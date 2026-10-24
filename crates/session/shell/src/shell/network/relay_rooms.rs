@@ -125,7 +125,7 @@ pub(super) enum PersonsHost {
 /// transport hint names: a relay, or a person's device hosting the rooms
 /// placed on it. `None` when the room is governed elsewhere than where it
 /// is served.
-fn hosting_governor(
+pub(super) fn hosting_governor(
     view: &tilo_joined_room::NativeCommittedView,
     room: RoomId,
 ) -> Result<Option<iroh::EndpointId>, String> {

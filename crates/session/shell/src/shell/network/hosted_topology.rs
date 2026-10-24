@@ -1,12 +1,15 @@
-//! This session's legacy windows in a room another device governs.
+//! This session's windows in a room it holds as a member.
 //!
-//! Such a room's topology is written by its governor, so a window this
-//! session adopted itself (a legacy Wayland or X11 client) is in nobody's
-//! room document, and the room's other members, a browser viewer among
-//! them, have no tab to show it in. The room's registry lets a member own a
-//! topology namespace: once the governor registers this session's salt to
-//! this device, the session publishes its legacy tabs as its own entries,
-//! which the governor admits within that namespace and republishes.
+//! Such a room's topology is written by its governor. When the governor is
+//! a host (a relay, or the room host of the device the room is placed on,
+//! this one's included) it runs no apps, so nothing places this session's
+//! windows but this session; when it is another device that opens the
+//! apps launched in the room, only the windows this session adopted itself
+//! (a legacy Wayland or X11 client) are in nobody's room document. The
+//! room's registry lets a member own a topology namespace: once the
+//! governor registers this session's salt to this device, the session
+//! publishes those tabs as its own entries, which the governor admits
+//! within that namespace and republishes.
 use super::{NetCmd, ShellNetwork, room_topic_id};
 use crate::shell::state::{RoomId, Strip, TileContent};
 use std::collections::HashMap;
@@ -14,8 +17,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tilo_desktop_model::commands::{BoundCommand, CommandSource, DesktopCommand};
 
-/// How often one room's legacy windows are looked at.
-const CHECK_EVERY: Duration = Duration::from_millis(500);
 /// A claim that did not answer is asked again after this long.
 const CLAIM_RETRY: Duration = Duration::from_secs(10);
 /// Entries the governor has not admitted yet are sent again after this long.
@@ -23,9 +24,10 @@ const RESEND_AFTER: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 struct Room {
-    checked: Option<Instant>,
     claimed_at: Option<Instant>,
+    /// When `sent` last went, and what it was.
     sent_at: Option<Instant>,
+    sent: Vec<Vec<u8>>,
     settled: Option<Settled>,
     /// The changes this session published that the governor has not
     /// admitted yet, oldest first ([`plan`]).
@@ -51,7 +53,8 @@ pub(super) struct State {
 }
 
 /// `strips` cut down to this session's own legacy tabs (and the groups and
-/// strips that hold them), the entries it publishes in a governed room.
+/// strips that hold them), the entries it publishes in a room whose
+/// governing device places its app windows.
 pub(crate) fn own_legacy_windows(strips: &[Strip], salt: u16) -> Vec<Strip> {
     let own = |id: u64| tilo_desktop_model::peer_salt_of(id) == salt;
     strips
@@ -112,10 +115,11 @@ impl ShellNetwork {
     }
 
     /// Keep `room`'s document showing this session's windows among its
-    /// workspace's layout in `tree`. When another device governs `room`,
-    /// that is this session's own legacy tabs (`own_legacy_windows`),
-    /// published for the governor to admit; the governor places the rest.
-    /// Nothing at all in a room whose layout is personal. Cheap when nothing changed: while neither those
+    /// workspace's layout in `tree`, published for the room's governor to
+    /// admit: every tab of this session's when a host governs `room`, only
+    /// its legacy tabs ([`own_legacy_windows`]) when another device that
+    /// places the rest does. Nothing at all in a room whose layout is
+    /// personal. Cheap when nothing changed: while neither those
     /// windows nor the admitted room document moved since a look found
     /// nothing to publish, the document is not copied. Call every tick.
     pub fn publish_hosted_legacy_windows(
@@ -124,31 +128,21 @@ impl ShellNetwork {
         tree: &crate::shell::state::WorkspaceTreeHandle,
     ) {
         let now = Instant::now();
-        {
-            let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
-                return;
-            };
-            let state = rooms.entry(room).or_default();
-            if state
-                .checked
-                .is_some_and(|at| now.saturating_duration_since(at) < CHECK_EVERY)
-            {
-                return;
-            }
-            state.checked = Some(now);
-        }
         // Only an owner already open: this runs on the frame loop.
         let Some(owner) = self.opened_native_owner() else {
             return;
         };
-        let personal = owner
-            .with_current(room, |view| {
-                Ok(view.peer().governance().room_layout().is_personal())
-            })
-            .unwrap_or(false);
-        if !Self::governed_elsewhere_by(&owner, room) {
+        let Ok((personal, governor)) = owner.with_current(room, |view| {
+            Ok((
+                view.peer().governance().room_layout().is_personal(),
+                Governor::of(view, room),
+            ))
+        }) else {
             return;
-        }
+        };
+        let Some(kept) = governor.keeps() else {
+            return;
+        };
         // A room whose layout is personal takes no member's windows: none is
         // published into it, and nothing published before is sent again.
         // Its governor removes what it took in of them while it shared them.
@@ -156,7 +150,7 @@ impl ShellNetwork {
             self.keep_out_of_personal_room(room);
             return;
         }
-        let (salt, windows) = windows_to_publish(&tree.read(), room);
+        let (salt, windows) = windows_to_publish(&tree.read(), room, kept);
         if salt == 0 {
             return;
         }
@@ -258,24 +252,28 @@ impl ShellNetwork {
         });
     }
 
-    /// Whether changes not yet admitted in `room` are due to go again.
-    fn due_to_send(&self, room: RoomId, now: Instant) -> bool {
+    /// Whether `changes`, not yet admitted in `room`, go now: at once when
+    /// they hold a change not sent before, and the same again only once
+    /// they have waited a while.
+    fn due_to_send(&self, room: RoomId, changes: &[Vec<u8>], now: Instant) -> bool {
         let Ok(mut rooms) = self.hosted_topology.rooms.lock() else {
             return false;
         };
         let state = rooms.entry(room).or_default();
-        if state
-            .sent_at
-            .is_some_and(|at| now.saturating_duration_since(at) < RESEND_AFTER)
+        if state.sent == changes
+            && state
+                .sent_at
+                .is_some_and(|at| now.saturating_duration_since(at) < RESEND_AFTER)
         {
             return false;
         }
         state.sent_at = Some(now);
+        state.sent = changes.to_vec();
         true
     }
 
     fn send_topology(&self, room: RoomId, changes: Vec<Vec<u8>>, now: Instant) {
-        if !self.due_to_send(room, now) {
+        if !self.due_to_send(room, &changes, now) {
             return;
         }
         tracing::debug!(%room, changes = changes.len(), "publishing this session's windows to the room");
@@ -290,11 +288,55 @@ impl ShellNetwork {
     }
 }
 
-/// This session's salt, and the windows it keeps in `room`'s document: its
-/// own legacy tabs ([`own_legacy_windows`]).
+/// Which of this session's windows it publishes into a room itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// Every one: the room's host runs no apps, so nobody else places this
+    /// session's app windows.
+    All,
+    /// Only its legacy tabs: the device governing the room opens the apps
+    /// launched there and places their windows.
+    Legacy,
+}
+
+/// Who governs a room, as far as publishing this session's windows into it
+/// goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Governor {
+    /// Another device than this one.
+    elsewhere: bool,
+    /// A host, which runs no apps: a relay, or the room host of the device
+    /// the room is placed on, this one's included.
+    host: bool,
+}
+
+impl Governor {
+    fn of(view: &tilo_joined_room::NativeCommittedView, room: RoomId) -> Self {
+        Self {
+            elsewhere: view.governor().device_public_key != view.device().device_public_key,
+            host: view.governor().capabilities.can_act_as_host
+                || super::relay_rooms::hosting_governor(view, room)
+                    .is_ok_and(|host| host.is_some()),
+        }
+    }
+
+    /// Which windows this session publishes into the room; `None` when this
+    /// device governs it itself and writes its windows there directly.
+    const fn keeps(self) -> Option<Kept> {
+        match (self.elsewhere, self.host) {
+            (_, true) => Some(Kept::All),
+            (true, false) => Some(Kept::Legacy),
+            (false, false) => None,
+        }
+    }
+}
+
+/// This session's salt, and the layout it keeps its windows in `room`'s
+/// document from: all of the workspace's, or only its own legacy tabs.
 fn windows_to_publish(
     tree: &crate::shell::state::WorkspaceTree,
     room: RoomId,
+    kept: Kept,
 ) -> (u16, Vec<Strip>) {
     let salt = tree.local_salt();
     let windows = tree
@@ -302,7 +344,14 @@ fn windows_to_publish(
         .workspaces
         .iter()
         .find(|workspace| workspace.room() == room)
-        .map(|workspace| own_legacy_windows(&workspace.strips, salt))
+        .map(|workspace| match kept {
+            // Whole: the projection writes only what this session minted,
+            // and a strip of its own that now holds only others' windows
+            // must still be seen as its own, or its windows closed here
+            // would never leave the room.
+            Kept::All => workspace.strips.clone(),
+            Kept::Legacy => own_legacy_windows(&workspace.strips, salt),
+        })
         .unwrap_or_default();
     (salt, windows)
 }
@@ -391,9 +440,17 @@ fn plan(
     }
     doc.apply_incoming(unadmitted.iter().map(|(_, change)| change.clone()))
         .map_err(|error| error.to_string())?;
+    if !doc.get_missing_deps(&[]).is_empty() {
+        // They build on a history the room no longer has: its governor
+        // started the room over from a base when someone joined. Nobody can
+        // take them now, nor anything built on them; the windows are made
+        // again on what the room holds.
+        doc = admitted.clone();
+        unadmitted.clear();
+    }
     pending.extend(unadmitted.into_iter().map(|(bytes, _)| bytes));
     let heads = doc.get_heads();
-    doc.set_actor(automerge::ActorId::from(device.to_vec()));
+    doc.set_actor(windows_actor(device, salt));
     tilo_desktop_model::projection::project_owned_contents(
         &mut doc,
         windows,
@@ -418,6 +475,20 @@ fn plan(
     Ok(Some(Plan::Publish(pending.clone())))
 }
 
+/// The actor `device`'s windows in the namespace `salt` are written as. A
+/// device that hosts the room commits the room's governance as its device
+/// key, so its windows written as that key too would number their changes
+/// and operations as the governor numbers its own: the governor would hold
+/// two changes with one sequence number, take neither the windows nor
+/// anything built on them, and each side would read the other's operations
+/// as its own.
+fn windows_actor(device: [u8; 32], salt: u16) -> automerge::ActorId {
+    let mut actor = device.to_vec();
+    actor.extend_from_slice(b"windows");
+    actor.extend_from_slice(&salt.to_be_bytes());
+    automerge::ActorId::from(actor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -430,6 +501,28 @@ mod tests {
             tile,
             app_title: None,
         }
+    }
+
+    #[test]
+    fn a_member_publishes_every_window_where_a_host_governs_and_only_legacy_ones_where_a_device_opens_the_apps()
+     {
+        let keeps = |elsewhere, host| Governor { elsewhere, host }.keeps();
+        assert_eq!(
+            keeps(false, true),
+            Some(Kept::All),
+            "this device's own host"
+        );
+        assert_eq!(
+            keeps(true, true),
+            Some(Kept::All),
+            "another device's host or a relay"
+        );
+        assert_eq!(
+            keeps(true, false),
+            Some(Kept::Legacy),
+            "a device that opens the apps"
+        );
+        assert_eq!(keeps(false, false), None, "this device governing it itself");
     }
 
     /// A device host forwards a viewer's input with the relay's legacy-window
@@ -929,6 +1022,159 @@ mod tests {
             ));
         }
         assert_eq!(copies(), before, "a settled room is not copied");
+    }
+
+    /// One chat window of this session's, alone in its strip, with ids
+    /// minted in `salt`.
+    fn one_window(salt: u16) -> Vec<Strip> {
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        own_legacy_windows(
+            &[Strip {
+                id: crate::shell::state::StripId(own(1)),
+                name: "Main".into(),
+                window_groups: vec![WindowGroup {
+                    id: own(2),
+                    tabs: vec![tab(
+                        own(3),
+                        TileContent::Foreign {
+                            app_id: "so.tilo.chat".into(),
+                            surface_id: 9,
+                        },
+                    )],
+                    active_tab: own(3),
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                    focus_history: Vec::new(),
+                }],
+            }],
+            salt,
+        )
+    }
+
+    /// A device hosting the room governs it as its device key while its
+    /// windows are published to that governor: the governor admits them
+    /// after committing changes of its own in between, and the room then
+    /// shows them.
+    #[test]
+    fn a_device_hosting_the_room_publishes_its_windows_beside_its_governance() {
+        use automerge::transaction::Transactable as _;
+        let salt = 0x0043;
+        let device = [0x5b; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let windows = one_window(salt);
+        // The governor, on this device, registers the namespace.
+        let mut governor =
+            automerge::AutoCommit::new().with_actor(automerge::ActorId::from(device.to_vec()));
+        let owners = governor
+            .put_object(
+                automerge::ROOT,
+                tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .expect("a map");
+        governor
+            .put(&owners, format!("{salt:x}"), hex::encode(device))
+            .expect("an owner");
+        governor.commit();
+        let admitted = governor.clone();
+        let Ok(Some(Plan::Publish(changes))) = plan(
+            &admitted,
+            Look {
+                device,
+                windows: &windows,
+                salt,
+            },
+            &mut None,
+            &mut Vec::new(),
+        ) else {
+            panic!("the window is published");
+        };
+        // The governor commits more of the room before the windows arrive.
+        governor
+            .put(automerge::ROOT, "name", "Projects")
+            .expect("a name");
+        governor.commit();
+        for change in &changes {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut governor, change)
+                .expect("the governor admits the windows");
+        }
+        let shown: Vec<u64> = tilo_desktop_model::projection::contents_of(&governor)
+            .into_iter()
+            .flat_map(|strip| strip.groups)
+            .flat_map(|group| group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        assert_eq!(shown, vec![own(3)], "the room shows the window");
+        assert!(
+            governor.get_missing_deps(&[]).is_empty(),
+            "nothing the windows build on is missing"
+        );
+    }
+
+    /// A window published before the governor started the room over from a
+    /// base (someone joined) builds on a history the room no longer has:
+    /// once the base arrives, the window is published again on it, and the
+    /// governor takes it.
+    #[test]
+    fn a_window_waiting_when_the_room_starts_over_is_published_on_the_new_base() {
+        use automerge::transaction::Transactable as _;
+        let salt = 0x0044;
+        let device = [0x5c; 32];
+        let own = |counter: u64| (u64::from(salt) << 48) | counter;
+        let windows = one_window(salt);
+        let mut room = automerge::AutoCommit::new();
+        let owners = room
+            .put_object(
+                automerge::ROOT,
+                tilo_desktop_model::projection::ROOM_CONTENTS_OWNERS_KEY,
+                automerge::ObjType::Map,
+            )
+            .expect("a map");
+        room.put(&owners, format!("{salt:x}"), hex::encode(device))
+            .expect("an owner");
+        room.commit();
+        let (mut settled, mut pending) = (None, Vec::new());
+        let look = Look {
+            device,
+            windows: &windows,
+            salt,
+        };
+        let Ok(Some(Plan::Publish(before))) = plan(&room, look, &mut settled, &mut pending) else {
+            panic!("the window is published");
+        };
+
+        // Someone joins: the governor starts the room over from a base,
+        // without the window, which had not reached it.
+        let based = tilo_peer_state::room::base::rebase(&room, automerge::ActorId::random())
+            .expect("a base");
+        let mut stale = based.clone();
+        let refused = before.iter().any(|change| {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut stale, change).is_err()
+        });
+        assert!(
+            refused || !stale.get_missing_deps(&[]).is_empty(),
+            "what was built before the base does not apply to it"
+        );
+
+        let Ok(Some(Plan::Publish(after))) = plan(&based, look, &mut settled, &mut pending) else {
+            panic!("the window is published again");
+        };
+        let mut governor = based.clone();
+        for change in &after {
+            tilo_automerge::ApplyIncoming::load_incoming(&mut governor, change)
+                .expect("the governor admits the window");
+        }
+        assert!(
+            governor.get_missing_deps(&[]).is_empty(),
+            "the window builds on the base alone"
+        );
+        let shown: Vec<u64> = tilo_desktop_model::projection::contents_of(&governor)
+            .into_iter()
+            .flat_map(|strip| strip.groups)
+            .flat_map(|group| group.tabs)
+            .map(|tab| tab.id)
+            .collect();
+        assert_eq!(shown, vec![own(3)], "the room shows the window");
     }
 
     /// A window opened while the last one is still waiting for the

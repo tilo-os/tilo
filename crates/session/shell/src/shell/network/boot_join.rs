@@ -57,7 +57,7 @@ impl ShellNetwork {
     fn await_administration(&self, room: &str) -> Result<(), String> {
         let target = RoomId::parse(room).ok_or("invitation names an invalid room")?;
         let tree = self.tree.clone();
-        let person = crate::shell::state::local_user_id_for_room(&target);
+        let person = self.person_in_room(target);
         let deadline = Instant::now()
             .checked_add(JOIN_DEADLINE)
             .ok_or("boot join deadline overflows")?;
