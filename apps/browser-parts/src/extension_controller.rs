@@ -1386,13 +1386,9 @@ impl ExtensionController {
     pub fn add_action(&self) -> Option<ui::tilo_actions::ActionSpec> {
         use ui::tilo_resource::Effect as _;
         let add = crate::effects::BrowserEffect::AddExtension.bound();
-        self.active.then(|| match self.bar_offer() {
-            Some(offer) if offer.enabled => add,
-            Some(_) => add.unavailable("adding", "Another extension is being added"),
-            None => add.unavailable(
-                "no_store_item",
-                "Open an extension's page on the Chrome Web Store first",
-            ),
+        self.active.then(|| match self.store_item_to_add() {
+            Ok(_) => add,
+            Err((code, reason)) => add.unavailable(code, reason),
         })
     }
 
@@ -1406,22 +1402,35 @@ impl ExtensionController {
         if !self.active {
             return Err("This window has no extensions".into());
         }
-        let item = self
-            .store_item
-            .as_ref()
-            .ok_or("Open an extension's page on the Chrome Web Store first")?;
+        let id = self
+            .store_item_to_add()
+            .map_err(|(_, reason)| reason.to_owned())?
+            .id
+            .clone();
+        (self.queue(Command::Fetch(id)))();
+        Ok(())
+    }
+
+    /// The Web Store item on the page, when it can be added now; otherwise
+    /// why not, as a stable code and the reason a person or agent reads.
+    /// The action's availability and its invocation share it, so an agent
+    /// is never told to open a store page while it is on one.
+    fn store_item_to_add(&self) -> Result<&web_store::Item, (&'static str, &'static str)> {
+        let item = self.store_item.as_ref().ok_or((
+            "no_store_item",
+            "Open an extension's page on the Chrome Web Store first",
+        ))?;
         if self
             .installed
             .iter()
             .any(|extension| extension.id == item.id)
         {
-            return Err("This extension is already added".into());
+            return Err(("added", "This extension is already added"));
         }
         if self.busy {
-            return Err("Another extension is being added".into());
+            return Err(("adding", "Another extension is being added"));
         }
-        (self.queue(Command::Fetch(item.id.clone())))();
-        Ok(())
+        Ok(item)
     }
 
     /// The header of the Extensions section: how to add one.
@@ -1980,6 +1989,23 @@ mod tests {
         controller.busy = true;
         assert_eq!(available(&controller), Some(false));
         assert!(controller.offer_store_item().is_err(), "one at a time");
+        controller.busy = false;
+        let id = controller.store_item.as_ref().unwrap().id.clone();
+        controller.installed = vec![installed(&id, None, toolbar::Access::default())];
+        assert_eq!(
+            controller
+                .add_action()
+                .map(|spec| spec.contract.availability),
+            Some(ui::tilo_actions::Availability::Unavailable {
+                code: "added".into(),
+                reason: "This extension is already added".into(),
+            }),
+            "on the store page of one already added, it says so"
+        );
+        assert_eq!(
+            controller.offer_store_item(),
+            Err("This extension is already added".into())
+        );
         assert_eq!(
             ExtensionController::new(false).add_action().map(|_| ()),
             None
