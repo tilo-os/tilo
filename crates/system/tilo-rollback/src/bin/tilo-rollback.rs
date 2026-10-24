@@ -89,7 +89,7 @@ enum Cmd {
         /// Where to record the generated reset authorisation. Must be on the encrypted root.
         #[arg(long, default_value = "/var/lib/tilo/rollback/lockout-auth")]
         auth_file: PathBuf,
-        #[arg(long, default_value_t = 32)]
+        #[arg(long, default_value_t = 10)]
         max_tries: u32,
         #[arg(long, default_value_t = 7200)]
         recovery_time: u32,
