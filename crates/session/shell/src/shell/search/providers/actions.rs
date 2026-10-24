@@ -39,7 +39,10 @@ use strips::{
     move_strip, remove_strip, rename_strip,
 };
 pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
-use tabs::{TAB_RENAME_PARAMS, rename_focused_tab};
+use tabs::{
+    TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
+    rename_focused_tab,
+};
 
 use crate::shell::shared_display_actions;
 
@@ -426,6 +429,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "tab.open-beside"
         | "tab.split-right"
         | "tab.move-to-new-group"
+        | "tab.move-to-workspace"
         | "tab.close"
         | "tab.reopen" => {
             contract.kind = ActionKind::Undoable;
@@ -2931,6 +2935,13 @@ impl Action {
                 })
             },
         ),
+        Action {
+            id: "tab.move-to-workspace",
+            label: "search-action-tab-move-to-workspace",
+            subtitle: "search-action-tab-move-to-workspace-subtitle",
+            params: TAB_MOVE_TO_WORKSPACE_PARAMS,
+            apply: move_focused_tab_to_workspace,
+        },
         chrome(
             "notifications.dnd.toggle",
             "search-action-notifications-dnd-toggle",

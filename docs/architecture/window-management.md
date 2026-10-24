@@ -101,12 +101,12 @@ and Shift+F10 keys continue to reach the app's resource menu.
 |---|---|---|---|---|
 | One slot left / right, walking across a display seam | `group.move-left` / `-right` | Super+Shift+← / → | drag the tab-bar ground into a gap | today within a display |
 | To the strip above / below | `group.move-to-strip-previous` / `-next` | Shift+Ctrl+Super+↑ / ↓ | drag onto another strip | today, except the drag |
-| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move` |
+| To the previous / next workspace | `group.move-to-workspace-previous` / `-next` | Super+Shift+PageUp / PageDown | — | planned; one tab today via `tab.move-to-workspace` |
 | To the neighbouring display | `group.move-to-display-previous` / `-next` | Alt+Super+Shift+← / → | drag onto the other display | today on Super+Ctrl+Shift+← / → |
 
 A workspace is the sandbox and sharing boundary. Carrying a group there moves
-each tab through the window-transfer consent sheet exactly where `tab.move`
-would show it; a chord opens the sheet and never bypasses it.
+each tab through the window-transfer consent sheet exactly where
+`tab.move-to-workspace` would show it; a chord opens the sheet and never bypasses it.
 
 ### The frame of one group
 
