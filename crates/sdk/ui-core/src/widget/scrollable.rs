@@ -195,6 +195,12 @@ pub struct Scrollable {
     /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
     /// Content that fits keeps the full width.
     reserve_vertical: bool,
+    /// The lanes (vertical, horizontal) this layout found the content
+    /// overflowing without: kept until the layout is applied, so content
+    /// that fits only beside its own bar does not drop the bar and overflow
+    /// again, pass after pass. A retained tree is laid out again without
+    /// being rebuilt, so applying the layout is what ends it.
+    lanes_needed: (bool, bool),
     /// Keep the themed trailing lane even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
@@ -315,6 +321,7 @@ impl Scrollable {
             bar_margin: BAR_MARGIN,
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
+            lanes_needed: (false, false),
             stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
@@ -811,7 +818,10 @@ impl Scrollable {
     }
     /// Reserve the bar's lane on the edge it scrolls along while the solved
     /// content overflows the viewport, and give it back once it fits.
-    /// Narrower content is never shorter, so this settles in one step.
+    /// Narrower content is usually taller, not always: a grid whose cells
+    /// scale with the width can overflow at full width and fit beside the
+    /// lane. A lane the content needed then stays for the rest of the layout,
+    /// so this settles within two steps.
     fn follow_overflow(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -837,6 +847,16 @@ impl Scrollable {
             && self.show_scrollbar
             && viewport_w > 0.0
             && content_w > viewport_w + FIT_EPS;
+        // A lane the content overflowed without stays: content that fits
+        // only because the lane narrowed it would overflow again without it.
+        if vertical && !self.reserve_vertical {
+            self.lanes_needed.0 = true;
+        }
+        if horizontal && !self.reserve_horizontal {
+            self.lanes_needed.1 = true;
+        }
+        let vertical = vertical || (self.reserve_vertical && self.lanes_needed.0);
+        let horizontal = horizontal || (self.reserve_horizontal && self.lanes_needed.1);
         if vertical == self.reserve_vertical && horizontal == self.reserve_horizontal {
             return false;
         }
@@ -1630,6 +1650,7 @@ impl Widget for Scrollable {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.height_limit_dirty = false;
+        self.lanes_needed = (false, false);
         self.child_node = self
             .child
             .as_mut()
@@ -1768,6 +1789,9 @@ impl Widget for Scrollable {
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
         self.cursor_initialized = false;
+        // This layout is over: the next one checks the lanes afresh, so
+        // content that now fits at full width gives its bar back.
+        self.lanes_needed = (false, false);
         let l = taffy.layout(node).copied().unwrap_or_default();
         self.rect = crate::widget::placed(&l, origin);
         self.viewport_w = l.size.width;
