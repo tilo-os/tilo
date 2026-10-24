@@ -255,13 +255,16 @@ class ExtensionTabs {
   // whose worker answers which tab a page is (Identify).
   void SetIdentity(const std::string& id) { identity_ = id; }
 
-  // What the extension may do, from its manifest as installed.
+  // What the extension may do, from its manifest as installed: its API
+  // permissions, its host permissions (`hosts`) and, apart from those, where
+  // its declared content scripts run (`scriptable`), which as in Chrome
+  // gives no access to the tab APIs.
   // `token` is what its worker shows the bridge: the Browser wrote it with
   // the tab APIs into the extension's worker, which alone can read it.
   // `commands` are its manifest's (`commands`), keyboard shortcuts.
-  void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, const std::string& token,
-                 CefRefPtr<CefDictionaryValue> commands) {
-    access_[id] = Access{std::move(permissions), std::move(hosts)};
+  void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, std::vector<std::string> scriptable,
+                 const std::string& token, CefRefPtr<CefDictionaryValue> commands) {
+    access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable)};
     commands_.Set(id, CommandsOf(commands));
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     if (token.empty()) return;
@@ -521,17 +524,19 @@ class ExtensionTabs {
     });
   }
 
-  // The extension's toolbar button opened its popup over `tab`, which it may
-  // now script until the page navigates, as after a click.
+  // The extension's toolbar button opened its popup over `tab`: one that
+  // asked for activeTab may now read and script it until the page
+  // navigates, as after a click.
   void Grant(const std::string& extension, int tab) {
     Ensure([this, extension, tab] {
       const auto tabs = Tabs();
-      if (const auto* found = Find(tabs, tab); found && access_.count(extension)) granted_.insert({extension, found->id});
+      if (const auto* found = Find(tabs, tab); found && Has(extension, "activeTab")) granted_.insert({extension, found->id});
     });
   }
 
   // The person clicked the extension's toolbar button over `tab`: like
-  // Chrome, it may now script that page until it navigates.
+  // Chrome, one that asked for activeTab may now read and script that page
+  // until it navigates; a click gives any other nothing.
   void Clicked(const std::string& extension, int tab) {
     Ensure([this, extension, tab] { ClickedNow(extension, tab); });
   }
@@ -539,7 +544,7 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || !access_.count(extension)) return;
-    granted_.insert({extension, found->id});
+    if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
     Push(extension, "action.onClicked", args, true);
@@ -698,7 +703,9 @@ class ExtensionTabs {
   }
 
  private:
-  struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; };
+  // `scriptable` is kept apart from `hosts` so that no tab API counts it:
+  // Chromium runs the declared content scripts itself.
+  struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; std::vector<std::string> scriptable; };
   // A manifest's `commands`, each with the key it suggests on this
   // platform: its own (`mac`, `linux`), else its `default`, or one for all.
   static std::vector<ExtensionCommand> CommandsOf(CefRefPtr<CefDictionaryValue> commands) {
@@ -887,6 +894,9 @@ class ExtensionTabs {
     auto found = access_.find(extension);
     return found != access_.end() && found->second.permissions.count(permission) > 0;
   }
+  // Whether the extension's host permissions reach `url`. Where its content
+  // scripts run does not count: Chrome reads a tab and scripts it by host
+  // permissions alone.
   bool HostAccess(const std::string& extension, const std::string& url) const {
     auto found = access_.find(extension);
     if (found == access_.end()) return false;
@@ -903,8 +913,9 @@ class ExtensionTabs {
   bool MayScript(const std::string& extension, const ExtensionTab& tab) const {
     return HostAccess(extension, tab.url) || Granted(extension, tab);
   }
-  // Access to every site (`<all_urls>`, or any host of a scheme), which
-  // with `activeTab` is what Chrome asks of an extension to capture a tab.
+  // Host permission for every site (`<all_urls>`, or any host of a scheme),
+  // which with `activeTab` is what Chrome asks of an extension to capture a
+  // tab; content scripts on every site are not.
   bool AllSites(const std::string& extension) const {
     auto found = access_.find(extension);
     if (found == access_.end()) return false;

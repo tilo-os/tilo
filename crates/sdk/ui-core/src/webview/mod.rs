@@ -430,7 +430,12 @@ pub enum WebViewCommand {
     ExtensionAccess {
         id: String,
         permissions: Vec<String>,
+        /// Its host permissions: the sites the tab APIs let it read and
+        /// script.
         hosts: Vec<String>,
+        /// Where its declared content scripts run, which, as in Chrome, gives
+        /// no access to the tab APIs.
+        scriptable: Vec<String>,
         /// What its service worker shows the engine to be known as its.
         token: Option<String>,
         /// Its keyboard shortcuts: the manifest's `commands` object, whose

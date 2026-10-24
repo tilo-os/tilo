@@ -423,8 +423,13 @@ content scripts (with `sender.tab`) work without help.
   `sender.tab.id`. The Browser's own extension (`extension-manager`, with a
   content script in every page) asks it for each page on first use.
 - What a tab shows an extension follows Chrome: its address and title with
-  `tabs`, access to the site, or a click on the extension's button over it
-  (`activeTab`), which also lets it script the page until the page navigates.
+  `tabs`, a host permission for the site, or a click on the extension's
+  button over it (`activeTab`), which also lets it script the page until the
+  page navigates. A click gives an extension without `activeTab` nothing.
+  The Browser sends an extension's host permissions apart from the sites its
+  content scripts run on (`extension_access`, `hosts` and `scriptable`), and
+  no tab API counts the second: as in Chrome, content scripts on every page
+  let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
   `tabs.getZoom` the page's zoom.
 - The toolbar button's look for every tab is Chromium's, and so are its
@@ -480,7 +485,7 @@ content scripts (with `sender.tab`) work without help.
 - `tabs.captureVisibleTab` encodes the frame the host last painted of the
   tab, PNG or JPEG at the quality asked for (90 by default), off the UI
   thread. As in Chrome it needs a click on the extension's button over the
-  tab (`activeTab`) or access to every site (`<all_urls>`), and answers each
+  tab (`activeTab`) or a host permission for every site (`<all_urls>`), and answers each
   extension at most twice a second. A hidden tab has no frame to capture.
 - `contextMenus` items are kept by the host (`src/extension_menus.h`) and
   shown in the page's menu where their contexts (page, selection, link,
