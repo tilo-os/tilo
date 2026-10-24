@@ -90,8 +90,10 @@ fn row_of(host: &ShellOverlayHost, person: &Person) -> (Rect, Rect) {
     host.member_control_rects()
         .iter()
         .find(|(user, _, _)| *user == id)
-        .map(|(_, role, remove)| (*role, *remove))
-        .unwrap_or_else(|| panic!("{id} has a row"))
+        .map_or_else(
+            || panic!("{id} has a row"),
+            |(_, role, remove)| (*role, *remove),
+        )
 }
 
 /// Whether `person` may change `room`'s contents outright, as `device`

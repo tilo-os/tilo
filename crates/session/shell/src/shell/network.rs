@@ -13061,6 +13061,49 @@ mod tests {
         assert!(!document.replayed);
     }
 
+    /// Publish all that touches the person room of `user` through `net`, a
+    /// person-room record written by `own_device` among it, and check none of
+    /// it is `sent` to anyone but the person's devices and hosts. Returns the
+    /// record's artifact.
+    fn person_room_stays_with_the_person(
+        net: &ShellNetwork,
+        sent: &mut mpsc::Receiver<NetCmd>,
+        user: [u8; 32],
+        own_device: &ed25519_dalek::SigningKey,
+    ) -> collab_types::ArtifactId {
+        let person_room = RoomId::from(collab_types::person_room(&user));
+        let record = "history";
+        let envelope = person_document(&user, record, own_device);
+        let artifact = envelope.artifact;
+        net.publish_document(
+            "so.tilo.tube".into(),
+            person_room.to_string(),
+            record,
+            envelope,
+        );
+        net.publish_app_presence(
+            "so.tilo.tube".into(),
+            person_room.to_string(),
+            collab_types::PeerPresence {
+                key: Vec::new(),
+                payload: collab_types::PeerPresencePayload::Arrived,
+            },
+        );
+        net.publish_scrollback_response(room_topic_id(person_room), artifact, Vec::new());
+        net.publish_scrollback_request(&person_room.to_string(), artifact, u64::MAX, 8);
+        net.request_room_replay(&person_room.to_string());
+        let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
+        assert!(
+            leaked.iter().all(|command| matches!(
+                command,
+                NetCmd::PublishToHosts { ws, .. } | NetCmd::Replay { ws }
+                    if *ws == personal_continuity_topic_id(&user)
+            )),
+            "nothing about the person room leaves for anyone but the person's devices and hosts: {leaked:?}"
+        );
+        artifact
+    }
+
     /// A collaborator never sees the person room: nothing about it is
     /// published where they listen, and nothing naming it is accepted from
     /// them, on a room topic or on the personal fabric.
@@ -13100,34 +13143,7 @@ mod tests {
 
         let record = "history";
         let own_device = ed25519_dalek::SigningKey::from_bytes(&[0xE9; 32]);
-        let envelope = person_document(&user, record, &own_device);
-        let artifact = envelope.artifact;
-        net.publish_document(
-            "so.tilo.tube".into(),
-            person_room.to_string(),
-            record,
-            envelope,
-        );
-        net.publish_app_presence(
-            "so.tilo.tube".into(),
-            person_room.to_string(),
-            collab_types::PeerPresence {
-                key: Vec::new(),
-                payload: collab_types::PeerPresencePayload::Arrived,
-            },
-        );
-        net.publish_scrollback_response(room_topic_id(person_room), artifact, Vec::new());
-        net.publish_scrollback_request(&person_room.to_string(), artifact, u64::MAX, 8);
-        net.request_room_replay(&person_room.to_string());
-        let leaked: Vec<_> = std::iter::from_fn(|| sent.try_recv().ok()).collect();
-        assert!(
-            leaked.iter().all(|command| matches!(
-                command,
-                NetCmd::PublishToHosts { ws, .. } | NetCmd::Replay { ws }
-                    if *ws == personal_continuity_topic_id(&user)
-            )),
-            "nothing about the person room leaves for anyone but the person's devices and hosts: {leaked:?}"
-        );
+        let artifact = person_room_stays_with_the_person(&net, &mut sent, user, &own_device);
 
         net.dispatch_scrollback_request(room_topic_id(person_room), 0xBEEF, artifact, u64::MAX, 8);
         assert!(
@@ -13732,7 +13748,7 @@ mod tests {
             let phone = iroh::SecretKey::from_bytes(&[0xF2; 32]);
             authenticated_personal_peer(&net, &root, &phone);
             while cmd_rx.try_recv().is_ok() {}
-            let room = collab_types::person_room(&user).to_string();
+            let person_room = collab_types::person_room(&user).to_string();
             let author = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
             let secret = "/home/alice/Secret Plans/merger-2026.odt";
             for record_id in [
@@ -13741,7 +13757,7 @@ mod tests {
             ] {
                 net.publish_document(
                     "so.tilo.tube".into(),
-                    room.clone(),
+                    person_room.clone(),
                     &record_id,
                     person_document(&user, &record_id, &author),
                 );

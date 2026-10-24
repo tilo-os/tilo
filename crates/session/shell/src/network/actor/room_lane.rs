@@ -51,7 +51,7 @@ pub(super) enum Work {
     JoinPeers(Vec<EndpointId>),
     /// Write one message to one device on the direct plane; how it went
     /// comes back as [`InternalEvent::DirectSent`].
-    Direct(Direct),
+    Direct(Box<Direct>),
 }
 
 /// A message for exactly one device on the authenticated direct plane.
@@ -79,7 +79,7 @@ pub(super) struct Lanes {
     gossip: Gossip,
     endpoint: Endpoint,
     internal_tx: mpsc::Sender<InternalEvent>,
-    lanes: HashMap<WorkspaceId, Lane>,
+    rooms: HashMap<WorkspaceId, Lane>,
 }
 
 struct Lane {
@@ -97,13 +97,13 @@ impl Lanes {
             gossip,
             endpoint,
             internal_tx,
-            lanes: HashMap::new(),
+            rooms: HashMap::new(),
         }
     }
 
     /// `ws`'s lane, started when the room has none yet.
     fn lane(&mut self, ws: WorkspaceId) -> &Lane {
-        self.lanes.entry(ws).or_insert_with(|| {
+        self.rooms.entry(ws).or_insert_with(|| {
             let (queue, rx) = mpsc::channel(LANE_DEPTH);
             let task = tokio::spawn(run(
                 ws,
@@ -135,19 +135,19 @@ impl Lanes {
         &mut self,
         ws: WorkspaceId,
         direct: Direct,
-    ) -> Result<(), NeighbourMsg> {
+    ) -> Result<(), Box<NeighbourMsg>> {
         match self.lane(ws).queue.try_reserve() {
             Ok(permit) => {
-                permit.send(Work::Direct(direct));
+                permit.send(Work::Direct(Box::new(direct)));
                 Ok(())
             }
-            Err(_) => Err(direct.msg),
+            Err(_) => Err(Box::new(direct.msg)),
         }
     }
 
     /// The room was left: what its lane still had to send goes with it.
     pub(super) fn close(&mut self, ws: WorkspaceId) {
-        if let Some(lane) = self.lanes.remove(&ws) {
+        if let Some(lane) = self.rooms.remove(&ws) {
             lane.task.abort();
         }
     }
@@ -155,7 +155,7 @@ impl Lanes {
 
 impl Drop for Lanes {
     fn drop(&mut self) {
-        for lane in self.lanes.values() {
+        for lane in self.rooms.values() {
             lane.task.abort();
         }
     }
@@ -221,7 +221,7 @@ async fn run(
                 if let Some(connection) = connections.remove(&target) {
                     direct.cached.get_or_insert(connection);
                 }
-                let outcome = deliver(&endpoint, direct).await;
+                let outcome = deliver(&endpoint, *direct).await;
                 if let Some(connection) = &outcome.connection {
                     connections.insert(target, connection.clone());
                 }

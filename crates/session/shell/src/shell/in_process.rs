@@ -1522,9 +1522,8 @@ mod tests {
         std::fs::create_dir_all(&profile).unwrap();
         let session = crate::runtime_host::Session::start(&profile).unwrap();
         let room = crate::shell::state::RoomId::parse(&session.room).unwrap();
-        let network = session.network();
         assert!(
-            network.serves_here(room),
+            session.network().serves_here(room),
             "the session's workspace is hosted on this device's own host"
         );
         assert!(
@@ -1562,7 +1561,7 @@ mod tests {
                 context.provide_open_file(file);
             },
         );
-        let owner = network.native_owner().unwrap();
+        let owner = session.network().native_owner().unwrap();
         let record = RecordId::for_tab(93).to_string();
         until(
             &mut [&mut notes],

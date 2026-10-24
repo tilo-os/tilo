@@ -1936,7 +1936,7 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.lanes,
                         ws,
-                        msg.clone(),
+                        &msg,
                         false,
                         false,
                         true,
@@ -1944,7 +1944,7 @@ impl ActorState {
                     let _ = self.start_surface_fanout(ws, msg);
                 } else {
                     self.hold_for_host(ws, &msg, false);
-                    self.publish_paced(ws, msg);
+                    self.publish_paced(ws, &msg);
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
@@ -1955,7 +1955,7 @@ impl ActorState {
                     &self.host_sessions,
                     &mut self.lanes,
                     ws,
-                    msg,
+                    &msg,
                     false,
                     false,
                     true,
@@ -1974,7 +1974,7 @@ impl ActorState {
                         &self.host_sessions,
                         &mut self.lanes,
                         ws,
-                        msg,
+                        &msg,
                         false,
                         false,
                         true,
@@ -2003,7 +2003,7 @@ impl ActorState {
                     &self.host_sessions,
                     &mut self.lanes,
                     ws,
-                    msg,
+                    &msg,
                     true,
                     true,
                     true,
@@ -2638,10 +2638,11 @@ impl ActorState {
             match self.publish_direct(ws, target, NeighbourMsg::RemoteAction { frame }) {
                 // How it went comes back from the room's lane.
                 Ok(()) => return,
-                Err(NeighbourMsg::RemoteAction { frame }) => {
-                    self.relay_remote_action(ws, target, frame)
+                Err(msg) => {
+                    if let NeighbourMsg::RemoteAction { frame } = *msg {
+                        self.relay_remote_action(ws, target, frame);
+                    }
                 }
-                Err(_) => {}
             }
             return;
         }
@@ -2810,12 +2811,12 @@ impl ActorState {
                 match self.publish_direct(ws, target, msg) {
                     // How it went comes back from the room's lane.
                     Ok(()) => return,
-                    Err(msg) => msg,
+                    Err(msg) => *msg,
                 }
             }
             _ => msg,
         };
-        self.relay_record_content(ws, target, msg);
+        self.relay_record_content(ws, target, &msg);
     }
 
     /// Record content that could not go to `target` directly: through the
@@ -2824,12 +2825,12 @@ impl ActorState {
         &mut self,
         ws: WorkspaceId,
         target: Option<EndpointId>,
-        msg: NeighbourMsg,
+        msg: &NeighbourMsg,
     ) {
         // The workspace hosts route it to that device alone when it is
         // connected to them.
         if let Some(target) = target
-            && let Ok(frame) = postcard::to_allocvec(&msg)
+            && let Ok(frame) = postcard::to_allocvec(msg)
             && self
                 .host_sessions
                 .iter()
@@ -2865,10 +2866,10 @@ impl ActorState {
         ws: WorkspaceId,
         target: EndpointId,
         msg: NeighbourMsg,
-    ) -> Result<(), NeighbourMsg> {
+    ) -> Result<(), Box<NeighbourMsg>> {
         if !self.is_surface_member(ws, target) {
             tracing::warn!(ws, peer = %target, "direct route is no longer live");
-            return Err(msg);
+            return Err(Box::new(msg));
         }
         // Input must land within an interactive frame budget or not at all;
         // an action frame (up to a catalogue page) is worth waiting for.
@@ -2887,7 +2888,7 @@ impl ActorState {
             message: msg,
         };
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
-            return Err(wire.message);
+            return Err(Box::new(wire.message));
         };
         let direct = room_lane::Direct {
             addr: self
@@ -2929,7 +2930,7 @@ impl ActorState {
         match msg {
             NeighbourMsg::RemoteAction { frame } => self.relay_remote_action(ws, target, frame),
             NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. } => {
-                self.relay_record_content(ws, Some(target), msg);
+                self.relay_record_content(ws, Some(target), &msg);
             }
             _ => {}
         }
@@ -3149,8 +3150,7 @@ impl ActorState {
                 outcomes,
                 all_delivered,
             }) => {
-                self.handle_surface_fanout_complete(ws, generation, msg, outcomes, all_delivered)
-                    .await;
+                self.handle_surface_fanout_complete(ws, generation, &msg, outcomes, all_delivered);
             }
             Some(InternalEvent::PersonalFabric {
                 ws,
@@ -3307,15 +3307,15 @@ impl ActorState {
 
     /// [`InternalEvent::SurfaceFanoutComplete`] arm of [`Self::handle_internal`], split
     /// out to keep that dispatcher short.
-    async fn handle_surface_fanout_complete(
+    fn handle_surface_fanout_complete(
         &mut self,
         ws: WorkspaceId,
         generation: u64,
-        msg: NeighbourMsg,
+        msg: &NeighbourMsg,
         outcomes: Vec<SurfaceFanoutOutcome>,
         all_delivered: bool,
     ) {
-        let key = (ws, fanout_surface(&msg));
+        let key = (ws, fanout_surface(msg));
         if !finish_surface_fanout(&mut self.surface_fanout_tasks, key, generation) {
             return;
         }
@@ -3365,7 +3365,7 @@ impl ActorState {
                 &self.host_sessions,
                 &mut self.lanes,
                 ws,
-                next,
+                &next,
                 false,
                 true,
                 false,
@@ -3851,12 +3851,12 @@ impl ActorState {
     /// an agent's pointer travel alike. Carets, selections and typing pass a
     /// held pointer; anything else is broadcast after every held pointer, so
     /// an app's `Left` never overtakes its last move.
-    fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
+    fn publish_paced(&mut self, ws: WorkspaceId, msg: &NeighbourMsg) {
         let pacing = slot_pacing(ws, msg.presence_slot());
         if let Pacing::Pointer(key) = pacing
             && self.topics.contains_key(&ws)
         {
-            let bytes = match postcard::to_allocvec(&msg) {
+            let bytes = match postcard::to_allocvec(msg) {
                 Ok(bytes) => Bytes::from(bytes),
                 Err(error) => {
                     tracing::warn!(ws, %error, "collaboration message encode failed");
@@ -4083,7 +4083,7 @@ impl ActorState {
     /// connected, and announce this device's identity and codecs where they
     /// changed.
     /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
-    async fn run_heartbeat_tick(&mut self) {
+    fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
             if self.is_surface_member(ws, peer) {
                 self.flush_pending_remote_actions(ws, peer);
@@ -4737,7 +4737,7 @@ async fn run(
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
             () = sleep_until_lapse(upkeep) => {
                 upkeep = None;
-                state.run_heartbeat_tick().await;
+                state.run_heartbeat_tick();
             }
             () = sleep_until_lapse(host_checkpoint) => {
                 host_checkpoint = None;
@@ -4890,7 +4890,7 @@ fn publish(
     host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
     lanes: &mut room_lane::Lanes,
     ws: WorkspaceId,
-    msg: NeighbourMsg,
+    msg: &NeighbourMsg,
     shell_checkpoint: bool,
     broadcast_gossip: bool,
     publish_hosts: bool,
@@ -4905,7 +4905,7 @@ fn publish(
         );
         return;
     }
-    let retention = retention(&msg, shell_checkpoint);
+    let retention = retention(msg, shell_checkpoint);
     // Live traffic (pointers, carets, presence) is for whoever hears it now:
     // in a room with no session up there is no one, and nothing keeps it.
     if retention.is_none()
@@ -4916,7 +4916,7 @@ fn publish(
     {
         return;
     }
-    let bytes = match postcard::to_allocvec(&msg) {
+    let bytes = match postcard::to_allocvec(msg) {
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(ws, %error, "collaboration message encode failed");

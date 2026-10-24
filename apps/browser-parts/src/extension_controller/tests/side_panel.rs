@@ -5,6 +5,9 @@
 use super::*;
 use ui::webview::ExtensionSidePanelChange;
 
+/// A side panel's width beside the page, as a window lays it out.
+const PANEL_WIDTH: f32 = 320.0;
+
 fn with_side_panel(id: &str) -> Installed {
     installed(
         id,
@@ -53,7 +56,7 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
             WebViewCommand::Navigate(page(&notes, "panel.html")),
         ]
     );
-    assert!(controller.side_panel(SIDE_PANEL_WIDTH).is_some());
+    assert!(controller.side_panel(PANEL_WIDTH).is_some());
 
     // Its options name another page for this tab: the panel shows it,
     // in the same tab; turned off for the tab, it closes.
@@ -69,7 +72,7 @@ fn an_extensions_side_panel_shows_beside_the_page_as_it_asks() {
     );
     assert!(asked(&mut controller, &notes, Change::Options(None)));
     assert_eq!(controller.side_panel_shown(), None);
-    assert!(controller.side_panel(SIDE_PANEL_WIDTH).is_none());
+    assert!(controller.side_panel(PANEL_WIDTH).is_none());
     // Options and closing where it does not show change nothing.
     assert!(!asked(
         &mut controller,
