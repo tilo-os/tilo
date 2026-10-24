@@ -10,7 +10,10 @@
 //! Bytes that arrive can also be the last ones the file was missing. Then
 //! the record says the file is stored here, as a pin's download does when
 //! it ends, so a file read whole is shown stored and its folder's watchers
-//! hear of it (`crate::change_signal`).
+//! hear of it (`crate::change_signal`). Every write rewrites the whole
+//! registry and wakes the pinned-hydration pass, so files found whole are
+//! written together a moment later ([`StoredWrites`]), off the read's
+//! reply: a folder read through costs one write, not one per file.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -40,6 +43,164 @@ pub(super) struct NotedContent {
     pub(super) hydrator: Arc<Hydrator>,
     pub(super) hash: Hash,
     pub(super) version: FileVersionId,
+    /// Where a file found whole waits to be written with the others.
+    pub(super) stored: Arc<StoredWrites>,
+}
+
+/// How long a file found whole waits for others before they are written
+/// together: short enough that Files shows it stored at once, long enough
+/// that a folder read through (a copy, a search, thumbnails) is one write.
+const STORED_SETTLE: Duration = Duration::from_millis(200);
+
+/// Files reads found whole, written to the registry together. Each write
+/// of the registry rewrites all of it durably and wakes the
+/// pinned-hydration pass over the whole namespace, so one per file would
+/// make reading a folder cost a rewrite per file.
+pub(super) struct StoredWrites {
+    state: Mutex<StoredState>,
+    /// [`STORED_SETTLE`], but for tests that need a burst to fit for sure.
+    settle: Duration,
+    /// Ends the wait early: a test writes when its burst is in.
+    write_now: tokio::sync::Notify,
+}
+
+impl Default for StoredWrites {
+    fn default() -> Self {
+        Self {
+            state: Mutex::default(),
+            settle: STORED_SETTLE,
+            write_now: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct StoredState {
+    /// Found whole since the last write; `Some` while a write is scheduled.
+    pending: Option<Vec<FoundWhole>>,
+    /// Writes taken off `pending` and not yet committed.
+    writing: usize,
+}
+
+/// A file a read found whole: its record, and the version and content read.
+struct FoundWhole {
+    record_id: FileRecordId,
+    version: FileVersionId,
+    hash: Hash,
+}
+
+impl StoredWrites {
+    /// Queues `found` for the next write, scheduling one when none is.
+    fn add(
+        self: &Arc<Self>,
+        found: FoundWhole,
+        registry: &Arc<Mutex<AvailabilityRegistry>>,
+        hydrator: &Arc<Hydrator>,
+    ) {
+        {
+            let mut state = self.state.lock_recover();
+            if let Some(pending) = state.pending.as_mut() {
+                pending.push(found);
+                return;
+            }
+            state.pending = Some(vec![found]);
+        }
+        let stored = Arc::clone(self);
+        let registry = Arc::clone(registry);
+        let hydrator = Arc::clone(hydrator);
+        hydrator.runtime_handle.clone().spawn(async move {
+            tokio::select! {
+                () = tokio::time::sleep(stored.settle) => {}
+                () = stored.write_now.notified() => {}
+            }
+            let found = {
+                let mut state = stored.state.lock_recover();
+                state.writing = state.writing.saturating_add(1);
+                state.pending.take().unwrap_or_default()
+            };
+            write_stored(found, registry, &hydrator).await;
+            let mut state = stored.state.lock_recover();
+            state.writing = state.writing.saturating_sub(1);
+        });
+    }
+
+    /// Writes that wait `settle` for others instead of [`STORED_SETTLE`].
+    #[cfg(test)]
+    fn settling_for(settle: Duration) -> Self {
+        Self {
+            settle,
+            ..Self::default()
+        }
+    }
+
+    /// Writes what is queued now instead of after the wait.
+    #[cfg(test)]
+    fn write_now(&self) {
+        self.write_now.notify_one();
+    }
+
+    /// Waits until everything queued so far is written.
+    #[cfg(test)]
+    async fn settled(&self) {
+        loop {
+            {
+                let state = self.state.lock_recover();
+                if state.pending.is_none() && state.writing == 0 {
+                    return;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+}
+
+/// Writes `Resident` on the record of each file in `found` that is still
+/// whole here, in one batch. A file whose record moved on to another
+/// version, or already says so, is left alone. A file with no record gets
+/// one naming the version read, never a `Resident` record without one.
+async fn write_stored(
+    found: Vec<FoundWhole>,
+    registry: Arc<Mutex<AvailabilityRegistry>>,
+    hydrator: &Hydrator,
+) {
+    let mut whole = Vec::with_capacity(found.len());
+    for file in found {
+        // Checked again: the cache budget may have taken it meanwhile.
+        if let Some(bytes) = hydrator.local_len(file.hash).await {
+            whole.push((file, bytes));
+        }
+    }
+    if whole.is_empty() {
+        return;
+    }
+    let written = tokio::task::spawn_blocking(move || {
+        let verified_at = crate::clock::unix_now_ms();
+        registry.lock_recover().batch(|registry| {
+            for (file, bytes) in whole {
+                let resident = Residency::Resident { bytes };
+                let mut record = match registry.get(file.record_id) {
+                    Some(record) => record.clone(),
+                    None => {
+                        let mut record = RecordAvailability::new(file.record_id, RecordKind::File);
+                        record.current_version = Some(file.version);
+                        record
+                    }
+                };
+                if record.current_version != Some(file.version) || record.residency == resident {
+                    continue;
+                }
+                record.residency = resident;
+                record.freshness.local_verified_at_ms = Some(verified_at);
+                let _ = registry.put(record);
+            }
+        })
+    })
+    .await;
+    match written {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("could not note that files are stored here: {error}"),
+        Err(stopped) => eprintln!("the note that files are stored here stopped: {stopped}"),
+    }
 }
 
 impl UnavailableNote {
@@ -75,55 +236,54 @@ impl UnavailableNote {
     /// charge (queued, or a pin's fetch waiting for its next attempt) reports
     /// its own outcome, and any other failure stays.
     ///
-    /// When they were the last bytes the file was missing, the record says
-    /// it is stored here, unless the file has moved on to another version
-    /// meanwhile. A record already saying so is not written again, so only
-    /// the read that completes the file writes the registry.
+    /// When they were the last bytes the file was missing, the record will
+    /// say it is stored here ([`StoredWrites`]), unless the file has moved
+    /// on to another version meanwhile. A record already saying so is not
+    /// written again, so only the read that completes the file queues it.
     pub(super) async fn arrived(&self) {
-        let stored = match &self.content {
-            Some(content) => content
-                .hydrator
-                .local_len(content.hash)
-                .await
-                .map(|bytes| (content.version, bytes)),
+        let whole = match &self.content {
+            Some(content) => content.hydrator.local_len(content.hash).await,
             None => None,
         };
         let mut registry = self.registry.lock_recover();
         let current = registry.get(self.record_id);
-        let mut record = match (current, stored) {
-            (Some(record), _) => record.clone(),
-            (None, Some((version, _))) => {
-                let mut record = RecordAvailability::new(self.record_id, RecordKind::File);
-                record.current_version = Some(version);
-                record
-            }
-            (None, None) => return,
+        let queue = match (&self.content, whole) {
+            (Some(content), Some(bytes)) => current.is_none_or(|record| {
+                record.current_version == Some(content.version)
+                    && record.residency != (Residency::Resident { bytes })
+            }),
+            _ => false,
         };
-        let noted = record.transfer.phase == TransferPhase::Idle
-            && record.transfer.retry_at_ms.is_none()
-            && record
-                .transfer
-                .last_error
-                .as_ref()
-                .is_some_and(|error| error.message == NO_PEER_DELIVERED_ERROR);
-        if noted {
-            record.transfer.last_error = None;
-            // Bytes arriving ends the run of failures a retry counted, so the
-            // next read no peer answers is noted again.
-            record.transfer.retry_count = 0;
+        if let Some(record) = current {
+            let noted = record.transfer.phase == TransferPhase::Idle
+                && record.transfer.retry_at_ms.is_none()
+                && record
+                    .transfer
+                    .last_error
+                    .as_ref()
+                    .is_some_and(|error| error.message == NO_PEER_DELIVERED_ERROR);
+            if noted {
+                let mut record = record.clone();
+                record.transfer.last_error = None;
+                // Bytes arriving ends the run of failures a retry counted, so
+                // the next read no peer answers is noted again.
+                record.transfer.retry_count = 0;
+                if let Err(error) = registry.put(record) {
+                    eprintln!("could not note that a file is available again: {error}");
+                }
+            }
         }
-        if let Some((version, bytes)) = stored
-            && record.current_version == Some(version)
-            && record.residency != (Residency::Resident { bytes })
-        {
-            record.residency = Residency::Resident { bytes };
-            record.freshness.local_verified_at_ms = Some(crate::clock::unix_now_ms());
-        }
-        if registry.get(self.record_id) == Some(&record) {
-            return;
-        }
-        if let Err(error) = registry.put(record) {
-            eprintln!("could not note that a file's bytes arrived: {error}");
+        drop(registry);
+        if queue && let Some(content) = &self.content {
+            content.stored.add(
+                FoundWhole {
+                    record_id: self.record_id,
+                    version: content.version,
+                    hash: content.hash,
+                },
+                &self.registry,
+                &content.hydrator,
+            );
         }
     }
 }
@@ -305,11 +465,13 @@ mod tests {
             store,
         ));
         let version = FileVersionId::new();
+        let stored = Arc::new(StoredWrites::default());
         let content = |hash| {
             Some(NotedContent {
                 hydrator: Arc::clone(&hydrator),
                 hash,
                 version,
+                stored: Arc::clone(&stored),
             })
         };
         let bound = Duration::from_millis(500);
@@ -319,6 +481,7 @@ mod tests {
         noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
             .await
             .unwrap();
+        stored.settled().await;
         assert_eq!(
             note.registry.lock_recover().get(note.record_id),
             None,
@@ -329,6 +492,7 @@ mod tests {
         noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
             .await
             .unwrap();
+        stored.settled().await;
         let record = note
             .registry
             .lock_recover()
@@ -355,6 +519,7 @@ mod tests {
         noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
             .await
             .unwrap();
+        stored.settled().await;
         assert!(
             !changes.has_changed().unwrap(),
             "a stored file is written once"
@@ -368,10 +533,83 @@ mod tests {
         noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
             .await
             .unwrap();
+        stored.settled().await;
         assert_eq!(
             note.registry.lock_recover().get(note.record_id),
             Some(&moved),
             "bytes of an older version say nothing of the current one"
+        );
+    }
+
+    /// Every write of the registry rewrites all of it durably and wakes the
+    /// pinned-hydration pass over the whole namespace. A folder read
+    /// through in a burst (a copy, a search, thumbnails) is recorded stored
+    /// in one such write, not one per file, and the reads that complete
+    /// the files do not wait for it.
+    #[tokio::test]
+    async fn files_read_whole_together_are_recorded_in_one_write() {
+        use iroh::endpoint::{Endpoint, presets};
+
+        let (_dir, note) = note();
+        let store = Arc::new(crate::store::ContentStore::memory());
+        let mut files = Vec::new();
+        for seed in 0..24_u64 {
+            let data = crate::test_bytes::pseudo(16 * 1024, seed);
+            let hash = store.write_content(&data).await.unwrap().unwrap();
+            files.push((FileRecordId::new(), hash, data.len() as u64));
+        }
+        let hydrator = Arc::new(Hydrator::new(
+            Endpoint::bind(presets::Minimal).await.unwrap(),
+            store,
+        ));
+        // Written when the test says, however long the burst takes.
+        let stored = Arc::new(StoredWrites::settling_for(Duration::from_secs(3600)));
+        let version = FileVersionId::new();
+        let (writes, wakes) = {
+            let registry = note.registry.lock_recover();
+            (registry.persist_count(), registry.hydration_generation())
+        };
+
+        for (record_id, hash, _) in &files {
+            let read = UnavailableNote {
+                registry: Arc::clone(&note.registry),
+                record_id: *record_id,
+                content: Some(NotedContent {
+                    hydrator: Arc::clone(&hydrator),
+                    hash: *hash,
+                    version,
+                    stored: Arc::clone(&stored),
+                }),
+            };
+            noted_bounded_read(Duration::from_millis(500), async { Ok(()) }, Some(read))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            note.registry.lock_recover().persist_count(),
+            writes,
+            "a read that completes a file does not wait for the registry"
+        );
+        stored.write_now();
+        stored.settled().await;
+
+        let registry = note.registry.lock_recover();
+        for (record_id, _, bytes) in &files {
+            let record = registry
+                .get(*record_id)
+                .expect("each file read whole is recorded");
+            assert_eq!(record.residency, Residency::Resident { bytes: *bytes });
+            assert_eq!(record.current_version, Some(version));
+        }
+        assert_eq!(
+            registry.persist_count() - writes,
+            1,
+            "the files are written together"
+        );
+        assert_eq!(
+            registry.hydration_generation().wrapping_sub(wakes),
+            1,
+            "the pinned-hydration pass is woken once"
         );
     }
 

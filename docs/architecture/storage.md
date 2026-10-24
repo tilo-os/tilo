@@ -1451,7 +1451,10 @@ per peer.
 last bytes a file was missing writes `Resident` on its availability record, as a
 pin's finished download does, so Files shows it stored and its folder's watchers
 hear of it like of any change there. Bytes of a version the file has moved on
-from say nothing of the current one.
+from say nothing of the current one. Each write of the registry rewrites all of
+it and wakes the pinned-hydration pass, so files found whole are written
+together a moment later (200 ms), off the read's reply: a folder read through is
+one write, not one per file.
 
 ### 12.4 Read-ahead and prediction
 
