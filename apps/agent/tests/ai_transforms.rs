@@ -247,6 +247,7 @@ fn ai_shortcut(transform: AiTransform, input: Binding) -> Shortcut {
         )],
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 

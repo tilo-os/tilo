@@ -95,7 +95,7 @@ pub use tilo_relay_session::rooms::{
     LIST_ROOMS, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND, PREPARE_APPLICATION_RECORD,
     PendingInvitation, RECORD_EFFECT_RECEIPT, ROOM_ADMIN_ALPN, RemoveMemberRequest,
     RoomAdminClient, RoomAdminError, RoomCommand, RoomListing, RoomReply, RoomSummary,
-    SetMemberRoleRequest, member_resource,
+    SAVE_SHORTCUT, SetMemberRoleRequest, member_resource,
 };
 
 use crate::peer::WorkspaceRegistry;
