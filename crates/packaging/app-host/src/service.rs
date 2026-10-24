@@ -25,20 +25,27 @@ use tilo_app_package::id::PackageId;
 /// after this daemon's own, and at every start of the daemon (a new image or a
 /// swapped userspace changes the system store without any install running): the store's size cap, payload trees and staging
 /// nothing names, and the runtime builds nothing installed runs on any
-/// more. A tree a launch holds or a running app has mounted stays. Never
-/// fails the change it follows.
-pub fn collect_after_change(store: &PackageStore, catalog: &Catalog, max_store_bytes: u64) {
+/// more. A tree a launch holds or a running app has mounted stays, and so do
+/// the apps `keep` names: what the change just installed, which the person
+/// is about to open. Never fails the change it follows.
+pub fn collect_after_change(
+    store: &PackageStore,
+    catalog: &Catalog,
+    max_store_bytes: u64,
+    keep: &[&str],
+) {
     let runtimes = match runtime_bundle::gc::BundleRoot::from_env() {
         Ok(runtimes) => runtimes,
         Err(error) => {
             tracing::warn!(%error, "no runtime bundle root; applying the size cap only");
-            if let Err(error) = store.sweep(max_store_bytes) {
+            if let Err(error) = store.sweep_keeping(max_store_bytes, keep) {
                 tracing::warn!(%error, "post-change sweep failed");
             }
             return;
         }
     };
-    let request = ::install::gc::Request::after_change(max_store_bytes);
+    let request = ::install::gc::Request::after_change(max_store_bytes)
+        .keeping(keep.iter().map(|id| (*id).to_owned()));
     match ::install::gc::collect(store, catalog, &runtimes, request) {
         Ok(report) => tracing::debug!(
             freed_bytes = report.freed_bytes(),
@@ -1013,7 +1020,7 @@ impl app_host::Server for AppHostServer {
             blocking(move || {
                 let package = find_user(&catalog, id)?;
                 store.remove(&package.id, false).map_err(failed)?;
-                collect_after_change(&store, &catalog, max_bytes);
+                collect_after_change(&store, &catalog, max_bytes, &[]);
                 Ok(())
             })
             .await
@@ -1128,7 +1135,7 @@ impl app_host::Server for AppHostServer {
                     install_verified_tapp(&store, &tapp_bytes, pinning, &expected, None)
                         .map_err(failed)?;
                 // Best-effort: the package is already committed.
-                collect_after_change(&store, &catalog, max_bytes);
+                collect_after_change(&store, &catalog, max_bytes, &[installed.id.as_str()]);
                 installed
                     .package_id()
                     .ok_or_else(|| Error::failed("installed package has no package id".into()))

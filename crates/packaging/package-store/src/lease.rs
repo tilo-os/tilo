@@ -16,9 +16,17 @@
 //!
 //! Leases live beside `pkgs/`, never inside a payload tree, whose files are
 //! the signed collection's.
+//!
+//! A lease file's modification time is also when a launch last used the
+//! tree: taking a lease creates the file, and the launcher records a use
+//! again when the app closes ([`record_use`]). An app kept open for weeks
+//! thus counts as used the day it closed, not the day it opened, and the
+//! size sweep ([`last_use`]) reads it without anyone rewriting the registry,
+//! which every app listing would otherwise re-read.
 
 use std::io;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "store")]
 use advisory_lock::TryLockError;
@@ -49,6 +57,28 @@ pub fn hold_payload_in(layout: &Layout, payload_root: &Path) -> io::Result<Optio
     };
     let path = lease_file(layout, id)?;
     FileLock::open_current(&path, LockMode::Shared).map(Some)
+}
+
+/// Record that the launch holding `lease` used its tree now: the app it
+/// opened is closing, or still running.
+///
+/// # Errors
+///
+/// When the lease file's time cannot be set.
+pub fn record_use(lease: &FileLock) -> io::Result<()> {
+    lease.file().set_modified(SystemTime::now())
+}
+
+/// When a launch last used `id`'s tree, in Unix seconds; `None` when no
+/// launch ever held it.
+#[must_use]
+pub fn last_use(layout: &Layout, id: PackageId) -> Option<u64> {
+    let meta = std::fs::symlink_metadata(layout.lease(id)).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let since = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    Some(since.as_secs())
 }
 
 /// `id`'s lease, exclusively, when no launch holds it.
