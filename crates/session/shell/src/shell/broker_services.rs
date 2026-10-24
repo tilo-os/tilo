@@ -243,8 +243,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
 
     fn room_unavailable(&self, room: &str) -> Option<String> {
         super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().on_this_device_only(room))
-            .then(|| super::i18n::t("workspace-on-this-device-only-no-documents"))
+            .and_then(|room| self.tree.read().documents_unavailable(room))
+            .map(super::i18n::t)
     }
     fn requires_room(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
@@ -253,8 +253,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     /// A room its node stewards: this owner forwards an opening app's
     /// authorship to that host ([`grant_authorship_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room)
-            .is_some_and(|room| !self.tree.read().commits_native_documents(room))
+        super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))
     }
 
     fn health(&self) -> Result<(), String> {
@@ -1123,8 +1122,9 @@ impl NativeShortcutLibrary {
         change: tilo_action_broker::automation::ShortcutChange,
     ) -> Result<(), String> {
         use tilo_action_broker::automation::ShortcutChange;
-        if tree.read().on_this_device_only(room) {
-            return Err(super::i18n::t("workspace-on-this-device-only-no-documents"));
+        let unavailable = tree.read().documents_unavailable(room);
+        if let Some(reason) = unavailable {
+            return Err(super::i18n::t(reason));
         }
         let owner = super::native_workspace_owner::attached(&tree)
             .ok_or("the workspace is no longer hosted here")?;

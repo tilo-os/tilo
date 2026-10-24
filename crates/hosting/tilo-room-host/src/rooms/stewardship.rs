@@ -292,7 +292,6 @@ impl Stewardship {
 
     /// Read keys for an existing channel, recovering its sealed state if cold.
     /// Missing channels are refused; this path never initializes a group.
-    #[cfg(any(feature = "agents", feature = "web"))]
     pub(super) fn existing_keys(
         &mut self,
         channel: ChannelId,
@@ -317,7 +316,6 @@ impl Stewardship {
     /// write its first record there: create its group when it has none yet,
     /// with `allowed` admitted as they ask, exactly as the first member's
     /// request would. Returns the governance messages to publish.
-    #[cfg(feature = "agents")]
     pub(super) fn open_channel(
         &mut self,
         channel: ChannelId,

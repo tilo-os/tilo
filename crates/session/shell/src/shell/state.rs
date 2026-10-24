@@ -751,6 +751,12 @@ pub struct WorkspaceTree {
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
     pub stewarded_rooms: BTreeSet<RoomId>,
+    /// Enrolled rooms whose host stewards no channels (a host that may not
+    /// own workspaces): their records are documents the native owner
+    /// commits. A held room is in neither set until its replica is
+    /// projected, and then in exactly one. Projected, so not persisted.
+    #[serde(skip)]
+    pub committed_record_rooms: BTreeSet<RoomId>,
     /// Each room's admitted roster: every device its governor admitted,
     /// keyed by endpoint id (the device key), with its root-signed
     /// certificate and its person's revocations. Projected from the
@@ -932,6 +938,7 @@ impl Default for WorkspaceTree {
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             stewarded_rooms: BTreeSet::new(),
+            committed_record_rooms: BTreeSet::new(),
             room_rosters: BTreeMap::new(),
             policy_revision: 0,
             doc: AutoCommit::new(),
@@ -1188,11 +1195,29 @@ impl WorkspaceTree {
         joined
     }
 
-    /// Whether `room`'s app records are documents its native owner commits.
-    /// In a room whose governor stewards channels they are sealed instead:
-    /// each app seals and opens its record's channel itself.
+    /// Whether `room`'s app records are documents its native owner commits:
+    /// only a held room whose host stewards no channels. A room still
+    /// joining or being placed has no records here yet, and a hosted room's
+    /// records are sealed ([`Self::seals_records`]).
     pub(crate) fn commits_native_documents(&self, room: RoomId) -> bool {
-        !self.stewarded_rooms.contains(&room)
+        self.committed_record_rooms.contains(&room)
+    }
+
+    /// Whether `room`'s app records are sealed channels each app opens
+    /// itself: a held room its host stewards.
+    pub(crate) fn seals_records(&self, room: RoomId) -> bool {
+        self.stewarded_rooms.contains(&room)
+    }
+
+    /// Why no app opens a document in `room` on this device, as a catalogue
+    /// id, when none can: the room is on this device only, or it is still
+    /// joining or being placed on its host and holds no records yet.
+    pub(crate) fn documents_unavailable(&self, room: RoomId) -> Option<&'static str> {
+        if self.on_this_device_only(room) {
+            return Some("workspace-on-this-device-only-no-documents");
+        }
+        (self.is_joining(room) || self.pending_placements.contains(&room))
+            .then_some("workspace-not-ready-no-documents")
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
@@ -1205,8 +1230,10 @@ impl WorkspaceTree {
         // decides it (`tilo_room_host`'s stewardship): the room is sealed.
         if peer.authority().capabilities.stewards_room_channels() {
             self.stewarded_rooms.insert(room);
+            self.committed_record_rooms.remove(&room);
         } else {
             self.stewarded_rooms.remove(&room);
+            self.committed_record_rooms.insert(room);
         }
         // The room's replica is here: its join, or its placement on its
         // host, is over, and the room has its workspace, the one made for

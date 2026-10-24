@@ -334,7 +334,7 @@ impl ShellNetwork {
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {
-        !self.tree.read().commits_native_documents(room)
+        self.tree.read().seals_records(room)
     }
     /// Whether `input` is admitted together with the inputs of its session
     /// queued right before and after it: an app write the owner commits.
