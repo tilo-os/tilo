@@ -468,6 +468,49 @@ fn the_file_chooser_sheet_goes_on_the_window_its_handle_names() {
     crate::compositor::window_handles::forget(0xdead_0000_0001);
 }
 
+/// Escape takes the chooser down as Cancel does, also when the window that
+/// asked is the only one, which shows no focus accent.
+#[test]
+fn escape_cancels_the_file_chooser_of_a_lone_window() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let mut tree = app_tree();
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .retain(|group| group.id == ON_MONITOR);
+    let (mut desk, pickers) = Desk::with_queue(tree);
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let mut answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    assert!(
+        matches!(
+            desk.fb.host().file_picker_place(),
+            PickerPlace::Window { focused: true, .. }
+        ),
+        "the lone window that asked is the one in use"
+    );
+    for pressed in [true, false] {
+        desk.dispatch(&crate::shell::test_control::keyboard_input_event(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            pressed,
+        ));
+    }
+    let _ = desk.fb.host_mut().pump_file_picker();
+    desk.settle();
+    assert!(desk.fb.host().file_picker().is_none(), "Escape closed it");
+    assert_eq!(
+        answer.try_recv().ok(),
+        Some(None),
+        "and the app hears it was cancelled"
+    );
+}
+
 /// The sheet closes only its own window to input: the other window takes
 /// a click and the keys that follow, the sheet's name field stays as it
 /// was, and a click back on the waiting window gives the sheet the keys.
