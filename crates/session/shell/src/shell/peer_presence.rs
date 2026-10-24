@@ -186,11 +186,14 @@ pub struct PeerPresence {
     /// cursor queue. They are drained into the same render-only
     /// [`PresenceCtx`] projection in [`Self::pump`].
     typed_inbound: Arc<Mutex<Vec<(String, PresenceKey, PresencePayload)>>>,
+    /// The peer sessions that showed themselves, per room, on its typed
+    /// route (their availability there, anything but `Left`): being here.
+    shown: Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     /// The peer sessions that said, per room, that they are not here: a
     /// person who shows nothing there ("Nothing") says so on the room's
     /// typed route, and is then off this roster even while their machine
-    /// keeps taking part in the room's documents. Anything else they say
-    /// in the room (being available again, a pointer) brings them back.
+    /// is still a member. Anything else they say in the room (being
+    /// available again, a pointer) brings them back.
     absent: Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     /// Complete owner-backed People contexts. Ordinary app-authored Context
     /// fanout is deliberately not an input: it cannot establish membership.
@@ -230,6 +233,9 @@ pub struct PeerPresence {
     /// whether the room's naming, governance or the active workspace can
     /// have changed, without taking its lock to ask.
     roster_tree: crate::shell::state::WorkspaceTreeHandle,
+    /// The active room as last read from the tree, and the tree generation
+    /// it was read at: a frame with no tree write since reads no tree.
+    active_room: Mutex<Option<(u64, Option<String>)>>,
     /// What the roster was last derived from; `None` before the first refresh.
     roster_seen: Mutex<Option<RosterSeen>>,
     /// The record each window shows, by tab, as learned from the local app
@@ -600,6 +606,7 @@ impl PeerPresence {
             anchored: Mutex::new(HashMap::new()),
             inbound: net.inbound_presence_handle(),
             typed_inbound,
+            shown: Mutex::new(HashMap::new()),
             absent: Mutex::new(HashMap::new()),
             room_people,
             certified_people_inbound,
@@ -616,6 +623,7 @@ impl PeerPresence {
             colours_applied: AtomicU64::new(u64::MAX),
             presence_epoch: AtomicU64::new(0),
             roster_tree,
+            active_room: Mutex::new(None),
             roster_seen: Mutex::new(None),
             window_records: Arc::default(),
             window_instances: Box::new(Vec::new),
@@ -983,6 +991,7 @@ impl PeerPresence {
     /// room-keyed `Left` on the typed route), and who said anything else
     /// there since, which brings them back. Returns whether it changed.
     fn note_absences(&self, typed: &[(String, PresenceKey, PresencePayload)]) -> bool {
+        let mut shown = self.shown.lock_recover();
         let mut absent = self.absent.lock_recover();
         let mut changed = false;
         for (user, key, payload) in typed {
@@ -997,21 +1006,43 @@ impl PeerPresence {
             };
             if matches!(payload, PresencePayload::Left) {
                 changed |= absent.entry(room.clone()).or_default().insert(handle);
-            } else if let Some(gone) = absent.get_mut(room) {
-                changed |= gone.remove(&handle);
+                if let Some(here) = shown.get_mut(room) {
+                    changed |= here.remove(&handle);
+                }
+            } else {
+                changed |= shown.entry(room.clone()).or_default().insert(handle);
+                if let Some(gone) = absent.get_mut(room) {
+                    changed |= gone.remove(&handle);
+                }
             }
         }
+        shown.retain(|_, here| !here.is_empty());
         absent.retain(|_, gone| !gone.is_empty());
+        drop((shown, absent));
         changed
     }
 
-    fn project_people(&self, presence: &mut PresenceCtx) -> bool {
-        let tree = self.roster_tree.read();
-        let room = tree
+    /// The active workspace's room, read from the tree only after a write.
+    fn active_room(&self) -> Option<String> {
+        let generation = self.roster_tree.generation();
+        let mut cached = self.active_room.lock_recover();
+        if let Some((read_at, room)) = cached.as_ref()
+            && *read_at == generation
+        {
+            return room.clone();
+        }
+        let room = self
+            .roster_tree
+            .read()
             .desktop
             .active_workspace()
             .map(|workspace| workspace.room().to_string());
-        drop(tree);
+        *cached = Some((generation, room.clone()));
+        room
+    }
+
+    fn project_people(&self, presence: &mut PresenceCtx) -> bool {
+        let room = self.active_room();
         let Ok(people) = self.room_people.lock() else {
             return false;
         };
@@ -1129,8 +1160,13 @@ impl PeerPresence {
             // Only presence moved. A peer's pointer moving says nothing new
             // about who is here, and is told apart without the tree.
             if last.inputs.tree == inputs.tree
-                && roster_presence_print(presence, &self.anchored, &self.absent, &last.room)
-                    == last.presence
+                && roster_presence_print(
+                    presence,
+                    &self.anchored,
+                    &self.shown,
+                    &self.absent,
+                    &last.room,
+                ) == last.presence
             {
                 last.inputs = inputs;
                 return false;
@@ -1139,7 +1175,13 @@ impl PeerPresence {
         let (changed, room, tree) = self.derive_roster(presence, inputs.tree);
         *seen = Some(RosterSeen {
             inputs: RosterInputs { tree, ..inputs },
-            presence: roster_presence_print(presence, &self.anchored, &self.absent, &room),
+            presence: roster_presence_print(
+                presence,
+                &self.anchored,
+                &self.shown,
+                &self.absent,
+                &room,
+            ),
             room,
             at: now,
         });
@@ -1186,6 +1228,10 @@ impl PeerPresence {
                         .filter(|(_, (r, _, _))| *r == room)
                         .filter_map(|(user, _)| user.strip_prefix("peer@")?.parse::<u64>().ok()),
                 );
+            }
+            // Showing themselves in the room is being here too.
+            if let Some(here) = self.shown.lock_recover().get(&room) {
+                arrived.extend(here.iter().copied());
             }
             let principals = tree.room_peer_principals(ws.room());
             let own_devices = tree.room_own_devices(ws.room());
@@ -1261,6 +1307,7 @@ impl PeerPresence {
 fn roster_presence_print(
     presence: &PresenceCtx,
     anchored: &Mutex<AnchoredPointers>,
+    shown: &Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     absent: &Mutex<HashMap<String, std::collections::BTreeSet<u64>>>,
     room: &str,
 ) -> u64 {
@@ -1302,6 +1349,13 @@ fn roster_presence_print(
     {
         for handle in gone {
             add(hash_of((4u8, handle)));
+        }
+    }
+    if let Ok(shown) = shown.lock()
+        && let Some(here) = shown.get(room)
+    {
+        for handle in here {
+            add(hash_of((5u8, handle)));
         }
     }
     print
