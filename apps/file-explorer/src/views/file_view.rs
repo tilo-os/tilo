@@ -1366,7 +1366,9 @@ fn accessible_entry_description(entry: &Entry) -> String {
         use fs_protocol::ProjectedReplicaEvidence;
         use fs_protocol::Residency;
         use fs_protocol::TransferPhase;
-        if availability.transfer.last_error.is_some() {
+        if availability.unavailable() {
+            facts.push(t("files-a11y-unavailable"));
+        } else if availability.transfer.last_error.is_some() {
             facts.push(t("files-a11y-transfer-failed"));
         } else {
             match availability.transfer.phase {
@@ -2477,6 +2479,25 @@ mod tests {
             true,
         );
         assert_eq!(availability_badge(&failed, &theme).0, Icon::Ban);
+
+        // A file whose bytes no device delivered is unavailable while that
+        // device is offline; any other failure stays a failed transfer.
+        let mut unavailable = failed.clone();
+        unavailable.transfer.last_error = Some(fs_protocol::NO_PEER_DELIVERED_ERROR.into());
+        let described = |availability: AvailabilityProjectionV1| {
+            let mut entry = ent("report.pdf", false);
+            entry.availability = Some(availability);
+            accessible_entry_description(&entry)
+        };
+        let offline = described(unavailable);
+        assert!(
+            offline.contains("Unavailable until a device that keeps it is online"),
+            "{offline}"
+        );
+        assert!(!offline.contains("Transfer failed"), "{offline}");
+        let broken = described(failed);
+        assert!(broken.contains("Transfer failed"), "{broken}");
+        assert!(!broken.contains("Unavailable"), "{broken}");
     }
 
     fn dragging_a_directory_row_begins_a_pin_drag() {
