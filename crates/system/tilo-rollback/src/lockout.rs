@@ -85,8 +85,9 @@ pub struct Params {
     pub in_lockout: bool,
 }
 
-/// What we ask for: 8 tries and a 2-hour decay, chosen so a human can mistype a 6-digit PIN
-/// a few times freely while capping sustained offline guessing at 12 attempts a day.
+/// What we ask for: 32 tries and a 2-hour decay. Sustained guessing is capped by the decay
+/// alone, at 12 attempts a day; `maxTries` only sizes the burst before it, so a generous one
+/// costs an attacker nothing against a 6-digit PIN while sparing the owner a lockout from typos.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub max_tries: u32,
@@ -97,7 +98,7 @@ pub struct Target {
 impl Default for Target {
     fn default() -> Self {
         Self {
-            max_tries: 8,
+            max_tries: 32,
             recovery_time: 7200,
             lockout_recovery: 86400,
         }
@@ -503,7 +504,7 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
         }
         {
             let p = Params {
-                max_tries: 32,
+                max_tries: 64,
                 recovery_time: 600,
                 lockout_recovery: 600,
                 lockout_auth_set: true,

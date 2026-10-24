@@ -164,14 +164,35 @@ unverified boot, which is exactly the case where a developer still wants one sec
 (§7.4). So the wrapper's policy is the authorisation value alone. Dictionary-attack
 protection stays on.
 
-### 4.2 Password verification goes through the wrapper, not `/etc/shadow`
+### 4.2 Every check asks the TPM
 
 A six-digit PIN hashed in `/etc/shadow` is cracked in seconds by anyone who can read
 the system volume. That includes a compromise of the running system before sign-in,
-which is now a system with its volume already open. So accounts that use a TPM
-wrapper keep a locked shadow entry, and every Tilo PAM service verifies the secret
-by unwrapping the user key. A wrong guess costs one dictionary-attack try, the same
-as at the login screen.
+which is now a system with its volume already open. So no hash of the secret is
+stored anywhere: accounts keep a locked shadow entry, and every check — sign-in, lock
+screen, privileged prompt — verifies the secret by unwrapping the user key through
+the TPM. There is one way a secret is checked, and tools that change or verify it
+(`passwd`, `su`, AccountsService) go through `pam_tilo` like everything else.
+
+The TPM is the only limit on guessing, and the only one that matters against an
+attacker who can run their own code against it. Its two parameters do different
+jobs. `recoveryTime` caps sustained guessing: at two hours, twelve guesses a day, so
+about a century on average for a six-digit PIN. `maxTries` only sizes the burst
+before that cap, so Tilo asks for 32: the extra guesses are noise against a million
+PINs, and someone who mistypes a dozen times never meets a lockout. On a TPM that
+Windows manages, its parameters apply, and `tilo-rollback tpm-status` reports
+whether they meet §1.3.
+
+One rule spares the owner's tries: **an entry already tried is not tried again.**
+Someone who isn't sure the first attempt registered and types the same thing twice
+spends one try, not two. `tilo-authd` keeps the person's recent wrong entries as HMACs
+under a key generated at boot, in its own memory only. They are cleared on success and
+after ten minutes, and never reach disk. The rule is no security boundary — anything
+that bypasses `tilo-authd` still meets the TPM — so it only has to be correct.
+
+The screen always says what is happening, in plain words: how many tries are left
+before a wait, when the next try is possible, and the other ways in (security key,
+another device, the recovery key).
 
 ### 4.3 What fingerprints can and can't do
 
@@ -274,9 +295,9 @@ is more exposure than a machine waiting at a disk prompt, and it is bounded on p
 Each person has their own user key, home, vault and factors. A person the admin
 allows to unlock the machine gets a system-volume keyslot; others can sign in only
 after the system is up. The TPM's dictionary-attack counter is shared by everyone
-on the machine, and with Windows on a shared TPM ([rollback.md](rollback.md)), so
-`tilo-authd` also throttles each person's wrong guesses in software and says so when
-the shared counter is what's blocking them.
+on the machine, and with Windows on a shared TPM ([rollback.md](rollback.md)). With
+32 tries that rarely matters; when it does, the screen says that the wait comes from
+this computer's shared limit, not from the person's own attempts.
 
 ### 6.3 Locking and sleep
 
