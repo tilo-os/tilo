@@ -68,6 +68,11 @@ cleanup() {
   kill "$sampler" 2>/dev/null || true
   if [ "$rc" -ne 0 ]; then
     TILO_SSH_BOUND=60 "$vm" ssh 'systemctl --failed --no-pager; journalctl -b --no-pager -o short-monotonic -p warning -n 200' || true
+    # The session's own account: the compositor logs to its state directory.
+    TILO_SSH_BOUND=60 "$vm" ssh 'journalctl -b --no-pager -o short-monotonic -n 400 _UID=$(id -u)' \
+      > "$out/session-journal.txt" 2>&1 || true
+    TILO_SSH_BOUND=60 "$vm" ssh 'cat "$HOME"/.local/state/tilo/session-logs/*.log' \
+      > "$out/compositor-session.log" 2>&1 || true
   fi
   "$vm" stop >/dev/null 2>&1 || true
   cp -f "$TILO_RUN/qemu.log" "$TILO_RUN/serial.log" "$TILO_RUN"/*.png "$out/" 2>/dev/null || true
