@@ -6752,7 +6752,11 @@ impl ShellNetwork {
             self.apply_published_home_peers();
         });
         steps.time("network/shared-rooms", || match admission {
-            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::InPlace => {
+                if self.take_shared_rooms_due() {
+                    self.finish_shared_rooms();
+                }
+            }
             Admission::OffLoop => self.finish_shared_rooms_off_loop(),
         });
         steps.time("network/placements", || match admission {
