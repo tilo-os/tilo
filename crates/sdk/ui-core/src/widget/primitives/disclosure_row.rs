@@ -232,11 +232,18 @@ impl DisclosureGroup {
     }
 }
 
+/// What leads a row's title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Leading {
+    Icon(Icon),
+    Signal(crate::widget::SignalLevel),
+}
+
 /// A row that opens its body in place.
 pub struct DisclosureRow {
     title: String,
     secondary: String,
-    leading: Option<Icon>,
+    leading: Option<Leading>,
     /// One control on the header's trailing edge, before the chevron (a
     /// device's Connect): it acts without opening the row.
     trailing: Option<Element>,
@@ -316,7 +323,15 @@ impl DisclosureRow {
     /// A leading icon.
     #[must_use]
     pub fn icon(mut self, icon: Icon) -> Self {
-        self.leading = Some(icon);
+        self.leading = Some(Leading::Icon(icon));
+        self
+    }
+
+    /// A leading signal meter ([`crate::widget::SignalMeter`]): the row is
+    /// a radio network, led by how strong it is, as its list row is.
+    #[must_use]
+    pub fn signal(mut self, level: crate::widget::SignalLevel) -> Self {
+        self.leading = Some(Leading::Signal(level));
         self
     }
 
@@ -414,7 +429,7 @@ impl DisclosureRow {
 
     /// Where the title's text column starts from the row's leading edge:
     /// past the icon and its gap. The open body lines up with it too.
-    fn text_inset(leading: Option<Icon>, theme: &Theme) -> f64 {
+    fn text_inset(leading: Option<Leading>, theme: &Theme) -> f64 {
         leading.map_or(0.0, |_| {
             f64::from(theme.tokens.metrics.icon_control)
                 + f64::from(theme.tokens.spacing.rhythm.sibling)
@@ -472,12 +487,18 @@ impl DisclosureRow {
                 self.face().title_centre(text, ctx.text, theme)
             };
             let x0 = self.header.x0;
-            leading.draw(
-                ctx.scene,
-                ctx.transform,
-                Rect::new(x0, icon_cy - icon / 2.0, x0 + icon, icon_cy + icon / 2.0),
-                colors.text_dim,
-            );
+            let slot = Rect::new(x0, icon_cy - icon / 2.0, x0 + icon, icon_cy + icon / 2.0);
+            match leading {
+                Leading::Icon(glyph) => {
+                    glyph.draw(ctx.scene, ctx.transform, slot, colors.text_dim);
+                }
+                Leading::Signal(level) => crate::widget::SignalMeterFace::new(level).paint(
+                    ctx.scene,
+                    ctx.transform,
+                    theme,
+                    slot,
+                ),
+            }
         }
         self.face().paint(ctx, text);
         // The chevron turns a quarter, from pointing at the row's end to
@@ -995,7 +1016,7 @@ mod tests {
             )
             .expect("layout");
         row.apply_layout(&taffy, node, Point::ZERO);
-        let inset = DisclosureRow::text_inset(Some(Icon::Bluetooth), &theme);
+        let inset = DisclosureRow::text_inset(Some(Leading::Icon(Icon::Bluetooth)), &theme);
         assert!(inset > 0.0);
         assert!(
             (row.body.get_rect().x0 - (row.header.x0 + inset)).abs() < 0.5,

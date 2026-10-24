@@ -931,6 +931,8 @@ pub struct Section {
     ghosts: crate::widget::Ghosts,
     /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
+    /// Told whether the pointer is over the section.
+    pointer: Option<Rc<Cell<bool>>>,
 }
 
 impl Section {
@@ -946,7 +948,17 @@ impl Section {
             gaps: Vec::new(),
             ghosts: crate::widget::Ghosts::default(),
             motion: crate::tokens::EffectiveMotion::default(),
+            pointer: None,
         }
+    }
+
+    /// Keep `over` saying whether the pointer is over the section: a host
+    /// that reorders the section's rows holds them still while it is, so no
+    /// row moves under the pointer.
+    #[must_use]
+    pub fn pointer_over(mut self, over: Rc<Cell<bool>>) -> Self {
+        self.pointer = Some(over);
+        self
     }
 
     /// While a band moves in the section, how far below its laid-out place
@@ -1324,6 +1336,15 @@ impl Widget for Section {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(over) = &self.pointer {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    over.set(self.parts.rect.contains(ctx.logical(position)));
+                }
+                WindowEvent::CursorLeft { .. } => over.set(false),
+                _ => {}
+            }
+        }
         let shown = self.shown();
         if let Some(shifts) = self.follower_shifts() {
             let shown = shown.min(self.parts.nodes.len());
