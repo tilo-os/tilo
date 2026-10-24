@@ -421,7 +421,11 @@ impl ShellOverlayHost {
             crate::compositor::key_latency::note_key_handler(
                 crate::compositor::key_latency::KeyHandler::Shortcut(action),
             );
-            self.run_navigation_shortcut(action, repeat, ui::tokens::MotionSource::Keyboard);
+            let _ = self.navigation_shortcut_outcome(
+                action,
+                repeat,
+                ui::tokens::MotionSource::Keyboard,
+            );
             *handled = true;
             return true;
         }
@@ -452,103 +456,64 @@ impl ShellOverlayHost {
         false
     }
 
-    /// Run one editable navigation or window shortcut. `false` when
-    /// `action` is not one of them.
+    /// Run one editable navigation or window shortcut: whether it changed
+    /// anything, or `None` when `action` is not one of them. A held chord's
+    /// repeat changes nothing for an action that acts once.
     #[allow(
         clippy::too_many_lines,
         reason = "one dispatch over every navigation shortcut"
     )]
-    pub(super) fn run_navigation_shortcut(
+    pub(super) fn navigation_shortcut_outcome(
         &mut self,
         action: settings_store::hardware::ShortcutAction,
         repeat: bool,
         source: ui::tokens::MotionSource,
-    ) -> bool {
+    ) -> Option<bool> {
         use settings_store::hardware::ShortcutAction;
         if Self::is_navigation_shortcut(action) {
             self.begin_motion(source);
         }
-        match action {
-            ShortcutAction::PreviousTab => {
-                let _ = self.cycle_focused_tab(-1);
-            }
-            ShortcutAction::NextTab => {
-                let _ = self.cycle_focused_tab(1);
-            }
-            ShortcutAction::ToggleMaximize => {
-                if !repeat {
-                    let _ = self.toggle_focused_group_maximized();
-                }
-            }
+        let changed = match action {
+            ShortcutAction::PreviousTab => self.cycle_focused_tab(-1),
+            ShortcutAction::NextTab => self.cycle_focused_tab(1),
+            ShortcutAction::ToggleMaximize => !repeat && self.toggle_focused_group_maximized(),
             ShortcutAction::MaximizeWindow | ShortcutAction::RestoreWindow => {
-                if !repeat {
-                    let _ =
-                        self.set_focused_group_maximized(action == ShortcutAction::MaximizeWindow);
-                }
+                !repeat
+                    && self.set_focused_group_maximized(action == ShortcutAction::MaximizeWindow)
             }
-            ShortcutAction::DetachTab => {
-                if !repeat {
-                    let _ = self.detach_focused_tab();
-                }
-            }
-            ShortcutAction::AttachTabLeft => {
-                if !repeat {
-                    let _ = self.attach_focused_tab(-1);
-                }
-            }
-            ShortcutAction::AttachTabRight => {
-                if !repeat {
-                    let _ = self.attach_focused_tab(1);
-                }
-            }
+            ShortcutAction::DetachTab => !repeat && self.detach_focused_tab(),
+            ShortcutAction::AttachTabLeft => !repeat && self.attach_focused_tab(-1),
+            ShortcutAction::AttachTabRight => !repeat && self.attach_focused_tab(1),
             ShortcutAction::ReopenClosedTab => {
-                if !repeat && let Some(chrome) = self.chrome.clone() {
-                    let _ = chrome.borrow_mut().reopen_closed_tab();
-                }
+                !repeat
+                    && self
+                        .chrome
+                        .clone()
+                        .is_some_and(|chrome| chrome.borrow_mut().reopen_closed_tab().is_some())
             }
-            ShortcutAction::ResizeNarrower => {
-                let _ = self.resize_focused_group(-50);
-            }
-            ShortcutAction::ResizeWider => {
-                let _ = self.resize_focused_group(50);
-            }
-            ShortcutAction::MoveGroupLeft => {
-                let _ = self.reorder_focused_group(-1);
-            }
-            ShortcutAction::MoveGroupRight => {
-                let _ = self.reorder_focused_group(1);
-            }
-            ShortcutAction::MoveGroupToPreviousStrip => {
-                let _ = self.move_focused_group_to_strip(-1);
-            }
-            ShortcutAction::MoveGroupToNextStrip => {
-                let _ = self.move_focused_group_to_strip(1);
-            }
+            ShortcutAction::ResizeNarrower => self.resize_focused_group(-50),
+            ShortcutAction::ResizeWider => self.resize_focused_group(50),
+            ShortcutAction::MoveGroupLeft => self.reorder_focused_group(-1),
+            ShortcutAction::MoveGroupRight => self.reorder_focused_group(1),
+            ShortcutAction::MoveGroupToPreviousStrip => self.move_focused_group_to_strip(-1),
+            ShortcutAction::MoveGroupToNextStrip => self.move_focused_group_to_strip(1),
             ShortcutAction::MoveGroupToPreviousDisplay => {
-                if !repeat {
-                    let _ = self.move_focused_group_to_display(-1);
-                }
+                !repeat && self.move_focused_group_to_display(-1)
             }
             ShortcutAction::MoveGroupToNextDisplay => {
-                if !repeat {
-                    let _ = self.move_focused_group_to_display(1);
-                }
+                !repeat && self.move_focused_group_to_display(1)
             }
-            ShortcutAction::FocusPreviousWindow => {
-                let _ = self.step_focus_along_strip(-1);
-            }
-            ShortcutAction::FocusNextWindow => {
-                let _ = self.step_focus_along_strip(1);
-            }
+            ShortcutAction::FocusPreviousWindow => self.step_focus_along_strip(-1),
+            ShortcutAction::FocusNextWindow => self.step_focus_along_strip(1),
             ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
                 let direction = if action == ShortcutAction::PreviousStrip {
                     -1
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
-                    let _ = chrome.borrow_mut().switch_strip(direction);
-                }
+                self.chrome
+                    .clone()
+                    .is_some_and(|chrome| chrome.borrow_mut().switch_strip(direction))
             }
             ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
                 let direction = if action == ShortcutAction::PreviousWorkspace {
@@ -556,15 +521,18 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone()
-                    && chrome.borrow_mut().switch_workspace(direction)
-                {
+                let switched = self
+                    .chrome
+                    .clone()
+                    .is_some_and(|chrome| chrome.borrow_mut().switch_workspace(direction));
+                if switched {
                     self.start_workspace_switch(source);
                 }
+                switched
             }
-            _ => return false,
-        }
-        true
+            _ => return None,
+        };
+        Some(changed)
     }
 
     /// Intercept only local input controls without withdrawing text-input focus.
@@ -657,12 +625,32 @@ impl ShellOverlayHost {
         let requested = self
             .chrome
             .as_ref()
-            .map(|chrome| chrome.borrow_mut().take_shortcut_action_requests())
+            .map(|chrome| chrome.borrow_mut().take_window_requests())
             .unwrap_or_default();
-        for action in requested {
-            if !self.run_shortcut_action(action) {
-                tracing::warn!(?action, "requested shortcut action has no desktop handler");
+        let mut answered = false;
+        for (request, outcome) in requested {
+            let changed = match request {
+                crate::shell::chrome_state::WindowRequest::Shortcut(action) => {
+                    let changed = self.shortcut_action_outcome(action);
+                    if changed.is_none() {
+                        tracing::warn!(?action, "requested shortcut action has no desktop handler");
+                    }
+                    changed.unwrap_or(false)
+                }
+                crate::shell::chrome_state::WindowRequest::MoveGroupToStrip { group, strip } => {
+                    self.begin_motion(ui::tokens::MotionSource::Action);
+                    self.move_group_to_strip(group, strip)
+                }
+            };
+            if let Some(outcome) = outcome {
+                outcome.set(Some(changed));
+                answered = true;
             }
+        }
+        // A caller waiting on an outcome hears it now, not on whatever
+        // wakes the loop next.
+        if answered {
+            crate::shell::search::invocation_wake::waker().wake_by_ref();
         }
     }
 
@@ -718,12 +706,25 @@ impl ShellOverlayHost {
         &mut self,
         action: settings_store::hardware::ShortcutAction,
     ) -> bool {
-        let source = ui::tokens::MotionSource::Action;
-        self.run_navigation_shortcut(action, false, source)
-            || self.handle_desktop_chord(action, false, source)
+        self.shortcut_action_outcome(action).is_some()
     }
 
-    /// Whether [`Self::run_navigation_shortcut`] handles `action`.
+    /// Run `action` once, as its chord does: whether it changed anything,
+    /// or `None` when it is not a desktop shortcut the host runs. A desktop
+    /// chord (a picker, a focus by number) counts as a change once handled.
+    fn shortcut_action_outcome(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+    ) -> Option<bool> {
+        let source = ui::tokens::MotionSource::Action;
+        self.navigation_shortcut_outcome(action, false, source)
+            .or_else(|| {
+                self.handle_desktop_chord(action, false, source)
+                    .then_some(true)
+            })
+    }
+
+    /// Whether [`Self::navigation_shortcut_outcome`] handles `action`.
     pub(super) fn is_navigation_shortcut(action: settings_store::hardware::ShortcutAction) -> bool {
         use settings_store::hardware::ShortcutAction as A;
         matches!(

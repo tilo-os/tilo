@@ -272,11 +272,10 @@ impl ShellOverlayHost {
             .last()
             .map(|notice| notice.id);
         let outcome = if let Some(begin) = &result.on_begin_invoke {
-            begin(doc, root, &chrome, &args).map(|disposition| match disposition {
-                crate::shell::search::InvocationDisposition::Accepted(_) => (),
+            begin(doc, root, &chrome, &args).and_then(|disposition| match disposition {
+                crate::shell::search::InvocationDisposition::Accepted(_) => Ok(()),
                 crate::shell::search::InvocationDisposition::Pending(ticket) => {
-                    self.pending_action_admissions
-                        .push((result.title.clone(), ticket));
+                    self.settle_or_await(&result.title, ticket)
                 }
             })
         } else if let Some(invoke) = &result.on_invoke {
@@ -352,6 +351,25 @@ impl ShellOverlayHost {
         }
         self.palette_visible = false;
         self.palette.close();
+    }
+
+    /// A window operation this host runs itself is run now, so its outcome
+    /// is told on the row that asked for it; any other ticket waits among
+    /// the admissions, which tell how it went once it is answered.
+    fn settle_or_await(
+        &mut self,
+        title: &str,
+        ticket: crate::shell::search::PendingInvocation,
+    ) -> Result<(), crate::shell::search::action_api::ActionError> {
+        self.run_requested_shortcut_actions();
+        match ticket()? {
+            Some(_) => Ok(()),
+            None => {
+                self.pending_action_admissions
+                    .push((title.to_owned(), ticket));
+                Ok(())
+            }
+        }
     }
 
     /// Start collecting `result`'s arguments. Words after its title in the
@@ -582,9 +600,7 @@ impl ShellOverlayHost {
                         match begin(doc, root, &chrome, &bound)? {
                             crate::shell::search::InvocationDisposition::Accepted(_) => Ok(()),
                             crate::shell::search::InvocationDisposition::Pending(ticket) => {
-                                self.pending_action_admissions
-                                    .push((result.title.clone(), ticket));
-                                Ok(())
+                                self.settle_or_await(&result.title, ticket)
                             }
                         }
                     } else if let Some(invoke) = &result.on_invoke {

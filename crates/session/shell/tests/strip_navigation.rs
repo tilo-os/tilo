@@ -443,6 +443,43 @@ fn invoke(
         .map(drop)
 }
 
+/// Invoke shell action `id` as [`invoke`] does, let the overlay host run
+/// what it queued, and return how the action says it went: what an agent
+/// waiting on `tilo-control actions invoke` hears.
+fn invoke_answered(
+    h: &mut Harness,
+    id: &str,
+    args: &serde_json::Value,
+) -> Result<(), shell::shell::search::action_api::ActionError> {
+    use shell::shell::search::InvocationDisposition;
+    use shell::shell::search::action_api::ActionError;
+    use shell::shell::search::action_api::{AllVisible, ResourceRef};
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    let catalog = {
+        let st = h.chrome.borrow();
+        h.host
+            .exact_action_catalog("actions", id, &st, &doc, &root, &AllVisible)
+    };
+    let selected = catalog
+        .select(&ResourceRef::new("actions", id))
+        .ok_or_else(|| ActionError::Refused(format!("{id} is not on the action door")))?;
+    let args = args.as_object().cloned().unwrap_or_default();
+    let disposition = selected.invoke_json(
+        &mut ui::widget::Edits::lend(&mut doc),
+        &root,
+        &h.chrome,
+        &args,
+    )?;
+    h.host.run_requested_shortcut_actions();
+    match disposition {
+        InvocationDisposition::Accepted(_) => Ok(()),
+        InvocationDisposition::Pending(ticket) => ticket()?
+            .map(drop)
+            .ok_or_else(|| ActionError::Refused(format!("{id} was not answered"))),
+    }
+}
+
 /// Ctrl+Super+Up/Down moves focus between strips and
 /// Shift+Ctrl+Super+Up/Down carries the focused group the same way, whole,
 /// into the durable tree. The old Super+Shift+Up/Down chords do nothing.
@@ -682,6 +719,194 @@ fn window_actions_run_the_operations_their_chords_run() {
         plane(&h).0[0].1,
         vec![groups[1], groups[2], groups[4], groups[3]],
         "group.move-right is Super+Shift+Right"
+    );
+}
+
+/// A window action tells its caller whether anything changed: a move past
+/// the edge, a second maximize or a second restore says nothing changed
+/// rather than reporting a move that did not happen.
+#[test]
+fn window_actions_say_when_nothing_changed() {
+    use shell::shell::search::action_api::ActionError;
+    let (mut h, upper, _lower, _resident, groups) = two_strip_harness();
+    let none = serde_json::json!({});
+    let unchanged = |outcome: Result<(), ActionError>, what: &str| {
+        assert!(
+            matches!(&outcome, Err(ActionError::Explained(_))),
+            "{what}: {outcome:?}"
+        );
+    };
+    assert_eq!(plane(&h).2, Some(groups[0]), "the leftmost group has focus");
+    let before = plane(&h);
+    unchanged(
+        invoke_answered(&mut h, "group.move-left", &none),
+        "the leftmost group moves no further left",
+    );
+    assert_eq!(plane(&h), before);
+    unchanged(
+        invoke_answered(&mut h, "group.move-to-strip-previous", &none),
+        "there is no strip above the top one",
+    );
+    assert_eq!(plane(&h), before);
+
+    invoke_answered(&mut h, "group.move-right", &none).expect("a group moves right");
+    assert_eq!(plane(&h).0[0].1[1], groups[0]);
+    invoke_answered(&mut h, "group.move-left", &none).expect("and back");
+    assert_eq!(plane(&h), before);
+
+    let upper_maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+    invoke_answered(&mut h, "group.maximize", &none).expect("a normal group maximizes");
+    assert!(upper_maximized(&mut h));
+    unchanged(
+        invoke_answered(&mut h, "group.maximize", &none),
+        "group.maximize maximizes, it does not toggle",
+    );
+    assert!(
+        upper_maximized(&mut h),
+        "a second maximize leaves it maximized"
+    );
+    invoke_answered(&mut h, "group.restore", &none).expect("a maximized group restores");
+    assert!(!upper_maximized(&mut h));
+    unchanged(
+        invoke_answered(&mut h, "group.restore", &none),
+        "restoring a normal group changes nothing",
+    );
+}
+
+/// `group.move-to-strip` carries the focused group into the strip it names,
+/// offers each strip by name, and says so when the group is already there
+/// or the strip does not exist.
+#[test]
+fn group_move_to_strip_carries_the_focused_group_into_the_named_strip() {
+    use shell::shell::search::action_api::{ActionError, AllVisible, ResourceRef};
+    let (mut h, _upper, lower, resident, groups) = two_strip_harness();
+    let offered = {
+        let doc = automerge::AutoCommit::new();
+        let st = h.chrome.borrow();
+        let catalog = h.host.exact_action_catalog(
+            "actions",
+            "group.move-to-strip",
+            &st,
+            &doc,
+            &automerge::ROOT,
+            &AllVisible,
+        );
+        let selected = catalog
+            .select(&ResourceRef::new("actions", "group.move-to-strip"))
+            .expect("group.move-to-strip is on the action door");
+        let strip = selected
+            .params()
+            .iter()
+            .find(|param| param.name == "strip")
+            .expect("it asks which strip");
+        strip
+            .choices
+            .iter()
+            .map(|choice| strip.choice_label(choice).unwrap_or(choice).to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(offered, ["Main", "Below"], "each strip by its name");
+
+    invoke_answered(
+        &mut h,
+        "group.move-to-strip",
+        &serde_json::json!({ "strip": 2 }),
+    )
+    .expect("the focused group moves to the second strip");
+    let (strips, active, focused) = plane(&h);
+    assert_eq!(strips[1], (lower, vec![resident, groups[0]]));
+    assert_eq!(
+        (active, focused),
+        (lower, Some(groups[0])),
+        "focus follows it"
+    );
+    let before = plane(&h);
+    assert!(
+        matches!(
+            invoke_answered(
+                &mut h,
+                "group.move-to-strip",
+                &serde_json::json!({ "strip": 2 })
+            ),
+            Err(ActionError::Explained(_))
+        ),
+        "a group already in that strip changes nothing"
+    );
+    assert!(
+        invoke_answered(
+            &mut h,
+            "group.move-to-strip",
+            &serde_json::json!({ "strip": 3 })
+        )
+        .is_err(),
+        "there is no third strip"
+    );
+    assert_eq!(plane(&h), before);
+}
+
+/// `group.close` closes the focused window with all its tabs as one close,
+/// so Reopen Closed Tab brings the whole window back.
+#[test]
+fn group_close_closes_the_focused_window_and_reopen_brings_it_back() {
+    let (mut h, upper, _lower, _resident, groups) = two_strip_harness();
+    let titles_in = |h: &Harness, group: GroupId| {
+        let st = h.chrome.borrow();
+        let tree = st.tree();
+        tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .find(|candidate| candidate.id == group)
+            .map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect::<Vec<_>>()
+            })
+    };
+    let all_titles = |h: &Harness| {
+        let st = h.chrome.borrow();
+        let tree = st.tree();
+        tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .map(|group| {
+                group
+                    .tabs
+                    .iter()
+                    .map(|tab| tab.title.clone())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(plane(&h).2, Some(groups[0]));
+    assert_eq!(
+        titles_in(&h, groups[0]),
+        Some(vec!["G0-A".to_string(), "G0-B".to_string()])
+    );
+    let upper_count = |h: &Harness| plane(h).0[0].1.len();
+    let before = upper_count(&h);
+
+    invoke_answered(&mut h, "group.close", &serde_json::json!({})).expect("the window closes");
+    assert_eq!(titles_in(&h, groups[0]), None, "the whole window is gone");
+    assert_eq!(upper_count(&h), before.saturating_sub(1));
+    assert_eq!(plane(&h).1, upper);
+
+    invoke_answered(&mut h, "tab.reopen", &serde_json::json!({})).expect("reopen");
+    assert_eq!(upper_count(&h), before, "one reopen brings the window back");
+    assert!(
+        all_titles(&h).contains(&vec!["G0-A".to_string(), "G0-B".to_string()]),
+        "with both its tabs: {:?}",
+        all_titles(&h)
     );
 }
 
