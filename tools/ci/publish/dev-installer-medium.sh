@@ -107,7 +107,12 @@ export TMPDIR="$out/tmp"
 mkdir -p "$TMPDIR"
 podman tag "$id" "$TILO_IMAGE"
 
-bash os/dev/build-custom-installer.sh --reuse-image-installer
+if ! bash os/dev/build-custom-installer.sh --reuse-image-installer; then
+  # The disk step keeps bootc's own words in a log beside the disk, which t does not keep.
+  log="$installer_output/qcow2/.install.log"
+  [[ ! -s $log ]] || { echo "--- the last lines of $log:" >&2; tail -n 120 "$log" >&2; }
+  die "the installer disk step failed"
+fi
 
 [[ -s "$TILO_INSTALLER_DISK" ]] || die "the installer disk step produced no qcow2"
 [[ -f "$TILO_INSTALLER_DISK.hardware.json" ]] \
