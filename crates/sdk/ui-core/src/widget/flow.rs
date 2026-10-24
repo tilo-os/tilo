@@ -44,6 +44,11 @@ pub(super) struct Flow {
     /// mismatch → rebuild; pure translation → reuse with a
     /// `translate(delta)` on the outer append.
     cache_rect: Rect,
+    /// What of the theme the cache was painted in: its colours, radii and
+    /// material. A theme change (dark to light, a preset, high contrast)
+    /// moves no child's size and dirties no child, yet every pixel of the
+    /// cache is in the old theme, so a differing theme redraws it.
+    cache_theme: Option<Box<DrawnTheme>>,
     cache_present: bool,
     descendant_caches_released: bool,
     /// The cache holds floating surfaces over the blurred material. A reused
@@ -58,6 +63,32 @@ pub(super) struct Flow {
     /// gap) after its node was built. The retained layout tree keeps the
     /// built style, so the change reports a structure rebuild.
     pub style_dirty: bool,
+}
+
+/// The parts of a [`Theme`] a cached subtree's pixels depend on beyond its
+/// layout: every colour token, the radii, and whether floating surfaces are
+/// see-through.
+#[derive(Debug, PartialEq)]
+struct DrawnTheme {
+    colors: crate::tokens::Colors,
+    radii: crate::tokens::Radii,
+    reduce_transparency: bool,
+}
+
+impl DrawnTheme {
+    fn of(theme: &Theme) -> Self {
+        Self {
+            colors: theme.tokens.colors.clone(),
+            radii: theme.tokens.radii.clone(),
+            reduce_transparency: theme.reduce_transparency,
+        }
+    }
+
+    fn is(&self, theme: &Theme) -> bool {
+        self.colors == theme.tokens.colors
+            && self.radii == theme.tokens.radii
+            && self.reduce_transparency == theme.reduce_transparency
+    }
 }
 
 impl Flow {
@@ -75,6 +106,7 @@ impl Flow {
             padding_rhythm: None,
             subtree_cache: Scene::new(),
             cache_rect: Rect::ZERO,
+            cache_theme: None,
             cache_present: false,
             descendant_caches_released: false,
             cache_carries_material: false,
@@ -166,9 +198,14 @@ impl Flow {
         let size_changed = self.rect.width() != self.cache_rect.width()
             || self.rect.height() != self.cache_rect.height();
         let any_child_dirty = self.children.iter().any(|c| c.needs_redraw());
+        let theme_changed = self
+            .cache_theme
+            .as_deref()
+            .is_none_or(|drawn| !drawn.is(theme));
         let tracked = crate::scene_parts::is_tracked(scene);
         let needs_rebuild = !self.cache_present
             || size_changed
+            || theme_changed
             || any_child_dirty
             || self.cache_carries_material
             || (tracked && self.cache_parts.is_none());
@@ -217,6 +254,9 @@ impl Flow {
             ) > 0;
             self.subtree_cache = local;
             self.cache_rect = self.rect;
+            if theme_changed {
+                self.cache_theme = Some(Box::new(DrawnTheme::of(theme)));
+            }
             self.cache_present = true;
             self.descendant_caches_released = false;
             presence.viewport.set(prev_vp);

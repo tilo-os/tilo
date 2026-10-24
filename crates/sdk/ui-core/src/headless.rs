@@ -10431,6 +10431,41 @@ fn session_door(
 mod tests {
     use super::*;
 
+    /// A theme change repaints everything on the next frame, retained caches
+    /// included: a window switched from dark to light renders exactly what a
+    /// window opened in light renders. Controls nested in columns kept their
+    /// dark paint when the columns replayed their cached subtree.
+    #[test]
+    fn switching_theme_repaints_retained_controls_as_a_fresh_window_would() {
+        fn controls() -> Box<dyn Widget> {
+            Box::new(
+                crate::widget::Column::new()
+                    .push(Box::new(
+                        crate::widget::Column::new()
+                            .push(Box::new(crate::widget::Checkbox::new("a", "a")))
+                            .push(Box::new(crate::widget::Checkbox::new("b", "b"))),
+                    ))
+                    .push(Box::new(crate::widget::ProgressBar::new(0.4))),
+            )
+        }
+        let mut switched = FrameHarness::new(State::new(), controls(), (240, 160));
+        switched.relayout();
+        switched.set_theme(Theme::light());
+        let fresh =
+            FrameHarness::new_with_theme(State::new(), controls(), (240, 160), Theme::light());
+        let (switched, fresh) = (switched.render_rgba(), fresh.render_rgba());
+        assert!(!fresh.is_empty());
+        let differing = switched
+            .chunks_exact(4)
+            .zip(fresh.chunks_exact(4))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert_eq!(
+            differing, 0,
+            "{differing} pixels still show the dark theme after switching to light"
+        );
+    }
+
     #[test]
     fn closing_focus_trap_enumerates_history_once() {
         let state = State::new();
