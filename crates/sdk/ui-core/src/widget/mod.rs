@@ -2936,6 +2936,8 @@ mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
 mod checkbox;
+#[cfg(test)]
+mod control_hand_on_tests;
 pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;

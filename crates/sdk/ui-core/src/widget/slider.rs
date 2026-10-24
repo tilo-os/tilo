@@ -195,6 +195,9 @@ pub struct Slider {
     /// (the pointer or a finger): the glide gives way to the hand once it
     /// moves past [`DRAG_SLOP`] from there.
     glide_from: Option<(Point, crate::tokens::MotionSource)>,
+    /// A view that builds the slider anew on each change: the one built in
+    /// its place goes on from its thumb (`motion::keep`).
+    hand_on: crate::motion::HandOn<KeptThumb>,
     /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
     /// What the last presented frame painted, and what the frame being drawn
@@ -261,10 +264,28 @@ impl Slider {
             thumb: crate::motion::Thumb::default(),
             thumb_placed: false,
             glide_from: None,
+            hand_on: crate::motion::HandOn::default(),
             motion: None,
             painted: None,
             drawing: None,
         }
+    }
+
+    /// What names the slider across rebuilds: an id it was given, else
+    /// nothing (it is known by its place).
+    fn identity(&self) -> Option<&str> {
+        self.id_override
+            .as_deref()
+            .or((self.semantic_id != "slider").then_some(self.semantic_id.as_str()))
+    }
+
+    /// Go on from the slider a rebuild dropped: its thumb, gliding to a
+    /// press or at rest. A thumb headed elsewhere than this value (another
+    /// slider's, a key's) is put on it when drawn.
+    fn take_up(&mut self, kept: KeptThumb) {
+        self.thumb = kept.thumb;
+        self.thumb_placed = kept.placed;
+        self.glide_from = kept.glide_from;
     }
 
     fn painted_now(&self) -> Painted {
@@ -1095,6 +1116,10 @@ impl Widget for Slider {
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let identity = self.identity().map(str::to_owned);
+        if let Some(kept) = self.hand_on.build(identity.as_deref()) {
+            self.take_up(kept);
+        }
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -1105,7 +1130,16 @@ impl Widget for Slider {
         self.rect == Rect::ZERO
     }
 
-    crate::rect_geometry!();
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        if let Some(kept) = self.hand_on.place(self.rect) {
+            self.take_up(kept);
+        }
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
 
     fn draw(
         &mut self,
@@ -1394,6 +1428,26 @@ impl crate::widget::controls::ActionControls for Slider {
             self.binding.as_ref().and_then(|b| b.document_key()),
             self.on_change.is_some(),
         )
+    }
+}
+
+/// What a slider leaves for the one a rebuild puts in its place.
+#[derive(Default)]
+struct KeptThumb {
+    thumb: crate::motion::Thumb,
+    placed: bool,
+    glide_from: Option<(Point, crate::tokens::MotionSource)>,
+}
+
+/// A slider a rebuild drops leaves its thumb for the one put in its place.
+impl Drop for Slider {
+    fn drop(&mut self) {
+        let kept = KeptThumb {
+            thumb: std::mem::take(&mut self.thumb),
+            placed: self.thumb_placed,
+            glide_from: self.glide_from,
+        };
+        self.hand_on.leave(kept);
     }
 }
 
