@@ -2,7 +2,7 @@ mod action_directory_identity;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
 pub use disclosing::{Disclosing, event_offset};
-pub(crate) use disclosing::{follower_shifts, route_to_shifted_children};
+pub(crate) use disclosing::{content_box, follower_shifts, place_bands, route_to_shifted_children};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
@@ -2242,14 +2242,21 @@ pub trait Widget {
     }
 
     /// While this widget is a band on its way in or out
-    /// (`motion::Disclosure`: an in-window banner arriving or leaving), how
-    /// much of it is drawn against what the layout gives it. A column draws
-    /// the widgets after it that much lower, by transform, so they move
-    /// with the band's edge instead of being laid out again every frame.
-    /// `None` at rest (the default).
+    /// (`motion::Disclosure`: an in-window banner arriving or leaving), or a
+    /// content-sized container one moves in, how far what follows it is
+    /// drawn from where it is laid out. A moving band stands out of the
+    /// layout; its container places it ([`Self::place_disclosing`]) and
+    /// draws the widgets after it lower by transform, so they move with the
+    /// band's edge instead of being laid out again every frame. `None` at
+    /// rest (the default).
     fn disclosing(&self) -> Option<Disclosing> {
         None
     }
+
+    /// Where a band on its way ([`Disclosing::Band`]) stands while it is
+    /// out of the layout: its slot's top and width (`slot`'s height is
+    /// zero), set by its container after each layout.
+    fn place_disclosing(&mut self, _slot: vello::kurbo::Rect) {}
 
     /// Why this widget itself asks for animation frames, for diagnostics
     /// that name a desktop which keeps painting. `None` when it has nothing
@@ -3197,6 +3204,11 @@ pub use native_view::{
 };
 pub mod modal_prompt;
 pub use modal_prompt::PromptBody;
+pub mod secret_prompt;
+pub use secret_prompt::{
+    FieldRole, FieldSpec, NoticeTone, Presentation, PromptOutcome, SecretAnswer, SecretKind,
+    SecretPrompt,
+};
 pub mod toolbar;
 pub use toolbar::Toolbar;
 pub mod undo_button;

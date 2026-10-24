@@ -160,7 +160,7 @@ fn every_chrome_surface_lets_the_desktop_idle() {
     desk.fb.with_chrome(|c| c.show_osd(Osd::brightness(0.4)));
     let fade_done = Instant::now()
         + shell::shell::osd::OSD_HOLD
-        + shell::shell::osd::OSD_FADE
+        + shell::shell::osd::osd_fade()
         + Duration::from_millis(50);
     while Instant::now() < fade_done {
         desk.frame();

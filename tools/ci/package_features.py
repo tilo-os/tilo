@@ -57,6 +57,9 @@ NATIVE_TEST_FEATURES = {
     # Reading an AppImage's embedded entry is the compositor's alone; its
     # tests build the images they read.
     "tilo-desktop-entry": ("appimage",),
+    # The tunnel the shell links is a feature the root helper leaves out; its
+    # tests, and the namespace test of both together, need it.
+    "tilo-device-vpn": ("test-support",),
 }
 
 # Packages whose tested features above are not their default build. The

@@ -226,11 +226,20 @@ COPY \
     os/usr/lib/systemd/system/tilo-ntfs-mount.socket \
     os/usr/lib/systemd/system/tilo-ntfs-mount.service \
     os/usr/lib/systemd/system/tilo-ntfs-boot-disks.service \
+    os/usr/lib/systemd/system/tilo-device-vpn.socket \
+    os/usr/lib/systemd/system/tilo-device-vpn.service \
+    os/usr/lib/systemd/system/tilo-device-vpn-reset.service \
     /usr/lib/systemd/system/
 # NTFS drives: the kernel driver loads only when the consent-gated mount
 # service asks for it, and UDisks may not mount one around that service.
 COPY os/etc/modprobe.d/tilo-ntfs.conf /etc/modprobe.d/tilo-ntfs.conf
 COPY os/usr/lib/tmpfiles.d/tilo-ntfs-mount.conf /usr/lib/tmpfiles.d/tilo-ntfs-mount.conf
+# Your devices as a VPN (docs/device-vpn.md): the firewalld zone and policy that let the person's other
+# devices' traffic out while this device is their exit, and NetworkManager
+# leaving the tunnel interfaces to the helper.
+COPY os/usr/lib/firewalld/ /usr/lib/firewalld/
+COPY os/usr/lib/NetworkManager/conf.d/30-tilo-device-vpn.conf \
+    /usr/lib/NetworkManager/conf.d/30-tilo-device-vpn.conf
 COPY os/etc/polkit-1/rules.d/49-tilo-ntfs.rules /etc/polkit-1/rules.d/49-tilo-ntfs.rules
 # User provisioning is needed on the installed OS as well as live media.
 # disk-image.sh seeds these native units; custom installers additionally stage
@@ -359,7 +368,7 @@ COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-o
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
 # this is the only sanctioned way to materialise persistent dirs.
-COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-relay.conf /usr/lib/tmpfiles.d/
+COPY os/usr/lib/tmpfiles.d/tilo.conf os/usr/lib/tmpfiles.d/tilo-relay.conf os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/
 # systemd-tmpfiles --user reads /usr/share/user-tmpfiles.d, not /usr/lib.
 COPY os/usr/share/user-tmpfiles.d/tilo-model-manager.conf os/usr/share/user-tmpfiles.d/tilo-fs.conf os/usr/share/user-tmpfiles.d/tilo-secret-service.conf /usr/share/user-tmpfiles.d/
 
@@ -693,6 +702,7 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-fs-start.timer fs-identity.path && \
     systemctl enable tilo-system-extension-dispatcher.socket && \
     systemctl enable tilo-ntfs-mount.socket tilo-ntfs-boot-disks.service && \
+    systemctl enable tilo-device-vpn.socket tilo-device-vpn-reset.service && \
     systemctl enable tilo-system-extension-boot-pack-status.timer && \
     systemctl enable tilo-system-extension-boot-pack-stage.path && \
     systemctl --global enable tilo-models.socket && \

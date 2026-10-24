@@ -321,6 +321,22 @@ impl ShellOverlayHost {
         if self.portal_dialogs.view().is_none() {
             return false;
         }
+        if self.portal_dialogs.prompt().is_some() {
+            // The password prompt is modal and routes its own input: keys,
+            // the input method, the pointer and touch. A press is placed
+            // where the pointer last was, which may have been over a window
+            // whose motion never reached this tree.
+            if let (WindowEvent::MouseInput { .. }, Some(point)) = (event, self.last_cursor) {
+                let moved = ui::synthetic_input::cursor_moved(
+                    point.x * ctx.scale_factor,
+                    point.y * ctx.scale_factor,
+                );
+                self.portal_dialogs.prompt_event(&moved, ctx);
+            }
+            self.portal_dialogs.prompt_event(event, ctx);
+            *ctx.handled = true;
+            return true;
+        }
         if self.portal_dialogs.layout(self.overlay_area()).is_none() {
             // A security review that cannot fit is not an invisible Allow
             // button. Keep Escape available, but consume every other input.
@@ -415,9 +431,7 @@ impl ShellOverlayHost {
         let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
             return;
         };
-        let used = self
-            .portal_dialogs
-            .field_pointer_event(event, ctx, &layout, self.last_cursor);
+        let used = self.portal_dialogs.field_pointer_event(event, ctx, &layout);
         if !used
             && let (
                 WindowEvent::MouseInput {

@@ -496,6 +496,7 @@ decorator_trait! {
         fn minimum_window_width() -> Option<f64>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
+        fn disclosing() -> Option<crate::widget::Disclosing>;
         fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
@@ -522,6 +523,7 @@ decorator_trait! {
 
     mut {
         fn set_full_bleed(full_bleed: bool);
+        fn place_disclosing(slot: vello::kurbo::Rect);
         #[doc(hidden)]
         #[allow(
             private_interfaces,

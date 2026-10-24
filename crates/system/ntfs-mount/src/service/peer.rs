@@ -8,10 +8,13 @@
 //! mount namespaces, which no sandboxed app does. `kernel.yama.ptrace_scope`
 //! is 3 on Tilo, so no process can be steered from outside once running.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use super::Caller;
+
+pub use seat_peer::PeerFacts;
+#[cfg(target_os = "linux")]
+pub use seat_peer::facts;
 
 /// Where the facts about callers come from.
 #[derive(Clone, Debug)]
@@ -26,36 +29,31 @@ pub struct PeerPolicy {
 
 impl Default for PeerPolicy {
     fn default() -> Self {
+        let seat = seat_peer::Seat::default();
         Self {
-            trusted_ui: PathBuf::from("/usr/bin/shell"),
-            seat: PathBuf::from("/run/systemd/seats/seat0"),
-            users: PathBuf::from("/run/systemd/users"),
+            trusted_ui: seat.trusted_ui,
+            seat: seat.seat,
+            users: seat.users,
         }
     }
 }
 
-/// What the kernel says about a connecting process.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PeerFacts {
-    pub uid: u32,
-    /// Its executable, when it is still the process that connected.
-    pub exe: Option<PathBuf>,
-    /// Whether it shares this service's user and mount namespaces.
-    pub host_namespaces: bool,
-}
-
 impl PeerPolicy {
+    fn seat(&self) -> seat_peer::Seat {
+        seat_peer::Seat {
+            trusted_ui: self.trusted_ui.clone(),
+            seat: self.seat.clone(),
+            users: self.users.clone(),
+        }
+    }
+
     /// The uid logind reports at the seat.
     pub fn active_uid(&self) -> Option<u32> {
-        fs::read_to_string(&self.seat).ok().and_then(|text| {
-            text.lines()
-                .find_map(|line| line.strip_prefix("ACTIVE_UID="))
-                .and_then(|uid| uid.trim().parse().ok())
-        })
+        seat_peer::active_uid(&self.seat)
     }
 
     pub fn has_session(&self, uid: u32) -> bool {
-        self.users.join(uid.to_string()).exists()
+        seat_peer::has_session(&self.users, uid)
     }
 
     /// Decide who `peer` is, or why it is turned away.
@@ -63,9 +61,7 @@ impl PeerPolicy {
         if self.active_uid() != Some(peer.uid) {
             return Err("only the person at this computer may use its drives".into());
         }
-        let trusted =
-            peer.host_namespaces && peer.exe.as_deref() == Some(self.trusted_ui.as_path());
-        Ok(if trusted {
+        Ok(if self.seat().is_trusted_ui(peer) {
             Caller::Shell { uid: peer.uid }
         } else {
             Caller::Person { uid: peer.uid }
@@ -73,81 +69,11 @@ impl PeerPolicy {
     }
 }
 
-/// Read a connected peer's facts from the kernel.
-#[cfg(target_os = "linux")]
-pub fn facts(stream: &std::os::unix::net::UnixStream) -> std::io::Result<PeerFacts> {
-    use std::io;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-
-    let fd = stream.as_raw_fd();
-    // Raw libc rather than rustix: rustix's credentials carry a non-zero pid,
-    // and the kernel reports 0 for a peer in another PID namespace.
-    let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut size = libc::socklen_t::try_from(size_of::<libc::ucred>()).map_err(io::Error::other)?;
-    // SAFETY: `cred` is a properly sized, writable `ucred`.
-    if unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut cred).cast(),
-            &raw mut size,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let mut pidfd: libc::c_int = -1;
-    let mut size = libc::socklen_t::try_from(size_of::<libc::c_int>()).map_err(io::Error::other)?;
-    // SAFETY: `pidfd` is a properly sized, writable int.
-    let pinned = unsafe {
-        libc::getsockopt(
-            fd,
-            libc::SOL_SOCKET,
-            libc::SO_PEERPIDFD,
-            (&raw mut pidfd).cast(),
-            &raw mut size,
-        )
-    } == 0
-        && pidfd >= 0;
-    // SAFETY: the kernel just handed us this descriptor.
-    let pidfd = pinned.then(|| unsafe { OwnedFd::from_raw_fd(pidfd) });
-    let proc_dir = PathBuf::from(format!("/proc/{}", cred.pid));
-    let exe = if cred.pid > 0 {
-        fs::read_link(proc_dir.join("exe")).ok()
-    } else {
-        None
-    };
-    let host_namespaces = cred.pid > 0
-        && ["user", "mnt"].iter().all(|ns| {
-            let theirs = fs::read_link(proc_dir.join("ns").join(ns));
-            let ours = fs::read_link(Path::new("/proc/self/ns").join(ns));
-            matches!((theirs, ours), (Ok(theirs), Ok(ours)) if theirs == ours)
-        });
-    // The pid named the connecting process only if that process is still
-    // alive now that its facts were read: the pidfd pins it.
-    let still_same = pidfd.is_some_and(|pidfd| {
-        // SAFETY: signal 0 only checks that the process exists.
-        let sent = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                pidfd.as_raw_fd(),
-                0,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-        sent == 0
-    });
-    Ok(PeerFacts {
-        uid: cred.uid,
-        exe: exe.filter(|_| still_same),
-        host_namespaces: host_namespaces && still_same,
-    })
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
+
     use super::*;
 
     fn policy(dir: &Path, active: Option<u32>) -> PeerPolicy {

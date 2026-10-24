@@ -340,6 +340,29 @@ pub(super) fn install_device_fabric_bridge(
                         approved,
                     )?;
                 }
+                #[cfg(target_os = "linux")]
+                DeviceFabricUiAction::RouteThrough { device } => {
+                    crate::shell::device_vpn::choose(&device, true)?;
+                }
+                #[cfg(target_os = "linux")]
+                DeviceFabricUiAction::StopRouteThrough { device } => {
+                    crate::shell::device_vpn::choose(&device, false)?;
+                }
+                #[cfg(target_os = "linux")]
+                DeviceFabricUiAction::StopExitUser { device } => {
+                    crate::shell::device_vpn::stop_device(&device);
+                }
+                #[cfg(target_os = "linux")]
+                DeviceFabricUiAction::ShareConnection { on } => {
+                    crate::shell::device_vpn::set_exit(on)?;
+                }
+                #[cfg(not(target_os = "linux"))]
+                DeviceFabricUiAction::RouteThrough { .. }
+                | DeviceFabricUiAction::StopRouteThrough { .. }
+                | DeviceFabricUiAction::StopExitUser { .. }
+                | DeviceFabricUiAction::ShareConnection { .. } => {
+                    return Err("routing through your devices needs Linux".into());
+                }
                 DeviceFabricUiAction::RemoveDevice { device } => {
                     let mut key = [0_u8; 32];
                     hex::decode_to_slice(device.as_str(), &mut key)

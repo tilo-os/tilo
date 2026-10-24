@@ -204,6 +204,9 @@ mime_guess.workspace = true
 # Settings app can call the same bindings without depending on the
 # compositor. Quick Settings keeps only dispatcher aliases and fixture policy.
 os-actions = { path = "../../system/os-actions" }
+# Your devices as a VPN: the tunnel, and the helper's protocol (not the
+# helper itself).
+tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["tunnel"] }
 # Where the device is, for a time zone that follows it.
 tilo-location = { path = "../../platform/tilo-location" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
