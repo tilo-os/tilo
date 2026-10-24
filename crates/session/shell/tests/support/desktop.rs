@@ -283,6 +283,11 @@ impl Desktop {
         }
     }
 
+    /// The compositor's `XDG_CACHE_HOME`, where its crash records go.
+    pub fn cache_home(&self) -> PathBuf {
+        self.runtime_dir.join("cache")
+    }
+
     /// The wayland socket's file name, as `WAYLAND_DISPLAY` takes it.
     pub fn display_name(&self) -> String {
         self.wayland_socket

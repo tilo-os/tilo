@@ -4,17 +4,22 @@
 //! login. It kept DRM master and the VT, so the screen stayed frozen,
 //! Ctrl+Alt+Fn did nothing, and the person had to hold the power button. The
 //! watchdog (`shell::compositor::watchdog`) now notices a loop that stopped
-//! for good, writes every thread's stack to the session record, and exits
-//! with its own status, which hands the display back and ends the session.
+//! for good, writes every thread's stack to the session log and to a freeze
+//! record in the crash directory (which the next start reads to tell the
+//! person), and exits with its own status, which hands the display back and
+//! ends the session.
 //!
 //! This injects the same kind of deadlock into a real headless compositor on
 //! a private runtime directory, with the production thresholds, and asserts
-//! both halves: the record names the deadlocked frame, and the process ends.
+//! both halves: the log and the freeze record name the deadlocked frame, and
+//! the process ends.
 
 use std::time::Instant;
 
 use serde_json::json;
-use shell::compositor::watchdog::{HUNG_AFTER, HUNG_EXIT_STATUS, LONGEST_BOUNDED_WAIT};
+use shell::compositor::watchdog::{
+    HUNG_AFTER, HUNG_EXIT_STATUS, LONGEST_BOUNDED_WAIT, RECORD_WITHIN,
+};
 use shell::shell::state::WorkspaceTree;
 
 use crate::support::desktop::Desktop;
@@ -28,8 +33,11 @@ fn a_deadlocked_main_loop_is_recorded_and_the_compositor_ends() {
     let injected = Instant::now();
     desktop.send(&json!({"op": "deadlock_main_loop"}));
 
-    // Noticed one sample past the bound, then at most one bound for the dump.
-    let expected = HUNG_AFTER.saturating_add(LONGEST_BOUNDED_WAIT);
+    // Noticed one sample past the bound, then at most one bound for the dump
+    // and one for the record.
+    let expected = HUNG_AFTER
+        .saturating_add(LONGEST_BOUNDED_WAIT)
+        .saturating_add(RECORD_WITHIN);
     let status = desktop
         .wait_for_exit(expected.saturating_add(tilo_test_env::hang_bound()))
         .unwrap_or_else(|| {
@@ -71,5 +79,42 @@ fn a_deadlocked_main_loop_is_recorded_and_the_compositor_ends() {
         "the record ends with the recovery ({} lines read, ending):\n{}",
         log.lines().count(),
         desktop.recent_log(8)
+    );
+
+    // The freeze is kept where the next start looks for it, with the stacks.
+    let crashes = desktop.cache_home().join("tilo/crashes");
+    let records: Vec<_> = std::fs::read_dir(&crashes)
+        .unwrap_or_else(|error| panic!("{}: {error}\n{log}", crashes.display()))
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.to_string_lossy()
+                .ends_with(shell::crash_log::FREEZE_SUFFIX)
+        })
+        .collect();
+    let [record] = records.as_slice() else {
+        panic!(
+            "one freeze record in {}: {records:?}\n{log}",
+            crashes.display()
+        );
+    };
+    let body = std::fs::read_to_string(record).unwrap();
+    assert!(
+        body.starts_with(shell::crash_log::FREEZE_TITLE),
+        "a freeze record:\n{body}"
+    );
+    assert!(
+        body.contains("deadlock_this_thread_for_test"),
+        "the freeze record carries the compositor thread's stack:\n{body}"
+    );
+    assert!(
+        log.contains(&record.display().to_string()),
+        "the log names the record:\n{}",
+        desktop.recent_log(8)
+    );
+    let name = record.file_name().unwrap().to_string_lossy();
+    assert_eq!(
+        shell::shell::crash_notice::ended_by(&name, || None),
+        Some(shell::shell::crash_notice::Ended::Froze),
+        "the next start tells the person the desktop stopped responding"
     );
 }
