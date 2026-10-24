@@ -383,6 +383,38 @@ async fn assert_personal_continuity_live_closure() -> (Fixture, Envelope) {
     (fixture, closed)
 }
 
+impl Fixture {
+    /// The source device's snapshot of its person's workspace list.
+    fn workspace_list(&self, time: u64, delta: Vec<u8>) -> ([u8; 32], Vec<u8>) {
+        let msg = neighbour_wire::NeighbourMsg::PersonalWorkspaces {
+            user_public_key: self.source.peer.user_public_key,
+            update: Box::new(tilo_user_identity::DirectoryUpdate {
+                author_device_public_key: self.source.peer.device_public_key,
+                authored_at_ns: time,
+                delta,
+                signature: [0; 64],
+            }),
+        };
+        let (channel, _) = neighbour_wire::retention(&msg, false).unwrap();
+        (channel, postcard::to_stdvec(&msg).unwrap())
+    }
+}
+
+/// A person's workspace list is latest-wins state: no delta carries what
+/// changed between two of its values, so a connected device receives every
+/// one live, the second and third as well as the first.
+#[tokio::test]
+async fn every_new_workspace_list_reaches_a_connected_device() {
+    let mut fixture = Fixture::new();
+    for time in 1..=3_u64 {
+        let (channel, body) = fixture.workspace_list(time, vec![u8::try_from(time).unwrap()]);
+        let frame = fixture.checkpoint_frame(time, channel, body);
+        fixture.publish_checkpoint_frame(frame.clone(), true).await;
+        fixture.assert_checkpoint_written(&frame).await;
+    }
+    assert!(fixture.recipient_rx.try_recv().is_err());
+}
+
 #[tokio::test]
 async fn personal_continuity_live_closure_uses_both_publishers() {
     Box::pin(assert_personal_continuity_live_closure()).await;
