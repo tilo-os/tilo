@@ -6580,24 +6580,35 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
             );
         }
 
-        // Phase `narrow_list_goes_back_to_the_mailboxes`: too narrow to dock
-        // the mailboxes beside the list, they are the push stack's first
-        // screen; the list's Back (or Escape) goes to them, never a drawer.
+        // Phase `narrow_list_reaches_the_mailboxes_by_the_bars_toggle`: too
+        // narrow to dock the mailboxes beside the list, they are the push
+        // stack's first screen. The list is the top-level page: the window
+        // bar's sidebar toggle reaches the mailboxes, with no Back beside it.
         {
-            let (mut app, mut doc) = app();
+            let (mut app, _doc) = app();
             app.layout_for_test(560.0, 860.0);
             let geometry = app.nav.geometry();
             assert_eq!(geometry.sidebar, ui::widget::SidebarPlacement::Screen);
             assert_eq!(app.nav_pane(), NavPane::Overview, "opens on the list");
+            let toolbar = app.nav.window_toolbar();
+            assert_eq!(toolbar.sidebar, Some(false), "the toggle is the bar's");
             assert!(
-                app.nav.can_go_back() && !app.nav.window_toolbar().leading.is_empty(),
-                "Back in the window's bar on the narrow list"
+                !app.nav.can_go_back() && toolbar.leading.is_empty(),
+                "no Back on the top-level list"
             );
             assert!(!app.nav.is_sidebar_open());
-            assert!(dispatch(&mut app, &esc_event(), &mut doc), "Esc consumed");
+            assert!(
+                app.nav
+                    .window_toolbar_event(&ui::window_toolbar::ToolbarEvent::ToggleSidebar),
+                "the toggle is answered"
+            );
             app.nav.snap();
             app.layout_for_test(560.0, 860.0);
-            assert_eq!(app.nav_pane(), NavPane::Sidebar, "Esc shows the mailboxes");
+            assert_eq!(
+                app.nav_pane(),
+                NavPane::Sidebar,
+                "the toggle shows the mailboxes"
+            );
             assert!(app.nav.is_sidebar_open(), "the mailboxes fill the window");
             let sidebar = app.nav.geometry().sidebar_column;
             assert!(
