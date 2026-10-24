@@ -18,6 +18,23 @@
 //!   Discord delivers it: an interaction on the gateway; answers `{"id": ...}`.
 //! - `GET /replies` answers the bot's replies to interactions, oldest first,
 //!   each `{"interaction": id, "reply": body}`.
+//!
+//! Voice (the fake voice server runs on loopback; `VOICE_SERVER_UPDATE`
+//! names it, so the worker needs nothing beyond `DISCORD_ALLOW_LOOPBACK`):
+//! - `POST /voice/join?user=&name=&channel=` puts that user in a voice
+//!   channel (default the seeded `voice`); in the bot's channel they join
+//!   its call as a DAVE client.
+//! - `POST /voice/leave?user=` and `POST /voice/mute?user=&muted=1` take
+//!   them out or (un)mute them.
+//! - `POST /voice/tone?user=&hz=&seconds=` has them say a sine tone to the
+//!   bot in real time (Opus, DAVE and transport encrypted); answers at once.
+//! - `GET /voice/heard?hz=440,660&seconds=N` answers what the fake decoded
+//!   from the bot's audio in the last N seconds (default 5): `frames`, and
+//!   per frequency the share of the energy at it (`{"440": 0.8, ...}`, about
+//!   1 for that tone alone, about 0.5 each for two).
+//! - `GET /voice/state` answers the bot's voice side: its channel, whether
+//!   its voice connection is up, DAVE's version and readiness, its speaking
+//!   flags, the channel statuses and nickname it set, who is in voice.
 
 use std::convert::Infallible;
 use std::net::SocketAddr;
@@ -65,6 +82,10 @@ async fn main() -> std::io::Result<()> {
         fake_discord::TOKEN
     );
     println!("# gateway: {}", fake.gateway_url());
+    println!(
+        "# voice: ws://{} (named in VOICE_SERVER_UPDATE; DISCORD_ALLOW_LOOPBACK=1 lets the worker reach it)",
+        fake.voice_endpoint()
+    );
     if let Some(control) = control {
         let listener = tokio::net::TcpListener::bind(control).await?;
         println!("# control: http://{}", listener.local_addr()?);
@@ -90,7 +111,7 @@ async fn serve_control(fake: Arc<fake_discord::FakeDiscord>, listener: tokio::ne
 }
 
 async fn control(
-    fake: &fake_discord::FakeDiscord,
+    fake: &Arc<fake_discord::FakeDiscord>,
     request: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let method = request.method().as_str().to_owned();
@@ -150,9 +171,31 @@ async fn control(
             (200, json!({ "id": id }))
         }
         ("GET", "/replies") => (200, json!(fake.interaction_replies())),
+        ("POST", "/voice/join") => {
+            let user = fake_discord::User::new(&arg("user"), &arg("name"));
+            let channel = Some(arg("channel"))
+                .filter(|c| !c.is_empty())
+                .unwrap_or_else(|| fake_discord::CHANNEL_VOICE.to_owned());
+            fake.voice_join(&user, &channel);
+            (200, json!({}))
+        }
+        ("POST", "/voice/leave") => {
+            fake.voice_leave(&arg("user"));
+            (200, json!({}))
+        }
+        ("POST", "/voice/mute") => {
+            fake.voice_mute(&arg("user"), matches!(arg("muted").as_str(), "1" | "true"));
+            (200, json!({}))
+        }
+        ("POST", "/voice/tone") => {
+            tone(fake, arg("user"), &arg("hz"), &arg("seconds"));
+            (200, json!({}))
+        }
+        ("GET", "/voice/heard") => (200, heard(fake, &arg("hz"), &arg("seconds"))),
+        ("GET", "/voice/state") => (200, fake.voice_state_json()),
         _ => (
             404,
-            json!({ "error": "use /post, /edit, /delete, /messages, /slash or /replies" }),
+            json!({ "error": "use /post, /edit, /delete, /messages, /slash, /replies or /voice/..." }),
         ),
     };
     Response::builder()
@@ -160,6 +203,46 @@ async fn control(
         .header("content-type", "application/json")
         .body(Full::new(Bytes::from(answer.to_string())))
         .unwrap_or_else(|_| Response::new(Full::new(Bytes::new())))
+}
+
+/// Have `user` say a sine at `hz` for `seconds`, in real time, in the
+/// background.
+fn tone(fake: &Arc<fake_discord::FakeDiscord>, user: String, hz: &str, seconds: &str) {
+    let hz: f32 = hz.parse().unwrap_or(440.0);
+    let seconds: f32 = seconds.parse().unwrap_or(2.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0..=30000 frames"
+    )]
+    let count = (seconds.clamp(0.0, 600.0) * 50.0).round() as usize;
+    let frames = fake_discord::tone::sine(hz, count);
+    let fake = Arc::clone(fake);
+    tokio::spawn(async move { fake.voice_say(&user, &frames).await });
+}
+
+/// What the fake heard from the bot in the last `seconds`, per frequency.
+fn heard(fake: &fake_discord::FakeDiscord, hz: &str, seconds: &str) -> Value {
+    let seconds: u64 = seconds.parse().unwrap_or(5);
+    let since = fake_discord::now_ms().saturating_sub(seconds.saturating_mul(1000));
+    let frames: Vec<Vec<u8>> = fake
+        .voice_heard_frames()
+        .into_iter()
+        .filter(|heard| heard.at_ms >= since)
+        .map(|heard| heard.opus)
+        .collect();
+    let samples = fake_discord::tone::decode(&frames);
+    let shares: serde_json::Map<String, Value> = hz
+        .split(',')
+        .filter_map(|f| {
+            f.trim()
+                .parse::<f32>()
+                .ok()
+                .map(|hz| (f.trim().to_owned(), hz))
+        })
+        .map(|(name, hz)| (name, json!(fake_discord::tone::share(&samples, hz))))
+        .collect();
+    json!({"frames": frames.len(), "share": shares})
 }
 
 fn decode(text: &str) -> String {
