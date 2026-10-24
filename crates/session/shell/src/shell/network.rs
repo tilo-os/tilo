@@ -613,6 +613,7 @@ enum Reach {
 fn needs_reachability(
     tree: &WorkspaceTree,
     local_endpoint: &str,
+    local_device: &[u8; 32],
     open_invitations: bool,
     other_devices: bool,
 ) -> Option<&'static str> {
@@ -634,8 +635,14 @@ fn needs_reachability(
         // outlives an un-naming as revocation evidence: a peer no longer
         // named is no longer a member, and nobody to stay reachable for.
         Some("a room shared with a peer")
-    } else if !tree.native_authority.is_empty() {
-        Some("a relay-governed room")
+    } else if tree
+        .native_authority
+        .rooms()
+        .any(|room| !tree.native_authority.hosted_on(room, local_device))
+    {
+        // A room hosted on this device keeps it reachable only while
+        // another device is a member (`ShellNetwork::hosts_other_members`).
+        Some("a room hosted elsewhere")
     } else if !tree.continuation_rooms.is_empty() {
         Some("a room continued from another device")
     } else if open_invitations {
@@ -2219,6 +2226,7 @@ impl ShellNetwork {
             needs_reachability(
                 &tree_for_reachability.read(),
                 &local_peer_id.to_string(),
+                local_peer_id.as_bytes(),
                 !pending_identity_admissions.is_empty(),
                 other_devices,
             ),
@@ -4772,6 +4780,7 @@ impl ShellNetwork {
         needs_reachability(
             &tree,
             &self.local_peer_id.to_string(),
+            self.local_peer_id.as_bytes(),
             open_invitations,
             other_devices,
         )
