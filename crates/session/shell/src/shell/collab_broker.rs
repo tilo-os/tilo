@@ -249,7 +249,7 @@ pub fn spawn_native_offloading(
     // over the same network this broker answers their requests on.
     if let Some(network) = peer_sync {
         crate::shell::record_hydration::set_source(Arc::new(
-            crate::shell::record_hydration::NetworkSource(Arc::clone(network)),
+            crate::shell::record_hydration::NetworkSource(Arc::downgrade(network)),
         ));
     }
     let publisher = PeerPublisher::with_optional_owner_commit(

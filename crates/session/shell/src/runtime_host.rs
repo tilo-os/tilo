@@ -18,10 +18,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Child, Command},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 use tilo_runtime::RuntimeServices;
@@ -36,7 +33,7 @@ mod admission_tests;
 /// starting any threads when using an isolated profile.
 pub struct Session {
     pub broker: BrokerHandle,
-    _peer_sync: Option<PeerSync>,
+    _peer_sync: PeerSync,
     _identity: identity_broker::IdentityBrokerHandle,
     pub room: String,
     pub actor: String,
@@ -121,7 +118,8 @@ impl Session {
             .workspaces
             .first_mut()
             .ok_or_else(|| io::Error::other("runtime profile has no workspace"))?;
-        let room_id = workspace.room().to_string();
+        let room = workspace.room();
+        let room_id = room.to_string();
         let profile = crate::identity_registry::selected_identity_profile(&room_id)?
             .ok_or_else(|| io::Error::other("runtime workspace has no selected identity"))?;
         let actor = profile.principal_id();
@@ -143,21 +141,20 @@ impl Session {
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
-        stage("starting the collaboration broker");
-        let peer_sync = PeerSync::start(&tree);
+        stage("starting this device's network and room host");
+        let mut peer_sync = PeerSync::start(&tree, root)?;
         // No frame loop waits here: open the owner before the broker, whose
         // services otherwise answer that it is still opening until it is.
         stage("opening the workspace owner");
-        let opened = match peer_sync.as_ref() {
-            Some(sync) => sync.network.native_owner(),
-            None => crate::shell::native_workspace_owner::open(tree.clone()),
-        };
-        if let Err(error) = &opened {
+        if let Err(error) = peer_sync.network.native_owner() {
             tracing::warn!(%error, "the runtime's workspace owner did not open");
         }
+        stage("hosting the workspace on this device");
+        peer_sync.host(room)?;
+        stage("starting the collaboration broker");
         let broker = collab_broker::spawn_native_offloading(
             root.join(COLLAB_SOCKET),
-            &peer_sync.as_ref().map(|sync| Arc::clone(&sync.network)),
+            &Some(Arc::clone(&peer_sync.network)),
             tree.clone(),
             // Offloadable actions of the room may run on a better-placed
             // device of this person, over the room's media in this store.
@@ -186,6 +183,15 @@ impl Session {
     )]
     pub(crate) fn workspace_tree(&self) -> crate::shell::state::WorkspaceTreeHandle {
         self._membership.clone()
+    }
+
+    #[cfg(test)]
+    #[expect(
+        clippy::used_underscore_binding,
+        reason = "the network is otherwise only held for the session's lifetime"
+    )]
+    pub(crate) fn network(&self) -> &Arc<ShellNetwork> {
+        &self._peer_sync.network
     }
 
     /// The identity service an app this session connects joins with.
@@ -259,53 +265,161 @@ impl RuntimeServices for Session {
     }
 }
 
-/// The desktop's peer network, attached when `TILO_COLLAB_HOST(S)` names a
-/// workspace host, so apps of this session share their rooms with the
-/// host's other devices (other shells, browsers, agents). Without a host the
-/// session stays local, as before.
+/// This device's network, with the room host the desktop runs: the session's
+/// workspace is placed on and served by this device's own host, as the
+/// desktop's are. When `TILO_COLLAB_HOST(S)` names a workspace host, the
+/// network also joins it, so apps of this session share their rooms with
+/// the host's other devices (other shells, browsers, agents).
+///
+/// Nothing here runs on a timer: the pump turns the network only when it
+/// wakes the session (an event from the actor, a socket, one of its own
+/// timers), the way the desktop's loop does. An idle session with no peers
+/// sleeps.
 struct PeerSync {
     network: Arc<ShellNetwork>,
-    stop: Arc<AtomicBool>,
+    wake: Arc<Wake>,
     pump: Option<std::thread::JoinHandle<()>>,
 }
 
-impl PeerSync {
-    /// How often the actor's events are drained into the replica and the
-    /// broker's inbound queues; the compositor does this every frame.
-    const TICK: Duration = Duration::from_millis(16);
+/// The session's wake: set by the network from any thread, taken by the one
+/// turning it.
+#[derive(Default)]
+struct Wake {
+    state: std::sync::Mutex<WakeState>,
+    ready: std::sync::Condvar,
+}
 
-    fn start(tree: &crate::shell::state::WorkspaceTreeHandle) -> Option<Self> {
-        if !crate::shell::network::collab_host_configured() {
-            return None;
+#[derive(Default)]
+struct WakeState {
+    woken: bool,
+    stopping: bool,
+}
+
+impl Wake {
+    fn wake(&self) {
+        self.lock().woken = true;
+        self.ready.notify_all();
+    }
+
+    fn stop(&self) {
+        self.lock().stopping = true;
+        self.ready.notify_all();
+    }
+
+    /// Block until woken or `deadline` passes: whether it was woken.
+    fn wait_until(&self, deadline: std::time::Instant) -> bool {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let (mut state, timeout) = self
+            .ready
+            .wait_timeout_while(self.lock(), left, |state| !state.woken && !state.stopping)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.woken = false;
+        !timeout.timed_out()
+    }
+
+    /// Block until woken; `false` once the session stops.
+    fn wait(&self) -> bool {
+        let mut state = self
+            .ready
+            .wait_while(self.lock(), |state| !state.woken && !state.stopping)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.woken = false;
+        !state.stopping
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, WakeState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl PeerSync {
+    fn start(tree: &crate::shell::state::WorkspaceTreeHandle, root: &Path) -> io::Result<Self> {
+        // The session's own peer state, beside its workspace: a desktop on
+        // the same device keeps its own.
+        let network = Arc::new(ShellNetwork::spawn(
+            tree.clone(),
+            &crate::shell::network::peer_key_path(),
+            &root.join("peer-sync"),
+        )?);
+        let wake = Arc::new(Wake::default());
+        network.set_wake({
+            let wake = Arc::clone(&wake);
+            Arc::new(move || wake.wake())
+        });
+        if crate::shell::network::collab_host_configured() {
+            let _ = network.join_default_workspace();
+            tracing::info!("peer-sync: attached to the configured workspace host");
         }
-        let network = match ShellNetwork::spawn_for_session(tree.clone()) {
-            Ok(network) => Arc::new(network),
-            Err(error) => {
-                tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
-                return None;
+        Ok(Self {
+            network,
+            wake,
+            pump: None,
+        })
+    }
+
+    /// Place `room`, the session's workspace, on this device's host and wait,
+    /// turning the network as it wakes, until the native owner holds it; then
+    /// leave the network to the pump. A session whose room is not served
+    /// within [`hosting_bound`] fails to start, naming the step it stopped at,
+    /// rather than serving nothing.
+    fn host(&mut self, room: crate::shell::state::RoomId) -> io::Result<()> {
+        use crate::shell::network::Placement;
+        let deadline = std::time::Instant::now() + hosting_bound();
+        // The rooms this device hosted before are served again first: a
+        // session reopening its workspace finds it held already.
+        self.network.open_hosted_rooms();
+        loop {
+            // A turn places what waits to be placed and installs what
+            // enrolled, as the desktop's frame does.
+            self.network.tick();
+            let placement = self.network.placement(room);
+            match &placement {
+                Placement::Held => break,
+                Placement::Placing | Placement::Enrolling => {}
+                Placement::NotPlaced(error) | Placement::NotInstalled(error) => {
+                    return Err(io::Error::other(format!(
+                        "the session's workspace is not hosted: stopped at {}: {error}",
+                        placement.step()
+                    )));
+                }
             }
-        };
-        let _ = network.join_default_workspace();
-        let stop = Arc::new(AtomicBool::new(false));
-        let pump = {
-            let network = Arc::clone(&network);
-            let stop = Arc::clone(&stop);
+            if !self.wake.wait_until(deadline) {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "the session's workspace is not hosted: still waiting on {}",
+                        placement.step()
+                    ),
+                ));
+            }
+        }
+        let network = Arc::clone(&self.network);
+        let wake = Arc::clone(&self.wake);
+        self.pump = Some(
             std::thread::Builder::new()
                 .name("tilo-peer-sync".into())
                 .spawn(move || {
-                    while !stop.load(Ordering::Relaxed) {
+                    while wake.wait() {
                         network.tick();
-                        std::thread::sleep(Self::TICK);
                     }
-                })
-                .ok()
-        };
-        tracing::info!("peer-sync: attached to the configured workspace host");
-        Some(Self {
-            network,
-            stop,
-            pump,
-        })
+                })?,
+        );
+        Ok(())
+    }
+}
+
+/// How long a starting session waits for its workspace to be served by this
+/// device's host before it reports where it stopped.
+fn hosting_bound() -> Duration {
+    #[cfg(test)]
+    {
+        tilo_test_env::hang_bound()
+    }
+    #[cfg(not(test))]
+    {
+        Duration::from_secs(60)
     }
 }
 
@@ -330,7 +444,7 @@ impl Drop for FinalSessionSaves {
 
 impl Drop for PeerSync {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.wake.stop();
         if let Some(pump) = self.pump.take() {
             let _ = pump.join();
         }
