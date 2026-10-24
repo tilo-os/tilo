@@ -8245,6 +8245,14 @@ impl Drop for ConnectionLease {
     }
 }
 
+/// The room a channel id names, for a status asked before any join.
+fn channel_room(channel_id: capnp::Result<capnp::text::Reader<'_>>) -> capnp::Result<String> {
+    let channel_id = channel_id?
+        .to_str()
+        .map_err(|error| capnp::Error::failed(format!("channelId not utf8: {error}")))?;
+    Ok(CrdtRoute::from_channel_key(channel_id).cluster_id)
+}
+
 impl collab_service::Server for CapnpCollabService {
     #[expect(
         clippy::too_many_lines,
@@ -8286,13 +8294,18 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
-            if let Some(reason) = state
-                .services
-                .workspace_memberships
-                .as_ref()
-                .and_then(|memberships| memberships.room_unavailable(&route.cluster_id))
-            {
-                return Err(capnp::Error::failed(reason));
+            // A room still being joined or placed on its host holds the join
+            // until apps can open documents in it, whichever client asks.
+            if let Some(memberships) = state.services.workspace_memberships.clone() {
+                let mut status = memberships.room_status(&route.cluster_id);
+                while matches!(status, runtime_collab::RoomStatus::Waiting { .. }) {
+                    status = memberships
+                        .room_status_change(&route.cluster_id, status)
+                        .await;
+                }
+                if let runtime_collab::RoomStatus::Refused(reason) = status {
+                    return Err(capnp::Error::failed(reason));
+                }
             }
             if let Some(app) = self.lease.local_media.as_ref()
                 && verified_identity
@@ -8446,6 +8459,46 @@ impl collab_service::Server for CapnpCollabService {
                 .publisher()
                 .local_route(&crate::route::CrdtRoute::from_channel_key(&ensured));
             results.get().set_handle(client);
+            Ok(())
+        })
+    }
+
+    fn room_status(
+        self: Rc<Self>,
+        params: collab_service::RoomStatusParams,
+        mut results: collab_service::RoomStatusResults,
+    ) -> Promise<(), capnp::Error> {
+        let room = match channel_room(params.get().and_then(|reader| reader.get_channel_id())) {
+            Ok(room) => room,
+            Err(error) => return Promise::err(error),
+        };
+        let status = self
+            .state
+            .services
+            .workspace_memberships
+            .as_ref()
+            .map_or_else(runtime_collab::RoomStatus::default, |memberships| {
+                memberships.room_status(&room)
+            });
+        status.write(results.get().init_status());
+        Promise::ok(())
+    }
+
+    fn await_room(
+        self: Rc<Self>,
+        params: collab_service::AwaitRoomParams,
+        mut results: collab_service::AwaitRoomResults,
+    ) -> Promise<(), capnp::Error> {
+        let memberships = self.state.services.workspace_memberships.clone();
+        Promise::from_future(async move {
+            let reader = params.get()?;
+            let room = channel_room(reader.get_channel_id())?;
+            let seen = runtime_collab::RoomStatus::from_reader(reader.get_seen()?)?;
+            let status = match memberships {
+                Some(memberships) => memberships.room_status_change(&room, seen).await,
+                None => runtime_collab::RoomStatus::default(),
+            };
+            status.write(results.get().init_status());
             Ok(())
         })
     }
