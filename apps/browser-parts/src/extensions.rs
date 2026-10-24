@@ -949,7 +949,7 @@ fn asks_for_more(allowed: &[String], now: &[String]) -> bool {
 /// The Browser's own extension, which turns the others on and off as
 /// Chrome's extensions page does: turning one off keeps what it stored, its
 /// settings and logins, where Chromium's `DevTools` can only uninstall it.
-const MANAGER_FILES: [(&str, &str); 5] = [
+const MANAGER_FILES: [(&str, &str); 4] = [
     (
         "manifest.json",
         include_str!("../assets/extension-manager/manifest.json"),
@@ -966,7 +966,6 @@ const MANAGER_FILES: [(&str, &str); 5] = [
         "worker.js",
         include_str!("../assets/extension-manager/worker.js"),
     ),
-    ("tab.js", include_str!("../assets/extension-manager/tab.js")),
 ];
 
 /// Where the manager extension is, written beside the profile's extensions

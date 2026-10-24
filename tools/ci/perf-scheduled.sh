@@ -55,7 +55,8 @@ case $group in
         2> "$out/fs-gate-$run.log" || status=$?
       TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
         2>> "$out/fs-gate-$run.log" || status=$?
-      grep '^PERF\| PERF ' "$out/fs-gate-$run.log" || true
+      # The gates' assertion messages name the scenario that failed.
+      grep '^PERF\| PERF \|exceeded \|panicked at' "$out/fs-gate-$run.log" || true
     done
     env_json dev none kvm > "$out/env.json"
     python3 tools/perf/adapters.py fs-gate --env-json "$out/env.json" "$out"/fs-gate-*.log > "$out/fs.jsonl"

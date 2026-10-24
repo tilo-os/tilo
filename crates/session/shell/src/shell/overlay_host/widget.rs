@@ -154,6 +154,14 @@ impl Widget for ShellOverlayHost {
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
         crate::shell::settings_records::pump();
+        // Records Activity reads from disk are read off the loop; one that
+        // came in refreshes the glance and what the Activity app reads on this frame.
+        let activity_records_dirty = self.room_activity.take_persisted_reads();
+        if activity_records_dirty {
+            self.activity_refresh.invalidate();
+        }
+        self.pump_room_activity();
+        self.serve_activity();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -198,12 +206,6 @@ impl Widget for ShellOverlayHost {
         self.pump_shortcut_step_prompts();
         self.record_finished_shortcut_runs();
         steps.mark("shortcut-triggers");
-        // Records Activity reads from disk are read off the loop; one that
-        // came in refreshes the glance and the open window on this frame.
-        let activity_records_dirty = self.room_activity.take_persisted_reads();
-        if activity_records_dirty {
-            self.activity_refresh.invalidate();
-        }
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -1618,9 +1620,6 @@ impl ShellOverlayHost {
             }
         }
         if self.route_qs_pointer_capture(event, ctx.scale_factor, ctx.handled) {
-            return;
-        }
-        if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
             return;
         }
         if self.route_qs_root_scroll(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {

@@ -66,7 +66,7 @@ impl ListPane {
     fn list(&self, rows: Rows, filter: VaultFilter) -> VirtualList<Rows> {
         let requests = Rc::clone(&self.requests);
         let activate = Rc::clone(&self.requests);
-        VirtualList::with_selection_delegate(rows, 64.0, move |rows, index, id, _, _| {
+        VirtualList::with_selection_delegate(rows, 64.0, move |rows, index, id, _| {
             let Some(row) = rows.item(index) else {
                 return Box::new(ListRow::new(format!("passwords.item:{id}"), ""));
             };

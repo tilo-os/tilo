@@ -2204,7 +2204,6 @@ pub fn tile_app_kind(tile: &tilo_desktop_model::TileContent) -> ui::widget::AppK
         | tilo_desktop_model::TileContent::HostedWindow { app_id, .. } => {
             Kind::App(ui::icons::app_glyph(app_id, None))
         }
-        tilo_desktop_model::TileContent::WorkspaceActivity => Kind::Settings,
     }
 }
 

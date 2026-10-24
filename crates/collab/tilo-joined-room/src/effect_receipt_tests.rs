@@ -606,6 +606,7 @@ fn assert_archived_file_layout(path: &std::path::Path) {
     let storage: crate::NativeAuthorityStorage =
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert!(crate::publication::validate_file_layout(4, &storage).is_ok());
+    assert!(crate::publication::validate_file_layout(5, &storage).is_ok());
     assert!(crate::publication::validate_file_layout(3, &storage).is_err());
     let mut mismatched = storage.clone();
     mismatched.rooms.values_mut().next().unwrap().version = 2;

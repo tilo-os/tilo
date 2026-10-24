@@ -2184,6 +2184,7 @@ mod app_open_door;
 mod host_action_admission;
 mod host_steps;
 mod launchable;
+mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
 mod run_question;
@@ -3519,6 +3520,8 @@ pub struct CapnpBrokerState {
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
+    /// Host steps whose result stays current, while they are open.
+    live_views: live_views::LiveViews,
     // Retain result authorization even when the host has no durable journal.
     // Entries share the completed invocation cache's bounded lifetime.
     checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
@@ -4266,6 +4269,7 @@ impl CapnpBrokerState {
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
+                live_views: live_views::LiveViews::default(),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
@@ -6292,14 +6296,7 @@ impl CapnpBrokerState {
                 prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: actor.id.clone(),
-                cancellable: matches!(
-                    offered.1.contract.execution,
-                    tilo_actions::ExecutionMode::Background { cancellable: true }
-                        | tilo_actions::ExecutionMode::Streaming {
-                            cancellable: true,
-                            ..
-                        }
-                ),
+                cancellable: offered.1.contract.execution.cancellable(),
                 retryable_on_disconnect: matches!(
                     offered.1.contract.retry,
                     tilo_actions::RetryPolicy::Idempotent
@@ -6365,6 +6362,7 @@ impl CapnpBrokerState {
     /// Retire only this run's transient presence, preserving its pending jobs.
     pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         caller.retire_execution();
+        self.live_views.retire(caller);
         if let Ok(mut pending) = self.pending_invocations.lock() {
             for invocation in pending.values_mut() {
                 if invocation
@@ -6658,6 +6656,9 @@ impl CapnpBrokerState {
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
+        if let Some(update) = self.live_views.status(id, None) {
+            return Some(update);
+        }
         self.pending_invocations
             .lock()
             .ok()
@@ -6676,6 +6677,9 @@ impl CapnpBrokerState {
         owner: &InvocationOwner,
     ) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
+        if let Some(update) = self.live_views.status(id, Some(owner)) {
+            return Some(update);
+        }
         self.pending_invocations
             .lock()
             .ok()
@@ -6747,6 +6751,9 @@ impl CapnpBrokerState {
         owner: &InvocationOwner,
     ) -> Result<(), String> {
         self.expire_stale_invocations();
+        if let Some(cancelled) = self.live_views.cancel(id, Some(owner)) {
+            return cancelled;
+        }
         let mut pending = self
             .pending_invocations
             .lock()
@@ -20866,7 +20873,7 @@ fn validate_invocation_update(
         sequence, value, ..
     } = update
     {
-        let tilo_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution else {
+        let Some(item_schema) = pending.execution.item_schema() else {
             return Err(capnp::Error::failed(
                 "non-streaming action reported a streamed item".into(),
             ));

@@ -807,7 +807,16 @@ impl MailApp {
             "loading" => {
                 // A first fetch for an account with nothing kept yet.
                 let mut st = self.shared.borrow_mut();
-                st.fetching_first = true;
+                // Staged a second in, so the shot shows the rows' skeleton.
+                let fetch = first_fetch(&st.accounts.active_config());
+                let since = fetch.since();
+                let fetch = ui::arriving::ArrivalClock::new(
+                    since
+                        .checked_sub(ui::time::Duration::from_secs(1))
+                        .unwrap_or(since),
+                    fetch.source().clone(),
+                );
+                st.first_fetch = Some(fetch);
                 let ids: Vec<MessageId> = st.mailbox.messages.keys().copied().collect();
                 for id in ids {
                     st.mailbox.purge(id);
@@ -2245,7 +2254,7 @@ impl MailApp {
             st.mailbox.purge(id);
         }
         if account_id == st.accounts.active_config().email {
-            st.fetching_first = false;
+            st.first_fetch = None;
         }
         st.ingest_fetched(doc, account_id, &reflagged);
         st.ingest_fetched(doc, account_id, &synced.messages);
@@ -2438,7 +2447,7 @@ impl MailApp {
             .pending_engine_requests
             .get(&request_id)
             .map_or_else(String::new, |pending| pending.account.clone());
-        st.fetching_first = false;
+        st.first_fetch = None;
         let shown = engine_error_text(context, message, &account_id);
         if matches!(context, "connect" | "fetch") {
             // A failing account is said once, not on every refresh that
@@ -3730,7 +3739,7 @@ impl Widget for MailApp {
                     // Nothing kept for the account: its rows are on the way.
                     let mut st = self.shared.borrow_mut();
                     let nothing_kept = st.mailbox.of_account(&cfg.email).next().is_none();
-                    st.fetching_first = nothing_kept;
+                    st.first_fetch = nothing_kept.then(|| first_fetch(&cfg));
                 }
                 self.post_engine(EngineRequest::connect(cfg.clone()));
                 self.post_engine(EngineRequest::fetch(cfg, Folder::Inbox));
@@ -5492,6 +5501,15 @@ fn take_found(
     for message in fresh {
         st.mailbox.insert(message);
     }
+}
+
+/// The timing of an account's first fetch, starting now: its mail comes
+/// from the account's server.
+fn first_fetch(config: &crate::model::AccountConfig) -> ui::arriving::ArrivalClock {
+    ui::arriving::ArrivalClock::new(
+        ui::time::now(),
+        ui::arriving::Source::host(config.imap_host.clone()),
+    )
 }
 
 #[cfg(test)]

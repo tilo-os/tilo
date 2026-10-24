@@ -2,7 +2,7 @@
 //! over the sample shelf a capture shows.
 
 use ui::framework::testing::TestApp;
-use ui::framework::views::{Chip, RemoteState};
+use ui::framework::views::Chip;
 use ui::widget::Queryable as _;
 
 use super::query_view::{BOOK, PASSAGE};
@@ -113,7 +113,7 @@ fn a_search_from_inside_a_book_is_the_books_until_its_chip_is_cleared() {
             .results()
             .remote
             .iter()
-            .all(|section| section.state == RemoteState::Idle),
+            .all(|section| section.state.is_none()),
         "the store is not asked inside a book"
     );
 
@@ -164,7 +164,7 @@ fn the_store_answers_below_the_library_and_its_books_can_be_got() {
     let results = books(&mut app).query.engine.results().clone();
     let store = results.remote.first().expect("the store has its section");
     assert_eq!(store.label, crate::store::STORE_LABEL);
-    assert_eq!(store.state, RemoteState::Loaded);
+    assert!(store.is_answered());
     let got: Vec<&str> = store
         .rows()
         .filter_map(|item| item.value("title"))

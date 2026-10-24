@@ -67,12 +67,18 @@ pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
 }
 
 /// What an extension may do with the Browser's tabs, as its manifest asks:
-/// its API permissions (`tabs`, `activeTab`, `scripting`) and the sites it
-/// may read and script, which its content scripts' sites count among.
+/// its API permissions (`tabs`, `activeTab`, `scripting`), the sites it may
+/// read and script, and apart from those the sites its content scripts run
+/// on. As in Chrome, a content script's sites give no access to the tab
+/// APIs: an extension whose content scripts match every page sees no tab's
+/// address, scripts no page and captures none without asking.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Access {
     pub permissions: Vec<String>,
+    /// Its host permissions (MV2: the sites among its permissions).
     pub hosts: Vec<String>,
+    /// Where its declared content scripts run.
+    pub scriptable: Vec<String>,
     /// The token its service worker shows the engine
     /// ([`crate::extensions::prepare_tabs`]).
     pub token: Option<String>,
@@ -94,6 +100,7 @@ pub fn access(manifest: &Value) -> Access {
     let site = |entry: &String| entry == "<all_urls>" || entry.contains("://");
     let mut permissions = Vec::new();
     let mut hosts = strings(manifest.get("host_permissions"));
+    let mut scriptable = Vec::new();
     // Manifest V2 lists sites among its permissions.
     for entry in strings(manifest.get("permissions")) {
         if site(&entry) {
@@ -108,13 +115,16 @@ pub fn access(manifest: &Value) -> Access {
         .into_iter()
         .flatten()
     {
-        hosts.extend(strings(script.get("matches")));
+        scriptable.extend(strings(script.get("matches")));
     }
-    hosts.sort();
-    hosts.dedup();
+    for sites in [&mut hosts, &mut scriptable] {
+        sites.sort();
+        sites.dedup();
+    }
     Access {
         permissions,
         hosts,
+        scriptable,
         token: None,
         commands: manifest
             .get("commands")
@@ -522,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn an_extension_may_use_the_tabs_and_sites_its_manifest_asks_for() {
+    fn an_extension_has_its_host_permissions_apart_from_its_content_scripts_sites() {
         let manifest = serde_json::json!({
             "permissions": ["tabs", "scripting", "https://old.example/*"],
             "host_permissions": ["*://*.example.com/*"],
@@ -532,11 +542,8 @@ mod tests {
             access(&manifest),
             Access {
                 permissions: vec!["tabs".into(), "scripting".into()],
-                hosts: vec![
-                    "*://*.example.com/*".into(),
-                    "<all_urls>".into(),
-                    "https://old.example/*".into(),
-                ],
+                hosts: vec!["*://*.example.com/*".into(), "https://old.example/*".into()],
+                scriptable: vec!["<all_urls>".into()],
                 token: None,
                 commands: None,
             }

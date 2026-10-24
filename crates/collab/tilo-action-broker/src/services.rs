@@ -914,7 +914,35 @@ pub trait HostStepServices: Send + Sync {
         &self,
         request: &HostStepRequest<'_>,
     ) -> Result<tilo_actions::remote::Pending<HostStepOutcome>, String>;
+    /// Follow one admitted step whose contract is
+    /// [`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live): how to
+    /// read its result as it is now, and when that may have changed. The
+    /// broker reads it once at the start and again after each change, as
+    /// long as the caller follows it and may still read it.
+    ///
+    /// # Errors
+    ///
+    /// Why it cannot be followed: the arguments are malformed, or the
+    /// step has no live result.
+    fn watch(&self, request: &HostStepRequest<'_>) -> Result<LiveView, String> {
+        let _ = request;
+        Err("this step has no live result".into())
+    }
 }
+
+/// A live result a host step serves ([`HostStepServices::watch`]).
+pub struct LiveView {
+    /// The whole result as it is now. A host that reads it on a thread of
+    /// its own answers when it has; one that has it at hand answers at once
+    /// ([`Pending::ready`](tilo_actions::remote::Pending::ready)).
+    pub read: Box<dyn FnMut() -> tilo_actions::remote::Pending<LiveRead> + Send>,
+    /// Moves whenever the result may have changed. Moving without a
+    /// change costs one read whose item the caller already holds.
+    pub changes: tokio::sync::watch::Receiver<u64>,
+}
+
+/// One read of a [`LiveView`]: the result now, or why it failed for good.
+pub type LiveRead = Result<serde_json::Value, Box<tilo_actions::ActionFailure>>;
 
 pub trait ContinuationServices: Send + Sync {
     /// Reports one application instance's continuation metadata.

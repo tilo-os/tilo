@@ -10242,6 +10242,8 @@ pub fn run() {
     // What the broker asks of the person's records the session holds
     // wakes the loop, which runs it.
     crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
+    // So do the reads and writes apps ask of the workspace activity model.
+    crate::shell::activity_provider::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.
@@ -14147,7 +14149,8 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
-                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    if animation_demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0
+                        && animating_content_leaves.is_empty()
                     {
                         animating_content_leaves = frame_builder.content_animating_leaves();
                     }

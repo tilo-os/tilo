@@ -913,8 +913,7 @@ impl PdfApp {
         }
         // End an image-region marquee: crop + copy the region.
         if self.region.is_some() {
-            self.copy_region();
-            self.region = None;
+            self.release_region();
             *handled = true;
             return;
         }

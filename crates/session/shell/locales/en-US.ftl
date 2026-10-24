@@ -552,6 +552,25 @@ topbar-clocks-notification-body = Time is up
 
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
+host-activity-workspace-not-shown = Switch to this workspace to change its history.
+host-activity-personal-only = Only the person at this device can do this.
+host-activity-action-feed = Read history
+host-activity-action-summary = Read what's new
+host-activity-action-replay = Replay layout
+host-activity-action-detail = Read changes
+host-activity-action-focus = Read what to show
+host-activity-action-mark-viewed = Mark as viewed
+host-activity-action-focused = Say what was shown
+host-activity-action-name = Name changes
+host-activity-action-split = Split work group
+host-activity-action-merge = Merge work groups
+host-activity-action-move-boundary = Move work session boundary
+host-activity-action-undo = Undo changes
+host-activity-action-restore = Restore to before
+host-activity-action-undo-run = Undo agent task
+host-activity-action-open = Open
+host-activity-action-choose-source = Choose morning source
+host-activity-action-source = Use morning source
 host-activity-working-in = Working in { $app }
 host-activity-editing = Editing shared content
 host-activity-organizing = Organizing shared content
@@ -1420,8 +1439,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = { $app } · contains resources
-search-app-action-launches = { $resource } · { $app } · launches application
+search-app-resource-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo

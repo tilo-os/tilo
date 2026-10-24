@@ -3,7 +3,6 @@ shortcuts-runs-empty = Runs you start appear here.
 shortcuts-edit = Edit
 shortcuts-run = Run
 shortcuts-delete = Delete
-shortcuts-loading = Reading your shortcuts…
 shortcuts-library-unavailable = Saved shortcuts are not available here
 shortcuts-saved-empty = No shortcuts yet
 shortcuts-saved-empty-draft = Describe one above and the agent drafts it for you.

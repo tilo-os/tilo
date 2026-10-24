@@ -118,6 +118,7 @@ pub use action_locus::{ActionUiRoute, PaintedActionMarker};
 pub mod action_palette;
 pub mod agent_identity;
 pub mod animation;
+pub mod arriving;
 pub mod author;
 pub mod content_zoom;
 pub mod motion;
@@ -356,6 +357,7 @@ pub use winit;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use app::{App, local_surface_id};
+pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
     KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, RowMotion, RowMotions, TransitionVisual,
@@ -393,7 +395,7 @@ pub use record::{
     RecordCheckout, RecordId, RecordKind, RecordRef, RecordRefusal, RecordSet, RecordStore,
 };
 pub use remote_actions::{
-    CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
+    CancellationCall, CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard,
 };
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,

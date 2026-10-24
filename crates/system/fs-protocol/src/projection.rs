@@ -474,6 +474,12 @@ pub struct AvailabilityProjectionV1 {
     pub freshness: ProjectedFreshness,
 }
 
+/// The [`ProjectedTransfer::last_error`] of a file whose bytes no device
+/// delivered: a fetch, or a read that waited its bound, found no peer that
+/// had them. Files shows such a file as unavailable until a device that
+/// keeps it is back online.
+pub const NO_PEER_DELIVERED_ERROR: &str = "No available replica could provide this file";
+
 /// Bounded transfer status for the xattr/UI boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -551,6 +557,14 @@ impl AvailabilityProjectionV1 {
     /// At least one durable replica acknowledged the current version.
     pub fn safely_replicated(&self) -> bool {
         matches!(self.replicas, ProjectedReplicaEvidence::Known { durable, .. } if durable > 0)
+    }
+
+    /// Bytes of the current payload are missing here and no device
+    /// delivered them when they were last asked for: the device that keeps
+    /// the file is offline, so opening it would fail.
+    pub fn unavailable(&self) -> bool {
+        !matches!(self.residency, Residency::Resident { .. })
+            && self.transfer.last_error.as_deref() == Some(NO_PEER_DELIVERED_ERROR)
     }
 }
 

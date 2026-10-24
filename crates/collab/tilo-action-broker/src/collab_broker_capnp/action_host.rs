@@ -2998,6 +2998,9 @@ impl CapnpBrokerState {
         let job = self
             .remote_job(caller, id)
             .ok_or(ActionHostError::UnknownInvocation)?;
+        if let Some(cancelled) = self.live_views.cancel(job, None) {
+            return cancelled.map_err(|reason| ActionHostError::NotCancellable { reason });
+        }
         self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
             .map_err(|reason| ActionHostError::NotCancellable { reason })
     }

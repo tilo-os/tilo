@@ -66,7 +66,12 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
             assert event['event'] != 'context_menu', event
             return event['event']=='zoom'
         until(still_alive,timeout=5)
-        send(op='shutdown'); assert p.wait(timeout=15)==0
+        # Closed with a menu still open (a window closed over it): the host
+        # answers the menu and exits cleanly.
+        send(op='mouse_button',button='right',down=True,x=300,y=300)
+        send(op='mouse_button',button='right',down=False,x=300,y=300)
+        until(lambda e:e['event']=='context_menu',timeout=5)
+        send(op='shutdown'); code=p.wait(timeout=15); assert code==0, f'the host exited with {code}'
         print('PASS: native link context target and action')
     finally:
         if p.poll() is None: p.kill();p.wait()

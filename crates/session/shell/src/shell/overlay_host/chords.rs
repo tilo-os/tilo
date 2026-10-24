@@ -196,13 +196,11 @@ impl ShellOverlayHost {
                 *handled = true;
                 return true;
             }
-            if shift_down {
-                self.room_activity
-                    .set_view(crate::shell::room_activity::ActivityView::Explore);
+            self.room_activity.focus_view(if shift_down {
+                crate::shell::room_activity::ActivityView::Explore
             } else {
-                self.room_activity
-                    .set_view(crate::shell::room_activity::ActivityView::CatchUp);
-            }
+                crate::shell::room_activity::ActivityView::CatchUp
+            });
             let mut st = chrome.borrow_mut();
             st.open_room_activity(None);
             *handled = true;

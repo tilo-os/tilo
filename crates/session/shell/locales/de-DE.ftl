@@ -551,6 +551,25 @@ topbar-clocks-notification-body = Die Zeit ist abgelaufen
 
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
+host-activity-workspace-not-shown = Wechsle zu diesem Arbeitsbereich, um seinen Verlauf zu ändern.
+host-activity-personal-only = Das kann nur die Person an diesem Gerät.
+host-activity-action-feed = Verlauf lesen
+host-activity-action-summary = Neues lesen
+host-activity-action-replay = Layout abspielen
+host-activity-action-detail = Änderungen lesen
+host-activity-action-focus = Lesen, was gezeigt werden soll
+host-activity-action-mark-viewed = Als gesehen markieren
+host-activity-action-focused = Melden, was gezeigt wurde
+host-activity-action-name = Änderungen benennen
+host-activity-action-split = Arbeitsgruppe teilen
+host-activity-action-merge = Arbeitsgruppen zusammenführen
+host-activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
+host-activity-action-undo = Änderungen rückgängig machen
+host-activity-action-restore = Auf den Stand davor zurücksetzen
+host-activity-action-undo-run = Agentenaufgabe rückgängig machen
+host-activity-action-open = Öffnen
+host-activity-action-choose-source = Morgenquelle wählen
+host-activity-action-source = Morgenquelle verwenden
 host-activity-working-in = Arbeitet in { $app }
 host-activity-editing = Bearbeitet gemeinsame Inhalte
 host-activity-organizing = Ordnet gemeinsame Inhalte
@@ -1400,8 +1419,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = { $app } · enthält Ressourcen
-search-app-action-launches = { $resource } · { $app } · startet die Anwendung
+search-app-resource-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden

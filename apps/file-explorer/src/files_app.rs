@@ -4472,7 +4472,12 @@ impl FileExplorerWidget {
                             )
                         }
                     };
-                    let transfer = availability.transfer.last_error.clone().unwrap_or_else(|| {
+                    let transfer = if availability.unavailable() {
+                        Some(t("files-unavailable-offline"))
+                    } else {
+                        availability.transfer.last_error.clone()
+                    };
+                    let transfer = transfer.unwrap_or_else(|| {
                         t_args(
                             "files-transfer-state",
                             &[arg(

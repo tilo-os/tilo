@@ -36,8 +36,10 @@ const CNG_MAX_FRAMES = 25;
 const QUIET_PEAK = 0.01;
 const TRIM_EXCESS_FRAMES = 1.5;
 // A publisher whose frames keep arriving too late to play, with nothing
-// queued, for this many frames (100 ms) is heard again from its newest one.
+// queued, for this long (100 ms of arrivals, at least 5 frames) is heard
+// again from its newest one.
 const RESYNC_LATE_FRAMES = 5;
+const RESYNC_LATE_SAMPLES = 4_800;
 // Speaking levels: the RMS of the captured input and of each publisher's
 // played audio, posted every LEVEL_SAMPLES (100 ms).
 const LEVEL_SAMPLES = 4_800;
@@ -142,6 +144,7 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
         lastEnd: null,
         energy: 0,
         lateRun: 0,
+        lateSince: 0n,
       };
       this.publishers.set(message.publisherId, publisher);
     }
@@ -218,15 +221,17 @@ class VoiceAudioProcessor extends AudioWorkletProcessor {
     publisher.lateRun = 0;
   }
 
-  // A frame too late for its slot with nothing queued: one late frame is
-  // dropped, but a run of them means the sender's clock fell behind (its
-  // audio context paused while it was frozen, suspended or had no input), so
-  // every later frame would be as late. Start this publisher's timeline over
-  // from the frame instead of dropping its voice for good. Returns whether
-  // the frame plays.
+  // A frame too late for its slot with nothing queued is dropped. Late
+  // frames that keep arriving at their pace mean the sender's clock fell
+  // behind (its audio context paused while it was frozen, suspended or had
+  // no input), so every later frame would be as late: this publisher's
+  // timeline starts over from the frame instead of dropping its voice for
+  // good. A backlog arriving at once (a sender that stalled, then sent what
+  // it held) is dropped, and the frames after it play on time. Returns
+  // whether the frame plays.
   lateTimeline(publisher, message, reservedSamples) {
-    publisher.lateRun++;
-    if (publisher.lateRun < RESYNC_LATE_FRAMES) {
+    if (publisher.lateRun++ === 0) publisher.lateSince = this.renderTimestamp;
+    if (publisher.lateRun < RESYNC_LATE_FRAMES || this.renderTimestamp - publisher.lateSince < BigInt(RESYNC_LATE_SAMPLES)) {
       this.drop(message, 'playback-expired', reservedSamples);
       return false;
     }

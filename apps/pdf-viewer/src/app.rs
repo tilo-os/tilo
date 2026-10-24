@@ -625,6 +625,9 @@ pub struct PdfApp {
     interaction: ui::interaction::InteractionEnvironment,
     /// A live image-region marquee (Shift + Select drag), if any.
     region: Option<RegionSelect>,
+    /// A released marquee whose crop waits for its page's render, with the
+    /// document it was drawn on: copied when the render arrives.
+    region_waiting: Option<(u64, RegionSelect)>,
     /// Whether Shift is currently held (drives the region-copy marquee).
     shift_down: bool,
 
@@ -1112,6 +1115,7 @@ impl PdfApp {
             glide: ui::ScrollMomentum::new(),
             interaction: ui::interaction::InteractionEnvironment::default(),
             region: None,
+            region_waiting: None,
             shift_down: false,
             source_path: None,
             status_note: Transient::new(),
@@ -1332,8 +1336,9 @@ impl PdfApp {
             return;
         };
         if let Err(error) = record.invoke(invoke) {
+            tracing::warn!(%error, "keeping the person's signature failed");
             self.status_note
-                .show(format!("Your signature was not kept: {error}"));
+                .show(crate::t("pdf-note-signature-not-kept"));
             self.dirty = true;
         }
     }
@@ -1505,10 +1510,7 @@ impl PdfApp {
                 ));
             }
             Some(pinned) if pinned.hash != hash => {
-                self.status_note.show(
-                    "This file has changed since its markup was made; annotations may not line up"
-                        .to_string(),
-                );
+                self.status_note.show(crate::t("pdf-note-source-changed"));
             }
             _ => {}
         }
@@ -2076,20 +2078,13 @@ impl PdfApp {
                 .find(|state| **state != ContentState::Resolved)
                 .copied();
             if needs_reconcile && let Some(missing) = missing {
-                self.status_note.show(
-                    match missing {
-                        ContentState::Pending => {
-                            "Imported page content is arriving from collaborators"
-                        }
-                        ContentState::Waiting => {
-                            "Imported page content arrives once a collaborator who has it is online"
-                        }
-                        ContentState::Resolved | ContentState::Unavailable => {
-                            "Imported page content is unavailable on this device"
-                        }
+                self.status_note.show(crate::t(match missing {
+                    ContentState::Pending => "pdf-note-imported-arriving",
+                    ContentState::Waiting => "pdf-note-imported-waiting",
+                    ContentState::Resolved | ContentState::Unavailable => {
+                        "pdf-note-imported-unavailable"
                     }
-                    .into(),
-                );
+                }));
                 self.worker_plan_blobs = blobs;
             } else if needs_reconcile {
                 let request = ReconcileRequest {
@@ -2105,7 +2100,7 @@ impl PdfApp {
                     self.worker_plan_blobs = blobs;
                 } else {
                     self.status_note
-                        .show("PDF page-plan worker is unavailable".to_string());
+                        .show(crate::t("pdf-note-pages-unavailable"));
                 }
             }
             self.doc.pages = (1..=plan.len())
@@ -2123,16 +2118,14 @@ impl PdfApp {
                     blocks: Vec::new(),
                 })
                 .collect();
-            self.status_note
-                .show("Imported pages are unavailable until a PDF renderer is available".into());
+            self.status_note.show(crate::t("pdf-note-imported-unshown"));
         } else {
             let Some(mut pages) = sources
                 .iter()
                 .map(|source| self.source_pages.get(source - 1).cloned())
                 .collect::<Option<Vec<_>>>()
             else {
-                self.status_note
-                    .show("Shared page plan needs source pages unavailable on this device".into());
+                self.status_note.show(crate::t("pdf-note-pages-missing"));
                 return;
             };
             for (index, page) in pages.iter_mut().enumerate() {
@@ -2182,14 +2175,13 @@ impl PdfApp {
         ) -> Result<ImportRequest, crate::source::RasterSubmitError>,
     ) -> bool {
         if self.pending_import.is_some() {
-            self.status_note
-                .show("Another page import is already in progress".to_string());
+            self.status_note.show(crate::t("pdf-note-import-busy"));
             self.dirty = true;
             return false;
         }
         let Some(document) = self.raster_document.as_ref() else {
             self.status_note
-                .show("Importing pages needs the PDF worker".to_string());
+                .show(crate::t("pdf-note-import-unavailable"));
             self.dirty = true;
             return false;
         };
@@ -2205,12 +2197,13 @@ impl PdfApp {
             Ok(request) => {
                 self.pending_import = Some(request);
                 self.status_note
-                    .show_progress("Preparing pages for shared import…".to_string());
+                    .show_progress(crate::t("pdf-note-importing"));
                 self.dirty = true;
                 true
             }
             Err(error) => {
-                self.status_note.show(format!("Import failed: {error}"));
+                tracing::warn!(%error, "submitting a page import failed");
+                self.status_note.show(crate::t("pdf-note-import-failed"));
                 self.dirty = true;
                 false
             }
@@ -2220,7 +2213,7 @@ impl PdfApp {
     fn request_import_via_portal(&mut self) {
         if !self.raster_active() {
             self.status_note
-                .show("Importing pages needs an open PDF".to_string());
+                .show(crate::t("pdf-note-import-no-document"));
             self.dirty = true;
             return;
         }
@@ -2246,8 +2239,9 @@ impl PdfApp {
                     }
                     ContentsOutcome::Cancelled => {}
                     ContentsOutcome::Failed(reason) => {
+                        tracing::warn!(%reason, "the import picker failed");
                         self.status_note
-                            .show(format!("Couldn't open the import dialog: {reason}"));
+                            .show(crate::t("pdf-note-import-picker-failed"));
                         self.dirty = true;
                     }
                 }
@@ -2305,8 +2299,7 @@ impl PdfApp {
                     })
                 {
                     self.raster_text_pending.remove(&page);
-                    self.status_note
-                        .show("PDF text worker is unavailable".to_string());
+                    self.status_note.show(crate::t("pdf-note-text-unavailable"));
                 }
             }
             self.matches.clear();
@@ -2322,7 +2315,7 @@ impl PdfApp {
             // A scanned PDF is pictures of pages: its words can be seen but
             // not found. Say so instead of a bare "0 of 0".
             if hits.is_empty() && !query.trim().is_empty() && self.document_has_no_text() {
-                self.status_note.show(NO_TEXT_NOTE.to_string());
+                self.status_note.show(crate::t("pdf-note-no-text"));
             }
             self.raster_matches = hits;
             if let Some(hit) = self.raster_matches.first() {
@@ -2398,24 +2391,22 @@ impl PdfApp {
             // source document may have changed.  Refuse to rebind a stale
             // ordinal and leave an actionable status rather than navigating to
             // a potentially unrelated match.
-            self.status_note
-                .show("Find result is no longer available".into());
+            self.status_note.show(crate::t("pdf-note-find-result-gone"));
         }
         self.dirty = true;
     }
 
-    /// Crop the active image-region marquee out of its page bitmap and copy it
-    /// to the clipboard as an image. Raster backend only. Returns true when a
-    /// region of usable size was cropped (the clipboard push itself is
-    /// best-effort — it silently no-ops in a headless session).
-    fn copy_region(&mut self) -> bool {
-        let Some(region) = self.region else {
-            return false;
-        };
-        let rect = region.rect();
-        if rect.w < 3.0 || rect.h < 3.0 {
-            return false;
-        }
+    /// End the image-region marquee: crop it and copy it to the clipboard,
+    /// now or, when its page is still being rendered for the crop, as soon
+    /// as the render arrives. Whether it was copied now.
+    fn release_region(&mut self) -> bool {
+        self.region
+            .take()
+            .is_some_and(|region| self.copy_region(region))
+    }
+
+    /// The page bitmap a crop of `region` is cut from, and the page's size.
+    fn region_source(&self, region: RegionSelect) -> ((usize, u32), (f64, f64)) {
         let page_idx = region.page.saturating_sub(1);
         let (pgw, pgh) = self
             .raster_document
@@ -2423,24 +2414,48 @@ impl PdfApp {
             .and_then(|document| document.page_sizes.get(page_idx).copied())
             .unwrap_or_else(|| (self.pw(), self.ph()));
         let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
-        let image_key = (page_idx, crate::source::RasterBackend::bucket_for(bucket));
+        (
+            (page_idx, crate::source::RasterBackend::bucket_for(bucket)),
+            (pgw, pgh),
+        )
+    }
+
+    /// Crop `region` out of its page bitmap and copy it to the clipboard as
+    /// an image. Raster backend only. Returns true when a region of usable
+    /// size was cropped (the clipboard push itself is best-effort — it
+    /// silently no-ops in a headless session). A page not rendered for the
+    /// crop yet is asked for, and the copy waits for it
+    /// ([`Self::copy_waiting_region`]).
+    fn copy_region(&mut self, region: RegionSelect) -> bool {
+        let rect = region.rect();
+        if rect.w < 3.0 || rect.h < 3.0 {
+            return false;
+        }
+        let (image_key, (pgw, pgh)) = self.region_source(region);
         let Some(image) = self.raster_images.get(&image_key) else {
-            if let Some(document) = self.raster_document.as_ref()
-                && self.raster_render_pending.insert(image_key)
-                && !self.raster_handle.as_ref().is_some_and(|handle| {
-                    handle
-                        .request_render(RenderRequest {
-                            document_id: document.id,
-                            page: page_idx,
-                            target_width: bucket,
-                        })
-                        .is_ok()
-                })
-            {
-                self.raster_render_pending.remove(&image_key);
+            let Some(document) = self.raster_document.as_ref() else {
+                return false;
+            };
+            let document_id = document.id;
+            // Asked for on its own, outside the frame's render batch, so a
+            // batch that moves on with the view never cancels it.
+            let asked = self.raster_handle.as_ref().is_some_and(|handle| {
+                handle
+                    .request_render(RenderRequest {
+                        document_id,
+                        page: image_key.0,
+                        target_width: image_key.1,
+                    })
+                    .is_ok()
+            });
+            if asked {
+                self.region_waiting = Some((document_id, region));
+                self.status_note
+                    .show_progress(crate::t("pdf-note-copying-area"));
+            } else {
+                self.status_note
+                    .show(crate::t("pdf-note-pages-unavailable"));
             }
-            self.status_note
-                .show("Rendering selected region…".to_string());
             self.dirty = true;
             return false;
         };
@@ -2450,13 +2465,37 @@ impl PdfApp {
         let copied = self
             .region_copy
             .watch(ui::clipboard_copy_image(width, height, &rgba));
-        self.status_note.show(if copied {
-            format!("Copied a {width}×{height} image region")
+        self.status_note.show(crate::t(if copied {
+            "pdf-note-copied-area"
         } else {
-            "Selected a region (clipboard unavailable)".to_string()
-        });
+            "pdf-note-area-not-copied"
+        }));
         self.dirty = true;
         true
+    }
+
+    /// Copy a released marquee whose page render has arrived. One whose
+    /// document was replaced is dropped; one whose render failed was
+    /// dropped with the failure, which says so itself.
+    fn copy_waiting_region(&mut self) {
+        let Some((document_id, region)) = self.region_waiting else {
+            return;
+        };
+        if self
+            .raster_document
+            .as_ref()
+            .is_none_or(|document| document.id != document_id)
+        {
+            // Its progress note goes on the next sync (`keep_while`).
+            self.region_waiting = None;
+            self.dirty = true;
+        } else if self
+            .raster_images
+            .contains_key(&self.region_source(region).0)
+        {
+            self.region_waiting = None;
+            self.copy_region(region);
+        }
     }
 
     // ---- save-back (flatten markup onto a real .pdf) ----------------
@@ -2478,8 +2517,7 @@ impl PdfApp {
     fn request_save_via_portal(&mut self) {
         // Saving exports through the PDF engine; without an open PDF there is nothing to save.
         if !self.raster_active() {
-            self.status_note
-                .show("Saving annotations needs an open PDF".to_string());
+            self.status_note.show(crate::t("pdf-note-save-no-document"));
             self.dirty = true;
             return;
         }
@@ -2579,8 +2617,9 @@ impl PdfApp {
                     }
                     DestinationOutcome::Cancelled => self.finish_portal_action(false, None),
                     DestinationOutcome::Failed(reason) => {
+                        tracing::warn!(%reason, "the save picker failed");
                         self.status_note
-                            .show(format!("Couldn't save the PDF: {reason}"));
+                            .show(crate::t("pdf-note-save-picker-failed"));
                         self.dirty = true;
                         self.finish_portal_action(false, Some(reason));
                     }
@@ -2611,14 +2650,14 @@ impl PdfApp {
         };
         match outcome {
             ui::portal::SaveOutcome::Saved => {
-                self.status_note
-                    .show(format!("Saved annotated PDF to {name}"));
+                self.status_note.show(saved_note(&name));
                 self.pages_dirty = false;
                 self.finish_portal_action(true, None);
             }
             ui::portal::SaveOutcome::Cancelled => self.finish_portal_action(false, None),
             ui::portal::SaveOutcome::Failed(reason) => {
-                self.status_note.show(format!("Save failed: {reason}"));
+                tracing::warn!(%reason, "writing the saved PDF failed");
+                self.status_note.show(save_failed_note(&name));
                 self.finish_portal_action(false, Some(reason));
             }
         }
@@ -2636,20 +2675,20 @@ impl PdfApp {
     fn submit_save(&mut self, path: &std::path::Path, deliver: bool) -> bool {
         if self.pending_worker_plan.is_some() {
             self.status_note
-                .show("Waiting for the shared page plan before saving".to_string());
+                .show(crate::t("pdf-note-save-waiting-pages"));
             self.dirty = true;
             return false;
         }
         let Some(document) = self.raster_document.as_ref() else {
-            self.status_note
-                .show("Saving annotations needs the PDF worker".to_string());
+            self.status_note.show(save_failed_note(&display_name(path)));
             self.dirty = true;
             return false;
         };
         let id = match crate::source::next_worker_request_id() {
             Ok(id) => id,
             Err(error) => {
-                self.status_note.show(format!("Save failed: {error}"));
+                tracing::warn!(%error, "submitting a save failed");
+                self.status_note.show(save_failed_note(&display_name(path)));
                 self.dirty = true;
                 return false;
             }
@@ -2672,12 +2711,16 @@ impl PdfApp {
             }) {
             Ok(()) => {
                 self.pending_save = Some(request);
-                self.status_note.show("Saving annotated PDF…".to_string());
+                self.status_note.show_progress(crate::t_args(
+                    "pdf-note-saving",
+                    &[("name", display_name(path).into())],
+                ));
                 self.dirty = true;
                 true
             }
             Err(error) => {
-                self.status_note.show(format!("Save failed: {error}"));
+                tracing::warn!(%error, "submitting a save failed");
+                self.status_note.show(save_failed_note(&display_name(path)));
                 self.dirty = true;
                 false
             }
@@ -3031,8 +3074,7 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.focus_sidebar(SidebarTab::Signatures, id.to_owned());
             } else {
-                self.status_note
-                    .show("That is no longer in this document".to_owned());
+                self.status_note.show(crate::t("pdf-note-item-gone"));
             }
             self.dirty = true;
         }
@@ -3095,7 +3137,7 @@ impl PdfApp {
         // first (or switch to a typed signature).
         let Some(ink) = self.composed_ink() else {
             self.status_note
-                .show("Draw your signature first, then click a page".to_string());
+                .show(crate::t("pdf-note-signature-draw-first"));
             self.dirty = true;
             return;
         };
@@ -3103,7 +3145,7 @@ impl PdfApp {
             // A signature names its signer: ask for the name rather than
             // stamping a nameless one.
             self.status_note
-                .show("Type your name under Signatures, then click a page".to_string());
+                .show(crate::t("pdf-note-signature-name-first"));
             self.begin_edit(EditTarget::Signer, "");
             self.dirty = true;
             return;
@@ -3214,7 +3256,10 @@ impl PdfApp {
     /// a radio button, or step a choice field to its next option.
     fn activate_field(&mut self, state: &mut ui::widget::Edits<'_>, w: &FieldWidgetHit) {
         if w.read_only {
-            self.status_note.show(format!("“{}” is read-only", w.name));
+            self.status_note.show(crate::t_args(
+                "pdf-note-field-read-only",
+                &[("field", w.name.as_str().into())],
+            ));
             self.dirty = true;
             return;
         }
@@ -3352,8 +3397,7 @@ impl PdfApp {
         match &link.target {
             crate::source::LinkTarget::Page { page, at } => {
                 let Some(target) = self.link_destination_page(from, *page) else {
-                    self.status_note
-                        .show("The page this link points to is no longer in the document".into());
+                    self.status_note.show(crate::t("pdf-note-link-page-gone"));
                     self.dirty = true;
                     return;
                 };
@@ -3373,20 +3417,25 @@ impl PdfApp {
                     .split_once(':')
                     .map(|(scheme, _)| scheme.to_ascii_lowercase());
                 if matches!(scheme.as_deref(), Some("http" | "https" | "mailto")) {
+                    let key = match ui::widget::try_open_external_url(uri) {
+                        Ok(()) => "pdf-note-link-opening",
+                        Err(_) => "pdf-note-link-failed",
+                    };
                     self.status_note
-                        .show(match ui::widget::try_open_external_url(uri) {
-                            Ok(()) => format!("Opening {uri}"),
-                            Err(error) => format!("Couldn't open {uri}: {error}"),
-                        });
+                        .show(crate::t_args(key, &[("address", uri.as_str().into())]));
                 } else {
-                    self.status_note
-                        .show(format!("Links like {uri} are not opened"));
+                    self.status_note.show(crate::t_args(
+                        "pdf-note-link-unsupported",
+                        &[("address", uri.as_str().into())],
+                    ));
                 }
                 self.dirty = true;
             }
             crate::source::LinkTarget::File(path) => {
-                self.status_note
-                    .show(format!("Links to other files are not opened ({path})"));
+                self.status_note.show(crate::t_args(
+                    "pdf-note-link-file",
+                    &[("path", path.as_str().into())],
+                ));
                 self.dirty = true;
             }
         }
@@ -3851,11 +3900,13 @@ impl PdfApp {
                     .map(|name| name.to_string_lossy().into_owned())
             });
         match shown {
-            Some(shown) => format!(
-                "This window shows {shown} and its markup. Open {name} in a new PDF Viewer window."
+            Some(shown) => crate::t_args(
+                "pdf-note-open-in-new-window",
+                &[("shown", shown.into()), ("name", name.into())],
             ),
-            None => format!(
-                "This window keeps its document's markup. Open {name} in a new PDF Viewer window."
+            None => crate::t_args(
+                "pdf-note-open-in-new-window-unnamed",
+                &[("name", name.into())],
             ),
         }
     }
@@ -3889,7 +3940,7 @@ impl PdfApp {
         };
         let outcome = open_here.open(&[path.display().to_string()]);
         self.pending_reopen = Some((path.to_path_buf(), outcome));
-        self.status_note.show("Opening PDF…".to_string());
+        self.status_note.show_progress(crate::t("pdf-note-opening"));
         self.dirty = true;
         true
     }
@@ -4008,14 +4059,14 @@ impl PdfApp {
 
     fn begin_open(&mut self, request: OpenRequest) {
         self.pending_open = Some(request);
-        self.status_note.show("Opening PDF…".to_string());
+        self.status_note.show_progress(crate::t("pdf-note-opening"));
         self.dirty = true;
     }
 
     fn record_open_failure(&mut self, path: &std::path::Path, error: &str) {
         let error = format!("Could not open {}: {error}", path.display());
         if self.has_document {
-            self.status_note.show(error);
+            self.status_note.show(open_failed_note(path));
         } else {
             self.load_error = Some(error);
         }
@@ -4105,8 +4156,9 @@ impl PdfApp {
                     if let Some(handle) = self.raster_handle.as_ref()
                         && let Err(error) = handle.activate_document(request.id)
                     {
+                        tracing::warn!(%error, "activating the opened PDF failed");
                         self.status_note
-                            .show(format!("PDF source activation failed: {error}"));
+                            .show(crate::t("pdf-note-pages-unavailable"));
                     }
                     self.finish_portal_action(true, None);
                 }
@@ -4183,9 +4235,17 @@ impl PdfApp {
                         crate::source::RasterBackend::bucket_for(request.target_width),
                     );
                     self.raster_render_pending.remove(&key);
-                    self.status_note.show(format!(
-                        "Couldn’t render page {}: {error}",
-                        request.page + 1
+                    // A marquee waiting for this render is not copied.
+                    if self
+                        .region_waiting
+                        .is_some_and(|(_, region)| self.region_source(region).0 == key)
+                    {
+                        self.region_waiting = None;
+                    }
+                    tracing::warn!(%error, page = request.page + 1, "rendering a page failed");
+                    self.status_note.show(crate::t_args(
+                        "pdf-note-page-not-shown",
+                        &[("page", (request.page + 1).into())],
                     ));
                     self.dirty = true;
                 }
@@ -4269,7 +4329,11 @@ impl PdfApp {
                     self.raster_text_batch.retain(|page| *page != request.page);
                     let why = format!("Couldn’t read text on page {}: {error}", request.page + 1);
                     self.text_failed(request.page + 1, &why);
-                    self.status_note.show(why);
+                    tracing::warn!(%error, page = request.page + 1, "reading a page's text failed");
+                    self.status_note.show(crate::t_args(
+                        "pdf-note-page-text-unread",
+                        &[("page", (request.page + 1).into())],
+                    ));
                     self.dirty = true;
                 }
                 RasterEvent::Reconciled {
@@ -4312,8 +4376,9 @@ impl PdfApp {
                         && self.pending_worker_plan.as_ref() == Some(&request.plan) =>
                 {
                     self.pending_worker_plan = None;
+                    tracing::warn!(%error, "applying the shared page plan failed");
                     self.status_note
-                        .show(format!("Couldn’t apply shared page plan: {error}"));
+                        .show(crate::t("pdf-note-pages-not-arranged"));
                     self.dirty = true;
                 }
                 RasterEvent::Imported {
@@ -4328,6 +4393,7 @@ impl PdfApp {
                     && self.pending_import.as_ref() == Some(&request) =>
                 {
                     let pages_before = self.doc.page_count();
+                    let imported = sizes.len();
                     let pages = sizes
                         .into_iter()
                         .enumerate()
@@ -4351,10 +4417,10 @@ impl PdfApp {
                     ));
                     self.reconcile_shared_page_plan(state);
                     self.go_to_page(request.at + 1);
-                    self.status_note.show(
-                        "Imported pages are shared with collaborators; Save exports a flattened PDF"
-                            .into(),
-                    );
+                    self.status_note.show(crate::t_args(
+                        "pdf-note-imported",
+                        &[("count", imported.into())],
+                    ));
                     self.pages_dirty = self.doc.page_count() != pages_before;
                     self.dirty = true;
                 }
@@ -4362,7 +4428,8 @@ impl PdfApp {
                     if self.pending_import.as_ref() == Some(&request) =>
                 {
                     self.pending_import = None;
-                    self.status_note.show(format!("Import failed: {error}"));
+                    tracing::warn!(%error, "importing pages failed");
+                    self.status_note.show(crate::t("pdf-note-import-failed"));
                     self.dirty = true;
                 }
                 RasterEvent::SavePrepared { request, temporary }
@@ -4383,7 +4450,9 @@ impl PdfApp {
                         })
                     {
                         self.pending_save = None;
-                        self.status_note.show(format!("Save failed: {error}"));
+                        tracing::warn!(%error, "committing the saved PDF failed");
+                        self.status_note
+                            .show(save_failed_note(&display_name(&request.path)));
                         self.dirty = true;
                         self.finish_portal_action(false, Some(error));
                     }
@@ -4396,13 +4465,8 @@ impl PdfApp {
                         && self.pending_save.as_ref() == Some(&request) =>
                 {
                     self.pending_save = None;
-                    let name = request
-                        .path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("the file");
                     self.status_note
-                        .show(format!("Saved annotated PDF to {name}"));
+                        .show(saved_note(&display_name(&request.path)));
                     self.pages_dirty = false;
                     self.dirty = true;
                     self.finish_portal_action(true, None);
@@ -4427,7 +4491,9 @@ impl PdfApp {
                 {
                     self.save_destination = None;
                     self.pending_save = None;
-                    self.status_note.show(format!("Save failed: {error}"));
+                    tracing::warn!(%error, "saving the PDF failed");
+                    self.status_note
+                        .show(save_failed_note(&display_name(&request.path)));
                     self.dirty = true;
                     self.finish_portal_action(false, Some(error));
                 }
@@ -4449,8 +4515,9 @@ impl PdfApp {
                         .as_ref()
                         .is_some_and(|document| document.id == document_id) =>
                 {
+                    tracing::warn!(%error, "reading the PDF's own markup failed");
                     self.status_note
-                        .show(format!("Could not read the PDF's markup: {error}"));
+                        .show(crate::t("pdf-note-existing-markup-unread"));
                     self.dirty = true;
                 }
                 _ => {}
@@ -4487,6 +4554,34 @@ impl Default for PdfApp {
     }
 }
 
+/// A file's name as the person knows it, from its path.
+fn display_name(path: &std::path::Path) -> String {
+    path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// What the reader says once a copy with the markup is saved as `name`.
+fn saved_note(name: &str) -> String {
+    crate::t_args("pdf-note-saved", &[("name", name.into())])
+}
+
+/// What the reader says when the copy named `name` could not be saved.
+/// Why is the save effect's answer; the person is told what to do.
+fn save_failed_note(name: &str) -> String {
+    crate::t_args("pdf-note-save-failed", &[("name", name.into())])
+}
+
+/// What the reader says when the file at `path` could not be opened over a
+/// document it keeps showing.
+fn open_failed_note(path: &std::path::Path) -> String {
+    crate::t_args(
+        "pdf-note-open-failed",
+        &[("name", display_name(path).into())],
+    )
+}
+
 /// Ensure a chosen save path ends in `.pdf` (some portals return a name
 /// without the extension when the user typed it bare).
 fn ensure_pdf_extension(path: std::path::PathBuf) -> std::path::PathBuf {
@@ -4515,13 +4610,19 @@ impl Widget for PdfApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // A progress note stays while its copy or import is under way.
-        let working = self.pending_copy || self.pending_import.is_some();
+        // So does one while a document opens or a save is written.
+        let working = self.pending_copy
+            || self.pending_import.is_some()
+            || self.region_waiting.is_some()
+            || self.pending_open.is_some()
+            || self.pending_reopen.is_some()
+            || self.pending_save.is_some()
+            || self.save_write_rx.is_some();
         if self.status_note.keep_while(working) | self.status_note.expire() {
             self.dirty = true;
         }
         if self.region_copy.failed() {
-            self.status_note
-                .show("Selected a region (clipboard unavailable)".to_string());
+            self.status_note.show(crate::t("pdf-note-area-not-copied"));
             self.dirty = true;
         }
         let (state, _) = ui::doc::document_ref(state, path);
@@ -4536,6 +4637,7 @@ impl Widget for PdfApp {
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        self.copy_waiting_region();
         self.drain_opens();
         self.follow_cancellation();
         // A selection drag held at the canvas's edge scrolls on its own,
@@ -5427,7 +5529,7 @@ impl PdfApp {
         let Some(open_here) = self.open_here.clone() else {
             return Err("this window shows the document it was opened on".into());
         };
-        self.status_note.show("Opening PDF…".to_string());
+        self.status_note.show(crate::t("pdf-note-opening"));
         self.dirty = true;
         let arguments = [path.display().to_string()];
         Ok(cx.open_here(&open_here, &arguments, move |app, answer, _| {
@@ -5448,7 +5550,7 @@ impl PdfApp {
         };
         let error = format!("Could not open {}: {reason}", path.display());
         if self.has_document {
-            self.status_note.show(error.clone());
+            self.status_note.show(open_failed_note(path));
         } else {
             self.status_note.dismiss();
             self.load_error = Some(error.clone());
@@ -5633,10 +5735,6 @@ impl ui::widget::controls::ActionControls for PdfApp {
         ui::widget::semantic_action_bindings(self.accessibility())
     }
 }
-
-/// What Find says about a document whose pages are only pictures.
-const NO_TEXT_NOTE: &str =
-    "This PDF is images of pages, so its text can't be found, selected or copied";
 
 /// Whether `id` is an opaque participant id (a long hex key) rather than a
 /// name someone could read.
@@ -6656,10 +6754,10 @@ mod tests {
             );
             app.sync_settled(&mut state.doc, &state.root);
             assert_eq!(app.resource_page_ids[1], "imported-occurrence");
-            assert!(
-                app.status_note
-                    .as_deref()
-                    .is_some_and(|note| note.contains("unavailable"))
+            assert_eq!(
+                app.status_note.as_deref(),
+                Some(crate::t("pdf-note-imported-unshown").as_str()),
+                "the reader says it cannot show the imported page"
             );
 
             let annotation = Annotation {
@@ -6749,9 +6847,13 @@ mod tests {
         );
         app.sync_settled(&mut state.doc, &state.root);
         assert!(
-            app.status_note
-                .as_deref()
-                .is_some_and(|note| note.starts_with("Imported page content is")),
+            app.status_note.as_deref().is_some_and(|note| [
+                "pdf-note-imported-arriving",
+                "pdf-note-imported-waiting",
+                "pdf-note-imported-unavailable",
+            ]
+            .into_iter()
+            .any(|key| note == crate::t(key))),
             "{:?}",
             app.status_note
         );
@@ -6798,10 +6900,9 @@ mod tests {
                 800.0,
                 Some("/tmp/pdf_viewer_release_shots/import_unavailable.png"),
             );
-            assert!(
-                app.status_note
-                    .as_deref()
-                    .is_some_and(|note| note.contains("unavailable")),
+            assert_eq!(
+                app.status_note.as_deref(),
+                Some(crate::t("pdf-note-imported-unshown").as_str()),
                 "a missing imported blob is never rendered as a source page"
             );
         }

@@ -5,6 +5,7 @@
 )]
 mod audio;
 pub mod install;
+mod menus;
 mod protocol;
 pub mod runtime;
 mod service_session_probe;
@@ -25,6 +26,7 @@ use super::{
     FrameSlot, KeyInput, MouseButton, NavigationCommand, WebViewCommand, WebViewEngine,
     WebViewEvent,
 };
+use menus::{MENU_ROWS, decode_context_items, decode_extension_menu};
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
@@ -1029,12 +1031,7 @@ fn valid_context_menu(value: &Value) -> bool {
                 .as_f64()
                 .is_some_and(|v| v.is_finite() && v.abs() < 100_000.0)
         })
-        && value["items"].as_array().is_some_and(|items| {
-            items.len() <= 24
-                && items.iter().all(|item| {
-                    valid_id(item) && item["label"].as_str().is_some_and(|s| s.len() <= 4096)
-                })
-        })
+        && decode_context_items(&value["items"], 1, &mut { MENU_ROWS }).is_some()
 }
 
 impl ChromiumEngine {
@@ -2123,6 +2120,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "extension_action" | "extension_open_popup" | "extension_execute_action" => {
             decode_extension_event(value).is_some()
         }
+        "extension_menu" => decode_extension_menu(value).is_some(),
         "devtools_result" => {
             value["request_id"]
                 .as_u64()
@@ -2380,6 +2378,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             id,
             permissions,
             hosts,
+            scriptable,
             token,
             commands,
         } => {
@@ -2387,7 +2386,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                 && token
                     .as_ref()
                     .is_none_or(|token| (32..=128).contains(&token.len()))
-                && [permissions, hosts]
+                && [permissions, hosts, scriptable]
                     .iter()
                     .all(|list| list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048))
                 && commands.as_ref().is_none_or(|commands| {
@@ -2397,6 +2396,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id } => extension_id(id),
+        WebViewCommand::ExtensionMenuChoice { id, key } => {
+            extension_id(id) && !key.is_empty() && key.len() <= 1024
+        }
         WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
@@ -2564,17 +2566,9 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             x: value["x"].as_f64()?,
             y: value["y"].as_f64()?,
             link: value["link"].as_str()?.into(),
-            items: value["items"]
-                .as_array()?
-                .iter()
-                .map(|item| {
-                    Some((
-                        u32::try_from(item["id"].as_u64()?).ok()?,
-                        item["label"].as_str()?.into(),
-                    ))
-                })
-                .collect::<Option<Vec<_>>>()?,
+            items: decode_context_items(&value["items"], 1, &mut { MENU_ROWS })?,
         },
+        "extension_menu" => decode_extension_menu(value)?,
         "find_result" => WebViewEvent::FindResult {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             count: i32::try_from(value["count"].as_i64()?).ok()?,
@@ -2814,11 +2808,12 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             id,
             permissions,
             hosts,
+            scriptable,
             token,
             commands,
         } => {
-            let mut command =
-                json!({"op":"extension_access","id":id,"permissions":permissions,"hosts":hosts});
+            let mut command = json!({"op":"extension_access","id":id,
+                "permissions":permissions,"hosts":hosts,"scriptable":scriptable});
             if let Some(token) = token {
                 command["token"] = json!(token);
             }
@@ -2834,6 +2829,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             None => json!({"op":"extension_panel"}),
         },
         WebViewCommand::ExtensionClick { id } => json!({"op":"extension_click","id":id}),
+        WebViewCommand::ExtensionMenuChoice { id, key } => {
+            json!({"op":"extension_menu_action","id":id,"key":key})
+        }
         WebViewCommand::DevTools {
             request_id,
             method,

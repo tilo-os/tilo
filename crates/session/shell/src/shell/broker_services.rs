@@ -1990,7 +1990,10 @@ pub fn native_services(
             })
             .into_iter()
             .flatten()
-            .chain([super::settings_records::broker_door()])
+            .chain([
+                super::settings_records::broker_door(),
+                super::activity_provider::broker_door(),
+            ])
             .collect(),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>

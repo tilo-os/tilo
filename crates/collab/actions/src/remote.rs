@@ -41,6 +41,7 @@ pub mod feedback;
 pub mod own_device;
 mod pending;
 mod wait;
+pub mod workspace_activity;
 
 pub use catalogue::{
     CanonicalActionRoute, CatalogueLimits, CataloguePage, CatalogueProvider, CatalogueQuery,
