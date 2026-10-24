@@ -742,6 +742,9 @@ pub struct CommandPalette {
     rect: Rect,
     text_scale: f64,
     ui_scale: f64,
+    /// The theme's gap between two sections, set above every section or
+    /// group header that follows a row.
+    section_gap: f64,
     is_focused: bool,
     search_filter: SearchFilter,
     mode: PaletteMode,
@@ -829,6 +832,8 @@ enum VisualRow {
         label: String,
         total: usize,
         level: HeaderLevel,
+        /// Whether a row comes before it, so the section gap sits above.
+        spaced: bool,
     },
     /// Index into `self.visible`.
     Entry(usize),
@@ -867,6 +872,7 @@ impl CommandPalette {
             rect: Rect::ZERO,
             text_scale: 1.0,
             ui_scale: 1.0,
+            section_gap: f64::from(crate::tokens::RhythmScale::BASE.section),
             is_focused: false,
             search_filter: SearchFilter::default(),
             mode: PaletteMode::Search,
@@ -1240,7 +1246,9 @@ impl CommandPalette {
 
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
         match row {
-            VisualRow::Header { .. } => HEADER_HEIGHT * self.layout_scale(),
+            VisualRow::Header { spaced, .. } => {
+                HEADER_HEIGHT * self.layout_scale() + if *spaced { self.section_gap } else { 0.0 }
+            }
             VisualRow::Entry(entry_i) => self.entry_row_height(*entry_i),
         }
     }
@@ -2234,7 +2242,11 @@ impl CommandPalette {
                     label,
                     total,
                     level,
+                    spaced,
                 } => {
+                    if *spaced {
+                        y += self.section_gap;
+                    }
                     // A section's header in the text's own ink; a group
                     // within it a caption under it.
                     let (style, ink) = match level {
@@ -3006,10 +3018,12 @@ impl CommandPalette {
                 if section != Some(name) {
                     section = Some(name);
                     current = Some(name);
+                    let spaced = !self.rows.is_empty();
                     self.rows.push(VisualRow::Header {
                         label: name.to_string(),
                         total: 0,
                         level: HeaderLevel::Section,
+                        spaced,
                     });
                 }
                 if let Some(group) = entry.group.as_deref()
@@ -3020,6 +3034,7 @@ impl CommandPalette {
                         label: group.to_string(),
                         total: 0,
                         level: HeaderLevel::Subgroup,
+                        spaced: false,
                     });
                 }
                 self.rows.push(VisualRow::Entry(entry_i));
@@ -3043,10 +3058,12 @@ impl CommandPalette {
                             .count()
                     })
                 });
+                let spaced = !self.rows.is_empty();
                 self.rows.push(VisualRow::Header {
                     label: group.to_string(),
                     total,
                     level: HeaderLevel::Group,
+                    spaced,
                 });
             }
             self.rows.push(VisualRow::Entry(entry_i));
@@ -3112,6 +3129,7 @@ impl Widget for CommandPalette {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
         let generation = crate::search::engine_generation();
         if self.ranked_generation != generation {
             self.ranked_generation = generation;
@@ -3151,6 +3169,7 @@ impl Widget for CommandPalette {
         text_renderer.set_text_scale(1.0);
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
         let colors = &theme.tokens.colors;
         // The one floating card (HIG §9.1): the opaque panel ground and its
         // edges. Opaque, as the card is rows of small text: a tinted
@@ -4350,6 +4369,28 @@ mod keyboard_flow_tests {
         dispatch(&mut p, &crate::synthetic_input::mouse_press());
         assert!(p.take_scope_token_removed(), "a press widens");
         assert!(p.scope_token.is_none());
+    }
+
+    #[test]
+    fn a_section_after_rows_stands_the_themes_section_gap_below_them() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("bo", "Bo").in_section("Waiting on you"),
+            CommandEntry::new("doc", "Plan").in_section("Continue"),
+        ]);
+        let heights: Vec<f64> = p
+            .rows
+            .iter()
+            .filter(|row| matches!(row, VisualRow::Header { .. }))
+            .map(|row| p.visual_row_height(row))
+            .collect();
+        let gap = f64::from(crate::tokens::RhythmScale::BASE.section);
+        assert_eq!(
+            heights,
+            [HEADER_HEIGHT, HEADER_HEIGHT + gap],
+            "the first header opens the list; the next stands a section gap below the row above it"
+        );
     }
 
     #[test]
