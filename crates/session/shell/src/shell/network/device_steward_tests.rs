@@ -367,7 +367,6 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
             .all(|frame| frame.signed_by.as_bytes() == &owner_device),
         "a frame signed by another key reached the collaborator"
     );
-    drop(stewards);
     drop((owner_transport, member_transport));
     assert!(
         !broker,
