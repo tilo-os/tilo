@@ -2064,20 +2064,18 @@ default = false
 
 # Your devices as a VPN between two network namespaces: real TUN devices the root helper's Linux
 # backend sets up with `ip` and `nft`, and a loopback iroh pair carrying the packets
-# (crates/system/device-vpn/tests/netns_tunnel.rs). The test family skips it on a builder without
-# those programs; here they are installed when missing, and TILO_REQUIRE_TUN fails a test that
-# would skip.
+# (crates/system/device-vpn/tests/netns_tunnel.rs). It runs in the builder this tree defines, which
+# carries both; the test family skips it on a builder without them, and TILO_REQUIRE_TUN fails a
+# test that would skip here.
 [[check]]
 name = "device-vpn-namespaces"
+image = { check = "image-ci-builder-x86_64", path = "/target/publish/ci-builder/x86_64/image.oci.tar" }
 devices = ["/dev/net/tun"]
-requires = ["/dev/net/tun"]
+requires = ["arch=x86_64", "/dev/net/tun"]
 nested_sandboxes = true
 requirement = { cores = 4, memory = "4GiB" }
 env = { TILO_REQUIRE_TUN = "1" }
-run = """
-command -v ip >/dev/null && command -v nft >/dev/null || dnf install -y --setopt=install_weak_deps=False iproute nftables
-cargo test --locked -p tilo-device-vpn --features test-support --test netns_tunnel -- --nocapture --test-threads=1
-"""
+run = "cargo test --locked -p tilo-device-vpn --features test-support --test netns_tunnel -- --nocapture --test-threads=1"
 cargo_packages = ["tilo-device-vpn"]
 cost = "minutes"
 on = ["stable", "dispatch"]
