@@ -48,10 +48,10 @@ mode = "host"
 [sandbox.portals]
 
 [sandbox.services]
-collab     = "optional@7"
-tilo-fs     = "optional@7"
+collab     = "optional@8"
+tilo-fs     = "optional@8"
 app-host   = "required@3"
-identity   = "optional@7"
+identity   = "optional@8"
 
 [entrypoint]
 bin             = "bin/store"

@@ -170,7 +170,7 @@ if a[0] == 'pack':
     else:
         assert manifest['package']['isa'] == {arch: 'v3' if arch == 'x86_64' else 'armv8-a'}
         assert manifest['package']['runtime'] == runtime, manifest
-        assert manifest['sandbox']['services']['identity'] == 'optional@7', manifest
+        assert manifest['sandbox']['services']['identity'] == 'optional@8', manifest
         payload = pathlib.Path(a[a.index('--payload')+1])
         output = pathlib.Path(a[a.index('--output')+1])
         output.write_bytes((payload/'bin/calculator').read_bytes())
