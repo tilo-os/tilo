@@ -34,7 +34,10 @@
 //! When the window shows another tab, the row's content cross-fades in place
 //! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where
 //! they stood while the incoming ones fade in. Slots shown where none stood
-//! appear at once.
+//! appear at once. When the app changes the slots of the tab that shows, the
+//! slots move on the standard list change ([`crate::motion::ListChange`],
+//! `slot_change`): what it adds fades in, what it takes away fades out where
+//! it stood, and the slots that stay glide to their new places.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -62,6 +65,7 @@ mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
 mod paint;
+mod slot_change;
 mod strip;
 use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
 use location_label::{LocationLabel, edited_word};
@@ -142,6 +146,11 @@ pub(crate) struct ToolbarRow {
     fade: CrossFade<Option<u64>>,
     /// The outgoing tab's slots and where they stood, while they fade out.
     outgoing: Option<(WindowToolbar, Slots)>,
+    /// The slots the tab showed and where they stood before the app changed
+    /// them, until the next paint starts the change's motion.
+    changed_from: Option<(WindowToolbar, Slots)>,
+    /// The slots arriving, leaving and moving after the app changed them.
+    slot_changes: slot_change::SlotChanges,
     row: Rect,
     slots: Slots,
     hover: Option<Slot>,
@@ -200,6 +209,8 @@ impl ToolbarRow {
             shown: None,
             fade: CrossFade::new(None),
             outgoing: None,
+            changed_from: None,
+            slot_changes: slot_change::SlotChanges::default(),
             row: Rect::ZERO,
             slots: Slots::default(),
             hover: None,
@@ -281,6 +292,17 @@ impl ToolbarRow {
                 // only declared them asks for no frames of its own.
                 self.fade = CrossFade::new(next_tab);
             }
+            // The new tab's row cross-fades in whole.
+            self.changed_from = None;
+            self.slot_changes.clear();
+        } else if self.changed_from.is_none()
+            && self.row.area() > 0.0
+            && let (Some((_, was)), Some((_, toolbar))) = (self.shown.as_ref(), next.as_ref())
+            && was != toolbar
+        {
+            // The app changed the slots of the tab that shows: the next
+            // paint moves them from where they stood.
+            self.changed_from = Some((was.clone(), self.slots.clone()));
         }
         self.shown = next;
         self.sync_crumbs();
@@ -711,7 +733,7 @@ impl ToolbarRow {
         if let Some(i) = self.strip.buttons().iter().position(|r| r.contains(p)) {
             return Some(Slot::Notice(i));
         }
-        self.slots.hit(p)
+        self.slot_at(p)
     }
 
     /// Whether the notice up stands whole in the location, as measured
@@ -1515,11 +1537,12 @@ impl ToolbarRow {
         handled || key
     }
 
-    /// Whether a frame must follow: the cross-fade, the field's caret, or
-    /// a menu arriving or leaving.
+    /// Whether a frame must follow: the cross-fade, slots arriving, leaving
+    /// or moving, the field's caret, or a menu arriving or leaving.
     pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
         self.fade.is_moving(now)
             || self.strip.needs_frame()
+            || self.slot_changes.is_moving(now)
             || self
                 .field
                 .as_ref()
@@ -1548,6 +1571,22 @@ impl ToolbarRow {
             self.menu.close();
         }
         ran
+    }
+
+    /// The slot at `p`, where it is drawn: a slot gliding to its new place
+    /// is hit where the person sees it, before one arriving under it.
+    fn slot_at(&self, p: Point) -> Option<Slot> {
+        let now = crate::motion::frame_now();
+        let Some(toolbar) = self.toolbar().filter(|_| self.slot_changes.glides(now)) else {
+            return self.slots.hit(p);
+        };
+        let offset = |slot: &Slot| {
+            self.slot_changes
+                .offset(&slot_change::SlotKey::of(toolbar, slot), now)
+        };
+        self.slots
+            .hit_where(p, |slot| Some(offset(slot)).filter(|o| o.hypot() > 0.5))
+            .or_else(|| self.slots.hit_where(p, |slot| Some(offset(slot))))
     }
 
     fn menu_open_for(&self, slot: &Slot) -> bool {
