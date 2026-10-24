@@ -186,9 +186,17 @@ case $group in
     env_json release none kvm > "$out/env.json"
     # t sizes TOKIO_WORKER_THREADS by the cores a job is given, which may be more than it asks
     # for; the series was measured with a runtime worker per core of a 40-CPU quota.
+    # The host's state lives on memory. On the node's shared overlay disk a durable commit
+    # waits for every other job's writes: with the node's load average past 1000, single
+    # commits took up to 15 s and a quarter of the guests had no Ready within 60 s, while
+    # the same build on memory, in the same job, joined all 100 with p99 1.8 s, as in
+    # docs/benchmarks/room-host-capacity-2026-10.md's tmpfs runs. The disk measured other
+    # jobs; eu1 keeps its state on local NVMe.
     for run in 1 2 3; do
-      TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
-        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log"
+      state=$(mktemp -d /dev/shm/room-load.XXXXXX)
+      TMPDIR=$state TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
+        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log" || { rm -rf "$state"; exit 1; }
+      rm -rf "$state"
     done
     python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \
       > "$out/hosting-room.jsonl"
