@@ -634,6 +634,8 @@ pub struct PdfApp {
     /// A transient one-line status (e.g. "Saved to …"), shown as a toast for a
     /// notice's lifetime or until the next document action.
     status_note: Transient<String>,
+    /// The failure of `status_note` whose Try again asks for its work again.
+    note_action: Option<(String, note_action::NoteAction)>,
     /// The last copied region, whose outcome can arrive after its note.
     region_copy: ui::CopyWatch,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
@@ -1107,6 +1109,7 @@ impl PdfApp {
             shift_down: false,
             source_path: None,
             status_note: Transient::new(),
+            note_action: None,
             region_copy: ui::CopyWatch::default(),
             portal_save_rx: None,
             save_destination: None,
@@ -2188,7 +2191,10 @@ impl PdfApp {
             }
             Err(error) => {
                 tracing::warn!(%error, "submitting a page import failed");
-                self.status_note.show(crate::t("pdf-note-import-failed"));
+                self.show_failure(
+                    crate::t("pdf-note-import-failed"),
+                    note_action::NoteAction::Import,
+                );
                 self.dirty = true;
                 false
             }
@@ -2678,7 +2684,7 @@ impl PdfApp {
             ui::portal::SaveOutcome::Cancelled => self.finish_portal_action(false, None),
             ui::portal::SaveOutcome::Failed(reason) => {
                 tracing::warn!(%reason, "writing the saved PDF failed");
-                self.status_note.show(save_failed_note(&name));
+                self.show_failure(save_failed_note(&name), note_action::NoteAction::Save);
                 self.finish_portal_action(false, Some(reason));
             }
         }
@@ -2710,7 +2716,10 @@ impl PdfApp {
             Ok(id) => id,
             Err(error) => {
                 tracing::warn!(%error, "submitting a save failed");
-                self.status_note.show(save_failed_note(&display_name(path)));
+                self.show_failure(
+                    save_failed_note(&display_name(path)),
+                    note_action::NoteAction::Save,
+                );
                 self.dirty = true;
                 return false;
             }
@@ -2742,7 +2751,10 @@ impl PdfApp {
             }
             Err(error) => {
                 tracing::warn!(%error, "submitting a save failed");
-                self.status_note.show(save_failed_note(&display_name(path)));
+                self.show_failure(
+                    save_failed_note(&display_name(path)),
+                    note_action::NoteAction::Save,
+                );
                 self.dirty = true;
                 false
             }
@@ -4466,7 +4478,10 @@ impl PdfApp {
                 {
                     self.pending_import = None;
                     tracing::warn!(%error, "importing pages failed");
-                    self.status_note.show(crate::t("pdf-note-import-failed"));
+                    self.show_failure(
+                        crate::t("pdf-note-import-failed"),
+                        note_action::NoteAction::Import,
+                    );
                     self.dirty = true;
                 }
                 RasterEvent::SavePrepared { request, temporary }
@@ -4488,8 +4503,10 @@ impl PdfApp {
                     {
                         self.pending_save = None;
                         tracing::warn!(%error, "committing the saved PDF failed");
-                        self.status_note
-                            .show(save_failed_note(&display_name(&request.path)));
+                        self.show_failure(
+                            save_failed_note(&display_name(&request.path)),
+                            note_action::NoteAction::Save,
+                        );
                         self.dirty = true;
                         self.finish_portal_action(false, Some(error));
                     }
@@ -4529,8 +4546,10 @@ impl PdfApp {
                     self.save_destination = None;
                     self.pending_save = None;
                     tracing::warn!(%error, "saving the PDF failed");
-                    self.status_note
-                        .show(save_failed_note(&display_name(&request.path)));
+                    self.show_failure(
+                        save_failed_note(&display_name(&request.path)),
+                        note_action::NoteAction::Save,
+                    );
                     self.dirty = true;
                     self.finish_portal_action(false, Some(error));
                 }
@@ -4667,8 +4686,7 @@ impl Widget for PdfApp {
         }
         // The note says so in the window's bar while it lasts, as does a
         // page or zoom change.
-        self.status_note
-            .publish(|note| ToolbarNotice::new(note.clone(), ToastKind::Info));
+        self.publish_status_note();
         self.page_notice.expire();
         self.page_notice
             .publish(|line| ToolbarNotice::new(line.clone(), ToastKind::Info));
@@ -5759,6 +5777,7 @@ impl PdfApp {
 }
 
 mod content_import;
+mod note_action;
 mod scroll_damage;
 mod selection;
 mod window_bar;

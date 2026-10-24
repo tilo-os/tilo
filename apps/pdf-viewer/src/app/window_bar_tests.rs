@@ -554,3 +554,212 @@ fn a_match_highlight_ends_at_its_last_glyph_advance() {
         "the highlight stops short of the glyph after the match: {band:?} against {next:?}"
     );
 }
+
+/// A host whose first Save fails where it keeps the file and whose next
+/// one saves there; every other chooser is refused.
+struct SaveFailsOnce {
+    asked: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl ui::host::FilePicker for SaveFailsOnce {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::PortalOutcome::Failed("no chooser here".into()));
+        rx
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::MultiOutcome::Failed("no chooser here".into()));
+        rx
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::OpenFileOutcome::Failed(
+            "no chooser here".into(),
+        ));
+        rx
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::LaunchOutcome::Failed("no chooser here".into()));
+        rx
+    }
+    fn save_destination(&self, request: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        let first = {
+            let mut asked = self.asked.lock().unwrap();
+            *asked = asked.saturating_add(1);
+            *asked == 1
+        };
+        let name = request.suggested_name().unwrap_or("download").to_owned();
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+            ui::portal::SaveDestination::kept(name, move |_| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = tx.send(if first {
+                    ui::portal::SaveOutcome::Failed("the disk is full".into())
+                } else {
+                    ui::portal::SaveOutcome::Saved
+                });
+                rx
+            }),
+        ))
+    }
+}
+
+fn note(app: &mut TestApp<PdfViewerShell>) -> String {
+    reader_state(app, |pdf| {
+        pdf.status_note.as_deref().unwrap_or_default().to_owned()
+    })
+}
+
+fn wait_for_note(app: &mut TestApp<PdfViewerShell>, starts: &str) {
+    tilo_test_env::wait_until(format!("the bar to say {starts}…"), || {
+        app.settle();
+        note(app).starts_with(starts)
+    });
+}
+
+/// A save that failed carries Try again: pressed by pointer or through its
+/// semantic action, wide or compact, it asks where to save again and saves.
+#[test]
+#[serial(pdfium)]
+fn a_failed_saves_try_again_saves_again() {
+    for (width, semantic) in [
+        (1280.0, false),
+        (1280.0, true),
+        (420.0, false),
+        (420.0, true),
+    ] {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let services =
+            ui::host::HostServices::null().with_files(std::sync::Arc::new(SaveFailsOnce {
+                asked: std::sync::Arc::clone(&asked),
+            }));
+        let _host = ui::host::enter(&services);
+        let (_directory, mut app) = reader();
+        press(&mut app, action(SAVE));
+        wait_for_note(&mut app, "Save failed: the disk is full");
+        let buttons: Vec<String> = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the failure is in the bar")
+            .buttons
+            .into_iter()
+            .map(|button| button.name)
+            .collect();
+        assert_eq!(buttons, ["Try again"], "at {width} px");
+        let harness = app.harness();
+        let pressed = if semantic {
+            harness.invoke_window_notice_action(width, 0)
+        } else {
+            harness.click_window_notice_action(width, 0)
+        };
+        pressed.expect("Try again stands in the bar");
+        app.settle();
+        wait_for_note(&mut app, "Saved annotated PDF to ");
+        assert_eq!(
+            *asked.lock().unwrap(),
+            2,
+            "Try again asked where to save again"
+        );
+        let saved = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the save is said");
+        assert!(saved.buttons.is_empty(), "a saved PDF only informs");
+    }
+}
+
+/// A host whose Open chooser answers with each of `files` in turn; every
+/// other chooser is refused.
+struct ChoosesInTurn {
+    files: std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>>,
+}
+
+impl ui::host::FilePicker for ChoosesInTurn {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let next = self.files.lock().unwrap().pop_front();
+        let _ = tx.send(match next {
+            Some(path) => ui::portal::PortalOutcome::Opened(path),
+            None => ui::portal::PortalOutcome::Cancelled,
+        });
+        rx
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::MultiOutcome::Failed(
+            "one at a time here".into(),
+        ));
+        rx
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::OpenFileOutcome::Failed(
+            "no descriptors here".into(),
+        ));
+        rx
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::LaunchOutcome::Failed("no launcher here".into()));
+        rx
+    }
+    fn save_destination(&self, _: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Failed(
+            "no saving here".into(),
+        ))
+    }
+}
+
+/// Pages that could not be imported carry Try again: pressed by pointer or
+/// through its semantic action, wide or compact, it asks which pages to
+/// import again and imports them.
+#[test]
+#[serial(pdfium)]
+fn a_failed_imports_try_again_imports_again() {
+    for (width, semantic) in [
+        (1280.0, false),
+        (1280.0, true),
+        (420.0, false),
+        (420.0, true),
+    ] {
+        let (directory, mut app) = reader();
+        let broken = directory.path().join("broken.pdf");
+        std::fs::write(&broken, b"not a PDF at all").unwrap();
+        let swatch = directory.path().join("swatch.png");
+        image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]))
+            .save(&swatch)
+            .unwrap();
+        let services =
+            ui::host::HostServices::null().with_files(std::sync::Arc::new(ChoosesInTurn {
+                files: std::sync::Mutex::new([broken, swatch].into()),
+            }));
+        let _host = ui::host::enter(&services);
+        let pages = reader_state(&mut app, |pdf| pdf.doc.page_count());
+        reader_state(&mut app, PdfApp::request_import_via_portal);
+        wait_for_note(&mut app, "Import failed: ");
+        let buttons: Vec<String> = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the failure is in the bar")
+            .buttons
+            .into_iter()
+            .map(|button| button.name)
+            .collect();
+        assert_eq!(buttons, ["Try again"], "at {width} px");
+        let harness = app.harness();
+        let pressed = if semantic {
+            harness.invoke_window_notice_action(width, 0)
+        } else {
+            harness.click_window_notice_action(width, 0)
+        };
+        pressed.expect("Try again stands in the bar");
+        app.settle();
+        wait_for_note(&mut app, "Imported pages are shared");
+        assert_eq!(
+            reader_state(&mut app, |pdf| pdf.doc.page_count()),
+            pages.saturating_add(1),
+            "Try again imported the chosen page"
+        );
+    }
+}
