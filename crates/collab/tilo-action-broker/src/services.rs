@@ -208,6 +208,10 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 }
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
+/// A room's status once it changed ([`WorkspaceMemberships::room_status_change`]).
+pub type RoomStatusFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = runtime_collab::RoomStatus> + Send>>;
+
 /// Native room membership owner. Public callers choose only a closed typed
 /// command; this host service supplies the private governor signing custody.
 pub trait WorkspaceMemberships: Send + Sync {
@@ -235,11 +239,23 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn requires_room(&self, room: &str) -> bool;
 
-    /// Why no app opens anything in `room` on this device, when none can: a
-    /// room no host holds has no documents to open. Said to the app as it
-    /// joins, in place of a failure further in.
-    fn room_unavailable(&self, _room: &str) -> Option<String> {
-        None
+    /// Where `room` stands for the apps on this device: ready, waiting for
+    /// its join or its placement on its host, or refused, as when no host
+    /// holds it and it has no documents to open. A join is held while it
+    /// waits and refused with the reason, in place of a failure further in.
+    fn room_status(&self, _room: &str) -> runtime_collab::RoomStatus {
+        runtime_collab::RoomStatus::Ready
+    }
+
+    /// `room`'s status once it is no longer `seen`, woken by the change that
+    /// ends it rather than by asking again.
+    fn room_status_change(&self, room: &str, seen: runtime_collab::RoomStatus) -> RoomStatusFuture {
+        let now = self.room_status(room);
+        if now == seen {
+            Box::pin(std::future::pending())
+        } else {
+            Box::pin(std::future::ready(now))
+        }
     }
 
     /// Whether `room` is held here but governed by the node that stewards

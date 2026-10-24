@@ -12,6 +12,17 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Where an enrollment into a workspace stands before it is run.
+enum Enrollment {
+    /// It already committed; only its reply was lost.
+    Done(PeerSyncResponse),
+    /// It is to run, by `owner`, into `room`.
+    Due {
+        owner: NativeWorkspaceOwner,
+        room: RoomId,
+    },
+}
+
 /// A failed background open of the native owner is tried again no sooner
 /// than this: a second writer of the state file can hold it for long.
 const REOPEN_AFTER: Duration = Duration::from_secs(1);
@@ -268,37 +279,11 @@ impl ShellNetwork {
         token: &str,
         via: enrollment_driver::Via,
     ) -> Result<PeerSyncResponse, String> {
-        let owner = self.native_owner()?;
-        let room = self
-            .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == local)
-            .map(crate::shell::state::Workspace::room)
-            .ok_or("target workspace disappeared")?;
+        let (owner, room) = match self.enrollment_into(local, token)? {
+            Enrollment::Done(response) => return Ok(response),
+            Enrollment::Due { owner, room } => (owner, room),
+        };
         let topic = room_topic_id(room);
-        let certificate = self
-            .host_identity
-            .as_ref()
-            .ok_or("native device custody unavailable")?
-            .current_native_material(topic)?
-            .0;
-        // A lost UI reply after the local barrier is reconciled from the actual
-        // committed enrollment, never by another remote redemption.
-        if owner
-            .with_current(room, |view| {
-                Ok(view.device() == &certificate
-                    && view.enrollment_invitation().is_ok_and(|invitation| {
-                        tilo_peer_state::join::encode_invitation_text(invitation) == token
-                    }))
-            })
-            .unwrap_or(false)
-        {
-            self.connect_native_room(owner, room)?;
-            return Ok(PeerSyncResponse::Message(room.to_string()));
-        }
         let mut attempts = self
             .native_enrollment
             .attempts
@@ -323,6 +308,132 @@ impl ShellNetwork {
         drop(attempts);
         Ok(PeerSyncResponse::EnrollmentPending { id })
     }
+    /// Redeem `token` into `local` at this device's own host, in process,
+    /// through `client`, and install the room before returning: nothing of
+    /// it waits on the network, the network actor or a wake. Its end is
+    /// told as any enrollment's is.
+    ///
+    /// # Errors
+    ///
+    /// Why the room was not enrolled or installed.
+    pub(crate) fn enroll_in_process(
+        &self,
+        local: WorkspaceId,
+        token: &str,
+        client: tilo_relay_session::workspace_join::WorkspaceJoinClient,
+    ) -> Result<PeerSyncResponse, String> {
+        let (owner, room) = match self.enrollment_into(local, token)? {
+            Enrollment::Done(response) => return Ok(response),
+            Enrollment::Due { owner, room } => (owner, room),
+        };
+        let topic = room_topic_id(room);
+        let identity = self
+            .host_identity
+            .clone()
+            .ok_or("native device custody unavailable")?;
+        let runtime = self.runtime_handle()?;
+        // A certificate due for renewal is renewed before the host sees it.
+        if let Err(error) = crate::firstboot::renew_due_device_certificates() {
+            tracing::warn!(%error, "could not renew this device's certificate before enrolling");
+        }
+        let result = runtime
+            .block_on(tilo_joined_room::enroll::prepare_and_complete(
+                client,
+                identity,
+                topic,
+                Some(local),
+                token.to_owned(),
+                owner.clone(),
+            ))
+            .and_then(|enrollment| self.install_enrollment(&owner, topic, enrollment));
+        self.placement_enrollment_ended(room, result.as_ref().map(|_| ()));
+        self.enrollment_ended(
+            room,
+            local,
+            result.as_ref().map(|_| ()).map_err(Clone::clone),
+        );
+        result.map(|room| PeerSyncResponse::Message(room.to_string()))
+    }
+
+    /// The room an enrollment of `token` into `local` is for, with the owner
+    /// that enrolls it; or, when that enrollment already committed and only
+    /// its reply was lost, the room connected again.
+    fn enrollment_into(&self, local: WorkspaceId, token: &str) -> Result<Enrollment, String> {
+        let owner = self.native_owner()?;
+        let room = self
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == local)
+            .map(crate::shell::state::Workspace::room)
+            .ok_or("target workspace disappeared")?;
+        let certificate = self
+            .host_identity
+            .as_ref()
+            .ok_or("native device custody unavailable")?
+            .current_native_material(room_topic_id(room))?
+            .0;
+        // A lost UI reply after the local barrier is reconciled from the actual
+        // committed enrollment, never by another remote redemption.
+        if owner
+            .with_current(room, |view| {
+                Ok(view.device() == &certificate
+                    && view.enrollment_invitation().is_ok_and(|invitation| {
+                        tilo_peer_state::join::encode_invitation_text(invitation) == token
+                    }))
+            })
+            .unwrap_or(false)
+        {
+            self.connect_native_room(owner, room)?;
+            return Ok(Enrollment::Done(PeerSyncResponse::Message(
+                room.to_string(),
+            )));
+        }
+        Ok(Enrollment::Due { owner, room })
+    }
+
+    /// Install `enrollment`, completed with the custody of `identity_topic`,
+    /// into `owner`, and connect its room: the one installation every
+    /// enrollment ends in.
+    fn install_enrollment(
+        &self,
+        owner: &NativeWorkspaceOwner,
+        identity_topic: u64,
+        enrollment: tilo_joined_room::VerifiedNativeEnrollment,
+    ) -> Result<RoomId, String> {
+        let identity = self
+            .host_identity
+            .as_ref()
+            .ok_or("native custody unavailable")?;
+        let (certificate, _) = identity.current_native_material(identity_topic)?;
+        if &certificate != enrollment.local_device() {
+            return Err("selected native custody changed before installation".into());
+        }
+        let room = RoomId::parse(&enrollment.bootstrap().room).ok_or("invalid enrolled room")?;
+        // Preserve the explicitly selected identity when the target slot acquires
+        // its new room. This is existing custody storage, not semantic authority.
+        if identity.identity_paths.is_some() {
+            let registry = crate::identity_registry::IdentityRegistryStore::from_env()
+                .map_err(|e| e.to_string())?;
+            let profile = hex::encode(certificate.user_public_key);
+            registry
+                .bind_workspace(&room.to_string(), &profile)
+                .map_err(|e| e.to_string())?;
+            if identity.current_native_material(room_topic_id(room))?.0 != certificate {
+                return Err("native room custody did not retain selected certificate".into());
+            }
+        }
+        owner.install(&enrollment, SystemTime::now())?;
+        self.check_native_custody(owner, room)?;
+        if !self.join_topic(room_topic_id(room)) {
+            return Err("native room committed; transport queue unavailable".into());
+        }
+        self.connect_native_room(owner.clone(), room)?;
+        Ok(room)
+    }
+
     /// Finish the pending enrollment `id` once its remote exchange completed.
     pub fn poll_enrollment(&self, id: u64) -> Result<PeerSyncResponse, String> {
         // Which room and slot it is for: finishing it forgets its attempt.
@@ -336,36 +447,7 @@ impl ShellNetwork {
             .cloned()
             .ok_or("native enrollment attempt no longer active")?;
         let result = attempt.finish(|enrollment| {
-            let identity = self
-                .host_identity
-                .as_ref()
-                .ok_or("native custody unavailable")?;
-            let (certificate, _) = identity.current_native_material(attempt.identity_topic())?;
-            if &certificate != enrollment.local_device() {
-                return Err("selected native custody changed before installation".into());
-            }
-            let room =
-                RoomId::parse(&enrollment.bootstrap().room).ok_or("invalid enrolled room")?;
-            // Preserve the explicitly selected identity when the target slot acquires
-            // its new room. This is existing custody storage, not semantic authority.
-            if identity.identity_paths.is_some() {
-                let registry = crate::identity_registry::IdentityRegistryStore::from_env()
-                    .map_err(|e| e.to_string())?;
-                let profile = hex::encode(certificate.user_public_key);
-                registry
-                    .bind_workspace(&room.to_string(), &profile)
-                    .map_err(|e| e.to_string())?;
-                if identity.current_native_material(room_topic_id(room))?.0 != certificate {
-                    return Err("native room custody did not retain selected certificate".into());
-                }
-            }
-            attempt.owner().install(&enrollment, SystemTime::now())?;
-            self.check_native_custody(attempt.owner(), room)?;
-            if !self.join_topic(room_topic_id(room)) {
-                return Err("native room committed; transport queue unavailable".into());
-            }
-            self.connect_native_room(attempt.owner().clone(), room)?;
-            Ok(room)
+            self.install_enrollment(attempt.owner(), attempt.identity_topic(), enrollment)
         });
         let Some(result) = result else {
             return Ok(PeerSyncResponse::EnrollmentPending { id });
@@ -377,7 +459,7 @@ impl ShellNetwork {
             .remove(&id);
         match target {
             Some((room, local)) => {
-                self.placement_enrollment_ended(room, result.is_ok());
+                self.placement_enrollment_ended(room, result.as_ref().map(|_| ()));
                 self.enrollment_ended(
                     room,
                     local,

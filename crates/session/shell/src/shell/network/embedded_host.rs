@@ -20,7 +20,7 @@
 //!
 //! The host's state lives beside the native owner's state file, under
 //! [`HOST_STATE_DIR`].
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -35,9 +35,7 @@ use tilo_relay_session::rooms::{
 use super::{
     NetCmd, RoomId, ShellNetwork, personal_continuity_topic_id, relay_rooms, room_topic_id,
 };
-use crate::network::invite::enrollment_driver::Via;
 use crate::network::local_host::LocalHost;
-use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::WorkspaceId;
 
 /// The directory, beside the native owner's state file, that this device's
@@ -62,8 +60,9 @@ pub(super) struct State {
     /// What a pass that left a placement failing saw ([`Placing`]): no pass
     /// runs again until something it depends on changed.
     failed: Mutex<Option<Placing>>,
-    /// Why each room the last pass left failing was not placed.
-    failures: Mutex<std::collections::BTreeMap<RoomId, String>>,
+    /// Why the latest placement of each room still waiting failed: an app
+    /// waiting for the room says so.
+    failures: Mutex<BTreeMap<RoomId, String>>,
     /// Bumped when the host opens: a placement that failed for want of it
     /// may succeed now.
     host_generation: std::sync::atomic::AtomicU64,
@@ -396,6 +395,18 @@ impl ShellNetwork {
         }
     }
 
+    /// Place every workspace waiting for this device's host, once, before
+    /// the session lets apps start: blocks on the host and the disk, never
+    /// on the network.
+    pub(crate) fn place_before_launches(&self) {
+        let started = std::time::Instant::now();
+        self.place_pending_workspaces();
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "workspaces waiting for this device's host are placed before apps start"
+        );
+    }
+
     /// The queued pass runs: a workspace made from now on queues another.
     pub(super) fn placement_pass_started(&self) {
         self.embedded_host.queued.store(false, Ordering::Release);
@@ -443,6 +454,7 @@ impl ShellNetwork {
                 .unwrap_or_else(PoisonError::into_inner);
             // A room placed and since held waits no more.
             placing.retain(|room| tree.pending_placements.contains(room));
+            self.forget_placement_failures(|room| !tree.pending_placements.contains(room));
             let waiting = waiting(&tree, &placing);
             drop(tree);
             placing.extend(waiting.iter().map(|(room, _, _)| *room));
@@ -450,18 +462,17 @@ impl ShellNetwork {
             (waiting, before)
         };
         let mut failed = false;
-        let mut failures = std::collections::BTreeMap::new();
         for (room, local, name) in waiting {
             let placed = self.place(room, local, &name);
             if let Err(error) = &placed {
                 tracing::warn!(%room, %error, "a workspace was not placed on this device");
                 failed = true;
-                failures.insert(room, error.clone());
             }
-            // Placed, the room waits until this device's native owner holds
-            // it ([`WorkspaceTree::project_native_room`]), its enrollment
-            // still being placed: it is neither placed again nor a join
-            // meanwhile. A failed placement is left to a later pass.
+            self.note_placement(room, placed.as_ref().err());
+            // Placed, the room is held by this device's native owner
+            // already ([`WorkspaceTree::project_native_room`]): its
+            // enrollment ran in process. A failed placement is left to a
+            // later pass.
             if placed.is_err() {
                 self.embedded_host
                     .placing
@@ -470,11 +481,6 @@ impl ShellNetwork {
                     .remove(&room);
             }
         }
-        *self
-            .embedded_host
-            .failures
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = failures;
         // A failed placement is tried again once something it depends on
         // changes, never on every pass: as it was when this pass began, so
         // a change during the pass brings the next one.
@@ -489,10 +495,10 @@ impl ShellNetwork {
     /// room placed here waits for its replica when it succeeded, and is
     /// placed again once something placement depends on changed when it
     /// failed.
-    pub(super) fn placement_enrollment_ended(&self, room: RoomId, enrolled: bool) {
-        if enrolled {
+    pub(super) fn placement_enrollment_ended(&self, room: RoomId, enrolled: Result<(), &String>) {
+        let Err(error) = enrolled else {
             return;
-        }
+        };
         let mut placing = self
             .embedded_host
             .placing
@@ -502,6 +508,7 @@ impl ShellNetwork {
             return;
         }
         drop(placing);
+        self.note_placement(room, Some(error));
         let tree = self.tree.read();
         let now = self.placing_now(&tree);
         drop(tree);
@@ -512,18 +519,9 @@ impl ShellNetwork {
             .unwrap_or_else(PoisonError::into_inner) = Some(now);
     }
 
-    /// Why the last placement pass left `room` unplaced, while no later pass
-    /// is due: a placement waiting for something it depends on to change.
-    pub(super) fn placement_failure(&self, room: RoomId) -> Option<String> {
-        if self
-            .embedded_host
-            .failed
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_none()
-        {
-            return None;
-        }
+    /// Why the latest placement of `room` on this device's host failed,
+    /// while it waits to be placed again.
+    pub(crate) fn placement_failure(&self, room: RoomId) -> Option<String> {
         self.embedded_host
             .failures
             .lock()
@@ -532,9 +530,43 @@ impl ShellNetwork {
             .cloned()
     }
 
+    /// Keep why `room`'s placement failed, or that it did not, waking an
+    /// app waiting for the room when that changed.
+    fn note_placement(&self, room: RoomId, failure: Option<&String>) {
+        let mut failures = self
+            .embedded_host
+            .failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let changed = match failure {
+            Some(error) => failures.insert(room, error.clone()).as_ref() != Some(error),
+            None => failures.remove(&room).is_some(),
+        };
+        drop(failures);
+        if changed {
+            self.tree.room_readiness().announce();
+        }
+    }
+
+    /// Forget why rooms `gone` names failed to place: they wait no more.
+    fn forget_placement_failures(&self, gone: impl Fn(&RoomId) -> bool) {
+        let mut failures = self
+            .embedded_host
+            .failures
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let before = failures.len();
+        failures.retain(|room, _| !gone(room));
+        let changed = failures.len() != before;
+        drop(failures);
+        if changed {
+            self.tree.room_readiness().announce();
+        }
+    }
+
     /// Create `room`, the workspace `local` called `name`, on this device's
     /// host, and enroll this device into it with the invitation the host
-    /// issues it: the workspace says Joining… until its replica installs.
+    /// issues it, in process: the room is held when this returns.
     fn place(&self, room: RoomId, local: WorkspaceId, name: &str) -> Result<(), String> {
         let host = self.local_host()?;
         let identity = self
@@ -574,19 +606,19 @@ impl ShellNetwork {
             .as_ref()
             .and_then(|handle| handle.join_client(certificate.device_public_key))
             .ok_or("this device's host is not open")?;
-        if let PeerSyncResponse::EnrollmentPending { id } =
-            self.accept_invitation_via(local, &own, Via::Local(client))?
-        {
-            self.finish_when_enrolled(room, id, true)?;
-        }
+        // In process, and installed before this returns: placing a room on
+        // this device's own host waits on nothing but this device.
+        self.enroll_in_process(local, &own, client)?;
         tracing::info!(%room, "a workspace is placed on this device's host");
         Ok(())
     }
 
-    /// The way to the host that issued `invitation`: this device's own, in
-    /// process, when it names this device as the room's host. `None`
-    /// otherwise.
-    pub(super) fn local_route(&self, invitation: &str) -> Option<Via> {
+    /// This device's own host, in process, when `invitation` names it as the
+    /// room's host. `None` otherwise.
+    pub(super) fn local_route(
+        &self,
+        invitation: &str,
+    ) -> Option<tilo_relay_session::workspace_join::WorkspaceJoinClient> {
         let own = *self.local_peer_id.as_bytes();
         let verified = tilo_peer_state::join::decode_and_verify_invitation_text(
             invitation,
@@ -603,11 +635,7 @@ impl ShellNetwork {
         if !hosted_here {
             return None;
         }
-        self.embedded_host
-            .host
-            .as_ref()?
-            .join_client(own)
-            .map(Via::Local)
+        self.embedded_host.host.as_ref()?.join_client(own)
     }
 }
 

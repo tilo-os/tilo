@@ -90,6 +90,45 @@ struct TreeCell {
     /// The policy revision the current writer promised a launch it started,
     /// which its release then publishes; 0 when it promised none.
     reserved_revision: AtomicU64,
+    /// Woken when a room's readiness for apps may have changed.
+    readiness: RoomReadiness,
+    /// The rooms apps cannot open documents in yet, as the last release
+    /// saw them while someone waited; `None` while nobody does.
+    unready: parking_lot::Mutex<Option<UnreadyRooms>>,
+}
+
+/// The rooms of a tree whose apps cannot open documents yet, and why
+/// ([`WorkspaceTree::unready_rooms`]).
+pub type UnreadyRooms = std::collections::BTreeMap<tilo_desktop_model::RoomId, &'static str>;
+
+/// Wakes whoever waits for a room to be ready for its apps: a released
+/// write that changed which rooms are unready, or the network when a join
+/// or a placement it runs fails or recovers. A waiter subscribes before it
+/// looks, so it misses no change after its look; it is woken by changes
+/// only, never by a clock.
+#[derive(Clone)]
+pub struct RoomReadiness(Arc<tokio::sync::watch::Sender<u64>>);
+
+impl Default for RoomReadiness {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::Sender::new(0)))
+    }
+}
+
+impl RoomReadiness {
+    /// Wake every waiter to look again.
+    pub fn announce(&self) {
+        self.0.send_modify(|epoch| *epoch = epoch.wrapping_add(1));
+    }
+
+    /// Changes from now on; subscribe, then look.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.subscribe()
+    }
+
+    fn watched(&self) -> bool {
+        self.0.receiver_count() > 0
+    }
 }
 
 /// The parts of the tree an authorization decision reads: each
@@ -176,6 +215,8 @@ pub struct WorkspaceTreeWriteGuard<'a> {
     policy: &'a parking_lot::Mutex<PolicySnapshot>,
     holder: &'a parking_lot::Mutex<Option<Holder>>,
     reserved_revision: &'a AtomicU64,
+    readiness: &'a RoomReadiness,
+    unready: &'a parking_lot::Mutex<Option<UnreadyRooms>>,
     /// The workspace showing when the guard was taken, and where it was taken:
     /// a write that moves the desktop to another workspace is logged with
     /// its writer, since the active workspace has several.
@@ -193,6 +234,8 @@ impl WorkspaceTreeHandle {
             policy,
             holder: parking_lot::Mutex::new(None),
             reserved_revision: AtomicU64::new(0),
+            readiness: RoomReadiness::default(),
+            unready: parking_lot::Mutex::new(None),
         }))
     }
 
@@ -272,6 +315,8 @@ impl WorkspaceTreeHandle {
             policy: &self.0.policy,
             holder: &self.0.holder,
             reserved_revision: &self.0.reserved_revision,
+            readiness: &self.0.readiness,
+            unready: &self.0.unready,
         }
     }
 
@@ -330,6 +375,11 @@ impl WorkspaceTreeHandle {
         let fresh = next_policy_revision();
         self.0.reserved_revision.store(fresh, Ordering::Release);
         fresh
+    }
+
+    /// What wakes a wait for a room to be ready for its apps.
+    pub fn room_readiness(&self) -> &RoomReadiness {
+        &self.0.readiness
     }
 
     pub fn downgrade(&self) -> WeakWorkspaceTreeHandle {
@@ -446,6 +496,20 @@ impl Drop for WorkspaceTreeWriteGuard<'_> {
         }
         if changed {
             tilo_identity_host::policy_change::announce();
+        }
+        // Which rooms are unready is worked out only while an app waits for
+        // one; with nobody waiting, a write costs nothing more, and the
+        // first write after someone starts waiting wakes them once to look.
+        let mut unready = self.unready.lock();
+        if self.readiness.watched() {
+            let now = self.guard.unready_rooms();
+            if unready.as_ref() != Some(&now) {
+                *unready = Some(now);
+                drop(unready);
+                self.readiness.announce();
+            }
+        } else {
+            *unready = None;
         }
     }
 }

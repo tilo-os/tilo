@@ -22,7 +22,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 
-use crate::shell::state::{RoomId, WorkspaceId};
+use crate::shell::state::{RoomId, RoomReadiness, WorkspaceId};
 
 /// How long establishing a connection to a site or host may take.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -106,11 +106,14 @@ pub(super) struct State {
     joins: Mutex<BTreeMap<RoomId, SiteJoinState>>,
     /// Joins installed since chrome last looked.
     arrivals: Mutex<Vec<Arrival>>,
+    /// Woken as a join starts, fails or ends: an app waiting for its
+    /// room learns why it waits, or that it will not be joined.
+    readiness: RoomReadiness,
 }
 
 impl State {
     /// What `state_dir` keeps; nothing yet, or nothing readable, is none.
-    pub(super) fn open(state_dir: &Path) -> Self {
+    pub(super) fn open(state_dir: &Path, readiness: RoomReadiness) -> Self {
         let path = hosted_rooms_path(state_dir);
         let rooms = std::fs::read(&path)
             .ok()
@@ -119,6 +122,15 @@ impl State {
         Self {
             path: Some(path),
             rooms: Mutex::new(rooms),
+            readiness,
+            ..Self::default()
+        }
+    }
+
+    /// Nothing kept, waking `readiness` as joins change.
+    pub(super) fn with_readiness(readiness: RoomReadiness) -> Self {
+        Self {
+            readiness,
             ..Self::default()
         }
     }
@@ -126,11 +138,16 @@ impl State {
     /// Say where joining `room` stands now.
     pub(super) fn set_join(&self, state: SiteJoinState) {
         self.joins.lock_recover().insert(state.room, state);
+        self.readiness.announce();
     }
 
     /// Joining `room` is over: it installed, or the person left it.
     pub(super) fn end_join(&self, room: RoomId) -> Option<SiteJoinState> {
-        self.joins.lock_recover().remove(&room)
+        let ended = self.joins.lock_recover().remove(&room);
+        if ended.is_some() {
+            self.readiness.announce();
+        }
+        ended
     }
 
     /// Where joining `room` stands, while it does.
