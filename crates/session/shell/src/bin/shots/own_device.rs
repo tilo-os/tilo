@@ -7,7 +7,7 @@
     reason = "a scene whose devices cannot be set up has nothing true to render"
 )]
 
-use shell::shell::personal_workspaces::PersonalWorkspaces;
+use shell::shell::personal_workspaces::{HeldRooms, PersonalWorkspaces};
 use shell::shell::state::{
     AppKind, PeerOrigin, RoomAuthority, RoomId, Strip, StripId, Tab, TileContent, WindowGroup,
     WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
@@ -164,16 +164,23 @@ impl OwnDevice {
         shown: &mut WorkspaceTree,
         shown_list: &mut PersonalWorkspaces,
     ) -> Vec<u64> {
-        self.list.publish_local(&self.tree, person);
+        // The laptop's own host serves the room.
+        let held = HeldRooms::from([(self.room, self.cert.device_public_key)]);
+        self.list.publish_local(&self.tree, &held);
         let update = self
             .list
             .snapshot(&self.key, 1)
             .expect("the laptop signs its list");
-        shown_list.publish_local(shown, person);
+        shown_list.publish_local(shown, &HeldRooms::new());
         shown_list
             .merge(&update, &self.cert, 2)
             .expect("the same person's device");
-        shown_list.adopt_into(shown, &person.to_string());
+        // The list names the laptop as the room's host; the shown device
+        // enters it there, which a scene without a network stands in for.
+        let (_, board) = device(&root(), 0xB0, "Orange Pi");
+        for entry in shown_list.adopt_into(shown, &board.device_public_key).enter {
+            let _ = shown.adopt_personal_room(entry.room, &entry.name, &person.to_string(), None);
+        }
         let before = tab_ids(shown);
         let changes = self
             .tree

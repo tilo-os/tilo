@@ -343,7 +343,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 # The relay daemon itself (`tilo-relay`) is a dev-dependency only.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # The room host every device runs for the rooms placed on it.
-tilo-relay = { path = "../../hosting/tilo-relay" }
+tilo-room-host = { path = "../../hosting/tilo-room-host" }
 # The approver session that answers the questions this person's agents on
 # their hosts put to them.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
