@@ -78,6 +78,7 @@ chat-call-input-hint = Input from call status
 chat-call-connected = Connected
 chat-call-bridged = This call is bridged to { $services }
 chat-call-bridged-short = Bridged to { $services }
+chat-call-status-bridged = { $connection }. { $note }
 chat-call-participant = { $name }: volume and mute for you
 chat-call-silence = Mute for me
 chat-call-volume = Volume { $percent }%
