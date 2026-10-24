@@ -124,6 +124,24 @@ class EnvironmentRefusalTests(unittest.TestCase):
         self.assertIsNone(core.environment_refusal("Started tilo-ush.service.\nush: session opened"))
 
 
+class TerminalWithoutShellTests(unittest.TestCase):
+    def test_no_shell_fails_with_the_refusal_and_types_nothing(self):
+        typed = []
+        ctx = SimpleNamespace(
+            vm=SimpleNamespace(control=lambda *args: typed.append(args),
+                               exec=lambda *a, **k: EnvironmentRefusalTests.REFUSED),
+            shot=lambda name: None, write=lambda name, text: None)
+        res = SimpleNamespace(metrics={})
+        with patch.object(apps, "_lifecycle", return_value=(1, {}, 0)), \
+                patch.object(core, "terminal_shells", return_value=set()), \
+                patch.object(core, "wait_new_terminal_shell", return_value=None), \
+                patch.object(core, "ush_diagnostics", return_value=""):
+            with self.assertRaisesRegex(apps.CheckFailed, "refused it: no environment can be built"):
+                apps.terminal(ctx, res)
+        self.assertEqual(typed, [], "Enter would take the offer of the device's own shell")
+        self.assertIsNone(res.metrics["seconds_to_shell"])
+
+
 class ParseProcsTests(unittest.TestCase):
     def test_rows_keep_parent_session_cgroup_and_command(self):
         parsed = procs(TERMINAL)
