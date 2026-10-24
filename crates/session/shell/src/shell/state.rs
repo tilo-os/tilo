@@ -799,6 +799,12 @@ pub struct WorkspaceTree {
     /// restart, is still asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub governance_requests: Vec<(RoomId, GovernanceRequest)>,
+    /// Receipts of grants in force whose room's host has not recorded them
+    /// yet, as the host could not be reached: each is asked again once a
+    /// room's state changed. Persisted, so the room's history still gets
+    /// them after a restart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unrecorded_receipts: Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>,
     /// Changes made here whose governor refused them, until the chrome
     /// says so ([`Self::take_governance_refusals`]).
     #[serde(skip)]
@@ -931,6 +937,7 @@ impl Default for WorkspaceTree {
             room_docs: HashMap::new(),
             pending_placements: BTreeSet::new(),
             governance_requests: Vec::new(),
+            unrecorded_receipts: Vec::new(),
             governance_refusals: Vec::new(),
             strips_to_retain: BTreeSet::new(),
             continuation_tabs: BTreeSet::new(),
@@ -2709,6 +2716,28 @@ impl WorkspaceTree {
     pub fn request_governance(&mut self, room: RoomId, request: GovernanceRequest) {
         self.governance_requests.push((room, request));
         self.queue_save();
+    }
+
+    /// Keep `receipt`, which `room`'s host could not be reached to record,
+    /// to ask again.
+    pub fn hold_unrecorded_receipt(
+        &mut self,
+        room: RoomId,
+        receipt: tilo_desktop_model::WorkspaceEffectReceipt,
+    ) {
+        self.unrecorded_receipts.push((room, receipt));
+        self.queue_save();
+    }
+
+    /// The receipts waiting for their room's host, taken.
+    pub fn take_unrecorded_receipts(
+        &mut self,
+    ) -> Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)> {
+        let taken = std::mem::take(&mut self.unrecorded_receipts);
+        if !taken.is_empty() {
+            self.queue_save();
+        }
+        taken
     }
 
     /// Put back `requests`, taken but not yet asked because their governor

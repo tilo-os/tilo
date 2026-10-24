@@ -75,6 +75,9 @@ pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
 mod embedded_host;
+mod grant_in_force;
+#[cfg(test)]
+mod grant_in_force_tests;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
@@ -1415,6 +1418,9 @@ pub struct ShellNetwork {
     /// request found its governor out of reach: asked again only once
     /// either moved.
     governance_waiting: Mutex<Option<(u64, usize)>>,
+    /// The room state and count of unrecorded receipts last asked for
+    /// ([`Self::record_unrecorded_receipts_off_loop`]).
+    receipts_asked: Mutex<Option<(u64, usize)>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -2226,6 +2232,7 @@ impl ShellNetwork {
             room_rosters_sent: Mutex::default(),
             local_governor: std::sync::OnceLock::new(),
             governance_waiting: Mutex::default(),
+            receipts_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -6693,6 +6700,7 @@ impl ShellNetwork {
         steps.time("network/keepalive", || self.live_keepalive());
         steps.time("network/governance", || {
             self.send_governance_requests_off_loop();
+            self.record_unrecorded_receipts_off_loop();
         });
         steps.time("network/room-rosters", || self.send_room_rosters());
         // Hold the lock for the whole drain so a concurrent frame-tick
@@ -8168,6 +8176,7 @@ pub(crate) fn shell_network_for_test(
         room_rosters_sent: Mutex::default(),
         local_governor: std::sync::OnceLock::new(),
         governance_waiting: Mutex::default(),
+        receipts_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,
