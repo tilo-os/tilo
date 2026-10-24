@@ -59,19 +59,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-/// Stable identity colour for a collaborator who has not chosen one: the
-/// presence hue [`crate::tokens::PresenceHue::of_identity`] derives from
-/// their id, as the sRGB colour in [`PEER_PALETTE`]. A pure function of the
-/// id alone: two hosts painting the same room see different peer sets
-/// (everyone but themselves), so a colour derived from who's present
-/// couldn't agree across machines.
-///
-/// This is the identity as it travels; paint it through
-/// `theme.tokens.colors.presence.of_rgb(..)`, which carries the hue at the
-/// active theme's presence lightness and chroma.
-pub fn user_color(user_id: &str) -> (u8, u8, u8) {
-    identity_rgb(crate::tokens::PresenceHue::of_identity(user_id))
-}
+pub use collab_types::presence::{PEER_PALETTE, assign_peer_colors, identity_rgb, user_color};
 
 /// [`user_color`] as a colour: what a face of `user_id` wears when the room
 /// has not given them one ([`Face::colour`]).
@@ -80,96 +68,11 @@ pub fn identity_colour(user_id: &str) -> vello::peniko::Color {
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
-/// A presence hue as the identity colour it travels as.
-pub fn identity_rgb(hue: crate::tokens::PresenceHue) -> (u8, u8, u8) {
-    PEER_PALETTE.get(hue.slot()).copied().unwrap_or_default()
-}
-
 /// The face of someone here whose colour the room has not settled yet:
 /// grey, which the presence palette paints neutral
 /// ([`crate::tokens::colors::PresencePalette::of`]), never a ring colour
 /// they would then change from.
 pub const UNSETTLED_RGB: (u8, u8, u8) = (0x9a, 0x9a, 0x9a);
-
-/// Every colour a peer can be drawn in:the design language's twelve
-/// presence hues (`tokens::colors::PRESENCE_HUES`, 30° apart) at the dark
-/// material's presence lightness and chroma (OKLCH L 0.74, C 0.14, gamut
-/// mapped), as sRGB. Equal lightness and chroma, so no participant looks
-/// more important than another; a closed ring rather than a hash over all
-/// 360 hues, so two people never land a few degrees apart.
-pub const PEER_PALETTE: [(u8, u8, u8); 12] = [
-    (0xf7, 0x85, 0x7d), // 25°  red
-    (0xed, 0x91, 0x4c), // 55°  orange — pinned for "bob"
-    (0xd3, 0xa3, 0x29), // 85°  amber
-    (0xa8, 0xb5, 0x40), // 115° olive
-    (0x6e, 0xc2, 0x72), // 145° green — pinned for "charlie"
-    (0x00, 0xc7, 0xa6), // 175° teal
-    (0x00, 0xc1, 0xd1), // 205° cyan
-    (0x38, 0xb8, 0xf6), // 235° sky
-    (0x81, 0xa8, 0xff), // 265° blue — pinned for "me"
-    (0xb2, 0x98, 0xf9), // 295° violet
-    (0xd7, 0x8a, 0xdb), // 325° magenta
-    (0xee, 0x83, 0xaf), // 355° pink — pinned for "alice"
-];
-
-/// Give everyone in a room a colour nobody else in it is wearing.
-///
-/// [`user_color`] alone can't promise this — it's a hash, so `carol` lands
-/// on `alice`'s pink. Whoever collides steps to the next free ring entry,
-/// walking ids in sorted order so every host agrees despite seeing a
-/// different membership (everyone but itself). `reserved` colours are
-/// already spoken for by an explicit roster choice.
-pub fn assign_peer_colors(
-    ids: &[&str],
-    reserved: &[(u8, u8, u8)],
-) -> HashMap<String, (u8, u8, u8)> {
-    let mut sorted: Vec<&str> = ids.to_vec();
-    sorted.compact_sort();
-    sorted.dedup();
-
-    let mut taken = [false; PEER_PALETTE.len()];
-    for c in reserved {
-        if let Some(i) = PEER_PALETTE.iter().position(|p| p == c)
-            && let Some(slot) = taken.get_mut(i)
-        {
-            *slot = true;
-        }
-    }
-
-    let mut out = HashMap::with_capacity(sorted.len());
-    for id in sorted {
-        let natural = user_color(id);
-        let start = PEER_PALETTE
-            .iter()
-            .position(|p| *p == natural)
-            // Always a ring member; 0 just keeps a draw path total rather than panicking.
-            .unwrap_or(0);
-        let mut slot = start;
-        for step in 0..PEER_PALETTE.len() {
-            // `PEER_PALETTE.len()` (24) is a nonzero compile-time constant,
-            // so the remainder can never divide by zero; `start`/`step` are
-            // both < 24, so the sum can't realistically overflow either.
-            let i = start
-                .saturating_add(step)
-                .checked_rem(PEER_PALETTE.len())
-                .unwrap_or(0);
-            if !taken.get(i).copied().unwrap_or(false) {
-                slot = i;
-                break;
-            }
-            // More people than colours: share the natural entry; the name still says who is who.
-            slot = start;
-        }
-        if let Some(s) = taken.get_mut(slot) {
-            *s = true;
-        }
-        out.insert(
-            id.to_string(),
-            PEER_PALETTE.get(slot).copied().unwrap_or_default(),
-        );
-    }
-    out
-}
 
 /// How far apart two colours are, weighted the way an eye weights them (the
 /// "redmean" approximation).

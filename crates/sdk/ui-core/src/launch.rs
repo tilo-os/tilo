@@ -1404,7 +1404,7 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     let theme = match std::env::var("TILO_SHOTS_ACCENT")
         .ok()
         .and_then(|hex| crate::color::parse_hex(&hex))
-        .and_then(crate::tokens::PresenceHue::nearest)
+        .and_then(crate::tokens::nearest_presence_hue)
     {
         Some(hue) => theme.with_your_colour(hue),
         None => theme,

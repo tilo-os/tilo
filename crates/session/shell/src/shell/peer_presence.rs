@@ -4027,7 +4027,7 @@ mod two_sessions {
         host.pump(&mut on_host, &DESK_TILES);
         assert_eq!(
             on_host.color_overrides.get(&user).copied(),
-            Some(ui::presence::identity_rgb(worn)),
+            Some(collab_types::presence::identity_rgb(worn)),
             "the first frame paints the guest in their colour",
         );
 
@@ -4039,16 +4039,16 @@ mod two_sessions {
         }
         assert_eq!(on_host.color_overrides.get(&user), None);
 
-        let other = if worn == ui::tokens::PresenceHue::Violet {
-            ui::tokens::PresenceHue::Teal
+        let other = if worn == collab_types::presence::PresenceHue::Violet {
+            collab_types::presence::PresenceHue::Teal
         } else {
-            ui::tokens::PresenceHue::Violet
+            collab_types::presence::PresenceHue::Violet
         };
         host_net.note_peer_colour(handle_of(&guest_peer), Some(other.id()));
         host.pump(&mut on_host, &DESK_TILES);
         assert_eq!(
             on_host.color_overrides.get(&user).copied(),
-            Some(ui::presence::identity_rgb(other)),
+            Some(collab_types::presence::identity_rgb(other)),
             "a new colour is painted on the next frame",
         );
         drop(guest);
@@ -4150,7 +4150,7 @@ mod two_sessions {
             live.say(
                 7,
                 (window.clone(), [300.0, 200.0]),
-                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                participant("Ada".into(), collab_types::presence::PresenceHue::Teal),
                 Some(CursorChat {
                     text: text.into(),
                     sent,
@@ -4227,7 +4227,7 @@ mod two_sessions {
             .react(
                 7,
                 (window, [300.0, 200.0]),
-                participant("Ada".into(), ui::tokens::PresenceHue::Teal),
+                participant("Ada".into(), collab_types::presence::PresenceHue::Teal),
                 "\u{1f389}".into(),
                 later,
             )

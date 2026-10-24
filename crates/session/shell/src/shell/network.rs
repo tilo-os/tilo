@@ -1620,7 +1620,7 @@ pub struct ShellNetwork {
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
-    peer_colours: Mutex<std::collections::HashMap<u64, ui::tokens::PresenceHue>>,
+    peer_colours: Mutex<std::collections::HashMap<u64, collab_types::presence::PresenceHue>>,
     /// Advanced whenever [`Self::peer_colours`] changes, so the presence
     /// pump re-applies colours only after one did.
     peer_colours_epoch: std::sync::atomic::AtomicU64,
@@ -2973,7 +2973,7 @@ impl ShellNetwork {
     /// Remember the colour peer session `peer` said its person wears. A
     /// name this build does not know, or none, leaves what was heard before.
     pub fn note_peer_colour(&self, peer: u64, colour: Option<&str>) {
-        let Some(hue) = colour.and_then(ui::tokens::PresenceHue::from_id) else {
+        let Some(hue) = colour.and_then(collab_types::presence::PresenceHue::from_id) else {
             return;
         };
         if peer == self.local_peer_hash {
@@ -3009,12 +3009,12 @@ impl ShellNetwork {
     }
 
     /// The colour peer session `peer` said its person wears, if it said.
-    pub fn peer_colour(&self, peer: u64) -> Option<ui::tokens::PresenceHue> {
+    pub fn peer_colour(&self, peer: u64) -> Option<collab_types::presence::PresenceHue> {
         self.peer_colours.lock().ok()?.get(&peer).copied()
     }
 
     /// Every colour a peer session said its person wears, by handle.
-    pub fn peer_colours(&self) -> Vec<(u64, ui::tokens::PresenceHue)> {
+    pub fn peer_colours(&self) -> Vec<(u64, collab_types::presence::PresenceHue)> {
         self.peer_colours
             .lock()
             .map(|colours| colours.iter().map(|(peer, hue)| (*peer, *hue)).collect())
@@ -3875,7 +3875,10 @@ impl ShellNetwork {
         }) {
             self.drain_wake.poke();
         }
-        self.note_peer_colour(peer, inbound.colour.map(ui::tokens::PresenceHue::id));
+        self.note_peer_colour(
+            peer,
+            inbound.colour.map(collab_types::presence::PresenceHue::id),
+        );
         tracing::debug!(
             room = %cluster_id,
             from = %hex::encode(&from[..4]),
@@ -15951,7 +15954,10 @@ mod tests {
         assert_eq!(net.peer_colour(7), None);
         let before = net.peer_colours_epoch();
         net.note_peer_colour(7, Some("violet"));
-        assert_eq!(net.peer_colour(7), Some(ui::tokens::PresenceHue::Violet));
+        assert_eq!(
+            net.peer_colour(7),
+            Some(collab_types::presence::PresenceHue::Violet)
+        );
         let heard = net.peer_colours_epoch();
         assert_ne!(heard, before, "a new colour is announced");
         net.note_peer_colour(7, Some("violet"));
@@ -15959,7 +15965,7 @@ mod tests {
         net.note_peer_colour(7, None);
         assert_eq!(
             net.peer_colour(7),
-            Some(ui::tokens::PresenceHue::Violet),
+            Some(collab_types::presence::PresenceHue::Violet),
             "an unknown or missing colour leaves what was heard"
         );
         assert_eq!(
@@ -15972,7 +15978,7 @@ mod tests {
         assert_eq!(net.peer_colours_epoch(), heard);
         assert_eq!(
             net.peer_colours(),
-            vec![(7, ui::tokens::PresenceHue::Violet)]
+            vec![(7, collab_types::presence::PresenceHue::Violet)]
         );
     }
 

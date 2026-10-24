@@ -1268,7 +1268,7 @@ pub(crate) fn answer_remote_actions(
 
 /// What has been announced per (room, peer): the name, the colour, and the
 /// connection generation it was said in front of.
-type Announced = HashMap<(String, u64), (String, Option<ui::tokens::PresenceHue>, u64)>;
+type Announced = HashMap<(String, u64), (String, Option<collab_types::presence::PresenceHue>, u64)>;
 
 /// The id a remote peer's traffic is attributed under, announcing the
 /// room's name for it and the colour its own machine says it wears
@@ -1282,7 +1282,7 @@ fn remote_participant_id(
     cluster_id: &str,
     peer: u64,
     labels_of: &dyn Fn(&str) -> PeerLabels,
-    colour_of: &dyn Fn(u64) -> Option<ui::tokens::PresenceHue>,
+    colour_of: &dyn Fn(u64) -> Option<collab_types::presence::PresenceHue>,
     table: &FanoutState,
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
     announced: &mut Announced,
@@ -1760,7 +1760,7 @@ mod tests {
         fn the_colour_a_peer_wears_reaches_every_app_once() {
             const HANDLE: u64 = 77;
 
-            type Heard = Arc<Mutex<Vec<(String, Option<ui::tokens::PresenceHue>)>>>;
+            type Heard = Arc<Mutex<Vec<(String, Option<collab_types::presence::PresenceHue>)>>>;
             let table = Arc::new(super::FanoutState::new());
             let heard: Heard = Arc::new(Mutex::new(Vec::new()));
             let sink = Arc::clone(&heard);
@@ -1798,20 +1798,23 @@ mod tests {
                 heard.lock().unwrap().is_empty(),
                 "an unnamed peer that said no colour is not announced"
             );
-            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Violet);
+            *colour.lock().unwrap() = Some(collab_types::presence::PresenceHue::Violet);
             say();
             say();
             let id = format!("peer@{HANDLE}");
             assert_eq!(
                 heard.lock().unwrap().clone(),
-                vec![(id.clone(), Some(ui::tokens::PresenceHue::Violet))],
+                vec![(
+                    id.clone(),
+                    Some(collab_types::presence::PresenceHue::Violet)
+                )],
                 "the colour is said once, under the id"
             );
-            *colour.lock().unwrap() = Some(ui::tokens::PresenceHue::Teal);
+            *colour.lock().unwrap() = Some(collab_types::presence::PresenceHue::Teal);
             say();
             assert_eq!(
                 heard.lock().unwrap().last().cloned(),
-                Some((id, Some(ui::tokens::PresenceHue::Teal))),
+                Some((id, Some(collab_types::presence::PresenceHue::Teal))),
                 "a new choice is said again"
             );
         }
