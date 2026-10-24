@@ -80,9 +80,22 @@ evidence() {
   local rc=$?
   ((fails || rc)) || return 0
   local f
-  for f in "$out"/*-esp.txt; do [[ -f $f ]] && { echo "== $(basename "$f")"; cat "$f"; }; done
+  for f in "$out"/*-esp.txt; do
+    [[ -f $f ]] || continue
+    echo "== $(basename "$f")"; cat "$f"
+  done
   for f in "$out"/*-serial.log; do
-    [[ -f $f ]] && { echo "== $(basename "$f")"; grep -a -E 'tilo-boot-failure|systemd-boot|bless|Command line' "$f" | tail -20; }
+    [[ -f $f ]] || continue
+    echo "== $(basename "$f")"
+    grep -a -E 'tilo-boot-failure|systemd-boot|bless|Command line|reboot' "$f" | tail -20 || true
+  done
+  # The screens too, small, as base64 PNGs a person decodes from this log.
+  for f in "$out"/*.png; do
+    [[ -f $f ]] || continue
+    echo "== $(basename "$f") (base64 PNG, 640 px wide)"
+    python3 -c 'import sys, io, base64; from PIL import Image
+im = Image.open(sys.argv[1]); im.thumbnail((640, 640)); b = io.BytesIO(); im.save(b, "PNG", optimize=True)
+print(base64.b64encode(b.getvalue()).decode())' "$f" || true
   done
 }
 trap evidence EXIT
@@ -272,10 +285,10 @@ else
   bad "a root file system that does not mount shows the boot-failure screen"
 fi
 stop
+attach; dd if="$scratch/root-head" of="$(root_part)" bs=64K count=2 conv=notrunc status=none; detach
 inspect 5-sysroot
 check "its record names sysroot.mount" grep -qx 'unit=sysroot.mount' "$out/5-sysroot-esp.txt"
 attach
-dd if="$scratch/root-head" of="$(root_part)" bs=64K count=2 conv=notrunc status=none
 mount_esp
 rm -f "$mnt/esp/loader/entries/bootc_fedora-44-0-fake.conf"
 f=$(ls "$mnt/esp/loader/entries"/bootc*.conf | head -1)
