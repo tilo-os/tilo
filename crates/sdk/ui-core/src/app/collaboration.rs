@@ -813,6 +813,7 @@ impl App {
                 | CollabEvent::OpenSelectedResult { .. }
                 | CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::NearbyTransferChanged
+                | CollabEvent::SpeakersChanged
                 | CollabEvent::ActionCatalogue { .. }
                 | CollabEvent::ActionDirectoryPage { .. }
                 | CollabEvent::PublishedActionResolution { .. }
@@ -943,6 +944,7 @@ impl App {
             | CollabEvent::OpenSelectedV2Result { .. }
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
+            | CollabEvent::SpeakersChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_) => {}
         }

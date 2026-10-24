@@ -2015,6 +2015,8 @@ impl DeviceFabricRuntime {
         // After the store's follow-ups and expired consents: what Files
         // would see now, announced only when it moved.
         observe_nearby_view(network, policy);
+        // And what Settings' Speakers would see, while it waits to hear.
+        crate::shell::speaker_settings::observe(network);
         if policy.permits(ContinuityCapability::Media) {
             self.retry_waiting_media(network);
         }
