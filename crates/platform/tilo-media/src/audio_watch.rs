@@ -17,6 +17,12 @@
 //! This is the change source the session's single audio-graph owner can grow
 //! into: today it notifies, a graph reducer behind it can later publish the
 //! graph itself.
+//!
+//! [`watch_output_levels_and_capture`] also follows capture streams (a
+//! microphone or camera recording) for the privacy indicator: it reports how
+//! many are running each time that number changes, from the streams' own
+//! state on the same connection. Nothing is started to find out, and an idle
+//! graph reports nothing.
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -87,6 +93,57 @@ pub fn is_output_class(media_class: &str) -> bool {
     media_class == "Audio/Sink"
 }
 
+/// Whether `media_class` is a capture stream the privacy indicator
+/// attributes: an app recording a microphone, or a camera stream. The same
+/// classes `os_actions::active_media_uses` reads.
+pub fn is_capture_class(media_class: &str) -> bool {
+    matches!(
+        media_class,
+        "Stream/Input/Audio" | "Stream/Input/Video" | "Stream/Output/Video"
+    )
+}
+
+/// Which capture streams are running, so that only a change in that set is
+/// reported: a stream that is created, paused or resumed without changing
+/// whether it records is not news.
+#[derive(Debug, Default)]
+pub struct CaptureStreams {
+    running: BTreeSet<u32>,
+}
+
+impl CaptureStreams {
+    /// Capture stream `id` reported its state. Whether the running set
+    /// changed.
+    pub fn state(&mut self, id: u32, running: bool) -> bool {
+        if running {
+            self.running.insert(id)
+        } else {
+            self.running.remove(&id)
+        }
+    }
+
+    /// Global `id` went away. Whether it was a running capture stream.
+    pub fn removed(&mut self, id: u32) -> bool {
+        self.running.remove(&id)
+    }
+
+    /// How many capture streams are running.
+    pub fn running(&self) -> usize {
+        self.running.len()
+    }
+}
+
+/// What a watch follows besides the device graph.
+#[cfg_attr(
+    not(all(feature = "pipewire", target_os = "linux")),
+    expect(dead_code, reason = "only the native watch reads what to follow")
+)]
+struct Follow {
+    output_levels: bool,
+    /// Told how many capture streams run, on each change of that number.
+    capture: Option<Box<dyn Fn(usize) + Send>>,
+}
+
 /// A running watch. Dropping it stops and joins the loop thread.
 pub struct AudioGraphWatch {
     #[cfg(all(feature = "pipewire", target_os = "linux"))]
@@ -108,7 +165,13 @@ impl std::fmt::Debug for AudioGraphWatch {
 /// no native `PipeWire` support. The caller falls back to a slower way of
 /// observing — never to not observing.
 pub fn watch(notify: impl Fn(GraphWatchEvent) + Send + 'static) -> Result<AudioGraphWatch, String> {
-    spawn(notify, false)
+    spawn(
+        notify,
+        Follow {
+            output_levels: false,
+            capture: None,
+        },
+    )
 }
 
 /// Like [`watch`], and also reports a change of any output's volume or
@@ -122,21 +185,48 @@ pub fn watch(notify: impl Fn(GraphWatchEvent) + Send + 'static) -> Result<AudioG
 pub fn watch_output_levels(
     notify: impl Fn(GraphWatchEvent) + Send + 'static,
 ) -> Result<AudioGraphWatch, String> {
-    spawn(notify, true)
+    spawn(
+        notify,
+        Follow {
+            output_levels: true,
+            capture: None,
+        },
+    )
+}
+
+/// Like [`watch_output_levels`], and also tells `capture` how many capture
+/// streams ([`is_capture_class`]) are running: once with the baseline, then
+/// [`DEBOUNCE`] after the first change of a burst that moved the number of
+/// running streams. One connection serves both, so a status reader needs no
+/// second client, thread or process to keep the privacy indicator true.
+///
+/// # Errors
+///
+/// As [`watch`].
+pub fn watch_output_levels_and_capture(
+    notify: impl Fn(GraphWatchEvent) + Send + 'static,
+    capture: impl Fn(usize) + Send + 'static,
+) -> Result<AudioGraphWatch, String> {
+    spawn(
+        notify,
+        Follow {
+            output_levels: true,
+            capture: Some(Box::new(capture)),
+        },
+    )
 }
 
 fn spawn(
     notify: impl Fn(GraphWatchEvent) + Send + 'static,
-    output_levels: bool,
+    follow: Follow,
 ) -> Result<AudioGraphWatch, String> {
     #[cfg(all(feature = "pipewire", target_os = "linux"))]
     {
-        native::spawn(notify, output_levels).map(|native| AudioGraphWatch { _native: native })
+        native::spawn(notify, follow).map(|native| AudioGraphWatch { _native: native })
     }
     #[cfg(not(all(feature = "pipewire", target_os = "linux")))]
     {
-        drop(notify);
-        let _ = output_levels;
+        drop((notify, follow));
         Err("native PipeWire support is not compiled in".into())
     }
 }
@@ -156,8 +246,8 @@ mod native {
     use pw::types::ObjectType;
 
     use super::{
-        DEBOUNCE, DeviceGlobals, GlobalKind, GraphWatchEvent, is_default_device_key,
-        is_output_class,
+        CaptureStreams, DEBOUNCE, DeviceGlobals, Follow, GlobalKind, GraphWatchEvent,
+        is_capture_class, is_default_device_key, is_output_class,
     };
 
     pub(super) struct Watch {
@@ -178,13 +268,13 @@ mod native {
 
     pub(super) fn spawn(
         notify: impl Fn(GraphWatchEvent) + Send + 'static,
-        output_levels: bool,
+        follow: Follow,
     ) -> Result<Watch, String> {
         let (ready_tx, ready_rx) = sync_channel(1);
         let (stop, stop_rx) = pw::channel::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("tilo-audio-graph".into())
-            .spawn(move || run(&notify, output_levels, stop_rx, &ready_tx))
+            .spawn(move || run(&notify, &follow, stop_rx, &ready_tx))
             .map_err(|error| format!("start audio graph watch: {error}"))?;
         let watch = Watch {
             stop,
@@ -203,7 +293,8 @@ mod native {
     /// that order, so the listener drops before the proxy it listens on.
     type Bound = (u32, pw::metadata::MetadataListener, pw::metadata::Metadata);
 
-    /// A bound output node: its `Props` listener and proxy, listener first.
+    /// A bound node: its listener and proxy, listener first. An output's
+    /// listener follows its `Props`, a capture stream's its state.
     type Output = (pw::node::NodeListener, pw::node::Node);
 
     type Connected = (
@@ -243,10 +334,12 @@ mod native {
     )]
     fn run(
         notify: &dyn Fn(GraphWatchEvent),
-        output_levels: bool,
+        follow: &Follow,
         stop_rx: pw::channel::Receiver<()>,
         ready: &SyncSender<Result<(), String>>,
     ) {
+        let output_levels = follow.output_levels;
+        let follow_capture = follow.capture.is_some();
         let (mainloop, _context, core, registry) = match connect() {
             Ok(connected) => connected,
             Err(error) => {
@@ -264,9 +357,14 @@ mod native {
         let globals = Rc::new(RefCell::new(DeviceGlobals::default()));
         let metadata = Rc::new(RefCell::new(None::<Bound>));
         let outputs = Rc::new(RefCell::new(BTreeMap::<u32, Output>::new()));
+        // When the first change to the running capture streams not yet
+        // reported happened, those streams, and their bound nodes.
+        let capture_dirty = Rc::new(Cell::new(None::<Instant>));
+        let capture = Rc::new(RefCell::new(CaptureStreams::default()));
+        let streams = Rc::new(RefCell::new(BTreeMap::<u32, Output>::new()));
 
-        let mark = {
-            let dirty = Rc::clone(&dirty);
+        let marker = |dirty: &Rc<Cell<Option<Instant>>>| {
+            let dirty = Rc::clone(dirty);
             let live = Rc::clone(&live);
             move || {
                 if live.get() && dirty.get().is_none() {
@@ -274,6 +372,8 @@ mod native {
                 }
             }
         };
+        let mark = marker(&dirty);
+        let mark_capture = marker(&capture_dirty);
 
         let _stop = stop_rx.attach(mainloop.loop_(), {
             let stopped = Rc::clone(&stopped);
@@ -307,7 +407,10 @@ mod native {
                 let globals = Rc::clone(&globals);
                 let metadata = Rc::clone(&metadata);
                 let outputs = Rc::clone(&outputs);
+                let capture = Rc::clone(&capture);
+                let streams = Rc::clone(&streams);
                 let mark = mark.clone();
+                let mark_capture = mark_capture.clone();
                 move |global| {
                     let props = global.props.as_ref();
                     let property = |key: &str| props.and_then(|props| props.get(key));
@@ -362,15 +465,48 @@ mod native {
                         node.subscribe_params(&[pw::spa::param::ParamType::Props]);
                         outputs.borrow_mut().insert(global.id, (listener, node));
                     }
+                    if follow_capture
+                        && kind == GlobalKind::Node
+                        && property("media.class").is_some_and(is_capture_class)
+                        && let Ok(node) = registry.bind::<pw::node::Node, _>(global)
+                    {
+                        // Bound, the node reports its whole info, state
+                        // included, and then each change of it.
+                        let id = global.id;
+                        let listener = node
+                            .add_listener_local()
+                            .info({
+                                let capture = Rc::clone(&capture);
+                                let mark_capture = mark_capture.clone();
+                                move |info| {
+                                    // The raw state: `NodeInfoRef::state`
+                                    // panics on an error without a message.
+                                    let running = info.as_raw().state
+                                        == pw::sys::pw_node_state_PW_NODE_STATE_RUNNING;
+                                    if capture.borrow_mut().state(id, running) {
+                                        mark_capture();
+                                    }
+                                }
+                            })
+                            .register();
+                        streams.borrow_mut().insert(id, (listener, node));
+                    }
                 }
             })
             .global_remove({
                 let globals = Rc::clone(&globals);
                 let metadata = Rc::clone(&metadata);
                 let outputs = Rc::clone(&outputs);
+                let capture = Rc::clone(&capture);
+                let streams = Rc::clone(&streams);
                 move |id| {
                     let output = outputs.borrow_mut().remove(&id);
                     drop(output);
+                    let stream = streams.borrow_mut().remove(&id);
+                    drop(stream);
+                    if capture.borrow_mut().removed(id) {
+                        mark_capture();
+                    }
                     let unbound = metadata
                         .borrow()
                         .as_ref()
@@ -396,8 +532,18 @@ mod native {
         if ready.send(Ok(())).is_err() {
             return;
         }
+        let report_capture = || {
+            if let Some(report) = &follow.capture {
+                report(capture.borrow().running());
+            }
+        };
         loop {
-            let timeout = match dirty.get() {
+            // The first change of either kind still to report.
+            let first = match (dirty.get(), capture_dirty.get()) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            let timeout = match first {
                 // Rounded up: the loop counts milliseconds, and rounding a
                 // remainder down to zero would spin until it elapsed.
                 Some(since) => pw::loop_::Timeout::Finite(
@@ -430,7 +576,9 @@ mod native {
                     phase = Phase::Live;
                     live.set(true);
                     dirty.set(None);
+                    capture_dirty.set(None);
                     notify(GraphWatchEvent::Changed);
+                    report_capture();
                 }
             }
             if let Some(since) = dirty.get()
@@ -438,6 +586,12 @@ mod native {
             {
                 dirty.set(None);
                 notify(GraphWatchEvent::Changed);
+            }
+            if let Some(since) = capture_dirty.get()
+                && since.elapsed() >= DEBOUNCE
+            {
+                capture_dirty.set(None);
+                report_capture();
             }
         }
     }
@@ -482,6 +636,29 @@ mod tests {
         assert!(is_default_device_key("default.audio.source"));
         assert!(!is_default_device_key("default.video.source"));
         assert!(!is_default_device_key("default.configured.audio.sink"));
+    }
+
+    #[test]
+    fn only_recording_streams_are_capture() {
+        assert!(is_capture_class("Stream/Input/Audio"), "a microphone");
+        assert!(is_capture_class("Stream/Input/Video"), "a camera");
+        assert!(!is_capture_class("Stream/Output/Audio"), "playing a sound");
+        assert!(!is_capture_class("Audio/Source"), "the microphone device");
+    }
+
+    #[test]
+    fn only_a_change_in_which_capture_streams_run_is_news() {
+        let mut streams = CaptureStreams::default();
+        assert!(!streams.state(7, false), "a stream created paused");
+        assert!(streams.state(7, true), "it starts recording");
+        assert!(!streams.state(7, true), "the same state reported again");
+        assert!(streams.state(8, true), "a second app records");
+        assert_eq!(streams.running(), 2);
+        assert!(streams.state(8, false), "it pauses");
+        assert!(!streams.removed(8), "a paused stream ending");
+        assert!(!streams.removed(9), "a client disconnecting");
+        assert!(streams.removed(7), "a recording app quits");
+        assert_eq!(streams.running(), 0);
     }
 
     #[cfg(not(all(feature = "pipewire", target_os = "linux")))]
