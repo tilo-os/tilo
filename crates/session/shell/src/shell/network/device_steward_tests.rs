@@ -11,7 +11,9 @@ use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use collab_types::{ContentRetention, document_artifact_id, document_channel_id};
+use collab_types::{
+    ContentRetention, MlsGovernanceAction, document_artifact_id, document_channel_id,
+};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -145,6 +147,45 @@ impl GovernanceTransport for Recording<'_> {
         }
         inbound
     }
+}
+
+/// One line per frame of `channel`: its transaction, the frame it follows,
+/// its epoch and what it does, so a failure shows each steward's chain.
+fn describe(
+    frames: &[collab_types::MlsGovernanceFrameV1],
+    channel: collab_types::ChannelId,
+) -> String {
+    frames
+        .iter()
+        .filter(|frame| frame.channel == channel)
+        .map(|frame| {
+            format!(
+                "  {} after {} epoch {} {}",
+                hex::encode(&frame.transaction_id[..4]),
+                hex::encode(&frame.previous_frame_digest[..4]),
+                frame.epoch,
+                match &frame.action {
+                    MlsGovernanceAction::Add { recipient, .. } => {
+                        format!("adds {}", hex::encode(&recipient.as_bytes()[..4]))
+                    }
+                    MlsGovernanceAction::AddWithKeyHistory { recipients, .. } => format!(
+                        "adds {} with key history",
+                        recipients
+                            .iter()
+                            .map(|recipient| hex::encode(&recipient.as_bytes()[..4]))
+                            .collect::<Vec<_>>()
+                            .join(" and ")
+                    ),
+                    MlsGovernanceAction::Remove { removed, .. } => {
+                        format!("removes {}", hex::encode(&removed.as_bytes()[..4]))
+                    }
+                    MlsGovernanceAction::EnableEncryption { .. } => "enables encryption".into(),
+                    MlsGovernanceAction::Genesis => "genesis".into(),
+                }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A collaborator joins a room hosted on the owner's device, and both open
@@ -296,6 +337,11 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
          keys at epoch {} on the owner's device and {} on the collaborator's",
         owner_keys.epoch(),
         member_keys.epoch()
+    );
+    eprintln!(
+        "frames the owner's broker sent:\n{}\nframes the collaborator received:\n{}",
+        describe(&owner_transport.sent.borrow(), channel),
+        describe(&member_transport.received.borrow(), channel)
     );
     // What the owner's device seals, the collaborator's opens.
     assert_eq!(
