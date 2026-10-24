@@ -35,10 +35,11 @@ use crate::shell::state::{
     WorkspaceTree, WorkspaceTreeHandle,
 };
 
-// `home_relay` and `live_frames` add a relay to a room's hosting members
-// and take it away again, which the network has no call for yet, and
-// `channels` reads a relay's retained state through `home_relay`: they join
-// the suite with that call.
+// `live_frames` adds a relay to a room's hosting members and takes it away
+// again, and `channels` reads a relay's retained state through
+// `home_relay`: they join the suite once they run against the network's
+// hosting-member calls, as `home_relay` does.
+mod home_relay;
 #[cfg(target_os = "linux")]
 mod idle_host;
 mod invite_join;

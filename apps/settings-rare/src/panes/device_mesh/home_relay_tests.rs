@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use super::{DeviceMeshEffect, DeviceMeshModel, PairingHost};
+use super::tests::PairingHost;
+use super::{DeviceMeshEffect, DeviceMeshModel};
 
 pub(super) const PERSONAL_ROOM: &str = "4d6f1a2c-0000-4000-8000-000000000001";
 pub(super) const STUDIO_ROOM: &str = "4d6f1a2c-0000-4000-8000-000000000002";
@@ -55,7 +56,7 @@ fn a_workspace_is_put_on_the_home_relay_through_the_host() {
     );
     pane.poll_background_tasks();
     pane.poll_background_tasks();
-    let asked = host.asked.lock().unwrap();
+    let asked = host.asked();
     let set = asked
         .iter()
         .find(|request| request.target.address.action == home_relay_hosting::SET)
@@ -65,7 +66,6 @@ fn a_workspace_is_put_on_the_home_relay_through_the_host() {
     };
     assert_eq!(arguments["room"], STUDIO_ROOM);
     assert_eq!(arguments["on"], true);
-    drop(asked);
     assert_eq!(
         on_relay(&pane),
         [("Personal".to_owned(), true), ("Studio".to_owned(), true)],

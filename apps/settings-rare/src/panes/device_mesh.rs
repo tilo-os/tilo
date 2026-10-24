@@ -27,6 +27,8 @@ use settings_store::roaming_provenance::{Origin, RoamingProvenance};
 
 mod devices;
 mod home_relay;
+#[cfg(test)]
+mod home_relay_tests;
 
 crate::effects::effect_family!(DeviceMeshEffect => answer);
 
@@ -2619,12 +2621,12 @@ mod tests {
     /// The host's pairing actions, in process: it records what it was asked
     /// and answers the way the host does.
     #[derive(Default)]
-    struct PairingHost {
+    pub(super) struct PairingHost {
         asked: Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
     }
 
     impl PairingHost {
-        fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
+        pub(super) fn asked(&self) -> Vec<ui::tilo_actions::remote::InvokeRequest> {
             self.asked.lock().unwrap().clone()
         }
     }
@@ -2667,8 +2669,8 @@ mod tests {
                 serde_json::json!({
                     "relay": "Home server",
                     "workspaces": [
-                        { "room": home_relay::PERSONAL_ROOM, "name": "Personal", "on_relay": true },
-                        { "room": home_relay::STUDIO_ROOM, "name": "Studio", "on_relay": studio_on },
+                        { "room": super::home_relay_tests::PERSONAL_ROOM, "name": "Personal", "on_relay": true },
+                        { "room": super::home_relay_tests::STUDIO_ROOM, "name": "Studio", "on_relay": studio_on },
                     ],
                 })
             } else if request.target.provider == identity_admin::PROVIDER {
@@ -2731,9 +2733,6 @@ mod tests {
             Ok(())
         }
     }
-
-    #[path = "../home_relay_tests.rs"]
-    mod home_relay;
 
     /// The device fleet and the root key are the host's: the pane lists the
     /// devices and revokes one through its identity actions, with the
