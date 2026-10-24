@@ -81,7 +81,7 @@ use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use support::{Device, ROOM, enrol, ready, start_peer, workspace};
+use support::{Device, ROOM, enrol, ready, start_peer};
 
 const SHEETS: &str = "so.tilo.sheets";
 const SLIDES: &str = "so.tilo.slides";
@@ -1076,7 +1076,7 @@ async fn every_listed_themes_action_is_one_the_host_can_run() {
     let retained = hosted
         .relay
         .room_records()
-        .retained(workspace())
+        .retained(support::workspace())
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(
@@ -1343,7 +1343,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let retained = hosted
         .relay
         .room_records()
-        .retained(workspace())
+        .retained(support::workspace())
         .await
         .unwrap();
     let (readable, _) = common::retained_documents(

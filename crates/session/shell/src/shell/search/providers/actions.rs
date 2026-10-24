@@ -6845,7 +6845,9 @@ mod tests {
         let (_directory, owner, room, _now, _key) =
             crate::shell::native_workspace_owner::test_enrolled_owner();
         let governor = person_id_of(
-            native_governor(Some(owner.clone()), room).expect("the room's admitted governor"),
+            native_governor(Some(owner.clone()), room)
+                .expect("the room's admitted governor")
+                .person,
         )
         .expect("person id");
         let other = person_id_of(
@@ -9003,6 +9005,7 @@ mod tests {
 
     mod membership;
     use membership::governed;
+    pub(crate) use membership::invoke_shell_action;
 
     /// The notification centre's controls are actions too: an agent or a
     /// screen reader opens the list, clears it and brings it back as a click

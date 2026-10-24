@@ -29,7 +29,7 @@ fn chrome_with_member(member: &str) -> Chrome {
 /// exact address in a catalog, then bind and run its JSON arguments.
 /// Every action stays selectable, so the provider's own authority
 /// check is the one under test.
-pub(super) fn invoke_shell_action(
+pub(crate) fn invoke_shell_action(
     chrome: &Chrome,
     id: &str,
     args: &serde_json::Value,

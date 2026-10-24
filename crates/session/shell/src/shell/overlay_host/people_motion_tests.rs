@@ -15,7 +15,7 @@ fn host() -> ShellOverlayHost {
         let state = chrome.borrow();
         state
             .tree_mut()
-            .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+            .claim_own_unhosted_rooms(crate::shell::state::local_user_id_for_room);
     }
     chrome.borrow_mut().peer_sync_enabled = true;
     let mut host = ShellOverlayHost::with_fixture_content(Box::new(ui::widget::Container::new()))

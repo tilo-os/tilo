@@ -834,13 +834,14 @@ fn the_desktop_sessions_workspace_takes_no_grants_here() {
 
     assert!(!grants.may_grant(&room, "owner"));
     assert!(
-        grants
-            .record(
+        tilo_rt::app()
+            .handle()
+            .block_on(grants.record(
                 &consent(&room, "owner"),
                 app_grant(&room),
                 AppActionConsent::Always
-            )
-            .is_none()
+            ))
+            .is_err()
     );
     grants.revoke(&room, "owner-1");
     assert_eq!(std::fs::read(&desktop).unwrap(), bytes, "never rewritten");
