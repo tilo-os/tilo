@@ -1403,8 +1403,11 @@ fn wl_output_names_are_the_head_names() {
 }
 
 /// The greeter's startup configuration over `connection`, settled or not.
+/// The greeter's configuration, given the shared hang bound rather than the
+/// sign-in window's two seconds: this harness answers the request itself
+/// between the test's own steps, which a loaded machine stretches past that.
 fn greeter_configures(connection: &Connection) -> Result<(), &'static str> {
-    greeter::output_scale::configure_connection(connection)
+    greeter::output_scale::configure_connection_within(connection, tilo_test_env::hang_bound())
         .map(drop)
         .map_err(|(error, _)| error)
 }
@@ -1556,7 +1559,7 @@ fn greeter_scales_each_output_and_keeps_the_layout_contiguous() {
         .unwrap();
     let connection = Connection::from_socket(client).unwrap();
     let worker = std::thread::spawn(move || {
-        let _ = greeter::output_scale::configure_connection(&connection);
+        let _ = greeter_configures(&connection);
     });
     harness.pump_separate_client("greeter output request", || {
         DisplayTransaction::load().is_some_and(|value| Some(value.id) != previous_transaction)
