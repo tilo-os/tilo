@@ -92,6 +92,25 @@ const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// A page action that started a navigation waits this long for it to load.
 const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// What a page action answers while the page waits on its own question:
+/// the page runs nothing until the question is answered.
+fn page_question_failure(
+    invocation: ui::tilo_actions::InvocationId,
+) -> ui::tilo_actions::InvocationUpdate {
+    ui::tilo_actions::InvocationUpdate::Failed {
+        invocation,
+        error: ui::tilo_actions::ActionFailure {
+            code: "browser.page.question".into(),
+            message: format!(
+                "The page waits for an answer to its question: answer it on {}",
+                crate::page_dialogs::ROW
+            ),
+            details: None,
+            retryable: false,
+        },
+    }
+}
+
 /// A page action admitted through the resource surface.
 struct PageOperation {
     invocation: ui::tilo_actions::InvocationId,
@@ -1839,6 +1858,12 @@ impl BrowserWidget {
         if self.page_operation.is_some() || self.page_operation_result.is_some() {
             return Err("another page action is already running in this tab".into());
         }
+        // The page runs nothing while it waits on its question: an action
+        // sent now would only time out.
+        if self.page_dialogs.current().is_some() {
+            self.page_operation_result = Some(page_question_failure(invocation));
+            return Ok(());
+        }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
@@ -1910,18 +1935,7 @@ impl BrowserWidget {
             return;
         };
         self.reader_request = None;
-        self.page_operation_result = Some(ui::tilo_actions::InvocationUpdate::Failed {
-            invocation: operation.invocation,
-            error: ui::tilo_actions::ActionFailure {
-                code: "browser.page.question".into(),
-                message: format!(
-                    "The page waits for an answer to its question: answer it on {}",
-                    crate::page_dialogs::ROW
-                ),
-                details: None,
-                retryable: false,
-            },
-        });
+        self.page_operation_result = Some(page_question_failure(operation.invocation));
     }
 
     fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
@@ -5718,7 +5732,9 @@ impl BrowserWidget {
             }
             let enabled = !self.reader_view;
             self.start_page_operation(invocation, PageRequest::Reader { enabled })?;
-            self.reader_request = Some(enabled);
+            // Refused at once (the page waits on its question), nothing is
+            // to follow the reply.
+            self.reader_request = self.page_operation.is_some().then_some(enabled);
             return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(
