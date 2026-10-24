@@ -886,7 +886,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     // Profile-backed windows need their exact record before launch. Native
     // committed rooms read through their owner: an app profile is neither
     // required nor an authority fallback for that path.
-    if !item.local && !tree.commits_native_documents(ws.room()) {
+    if !item.local && tree.seals_records(ws.room()) {
         bring_over_continued_record(item, ws.room())?;
     }
     stage_continuation_for_tab(tree, item);
