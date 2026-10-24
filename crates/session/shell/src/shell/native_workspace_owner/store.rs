@@ -184,7 +184,7 @@ pub(super) struct Runtime {
     /// The tree document beside the state file.
     document: crate::shell::persist::DocLog,
     /// The action policy this writer's tree has published.
-    action_authority: Arc<crate::shell::launcher::action_authority::Authority>,
+    action_authority: Arc<crate::shell::action_authority::Authority>,
     /// An owner publication between taking its sequence and installing its
     /// record, and whether a snapshot of the tree was taken meanwhile. Read
     /// and changed only with the tree held, so a snapshot and the install
@@ -287,9 +287,7 @@ impl NativeStateRuntime {
         NativeStateWitness(Arc::downgrade(&self.0))
     }
     /// The action policy this writer's tree has published.
-    pub(crate) fn action_authority(
-        &self,
-    ) -> Arc<crate::shell::launcher::action_authority::Authority> {
+    pub(crate) fn action_authority(&self) -> Arc<crate::shell::action_authority::Authority> {
         self.0.action_authority.clone()
     }
     pub(crate) fn owner(&self) -> Option<NativeWorkspaceOwner> {

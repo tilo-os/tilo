@@ -1093,7 +1093,7 @@ mod tests {
             crate::shell::state::WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
         // Match session startup: launch gates wait for the tree's accepted
         // policy revision before judging a document's newly granted read.
-        launcher::action_authority::follow_tree(&handle);
+        crate::shell::action_authority::follow_tree(&handle);
         ChromeState::new_with_handle(handle)
     }
 

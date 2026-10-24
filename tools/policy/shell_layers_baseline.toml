@@ -30,14 +30,6 @@
     "crate::shell::overlay_host",
 ]
 
-# The headless runtime session publishes its room's accepted action policy at start, as
-# the native shell does when it builds the desktop, through the launcher's process-wide
-# policy table that launches are admitted against. This goes when that table moves below
-# the launcher with the workspace model.
-"src/runtime_host.rs" = [
-    "crate::shell::launcher",
-]
-
 # Peer presence measures tiles with vello's re-exported geometry types. This goes when
 # it takes kurbo or its own rectangle type.
 "src/shell/peer_presence.rs" = [

@@ -1,6 +1,11 @@
 //! Project accepted action policy and interrupt withdrawn sandbox authority.
 //! This observer never creates or expands grants.
-use super::{InstalledApp, LaunchCommand, lock, runtime_dir};
+//!
+//! It sits beside the workspace model rather than in the launcher: every save
+//! of the tree publishes through it, the compositor-free runtime host included.
+//! The launcher attaches a launch to it ([`attach_optional`]) and holds the
+//! [`Lease`] for the launch's lifetime.
+use crate::shell::host_runtime::write_runtime_private;
 use crate::shell::state::RoomId;
 use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
 use collab_types::caps::CapOverride;
@@ -9,6 +14,15 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
+use tilo_lock::MutexRecover as _;
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock_recover()
+}
+
+fn runtime_dir() -> PathBuf {
+    tilo_paths::xdg::runtime_dir_or_default()
+}
 
 #[cfg(target_os = "linux")]
 mod sandbox_revocation;
@@ -420,7 +434,7 @@ fn write_binding(
         // the compositor's loop takes it every iteration, so a sync under I/O
         // pressure would freeze the desktop. The sandbox reads the file
         // through the page cache, and a crash discards it with the session.
-        super::write_runtime_private(&path, &bytes)?;
+        write_runtime_private(&path, &bytes)?;
         match published.bindings.get_mut(binding) {
             Some(state) => state.projection = projection,
             None => {
@@ -437,22 +451,24 @@ fn write_binding(
     Ok(path)
 }
 
-pub(super) fn attach(
-    app: &InstalledApp,
+/// Stage `package_id`'s projection of `room`'s accepted policy and pass its
+/// path to the launch in `args` (`--action-authority <path>`).
+pub(crate) fn attach(
+    package_id: &str,
     room: RoomId,
-    command: &mut LaunchCommand,
+    args: &mut Vec<String>,
 ) -> std::io::Result<Lease> {
-    attach_to(followed_authority(), app, room, command)
+    attach_to(followed_authority(), package_id, room, args)
 }
 
 fn attach_to(
     authority: Arc<Authority>,
-    app: &InstalledApp,
+    package_id: &str,
     room: RoomId,
-    command: &mut LaunchCommand,
+    args: &mut Vec<String>,
 ) -> std::io::Result<Lease> {
     let person = crate::shell::state::local_user_id_for_room(&room);
-    let binding = (room, app.package_id.clone(), person);
+    let binding = (room, package_id.to_owned(), person);
     let mut published = lock(&authority.published);
     let path = write_binding(&mut published, &binding, true)?;
     if let Some(state) = published.bindings.get_mut(&binding) {
@@ -460,8 +476,8 @@ fn attach_to(
     }
     published.next_refresh = Instant::now().checked_add(Duration::from_secs(1));
     drop(published);
-    command.args.push("--action-authority".into());
-    command.args.push(path.display().to_string());
+    args.push("--action-authority".into());
+    args.push(path.display().to_string());
     Ok(Lease {
         authority,
         binding,
@@ -476,15 +492,15 @@ fn attach_to(
 }
 
 /// A missing projection does not grant Admin or refuse a manifest-only launch.
-pub(super) fn attach_optional(
-    app: &InstalledApp,
+pub(crate) fn attach_optional(
+    package_id: &str,
     room: RoomId,
-    command: &mut LaunchCommand,
+    args: &mut Vec<String>,
 ) -> Option<Lease> {
-    match attach(app, room, command) {
+    match attach(package_id, room, args) {
         Ok(lease) => Some(lease),
         Err(error) => {
-            tracing::warn!(%room, package_id = %app.package_id, %error, "could not stage host action authority; Admin actions remain unavailable");
+            tracing::warn!(%room, %package_id, %error, "could not stage host action authority; Admin actions remain unavailable");
             None
         }
     }
@@ -607,28 +623,29 @@ pub(crate) struct Lease {
     pid: Option<u32>,
     capabilities_file: Option<tempfile::NamedTempFile>,
     retained_projection: Option<tempfile::TempDir>,
+    /// The launcher's selected-target lifetime, held as long as the lease.
     #[cfg(target_os = "linux")]
-    selected_target: Option<Arc<super::retained_home::selected_target::TargetLifetime>>,
+    selected_target: Option<Arc<dyn std::any::Any + Send + Sync>>,
     /// The tree's policy revision when the grants above were captured.
     revision: Option<u64>,
 }
 impl Lease {
     #[cfg(target_os = "linux")]
-    pub(super) fn retain_selected_target(
+    pub(crate) fn retain_selected_target(
         mut self,
-        target: Arc<super::retained_home::selected_target::TargetLifetime>,
+        target: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Self {
         self.selected_target = Some(target);
         self
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn retain_home_projection(mut self, projection: tempfile::TempDir) -> Self {
+    pub(crate) fn retain_home_projection(mut self, projection: tempfile::TempDir) -> Self {
         self.retained_projection = Some(projection);
         self
     }
 
-    pub(super) fn with_sandbox_capabilities(
+    pub(crate) fn with_sandbox_capabilities(
         mut self,
         capabilities: Vec<CapOverride>,
         file: Option<tempfile::NamedTempFile>,
@@ -640,7 +657,7 @@ impl Lease {
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn retained_release(
+    pub(crate) fn retained_release(
         &mut self,
         pid: u32,
         room: RoomId,
@@ -657,7 +674,7 @@ impl Lease {
     }
 
     #[cfg(target_os = "linux")]
-    pub(super) fn register_sandbox(&mut self, pid: u32) -> std::io::Result<()> {
+    pub(crate) fn register_sandbox(&mut self, pid: u32) -> std::io::Result<()> {
         let sandbox =
             sandbox_revocation::Sandbox::capture(pid, self.binding.clone(), &self.capabilities)?;
         // The published policy lags the tree its grants were captured from:
@@ -982,50 +999,24 @@ mod tests {
     }
     #[test]
     fn action_authority_lease_follows_live_supervisor_borrowers_and_idle_renewal() {
-        let app = InstalledApp {
-            package_id: "so.tilo.authority-probe".into(),
-            display_name: "Authority probe".into(),
-            localized_names: BTreeMap::default(),
-            keywords: Vec::new(),
-            category: None,
-            version: "1".into(),
-            manifest_path: "/unused/manifest".into(),
-            payload_root: "/unused/payload".into(),
-            has_gui: true,
-            opens_extensions: vec![],
-            opens_mime_types: vec![],
-            opens_uri_schemes: vec![],
-            opens_secondary: false,
-            offers: Vec::new(),
-        };
+        let package_id = "so.tilo.authority-probe";
         let room = RoomId::new();
-        let mut command = LaunchCommand {
-            program: "/unused/launcher".into(),
-            args: vec![],
-            env: vec![],
-            service_identity: None,
-            portal_workspace_id: None,
-            managed_agent_id: None,
-            x11_workspace: None,
-        };
+        let mut args = Vec::new();
         let authority = Arc::new(Authority::default());
         // Renewal runs on this authority's own writer, which other tests'
         // saves do not queue on.
         let writer = authority.own_writer();
-        let first = attach_to(authority.clone(), &app, room, &mut command).unwrap();
+        let first = attach_to(authority.clone(), package_id, room, &mut args).unwrap();
         let binding = first.binding.clone();
         let path = binding_path(&binding);
-        assert_eq!(
-            command.args,
-            vec!["--action-authority", path.to_str().unwrap()]
-        );
+        assert_eq!(args, vec!["--action-authority", path.to_str().unwrap()]);
         let before: AppActionAuthorityProjection =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(
             before.policy.owner, None,
             "unknown room must have no management authority"
         );
-        let second = attach_to(authority.clone(), &app, room, &mut command).unwrap();
+        let second = attach_to(authority.clone(), package_id, room, &mut args).unwrap();
         assert_eq!(lock(&authority.published).bindings[&binding].borrowers, 2);
         assert!(authority.next_deadline().is_some());
         authority.clone().tick(
@@ -1281,7 +1272,7 @@ mod tests {
             lock(&authority.published)
                 .sandboxes
                 .contains_key(&child.id())
-                && super::super::proc_stat(child.id()).is_some()
+                && crate::shell::host_runtime::proc_stat(child.id()).is_some()
         };
         let before = Export::of(&tree.read());
 

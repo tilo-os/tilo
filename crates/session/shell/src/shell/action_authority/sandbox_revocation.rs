@@ -22,7 +22,7 @@ fn process_handle(pid: u32, start_time: u64) -> io::Result<OwnedFd> {
     }
     // SAFETY: the successful syscall returned an exclusively owned descriptor.
     let handle = unsafe { OwnedFd::from_raw_fd(i32::try_from(fd).map_err(io::Error::other)?) };
-    if super::super::proc_stat(pid).is_none_or(|(_, current)| current != start_time) {
+    if crate::shell::host_runtime::proc_stat(pid).is_none_or(|(_, current)| current != start_time) {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "launch process identity changed",
@@ -33,7 +33,7 @@ fn process_handle(pid: u32, start_time: u64) -> io::Result<OwnedFd> {
 
 impl Sandbox {
     pub(super) fn capture(pid: u32, binding: Binding, caps: &[CapOverride]) -> io::Result<Self> {
-        let (_, start_time) = super::super::proc_stat(pid)
+        let (_, start_time) = crate::shell::host_runtime::proc_stat(pid)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "launch process is absent"))?;
         Ok(Self {
             handle: process_handle(pid, start_time)?,
@@ -113,7 +113,8 @@ impl Sandbox {
         // killing its namespace init also closes descriptors in later forks.
         signal(&self.handle, libc::SIGSTOP);
         let mut processes = BTreeMap::new();
-        if super::super::proc_stat(self.pid).is_some_and(|(_, start)| start == self.start_time)
+        if crate::shell::host_runtime::proc_stat(self.pid)
+            .is_some_and(|(_, start)| start == self.start_time)
             && let Ok(entries) = std::fs::read_dir("/proc")
         {
             for entry in entries.flatten() {
@@ -121,7 +122,7 @@ impl Sandbox {
                     .file_name()
                     .to_str()
                     .and_then(|name| name.parse::<u32>().ok())
-                    && let Some(stat) = super::super::proc_stat(pid)
+                    && let Some(stat) = crate::shell::host_runtime::proc_stat(pid)
                 {
                     processes.insert(pid, stat);
                 }
@@ -463,7 +464,7 @@ mod tests {
         // The production staging path supplies the same reduced vector to
         // the child and the supervisor, not just a filtered policy file.
         assert!(
-            super::super::super::stage_launch_capabilities("so.tilo.reader", &mut grants,)
+            crate::shell::launcher::stage_launch_capabilities("so.tilo.reader", &mut grants,)
                 .is_none()
         );
         assert!(grants.sandbox.is_empty());
@@ -476,7 +477,7 @@ mod tests {
     #[test]
     fn process_handle_refuses_a_reused_numeric_pid() {
         let mut process = Process::new();
-        let (_, start) = super::super::super::proc_stat(process.0.id()).unwrap();
+        let (_, start) = crate::shell::host_runtime::proc_stat(process.0.id()).unwrap();
         assert!(process_handle(process.0.id(), start.saturating_add(1)).is_err());
         assert!(process.0.try_wait().unwrap().is_none());
     }

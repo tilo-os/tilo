@@ -8,7 +8,8 @@ pub(crate) mod discovery;
 pub(crate) mod open_selected;
 pub(crate) mod selected_target;
 
-use super::{InstalledApp, LaunchCommand, action_authority};
+use super::{InstalledApp, LaunchCommand};
+use crate::shell::action_authority;
 use crate::shell::{
     collab_broker::NativePersonalSession, native_workspace_owner::NativeWorkspaceOwner,
     state::RoomId,
