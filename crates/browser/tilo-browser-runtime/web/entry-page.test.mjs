@@ -94,6 +94,26 @@ test('a page the host refuses compiles no renderer for the next page to wait on'
   assert.deepEqual(prepared, []);
 });
 
+test('the account choice says it is the account choice, and resolves to the account taken', async () => {
+  // Pages driving a link wait for this card rather than counting buttons
+  // against a clock.
+  const accounts = [{displayName: 'Fixture reader', userPublicKey: USER}, {displayName: '', userPublicKey: 'bb'.repeat(32)}];
+  let chosen;
+  const {failure} = await fixture({boot: async ({deps}, page) => {
+    const choice = deps.chooseAccount(accounts);
+    const shown = document.body.children.filter(form => form.dataset.card === 'accounts');
+    assert.equal(shown.length, 1, 'one account choice is shown');
+    const buttons = shown[0].children.find(child => child.className === 'tilo-entry-options' || child.className === 'tilo-entry-actions').children;
+    assert.deepEqual(buttons.map(button => button.textContent), ['Fixture reader', 'bbbbbbbbbbbb']);
+    buttons[1].listeners.get('click')();
+    chosen = await choice;
+    return page;
+  }});
+  assert.equal(failure, null);
+  assert.equal(chosen, accounts[1]);
+  assert.equal(document.body.children.filter(form => form.dataset.card === 'accounts').length, 0, 'taking an account closes the choice');
+});
+
 test('rooms another host held at the origin of the page host are no longer offered', async () => {
   // The host at ORIGIN was set up again on fresh state twice since this
   // browser entered rooms there; both rooms went with the hosts before.
