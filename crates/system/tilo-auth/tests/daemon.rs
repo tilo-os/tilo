@@ -26,7 +26,7 @@ use tilo_auth::daemon::{Answer, Config, Daemon, Peer, server};
 use tilo_auth::handoff::{self, Handoff};
 use tilo_auth::luks;
 use tilo_auth::protocol::{Refusal, Reply, Request};
-use tilo_auth::record::{Attention, Record, Store};
+use tilo_auth::record::{Attention, Record, SecretKind, Store};
 use tilo_auth::recovery::RecoveryKey;
 use tilo_auth::secret::Secret;
 use tilo_auth::userkey::UserKey;
@@ -371,6 +371,7 @@ fn the_admin_moves_onto_the_tpm_and_gets_a_system_keyslot_on_first_sign_in() {
     assert!(record.unlocks_system);
     assert_eq!(record.attention, None);
     assert_eq!(m.old.locked(), ["ada"]);
+    assert_eq!(record.secret, Some(SecretKind::Pin));
 
     // The old slots stay; one new slot opens with the derived passphrase.
     let slot = record.system_keyslot.expect("a system keyslot");
@@ -484,6 +485,7 @@ fn without_a_tpm_only_a_strong_password_stands_alone() {
     );
     let record = m.record(ADA.uid).unwrap();
     assert!(record.has(Kind::Passphrase));
+    assert_eq!(record.secret, Some(SecretKind::Password));
     assert_eq!(m.old.locked(), ["ada"]);
     assert_eq!(
         verify(&daemon, ADA, "ada", "correct horse battery stable").error,
