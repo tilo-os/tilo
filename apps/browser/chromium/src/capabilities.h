@@ -3,6 +3,7 @@
 #include "include/cef_permission_handler.h"
 #include "include/cef_request_context.h"
 #include "site_policy.h"
+#include "download_name.h"
 #include "download_slots.h"
 #include "download_space.h"
 #include "include/base/cef_callback.h"
@@ -43,14 +44,7 @@ class Downloads final : public CefDownloadHandler {
     for(int id:slots_.EarlyForOwner(tab)) CancelEarly(id,"cancelled","");
     return std::any_of(transfers_.begin(),transfers_.end(),[tab](const auto& entry){return entry.second.owner==tab && entry.second.approved;});
   }
-  static std::string FileName(std::string name) {
-    for(auto& c:name) if(c=='\\') c='/';
-    name=std::filesystem::path(name).filename().string();
-    for(auto& c:name) if(static_cast<unsigned char>(c)<32 || c==127) c='_';
-    if(name.empty() || name=="." || name=="..") name="download";
-    if(name.size()>180) name="download";
-    return name;
-  }
+  static std::string FileName(std::string name) {return DownloadFileName(std::move(name));}
   bool CanDownload(CefRefPtr<CefBrowser> browser,const CefString& url,const CefString& method) override {
     const int owner=owner_(browser);if(!accepting_ || !owner || !eligible_(owner)) return false;
     provenance_.Record(owner,url.ToString(),method.ToString());
