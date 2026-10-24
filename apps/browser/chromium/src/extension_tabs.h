@@ -1044,6 +1044,7 @@ class ExtensionTabs {
     const auto* found = Find(tabs, tab);
     sign_in_.Closed(tab, ExtensionSignIn::Clock::now());
     native_.erase(tab);
+    worded_.erase(tab);
     unknown_.erase(tab);
     openers_.erase(tab);
     for (auto it = openers_.begin(); it != openers_.end();) it = it->second == tab ? openers_.erase(it) : std::next(it);
@@ -1311,9 +1312,12 @@ class ExtensionTabs {
     if (!identity_.empty())
       for (const auto& tab : hooks_.tabs()) {
         // One that could not be identified is asked about again once it
-        // shows another page, not on every call.
+        // shows another page, not on every call. One known by its page's
+        // word alone is asked again once it shows a page Chromium lists with
+        // its tab, whose answer is Chromium's own (Learn).
         const auto failed = unknown_.find(tab.tab);
-        if (!tab.panel && !native_.count(tab.tab) && (failed == unknown_.end() || failed->second != tab.url)) missing.push_back(tab.tab);
+        const bool ask = !native_.count(tab.tab) || (worded_.count(tab.tab) && !Worded(tab.url));
+        if (!tab.panel && ask && (failed == unknown_.end() || failed->second != tab.url)) missing.push_back(tab.tab);
       }
     if (missing.empty()) { then(); return; }
     auto left = std::make_shared<size_t>(missing.size());
@@ -1340,11 +1344,10 @@ class ExtensionTabs {
       // An extension's page may have been between documents when asked: it
       // is asked again on the next call.
       const auto open = hooks_.tabs();
-      const std::string own = "chrome-extension://" + identity_ + "/";
       for (int tab : tabs) {
         const auto* entry = Find(open, tab);
-        const bool page = entry && entry->url.rfind("chrome-extension://", 0) == 0 && entry->url.rfind(own, 0) != 0;
-        if (entry && !page && !native_.count(tab)) unknown_[tab] = entry->url;
+        const bool page = entry && Worded(entry->url);
+        if (entry && !page && (!native_.count(tab) || worded_.count(tab))) unknown_[tab] = entry->url;
         else unknown_.erase(tab);
       }
       for (int tab : tabs) {
@@ -1361,10 +1364,8 @@ class ExtensionTabs {
       if (!alive.expired()) finish();
     }, alive, std::function<void()>(finish)), 10000);
     std::map<int, std::string> words;
-    const std::string own = "chrome-extension://" + identity_ + "/";
     for (const auto& tab : hooks_.tabs())
-      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end() && tab.url.rfind("chrome-extension://", 0) == 0 && tab.url.rfind(own, 0) != 0)
-        words[tab.tab] = Word();
+      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end() && Worded(tab.url)) words[tab.tab] = Word();
     Tell(words, [this, tabs, words, finish] {
       Targets(tabs, [this, words, finish](std::map<int, std::string> targets) {
         if (targets.empty() && words.empty()) { finish(); return; }
@@ -1374,27 +1375,48 @@ class ExtensionTabs {
         value->SetList(list);
         InWorker(identity_, "globalThis.__tiloTabIds ? __tiloTabIds(" + ToJson(value) + ") : null", false, [this, targets, words, finish](std::optional<std::string> error, CefRefPtr<CefValue> value) {
           auto ids = !error && value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
-          // What a page's word answers outranks its target, which Chromium
-          // lists with no tab for an extension's page.
-          std::map<int, int> learnt;
-          for (const auto& [tab, target] : targets) if (const auto id = ids ? IntOf(ids, target.c_str()) : std::nullopt) learnt[tab] = *id;
-          for (const auto& [tab, word] : words) if (const auto id = ids ? IntOf(ids, word.c_str()) : std::nullopt) learnt[tab] = *id;
-          Learn(learnt);
+          std::map<int, int> seen, told;
+          for (const auto& [tab, target] : targets) if (const auto id = ids ? IntOf(ids, target.c_str()) : std::nullopt) seen[tab] = *id;
+          for (const auto& [tab, word] : words) if (const auto id = ids ? IntOf(ids, word.c_str()) : std::nullopt) told[tab] = *id;
+          Learn(seen, told);
           finish();
         });
       });
     });
   }
-  // Keep each tab's id, but only one Chromium could have given: positive,
-  // the tab still open, and no other tab's. An extension's page that relays
-  // its word to another of its tabs gets neither tab an id it does not have.
-  void Learn(const std::map<int, int>& learnt) {
+  // Keep each tab's id, but only one Chromium could have given: positive
+  // and the tab still open. The id Chromium lists with a tab's target
+  // (`seen`) is its own; the one an extension's page's word answers (`told`)
+  // is the page's say: two pages of one extension that trade their words get
+  // each other's tab. So a word takes no id another tab has, and gives way
+  // to the target's once the tab shows a page Chromium lists with it, before
+  // an extension that meets the tab's real id there (in `sender.tab`) asks
+  // the host about it.
+  void Learn(const std::map<int, int>& seen, const std::map<int, int>& told) {
     const auto open = hooks_.tabs();
+    for (const auto& [tab, id] : seen) {
+      if (id <= 0 || !Find(open, tab)) continue;
+      bool held = false;
+      for (auto it = native_.begin(); it != native_.end();) {
+        if (it->first == tab || it->second != id) { ++it; continue; }
+        if (!worded_.count(it->first)) { held = true; ++it; continue; }
+        worded_.erase(it->first);
+        it = native_.erase(it);
+      }
+      if (held) continue;
+      native_[tab] = id;
+      worded_.erase(tab);
+    }
     std::map<int, int> uses;
     for (const auto& [tab, id] : native_) ++uses[id];
-    for (const auto& [tab, id] : learnt) ++uses[id];
-    for (const auto& [tab, id] : learnt)
-      if (id > 0 && uses[id] == 1 && Find(open, tab)) native_[tab] = id;
+    for (const auto& [tab, id] : told) if (!seen.count(tab)) ++uses[id];
+    for (const auto& [tab, id] : told)
+      if (!seen.count(tab) && id > 0 && uses[id] == 1 && Find(open, tab)) { native_[tab] = id; worded_.insert(tab); }
+  }
+  // A tab whose page is another extension's own: Chromium lists it with no
+  // tab, so the page's word tells which tab it is.
+  bool Worded(const std::string& url) const {
+    return url.rfind("chrome-extension://", 0) == 0 && url.rfind("chrome-extension://" + identity_ + "/", 0) != 0;
   }
   // A word no page can guess: 128 random bits, in letters.
   static std::string Word() {
@@ -3441,6 +3463,8 @@ class ExtensionTabs {
   std::string identity_;
   // Each tab's id among Chromium's, once learnt; it lasts the tab's life.
   std::map<int, int> native_;
+  // Each tab whose id only its page's word told (Learn).
+  std::set<int> worded_;
   // Each tab the host could not identify, by the address it showed then.
   std::map<int, std::string> unknown_;
   // Pages' requests for new tabs not yet shown (Opening), and the tab each
