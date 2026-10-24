@@ -920,6 +920,12 @@ pub struct MediaCard {
 
 impl MediaCard {
     pub fn new(id: impl Into<String>, source: MediaSource) -> Self {
+        Self::new_owned(id.into(), source)
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, source: MediaSource) -> Self {
         let loaded = match &source {
             MediaSource::Image(image) => Some(image.clone()),
             _ => None,

@@ -660,26 +660,15 @@ impl<T: SettingsSchema> Settings<T> {
         origin: Option<&settings_store::ChangeOrigin>,
     ) -> std::io::Result<()> {
         let value = serde_json::to_value(value).map_err(std::io::Error::other)?;
-        // Only what differs from what is read now is written. A key the
-        // person never set reads as `T`'s default; writing the whole value
-        // would store that default as their choice, and a field edit in one
-        // place (a text size) would pin every other field of the section to
-        // whatever default this build has (the theme mode among them),
-        // replacing what another writer meant by leaving it unset.
         let current = serde_json::to_value(self.get()).ok();
-        let value = match (value, current) {
-            (Value::Object(values), Some(Value::Object(current))) => Value::Object(
-                values
-                    .into_iter()
-                    .filter(|(key, value)| current.get(key) != Some(value))
-                    .collect(),
-            ),
-            (value, _) => value,
-        };
-        if value.as_object().is_some_and(Map::is_empty) {
-            return Ok(());
-        }
-        store_in(&self.document, &self.app_id, T::SCOPE, value, origin)
+        store_changed(
+            &self.document,
+            &self.app_id,
+            T::SCOPE,
+            value,
+            current,
+            origin,
+        )
     }
 
     /// Change the current value with `change` and store it, returning what
@@ -701,6 +690,38 @@ impl<T: SettingsSchema> Settings<T> {
     pub fn revision(&self) -> SettingsRevision {
         self.document.revision()
     }
+}
+
+/// Store the keys of `value` that differ from `current`, what is read now:
+/// [`Settings::set_by`] once both are JSON. Not generic, so the toolkit
+/// compiles it once rather than every app once per settings type.
+fn store_changed(
+    document: &SettingsDocument,
+    app_id: &str,
+    scope: Scope,
+    value: Value,
+    current: Option<Value>,
+    origin: Option<&settings_store::ChangeOrigin>,
+) -> std::io::Result<()> {
+    // Only what differs from what is read now is written. A key the
+    // person never set reads as `T`'s default; writing the whole value
+    // would store that default as their choice, and a field edit in one
+    // place (a text size) would pin every other field of the section to
+    // whatever default this build has (the theme mode among them),
+    // replacing what another writer meant by leaving it unset.
+    let value = match (value, current) {
+        (Value::Object(values), Some(Value::Object(current))) => Value::Object(
+            values
+                .into_iter()
+                .filter(|(key, value)| current.get(key) != Some(value))
+                .collect(),
+        ),
+        (value, _) => value,
+    };
+    if value.as_object().is_some_and(Map::is_empty) {
+        return Ok(());
+    }
+    store_in(document, app_id, scope, value, origin)
 }
 
 /// Decode `stored` over `T`'s defaults on `device` one key at a time, so a key that

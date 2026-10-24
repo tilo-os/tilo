@@ -491,10 +491,16 @@ impl ToolbarAction {
     /// outcome it names.
     #[must_use]
     pub fn new(id: impl Into<String>, icon: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), icon.into(), name.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, icon: String, name: String) -> Self {
         Self {
-            id: id.into(),
-            icon: icon.into(),
-            name: name.into(),
+            id,
+            icon,
+            name,
             enabled: true,
             on: false,
             menu: false,
