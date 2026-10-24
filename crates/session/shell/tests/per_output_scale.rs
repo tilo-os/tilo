@@ -291,3 +291,90 @@ fn a_scaled_second_display_is_drawn_and_no_layer_is_left_open() {
         );
     }
 }
+
+/// Every byte of `area` of `scene`, rasterized at `size` scene pixels.
+#[allow(
+    clippy::arithmetic_side_effects,
+    reason = "pixel offsets into a few-megapixel test target cannot overflow usize"
+)]
+fn pixels(scene: &vello::Scene, size: (u32, u32), area: Region) -> Vec<u8> {
+    let (width, height) = size;
+    let stride = width as usize * 4;
+    let mut pixels = vec![0u8; stride * height as usize];
+    {
+        let mut target = Target::new(&mut pixels, width, height, stride).expect("target");
+        CpuRasterizer::new(Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            Some(&[area]),
+            Color::TRANSPARENT,
+        );
+    }
+    (area.y..area.y + area.height)
+        .flat_map(|y| {
+            let row = y as usize * stride + area.x as usize * 4;
+            pixels[row..row + area.width as usize * 4].to_vec()
+        })
+        .collect()
+}
+
+/// Move the pointer to a scene pixel the way a backend reports it.
+fn move_scene(fb: &mut FrameBuilder, outputs: &[Output], at: Point) {
+    let moved = event_to_logical(
+        &placements(outputs),
+        BackendEvent::Input(ui::synthetic_input::cursor_moved(at.x, at.y)),
+    );
+    let BackendEvent::Input(moved) = moved else {
+        panic!("a cursor event stays a cursor event");
+    };
+    let mut doc = AutoCommit::new();
+    let mut focus = None;
+    fb.dispatch_event(
+        &moved,
+        &Modifiers::default(),
+        &mut ui::widget::Edits::lend(&mut doc),
+        &ROOT,
+        &mut focus,
+    );
+}
+
+/// The scene pixels of `rect` (logical) as one region.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a bar control is a small positive scene rectangle"
+)]
+fn region_of(fb: &FrameBuilder, rect: Rect) -> Region {
+    let scene = fb.layout_rect_to_scene(rect).expect("on a display");
+    Region::new(
+        scene.x0.floor() as u32,
+        scene.y0.floor() as u32,
+        scene.width().ceil() as u32,
+        scene.height().ceil() as u32,
+    )
+}
+
+#[test]
+fn a_control_on_another_displays_bar_rests_once_the_pointer_leaves_it() {
+    let (mut fb, outputs) = frame_across("docked-laptop");
+    let size = combined_geometry(&outputs);
+    let control = control_on(&fb, &outputs, WORKSPACE_MENU, 1);
+    let area = region_of(&fb, control);
+    let rest = pixels(&fb.paint_settled(), size, area);
+
+    let on_control = fb.layout_point_to_scene(control.center());
+    move_scene(&mut fb, &outputs, on_control);
+    let hovered = pixels(&fb.paint_settled(), size, area);
+    assert_ne!(hovered, rest, "under the pointer the control lifts");
+
+    // Straight down off the bar, into the monitor's desktop.
+    let below = Point::new(control.center().x, control.y1 + 200.0);
+    assert!(outputs[1].logical_rect().contains(below));
+    let below = fb.layout_point_to_scene(below);
+    move_scene(&mut fb, &outputs, below);
+    let left = pixels(&fb.paint_settled(), size, area);
+    assert!(
+        left == rest,
+        "once the pointer has left the bar, its control is plain again"
+    );
+}
