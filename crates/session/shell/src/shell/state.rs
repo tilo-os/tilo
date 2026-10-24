@@ -7,6 +7,7 @@ use tilo_clock::unix_now_i64;
 mod continuation_labels;
 mod local_app_records;
 mod room_binding;
+mod room_outbox;
 mod tree_handle;
 mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
@@ -15,6 +16,7 @@ use super::fs_authority::wait_for_fs_authority_publication_idle;
 pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
 pub(crate) use room_binding::room_holds_files;
+pub use room_outbox::{HostAnswer, Outgoing, RoomChange, Standing};
 pub use tree_handle::{
     WeakWorkspaceTreeHandle, WorkspaceTreeHandle, WorkspaceTreeWriteGuard, next_policy_revision,
 };
@@ -734,7 +736,7 @@ pub enum GovernanceRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GovernanceRefusal {
     pub room: RoomId,
-    pub request: GovernanceRequest,
+    pub change: RoomChange,
     /// The governor's reason, worded for the person.
     pub reason: String,
 }
@@ -800,20 +802,15 @@ pub struct WorkspaceTree {
     /// placed.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub pending_placements: BTreeSet<RoomId>,
-    /// Changes to rooms' governance made at this device
-    /// ([`Self::request_governance`]), waiting to be taken to each room's
-    /// governor. A room's governance changes only there, and reaches this
-    /// tree as the projection of its admitted document. Persisted, so a
-    /// change made while its governor is out of reach, or just before a
-    /// restart, is still asked.
+    /// What this device asked of its rooms' hosts (governance changes,
+    /// effect receipts) that the rooms' documents do not carry yet
+    /// ([`room_outbox`]). A room's governed fields change only at its host,
+    /// and reach this tree as the projection of its admitted document.
+    /// Persisted, so a change made while its host is out of reach, or just
+    /// before a restart, is still asked, and what it shows here ahead of
+    /// the room stays shown.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub governance_requests: Vec<(RoomId, GovernanceRequest)>,
-    /// Receipts of grants in force whose room's host has not recorded them
-    /// yet, as the host could not be reached: each is asked again once a
-    /// room's state changed. Persisted, so the room's history still gets
-    /// them after a restart.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub unrecorded_receipts: Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>,
+    pub room_outbox: Vec<Outgoing>,
     /// Changes made here whose governor refused them, until the chrome
     /// says so ([`Self::take_governance_refusals`]).
     #[serde(skip)]
@@ -941,8 +938,7 @@ impl Default for WorkspaceTree {
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
             pending_placements: BTreeSet::new(),
-            governance_requests: Vec::new(),
-            unrecorded_receipts: Vec::new(),
+            room_outbox: Vec::new(),
             governance_refusals: Vec::new(),
             strips_to_retain: BTreeSet::new(),
             continuation_tabs: BTreeSet::new(),
@@ -1242,28 +1238,58 @@ impl WorkspaceTree {
             let name = crate::shell::i18n::t("workspace-joined-name");
             self.append_workspace_for_room(&name, room);
         }
+        self.room_docs.insert(room, document.clone());
+        self.settle_outbox(room);
         if let Some(archived) = self
             .archived_workspaces
             .iter_mut()
             .find(|ws| ws.room() == room)
         {
-            tilo_peer_state::room::adopt_room(archived, document, &[]);
+            room_outbox::adopt_room_document(archived, document, &self.room_outbox);
         }
-        self.room_docs.insert(room, document.clone());
         self.room_rosters.insert(room, admitted_roster(peer));
         self.queue_inbound_records(room, document);
         self.merge_room_contents(room);
+        let local = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|ws| ws.room() == room)
+            .map(|ws| self.native_runtime.preserve_files_home_consent(ws, peer))
+            .unwrap_or_default();
+        self.adopt_into_workspace(room, document, local);
+    }
+
+    /// Take `document`, `room`'s admitted document, into the room's
+    /// workspace, with this device's own capabilities `local` and what its
+    /// outbox shows ahead of the room ([`room_outbox`]), as every commit of
+    /// the room does.
+    fn adopt_into_workspace(
+        &mut self,
+        room: RoomId,
+        document: &AutoCommit,
+        local: Vec<CapOverride>,
+    ) {
         if let Some(ws) = self
             .desktop
             .workspaces
             .iter_mut()
             .find(|ws| ws.room() == room)
         {
-            let local = self.native_runtime.preserve_files_home_consent(ws, peer);
-            tilo_peer_state::room::adopt_room(ws, document, &[]);
+            room_outbox::adopt_room_document(ws, document, &self.room_outbox);
             ws.sandbox.extend(local);
+            room_outbox::keep_taken_back(ws, &self.room_outbox);
         }
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+    }
+
+    /// Commit `document` as `room`'s admitted document here, as its native
+    /// owner's projection does: for tests, which hold no replica.
+    #[cfg(test)]
+    pub(crate) fn admit_room_document_for_test(&mut self, room: RoomId, document: &AutoCommit) {
+        self.room_docs.insert(room, document.clone());
+        self.settle_outbox(room);
+        self.adopt_into_workspace(room, document, Vec::new());
     }
 
     /// The record the room document names for `tab` of `room`, if any.
@@ -2305,6 +2331,17 @@ impl WorkspaceTree {
         workspace_id: WorkspaceId,
         receipt: tilo_desktop_model::WorkspaceEffectReceipt,
     ) -> bool {
+        let room = self
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == workspace_id)
+            .map(Workspace::room);
+        // A hosted room's history is its document's: its host commits the
+        // receipt, and it shows here until the document carries it.
+        if let Some(room) = room.filter(|room| self.native_authority.holds(*room)) {
+            return self.record_in_room(room, receipt);
+        }
         let Some(receipt) = self
             .desktop
             .append_workspace_effect_receipt(workspace_id, receipt)
@@ -2688,49 +2725,28 @@ impl WorkspaceTree {
     }
 
     /// Ask `room`'s governor for `request`. Nothing changes here until the
-    /// room's admitted document carries it.
+    /// room's admitted document carries it, but for a sandbox capability
+    /// taken back ([`Self::narrow_sandbox`]), which stays taken back.
     pub fn request_governance(&mut self, room: RoomId, request: GovernanceRequest) {
-        self.governance_requests.push((room, request));
-        self.queue_save();
-    }
-
-    /// Keep `receipt`, which `room`'s host could not be reached to record,
-    /// to ask again.
-    pub fn hold_unrecorded_receipt(
-        &mut self,
-        room: RoomId,
-        receipt: tilo_desktop_model::WorkspaceEffectReceipt,
-    ) {
-        self.unrecorded_receipts.push((room, receipt));
-        self.queue_save();
-    }
-
-    /// The receipts waiting for their room's host, taken.
-    pub fn take_unrecorded_receipts(
-        &mut self,
-    ) -> Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)> {
-        let taken = std::mem::take(&mut self.unrecorded_receipts);
-        if !taken.is_empty() {
-            self.queue_save();
-        }
-        taken
-    }
-
-    /// Put back `requests`, taken but not yet asked because their governor
-    /// was out of reach, ahead of any made since: asked in the order made.
-    pub fn requeue_governance(&mut self, requests: Vec<(RoomId, GovernanceRequest)>) {
-        if requests.is_empty() {
-            return;
-        }
-        let newer = std::mem::replace(&mut self.governance_requests, requests);
-        self.governance_requests.extend(newer);
-        self.queue_save();
+        let takes_back = match &request {
+            GovernanceRequest::RevokeSandbox(id) => {
+                self.room_docs.get(&room).and_then(|document| {
+                    projection::room_sandbox_of(document)
+                        .into_iter()
+                        .find(|capability| &capability.id == id)
+                })
+            }
+            _ => None,
+        };
+        self.send_to_room(room, RoomChange::Governance(request), takes_back);
     }
 
     /// Take back the sandbox capability `id` of `workspace_id` as `revoker`:
     /// here at once, as narrowing this device's own reach never waits for
-    /// anyone, and at the room's governor, so the room drops it too. Whether
-    /// anything was taken back here.
+    /// anyone, and at the room's governor, so the room drops it too. It
+    /// stays taken back here across every commit of the room until the
+    /// room's document no longer carries it, even when the governor refuses
+    /// ([`room_outbox`]). Whether anything was taken back here.
     pub fn narrow_sandbox(
         &mut self,
         workspace_id: WorkspaceId,
@@ -3050,55 +3066,34 @@ impl WorkspaceTree {
         }
     }
 
-    /// Whether a governance change waits to be taken to its governor.
+    /// Whether a governance change waits to be asked of its governor.
+    #[cfg(test)]
     pub fn has_governance_requests(&self) -> bool {
-        !self.governance_requests.is_empty()
+        self.outbox_to_ask()
+            .any(|entry| matches!(entry.change, RoomChange::Governance(_)))
     }
 
-    /// The governance changes made here, taken in the order they were made.
+    /// The governance changes made here and not asked yet, taken out of
+    /// the outbox in the order they were made: for tests, which answer
+    /// them as the governor would.
+    #[cfg(test)]
     pub fn take_governance_requests(&mut self) -> Vec<(RoomId, GovernanceRequest)> {
-        let taken = std::mem::take(&mut self.governance_requests);
-        if !taken.is_empty() {
-            self.queue_save();
-        }
+        let mut taken = Vec::new();
+        self.room_outbox
+            .retain(|entry| match (&entry.change, entry.standing) {
+                (RoomChange::Governance(request), Standing::Asking) => {
+                    taken.push((entry.room, request.clone()));
+                    false
+                }
+                _ => true,
+            });
         taken
     }
 
-    /// `room`'s governor refused `request` for `reason`. What this device
-    /// showed ahead of the governor's answer (a rename, a sandbox
-    /// capability taken back) returns to what the room's admitted document
-    /// says, and the refusal waits for the chrome to say it. Other changes
-    /// to the room still waiting show as the room has them until they are
-    /// answered.
+    /// `room`'s governor refused `request`, a change not in the outbox, for
+    /// `reason` ([`Self::refuse_room_change`]).
     pub fn refuse_governance(&mut self, room: RoomId, request: GovernanceRequest, reason: String) {
-        if let Some(document) = self.room_docs.get(&room)
-            && let Some(workspace) = self
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-        {
-            // This device's own sandbox capabilities (a files-home consent)
-            // are not the room's, and stay.
-            let held = workspace.sandbox.clone();
-            tilo_peer_state::room::adopt_room(workspace, document, &[]);
-            let own: Vec<_> = held
-                .into_iter()
-                .filter(|cap| {
-                    !workspace
-                        .sandbox
-                        .iter()
-                        .any(|room_cap| room_cap.id == cap.id)
-                })
-                .collect();
-            workspace.sandbox.extend(own);
-            self.queue_save();
-        }
-        self.governance_refusals.push(GovernanceRefusal {
-            room,
-            request,
-            reason,
-        });
+        self.refuse_room_change(room, RoomChange::Governance(request), reason);
     }
 
     /// The refusals of governance changes made here, taken.

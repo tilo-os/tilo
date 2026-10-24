@@ -35,6 +35,7 @@ use crate::shell::state::{
     WorkspaceTree, WorkspaceTreeHandle,
 };
 
+mod adopted_fields;
 mod channels;
 mod failover;
 mod history_across_admission;

@@ -299,8 +299,8 @@ fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
     first.go_offline();
     rename("Roadmap");
     until(&[&second], "the rename to wait for the host", || {
-        let waiting = second.net().governance_waiting.lock().unwrap().is_some();
-        (waiting && second.tree.read().governance_requests.len() == 1).then_some(())
+        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
+        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
     });
     assert!(!refused_on(&second), "a host out of reach refused nothing");
 
@@ -317,12 +317,7 @@ fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
         "the laptop to ask the host again",
         || {
             assert!(!refused_on(&second), "a host out of reach refused nothing");
-            second
-                .tree
-                .read()
-                .governance_requests
-                .is_empty()
-                .then_some(())
+            second.tree.read().room_outbox.is_empty().then_some(())
         },
     );
     until(&[&first, &second], "the rename on both devices", || {
@@ -331,6 +326,99 @@ fn governance_made_while_the_host_is_away_applies_once_it_is_back() {
             && name_on(&second).as_deref() == Some("Roadmap"))
         .then_some(())
     });
-    assert!(second.tree.read().governance_requests.is_empty());
+    assert!(second.tree.read().room_outbox.is_empty());
+    drop((first, second));
+}
+
+/// An effect a member device records in its own person's workspace while
+/// the workspace's host is away waits on that device, shown and never
+/// refused, and reaches the room's history once the host's session is
+/// back: once, on both devices.
+#[test]
+#[serial_test::serial]
+fn an_effect_recorded_while_the_host_is_away_reaches_the_room_once_it_is_back() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = scratch();
+    let wakes = Arc::new(Wakes::default());
+    let ada = Person::new(54);
+    home.env().set("TILO_USER_ID", ada.id());
+    let mut first = Device::start(
+        &ada,
+        "Ada's desktop",
+        &dir.path().join("desktop"),
+        0x0A41,
+        DeviceCapabilities::primary(),
+        &wakes,
+    );
+    let second = Device::start(
+        &ada,
+        "Ada's laptop",
+        &dir.path().join("laptop"),
+        0x0A42,
+        DeviceCapabilities::member(),
+        &wakes,
+    );
+    let (_, room) = hosted_workspace(&first, &[&second], "Projects");
+    second.reach(&first);
+    until(
+        &[&first, &second],
+        "the laptop to hold the workspace",
+        || second.holds(room).then_some(()),
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    let held_on = |device: &Device| {
+        device
+            .tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map_or(0, |workspace| {
+                workspace
+                    .effect_receipts
+                    .iter()
+                    .filter(|receipt| receipt.invocation == invocation)
+                    .count()
+            })
+    };
+    let refused_on = |device: &Device| !device.tree.read().governance_refusals.is_empty();
+
+    // The desktop, the workspace's host, goes away; the laptop records an
+    // effect in the workspace.
+    first.go_offline();
+    let recorded = second.tree.write().record_in_room(
+        room,
+        tilo_desktop_model::WorkspaceEffectReceipt::recorded(
+            invocation,
+            &ada.id(),
+            tilo_actions::ActionContext::default(),
+            tilo_actions::EffectReceiptStatus::Succeeded,
+            1,
+        ),
+    );
+    assert!(recorded);
+    until(&[&second], "the effect to wait for the host", || {
+        let waiting = second.net().outbox_waiting.lock().unwrap().is_some();
+        (waiting && second.tree.read().room_outbox.len() == 1).then_some(())
+    });
+    assert_eq!(held_on(&second), 1, "the laptop shows it while it waits");
+    assert!(!refused_on(&second), "a host out of reach refused nothing");
+
+    // The desktop comes back: the laptop asks again, and the room's history
+    // holds the effect on both devices.
+    first.come_back();
+    second.reach(&first);
+    until(
+        &[&first, &second],
+        "the room's history to hold the effect on both devices",
+        || {
+            assert!(!refused_on(&second), "a host out of reach refused nothing");
+            (second.tree.read().room_outbox.is_empty()
+                && held_on(&first) == 1
+                && held_on(&second) == 1)
+                .then_some(())
+        },
+    );
     drop((first, second));
 }

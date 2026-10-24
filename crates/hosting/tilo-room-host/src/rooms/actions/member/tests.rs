@@ -166,6 +166,44 @@ async fn a_member_claims_their_namespace_and_records_their_receipt_as_actions() 
     relay.shutdown().await;
 }
 
+#[tokio::test]
+async fn a_receipt_sent_again_after_a_restart_is_recorded_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let (room, workspace, host) = governed(relay.rooms()).await;
+    let ada = admit(relay.rooms(), &room, &owner, 1).await;
+    let invocation = uuid::Uuid::new_v4();
+    let receipt = || {
+        member_request(
+            &room,
+            RECORD_EFFECT_RECEIPT,
+            json!({
+                "invocation": invocation.to_string(),
+                "redacted": terminal_audit(&ada.user_public_key, invocation),
+            }),
+        )
+    };
+    let recorded = invoke(&host, workspace, &ada, receipt()).await.unwrap();
+    assert_eq!(
+        invoke(&host, workspace, &ada, receipt()).await.unwrap(),
+        recorded,
+        "a receipt asked again commits nothing new"
+    );
+    relay.shutdown().await;
+
+    // The member's device asks again after the host restarted.
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let host = HostRoomActions::new();
+    host.attach(relay.rooms().clone());
+    assert_eq!(
+        invoke(&host, workspace, &ada, receipt()).await.unwrap(),
+        recorded,
+        "nor after the host restarted"
+    );
+    relay.shutdown().await;
+}
+
 fn shortcut(id: &str) -> tilo_automation::Shortcut {
     tilo_automation::Shortcut {
         id: id.into(),
