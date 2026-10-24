@@ -189,7 +189,7 @@ pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
     }
 
     let started = ui::time::now();
-    let resp = builder.send().await.map_err(|e| describe(&e))?;
+    let mut resp = builder.send().await.map_err(|e| describe(&e))?;
     let status = resp.status();
     let status_text = status.canonical_reason().unwrap_or("").to_string();
     let headers: Vec<KeyValue> = resp
@@ -202,18 +202,142 @@ pub async fn send(out: &Outgoing) -> Result<ResponseData, String> {
         .find(|h| h.key.eq_ignore_ascii_case("content-type"))
         .map(|h| h.value.clone())
         .unwrap_or_default();
-    let body = resp.text().await.map_err(|e| describe(&e))?;
+    let declared = resp.content_length();
+    let (bytes, complete) = read_shown(&mut resp).await?;
     let duration_ms = started.elapsed().as_millis() as u64;
+    let received = bytes.len();
+    let size_bytes = match (complete, declared.and_then(|n| usize::try_from(n).ok())) {
+        (true, _) | (false, None) => received,
+        (false, Some(declared)) => declared.max(received),
+    };
+    let shown = ShownBody::of(bytes, complete, textual(&content_type));
 
     Ok(ResponseData {
         status: status.as_u16(),
         status_text,
         duration_ms,
-        size_bytes: body.len(),
+        size_bytes,
+        size_exact: complete || declared.is_some(),
+        shown_bytes: shown.bytes,
+        binary: shown.binary,
         headers,
-        body,
+        body: shown.text,
         content_type,
     })
+}
+
+/// The most of a response body the app downloads to show (2 MiB): the
+/// response pane lays its text out line by line, so a download of gigabytes
+/// would hold all of it in memory and freeze the window. The rest is never
+/// read; the pane says how much it shows.
+pub const MAX_SHOWN_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+/// The most of a binary body shown as hex (64 KiB): each byte takes a few
+/// characters of the dump.
+pub const MAX_HEX_BYTES: usize = 64 * 1024;
+
+/// The body up to [`MAX_SHOWN_BODY_BYTES`], and whether that is all of it.
+async fn read_shown(resp: &mut tilo_net::Response) -> Result<(Vec<u8>, bool), String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| describe(&e))? {
+        let room = MAX_SHOWN_BODY_BYTES.saturating_sub(body.len());
+        if chunk.len() > room {
+            body.extend_from_slice(chunk.get(..room).unwrap_or_default());
+            return Ok((body, false));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, true))
+}
+
+/// A body as the response pane shows it.
+struct ShownBody {
+    text: String,
+    /// How many of the body's bytes `text` shows.
+    bytes: usize,
+    binary: bool,
+}
+
+impl ShownBody {
+    /// Text as text; anything else that is not UTF-8 as a hex dump of its
+    /// start. A body cut short may end inside a character, which is not
+    /// binary, and a `textual` one in another encoding is shown with its
+    /// stray bytes replaced.
+    fn of(bytes: Vec<u8>, complete: bool, textual: bool) -> Self {
+        match String::from_utf8(bytes) {
+            Ok(text) => Self {
+                bytes: text.len(),
+                text,
+                binary: false,
+            },
+            Err(error) => {
+                let utf8 = error.utf8_error();
+                let bytes = error.into_bytes();
+                if textual || (!complete && utf8.error_len().is_none()) {
+                    let end = if textual {
+                        bytes.len()
+                    } else {
+                        utf8.valid_up_to()
+                    };
+                    let shown = bytes.get(..end).unwrap_or_default();
+                    return Self {
+                        bytes: shown.len(),
+                        text: String::from_utf8_lossy(shown).into_owned(),
+                        binary: false,
+                    };
+                }
+                let dumped = bytes.get(..MAX_HEX_BYTES).unwrap_or(&bytes);
+                Self {
+                    text: hex_dump(dumped),
+                    bytes: dumped.len(),
+                    binary: true,
+                }
+            }
+        }
+    }
+}
+
+/// Whether `content_type` names text, which is shown as text even when it
+/// is not UTF-8.
+fn textual(content_type: &str) -> bool {
+    let essence = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    essence.starts_with("text/")
+        || ["json", "xml", "javascript", "x-www-form-urlencoded"]
+            .iter()
+            .any(|kind| essence.contains(kind))
+}
+
+/// `bytes` as lines of sixteen: the offset, the bytes in hex, and the bytes
+/// that are printable ASCII (a dot for the rest).
+fn hex_dump(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(bytes.len().div_ceil(16).saturating_mul(78));
+    for (row, line) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:08x} ", row.saturating_mul(16));
+        for column in 0..16 {
+            match line.get(column) {
+                Some(byte) => {
+                    let _ = write!(out, " {byte:02x}");
+                }
+                None => out.push_str("   "),
+            }
+        }
+        out.push_str("  ");
+        out.extend(line.iter().map(|&byte| {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                char::from(byte)
+            } else {
+                '.'
+            }
+        }));
+        out.push('\n');
+    }
+    out
 }
 
 /// A request error for the response pane, naming the fix for a browser that
@@ -254,6 +378,9 @@ pub fn sample_response() -> ResponseData {
         status_text: "OK".into(),
         duration_ms: 84,
         size_bytes: body.len(),
+        size_exact: true,
+        shown_bytes: body.len(),
+        binary: false,
         headers: vec![
             KeyValue::new("content-type", "application/json; charset=utf-8"),
             KeyValue::new("cache-control", "no-cache, private"),
