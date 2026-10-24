@@ -67,8 +67,11 @@ impl Remote {
         Ok(())
     }
 
-    /// Remove a saved connection from every device.
-    #[action(destructive, item = connections)]
+    /// Remove a saved connection from every device, and the passwords each
+    /// device saved for it.
+    // Undo brings the connection back but not the passwords every device
+    // forgot, so people confirm it.
+    #[action(destructive, irreversible, item = connections)]
     pub fn delete_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
             .remove(connection)
