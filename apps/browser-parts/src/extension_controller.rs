@@ -98,6 +98,10 @@ enum ExtensionPage {
 /// An icon an extension gave its button through `chrome.action.setIcon`.
 #[derive(Clone)]
 enum ActionIcon {
+    /// Its file at this path, read once a read of the profile says where the
+    /// extension's files are: a window opened beside running extensions is
+    /// told their icons as its page opens, before it knows them.
+    Unread(String),
     /// Its file at this path is being read.
     Reading(String),
     /// What could be drawn of it: nothing when it is no PNG of its own.
@@ -416,16 +420,25 @@ impl ExtensionController {
                 .insert(key, ActionIcon::Ready(image.clone()));
             return;
         }
+        let icon = if self.read_action_icon(id, path.clone()) {
+            ActionIcon::Reading(path)
+        } else {
+            ActionIcon::Unread(path)
+        };
+        self.action_icons.insert(key, icon);
+    }
+
+    /// Read the icon file at `path` among the extension's files off the
+    /// window's thread; `false` while the profile has not said where they are.
+    fn read_action_icon(&self, id: String, path: String) -> bool {
         let Some(root) = self
             .installed
             .iter()
             .find(|extension| extension.id == id)
             .map(|extension| extension.root.clone())
         else {
-            return;
+            return false;
         };
-        self.action_icons
-            .insert(key, ActionIcon::Reading(path.clone()));
         let outcomes = self.outcomes.clone();
         std::thread::spawn(move || {
             let image =
@@ -434,6 +447,7 @@ impl ExtensionController {
                 queue.push(Outcome::ActionIcon { id, path, image });
             }
         });
+        true
     }
 
     /// The icon the extension set for its button on this page, else for
@@ -442,7 +456,7 @@ impl ExtensionController {
         [false, true].iter().find_map(|global| {
             match self.action_icons.get(&(id.to_owned(), *global))? {
                 ActionIcon::Ready(image) => image.as_ref(),
-                ActionIcon::Reading(_) => None,
+                ActionIcon::Unread(_) | ActionIcon::Reading(_) => None,
             }
         })
     }
@@ -674,6 +688,25 @@ impl ExtensionController {
         self.icons.extend(profile.icons);
         self.installed = profile.installed;
         self.infos = profile.infos;
+        // Icons told before the profile said where their files are.
+        let unread: HashSet<(String, String)> = self
+            .action_icons
+            .iter()
+            .filter_map(|((id, _), icon)| match icon {
+                ActionIcon::Unread(path) => Some((id.clone(), path.clone())),
+                _ => None,
+            })
+            .collect();
+        for (id, path) in unread {
+            if self.read_action_icon(id.clone(), path.clone()) {
+                for ((owner, _), icon) in &mut self.action_icons {
+                    if *owner == id && matches!(icon, ActionIcon::Unread(unread) if *unread == path)
+                    {
+                        *icon = ActionIcon::Reading(path.clone());
+                    }
+                }
+            }
+        }
     }
 
     /// An extension the daily check brought up to date: the engine runs the
@@ -1739,6 +1772,57 @@ mod tests {
             &shared,
         ));
         assert_eq!(window.created_tabs().len(), 1);
+    }
+
+    #[test]
+    fn an_icon_told_before_the_profile_is_read_shows_once_it_is() {
+        // A window opened beside running extensions is told the icons they
+        // set for every tab as its page opens, before its read of the profile
+        // says where their files are.
+        let window: SharedEngine = ui::webview::test_engine::TestEngine::new();
+        let mut controller = ExtensionController::new(true);
+        controller.refresh = false;
+        let id = "a".repeat(32);
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("off.png"),
+            ui::png::encode_rgba8(2, 1, &[1, 2, 3, 255, 5, 6, 7, 255]).unwrap(),
+        )
+        .unwrap();
+        assert!(controller.on_engine_event(
+            WebViewEvent::ExtensionAction {
+                id: id.clone(),
+                global: true,
+                change: ui::webview::ExtensionActionChange {
+                    icon: Some(Some(ExtensionActionIcon::Path("/off.png".into()))),
+                    ..ui::webview::ExtensionActionChange::default()
+                },
+            },
+            &window,
+        ));
+        assert!(controller.action_icon(&id).is_none(), "nothing to read yet");
+
+        controller.apply_profile(Profile {
+            infos: Vec::new(),
+            installed: vec![Installed {
+                root: root.path().to_owned(),
+                ..installed(&id, None, toolbar::Access::default())
+            }],
+            wanted: Vec::new(),
+            icons: Vec::new(),
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while controller.action_icon(&id).is_none() && std::time::Instant::now() < deadline {
+            controller.sync(&window, "");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            controller
+                .action_icon(&id)
+                .map(|image| (image.width, image.height)),
+            Some((2, 1)),
+            "the icon it set, not its manifest's"
+        );
     }
 
     #[test]
