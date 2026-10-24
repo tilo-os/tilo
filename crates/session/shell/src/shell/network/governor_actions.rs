@@ -32,8 +32,8 @@ struct GovernorRoute {
     source: [u8; 32],
     target: [u8; 32],
     governor_user: [u8; 32],
-    /// The governor is a host (a relay governing the room as a service),
-    /// which runs no apps.
+    /// The governor is a host, which runs no apps: a relay governing the
+    /// room as a service, or the room host of the device it is placed on.
     governor_hosts: bool,
 }
 
@@ -312,7 +312,9 @@ impl ShellNetwork {
                 source: view.device().device_public_key,
                 target: view.governor().device_public_key,
                 governor_user: view.governor().user_public_key,
-                governor_hosts: view.governor().capabilities.can_act_as_host,
+                governor_hosts: view.governor().capabilities.can_act_as_host
+                    || super::relay_rooms::hosting_governor(view, room)
+                        .is_ok_and(|host| host.is_some()),
             })
         })
     }
@@ -327,13 +329,6 @@ impl ShellNetwork {
     /// and records are created by that governor.
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
         self.governor_route(room)
-            .is_ok_and(|route| route.elsewhere())
-    }
-
-    /// [`Self::governed_elsewhere`] as `owner`, already open, admits it:
-    /// for the frame loop, which never opens one.
-    pub(crate) fn governed_elsewhere_by(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
-        self.governor_route_of(owner, room)
             .is_ok_and(|route| route.elsewhere())
     }
 
