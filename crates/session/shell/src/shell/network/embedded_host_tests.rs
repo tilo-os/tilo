@@ -95,6 +95,10 @@ fn a_workspace_not_placed_stays_waiting_for_the_next_pass() {
             .is_empty(),
         "the next pass takes it again"
     );
+    assert!(
+        !network.placements_pending(),
+        "a network with no host to place on asks for no pass on any frame"
+    );
 }
 
 #[test]
@@ -102,9 +106,15 @@ fn a_failed_placement_waits_for_something_it_depends_on_to_change() {
     let plans = RoomId::new();
     let mut tree = tree_with(&[("Plans", plans)]);
     tree.pending_placements.insert(plans);
-    let (network, _commands) = shell_network_for_test(tree.shared(), 1);
+    let (mut network, _commands) = personal_workspaces_network_for_test(
+        &ed25519_dalek::SigningKey::from_bytes(&[0x61; 32]),
+        &iroh::SecretKey::from_bytes(&[0x62; 32]),
+        tree,
+    );
+    // A device that places its workspaces, whose host cannot open: it
+    // keeps no workspaces on disk to host them beside.
+    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
     let passes = || network.embedded_host.passes.load(Ordering::Acquire);
-    // This network has no host to place it on.
     network.place_pending_workspaces();
     assert_eq!(passes(), 1);
     for _ in 0..10 {

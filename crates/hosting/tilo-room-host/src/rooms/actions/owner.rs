@@ -22,20 +22,10 @@ use super::{Args, GOVERNANCE, Verb, invalid, refused, request_id};
 use crate::rooms::owner_commands::Offer;
 use crate::rooms::{AppAction, GovernedRoom, OwnerCommand, Rooms, app_action_lifetime};
 
-/// Renaming the workspace.
-pub(crate) const RENAME: &str = "workspace.rename";
-/// Saving a named grant set, replacing the one with the same name.
-pub(crate) const SAVE_PRESET: &str = "preset.save";
-/// Assigning a saved grant set to a person, an app or an agent.
-pub(crate) const ASSIGN_PRESET: &str = "preset.assign";
-/// Letting an app use one action of another app here.
-pub(crate) const GRANT_APP_ACTION: &str = "app-action.grant";
-/// Taking that back.
-pub(crate) const REVOKE_APP_ACTION: &str = "app-action.revoke";
-/// Recording a capability for the room's apps' sandbox.
-pub(crate) const GRANT_SANDBOX: &str = "sandbox.grant";
-/// Taking a sandbox capability back.
-pub(crate) const REVOKE_SANDBOX: &str = "sandbox.revoke";
+pub(crate) use tilo_action_policy::roles::owner_commands::{
+    ASSIGN_PRESET, GRANT_APP_ACTION, GRANT_SANDBOX, RENAME_WORKSPACE as RENAME, REVOKE_APP_ACTION,
+    REVOKE_SANDBOX, SAVE_PRESET,
+};
 
 /// The room's own changes, in catalogue order. `gate` names the room
 /// governance action each is offered by; renaming and assigning are

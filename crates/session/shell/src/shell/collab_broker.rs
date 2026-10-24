@@ -1154,7 +1154,7 @@ fn open_channel_encryption(
     ) = match net {
         Some(net) => {
             let changes = Arc::clone(&net);
-            let stewards = stewards_of(Arc::clone(&net));
+            let stewards = crate::shell::network::ShellNetwork::room_stewards(&net);
             let hosted = hosted_channel_keys_of(Arc::clone(&net));
             (
                 Box::new(move |user| net.authenticated_devices_of(user)),
@@ -1375,23 +1375,6 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
         None if now == id => None,
         _ => Some(now.to_string()),
     }
-}
-
-/// Who stewards each room's channels, as `net`'s admitted view of the room
-/// names them: this device and the room's governor.
-pub(crate) fn stewards_of(
-    net: Arc<crate::shell::network::ShellNetwork>,
-) -> crate::shell::channel_policy::Stewards {
-    Box::new(move |room| {
-        net.opened_native_owner()?
-            .with_current(room, |view| {
-                Ok((
-                    view.device().device_public_key,
-                    view.governor().device_public_key,
-                ))
-            })
-            .ok()
-    })
 }
 
 /// The keys of the channels of rooms `net`'s own room host governs, from

@@ -104,7 +104,7 @@ fn channels(
         },
         Box::new(
             WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
-                .with_stewards(crate::shell::collab_broker::stewards_of(Arc::clone(net)))
+                .with_stewards(crate::shell::network::ShellNetwork::room_stewards(net))
                 .with_hosted_channel_keys(crate::shell::collab_broker::hosted_channel_keys_of(
                     Arc::clone(net),
                 )),
@@ -367,7 +367,6 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
             .all(|frame| frame.signed_by.as_bytes() == &owner_device),
         "a frame signed by another key reached the collaborator"
     );
-    drop(stewards);
     drop((owner_transport, member_transport));
     assert!(
         !broker,
