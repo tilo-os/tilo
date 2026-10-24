@@ -1,0 +1,51 @@
+[Unit]
+Description=Keep the deployment the boot loader went back to
+Documentation=file:///usr/share/doc/tilo/recovery.md
+# After a deployment spends its tries, sd-boot starts the previous one, but
+# bootc still queues the failed one as the default. This makes the running
+# deployment bootc's default again and writes what the failed tries left
+# behind to /var/lib/tilo/boot-fallback, where the session's
+# tilo-boot-fallback-notice tells the person. On every other boot it reads
+# bootc's status and exits.
+RequiresMountsFor=/boot /boot/efi /var/lib/tilo
+After=local-fs.target systemd-pstore.service
+# The running deployment is made the default only once it proved itself. On a
+# boot the boot loader counts (it was on trial too), that is when the boot was
+# judged good and blessed; on any other boot neither unit is queued and this
+# runs at once.
+After=boot-complete.target systemd-bless-boot.service
+ConditionKernelCommandLine=!tilo.mode=repair
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-deployment fallback
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# bootc mounts the ESP itself; a dev disk's ESP superblock is read-only, so the
+# script makes it writable for bootc in this unit's own mount namespace.
+PrivateMounts=yes
+UMask=0022
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

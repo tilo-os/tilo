@@ -61,6 +61,9 @@ done
 greeter_record_dir="${TILO_GREETER_RECORD_DIR:-/run/tilo-greeter}"
 if [[ ${1##*/} == tilo-greeter && -z ${TILO_STARTUP_METRICS_PATH:-} && -d $greeter_record_dir ]]; then
   export TILO_STARTUP_METRICS_PATH="$greeter_record_dir/startup-metrics.json"
+  # And which keyboard or touch screen the kiosk gives it, once it has one
+  # (crates/session/greeter/src/seat_input.rs).
+  export TILO_GREETER_INPUT_RECORD="$greeter_record_dir/input"
   umask 0022
 fi
 
