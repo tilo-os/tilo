@@ -1964,6 +1964,7 @@ fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<usize>) {
             "NearbyTransferCommandResult"
         }
         CollabEvent::NearbyTransferChanged => "NearbyTransferChanged",
+        CollabEvent::SpeakersChanged => "SpeakersChanged",
         CollabEvent::Realtime(event) => {
             serialized_bytes(event, &mut meter);
             "Realtime"
@@ -4563,6 +4564,41 @@ fn follow_nearby_transfer(channel: runtime_collab::ChannelHandle, inbound_tx: In
     });
 }
 
+/// The app whose routes follow the speaker groups: only the certified
+/// Settings route is answered, so no other app spends a call on it.
+const SPEAKER_APP_ID: &str = "so.tilo.settings";
+
+/// Follow what a speaker snapshot would show for as long as the Settings
+/// route lives, handing the app a [`CollabEvent::SpeakersChanged`] after each
+/// change. The first wait (from 0) answers at once, so Settings learns its
+/// first view without asking on a timer, and learns it again after the
+/// broker comes back. The call is pending without traffic while nothing
+/// changes; a host that cannot say when its speakers change ends it after
+/// the first refusal.
+fn follow_speakers(channel: runtime_collab::ChannelHandle, inbound_tx: InboundBridge) {
+    tokio::task::spawn_local(async move {
+        let mut after = 0;
+        loop {
+            match channel.speaker_changed(after).await {
+                Ok(change) if change != after => {
+                    after = change;
+                    if !inbound_tx.send_durable(CollabEvent::SpeakersChanged) {
+                        return;
+                    }
+                }
+                Ok(_) => {
+                    tracing::warn!("collab: the broker reported unchanged speakers as changed");
+                    return;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "collab: this route does not follow speaker groups");
+                    return;
+                }
+            }
+        }
+    });
+}
+
 /// SDK-side event loop: dispatches outbound requests to SDK calls, and
 /// spawns one subscription task per stream on the first `join_channel`.
 // Not `Send`: `client` wraps a capnp-rpc handle (`Rc`-based, `!Send`), and
@@ -5320,6 +5356,9 @@ async fn ensure_sdk_route(
         follow_channel_keys(channel.clone(), channel_id.clone(), key_signals.clone());
     }
     follow_nearby_transfer(channel.clone(), inbound_tx.clone());
+    if spec.app_id == SPEAKER_APP_ID {
+        follow_speakers(channel.clone(), inbound_tx.clone());
+    }
     // The streams are independent: subscribing to them together costs the
     // join one broker round trip instead of one per stream.
     let ((), (), (), (), (), (), (), presence) = tokio::join!(

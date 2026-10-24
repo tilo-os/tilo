@@ -550,6 +550,74 @@ mod device_continuity_service_boundary_tests {
         }
     }
 
+    /// Speaker groups that record each wait and answer it with the next
+    /// revision, or (`announces: false`) cannot say when they change.
+    struct WaitingSpeakers {
+        announces: bool,
+        waits: Mutex<Vec<u64>>,
+    }
+
+    impl crate::services::SpeakerServices for WaitingSpeakers {
+        fn command(
+            &self,
+            _command: runtime_collab::SpeakerCommand,
+        ) -> runtime_collab::SpeakerReply {
+            runtime_collab::SpeakerReply::Done { group: None }
+        }
+
+        fn changed(&self, after: u64) -> Option<crate::services::SpeakerChange> {
+            self.waits.lock().expect("waits").push(after);
+            self.announces
+                .then(|| Box::pin(std::future::ready(after.wrapping_add(1))) as _)
+        }
+    }
+
+    #[test]
+    fn only_the_certified_settings_route_waits_for_speaker_changes() {
+        let service = Arc::new(WaitingSpeakers {
+            announces: true,
+            waits: Mutex::new(Vec::new()),
+        });
+        let services = HostServices {
+            speakers: Some(service.clone()),
+            ..Default::default()
+        };
+        let change =
+            speaker_change(&services, "so.tilo.settings", 4).expect("Settings waits on its route");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        assert_eq!(runtime.block_on(change), 5, "the host's next change");
+
+        for app in [NEARBY_TRANSFER_APP_ID, "so.tilo.browser", ""] {
+            let refused = speaker_change(&services, app, 0)
+                .err()
+                .expect("only the certified Settings route waits");
+            assert!(refused.to_string().contains("certified Settings"));
+        }
+        assert_eq!(
+            *service.waits.lock().expect("waits"),
+            [4],
+            "a refused route never reaches the host"
+        );
+
+        for services in [
+            HostServices::default(),
+            HostServices {
+                speakers: Some(Arc::new(WaitingSpeakers {
+                    announces: false,
+                    waits: Mutex::new(Vec::new()),
+                })),
+                ..Default::default()
+            },
+        ] {
+            let unannounced = speaker_change(&services, "so.tilo.settings", 0)
+                .err()
+                .expect("a host that cannot announce changes says so");
+            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+        }
+    }
+
     #[test]
     fn nearby_transfer_is_unavailable_without_a_host_service() {
         let unsupported = delegate_nearby_transfer_command(
@@ -7462,6 +7530,7 @@ impl CapnpBrokerState {
             | CollabEvent::OpenSelectedV2Result { .. }
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
+            | CollabEvent::SpeakersChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -8927,6 +8996,31 @@ fn nearby_transfer_change(
         })
 }
 
+/// The only application that manages the person's speaker groups.
+const SPEAKER_APP_ID: &str = "so.tilo.settings";
+
+/// The wait for the speaker groups' next change past `after` for a
+/// connection on `route_app`: only the certified Settings route may wait, as
+/// only it may command.
+fn speaker_change(
+    services: &HostServices,
+    route_app: &str,
+    after: u64,
+) -> Result<crate::services::SpeakerChange, capnp::Error> {
+    if route_app != SPEAKER_APP_ID {
+        return Err(capnp::Error::failed(
+            "speaker groups are managed only by the certified Settings application".into(),
+        ));
+    }
+    services
+        .speakers
+        .as_ref()
+        .and_then(|service| service.changed(after))
+        .ok_or_else(|| {
+            capnp::Error::unimplemented("this host does not say when speaker groups change".into())
+        })
+}
+
 fn delegate_nearby_transfer_command(
     services: &HostServices,
     context: &crate::services::NearbyTransferRequestContext,
@@ -9650,6 +9744,36 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         results.get().set_reply_json(&reply);
         Promise::ok(())
+    }
+
+    /// Resolves once what a speaker snapshot would show may have changed
+    /// since `after`. Only the certified Settings route may wait, the same
+    /// route every speaker command is confined to, and it learns nothing but
+    /// that something changed: it asks for a snapshot, which is checked as
+    /// always.
+    fn speaker_changed(
+        self: Rc<Self>,
+        params: channel_handle::SpeakerChangedParams,
+        mut results: channel_handle::SpeakerChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        match speaker_change(&self.state.services, &route.app_id, after) {
+            Ok(change) => Promise::from_future(async move {
+                results.get().set_change(change.await);
+                Ok(())
+            }),
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn settings(

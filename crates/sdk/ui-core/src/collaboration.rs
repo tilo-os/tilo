@@ -914,6 +914,14 @@ pub enum CollabEvent {
     /// so it also starts the app's view. Only the certified Files route
     /// receives these.
     NearbyTransferChanged,
+    /// What a speaker snapshot would show may have changed: a device came or
+    /// went, a member answered, a calibration moved on. It names nothing;
+    /// Settings asks for a fresh
+    /// [`SpeakerCommand::Snapshot`](runtime_collab::SpeakerCommand::Snapshot)
+    /// instead of asking on a timer. The first arrives once the route joins,
+    /// so it also starts the view. Only the certified Settings route
+    /// receives these.
+    SpeakersChanged,
     Realtime(crate::realtime_continuity::RealtimeEvent),
 }
 
