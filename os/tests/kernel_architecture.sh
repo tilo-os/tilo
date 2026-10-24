@@ -108,6 +108,74 @@ done
 [ ! -e "$tmp/unknown-stage" ] || fail 'unsupported architecture created a payload'
 printf 'ok    kernel images and DTBs staged by architecture; missing artifacts fail\n'
 
+# The aarch64 kernel cross-compiles on x86_64: every make of the compile runs with Kbuild's ARCH
+# and CROSS_COMPILE, the compiler cache wraps the cross compiler (and the builder's own for host
+# programs), and a builder without the cross toolchain, or another pairing, fails before make.
+mkdir -p "$tmp/cross/bin" "$tmp/cross/tree" "$tmp/cross/extmod" "$tmp/cross/cache"
+export CROSS_LOG="$tmp/cross/make.log" SCCACHE_LOG_FILE="$tmp/cross/sccache.log"
+cat > "$tmp/cross/bin/uname" <<'EOF'
+#!/bin/sh
+[ "$1" = -m ] && { echo "${FAKE_HOST:-x86_64}"; exit 0; }
+exec /usr/bin/uname "$@"
+EOF
+cat > "$tmp/cross/bin/make" <<'EOF'
+#!/bin/sh
+printf 'ARCH=%s CROSS_COMPILE=%s %s\n' "${ARCH:-}" "${CROSS_COMPILE:-}" "$*" >> "$CROSS_LOG"
+case "$*" in *kernelrelease*) echo 6.test ;; esac
+EOF
+cat > "$tmp/cross/bin/sccache" <<'EOF'
+#!/bin/sh
+printf '%s SCCACHE_DIR=%s\n' "$*" "${SCCACHE_DIR:-}" >> "$SCCACHE_LOG_FILE"
+EOF
+printf '#!/bin/sh\n' > "$tmp/cross/bin/aarch64-linux-gnu-gcc"
+chmod +x "$tmp/cross/bin/"*
+cross_path="$tmp/cross/bin:$PATH"
+PATH="$cross_path" sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod" > "$tmp/cross/out"
+[ "$(tail -1 "$tmp/cross/out")" = 6.test ] || fail 'cross compile did not print the kernel release'
+[ "$(grep -c . "$CROSS_LOG")" -eq 3 ] || fail "cross compile ran an unexpected make: $(cat "$CROSS_LOG")"
+if grep -Fv 'ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ' "$CROSS_LOG" | grep -q .; then
+    fail "a cross make ran without Kbuild's cross settings: $(cat "$CROSS_LOG")"
+fi
+: > "$CROSS_LOG"
+PATH="$cross_path" TILO_KERNEL_COMPILER_CACHE="$tmp/cross/cache" \
+    sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod" > /dev/null
+grep -Fq 'CC=sh /work/kernel-cc-wrapper.sh aarch64-linux-gnu-gcc HOSTCC=sh /work/kernel-cc-wrapper.sh gcc all' "$CROSS_LOG" \
+    || fail "the compiler cache does not wrap the cross compiler: $(cat "$CROSS_LOG")"
+grep -Fxq -- "--start-server SCCACHE_DIR=$tmp/cross/cache" "$SCCACHE_LOG_FILE" || fail 'sccache did not start on the cache directory'
+grep -Fxq -- "--stop-server SCCACHE_DIR=$tmp/cross/cache" "$SCCACHE_LOG_FILE" || fail 'sccache was left running'
+reject env PATH="$cross_path" TILO_KERNEL_COMPILER_CACHE="$tmp/cross/absent" \
+    sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod"
+grep -Fq 'no writable compiler cache directory' "$tmp/rejected.log" || fail 'a missing cache directory did not fail'
+: > "$CROSS_LOG"
+PATH="$cross_path" FAKE_HOST=aarch64 sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod" > /dev/null
+if grep -Fv 'ARCH= CROSS_COMPILE= ' "$CROSS_LOG" | grep -q .; then fail 'a native build set cross settings'; fi
+rm "$tmp/cross/bin/aarch64-linux-gnu-gcc"
+: > "$CROSS_LOG"
+reject env PATH="$cross_path" sh "$helper" compile aarch64 "$tmp/cross/tree" 2 "$tmp/cross/extmod"
+grep -Fq 'carries no aarch64 cross toolchain' "$tmp/rejected.log" || fail 'a missing cross toolchain did not fail'
+reject env PATH="$cross_path" FAKE_HOST=aarch64 sh "$helper" compile x86_64 "$tmp/cross/tree" 2 "$tmp/cross/extmod"
+grep -Fq 'the x86_64 kernel builds natively or on x86_64, not on aarch64' "$tmp/rejected.log" \
+    || fail 'an x86_64 kernel built on aarch64'
+[ ! -s "$CROSS_LOG" ] || fail "a refused cross build ran make: $(cat "$CROSS_LOG")"
+printf 'ok    the aarch64 kernel cross-compiles on x86_64 with Kbuild cross settings and its cache\n'
+
+# The cache wrapper compiles every source that pulls a file in with .incbin without the cache,
+# since the cache keys the source text, not the file it includes; the rest go through it.
+wrapper="$repo/os/kernel/cc-wrapper.sh"
+mkdir -p "$tmp/ccw"
+printf '#!/bin/sh\necho "cached $*"\n' > "$tmp/ccw/launcher"
+printf '#!/bin/sh\necho "direct $*"\n' > "$tmp/ccw/cc"
+chmod +x "$tmp/ccw/launcher" "$tmp/ccw/cc"
+printf 'int f(void) { return 0; }\n' > "$tmp/ccw/plain.c"
+printf 'asm(".incbin \\"kernel/config_data.gz\\"");\n' > "$tmp/ccw/configs.c"
+printf '\t.incbin "arch/arm64/kernel/vdso/vdso.so"\n' > "$tmp/ccw/vdso-wrap.S"
+ccw() { (cd "$tmp/ccw" && TILO_KERNEL_CC_LAUNCHER="$tmp/ccw/launcher" sh "$wrapper" "$tmp/ccw/cc" "$@"); }
+[ "$(ccw -c -o plain.o plain.c)" = "cached $tmp/ccw/cc -c -o plain.o plain.c" ] || fail 'a plain source bypassed the cache'
+[ "$(ccw -c -o configs.o configs.c)" = 'direct -c -o configs.o configs.c' ] || fail 'an inline .incbin went through the cache'
+[ "$(ccw -c -o vdso-wrap.o vdso-wrap.S)" = 'direct -c -o vdso-wrap.o vdso-wrap.S' ] || fail 'an assembler .incbin went through the cache'
+[ "$(ccw -E plain.c)" = 'direct -E plain.c' ] || fail 'preprocessing went through the cache'
+printf 'ok    sources naming .incbin compile without the compiler cache\n'
+
 # Verify the Containerfile actually uses the executable path under test, that
 # native RPM metadata is not forced to x86, and that the DTB tree is packaged.
 tr -d '\r' < "$repo/os/kernel/Containerfile" > "$tmp/Containerfile"
@@ -116,8 +184,10 @@ for contract in \
     'COPY os/kernel/config-fragments/ /work/kernel-config/' \
     'sh /work/kernel-build-support.sh validate-arch "$ARCH"' \
     'sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC"' \
-    'sh /work/kernel-build-support.sh compile "$(uname -m)" "$KSRC" "$JOBS"' \
-    'sh /work/kernel-build-support.sh stage-modules "$(uname -m)" "$KSRC" "$STAGE" "$KVER"'; do
+    'TARGET_ARCH="${KERNEL_ARCH:-$(uname -m)}"' \
+    'sh /work/kernel-build-support.sh compile "$TARGET_ARCH" "$KSRC" "$JOBS"' \
+    'sh /work/kernel-build-support.sh stage-modules "$TARGET_ARCH" "$KSRC" "$STAGE" "$KVER"' \
+    'rpmbuild -bb --target "$TARGET_ARCH"'; do
     grep -Fq "$contract" "$tmp/Containerfile" || fail "kernel build bypassed tested helper: $contract"
 done
 # The helper's own steps: the native fragment, the resolved-config checks and
