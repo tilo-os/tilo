@@ -197,10 +197,16 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
     owner.admits(old.rooms(), &room, 2, &writer).await;
     let mut held = recipient.member(channel, &owner);
     let mut writing = writer.member(channel, &owner);
-    recipient.ask(old.rooms(), &room, &mut held).await;
-    writer.ask(old.rooms(), &room, &mut writing).await;
-    recipient.receive(old.rooms(), &room, &mut held).await;
-    writer.receive(old.rooms(), &room, &mut writing).await;
+    for (device, member) in [(&recipient, &mut held), (&writer, &mut writing)] {
+        device.ask(old.rooms(), &room, member).await;
+        let events = device.receive(old.rooms(), &room, member).await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, MemberEvent::Joined { .. })),
+            "{events:?}"
+        );
+    }
     let before = seal(
         &writing.content_keys().unwrap(),
         artifact,
