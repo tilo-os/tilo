@@ -3197,9 +3197,23 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
     assert!(pump(&mut h, &cursor_moved_at(center), mods));
     let wheel = ui::synthetic_input::mouse_wheel(0.0, -3.0);
     assert!(pump(&mut h, &wheel, mods));
+    // The notches glide on for a few frames; the idle wait is after.
+    let mut at = Instant::now();
+    let mut frames = 0;
+    while ui::time::testing::with_monotonic_time(at, || {
+        h.host.collaborators_overlay.needs_animation_frame()
+    }) {
+        frames += 1;
+        assert!(frames < 600, "the glide comes to rest");
+        at += Duration::from_millis(16);
+        ui::time::testing::with_monotonic_time(at, || {
+            h.host.collaborators_overlay.advance_scroll()
+        });
+    }
+    assert!(frames > 0, "the notches glide on");
     let deadline = h
         .host
-        .wake_deadline_sources(Instant::now())
+        .wake_deadline_sources(at)
         .into_iter()
         .find(|(name, _)| *name == "people")
         .expect("People contributes its child widget deadline")
@@ -3209,7 +3223,9 @@ fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
         "the shared scrollbar fade must wake an otherwise idle compositor"
     );
     assert!(
-        !h.host.collaborators_overlay.needs_animation_frame(),
+        !ui::time::testing::with_monotonic_time(at, || {
+            h.host.collaborators_overlay.needs_animation_frame()
+        }),
         "the idle interval before a scroll fade uses a deadline rather than busy frames"
     );
     assert!(pump(
