@@ -9,7 +9,9 @@ The identical archive is published at the immutable SHA-256 URL in
 `../source_artifact.py`. Run `python3 crates/session/tilo-ntfs-helper/source_artifact.py`
 from the repository root to prewarm `target/ntfs-source`; set
 `TILO_NTFS_SOURCE_OFFLINE=1` for builds without network access. Override the
-cache location with `TILO_NTFS_SOURCE_CACHE`. Missing offline content and corrupt
+cache location with `TILO_NTFS_SOURCE_CACHE`. Without it, a Cargo build reads a
+prewarmed `target/ntfs-source` and otherwise downloads into its own `OUT_DIR`, the
+only place Cargo lets a build script write. Missing offline content and corrupt
 cached content fail. A standalone distribution prefers its included archive.
 `build_native.py` checks the entire archive before extraction and requires both
 expected parser symbols and absence of the default
