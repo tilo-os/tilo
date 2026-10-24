@@ -3755,6 +3755,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let durable_namespace = Arc::clone(&namespace);
     #[cfg(target_os = "linux")]
     let signalled_namespace = Arc::clone(&namespace);
+    #[cfg(target_os = "linux")]
+    let signalled_availability = availability.clone();
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
         .with_document_content(tilo_content_device::for_app());
@@ -3999,6 +4001,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
             signal
                 .start(
                     signalled_namespace,
+                    signalled_availability,
                     &mp,
                     session.notifier(),
                     &tokio::runtime::Handle::current(),
