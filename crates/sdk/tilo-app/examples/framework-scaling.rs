@@ -29,7 +29,8 @@
 //! macOS) to see typing alone.
 //!
 //! With `TILO_PROFILE_RESOURCES=1` each move's resource work is printed to
-//! stderr as `input_carry` stages (see `docs/app-performance.md`).
+//! stderr as `input_carry` stages (see `docs/app-performance.md`), and in
+//! the `focus` mode every scope of one more added task as an `add_item` line.
 //!
 //! A second argument `open` measures only the open, for profiling it. Each
 //! size's open also prints a `FRAMEWORK-OPEN` line, which
@@ -1094,6 +1095,22 @@ fn focus_cost(tasks: u32) -> Result<FocusCost, Box<dyn std::error::Error>> {
         recompute_ms.push(millis(start));
         if order.is_empty() {
             return Err("the window has no focus order to time".into());
+        }
+    }
+    if std::env::var_os("TILO_PROFILE_RESOURCES").is_some() {
+        // One more add, untimed, with every scope it ran: where the call's
+        // time goes, slowest scope first. Scopes nest, so they do not add up.
+        let (called, mut phases) = observe(|| app.call("seed", add.clone()));
+        called?;
+        phases.sort_by_key(|phase| std::cmp::Reverse(phase.elapsed_ns));
+        for phase in phases {
+            let elapsed = u64::try_from(phase.elapsed_ns).unwrap_or(u64::MAX);
+            eprintln!(
+                "add_item tasks={tasks} {} calls={} ms={:.3}",
+                phase.phase,
+                phase.calls,
+                std::time::Duration::from_nanos(elapsed).as_secs_f64() * 1e3,
+            );
         }
     }
     let native_ms = drive_live_window::<Mounted, _>(|app| {

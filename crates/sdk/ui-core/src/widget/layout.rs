@@ -314,14 +314,12 @@ pub(super) unsafe fn compute_widget_layout_depth(
     }
     let mut policies = Vec::new();
     let mut pending = vec![root];
+    let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
     while let Some(node) = pending.pop() {
-        let policy = unsafe {
-            crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
-                widget.manual_layout_policy()
-            })
-        }
-        .ok()
-        .flatten();
+        // SAFETY: the caller's exact live-tree ownership contract.
+        let policy = unsafe { sweep.inspect(node, |widget| widget.manual_layout_policy()) }
+            .ok()
+            .flatten();
         if let Some(policy) = policy {
             policies.push((node, policy));
         }
@@ -335,16 +333,14 @@ pub(super) unsafe fn compute_widget_layout_depth(
     // descendant heights intact and clips paragraphs as they wrap while typing.
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
-        let needs_measure = unsafe {
-            layout_bound_node(bindings, nodes, node, |widget| {
-                widget.layout_needs_measure()
-            })
-        }
-        .unwrap_or(false);
+        let needs_measure =
+            unsafe { sweep.layout(node, |widget| widget.layout_needs_measure()) }.unwrap_or(false);
         if needs_measure {
             taffy.mark_dirty(node)?;
         }
     }
+    // Measurement enters each measured node's own scope.
+    drop(sweep);
     // Outermost first: resetting a region dirties the regions inside it.
     for (node, policy) in &policies {
         super::manual::reset_region(policy, taffy, *node)?;
@@ -396,13 +392,12 @@ pub(super) unsafe fn compute_widget_layout_depth(
             }
             changed |= placed;
         }
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
         for &node in nodes.keys() {
             // SAFETY: same contract as measurement; no topology mutation is
             // permitted by adjust_layout_style.
             let adjusted = unsafe {
-                layout_bound_node(bindings, nodes, node, |widget| {
-                    widget.adjust_layout_style(taffy, node, text)
-                })
+                sweep.layout(node, |widget| widget.adjust_layout_style(taffy, node, text))
             }
             .unwrap_or(false);
             if adjusted {
@@ -410,6 +405,7 @@ pub(super) unsafe fn compute_widget_layout_depth(
             }
             changed |= adjusted;
         }
+        drop(sweep);
         if !changed {
             return Ok(());
         }
@@ -846,19 +842,21 @@ impl CompositionFocus {
         // Asked of every node: look the order up, do not scan it each time.
         let allowed: Option<std::collections::HashSet<NodeId>> =
             allowed.map(|order| order.iter().copied().collect());
+        let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
         let focused: Vec<_> = nodes
             .keys()
             .copied()
             .filter(|&node| {
                 allowed.as_ref().is_none_or(|order| order.contains(&node))
                     && unsafe {
-                        crate::bound_dispatch::inspect_bound_node(bindings, nodes, node, |widget| {
+                        sweep.inspect(node, |widget| {
                             widget.is_focusable() && widget.is_enabled() && widget.is_focused()
                         })
-                        .unwrap_or(false)
                     }
+                    .unwrap_or(false)
             })
             .collect();
+        drop(sweep);
         let mut candidates = focused.iter().copied().filter(|&candidate| {
             let owner = Self {
                 ambiguous: false,
