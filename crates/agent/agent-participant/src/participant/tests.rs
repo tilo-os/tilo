@@ -708,8 +708,12 @@ fn a_wait_that_runs_out_plans_again_saying_nothing_arrived() {
     assert!(waiting.ran_out(now));
     assert_eq!(waiting.activity(), "Waiting for a message");
     assert!(
-        waiting.answered_by(&[], &[]),
-        "without a text, any change is it"
+        waiting.answered_by(&["Hi".into()], &[]),
+        "without a text, any message is it"
+    );
+    assert!(
+        !waiting.answered_by(&[], &[]),
+        "a change that added no message (a roster, a read mark) is not"
     );
     running
         .waits

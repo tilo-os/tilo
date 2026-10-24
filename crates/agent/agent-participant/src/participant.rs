@@ -584,7 +584,7 @@ impl AgentParticipant {
                         .insert(document.route.clone(), document.author);
                     if !self.news.contains(&document.route) {
                         // Read before the change merges below.
-                        let before = self.record_text(&document.route).unwrap_or_default();
+                        let before = self.record_messages(&document.route).unwrap_or_default();
                         self.news_before.insert(document.route.clone(), before);
                         self.news.push(document.route.clone());
                     }
