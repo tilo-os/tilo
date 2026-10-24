@@ -209,9 +209,20 @@ mod tests {
             "shared"
         );
         // Seek reaches the player: it moves the open clip, or, on a machine
-        // without the system decoder, says a video must be open first.
-        if let Err(error) = drive_invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 }) {
-            assert_eq!(error.code(), "action_unavailable", "{error}");
+        // without the system decoder, says a video must be open first. The
+        // scenario parks the clip at two seconds and plays on from there, so
+        // the target is before it: a seek that did nothing would leave the
+        // playhead at or past where it was.
+        let before = surface(&mut app, |player| player.player().position_ms());
+        match drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 }) {
+            Ok(()) => {
+                let after = surface(&mut app, |player| player.player().position_ms());
+                assert!(
+                    (500..before).contains(&after),
+                    "the seek moved the playhead from {before} ms to 500 ms, not {after} ms"
+                );
+            }
+            Err(error) => assert_eq!(error.code(), "action_unavailable", "{error}"),
         }
     }
 
