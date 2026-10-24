@@ -159,3 +159,24 @@ fn standalone_immediate_dispatch_has_no_capture_encoding() {
     assert_eq!(captures[0].mutation_hashes.len(), 1);
     assert!(queue.take_refusals().is_empty());
 }
+
+#[test]
+fn what_the_app_submits_on_its_own_reaches_the_host_as_the_apps() {
+    let dispatcher = Dispatcher::<Document>::new("test.dispatch", "body", false, Some("author"));
+    let invoke = || Invoke::<Document>::apply(&Put(1)).expect("the edit binds");
+    dispatcher.submit(invoke());
+    dispatcher.submit_on_its_own(invoke());
+    dispatcher.submit(invoke());
+    let origins = dispatcher
+        .core
+        .queue
+        .borrow()
+        .iter()
+        .map(|(_, origin)| *origin)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        origins,
+        [Origin::Person, Origin::App, Origin::Person],
+        "only what was submitted on its own is the app's, and the next submission is the person's again"
+    );
+}

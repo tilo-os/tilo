@@ -34,9 +34,12 @@ pub(crate) enum Input {
     Starting,
 }
 
+pub(crate) use crate::widget::controls::Origin;
+
 thread_local! {
     static INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
     static DRAINED_INPUT: Cell<Input> = const { Cell::new(Input::Discrete) };
+    static DRAINED_ORIGIN: Cell<Origin> = const { Cell::new(Origin::Person) };
     static NATIVE_TEXT_EXECUTION: Cell<Input> = const { Cell::new(Input::Discrete) };
 }
 
@@ -87,10 +90,43 @@ impl Drop for DrainTextScope {
     }
 }
 
-fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input) {
+/// The queue that hands over the invocation being drained says who asked
+/// for it ([`Origin::App`]: the app on its own); unsaid, it is a person's.
+pub(crate) fn note_drained_origin(origin: Origin) {
+    DRAINED_ORIGIN.with(|flag| flag.set(origin));
+}
+
+struct DrainOriginScope(Origin);
+impl Drop for DrainOriginScope {
+    fn drop(&mut self) {
+        DRAINED_ORIGIN.with(|flag| flag.set(self.0));
+    }
+}
+
+/// The next invocation `widget`'s queues hand over, the effect invocation
+/// it continues, and who asked for it.
+pub(crate) fn take_attributed_with_origin(
+    widget: &mut dyn Widget,
+) -> Option<(
+    tilo_actions::ControlInvocation,
+    Option<tilo_actions::InvocationId>,
+    Origin,
+)> {
+    let (taken, _, origin) = capture_physical_drain(|| {
+        crate::widget::controls::take_attributed_control_invocation(widget)
+    });
+    taken.map(|(intent, on_behalf_of)| (intent, on_behalf_of, origin))
+}
+
+fn capture_physical_drain<T>(run: impl FnOnce() -> T) -> (T, Input, Origin) {
     let _scope = DrainTextScope(DRAINED_INPUT.with(|flag| flag.replace(Input::Discrete)));
+    let _origin = DrainOriginScope(DRAINED_ORIGIN.with(|flag| flag.replace(Origin::Person)));
     let result = run();
-    (result, DRAINED_INPUT.with(Cell::get))
+    (
+        result,
+        DRAINED_INPUT.with(Cell::get),
+        DRAINED_ORIGIN.with(Cell::get),
+    )
 }
 
 struct NativeTextScope(Input);
@@ -461,11 +497,13 @@ fn count_addresses(
 }
 
 /// A component's control intent, with the effect invocation it continues
-/// when the component's effect handler or completion queued it.
+/// when the component's effect handler or completion queued it, and who
+/// asked for it.
 pub(crate) type PendingComponentControl = (
     BoundActionTarget,
     tilo_actions::ControlInvocation,
     Option<tilo_actions::InvocationId>,
+    Origin,
 );
 
 pub(crate) struct DrainedControlInvocations {
@@ -480,7 +518,10 @@ pub(crate) fn drain_control_invocations(root: &mut dyn Widget) -> DrainedControl
             .controls
             .into_iter()
             .zip(batch.continuing)
-            .map(|((target, intent), on_behalf_of)| (target, intent, on_behalf_of))
+            .zip(batch.origins)
+            .map(|(((target, intent), on_behalf_of), origin)| {
+                (target, intent, on_behalf_of, origin)
+            })
             .collect(),
         error: batch.failures.into_iter().next(),
     }
@@ -492,6 +533,8 @@ pub(crate) struct BoundControlBatch {
     pub(crate) controls: Vec<(BoundActionTarget, tilo_actions::ControlInvocation)>,
     /// For each of `controls`, in order, the effect invocation it continues.
     pub(crate) continuing: Vec<Option<tilo_actions::InvocationId>>,
+    /// For each of `controls`, in order, who asked for it.
+    pub(crate) origins: Vec<Origin>,
     pub(crate) failures: Vec<BoundDispatchError>,
 }
 
@@ -554,6 +597,7 @@ pub(crate) fn snapshot_control_queues(root: &dyn Widget) -> ControlQueueSnapshot
 fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch {
     let mut invocations = Vec::new();
     let mut continuing = Vec::new();
+    let mut origins = Vec::new();
     let mut visited = Vec::new();
     let mut visit = |binding: &CallbackBinding,
                      widget: &mut dyn crate::widget::AppWidget,
@@ -569,6 +613,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
             .collect::<Vec<_>>();
         for intent in queued {
             continuing.push(None);
+            origins.push(Origin::Person);
             invocations.push((
                 BoundActionTarget {
                     input: Input::Discrete,
@@ -581,10 +626,11 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
                 intent,
             ));
         }
-        while let (Some((intent, on_behalf_of)), input) = capture_physical_drain(|| {
+        while let (Some((intent, on_behalf_of)), input, origin) = capture_physical_drain(|| {
             crate::widget::controls::take_attributed_control_invocation(widget)
         }) {
             continuing.push(on_behalf_of);
+            origins.push(origin);
             invocations.push((
                 BoundActionTarget {
                     input,
@@ -610,6 +656,7 @@ fn visit_control_queues(root: &mut dyn Widget, drain: bool) -> BoundControlBatch
         visited,
         controls: invocations,
         continuing,
+        origins,
         failures: failure.into_iter().collect(),
     }
 }

@@ -7838,6 +7838,7 @@ impl FrameHarness {
         target: crate::bound_dispatch::BoundActionTarget,
         intent: &tilo_actions::ControlInvocation,
         on_behalf_of: Option<tilo_actions::InvocationId>,
+        origin: crate::bound_dispatch::Origin,
     ) {
         let invocation = tilo_actions::InvocationId::new();
         // An edit a job started for someone else submitted is theirs, as far
@@ -7897,12 +7898,15 @@ impl FrameHarness {
                     intent,
                 );
             }
-            Err(error) if acting.is_none() => {
+            // Only what the person asked for is refused over the window; the
+            // app hears of its own invocation's refusal through the feedback
+            // above.
+            Err(error) if acting.is_none() && origin == crate::bound_dispatch::Origin::Person => {
                 tracing::warn!(code = error.code(), %error, "headless: bound control refused");
                 self.refuse_visibly(&error);
             }
             Err(error) => {
-                tracing::warn!(code = error.code(), %error, "headless: bound control refused");
+                tracing::warn!(code = error.code(), %error, ?origin, "headless: bound control refused");
                 self.control_failures.push(error.to_string());
             }
         }
@@ -8425,10 +8429,10 @@ impl FrameHarness {
                 "headless: control traversal incomplete; delivering already drained intents"
             );
         }
-        for (target, intent, on_behalf_of) in registered
+        for (target, intent, on_behalf_of, origin) in registered
             .components
             .into_iter()
-            .map(|(target, intent)| (target, intent, None))
+            .map(|(target, intent)| (target, intent, None, crate::bound_dispatch::Origin::Person))
             .chain(bound.pending)
         {
             if on_behalf_of.is_none() && self.take_component_search_invocation(&target, &intent) {
@@ -8443,7 +8447,7 @@ impl FrameHarness {
             {
                 continue;
             }
-            self.dispatch_bound_control(target, &intent, on_behalf_of);
+            self.dispatch_bound_control(target, &intent, on_behalf_of, origin);
         }
 
         let batch =

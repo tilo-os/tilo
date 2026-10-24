@@ -333,10 +333,10 @@ fn physical_text_provenance_survives_initial_custody_transfer_and_legacy_drainin
     let mut parent = crate::widget::Column::new().push(Box::new(TextOwner {
         emitter: Some(legacy),
     }));
-    let (physical, marked) = capture_physical_drain(|| {
+    let (physical, marked, _) = capture_physical_drain(|| {
         crate::widget::controls::take_attributed_control_invocation(&mut parent)
     });
-    let (programmatic, unmarked) = capture_physical_drain(|| {
+    let (programmatic, unmarked, _) = capture_physical_drain(|| {
         crate::widget::controls::take_attributed_control_invocation(&mut parent)
     });
     assert_eq!(marked, Input::Continuing);
