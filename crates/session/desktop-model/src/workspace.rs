@@ -43,20 +43,11 @@ pub struct Workspace {
     /// control socket's state dump.
     #[serde(skip_deserializing)]
     pub collaborators: Vec<Collaborator>,
-    /// One exact, owner-signed offer awaiting the named recipient's consent.
-    /// Persisted with the workspace so restart cannot erase, extend, or retarget
-    /// the ceremony.
+    /// Where moving the room to another person stands, as its governance
+    /// says: projected from this device's copy of the room, as
+    /// [`Workspace::policy`] is.
     #[serde(default)]
-    pub pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    /// Completed transfers retaining the outgoing owner's signed authorization
-    /// and the exact recipient's signed acceptance. This is append-only audit
-    /// evidence, not a second source of current ownership.
-    #[serde(default, skip_serializing_if = "crate::history::omitted")]
-    pub ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    /// Owner-signed cancellations retained so a cancelled proposal cannot be
-    /// replayed after restart.
-    #[serde(default, skip_serializing_if = "crate::history::omitted")]
-    pub ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
+    pub ownership: RoomOwnership,
     /// Who may do what in this room: its owner (structural, `None` until the
     /// local user adopts it on load), each member's role preset, and every
     /// grant on the room's tree. Changed only through governance actions.
@@ -113,11 +104,7 @@ struct StoredWorkspace {
     #[serde(skip_deserializing)]
     collaborators: Vec<Collaborator>,
     #[serde(default)]
-    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
-    #[serde(default)]
-    ownership_transfer_audit: Vec<collab_types::OwnershipTransferAuditV1>,
-    #[serde(default)]
-    ownership_transfer_cancellations: Vec<collab_types::OwnershipTransferCancellationV1>,
+    ownership: RoomOwnership,
     #[serde(default)]
     policy: Option<RoomPolicy>,
     #[serde(default)]
@@ -152,9 +139,7 @@ impl From<StoredWorkspace> for Workspace {
             name: stored.name,
             strips: stored.strips,
             collaborators: stored.collaborators,
-            pending_ownership_transfer: stored.pending_ownership_transfer,
-            ownership_transfer_audit: stored.ownership_transfer_audit,
-            ownership_transfer_cancellations: stored.ownership_transfer_cancellations,
+            ownership: stored.ownership,
             policy,
             sandbox: stored.sandbox,
             presets: stored.presets,
@@ -197,6 +182,17 @@ pub const PRESET_ASSIGN_ACTION_ID: &str = "preset.assign";
 pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
 /// Taking such a grant back.
 pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
+
+/// Offering the room to another member, in place of any open offer.
+pub const OWNERSHIP_OFFER_ACTION_ID: &str = "ownership.propose";
+/// Taking the open offer back.
+pub const OWNERSHIP_CANCEL_ACTION_ID: &str = "ownership.cancel";
+/// Accepting the offer made to the person, to govern the room from the
+/// device accepting it.
+pub const OWNERSHIP_ACCEPT_ACTION_ID: &str = "ownership.accept";
+/// Declining the offer made to the person: it closes, and its owner sees it
+/// declined.
+pub const OWNERSHIP_DECLINE_ACTION_ID: &str = "ownership.decline";
 
 /// The room governance action a published governance action is, which
 /// decides who may take it: granting (or assigning a grant set) is
@@ -485,6 +481,26 @@ impl Workspace {
     #[must_use]
     pub fn is_owner(&self, user: &str) -> bool {
         self.policy.is_owner(user)
+    }
+
+    /// Whether `person` may take the ownership action `action` (one of
+    /// [`OWNERSHIP_OFFER_ACTION_ID`] and its kin) as the room's ownership
+    /// stands: its owner offers it while it is not moving and takes an open
+    /// offer back, and only the person offered it accepts. Its governor
+    /// decides again when asked.
+    #[must_use]
+    pub fn may_move(&self, person: &str, action: &str) -> bool {
+        let owner = self.is_owner(person);
+        match (&self.ownership.step, action) {
+            (OwnershipStep::Moving { .. }, _) => false,
+            (_, OWNERSHIP_OFFER_ACTION_ID)
+            | (OwnershipStep::Offered { .. }, OWNERSHIP_CANCEL_ACTION_ID) => owner,
+            (
+                OwnershipStep::Offered { recipient, .. },
+                OWNERSHIP_ACCEPT_ACTION_ID | OWNERSHIP_DECLINE_ACTION_ID,
+            ) => hex::encode(recipient) == person,
+            _ => false,
+        }
     }
 
     /// Whether any of the workspace's strips holds a window. One without
@@ -1068,9 +1084,7 @@ impl Workspace {
             name: name.into(),
             strips: Vec::new(),
             collaborators: Vec::new(),
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
+            ownership: RoomOwnership::default(),
             policy: RoomPolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),
@@ -1085,8 +1099,8 @@ impl Workspace {
 
     /// A copy holding what authority decisions read — identity, the room's
     /// policy, sandbox, presets, defaults — and none of the layout or
-    /// history: no strips, effect receipts, shortcuts, schedule
-    /// claims or ownership-transfer records. For a caller that must not hold
+    /// history: no strips, effect receipts, shortcuts or schedule
+    /// claims. For a caller that must not hold
     /// the tree while it asks [`Self::answer_at`] and its kin, so the copy
     /// costs the policy, not the workspace's past.
     #[must_use]
@@ -1098,9 +1112,7 @@ impl Workspace {
             name,
             strips: _,
             collaborators,
-            pending_ownership_transfer,
-            ownership_transfer_audit: _,
-            ownership_transfer_cancellations: _,
+            ownership,
             policy,
             sandbox,
             presets,
@@ -1117,9 +1129,7 @@ impl Workspace {
             name: name.clone(),
             strips: Vec::new(),
             collaborators: collaborators.clone(),
-            pending_ownership_transfer: pending_ownership_transfer.clone(),
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
+            ownership: ownership.clone(),
             policy: policy.clone(),
             sandbox: sandbox.clone(),
             presets: presets.clone(),
@@ -1167,6 +1177,40 @@ impl Workspace {
     }
 }
 
+/// Where moving a room to another person stands, as its governance says.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomOwnership {
+    pub step: OwnershipStep,
+    /// The governance generation of the room's last handoff to another
+    /// person's device; `0` while it never moved. It only grows, so a room
+    /// handed away and back is not the room it was before.
+    pub handed_at: u64,
+}
+
+/// A step of moving a room to another person.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OwnershipStep {
+    /// Nobody is offered the room, and it is on its way to nobody.
+    #[default]
+    Settled,
+    /// Its owner `owner` offered it to `recipient` (each a person's root
+    /// key), until `expires_at_ns`; `offer_id` names the offer.
+    Offered {
+        offer_id: [u8; 32],
+        owner: [u8; 32],
+        recipient: [u8; 32],
+        expires_at_ns: u64,
+    },
+    /// `recipient` accepted the room, which is on its way to their device:
+    /// governed there once that device takes it up.
+    Moving { recipient: [u8; 32] },
+    /// `recipient` declined the offer `offer_id`, and no offer followed it.
+    Declined {
+        offer_id: [u8; 32],
+        recipient: [u8; 32],
+    },
+}
+
 impl Default for Workspace {
     /// Room is minted, not left at [`RoomId::nil`] — two workspaces
     /// built this way must not silently become the same room.
@@ -1178,9 +1222,7 @@ impl Default for Workspace {
             name: String::new(),
             strips: Vec::new(),
             collaborators: Vec::new(),
-            pending_ownership_transfer: None,
-            ownership_transfer_audit: Vec::new(),
-            ownership_transfer_cancellations: Vec::new(),
+            ownership: RoomOwnership::default(),
             policy: RoomPolicy::unowned(room.to_string(), &Subject::Role(Role::Owner)),
             sandbox: Vec::new(),
             presets: Vec::new(),

@@ -7,7 +7,7 @@ use tilo_actions::remote::{
     ROOM_GOVERNANCE_PROVIDER, ReceiptStatus,
 };
 
-use super::{ACCEPT, CANCEL, OWNERSHIP_VERBS, PROPOSE};
+use super::{ACCEPT, CANCEL, DECLINE, OWNERSHIP_VERBS, PROPOSE};
 use crate::rooms::actions::HostRoomActions;
 use crate::rooms::actions::tests::{admit, admit_device, caller, governed, request, settled};
 use crate::rooms::ownership::tests::HostDevice;
@@ -98,7 +98,7 @@ async fn the_owner_offers_the_room_and_the_recipients_device_accepts_it() {
     );
     assert_eq!(
         offered(&host, workspace, &caller(&recipient.cert)).await,
-        [ACCEPT]
+        [ACCEPT, DECLINE]
     );
     assert!(offered(&host, workspace, &caller(&member)).await.is_empty());
 
@@ -125,5 +125,64 @@ async fn the_owner_offers_the_room_and_the_recipients_device_accepts_it() {
     for device in [&owner, &recipient.cert, &member] {
         assert!(offered(&host, workspace, &caller(device)).await.is_empty());
     }
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_recipient_declines_the_offer_and_the_owner_may_offer_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let rooms = relay.rooms();
+    let (room, workspace, host) = governed(rooms).await;
+    let recipient = HostDevice::new();
+    admit_device(rooms, &room, &owner, 1, (&recipient.key, &recipient.cert)).await;
+    invoke(
+        &host,
+        workspace,
+        &caller(&owner),
+        request(
+            &room,
+            PROPOSE,
+            json!({ "person": hex::encode(recipient.cert.user_public_key) }),
+        ),
+    )
+    .await
+    .unwrap();
+    let offer = {
+        let state = rooms.room(&room).await.unwrap();
+        let offer = state.lock().await.peer().governance().ownership_offer();
+        offer.unwrap()
+    };
+
+    invoke(
+        &host,
+        workspace,
+        &caller(&recipient.cert),
+        request(
+            &room,
+            DECLINE,
+            json!({ "offer": hex::encode(offer.offer_id) }),
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        offered(&host, workspace, &caller(&recipient.cert))
+            .await
+            .is_empty()
+    );
+    assert_eq!(offered(&host, workspace, &caller(&owner)).await, [PROPOSE]);
+    let state = rooms.room(&room).await.unwrap();
+    assert_eq!(
+        state
+            .lock()
+            .await
+            .peer()
+            .governance()
+            .declined_ownership_offer(),
+        Some(offer)
+    );
     relay.shutdown().await;
 }

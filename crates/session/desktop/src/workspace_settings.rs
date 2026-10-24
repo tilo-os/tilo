@@ -41,7 +41,9 @@ pub mod agent_access;
 pub mod overlay;
 mod people_pane;
 
-pub use people_pane::{draw_members_pane, member_row_controls, ownership_button};
+pub use people_pane::{
+    OwnershipControl, draw_members_pane, member_row_controls, members_frozen, ownership_buttons,
+};
 
 /// The host's application catalogue, as workspace settings name apps and
 /// offer them as default openers.
@@ -79,7 +81,6 @@ fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
         .unwrap_or_else(|| app_id.to_string())
 }
 
-pub const OWNERSHIP_TRANSFER_ACTION_TYPE: &str = "tilo.workspace.ownership-transfer.v1";
 pub const GOVERNANCE_ACTION_TYPE: &str = "tilo.room.governance.v1";
 
 /// One of the room's governance actions, as its published door builds it.
@@ -132,6 +133,17 @@ pub enum GovernanceOperation {
         resource: String,
         action: String,
     },
+    /// Offer the room to the member `person` (their user root key, hex):
+    /// it moves to their device once they accept.
+    OfferOwnership { person: String },
+    /// Take the open offer `offer` (its id, hex) back.
+    CancelOwnershipOffer { offer: String },
+    /// Accept the open offer `offer` (its id, hex) made to the person
+    /// here, to govern the room from this device.
+    AcceptOwnership { offer: String },
+    /// Decline the open offer `offer` (its id, hex) made to the person
+    /// here: it closes, and its owner sees it declined.
+    DeclineOwnership { offer: String },
 }
 
 pub use tilo_desktop_model::{
@@ -149,6 +161,10 @@ impl GovernanceOperation {
             Self::AssignPreset { .. } => PRESET_ASSIGN_ACTION_ID,
             Self::GrantAppAction { .. } => APP_ACTION_GRANT_ACTION_ID,
             Self::RevokeAppAction { .. } => APP_ACTION_REVOKE_ACTION_ID,
+            Self::OfferOwnership { .. } => tilo_desktop_model::OWNERSHIP_OFFER_ACTION_ID,
+            Self::CancelOwnershipOffer { .. } => tilo_desktop_model::OWNERSHIP_CANCEL_ACTION_ID,
+            Self::AcceptOwnership { .. } => tilo_desktop_model::OWNERSHIP_ACCEPT_ACTION_ID,
+            Self::DeclineOwnership { .. } => tilo_desktop_model::OWNERSHIP_DECLINE_ACTION_ID,
         }
     }
 }
@@ -252,6 +268,18 @@ pub fn apply_governance(
         }
         operation @ (GovernanceOperation::GrantAppAction { .. }
         | GovernanceOperation::RevokeAppAction { .. }) => app_action_changes(ws, actor, operation)?,
+        // Moving the room changes nothing here: its governor decides, and
+        // the room's governance carries the outcome back.
+        operation @ (GovernanceOperation::OfferOwnership { .. }
+        | GovernanceOperation::CancelOwnershipOffer { .. }
+        | GovernanceOperation::AcceptOwnership { .. }
+        | GovernanceOperation::DeclineOwnership { .. }) => {
+            return if ws.may_move(actor, operation.action_id()) {
+                Ok(GovernanceApplied::default())
+            } else {
+                Err(t("workspace-settings-ownership-refused"))
+            };
+        }
     };
     let edit = ws
         .govern_all_at(actor, changes, now)
@@ -325,7 +353,11 @@ fn app_action_changes(
         GovernanceOperation::Grant { .. }
         | GovernanceOperation::Revoke { .. }
         | GovernanceOperation::SavePreset { .. }
-        | GovernanceOperation::AssignPreset { .. } => {
+        | GovernanceOperation::AssignPreset { .. }
+        | GovernanceOperation::OfferOwnership { .. }
+        | GovernanceOperation::CancelOwnershipOffer { .. }
+        | GovernanceOperation::AcceptOwnership { .. }
+        | GovernanceOperation::DeclineOwnership { .. } => {
             return Err("not an app-action grant".into());
         }
     })
@@ -486,14 +518,19 @@ pub fn picks(
 /// letting one app use another's action, published on the room's own
 /// resource so searches, agents and scripts reach them like any action.
 pub fn governance_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
-    governance_resource_with_access(
+    let mut resource = governance_resource_with_access(
         ws,
         ws.may_govern_at(
             local_user,
             tilo_action_policy::roles::governance::GRANT,
             tilo_clock::unix_now(),
         ),
-    )
+    );
+    let ownership = ownership_resource(ws, local_user);
+    if !ownership.actions.is_empty() {
+        resource.children.push(ownership);
+    }
+    resource
 }
 
 /// Build the governance surface after an external authority boundary (the
@@ -772,170 +809,139 @@ pub fn governance_resource_with_access(ws: &Workspace, can_govern: bool) -> tilo
     root
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
-pub enum OwnershipTransferOperation {
-    Propose {
-        recipient: String,
-        expires_unix: u64,
-    },
-    Accept {
-        proposal_digest: String,
-    },
-    Cancel {
-        proposal_digest: String,
-    },
-}
+/// Moving the room, as `local_user` may take it now
+/// ([`Workspace::may_move`]): offering it to a member and taking the offer
+/// back for its owner, accepting it for the person offered it.
+pub fn ownership_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
+    use tilo_actions::{ActionParam, ConfirmationPolicy, OperationKind, ParamType, RiskLevel};
+    use tilo_desktop_model::{
+        OWNERSHIP_ACCEPT_ACTION_ID, OWNERSHIP_CANCEL_ACTION_ID, OWNERSHIP_DECLINE_ACTION_ID,
+        OWNERSHIP_OFFER_ACTION_ID, OwnershipStep,
+    };
 
-fn encoded_ownership_operation(
-    operation: &OwnershipTransferOperation,
-) -> tilo_actions::EncodedAction {
-    tilo_actions::EncodedAction::encode_operation(OWNERSHIP_TRANSFER_ACTION_TYPE, operation)
-        .unwrap_or_else(|error| tilo_actions::EncodedAction {
-            type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
-            payload: error.to_string().into_bytes(),
-        })
-}
-
-/// Publish the active workspace and its ownership ceremony as typed,
-/// resource-addressed operations for search, automation, and assistive tools.
-/// Generic member-role actions remain separate and never include Owner.
-pub fn ownership_transfer_resource(ws: &Workspace, local_user: &UserId) -> tilo_actions::Resource {
     let mut resource = tilo_actions::Resource::new(
-        format!("workspace:{}", ws.room()),
-        "workspace.governance",
+        format!(
+            "{}/ownership",
+            tilo_desktop_model::governance_resource_id(&ws.room())
+        ),
+        tilo_action_policy::roles::ROOM_KIND,
         t_args(
             "workspace-settings-ownership-resource",
             &[("workspace", ws.name.clone().into())],
         ),
     );
-    if ws.owner() == Some(local_user) {
-        resource.actions.push(ownership_proposal_action());
+    let contract = ownership_contract;
+    if ws.may_move(local_user, OWNERSHIP_OFFER_ACTION_ID) {
+        resource.actions.push(
+            tilo_actions::ActionSpec::typed_operation(
+                OWNERSHIP_OFFER_ACTION_ID,
+                t("workspace-settings-ownership-propose"),
+                t("workspace-settings-ownership-propose-placeholder"),
+                OperationKind::Effect,
+                GOVERNANCE_ACTION_TYPE,
+                vec![
+                    ActionParam::required_owned(
+                        "person",
+                        ParamType::Object,
+                        "The member to offer the workspace to: {\"person\": id}",
+                    )
+                    .picking(tilo_actions::Pick::Subject),
+                ],
+                |arguments| match decoded(arguments, "person") {
+                    Some(tilo_action_policy::Subject::Person(person)) => {
+                        encoded_governance_operation(&GovernanceOperation::OfferOwnership {
+                            person,
+                        })
+                    }
+                    _ => tilo_actions::EncodedAction {
+                        type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                        payload: b"ownership is offered to a person".to_vec(),
+                    },
+                },
+            )
+            .with_description(t("workspace-settings-ownership-propose-description"))
+            .with_contract(contract(RiskLevel::Privileged, ConfirmationPolicy::Confirm)),
+        );
     }
-    if let Some(pending) = &ws.pending_ownership_transfer {
-        let digest = pending.digest().map_or_else(|_| String::new(), hex::encode);
-        if public_key_member_id(pending.recipient) == *local_user {
-            resource.actions.push(ownership_accept_action(&digest));
-        }
-        if ws.owner() == Some(local_user) {
-            resource.actions.push(ownership_cancel_action(&digest));
-        }
+    let OwnershipStep::Offered {
+        offer_id, owner, ..
+    } = &ws.ownership.step
+    else {
+        return resource;
+    };
+    let offer = hex::encode(offer_id);
+    let typed = |id: &str, label: String, operation: fn(String) -> GovernanceOperation| {
+        offer_step(id, label, offer.clone(), operation)
+    };
+    if ws.may_move(local_user, OWNERSHIP_CANCEL_ACTION_ID) {
+        resource.actions.push(
+            typed(
+                OWNERSHIP_CANCEL_ACTION_ID,
+                t("workspace-settings-ownership-cancel"),
+                |offer| GovernanceOperation::CancelOwnershipOffer { offer },
+            )
+            .with_description(t("workspace-settings-ownership-cancel-description"))
+            .with_contract(contract(RiskLevel::Low, ConfirmationPolicy::Confirm)),
+        );
+    }
+    if ws.may_move(local_user, OWNERSHIP_ACCEPT_ACTION_ID) {
+        let owner = person_name(ws, local_user, &hex::encode(owner));
+        resource.actions.push(
+            typed(
+                OWNERSHIP_ACCEPT_ACTION_ID,
+                t("workspace-settings-ownership-accept"),
+                |offer| GovernanceOperation::AcceptOwnership { offer },
+            )
+            .with_description(t_args(
+                "workspace-settings-ownership-accept-description",
+                &[("owner", owner.into())],
+            ))
+            .with_contract(contract(RiskLevel::Privileged, ConfirmationPolicy::Confirm)),
+        );
+        resource.actions.push(
+            typed(
+                OWNERSHIP_DECLINE_ACTION_ID,
+                t("workspace-settings-ownership-decline"),
+                |offer| GovernanceOperation::DeclineOwnership { offer },
+            )
+            .with_description(t("workspace-settings-ownership-decline-description"))
+            .with_contract(contract(RiskLevel::Low, ConfirmationPolicy::None)),
+        );
     }
     resource
 }
 
-fn ownership_proposal_action() -> tilo_actions::ActionSpec {
-    use tilo_actions::{
-        ActionContract, ActionKind, ActionParam, ConfirmationPolicy, OperationKind, ParamType,
-        RiskLevel,
-    };
+/// The contract of a way of moving the room, at `risk`, confirmed as
+/// `confirmation` asks.
+fn ownership_contract(
+    risk: tilo_actions::RiskLevel,
+    confirmation: tilo_actions::ConfirmationPolicy,
+) -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        kind: tilo_action_policy::roles::GOVERNANCE_KIND,
+        risk,
+        confirmation,
+        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
+        ..tilo_actions::ActionContract::default()
+    }
+}
 
+/// A step on the open offer `offer` (its id, hex), taken as `operation`.
+fn offer_step(
+    id: &str,
+    label: String,
+    offer: String,
+    operation: fn(String) -> GovernanceOperation,
+) -> tilo_actions::ActionSpec {
     tilo_actions::ActionSpec::typed_operation(
-        "ownership.propose",
-        t("workspace-settings-ownership-propose"),
-        t("workspace-settings-ownership-propose-placeholder"),
-        OperationKind::Effect,
-        OWNERSHIP_TRANSFER_ACTION_TYPE,
-        vec![
-            ActionParam::required_owned(
-                "recipient",
-                ParamType::Text,
-                "Exact certified recipient identity",
-            ),
-            ActionParam::required_owned(
-                "expires_unix",
-                ParamType::Integer,
-                "Unix expiry chosen by the current owner",
-            ),
-        ],
-        |arguments| {
-            let expires_unix = arguments
-                .integer("expires_unix")
-                .and_then(|value| u64::try_from(value).ok())
-                .unwrap_or_default();
-            encoded_ownership_operation(&OwnershipTransferOperation::Propose {
-                recipient: arguments.text("recipient").unwrap_or_default().to_string(),
-                expires_unix,
-            })
-        },
+        id,
+        label,
+        String::new(),
+        tilo_actions::OperationKind::Effect,
+        GOVERNANCE_ACTION_TYPE,
+        Vec::new(),
+        move |_: &tilo_actions::ActionArgs| encoded_governance_operation(&operation(offer.clone())),
     )
-    .with_description(t("workspace-settings-ownership-propose-description"))
-    .with_contract(ActionContract {
-        kind: ActionKind::Outside,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Confirm,
-        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
-        ..ActionContract::default()
-    })
-}
-
-fn ownership_accept_action(digest: &str) -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, OperationKind, RiskLevel};
-
-    let operation = OwnershipTransferOperation::Accept {
-        proposal_digest: digest.to_string(),
-    };
-    tilo_actions::ActionSpec::operation(
-        "ownership.accept",
-        t("workspace-settings-ownership-accept"),
-        OperationKind::Effect,
-        OWNERSHIP_TRANSFER_ACTION_TYPE,
-        &operation,
-    )
-    .unwrap_or_else(|_| {
-        tilo_actions::ActionSpec::immediate_encoded(
-            "ownership.accept",
-            t("workspace-settings-ownership-accept"),
-            tilo_actions::ExecutionLocus::ClientLocal,
-            encoded_ownership_operation(&operation),
-        )
-    })
-    .with_description(t("workspace-settings-ownership-accept-description"))
-    .with_contract(ActionContract {
-        kind: ActionKind::Outside,
-        risk: RiskLevel::Privileged,
-        confirmation: ConfirmationPolicy::Phrase {
-            phrase: t("workspace-settings-ownership-accept-phrase"),
-        },
-        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
-        ..ActionContract::default()
-    })
-}
-
-fn ownership_cancel_action(digest: &str) -> tilo_actions::ActionSpec {
-    use tilo_actions::{ActionContract, ActionKind, ConfirmationPolicy, OperationKind, RiskLevel};
-
-    let operation = OwnershipTransferOperation::Cancel {
-        proposal_digest: digest.to_string(),
-    };
-    tilo_actions::ActionSpec::operation(
-        "ownership.cancel",
-        t("workspace-settings-ownership-cancel"),
-        OperationKind::Effect,
-        OWNERSHIP_TRANSFER_ACTION_TYPE,
-        &operation,
-    )
-    .unwrap_or_else(|_| {
-        tilo_actions::ActionSpec::immediate_encoded(
-            "ownership.cancel",
-            t("workspace-settings-ownership-cancel"),
-            tilo_actions::ExecutionLocus::ClientLocal,
-            encoded_ownership_operation(&operation),
-        )
-    })
-    .with_description(t("workspace-settings-ownership-cancel-description"))
-    .with_contract(ActionContract {
-        kind: ActionKind::Outside,
-        risk: RiskLevel::Low,
-        confirmation: ConfirmationPolicy::Confirm,
-        reversible: false,
-        tags: vec!["workspace".into(), "governance".into(), "ownership".into()],
-        ..ActionContract::default()
-    })
-}
-
-fn public_key_member_id(key: collab_types::Ed25519PublicKey) -> UserId {
-    hex::encode(key.as_bytes())
 }
 
 /// The right-pane drawer [`WorkspaceSettings::draw_body`] dispatches to.
@@ -3024,16 +3030,39 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
     (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
-/// Pointer and accessibility target for the ownership action entry point in
-/// the Members intro card.
-pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
+/// Pointer and accessibility targets for the ownership buttons in the
+/// Members intro card, `count` of them, the last rightmost.
+#[must_use]
+pub fn ownership_action_rects(pane_rect: Rect, count: usize) -> Vec<Rect> {
+    const WIDTH: f64 = 160.0;
+    const GAP: f64 = 8.0;
     let center_y = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT / 2.0;
-    Rect::new(
-        pane_rect.x1 - PANE_PAD_X - 168.0,
-        center_y - 18.0,
-        pane_rect.x1 - PANE_PAD_X - 8.0,
-        center_y + 18.0,
-    )
+    let right = pane_rect.x1 - PANE_PAD_X - 8.0;
+    let mut rects: Vec<Rect> = std::iter::successors(Some(right), |x1| Some(x1 - WIDTH - GAP))
+        .take(count)
+        .map(|x1| Rect::new(x1 - WIDTH, center_y - 18.0, x1, center_y + 18.0))
+        .collect();
+    rects.reverse();
+    rects
+}
+
+/// The people `local_user` may offer `ws` to, in roster order: everyone in
+/// it but its owner and themselves.
+#[must_use]
+pub fn ownership_candidates(ws: &Workspace, local_user: &UserId) -> Vec<UserId> {
+    ordered_roster(ws)
+        .into_iter()
+        .map(|(user, _)| user)
+        .filter(|user| !ws.is_owner(user) && user != local_user)
+        .collect()
+}
+
+/// When an offer of the room made at `expires_at_ns` lapses, as people read
+/// a date and time.
+#[must_use]
+pub fn offer_expiry(expires_at_ns: u64) -> String {
+    let secs = i64::try_from(expires_at_ns / 1_000_000_000).unwrap_or(i64::MAX);
+    ui::format::timestamp(&ui::format::UnixSecs(secs))
 }
 
 /// Plain-language ownership state shared by visual rendering, accessibility
@@ -3043,29 +3072,53 @@ pub fn ownership_transfer_status(
     names: &crate::collaborators::PeopleNames,
     local_user: &UserId,
 ) -> Option<String> {
-    let proposal = ws.pending_ownership_transfer.as_ref()?;
-    let recipient = public_key_member_id(proposal.recipient);
-    let owner = public_key_member_id(proposal.current_owner);
-    let name_of = |id: &str| {
+    use tilo_desktop_model::OwnershipStep;
+    let name_of = |key: &[u8; 32]| {
+        let id = hex::encode(key);
         names
-            .get(id)
-            .map_or_else(|| member_name_or_short_id(ws, id), str::to_owned)
+            .get(&id)
+            .map_or_else(|| member_name_or_short_id(ws, &id), str::to_owned)
     };
-    if &recipient == local_user {
-        Some(t_args(
-            "workspace-settings-ownership-offered",
-            &[("owner", name_of(&owner).into())],
-        ))
-    } else if &owner == local_user {
-        Some(t_args(
-            "workspace-settings-ownership-waiting",
-            &[("recipient", name_of(&recipient).into())],
-        ))
-    } else {
-        Some(t_args(
-            "workspace-settings-ownership-pending",
-            &[("recipient", name_of(&recipient).into())],
-        ))
+    match &ws.ownership.step {
+        OwnershipStep::Settled => None,
+        OwnershipStep::Moving { recipient } => Some(t_args(
+            "workspace-settings-ownership-moving",
+            &[("recipient", name_of(recipient).into())],
+        )),
+        OwnershipStep::Declined { recipient, .. } => Some(t_args(
+            "workspace-settings-ownership-declined",
+            &[("recipient", name_of(recipient).into())],
+        )),
+        OwnershipStep::Offered {
+            owner,
+            recipient,
+            expires_at_ns,
+            ..
+        } => {
+            let expires = offer_expiry(*expires_at_ns);
+            Some(if hex::encode(recipient) == *local_user {
+                t_args(
+                    "workspace-settings-ownership-offered",
+                    &[
+                        ("owner", name_of(owner).into()),
+                        ("expires", expires.into()),
+                    ],
+                )
+            } else if hex::encode(owner) == *local_user {
+                t_args(
+                    "workspace-settings-ownership-waiting",
+                    &[
+                        ("recipient", name_of(recipient).into()),
+                        ("expires", expires.into()),
+                    ],
+                )
+            } else {
+                t_args(
+                    "workspace-settings-ownership-pending",
+                    &[("recipient", name_of(recipient).into())],
+                )
+            })
+        }
     }
 }
 
@@ -5079,27 +5132,20 @@ mod members_pane_tests {
         }
 
         {
+            let offered = tilo_desktop_model::OwnershipStep::Offered {
+                offer_id: [8; 32],
+                owner: [17; 32],
+                recipient: [18; 32],
+                expires_at_ns: 1_800_000_000_000_000_000,
+            };
+            let owner = hex::encode([17; 32]);
+            let recipient = hex::encode([18; 32]);
             {
-                let (owner_key, owner_public) = collab_types::generate_keypair();
-                let (_, recipient_public) = collab_types::generate_keypair();
-                let owner = hex::encode(owner_public.as_bytes());
-                let recipient = hex::encode(recipient_public.as_bytes());
                 let mut ws = Workspace::new(WorkspaceId(91), "Research");
                 ws.set_owner(owner.clone());
                 ws.admit(recipient.clone(), CapRole::Editor);
-                ws.pending_ownership_transfer = Some(
-                    collab_types::OwnershipTransferProposalV1::new(
-                        ws.room().to_string(),
-                        [8; 32],
-                        owner_public,
-                        recipient_public,
-                        500,
-                        &owner_key,
-                    )
-                    .unwrap(),
-                );
-
-                let owner_resource = ownership_transfer_resource(&ws, &owner);
+                ws.ownership.step = offered.clone();
+                let owner_resource = ownership_resource(&ws, &owner);
                 assert!(owner_resource.actions.iter().any(|action| {
                     action.id == "ownership.propose"
                         && action.contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
@@ -5110,51 +5156,43 @@ mod members_pane_tests {
                         .iter()
                         .any(|action| action.id == "ownership.cancel")
                 );
-                let recipient_resource = ownership_transfer_resource(&ws, &recipient);
-                let accept = recipient_resource
-                    .actions
-                    .iter()
-                    .find(|action| action.id == "ownership.accept")
-                    .unwrap();
-                assert!(matches!(
-                    accept.contract.confirmation,
-                    tilo_actions::ConfirmationPolicy::Phrase { .. }
-                ));
+                let recipient_resource = ownership_resource(&ws, &recipient);
+                let confirmation = |id: &str| {
+                    recipient_resource
+                        .actions
+                        .iter()
+                        .find(|action| action.id == id)
+                        .map(|action| action.contract.confirmation.clone())
+                };
+                // Accepting is one plain confirmation that says what changes;
+                // declining asks nothing more.
+                assert_eq!(
+                    confirmation("ownership.accept"),
+                    Some(tilo_actions::ConfirmationPolicy::Confirm)
+                );
+                assert_eq!(
+                    confirmation("ownership.decline"),
+                    Some(tilo_actions::ConfirmationPolicy::None)
+                );
+                let status = ownership_transfer_status(
+                    &ws,
+                    &crate::collaborators::PeopleNames::default(),
+                    &recipient,
+                )
+                .unwrap();
+                assert!(status.contains("wants to make you the owner"), "{status}");
                 assert!(
-                    ownership_transfer_status(
-                        &ws,
-                        &crate::collaborators::PeopleNames::default(),
-                        &recipient
-                    )
-                    .unwrap()
-                    .contains("offered you ownership")
+                    status.contains(&offer_expiry(1_800_000_000_000_000_000)),
+                    "the offer says when it expires: {status}"
                 );
             }
 
             {
                 let mut ws = ws_with_two_members();
-                let owner_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
-                let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[18; 32]);
-                let owner_public = collab_types::Ed25519PublicKey::from_bytes(
-                    owner_key.verifying_key().to_bytes(),
-                );
-                let recipient_public = collab_types::Ed25519PublicKey::from_bytes(
-                    recipient_key.verifying_key().to_bytes(),
-                );
-                let owner = public_key_member_id(owner_public);
-                let recipient = public_key_member_id(recipient_public);
                 ws.collaborators.push(
                     tilo_desktop_model::Collaborator::new(recipient.clone(), "Morgan").as_invited(),
                 );
-                ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-                    ws.room().to_string(),
-                    [23; 32],
-                    owner_public,
-                    recipient_public,
-                    u64::MAX,
-                    &owner_key,
-                )
-                .ok();
+                ws.ownership.step = offered;
 
                 let status = ownership_transfer_status(
                     &ws,
@@ -5164,6 +5202,19 @@ mod members_pane_tests {
                 .unwrap();
                 assert!(status.contains("Morgan"));
                 assert!(!status.contains(&short_id(&recipient)));
+
+                ws.ownership.step = tilo_desktop_model::OwnershipStep::Declined {
+                    offer_id: [8; 32],
+                    recipient: [18; 32],
+                };
+                let declined = ownership_transfer_status(
+                    &ws,
+                    &crate::collaborators::PeopleNames::default(),
+                    &owner,
+                )
+                .unwrap();
+                assert!(declined.contains("Morgan"), "{declined}");
+                assert!(declined.contains("declined ownership"), "{declined}");
             }
         }
     }

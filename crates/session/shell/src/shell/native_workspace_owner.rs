@@ -207,7 +207,12 @@ impl TreeStore {
         let before = tree.desktop.workspaces.len();
         tree.native_authority = next.clone();
         match *change {
-            Change::Room { room, peer, .. } => tree.project_native_room(room, peer),
+            Change::Room {
+                room,
+                peer,
+                generation,
+                ..
+            } => tree.project_native_room(room, peer, generation),
             // The room and its workspace go together.
             Change::Released { room } => {
                 tree.forget_personal_room(room);
@@ -297,7 +302,7 @@ pub(crate) fn open(tree: WorkspaceTreeHandle) -> Result<NativeWorkspaceOwner, St
     }
     for room in owner.rooms() {
         owner.with_current(room, |view| {
-            native.project_native_room(room, view.peer());
+            native.project_native_room(room, view.peer(), view.generation());
             Ok(())
         })?;
     }

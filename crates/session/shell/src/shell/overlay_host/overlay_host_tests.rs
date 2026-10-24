@@ -1064,8 +1064,8 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
                 .get(1)
                 .and_then(|settings| settings.children.first())
                 .and_then(|ownership| ownership.name.as_deref()),
-            Some("Manage workspace ownership"),
-            "the visible ownership control is named in the accessibility tree"
+            Some("Transfer ownership"),
+            "the visible ownership control is named by what it does in the accessibility tree"
         );
 
         assert!(

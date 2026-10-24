@@ -251,6 +251,55 @@ impl Rooms {
         Ok(done.generation)
     }
 
+    /// Close the open offer `offer_id` of `room` as its recipient declines
+    /// it, asked by `device`, one of theirs: the owner sees it declined.
+    /// Declining an offer no longer open changes nothing. The room's
+    /// generation after it.
+    ///
+    /// # Errors
+    ///
+    /// `device` is not in the room or not the recipient's, or the change
+    /// could not be committed.
+    pub async fn decline_ownership_offer(
+        &self,
+        room: &str,
+        device: &DeviceCert,
+        request_id: [u8; 32],
+        offer_id: [u8; 32],
+    ) -> Result<u64, OwnershipError> {
+        let now = tilo_clock::unix_now_ns();
+        let governed = self.room(room).await?;
+        let mut governed = governed.lock().await;
+        self.standing(&governed, device, now)?;
+        let Some(open) = governed
+            .peer()
+            .governance()
+            .ownership_offer()
+            .filter(|offer| offer.offer_id == offer_id)
+        else {
+            return Ok(governed.record.generation);
+        };
+        if open.recipient != device.user_public_key {
+            return Err(HandoffError::SuccessorNotRecipient.into());
+        }
+        let key = self.inner.host.key.clone();
+        let done = self
+            .administer(
+                &mut governed,
+                request_id,
+                request_digest(&("ownership.decline", offer_id))?,
+                |peer| {
+                    peer.governance_mut()
+                        .decline_ownership_offer(offer_id, &key, system_time(now))
+                        .map_err(|error| error.to_string())
+                },
+                now,
+            )
+            .await?;
+        drop(governed);
+        Ok(done.generation)
+    }
+
     /// Hand `room` to the device that signed `acceptance` of the room's open
     /// offer, as that device, `device`, asks: commit the room's last
     /// generation here, carrying the handoff, and from then on serve the

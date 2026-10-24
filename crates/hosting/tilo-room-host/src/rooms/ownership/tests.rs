@@ -602,6 +602,101 @@ async fn only_the_owner_offers_the_room_or_takes_the_offer_back() {
 }
 
 #[tokio::test]
+async fn a_declined_offer_closes_and_its_owner_sees_it_declined() {
+    let dir = tempfile::tempdir().unwrap();
+    let moving = Moving::new(dir.path()).await;
+    let offer = moving.offer(1).await;
+    // Only the person it was offered to declines it.
+    assert!(matches!(
+        moving
+            .rooms()
+            .decline_ownership_offer(&moving.room, &moving.member, [2; 32], offer.offer_id)
+            .await,
+        Err(OwnershipError::Handoff(HandoffError::SuccessorNotRecipient))
+    ));
+    moving
+        .rooms()
+        .decline_ownership_offer(
+            &moving.room,
+            &moving.recipient.cert,
+            [3; 32],
+            offer.offer_id,
+        )
+        .await
+        .unwrap();
+    let state = moving.rooms().room(&moving.room).await.unwrap();
+    let (open, declined) = {
+        let governed = state.lock().await;
+        (
+            governed.peer().governance().ownership_offer(),
+            governed.peer().governance().declined_ownership_offer(),
+        )
+    };
+    assert_eq!(open, None);
+    assert_eq!(declined, Some(offer.clone()));
+    assert!(matches!(
+        moving
+            .rooms()
+            .accept_ownership(
+                &moving.room,
+                &moving.recipient.cert,
+                [0xAC; 32],
+                moving.recipient.accept(&offer),
+            )
+            .await,
+        Err(OwnershipError::Handoff(HandoffError::WrongOffer))
+    ));
+    // Offering again opens a new offer in its place.
+    let again = moving.offer(4).await;
+    let governed = state.lock().await;
+    assert_eq!(governed.peer().governance().ownership_offer(), Some(again));
+    assert_eq!(
+        governed.peer().governance().declined_ownership_offer(),
+        None
+    );
+    drop(governed);
+    moving.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn removing_the_person_the_room_is_offered_to_closes_the_offer() {
+    let dir = tempfile::tempdir().unwrap();
+    let moving = Moving::new(dir.path()).await;
+    let offer = moving.offer(1).await;
+    moving
+        .rooms()
+        .remove_member(
+            &moving.room,
+            &moving.owner,
+            tilo_relay_session::rooms::RemoveMemberRequest {
+                request_id: [2; 32],
+                user_public_key: moving.recipient.cert.user_public_key,
+            },
+        )
+        .await
+        .unwrap();
+    let state = moving.rooms().room(&moving.room).await.unwrap();
+    assert_eq!(
+        state.lock().await.peer().governance().ownership_offer(),
+        None
+    );
+    assert!(
+        moving
+            .rooms()
+            .accept_ownership(
+                &moving.room,
+                &moving.recipient.cert,
+                [0xAC; 32],
+                moving.recipient.accept(&offer),
+            )
+            .await
+            .is_err(),
+        "someone no longer in the room takes nothing up"
+    );
+    moving.host.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_room_is_offered_only_to_someone_else_who_is_in_it() {
     let dir = tempfile::tempdir().unwrap();
     let moving = Moving::new(dir.path()).await;

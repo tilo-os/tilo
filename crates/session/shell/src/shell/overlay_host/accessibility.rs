@@ -149,16 +149,11 @@ impl ShellOverlayHost {
                         .with_name(t("a11y-workspace-settings"))
                         .with_description(t("a11y-workspace-settings-description"))
                         .with_state(AccessState::new().modal(true));
-                    if self
-                        .workspace_settings_overlay
-                        .ownership_action_rect()
-                        .area()
-                        > 0.0
-                    {
+                    for (control, rect) in self.workspace_settings_overlay.ownership_controls() {
                         settings.children.push(
                             AccessNode::new(Role::Button)
-                                .with_name(t("a11y-manage-ownership"))
-                                .with_description(t("a11y-manage-ownership-description")),
+                                .with_name(control.label())
+                                .with_bounds(*rect),
                         );
                     }
                     if let Some(chrome) = &self.chrome {
@@ -435,17 +430,18 @@ impl ShellOverlayHost {
                     .or_else(|| self.qs_root.accessibility_rect_for_path(child_path))
             }
             LayerId::WorkspaceSettings => {
-                let ownership = self.workspace_settings_overlay.ownership_action_rect();
-                let ownership_present = ownership.area() > 0.0;
+                let ownership = self.workspace_settings_overlay.ownership_controls();
                 match child_path {
                     [] => Some(self.workspace_settings_overlay.rect()),
-                    [0] if ownership_present => Some(ownership),
+                    [index] if *index < ownership.len() => {
+                        ownership.get(*index).map(|(_, rect)| *rect)
+                    }
                     [index] => self.chrome.as_ref().and_then(|chrome| {
                         let state = chrome.borrow();
                         if !matches!(state.ws_settings_tab, WsTab::General) {
                             return None;
                         }
-                        let index = index.checked_sub(usize::from(ownership_present))?;
+                        let index = index.checked_sub(ownership.len())?;
                         let body = self.workspace_settings_overlay.general_body_rect();
                         let visible =
                             |rect: Rect| (rect.y0 >= body.y0 && rect.y1 <= body.y1).then_some(rect);

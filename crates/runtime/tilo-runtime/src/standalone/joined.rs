@@ -184,6 +184,8 @@ impl Joined {
             let mut workspace =
                 Workspace::in_room(WorkspaceId(view.workspace()), room, String::new());
             tilo_peer_state::room::adopt_room(&mut workspace, document, &[]);
+            workspace.ownership =
+                tilo_peer_state::handoff::room_ownership(document, view.generation());
             workspace.sandbox = view.peer().governance().governed_sandbox()?;
             Ok((workspace, principal))
         })

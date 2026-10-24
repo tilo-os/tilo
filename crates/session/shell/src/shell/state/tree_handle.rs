@@ -109,7 +109,7 @@ struct WorkspacePolicy {
     collaborators: Vec<tilo_desktop_model::Collaborator>,
     policy: tilo_action_policy::RoomPolicy,
     sandbox: Vec<collab_types::caps::CapOverride>,
-    pending_ownership_transfer: Option<collab_types::OwnershipTransferProposalV1>,
+    ownership: tilo_desktop_model::RoomOwnership,
 }
 
 impl PolicySnapshot {
@@ -126,7 +126,7 @@ impl PolicySnapshot {
                     collaborators: workspace.collaborators.clone(),
                     policy: workspace.policy.clone(),
                     sandbox: workspace.sandbox.clone(),
-                    pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
+                    ownership: workspace.ownership.clone(),
                 })
                 .collect(),
             local_person: tree.local_person,
@@ -149,7 +149,7 @@ impl PolicySnapshot {
                         && seen.collaborators == workspace.collaborators
                         && seen.policy == workspace.policy
                         && seen.sandbox == workspace.sandbox
-                        && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
+                        && seen.ownership == workspace.ownership
                 })
             && self.local_person == tree.local_person
             && self.stewarded_rooms == tree.stewarded_rooms

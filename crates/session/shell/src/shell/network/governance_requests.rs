@@ -3,8 +3,11 @@
 //! `Rooms`; this device asks and reads the answer back from the room's
 //! admitted document, as every other member does.
 use super::ShellNetwork;
-use crate::shell::state::{GovernanceRequest, RoomId};
+use crate::shell::state::{GovernanceRequest, OwnershipRequest, RoomId};
 use tilo_action_policy::{Change, roles::governance};
+use tilo_desktop_model::{
+    OWNERSHIP_CANCEL_ACTION_ID, OWNERSHIP_DECLINE_ACTION_ID, OWNERSHIP_OFFER_ACTION_ID,
+};
 
 /// Why a change has no route to its governor yet.
 const NO_GOVERNOR_ACTION: &str = "the workspace host has no action for this change yet";
@@ -25,6 +28,16 @@ pub(crate) enum GovernanceRoute {
     },
     /// A desktop command, applied by the governor.
     Command(tilo_desktop_model::commands::DesktopCommand),
+    /// Accepting the open offer `offer` (its id, hex) of the room to this
+    /// device's person: signed by this device's own host, which governs the
+    /// room once its governor hands it on.
+    AcceptOwnership { offer: String },
+    /// An ownership step of the person the room is offered to, asked of
+    /// the host governing it, whoever's that is.
+    Offered {
+        action: &'static str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// The route `request` takes to its room's governor, or why it has none.
@@ -91,6 +104,27 @@ pub(crate) fn route(request: GovernanceRequest, now_ms: u64) -> Result<Governanc
             argument: serde_json::json!({ "grant": grant }),
         }),
         GovernanceRequest::Command(command) => Ok(GovernanceRoute::Command(command)),
+        GovernanceRequest::Ownership(OwnershipRequest::Offer { person: who }) => {
+            Ok(GovernanceRoute::Rooms {
+                action: OWNERSHIP_OFFER_ACTION_ID,
+                arguments: person(who)?,
+            })
+        }
+        GovernanceRequest::Ownership(OwnershipRequest::Cancel { offer }) => {
+            Ok(GovernanceRoute::Rooms {
+                action: OWNERSHIP_CANCEL_ACTION_ID,
+                arguments: offer_named(offer)?,
+            })
+        }
+        GovernanceRequest::Ownership(OwnershipRequest::Decline { offer }) => {
+            Ok(GovernanceRoute::Offered {
+                action: OWNERSHIP_DECLINE_ACTION_ID,
+                arguments: offer_named(offer)?,
+            })
+        }
+        GovernanceRequest::Ownership(OwnershipRequest::Accept { offer }) => {
+            Ok(GovernanceRoute::AcceptOwnership { offer })
+        }
         GovernanceRequest::GrantSandbox(_) | GovernanceRequest::RevokeSandbox(_) => {
             Err(NO_GOVERNOR_ACTION.into())
         }
@@ -212,6 +246,9 @@ impl ShellNetwork {
             GovernanceRoute::Membership { .. } | GovernanceRoute::Command(_) => {
                 self.governed_by_a_reachable_host(room)
             }
+            GovernanceRoute::AcceptOwnership { .. } | GovernanceRoute::Offered { .. } => {
+                self.held_room(room).is_some()
+            }
         }
     }
 
@@ -254,8 +291,25 @@ impl ShellNetwork {
                 super::governor_actions::wait_for_governor(answer)
             }
             GovernanceRoute::Command(command) => self.govern_with_command_and_wait(room, command),
+            GovernanceRoute::AcceptOwnership { offer } => self.accept_ownership(room, &offer),
+            GovernanceRoute::Offered { action, arguments } => {
+                let held = self
+                    .held_room(room)
+                    .ok_or("this device holds no session with the workspace host")?;
+                self.govern(&held, action, arguments).map(drop)
+            }
         }
     }
+}
+
+/// The arguments naming the open offer `offer` (its id, hex).
+fn offer_named(offer: String) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if offer.len() != 64 || hex::decode(&offer).is_err() {
+        return Err("an offer is named by its id".into());
+    }
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("offer".into(), offer.into());
+    Ok(arguments)
 }
 
 /// The resource the room's own membership actions are published on.
@@ -332,6 +386,42 @@ mod tests {
             assert_eq!(action, expected);
             assert_eq!(arguments["person"], person());
         }
+    }
+
+    #[test]
+    fn taking_an_offer_back_or_declining_it_names_the_offer_to_the_host() {
+        use crate::shell::state::OwnershipRequest;
+        let offer = "cd".repeat(32);
+        let Ok(GovernanceRoute::Rooms { action, arguments }) = route(
+            GovernanceRequest::Ownership(OwnershipRequest::Cancel {
+                offer: offer.clone(),
+            }),
+            0,
+        ) else {
+            panic!("the owner takes an offer back at the room's own host");
+        };
+        assert_eq!(action, tilo_desktop_model::OWNERSHIP_CANCEL_ACTION_ID);
+        assert_eq!(arguments["offer"], offer);
+
+        let Ok(GovernanceRoute::Offered { action, arguments }) = route(
+            GovernanceRequest::Ownership(OwnershipRequest::Decline {
+                offer: offer.clone(),
+            }),
+            0,
+        ) else {
+            panic!("the person offered the room declines at whoever's host governs it");
+        };
+        assert_eq!(action, tilo_desktop_model::OWNERSHIP_DECLINE_ACTION_ID);
+        assert_eq!(arguments["offer"], offer);
+
+        assert!(
+            route(
+                GovernanceRequest::Ownership(OwnershipRequest::Decline { offer: "x".into() }),
+                0,
+            )
+            .is_err(),
+            "an offer is named by its id"
+        );
     }
 
     #[test]

@@ -282,6 +282,22 @@ impl ShellNetwork {
             .ok()
     }
 
+    /// The host governing `room`, whoever's it is, when this device holds
+    /// the room.
+    pub(super) fn held_room(&self, room: RoomId) -> Option<HeldRoom> {
+        let owner = self.native_owner().ok()?;
+        owner
+            .with_current(room, |view| {
+                let host = hosting_governor(view, room)?.ok_or("no host governs the room")?;
+                Ok(HeldRoom {
+                    room,
+                    host,
+                    here: host == self.local_peer_id,
+                })
+            })
+            .ok()
+    }
+
     /// Queue `invoke` on `ws`'s relay session for `to`, and answer where
     /// its receipt arrives.
     fn ask_relay(

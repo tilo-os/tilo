@@ -81,6 +81,7 @@ mod relay_rooms;
 mod room_gate;
 #[cfg(test)]
 mod room_gate_tests;
+mod room_ownership;
 #[cfg(test)]
 mod same_person_room_tests;
 mod site_join;

@@ -22,18 +22,15 @@ use super::{Args, GOVERNANCE, Verb, invalid, refused, request_id};
 use crate::host_authority::HostOperation;
 use crate::rooms::{GovernedRoom, Rooms};
 
-/// Offering the room to another member, in place of any open offer.
-pub(crate) const PROPOSE: &str = "ownership.propose";
-/// Taking the open offer back.
-pub(crate) const CANCEL: &str = "ownership.cancel";
-/// Accepting the offer made to the caller's person, to govern the room
-/// from the calling device.
-pub(crate) const ACCEPT: &str = "ownership.accept";
+pub(crate) use tilo_desktop_model::{
+    OWNERSHIP_ACCEPT_ACTION_ID as ACCEPT, OWNERSHIP_CANCEL_ACTION_ID as CANCEL,
+    OWNERSHIP_DECLINE_ACTION_ID as DECLINE, OWNERSHIP_OFFER_ACTION_ID as PROPOSE,
+};
 
 /// Moving the room, in catalogue order. Each is offered by [`offered`],
 /// not by a governance gate: only the owner moves the room, and only the
 /// recipient takes it.
-const OWNERSHIP_VERBS: [Verb; 3] = [
+const OWNERSHIP_VERBS: [Verb; 4] = [
     Verb {
         id: PROPOSE,
         label: "Offer ownership",
@@ -43,7 +40,7 @@ const OWNERSHIP_VERBS: [Verb; 3] = [
     },
     Verb {
         id: CANCEL,
-        label: "Cancel ownership offer",
+        label: "Take back ownership offer",
         gate: governance::SETTINGS,
         kind: roles::GOVERNANCE_KIND,
         params: cancel_params,
@@ -54,6 +51,13 @@ const OWNERSHIP_VERBS: [Verb; 3] = [
         gate: governance::SETTINGS,
         kind: roles::GOVERNANCE_KIND,
         params: accept_params,
+    },
+    Verb {
+        id: DECLINE,
+        label: "Decline ownership",
+        gate: governance::SETTINGS,
+        kind: roles::GOVERNANCE_KIND,
+        params: cancel_params,
     },
 ];
 
@@ -102,7 +106,7 @@ impl Rooms {
         match verb {
             PROPOSE => owner,
             CANCEL => owner && open.is_some(),
-            ACCEPT => open.is_some_and(|offer| offer.recipient == device.user_public_key),
+            ACCEPT | DECLINE => open.is_some_and(|offer| offer.recipient == device.user_public_key),
             _ => false,
         }
     }
@@ -166,6 +170,18 @@ impl Rooms {
             CANCEL => {
                 let generation = self
                     .cancel_ownership_offer(&room, &device, request_id, args.required_key("offer")?)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(json!({ "generation": generation }))
+            }
+            DECLINE => {
+                let generation = self
+                    .decline_ownership_offer(
+                        &room,
+                        &device,
+                        request_id,
+                        args.required_key("offer")?,
+                    )
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(json!({ "generation": generation }))

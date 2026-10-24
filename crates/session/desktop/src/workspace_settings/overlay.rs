@@ -25,7 +25,7 @@ use tilo_desktop_model::{DesktopTree, UserId};
 use super::{
     AppDirectory, DefaultAppsCtx, GrantDraft, WsTab, agents_add_rect, agents_pane_rows,
     default_app_rows, draw_agents_pane, draw_default_apps_pane, draw_members_pane,
-    draw_permissions_pane, members_pane_rows, ownership_action_rect, permission_profiles_rect,
+    draw_permissions_pane, members_pane_rows, ownership_action_rects, permission_profiles_rect,
     permissions_pane_layout,
 };
 use ui::TextRole;
@@ -130,8 +130,18 @@ pub enum EventOutcome {
     ManagePermissionProfiles,
     MemberRole(UserId),
     RemoveMember(UserId),
-    /// Opens the canonical, resource-addressed ownership actions.
-    ManageOwnership,
+    /// One of the People pane's ownership buttons.
+    ManageOwnership(super::OwnershipControl),
+    /// The member chosen to offer the workspace to, to confirm.
+    ChooseOwnershipRecipient(UserId),
+    /// Offer the workspace to this member, confirmed.
+    OfferOwnership(UserId),
+    /// Take the open offer back, confirmed.
+    CancelOwnershipOffer,
+    /// Accept the offer made to this person, confirmed.
+    AcceptOwnership,
+    /// Decline the offer made to this person.
+    DeclineOwnership,
     /// Starts a named, explicit agent setup in the command palette.
     AddAgent,
     /// Opens this agent's Allow / Ask first / Deny answers, app by app.
@@ -220,14 +230,31 @@ enum MemberSheet {
     Role(UserId),
     Remove(UserId),
     Revoke(String),
+    /// The members the workspace may be offered to, to choose one.
+    ChooseRecipient(Vec<UserId>),
+    /// Offering the workspace to this member, to confirm.
+    OfferTo(UserId),
+    /// Taking the open offer back, to confirm.
+    TakeBack,
+    /// Accepting the offer made to this person, to confirm.
+    Accept,
 }
 
 impl MemberSheet {
-    const fn action_count() -> usize {
-        // Every sheet offers three explicit choices. Destructive sheets use
-        // cancel, inspect history, then complete the policy-checked action;
-        // the role sheet offers its three concrete roles.
-        3
+    fn action_count(&self) -> usize {
+        match self {
+            // Destructive sheets offer cancel, inspect history, then the
+            // policy-checked action; the role sheet its three roles.
+            Self::Role(_) | Self::Remove(_) | Self::Revoke(_) => 3,
+            Self::ChooseRecipient(people) => people.len().saturating_add(1),
+            // A confirmation: keep things as they are, or go ahead.
+            Self::OfferTo(_) | Self::TakeBack | Self::Accept => 2,
+        }
+    }
+
+    /// Whether the sheet's last choice takes something away.
+    fn destructive(&self) -> bool {
+        matches!(self, Self::Remove(_) | Self::Revoke(_))
     }
 }
 
@@ -255,7 +282,7 @@ pub struct WorkspaceSettingsOverlay {
     grant_composer_rects: Option<GrantComposerRects>,
     permission_profiles_rect: Rect,
     member_control_rects: Vec<(UserId, Rect, Rect)>,
-    ownership_action_rect: Rect,
+    ownership_controls: Vec<(super::OwnershipControl, Rect)>,
     agent_add_rect: Rect,
     agent_control_rects: Vec<(String, Rect, Rect)>,
     /// The Bots section's Add a bot, and each requested bot's Remove by its
@@ -313,7 +340,7 @@ impl Default for WorkspaceSettingsOverlay {
             grant_composer_rects: None,
             permission_profiles_rect: Rect::ZERO,
             member_control_rects: Vec::new(),
-            ownership_action_rect: Rect::ZERO,
+            ownership_controls: Vec::new(),
             agent_add_rect: Rect::ZERO,
             agent_control_rects: Vec::new(),
             bot_add_rect: Rect::ZERO,
@@ -711,11 +738,11 @@ impl WorkspaceSettingsOverlay {
         &self.member_control_rects
     }
 
-    /// Bounds of the resource-addressed ownership entry point painted in the
-    /// Members pane. The shell accessibility bridge uses the exact same rect
-    /// for assistive-technology activation as pointer input.
-    pub fn ownership_action_rect(&self) -> Rect {
-        self.ownership_action_rect
+    /// The ownership buttons painted in the Members pane, each with its
+    /// bounds. The shell accessibility bridge uses the exact same rects for
+    /// assistive-technology activation as pointer input.
+    pub fn ownership_controls(&self) -> &[(super::OwnershipControl, Rect)] {
+        &self.ownership_controls
     }
 
     /// Button bounds from the currently focused role / confirmation sheet.
@@ -747,6 +774,30 @@ impl WorkspaceSettingsOverlay {
         self.member_sheet_focus = 0;
     }
 
+    /// Choose whom to offer the workspace to, among `people`.
+    pub fn open_ownership_recipient_sheet(&mut self, people: Vec<UserId>) {
+        self.member_sheet = Some(MemberSheet::ChooseRecipient(people));
+        self.member_sheet_focus = 0;
+    }
+
+    /// Confirm offering the workspace to `user`.
+    pub fn open_offer_ownership_sheet(&mut self, user: UserId) {
+        self.member_sheet = Some(MemberSheet::OfferTo(user));
+        self.member_sheet_focus = 0;
+    }
+
+    /// Confirm taking the open offer back.
+    pub fn open_take_back_offer_sheet(&mut self) {
+        self.member_sheet = Some(MemberSheet::TakeBack);
+        self.member_sheet_focus = 0;
+    }
+
+    /// Confirm accepting the offer made to this person.
+    pub fn open_accept_ownership_sheet(&mut self) {
+        self.member_sheet = Some(MemberSheet::Accept);
+        self.member_sheet_focus = 0;
+    }
+
     pub fn dismiss_member_sheet(&mut self) {
         self.member_sheet = None;
         self.member_sheet_focus = 0;
@@ -758,7 +809,7 @@ impl WorkspaceSettingsOverlay {
     /// a pointer, and every other key is absorbed by the host while open.
     pub fn handle_member_sheet_key(&mut self, key: MemberSheetKey) -> Option<EventOutcome> {
         let sheet = self.member_sheet.clone()?;
-        let count = MemberSheet::action_count();
+        let count = sheet.action_count();
         match key {
             MemberSheetKey::Previous => {
                 self.member_sheet_focus = self
@@ -798,6 +849,28 @@ impl WorkspaceSettingsOverlay {
                 2 => Some(EventOutcome::ConfirmRevoke(cap_id.clone())),
                 _ => None,
             },
+            MemberSheet::ChooseRecipient(people) => match index {
+                0 => Some(EventOutcome::DismissMemberSheet),
+                _ => index
+                    .checked_sub(1)
+                    .and_then(|person| people.get(person))
+                    .map(|user| EventOutcome::ChooseOwnershipRecipient(user.clone())),
+            },
+            MemberSheet::OfferTo(user) => match index {
+                0 => Some(EventOutcome::DismissMemberSheet),
+                1 => Some(EventOutcome::OfferOwnership(user.clone())),
+                _ => None,
+            },
+            MemberSheet::TakeBack => match index {
+                0 => Some(EventOutcome::DismissMemberSheet),
+                1 => Some(EventOutcome::CancelOwnershipOffer),
+                _ => None,
+            },
+            MemberSheet::Accept => match index {
+                0 => Some(EventOutcome::DismissMemberSheet),
+                1 => Some(EventOutcome::AcceptOwnership),
+                _ => None,
+            },
         }
     }
 
@@ -808,7 +881,7 @@ impl WorkspaceSettingsOverlay {
         self.grant_composer_rects = None;
         self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
-        self.ownership_action_rect = Rect::ZERO;
+        self.ownership_controls.clear();
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         self.bot_add_rect = Rect::ZERO;
@@ -1155,8 +1228,10 @@ impl WorkspaceSettingsOverlay {
                 return EventOutcome::RemoveMember(user.clone());
             }
         }
-        if self.ownership_action_rect.area() > 0.0 && self.ownership_action_rect.contains(point) {
-            return EventOutcome::ManageOwnership;
+        for (control, rect) in &self.ownership_controls {
+            if rect.area() > 0.0 && rect.contains(point) {
+                return EventOutcome::ManageOwnership(*control);
+            }
         }
         if let Some(outcome) = self.agents_outcome(point, active_tab) {
             return outcome;
@@ -1372,8 +1447,28 @@ impl WorkspaceSettingsOverlay {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let role_sheet = matches!(sheet, MemberSheet::Role(_));
-        let height = if role_sheet { 326.0 } else { 300.0 };
         let width = (settings_rect.width() - 48.0).clamp(330.0, 440.0);
+        let (title, description, subject) = member_sheet_text(&sheet, model);
+        let (labels, previews) = member_sheet_options(&sheet, model);
+        let caption = tokens.typography.style(TextRole::Caption);
+        let desc_y = if role_sheet || subject.is_none() {
+            50.0
+        } else {
+            72.0
+        };
+        // What the choice does is said in full, however many lines it takes.
+        let (_, desc_h) =
+            text_renderer.measure_style(&description, Some(f32_of_f64(width - 40.0)), &caption);
+        let row_h = if role_sheet { 58.0 } else { 42.0 };
+        let gap = 8.0;
+        let start = if role_sheet {
+            88.0
+        } else {
+            (desc_y + f64::from(desc_h) + 20.0).max(if subject.is_some() { 112.0 } else { 88.0 })
+        };
+        let options_h = f64_of_usize(labels.len()) * (row_h + gap);
+        let hints_h = ui::widget::KeyHintsFace::height(theme) + 2.0 * f64::from(tokens.spacing.s4);
+        let height = (start + options_h + hints_h).min(settings_rect.height() - 24.0);
         let card = Rect::new(
             settings_rect.center().x - width / 2.0,
             settings_rect.center().y - height / 2.0,
@@ -1398,37 +1493,9 @@ impl WorkspaceSettingsOverlay {
         // ramp slot over a declared border.
         let painted = ui::chrome::shell::paint_panel(scene, transform, card, theme, 1.0);
         let theme = &painted.theme;
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
 
-        let (title, description, subject): (String, String, Option<String>) = match &sheet {
-            MemberSheet::Role(user) => {
-                let current = model
-                    .desktop
-                    .active_workspace()
-                    .and_then(|workspace| workspace.role_of(user))
-                    .unwrap_or(CapRole::Viewer);
-                (
-                    t("workspace-settings-role-sheet-title"),
-                    t_args(
-                        "workspace-settings-role-sheet-description",
-                        &[
-                            ("person", super::short_id(user).into()),
-                            ("role", super::role_label(current).into()),
-                        ],
-                    ),
-                    None,
-                )
-            }
-            MemberSheet::Remove(user) => (
-                t("workspace-settings-remove-sheet-title"),
-                t("workspace-settings-remove-sheet-description"),
-                Some(super::short_id(user)),
-            ),
-            MemberSheet::Revoke(cap_id) => (
-                t("workspace-settings-revoke-sheet-title"),
-                t("workspace-settings-revoke-sheet-description"),
-                Some(super::short_id(cap_id)),
-            ),
-        };
         text_renderer.draw_style(
             scene,
             &title,
@@ -1444,80 +1511,29 @@ impl WorkspaceSettingsOverlay {
                 colors.intent.accent_hover,
                 transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
                 None,
-                &tokens.typography.style(TextRole::Caption),
+                &caption,
             );
         }
-        let desc_y = if role_sheet {
-            card.y0 + 50.0
-        } else {
-            card.y0 + 72.0
-        };
-        let description = text_renderer.elide_to_width_style(
-            &description,
-            f32_of_f64(card.width() - 40.0),
-            &tokens.typography.style(TextRole::Caption),
-        );
         text_renderer.draw_style(
             scene,
             &description,
             colors.text_dim,
-            transform.pre_translate((card.x0 + 20.0, desc_y).into()),
-            None,
-            &tokens.typography.style(TextRole::Caption),
+            transform.pre_translate((card.x0 + 20.0, card.y0 + desc_y).into()),
+            Some(f32_of_f64(card.width() - 40.0)),
+            &caption,
         );
 
         self.member_sheet_option_rects.clear();
         let option_x0 = card.x0 + 20.0;
         let option_x1 = card.x1 - 20.0;
-        let (labels, previews): (Vec<String>, Vec<String>) = match &sheet {
-            MemberSheet::Role(_) => {
-                let roles = [CapRole::Viewer, CapRole::Commenter, CapRole::Editor];
-                (
-                    roles.iter().map(|role| super::role_label(*role)).collect(),
-                    roles
-                        .iter()
-                        .map(|role| super::role_capability_preview(*role))
-                        .collect(),
-                )
-            }
-            MemberSheet::Remove(_) => (
-                vec![
-                    t("workspace-settings-keep-access"),
-                    t("workspace-settings-review-activity"),
-                    t("workspace-settings-remove-person"),
-                ],
-                vec![
-                    t("workspace-settings-no-changes"),
-                    t("workspace-settings-open-history"),
-                    t("workspace-settings-remove-person-detail"),
-                ],
-            ),
-            MemberSheet::Revoke(_) => (
-                vec![
-                    t("workspace-settings-keep-permission"),
-                    t("workspace-settings-review-activity"),
-                    t("workspace-settings-revoke-permission"),
-                ],
-                vec![
-                    t("workspace-settings-no-changes"),
-                    t("workspace-settings-open-history"),
-                    t("workspace-settings-revoke-permission-detail"),
-                ],
-            ),
-        };
-        let row_h = if role_sheet { 58.0 } else { 42.0 };
-        let gap = 8.0;
-        let start_y = if role_sheet {
-            card.y0 + 88.0
-        } else {
-            card.y0 + 112.0
-        };
+        let last = labels.len().saturating_sub(1);
+        let start_y = card.y0 + start;
         for (index, (label, preview)) in labels.iter().zip(&previews).enumerate() {
             let y0 = start_y + f64_of_usize(index) * (row_h + gap);
             let option = Rect::new(option_x0, y0, option_x1, y0 + row_h);
             self.member_sheet_option_rects.push(option);
             let focused = index == self.member_sheet_focus;
-            let destructive = index == 2 && !role_sheet;
+            let destructive = index == last && sheet.destructive();
             let tint = if destructive {
                 colors.semantic.danger
             } else {
@@ -1544,7 +1560,7 @@ impl WorkspaceSettingsOverlay {
                 colors.text_primary,
                 transform.pre_translate((option.x0 + 12.0, option.y0 + 9.0).into()),
                 None,
-                &tokens.typography.style(TextRole::Caption),
+                &caption,
             );
             if role_sheet {
                 text_renderer.draw_style(
@@ -1553,7 +1569,7 @@ impl WorkspaceSettingsOverlay {
                     colors.text_dim,
                     transform.pre_translate((option.x0 + 12.0, option.y0 + 29.0).into()),
                     None,
-                    &tokens.typography.style(TextRole::Caption),
+                    &caption,
                 );
             }
         }
@@ -1976,7 +1992,7 @@ impl WorkspaceSettingsOverlay {
                 self.revoke_rects.clear();
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
-                self.ownership_action_rect = Rect::ZERO;
+                self.ownership_controls.clear();
                 self.agent_add_rect = Rect::ZERO;
                 self.agent_control_rects.clear();
                 self.default_app_rects.clear();
@@ -1999,17 +2015,21 @@ impl WorkspaceSettingsOverlay {
         self.grant_composer_rects = None;
         self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
-        self.ownership_action_rect = Rect::ZERO;
+        self.ownership_controls.clear();
         self.agent_add_rect = Rect::ZERO;
         self.agent_control_rects.clear();
         let body_rect = Self::body_rect(rect);
         let is_owner = model.owner_controls;
         if let Some(ws) = model.desktop.active_workspace() {
             let actor = model.acting_user;
-            if super::ownership_button(ws, actor).is_some() {
-                self.ownership_action_rect = ownership_action_rect(body_rect);
-            }
-            for row in members_pane_rows(ws, body_rect) {
+            let controls = super::ownership_buttons(ws, actor);
+            let rects = ownership_action_rects(body_rect, controls.len());
+            self.ownership_controls = controls.into_iter().zip(rects).collect();
+            let frozen = super::members_frozen(ws);
+            for row in members_pane_rows(ws, body_rect)
+                .into_iter()
+                .filter(|_| !frozen)
+            {
                 let (role, remove) = super::member_row_controls(&row, actor);
                 self.member_control_rects
                     .push((row.user.clone(), role, remove));
@@ -2042,7 +2062,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
-        self.ownership_action_rect = Rect::ZERO;
+        self.ownership_controls.clear();
         self.agent_control_rects.clear();
         self.bot_add_rect = Rect::ZERO;
         self.bot_remove_rects.clear();
@@ -2124,7 +2144,7 @@ impl WorkspaceSettingsOverlay {
         self.grant_composer_rects = None;
         self.permission_profiles_rect = Rect::ZERO;
         self.member_control_rects.clear();
-        self.ownership_action_rect = Rect::ZERO;
+        self.ownership_controls.clear();
         self.agent_add_rect = Rect::ZERO;
         if let Some(ws) = model.desktop.active_workspace() {
             if is_owner {
@@ -2168,7 +2188,7 @@ impl WorkspaceSettingsOverlay {
         self.revoke_rects.clear();
         self.grant_composer_rects = None;
         self.member_control_rects.clear();
-        self.ownership_action_rect = Rect::ZERO;
+        self.ownership_controls.clear();
         self.agent_add_rect = Rect::ZERO;
         self.default_app_rects.clear();
         let body_rect = Self::body_rect(rect);
@@ -3676,11 +3696,19 @@ mod tests {
 
         {
             let mut overlay = WorkspaceSettingsOverlay::default();
-            let action = Rect::new(900.0, 220.0, 1_020.0, 258.0);
-            overlay.ownership_action_rect = action;
+            let decline = Rect::new(732.0, 220.0, 892.0, 258.0);
+            let accept = Rect::new(900.0, 220.0, 1_060.0, 258.0);
+            overlay.ownership_controls = vec![
+                (super::super::OwnershipControl::Decline, decline),
+                (super::super::OwnershipControl::Accept, accept),
+            ];
             assert_eq!(
-                overlay.hit_test(action.center(), WsTab::Members),
-                EventOutcome::ManageOwnership
+                overlay.hit_test(decline.center(), WsTab::Members),
+                EventOutcome::ManageOwnership(super::super::OwnershipControl::Decline)
+            );
+            assert_eq!(
+                overlay.hit_test(accept.center(), WsTab::Members),
+                EventOutcome::ManageOwnership(super::super::OwnershipControl::Accept)
             );
         }
 
@@ -3756,7 +3784,59 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn each_ownership_step_but_declining_is_confirmed_first_and_starts_on_keeping_things() {
+        let mut overlay = WorkspaceSettingsOverlay::default();
+        overlay.open_ownership_recipient_sheet(vec!["ada".into(), "bo".into()]);
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+            Some(EventOutcome::DismissMemberSheet),
+            "nobody is chosen by Enter alone"
+        );
+        overlay.open_ownership_recipient_sheet(vec!["ada".into(), "bo".into()]);
+        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+            Some(EventOutcome::ChooseOwnershipRecipient("bo".into()))
+        );
+
+        for (open, confirmed) in [
+            (
+                WorkspaceSettingsOverlay::open_take_back_offer_sheet
+                    as fn(&mut WorkspaceSettingsOverlay),
+                EventOutcome::CancelOwnershipOffer,
+            ),
+            (
+                WorkspaceSettingsOverlay::open_accept_ownership_sheet,
+                EventOutcome::AcceptOwnership,
+            ),
+        ] {
+            open(&mut overlay);
+            assert_eq!(
+                overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+                Some(EventOutcome::DismissMemberSheet)
+            );
+            open(&mut overlay);
+            let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+            assert_eq!(
+                overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+                Some(confirmed)
+            );
+        }
+
+        overlay.open_offer_ownership_sheet("bo".into());
+        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+        assert_eq!(
+            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+            Some(EventOutcome::OfferOwnership("bo".into()))
+        );
+    }
 }
+
+mod member_sheet_text;
+use member_sheet_text::{member_sheet_options, member_sheet_text};
 
 #[cfg(test)]
 mod general_scroll_tests;

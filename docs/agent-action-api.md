@@ -406,8 +406,7 @@ it.
 
 `state_dump` answers `workspace_tree`, `chrome`, `peers` and `sharing`. The
 tree is the desktop as it is now. A workspace's append-only history is left
-out: `effect_receipts`, `ownership_transfer_audit`,
-`ownership_transfer_cancellations` and each task's `audit`. That history grows
+out: `effect_receipts` and each task's `audit`. That history grows
 with every action ever taken, so the dump stays the same size however long the
 desktop has been in use. Ask for the history explicitly when you need it:
 

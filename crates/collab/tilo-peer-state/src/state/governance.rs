@@ -704,6 +704,12 @@ impl PeerGovernanceMut<'_> {
         for id in personal {
             doc.delete(&grants, id.as_str()).map_err(err)?;
         }
+        // An offer of the room to someone leaving it closes with them.
+        if crate::handoff::open_offer(&doc).is_some_and(|offer| offer.recipient == user_public_key)
+        {
+            doc.delete(ROOT, crate::handoff::OWNERSHIP_OFFER_KEY)
+                .map_err(err)?;
+        }
         doc.commit();
         self.peer.apply_governance_doc(doc, &before, key, now)
     }

@@ -4,7 +4,8 @@
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{SigningKey, StatePeer, SystemTime, VerifiedCertificate, err};
 use crate::handoff::{
-    self, GOVERNOR_HANDOFFS_KEY, GovernorHandoff, HandoffError, OWNERSHIP_OFFER_KEY, OwnershipOffer,
+    self, GOVERNOR_HANDOFFS_KEY, GovernorHandoff, HandoffError, OWNERSHIP_DECLINED_KEY,
+    OWNERSHIP_OFFER_KEY, OwnershipOffer,
 };
 use automerge::{ObjType, ROOT, ReadDoc as _, ScalarValue, transaction::Transactable as _};
 use tilo_action_policy::Role;
@@ -36,11 +37,26 @@ impl From<HandoffError> for OwnershipWriteError {
     }
 }
 
+/// Drop the record of a declined offer, when `doc` holds one.
+fn forget_declined(doc: &mut automerge::AutoCommit) -> Result<(), automerge::AutomergeError> {
+    if doc.get(ROOT, OWNERSHIP_DECLINED_KEY)?.is_some() {
+        doc.delete(ROOT, OWNERSHIP_DECLINED_KEY)?;
+    }
+    Ok(())
+}
+
 impl PeerGovernance<'_> {
     /// The owner's open offer of the room to another person, if any.
     #[must_use]
     pub fn ownership_offer(self) -> Option<OwnershipOffer> {
         handoff::open_offer(self.peer.core.room_doc.as_deref()?)
+    }
+
+    /// The offer its recipient declined, while the owner has made no other
+    /// since.
+    #[must_use]
+    pub fn declined_ownership_offer(self) -> Option<OwnershipOffer> {
+        handoff::declined_offer(self.peer.core.room_doc.as_deref()?)
     }
 
     /// Every handoff of the room's governance its governance logs, in
@@ -86,7 +102,38 @@ impl PeerGovernanceMut<'_> {
         let bytes = postcard::to_stdvec(offer)
             .map_err(|error| HandoffError::Encoding(error.to_string()))?;
         self.author(key, now, |doc| {
+            forget_declined(doc)?;
             doc.put(ROOT, OWNERSHIP_OFFER_KEY, ScalarValue::Bytes(bytes))
+        })
+        .map_err(OwnershipWriteError::Governance)
+    }
+
+    /// Close the open offer `offer_id` as its recipient declined it, as the
+    /// governor `key`: the owner sees it declined until they offer the room
+    /// again. Declining an offer that is no longer open changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// `key` does not govern the room.
+    pub fn decline_ownership_offer(
+        self,
+        offer_id: [u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, OwnershipWriteError> {
+        let Some(offer) = self
+            .peer
+            .governance()
+            .ownership_offer()
+            .filter(|offer| offer.offer_id == offer_id)
+        else {
+            return Ok(false);
+        };
+        let bytes = postcard::to_stdvec(&offer)
+            .map_err(|error| HandoffError::Encoding(error.to_string()))?;
+        self.author(key, now, |doc| {
+            doc.delete(ROOT, OWNERSHIP_OFFER_KEY)?;
+            doc.put(ROOT, OWNERSHIP_DECLINED_KEY, ScalarValue::Bytes(bytes))
         })
         .map_err(OwnershipWriteError::Governance)
     }
@@ -163,6 +210,7 @@ impl PeerGovernanceMut<'_> {
             };
             doc.put(&log, offer_id.as_str(), ScalarValue::Bytes(bytes))?;
             doc.delete(ROOT, OWNERSHIP_OFFER_KEY)?;
+            forget_declined(doc)?;
             let mut policy = projection::room_policy_of(doc, &room);
             policy.owner = Some(next.clone());
             policy.members.remove(&next);

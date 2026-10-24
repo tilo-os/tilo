@@ -38,19 +38,14 @@ fn serialising_without_history_leaves_out_every_history_field() {
     let full = serde_json::to_value(&tree).unwrap();
     let workspace = &full["workspaces"][0];
     assert_eq!(workspace["effect_receipts"].as_array().unwrap().len(), 3);
-    assert!(workspace.get("ownership_transfer_audit").is_some());
-    assert!(workspace.get("ownership_transfer_cancellations").is_some());
 
     let current: serde_json::Value =
         history::without_history(|| serde_json::to_value(&tree)).unwrap();
     let workspace = &current["workspaces"][0];
-    for field in [
-        "effect_receipts",
-        "ownership_transfer_audit",
-        "ownership_transfer_cancellations",
-    ] {
-        assert!(workspace.get(field).is_none(), "{field} is history");
-    }
+    assert!(
+        workspace.get("effect_receipts").is_none(),
+        "effect receipts are history"
+    );
     // Everything that is not history is still there.
     assert_eq!(workspace["strips"][0]["name"], "Main");
     assert_eq!(workspace["policy"]["owner"], "owner");
@@ -111,8 +106,6 @@ fn a_policy_view_decides_like_the_workspace_and_carries_no_layout_or_history() {
     assert!(view.effect_receipts.is_empty());
     assert!(view.shortcuts.is_empty());
     assert!(view.schedule_claims.is_empty());
-    assert!(view.ownership_transfer_audit.is_empty());
-    assert!(view.ownership_transfer_cancellations.is_empty());
     assert_eq!(
         (view.id, &view.room(), &view.name),
         (workspace.id, &workspace.room(), &workspace.name)

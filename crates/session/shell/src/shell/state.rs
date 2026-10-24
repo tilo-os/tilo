@@ -725,6 +725,24 @@ pub enum GovernanceRequest {
     /// A desktop command on the room's governance (its name, presets,
     /// shortcuts, app action grants).
     Command(tilo_desktop_model::commands::DesktopCommand),
+    /// Moving the room to another person.
+    Ownership(OwnershipRequest),
+}
+
+/// A step of moving a room to another person, asked of its governor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnershipRequest {
+    /// Offer it to the member `person` (their user root key, hex).
+    Offer { person: String },
+    /// Take the open offer `offer` (its id, hex) back.
+    Cancel { offer: String },
+    /// Accept the open offer `offer` (its id, hex), to govern the room from
+    /// this device.
+    Accept { offer: String },
+    /// Decline the open offer `offer` (its id, hex): it closes, and its
+    /// owner sees it declined.
+    Decline { offer: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1154,7 +1172,13 @@ impl WorkspaceTree {
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
-    pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &tilo_peer_state::StatePeer) {
+    /// `generation` is the governance generation this device holds of it.
+    pub(crate) fn project_native_room(
+        &mut self,
+        room: RoomId,
+        peer: &tilo_peer_state::StatePeer,
+        generation: u64,
+    ) {
         let Some(document) = peer.admitted_room() else {
             return;
         };
@@ -1180,6 +1204,7 @@ impl WorkspaceTree {
             .find(|ws| ws.room() == room)
         {
             tilo_peer_state::room::adopt_room(archived, document, &[]);
+            archived.ownership = tilo_peer_state::handoff::room_ownership(document, generation);
         }
         self.room_docs.insert(room, document.clone());
         self.room_rosters.insert(room, admitted_roster(peer));
@@ -1193,6 +1218,7 @@ impl WorkspaceTree {
         {
             let local = self.native_runtime.preserve_files_home_consent(ws, peer);
             tilo_peer_state::room::adopt_room(ws, document, &[]);
+            ws.ownership = tilo_peer_state::handoff::room_ownership(document, generation);
             ws.sandbox.extend(local);
         }
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
@@ -2964,7 +2990,7 @@ impl WorkspaceTree {
                         .expect("the governor takes the capability back");
                     continue;
                 }
-                GovernanceRequest::Command(_) => continue,
+                GovernanceRequest::Command(_) | GovernanceRequest::Ownership(_) => continue,
             };
             tilo_desktop::workspace_settings::apply_governance(workspace, actor, operation, now)
                 .expect("the governor takes the change");

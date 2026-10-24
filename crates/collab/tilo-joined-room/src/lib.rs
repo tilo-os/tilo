@@ -118,6 +118,8 @@ pub enum Change<'a> {
     Room {
         room: RoomId,
         peer: &'a StatePeer,
+        /// The governance generation this device holds of the room.
+        generation: u64,
         into: Option<&'a EnrollmentTarget>,
     },
     /// This device no longer holds `room`: its replica and any enrollment
@@ -703,6 +705,7 @@ impl NativeWorkspaceOwner {
             Change::Room {
                 room,
                 peer: &candidate.peer,
+                generation: candidate.generation(),
                 into: enrollment.and_then(|pending| pending.target.as_ref()),
             },
             &mut || {

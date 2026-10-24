@@ -347,3 +347,106 @@ fn a_record_is_covered_by_the_new_governor_only_along_the_handoff_log() {
     assert!(!crate::handoff::handed_between(doc, &member, &new));
     assert!(!crate::handoff::handed_between(doc, &old, &member));
 }
+
+#[test]
+fn a_member_sees_the_room_offered_then_moving_until_its_new_governor_governs_it() {
+    use tilo_desktop_model::{OwnershipStep, RoomOwnership};
+    let now = SystemTime::now();
+    let parties = Parties::new();
+    let (mut governor, mut member) = room(&parties, now);
+    let ownership = |peer: &StatePeer, held| {
+        crate::handoff::room_ownership(peer.admitted_room().unwrap(), held)
+    };
+    assert_eq!(ownership(&member, 1), RoomOwnership::default());
+
+    let offer = parties.offer(1);
+    governor
+        .governance_mut()
+        .offer_ownership(&offer, &parties.governor.key, now)
+        .unwrap();
+    sync(&governor, &mut member, &parties.governor.key, now).unwrap();
+    assert_eq!(
+        ownership(&member, 2),
+        RoomOwnership {
+            step: OwnershipStep::Offered {
+                offer_id: offer.offer_id,
+                owner: offer.owner,
+                recipient: offer.recipient,
+                expires_at_ns: offer.expires_at_ns,
+            },
+            handed_at: 0,
+        }
+    );
+
+    let handoff = parties.handoff(&offer, 3);
+    governor
+        .governance_mut()
+        .commit_handoff(&handoff, &parties.governor.key, now)
+        .unwrap();
+    sync(&governor, &mut member, &parties.governor.key, now).unwrap();
+    member.follow_handoffs().unwrap();
+    let moving = RoomOwnership {
+        step: OwnershipStep::Moving {
+            recipient: offer.recipient,
+        },
+        handed_at: 3,
+    };
+    // The handoff is the newest governance the member holds.
+    assert_eq!(ownership(&member, 3), moving);
+    // Its new governor has governed it since.
+    assert_eq!(
+        ownership(&member, 4),
+        RoomOwnership {
+            step: OwnershipStep::Settled,
+            handed_at: 3,
+        }
+    );
+}
+
+#[test]
+fn a_declined_offer_shows_as_declined_until_the_owner_offers_again() {
+    use tilo_desktop_model::OwnershipStep;
+    let now = SystemTime::now();
+    let parties = Parties::new();
+    let (mut governor, mut member) = room(&parties, now);
+    let step =
+        |peer: &StatePeer| crate::handoff::room_ownership(peer.admitted_room().unwrap(), 1).step;
+
+    let offer = parties.offer(1);
+    governor
+        .governance_mut()
+        .offer_ownership(&offer, &parties.governor.key, now)
+        .unwrap();
+    assert!(
+        governor
+            .governance_mut()
+            .decline_ownership_offer(offer.offer_id, &parties.governor.key, now)
+            .unwrap()
+    );
+    sync(&governor, &mut member, &parties.governor.key, now).unwrap();
+    assert_eq!(member.governance().ownership_offer(), None);
+    assert_eq!(
+        step(&member),
+        OwnershipStep::Declined {
+            offer_id: offer.offer_id,
+            recipient: offer.recipient,
+        }
+    );
+    assert!(
+        !governor
+            .governance_mut()
+            .decline_ownership_offer(offer.offer_id, &parties.governor.key, now)
+            .unwrap(),
+        "an offer no longer open is declined once"
+    );
+
+    let again = parties.offer(2);
+    governor
+        .governance_mut()
+        .offer_ownership(&again, &parties.governor.key, now)
+        .unwrap();
+    sync(&governor, &mut member, &parties.governor.key, now).unwrap();
+    assert!(
+        matches!(step(&member), OwnershipStep::Offered { offer_id, .. } if offer_id == again.offer_id)
+    );
+}

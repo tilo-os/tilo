@@ -53,7 +53,9 @@ pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{
     APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, GRANT_ACTION_ID,
-    PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID, PresetMutationError, REVOKE_ACTION_ID, UserId,
-    WORKSPACE_GOVERNANCE_APP_ID, Workspace, WorkspaceDefaultError, context_at, governance_of,
-    governance_resource_id, preset_assign_node, role_from_id, role_id, session_id,
+    OWNERSHIP_ACCEPT_ACTION_ID, OWNERSHIP_CANCEL_ACTION_ID, OWNERSHIP_DECLINE_ACTION_ID,
+    OWNERSHIP_OFFER_ACTION_ID, OwnershipStep, PRESET_ASSIGN_ACTION_ID, PRESET_SAVE_ACTION_ID,
+    PresetMutationError, REVOKE_ACTION_ID, RoomOwnership, UserId, WORKSPACE_GOVERNANCE_APP_ID,
+    Workspace, WorkspaceDefaultError, context_at, governance_of, governance_resource_id,
+    preset_assign_node, role_from_id, role_id, session_id,
 };

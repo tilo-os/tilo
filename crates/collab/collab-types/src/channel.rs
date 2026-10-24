@@ -117,8 +117,7 @@ pub struct Channel {
     /// Human-meaningful display name ("#engineering"); not unique, not used
     /// in equality.
     pub name: String,
-    /// Owner identity — initially the creator, transferred via
-    /// `ChannelEvent::OwnershipTransfer`. Only key that can issue
+    /// Owner identity — initially the creator. Only key that can issue
     /// `Govern`-class ops unless delegated via an `AttestationIssued` event
     /// granting `Role::Owner`.
     pub owner: Ed25519PublicKey,

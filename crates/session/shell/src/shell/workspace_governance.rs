@@ -5,7 +5,9 @@
 
 use tilo_desktop::workspace_settings::{GovernanceOperation, apply_governance};
 
-use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceId, WorkspaceTree};
+use crate::shell::state::{
+    GovernanceRequest, OwnershipRequest, RoomId, WorkspaceId, WorkspaceTree,
+};
 
 /// Ask the governor of `workspace_id`'s room for a governance `operation`
 /// as `person`, after the room's policy as held here allows it: `person`
@@ -119,6 +121,26 @@ pub(crate) fn governance_request(
             resource,
             action,
         },
+        Operation::OfferOwnership { person } => {
+            return Ok(GovernanceRequest::Ownership(OwnershipRequest::Offer {
+                person,
+            }));
+        }
+        Operation::CancelOwnershipOffer { offer } => {
+            return Ok(GovernanceRequest::Ownership(OwnershipRequest::Cancel {
+                offer,
+            }));
+        }
+        Operation::DeclineOwnership { offer } => {
+            return Ok(GovernanceRequest::Ownership(OwnershipRequest::Decline {
+                offer,
+            }));
+        }
+        Operation::AcceptOwnership { offer } => {
+            return Ok(GovernanceRequest::Ownership(OwnershipRequest::Accept {
+                offer,
+            }));
+        }
     };
     Ok(GovernanceRequest::Command(command))
 }

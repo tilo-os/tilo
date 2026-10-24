@@ -25,6 +25,7 @@ use shell::compositor::frame::FrameBuilder;
 use shell::shell::chrome_state::{Chrome, ChromeState, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::WorkspaceTree;
+use tilo_desktop::workspace_settings::OwnershipControl;
 use ui::Widget;
 
 use taffy::prelude::NodeId;
@@ -2018,7 +2019,32 @@ impl ShellDriver {
             "power-menu" => self.scene_power_menu(false),
             "power-menu-keyboard" => self.scene_power_menu(true),
             "ws-settings-general" => self.scene_ws_settings_general(),
-            "ws-settings-members" => self.scene_ws_settings_members(),
+            "ws-settings-members" => self.scene_ws_settings_members(MembersView::Owner),
+            "ws-settings-members-recipient" => {
+                self.scene_ws_settings_members(MembersView::Recipient);
+            }
+            "ws-settings-members-moving" => self.scene_ws_settings_members(MembersView::Moving),
+            "ws-settings-members-settled" => {
+                self.scene_ws_settings_members(MembersView::Settled);
+            }
+            "ws-settings-members-declined" => {
+                self.scene_ws_settings_members(MembersView::Declined);
+            }
+            "ws-settings-members-offer" => {
+                self.scene_ws_settings_members(MembersView::Settled);
+                self.press_ownership_control(OwnershipControl::Offer);
+            }
+            "ws-settings-members-offer-confirm" => {
+                self.scene_ws_settings_members(MembersView::Settled);
+                self.press_ownership_control(OwnershipControl::Offer);
+                self.press_key(&Key::Named(NamedKey::ArrowDown));
+                self.press_key(&Key::Named(NamedKey::Enter));
+                self.step_frames(2);
+            }
+            "ws-settings-members-accept-confirm" => {
+                self.scene_ws_settings_members(MembersView::Recipient);
+                self.press_ownership_control(OwnershipControl::Accept);
+            }
             "ws-settings-apps" => self.scene_ws_settings_apps(),
             "ws-settings-agents" => self.scene_ws_settings_agents(),
             "ws-settings-agent-access" => self.scene_ws_settings_agent_access(),
@@ -2762,28 +2788,48 @@ impl ShellDriver {
         self.fb.host_mut().force_ws_settings_settled();
     }
 
-    fn scene_ws_settings_members(&mut self) {
+    /// Press the People pane's ownership button `control` where it was
+    /// painted, as a person would.
+    fn press_ownership_control(&mut self, control: OwnershipControl) {
+        self.step_frames(1);
+        let Some(rect) = self.fb.host_mut().ownership_control_rect_for_shots(control) else {
+            eprintln!("shots: the People pane paints no {control:?} button");
+            return;
+        };
+        self.click_at(rect.center());
+        self.step_frames(2);
+    }
+
+    /// The People pane of a workspace and its owner Robin's offer of it to
+    /// Morgan: before any offer, as Robin and as Morgan see the offer, once
+    /// Morgan declined, or once Morgan accepted and the room is on its way
+    /// to Morgan's device.
+    fn scene_ws_settings_members(&mut self, view: MembersView) {
         self.seed_workspace_permissions();
         self.with_chrome(|st| {
             let owner_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
             let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
-            let owner_public =
-                collab_types::Ed25519PublicKey::from_bytes(owner_key.verifying_key().to_bytes());
-            let recipient_public = collab_types::Ed25519PublicKey::from_bytes(
-                recipient_key.verifying_key().to_bytes(),
-            );
-            let owner = hex::encode(owner_public.as_bytes());
-            // The person acting here is the owner: who "you" is in the pane
-            // and whose authority its controls follow.
-            st.act_as(owner.clone());
+            let owner_public = owner_key.verifying_key().to_bytes();
+            let recipient_public = recipient_key.verifying_key().to_bytes();
+            let owner = hex::encode(owner_public);
+            let recipient = hex::encode(recipient_public);
+            // Who "you" is in the pane, and whose authority its controls
+            // follow.
+            st.act_as(match view {
+                MembersView::Recipient => recipient.clone(),
+                MembersView::Owner
+                | MembersView::Moving
+                | MembersView::Settled
+                | MembersView::Declined => owner.clone(),
+            });
             if let Some(workspace) = st.tree_mut().desktop.active_workspace_mut() {
-                workspace.set_owner(owner);
+                workspace.set_owner(owner.clone());
+                workspace
+                    .collaborators
+                    .push(shell::shell::state::Collaborator::new(owner, "Robin"));
                 workspace.collaborators.push(
-                    shell::shell::state::Collaborator::new(
-                        hex::encode(recipient_public.as_bytes()),
-                        "Morgan",
-                    )
-                    .as_invited(),
+                    shell::shell::state::Collaborator::new(recipient.clone(), "Morgan")
+                        .as_invited(),
                 );
                 // The people the workspace admitted, by the names they go by.
                 for (id, name) in [("ada", "Ada Lovelace"), ("bo", "Bo Lindqvist")] {
@@ -2791,20 +2837,25 @@ impl ShellDriver {
                         .collaborators
                         .push(shell::shell::state::Collaborator::new(id, name));
                 }
-                workspace.admit(
-                    hex::encode(recipient_public.as_bytes()),
-                    tilo_action_policy::Role::Editor,
-                );
-                workspace.pending_ownership_transfer =
-                    collab_types::OwnershipTransferProposalV1::new(
-                        workspace.room().to_string(),
-                        [23; 32],
-                        owner_public,
-                        recipient_public,
-                        u64::MAX,
-                        &owner_key,
-                    )
-                    .ok();
+                workspace.admit(recipient, tilo_action_policy::Role::Editor);
+                workspace.ownership.step = match view {
+                    MembersView::Owner | MembersView::Recipient => {
+                        tilo_desktop_model::OwnershipStep::Offered {
+                            offer_id: [23; 32],
+                            owner: owner_public,
+                            recipient: recipient_public,
+                            expires_at_ns: OFFER_EXPIRES_AT_NS,
+                        }
+                    }
+                    MembersView::Moving => tilo_desktop_model::OwnershipStep::Moving {
+                        recipient: recipient_public,
+                    },
+                    MembersView::Settled => tilo_desktop_model::OwnershipStep::Settled,
+                    MembersView::Declined => tilo_desktop_model::OwnershipStep::Declined {
+                        offer_id: [23; 32],
+                        recipient: recipient_public,
+                    },
+                };
             }
             st.overlays.ws_settings = true;
             st.ws_settings_tab = WsTab::Members;
@@ -4349,4 +4400,23 @@ mod tests {
         );
         (files_tab_id, files_rect)
     }
+}
+
+/// When the offer in the People pane scenes expires: a fixed time, so
+/// shots stay comparable.
+const OFFER_EXPIRES_AT_NS: u64 = 1_793_120_400_000_000_000;
+
+/// Whose People pane a scene shows, and where moving the workspace stands.
+#[derive(Clone, Copy)]
+enum MembersView {
+    /// The owner, before offering the workspace to anyone.
+    Settled,
+    /// The owner, once Morgan declined the offer.
+    Declined,
+    /// The owner, who offered the workspace to Morgan.
+    Owner,
+    /// Morgan, whom it was offered to.
+    Recipient,
+    /// The owner, once Morgan accepted and the workspace is on its way.
+    Moving,
 }

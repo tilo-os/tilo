@@ -407,6 +407,19 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Where the People pane last painted the ownership button `control`,
+    /// for scenes that press it as a person would.
+    pub fn ownership_control_rect_for_shots(
+        &self,
+        control: tilo_desktop::workspace_settings::OwnershipControl,
+    ) -> Option<vello::kurbo::Rect> {
+        self.workspace_settings_overlay
+            .ownership_controls()
+            .iter()
+            .find(|(painted, _)| *painted == control)
+            .map(|(_, rect)| *rect)
+    }
+
     pub fn force_ws_settings_settled(&mut self) {
         if !self.overlay_flags().ws_settings {
             return;

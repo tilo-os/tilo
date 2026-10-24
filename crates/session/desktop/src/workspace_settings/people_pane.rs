@@ -1,6 +1,6 @@
 //! The People pane of Workspace Settings, built from the design system's
-//! primitives: the summary is a list row with the one ownership action
-//! named by what it does, the people are list rows under a section header,
+//! primitives: the summary is a list row with the ownership actions named
+//! by what they do, the people are list rows under a section header,
 //! each with their role's dropdown and, where it can be taken, Remove.
 //! Facts stand on their own: a person's role is their dropdown, extra
 //! permissions are a line of their own only when there are any, and "You"
@@ -15,36 +15,80 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
     AvatarFace, Button, ButtonFace, ButtonRole, ChipStyle, ControlSize, DropdownFace, Interaction,
-    ListRowFace, RowLeading, SectionHeaderFace,
+    ListRowFace, RowLeading, SectionHeaderFace, Tone,
 };
 
 use super::{
     CapRole, MemberRow, PANE_INTRO_GAP, PANE_INTRO_HEIGHT, PANE_PAD_TOP, PANE_PAD_X,
     SECTION_HEADER_HEIGHT, UserId, Workspace, draw_authority_note, draw_empty_state,
     member_row_name, members_authority_note, members_pane_rows, ordered_roster,
-    ownership_transfer_status, public_key_member_id, role_label,
+    ownership_transfer_status, role_label,
 };
 use crate::i18n::{t, t_args};
 
-/// What the People pane's ownership button does for `local_user` now, by
-/// outcome: its label, and the label of the ownership action it leads to.
-/// `None` when they can do nothing about ownership.
+/// One of the People pane's ownership buttons, by what it does: each but
+/// Decline asks to confirm first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnershipControl {
+    /// Choose a member to offer the workspace to.
+    Offer,
+    /// Take the open offer back.
+    TakeBack,
+    /// Accept the offer made to this person.
+    Accept,
+    /// Decline the offer made to this person.
+    Decline,
+}
+
+impl OwnershipControl {
+    /// The button's label.
+    #[must_use]
+    pub fn label(self) -> String {
+        t(match self {
+            Self::Offer => "workspace-settings-ownership-transfer",
+            Self::TakeBack => "workspace-settings-ownership-cancel-short",
+            Self::Accept => "workspace-settings-ownership-accept",
+            Self::Decline => "workspace-settings-ownership-decline",
+        })
+    }
+}
+
+/// The People pane's ownership buttons for `local_user` now, in reading
+/// order: none when they can do nothing about ownership.
 #[must_use]
-pub fn ownership_button(ws: &Workspace, local_user: &UserId) -> Option<(String, String)> {
-    let owner = ws.owner() == Some(local_user);
-    match &ws.pending_ownership_transfer {
-        Some(pending) if public_key_member_id(pending.recipient) == *local_user => Some((
-            t("workspace-settings-ownership-accept-phrase"),
-            t("workspace-settings-ownership-accept"),
-        )),
-        Some(_) if owner => Some((
-            t("workspace-settings-ownership-cancel-short"),
-            t("workspace-settings-ownership-cancel"),
-        )),
-        None if owner => Some((
-            t("workspace-settings-ownership-transfer"),
-            t("workspace-settings-ownership-propose"),
-        )),
+pub fn ownership_buttons(ws: &Workspace, local_user: &UserId) -> Vec<OwnershipControl> {
+    use tilo_desktop_model::{
+        OWNERSHIP_ACCEPT_ACTION_ID, OWNERSHIP_CANCEL_ACTION_ID, OWNERSHIP_OFFER_ACTION_ID,
+    };
+    if ws.may_move(local_user, OWNERSHIP_ACCEPT_ACTION_ID) {
+        vec![OwnershipControl::Decline, OwnershipControl::Accept]
+    } else if ws.may_move(local_user, OWNERSHIP_CANCEL_ACTION_ID) {
+        vec![OwnershipControl::TakeBack]
+    } else if ws.may_move(local_user, OWNERSHIP_OFFER_ACTION_ID) {
+        vec![OwnershipControl::Offer]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether the people of `ws` stay as they are for now: while the room is
+/// on its way to its new owner's device, its old host takes no changes.
+#[must_use]
+pub fn members_frozen(ws: &Workspace) -> bool {
+    matches!(
+        ws.ownership.step,
+        tilo_desktop_model::OwnershipStep::Moving { .. }
+    )
+}
+
+/// The open offer of the room to `user`, by when it lapses.
+fn offered_to(ws: &Workspace, user: &str) -> Option<String> {
+    match &ws.ownership.step {
+        tilo_desktop_model::OwnershipStep::Offered {
+            recipient,
+            expires_at_ns,
+            ..
+        } if hex::encode(recipient) == user => Some(super::offer_expiry(*expires_at_ns)),
         _ => None,
     }
 }
@@ -132,9 +176,10 @@ pub fn draw_members_pane(
     );
 
     let last = rows.len().saturating_sub(1);
+    let frozen = members_frozen(ws);
     for (index, row) in rows.iter().enumerate() {
         let name = member_row_name(names, ws, local_user, &row.user);
-        let can_manage = is_owner && !row.is_workspace_owner && row.user != *local_user;
+        let can_manage = is_owner && !frozen && !row.is_workspace_owner && row.user != *local_user;
         draw_member_row(
             &mut ctx,
             row,
@@ -144,11 +189,17 @@ pub fn draw_members_pane(
                 can_manage,
                 separator: index < last,
                 local_user,
+                offer_expires: offered_to(ws, &row.user),
             },
         );
     }
 
-    if let Some(note) = members_authority_note(is_owner) {
+    let note = if frozen {
+        Some(t("workspace-settings-members-moving-note"))
+    } else {
+        members_authority_note(is_owner)
+    };
+    if let Some(note) = note {
         draw_authority_note(ctx.scene, transform, pane_rect, &note, ctx.text, theme);
     }
 }
@@ -174,30 +225,30 @@ fn draw_summary(
     );
     let status = ownership_transfer_status(ws, names, local_user)
         .unwrap_or_else(|| t("workspace-settings-members-help"));
-    let button = ownership_button(ws, local_user);
-    let action_rect = super::ownership_action_rect(pane_rect);
+    let buttons = ownership_buttons(ws, local_user);
+    let rects = super::ownership_action_rects(pane_rect, buttons.len());
     let mut face = ListRowFace::new(&count)
         .leading(RowLeading::Icon(Icon::Users))
         .secondary(&status)
-        .secondary_lines(2);
-    if button.is_some() {
-        face = face.trailing_width(rect.x1 - action_rect.x0);
+        .secondary_lines(3);
+    if let Some(first) = rects.first() {
+        face = face.trailing_width(rect.x1 - first.x0);
     }
     face.paint(ctx, rect);
-    if let Some((label, _)) = &button {
-        let height = ButtonFace::height(ControlSize::Regular, theme);
-        let slot = Rect::new(
-            action_rect.x0,
-            action_rect.center().y - height / 2.0,
-            action_rect.x1,
-            action_rect.center().y + height / 2.0,
-        );
+    let height = ButtonFace::height(ControlSize::Regular, theme);
+    for (control, slot) in buttons.iter().zip(&rects) {
+        let label = control.label();
+        let role = if *control == OwnershipControl::Accept {
+            ButtonRole::Primary
+        } else {
+            ButtonRole::Secondary
+        };
         Button::paint(
             ctx.scene,
             ctx.transform,
             ctx.text,
             theme,
-            &ButtonFace::new(slot, label).role(ButtonRole::Secondary),
+            &ButtonFace::new(centred(*slot, height), &label).role(role),
         );
     }
 }
@@ -210,6 +261,9 @@ struct MemberRowView<'a> {
     can_manage: bool,
     separator: bool,
     local_user: &'a str,
+    /// When the open offer of the room to this member lapses, while there
+    /// is one.
+    offer_expires: Option<String>,
 }
 
 /// One person: avatar and name, "You" on the acting person's own row, their
@@ -217,17 +271,36 @@ struct MemberRowView<'a> {
 /// Remove where those can be offered.
 fn draw_member_row(ctx: &mut PaintCtx<'_>, row: &MemberRow, view: &MemberRowView<'_>) {
     let theme = ctx.theme;
-    let you = [(t("workspace-settings-you"), ChipStyle::Neutral)];
-    let you_tag: Vec<(&str, ChipStyle)> = you
+    let mut tags = Vec::new();
+    if view.is_you {
+        tags.push((t("workspace-settings-you"), ChipStyle::Neutral));
+    }
+    if view.offer_expires.is_some() {
+        tags.push((
+            t("workspace-settings-ownership-offered-tag"),
+            ChipStyle::Tinted(Tone::Info),
+        ));
+    }
+    let tags: Vec<(&str, ChipStyle)> = tags
         .iter()
         .map(|(label, style)| (label.as_str(), *style))
         .collect();
-    let extra = (row.grant_count > 0).then(|| {
-        t_args(
-            "workspace-settings-member-extra",
-            &[("count", row.grant_count.into())],
-        )
-    });
+    let extra = view.offer_expires.as_ref().map_or_else(
+        || {
+            (row.grant_count > 0).then(|| {
+                t_args(
+                    "workspace-settings-member-extra",
+                    &[("count", row.grant_count.into())],
+                )
+            })
+        },
+        |expires| {
+            Some(t_args(
+                "workspace-settings-ownership-offer-expires",
+                &[("expires", expires.clone().into())],
+            ))
+        },
+    );
     let role = shown_role(row);
     let (role_rect, remove_rect) = member_row_controls(row, view.local_user);
     let mut face = ListRowFace::new(view.name)
@@ -235,8 +308,8 @@ fn draw_member_row(ctx: &mut PaintCtx<'_>, row: &MemberRow, view: &MemberRowView
     if view.separator {
         face = face.separator(false);
     }
-    if view.is_you {
-        face = face.tags(&you_tag);
+    if !tags.is_empty() {
+        face = face.tags(&tags);
     }
     if let Some(extra) = &extra {
         face = face.secondary(extra);
@@ -291,38 +364,48 @@ mod tests {
     }
 
     #[test]
-    fn the_ownership_button_says_what_it_will_do() {
-        let (owner_key, owner_public) = collab_types::generate_keypair();
-        let (_, recipient_public) = collab_types::generate_keypair();
-        let owner = hex::encode(owner_public.as_bytes());
-        let recipient = hex::encode(recipient_public.as_bytes());
+    fn the_ownership_buttons_say_what_they_will_do() {
+        use tilo_desktop_model::{OwnershipStep, RoomOwnership};
+        let owner = hex::encode([3; 32]);
+        let recipient = hex::encode([4; 32]);
         let mut ws = Workspace::new(WorkspaceId(92), "Studio");
         ws.set_owner(owner.clone());
         ws.admit(recipient.clone(), CapRole::Editor);
-        let label =
-            |ws: &Workspace, who: &String| ownership_button(ws, who).map(|(label, _)| label);
+        let labels = |ws: &Workspace, who: &String| -> Vec<String> {
+            ownership_buttons(ws, who)
+                .into_iter()
+                .map(OwnershipControl::label)
+                .collect()
+        };
 
-        assert_eq!(label(&ws, &owner).as_deref(), Some("Transfer ownership"));
-        assert_eq!(label(&ws, &recipient), None, "a member has nothing to do");
+        assert_eq!(labels(&ws, &owner), ["Transfer ownership"]);
+        assert!(
+            labels(&ws, &recipient).is_empty(),
+            "a member has nothing to do"
+        );
 
-        ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-            ws.room().to_string(),
-            [9; 32],
-            owner_public,
-            recipient_public,
-            u64::MAX,
-            &owner_key,
-        )
-        .ok();
-        assert_eq!(label(&ws, &owner).as_deref(), Some("Cancel transfer"));
-        assert_eq!(label(&ws, &recipient).as_deref(), Some("Accept ownership"));
-        let actions: Vec<String> = super::super::ownership_transfer_resource(&ws, &owner)
-            .actions
-            .iter()
-            .map(|action| action.label.clone())
-            .collect();
-        let (_, leads_to) = ownership_button(&ws, &owner).expect("the owner may cancel");
-        assert!(actions.contains(&leads_to), "{leads_to:?} in {actions:?}");
+        ws.ownership.step = OwnershipStep::Offered {
+            offer_id: [9; 32],
+            owner: [3; 32],
+            recipient: [4; 32],
+            expires_at_ns: 1_800_000_000_000_000_000,
+        };
+        assert_eq!(labels(&ws, &owner), ["Take back offer"]);
+        assert_eq!(labels(&ws, &recipient), ["Decline", "Accept ownership"]);
+
+        ws.ownership = RoomOwnership {
+            step: OwnershipStep::Moving { recipient: [4; 32] },
+            handed_at: 7,
+        };
+        assert!(
+            labels(&ws, &owner).is_empty(),
+            "nothing moves a room on its way"
+        );
+        assert!(
+            members_frozen(&ws),
+            "nobody's role or place changes on its way"
+        );
+        assert!(labels(&ws, &recipient).is_empty());
     }
 
     #[test]

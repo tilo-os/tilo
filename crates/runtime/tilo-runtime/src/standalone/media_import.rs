@@ -77,12 +77,12 @@ fn owner_revision(
         if current.owner().map(String::as_str) == Some(account) {
             // Only structural ownership authorizes this action. Task progress,
             // receipts, layout and delegated grants cannot revoke owner custody.
-            // Retain completed transfers so an away-and-back transfer also
-            // invalidates an approval minted before the transfer.
+            // The last handoff's generation only grows, so a room handed
+            // away and back also invalidates an approval minted before.
             revision = serde_json::to_vec(&(
                 &current.room(),
                 current.owner(),
-                &current.ownership_transfer_audit,
+                current.ownership.handed_at,
             ))
             .ok()
             .map(|bytes| blake3::hash(&bytes).to_hex().to_string());

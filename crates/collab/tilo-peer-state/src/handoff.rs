@@ -32,6 +32,9 @@ use tilo_workspace_join::TransportHint;
 pub const HANDOFF_VERSION: u16 = 1;
 /// The governance key holding the pending offer, if any.
 pub const OWNERSHIP_OFFER_KEY: &str = "ownership_offer_v1";
+/// The governance key holding the last offer its recipient declined, until
+/// the next offer.
+pub const OWNERSHIP_DECLINED_KEY: &str = "ownership_declined_v1";
 /// The governance key logging every committed handoff, by offer id.
 pub const GOVERNOR_HANDOFFS_KEY: &str = "governor_handoffs_v1";
 /// The longest an offer stays open.
@@ -446,7 +449,18 @@ impl GovernorHandoff {
 /// The open offer `doc`'s governance records, if any.
 #[must_use]
 pub fn open_offer(doc: &AutoCommit) -> Option<OwnershipOffer> {
-    match doc.get(ROOT, OWNERSHIP_OFFER_KEY).ok().flatten()? {
+    offer_at(doc, OWNERSHIP_OFFER_KEY)
+}
+
+/// The last offer `doc`'s governance records its recipient declined, while
+/// no offer followed it.
+#[must_use]
+pub fn declined_offer(doc: &AutoCommit) -> Option<OwnershipOffer> {
+    offer_at(doc, OWNERSHIP_DECLINED_KEY)
+}
+
+fn offer_at(doc: &AutoCommit, key: &str) -> Option<OwnershipOffer> {
+    match doc.get(ROOT, key).ok().flatten()? {
         (Value::Scalar(value), _) => match value.as_ref() {
             ScalarValue::Bytes(bytes) => postcard::from_bytes(bytes).ok(),
             _ => None,
@@ -511,6 +525,35 @@ pub fn follow(
 #[must_use]
 pub fn pending_steps(room: &str, doc: &AutoCommit, authority: &DeviceCert) -> Vec<GovernorHandoff> {
     follow(room, authority, &logged(doc))
+}
+
+/// Where moving the room `doc` holds stands, for a device that holds its
+/// governance as of generation `held`: offered while an offer is open, and
+/// moving while the last handoff is the newest governance the device holds
+/// (the device the room was handed to has not governed it since).
+#[must_use]
+pub fn room_ownership(doc: &AutoCommit, held: u64) -> tilo_desktop_model::RoomOwnership {
+    use tilo_desktop_model::{OwnershipStep, RoomOwnership};
+    let last = logged(doc).pop();
+    let handed_at = last.as_ref().map_or(0, |handoff| handoff.generation);
+    let step = match (open_offer(doc), last) {
+        (_, Some(handoff)) if held <= handoff.generation => OwnershipStep::Moving {
+            recipient: handoff.offer.recipient,
+        },
+        (Some(offer), _) => OwnershipStep::Offered {
+            offer_id: offer.offer_id,
+            owner: offer.owner,
+            recipient: offer.recipient,
+            expires_at_ns: offer.expires_at_ns,
+        },
+        (None, _) => {
+            declined_offer(doc).map_or(OwnershipStep::Settled, |offer| OwnershipStep::Declined {
+                offer_id: offer.offer_id,
+                recipient: offer.recipient,
+            })
+        }
+    };
+    RoomOwnership { step, handed_at }
 }
 
 /// Where a host's [`RoomMoved`](crate::join::RoomMoved) answer says `room`
@@ -579,7 +622,11 @@ pub(crate) fn governed_bytes(doc: Option<&AutoCommit>) -> Vec<(String, Vec<u8>)>
         None => None,
     };
     let mut statements = Vec::new();
-    for key in [OWNERSHIP_OFFER_KEY, GOVERNOR_HANDOFFS_KEY] {
+    for key in [
+        OWNERSHIP_OFFER_KEY,
+        OWNERSHIP_DECLINED_KEY,
+        GOVERNOR_HANDOFFS_KEY,
+    ] {
         let value = doc.get(ROOT, key).ok().flatten();
         let map = match &value {
             Some((Value::Object(_), map)) => Some(map.clone()),

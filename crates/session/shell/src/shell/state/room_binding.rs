@@ -55,9 +55,6 @@ fn holds_anything(left: &Workspace) -> bool {
         || !left.presets.is_empty()
         || !left.sandbox.is_empty()
         || left.default_apps != desktop_policy::WorkspaceDefaults::default()
-        || left.pending_ownership_transfer.is_some()
-        || !left.ownership_transfer_audit.is_empty()
-        || !left.ownership_transfer_cancellations.is_empty()
         || !left.policy.members.is_empty()
         || !left.shared_surfaces.is_empty()
 }
@@ -180,10 +177,6 @@ impl WorkspaceTree {
             kept.effect_receipts = std::mem::take(&mut left.effect_receipts);
             kept.shortcuts = std::mem::take(&mut left.shortcuts);
             kept.schedule_claims = std::mem::take(&mut left.schedule_claims);
-            kept.pending_ownership_transfer = left.pending_ownership_transfer.take();
-            kept.ownership_transfer_audit = std::mem::take(&mut left.ownership_transfer_audit);
-            kept.ownership_transfer_cancellations =
-                std::mem::take(&mut left.ownership_transfer_cancellations);
             kept.shared_surfaces = std::mem::take(&mut left.shared_surfaces);
             let strip = StripId::new();
             kept.strips = vec![Strip {

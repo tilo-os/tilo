@@ -5,6 +5,7 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
+use tilo_desktop::workspace_settings::GovernanceOperation;
 
 impl ShellOverlayHost {
     /// Apply the typed hit produced by [`WorkspaceSettingsOverlay`]. Policy
@@ -23,6 +24,80 @@ impl ShellOverlayHost {
             .is_some_and(|c| is_active_workspace_owner(&c.borrow()));
         self.apply_workspace_settings_outcome(outcome, is_owner);
         *handled = true;
+    }
+
+    /// Open what the People pane's ownership button `control` leads to:
+    /// the sheet confirming it, or, declining, the answer itself.
+    fn open_ownership_control(
+        &mut self,
+        control: tilo_desktop::workspace_settings::OwnershipControl,
+    ) {
+        use tilo_desktop::workspace_settings::OwnershipControl;
+        match control {
+            OwnershipControl::Offer => {
+                let people = self.chrome.as_ref().map(|chrome| {
+                    let state = chrome.borrow();
+                    let actor = state.active_local_user();
+                    let tree = state.tree();
+                    tree.desktop.active_workspace().map_or_else(Vec::new, |ws| {
+                        tilo_desktop::workspace_settings::ownership_candidates(ws, &actor)
+                    })
+                });
+                self.workspace_settings_overlay
+                    .open_ownership_recipient_sheet(people.unwrap_or_default());
+            }
+            OwnershipControl::TakeBack => {
+                self.workspace_settings_overlay.open_take_back_offer_sheet();
+            }
+            OwnershipControl::Accept => {
+                self.workspace_settings_overlay
+                    .open_accept_ownership_sheet();
+            }
+            OwnershipControl::Decline => {
+                self.apply_ownership(|offer| {
+                    offer.map(|offer| GovernanceOperation::DeclineOwnership { offer })
+                });
+                return;
+            }
+        }
+        self.bump_chrome();
+    }
+
+    /// Take the ownership step `operation` builds from the open offer's id
+    /// (hex), through the same governance path as its action, and close the
+    /// sheet that confirmed it.
+    fn apply_ownership(
+        &mut self,
+        operation: impl FnOnce(Option<String>) -> Option<GovernanceOperation>,
+    ) {
+        if let Some(chrome) = self.chrome.clone() {
+            let state = chrome.borrow_mut();
+            let actor = state.active_local_user();
+            let mut tree = state.tree_mut();
+            let target = tree.desktop.active_workspace().map(|ws| {
+                let offer = match &ws.ownership.step {
+                    tilo_desktop_model::OwnershipStep::Offered { offer_id, .. } => {
+                        Some(hex::encode(offer_id))
+                    }
+                    _ => None,
+                };
+                (ws.id, offer)
+            });
+            if let Some((workspace, offer)) = target
+                && let Some(operation) = operation(offer)
+            {
+                match crate::shell::workspace_governance::apply_governance_operation(
+                    &mut tree, workspace, &actor, operation,
+                ) {
+                    Ok(()) => tree.queue_save(),
+                    Err(error) => tracing::debug!(%error, "ownership step refused"),
+                }
+            }
+            drop(tree);
+            drop(state);
+            chrome.borrow_mut().bump();
+        }
+        self.workspace_settings_overlay.dismiss_member_sheet();
     }
 
     /// Whether the person here may take the governance action `action` in
@@ -107,25 +182,31 @@ impl ShellOverlayHost {
                     self.bump_chrome();
                 }
             }
-            WorkspaceSettingsOutcome::ManageOwnership => {
-                // The button is named by its outcome; search opens on the
-                // ownership action it names, with that action's confirmation.
-                let action = self.chrome.as_ref().and_then(|chrome| {
-                    let state = chrome.borrow();
-                    let acting_user = state.active_local_user();
-                    let tree = state.tree();
-                    let action = tree.desktop.active_workspace().and_then(|workspace| {
-                        tilo_desktop::workspace_settings::ownership_button(workspace, &acting_user)
-                            .map(|(_, action)| action)
-                    });
-                    drop(tree);
-                    drop(state);
-                    action
+            WorkspaceSettingsOutcome::ManageOwnership(control) => {
+                self.open_ownership_control(control);
+            }
+            WorkspaceSettingsOutcome::ChooseOwnershipRecipient(user) => {
+                self.workspace_settings_overlay
+                    .open_offer_ownership_sheet(user);
+                self.bump_chrome();
+            }
+            WorkspaceSettingsOutcome::OfferOwnership(person) => {
+                self.apply_ownership(|_| Some(GovernanceOperation::OfferOwnership { person }));
+            }
+            WorkspaceSettingsOutcome::CancelOwnershipOffer => {
+                self.apply_ownership(|offer| {
+                    offer.map(|offer| GovernanceOperation::CancelOwnershipOffer { offer })
                 });
-                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
-                self.palette
-                    .set_query(action.as_deref().unwrap_or("ownership"));
-                self.last_search_query = "\0workspace-ownership\0".to_string();
+            }
+            WorkspaceSettingsOutcome::AcceptOwnership => {
+                self.apply_ownership(|offer| {
+                    offer.map(|offer| GovernanceOperation::AcceptOwnership { offer })
+                });
+            }
+            WorkspaceSettingsOutcome::DeclineOwnership => {
+                self.apply_ownership(|offer| {
+                    offer.map(|offer| GovernanceOperation::DeclineOwnership { offer })
+                });
             }
             WorkspaceSettingsOutcome::Revoke(cap_id) => {
                 if self.may_govern_active(tilo_action_policy::roles::governance::REVOKE) {

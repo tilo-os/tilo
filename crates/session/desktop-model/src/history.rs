@@ -1,7 +1,7 @@
 //! A workspace's append-only history, and serialising without it.
 //!
-//! A workspace keeps every effect receipt, every task's audit trail and every
-//! ownership-transfer record. They only ever grow, so whatever serialises a
+//! A workspace keeps every effect receipt and every task's audit trail.
+//! They only ever grow, so whatever serialises a
 //! whole tree for a reader that wants the desktop as it is now (the control
 //! socket's state dump) pays for the desktop's whole past. [`without_history`]
 //! leaves those lists out of every `Serialize` it runs. Persistence and
@@ -14,14 +14,11 @@ thread_local! {
 }
 
 /// Run `f` with the history fields left out of whatever it serialises on
-/// this thread: [`Workspace::effect_receipts`],
-/// [`Workspace::ownership_transfer_audit`] and
-/// [`Workspace::ownership_transfer_cancellations`]. The fields are absent, not empty, so a reader
-/// cannot mistake the omission for "nothing happened". Nested calls are fine.
+/// this thread: [`Workspace::effect_receipts`]. The field is absent, not
+/// empty, so a reader cannot mistake the omission for "nothing happened".
+/// Nested calls are fine.
 ///
 /// [`Workspace::effect_receipts`]: crate::Workspace::effect_receipts
-/// [`Workspace::ownership_transfer_audit`]: crate::Workspace::ownership_transfer_audit
-/// [`Workspace::ownership_transfer_cancellations`]: crate::Workspace::ownership_transfer_cancellations
 pub fn without_history<R>(f: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
