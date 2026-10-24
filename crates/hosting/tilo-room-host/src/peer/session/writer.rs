@@ -117,7 +117,11 @@ impl<'s, W: tokio::io::AsyncWrite + Unpin> SessionWriter<'s, W> {
         mut ending: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), PeerError> {
         loop {
-            if self.ending.is_none() && ending.has_changed().unwrap_or(true) {
+            // Read the end's value: `changed` in `await_ready` only wakes
+            // this loop, and marks the change seen.
+            if self.ending.is_none()
+                && (*ending.borrow_and_update() || ending.has_changed().is_err())
+            {
                 self.ending = Some(self.queued());
             }
             if self.ending == Some(0) {
