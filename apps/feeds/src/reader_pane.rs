@@ -630,6 +630,14 @@ impl Widget for ReaderPane {
         over.then_some(winit::window::CursorIcon::Pointer)
     }
 
+    /// A glide after a flick scrolls the article as the wheel does.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        if let Ok(mut core) = self.core.try_borrow_mut() {
+            core.reader.scroller.advance();
+        }
+        false
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.core.try_borrow().is_ok_and(|core| {
             core.reader

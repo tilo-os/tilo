@@ -677,6 +677,12 @@ impl AccountList {
         self.scroller.needs_animation_frame(&self.theme)
     }
 
+    /// Step a glide after a flick to the frame's time, from the app's
+    /// `update`; returns whether the rows moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        self.scroller.advance()
+    }
+
     /// When the scroll bar starts to fade.
     pub fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.scroller.next_wake_deadline(&self.theme)

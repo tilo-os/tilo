@@ -2819,7 +2819,21 @@ impl Widget for SheetsApp {
         // Keep frames coming while the floating status bubble is lingering /
         // fading, so it hides itself without needing a stray pointer event.
         (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
+            || self.dock_scroll.needs_animation_frame(&self.chrome_theme)
             || self.children().iter().any(|c| c.needs_animation_frame())
+    }
+
+    /// The annotation dock glides on after a sideways flick, as the wheel
+    /// scrolls it; that changes no model.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        if self.dock_scroll.advance() {
+            self.pending.redraw = true;
+        }
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     fn settle(&mut self, edits: &mut Edits<'_>, _path: &ObjId) {

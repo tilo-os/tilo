@@ -687,7 +687,13 @@ impl ShellOverlayHost {
         taken
     }
 
-    /// The root page's scrollbar is fading on an open popover.
+    /// Step the root page's glide on an open popover, repainted as a
+    /// wheel's scroll is; returns whether it moved.
+    pub(super) fn advance_qs_root_scroll(&mut self) -> bool {
+        self.overlay_flags().quick_settings && self.qs_root.advance_scroll()
+    }
+
+    /// The root page's scrollbar is fading or gliding on an open popover.
     pub(super) fn qs_root_scroll_fading(&self) -> bool {
         self.overlay_flags().quick_settings
             && self.qs_root.scroll_needs_frame(&self.overview_layout_theme)

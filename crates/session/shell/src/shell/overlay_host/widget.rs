@@ -110,6 +110,14 @@ impl Widget for ShellOverlayHost {
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
         let mut steps = UpdateSteps::start();
+        // The roster, the display sheet's list and the quick settings page
+        // glide on after a flick, repainted as a wheel's scroll is.
+        let glided = self.collaborators_overlay.advance_scroll()
+            | self.projection_overlay.advance_scroll()
+            | self.advance_qs_root_scroll();
+        if glided && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
         let person_activation = self.pump_person_cursor_activation();
         let person_context_dirty = self.validate_person_composer();
         let person_action_dirty = {
