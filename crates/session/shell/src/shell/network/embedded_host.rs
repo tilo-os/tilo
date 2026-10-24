@@ -58,6 +58,26 @@ pub(super) struct State {
     placing: Mutex<BTreeSet<RoomId>>,
     /// A placement pass is queued on the peer-sync worker and has not run.
     queued: Arc<AtomicBool>,
+    /// What a pass that left a placement failing saw ([`Placing`]): no pass
+    /// runs again until something it depends on changed.
+    failed: Mutex<Option<Placing>>,
+    /// Bumped when the host opens: a placement that failed for want of it
+    /// may succeed now.
+    host_generation: std::sync::atomic::AtomicU64,
+    /// Placement passes that ran, for tests that a failing one is not
+    /// retried on every pass.
+    #[cfg(test)]
+    passes: std::sync::atomic::AtomicU64,
+}
+
+/// Everything a placement depends on that can change: the rooms waiting,
+/// the tree's rooms (a session coming up or a room's state changing bumps
+/// its epoch), and the host.
+#[derive(Clone, PartialEq, Eq)]
+struct Placing {
+    waiting: BTreeSet<RoomId>,
+    room_epoch: u64,
+    host_generation: u64,
 }
 
 impl State {
@@ -248,6 +268,9 @@ impl ShellNetwork {
             .map_err(|error| format!("this device's room host did not open: {error}"))?;
         let host = handle.install(Arc::new(host));
         tracing::info!("this device's room host is open");
+        self.embedded_host
+            .host_generation
+            .fetch_add(1, Ordering::AcqRel);
         if let Err(error) = self.install_own_governor(&host) {
             tracing::warn!(%error, "the rooms hosted on this device are governed over the network only");
         }
@@ -310,7 +333,23 @@ impl ShellNetwork {
                 tree.pending_placements
                     .iter()
                     .any(|room| !placing.contains(room))
+                    && self
+                        .embedded_host
+                        .failed
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_ref()
+                        != Some(&self.placing_now(&tree))
             })
+    }
+
+    /// What a placement pass would depend on now.
+    fn placing_now(&self, tree: &crate::shell::state::WorkspaceTree) -> Placing {
+        Placing {
+            waiting: tree.pending_placements.clone(),
+            room_epoch: tree.desktop.room_epoch,
+            host_generation: self.embedded_host.host_generation.load(Ordering::Acquire),
+        }
     }
 
     /// Queue a placement pass on the peer-sync worker when a workspace
@@ -337,8 +376,21 @@ impl ShellNetwork {
     /// each once. Blocks on the host and the disk: runs on the peer-sync
     /// worker.
     pub(crate) fn place_pending_workspaces(&self) {
-        let waiting = {
+        let (waiting, before) = {
             let tree = self.tree.read();
+            let before = self.placing_now(&tree);
+            if self
+                .embedded_host
+                .failed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                == Some(&before)
+            {
+                return;
+            }
+            #[cfg(test)]
+            self.embedded_host.passes.fetch_add(1, Ordering::AcqRel);
             let mut placing = self
                 .embedded_host
                 .placing
@@ -348,12 +400,14 @@ impl ShellNetwork {
             drop(tree);
             placing.extend(waiting.iter().map(|(room, _, _)| *room));
             drop(placing);
-            waiting
+            (waiting, before)
         };
+        let mut failed = false;
         for (room, local, name) in waiting {
             let placed = self.place(room, local, &name);
             if let Err(error) = &placed {
                 tracing::warn!(%room, %error, "a workspace was not placed on this device");
+                failed = true;
             }
             if placed.is_ok() {
                 let mut tree = self.tree.write();
@@ -361,13 +415,20 @@ impl ShellNetwork {
                     tree.queue_save();
                 }
             }
-            // A failed placement is tried again on the next pass.
             self.embedded_host
                 .placing
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .remove(&room);
         }
+        // A failed placement is tried again once something it depends on
+        // changes, never on every pass: as it was when this pass began, so
+        // a change during the pass brings the next one.
+        *self
+            .embedded_host
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = failed.then_some(before);
     }
 
     /// Create `room`, the workspace `local` called `name`, on this device's
