@@ -31,7 +31,7 @@ use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Blob, Fill, ImageBrush, ImageData as PenikoImage};
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
 use ui::icons::Icon;
@@ -366,6 +366,9 @@ struct SessionCore {
     /// the keysym for VNC. Released together when the pane loses the
     /// keyboard, so no key stays held on the remote side.
     held_keys: Vec<(PhysicalKey, u32)>,
+    /// Wheel movement not yet sent to a VNC desktop, in wheel clicks: a
+    /// trackpad scrolls in pixels, a desktop in whole clicks.
+    vnc_wheel: (f64, f64),
     /// Whether the remote desktop is scaled to fit (vs. its own size).
     scale_to_fit: bool,
     /// Last pointer position over the pane.
@@ -385,6 +388,7 @@ impl Default for SessionCore {
             fb_canvas: None,
             vnc_buttons: 0,
             held_keys: Vec::new(),
+            vnc_wheel: (0.0, 0.0),
             scale_to_fit: true,
             pointer: Point::ZERO,
             collab_outbox: Vec::new(),
@@ -489,6 +493,25 @@ impl SessionCore {
             return Some(sent);
         }
         released
+    }
+
+    /// Scroll the live remote desktop under `p` by `delta`: each whole wheel
+    /// click is a press and release of the wheel's button (RFB 6143 §7.5.5),
+    /// at most [`VNC_WHEEL_BURST`] of them per event. `false` when the
+    /// pointer is not over the desktop.
+    fn forward_vnc_wheel(&mut self, p: Point, delta: &MouseScrollDelta, scale_factor: f64) -> bool {
+        let Some((x, y)) = self.vnc_pointer_target(p) else {
+            return false;
+        };
+        let clicks = vnc_wheel_clicks(&mut self.vnc_wheel, delta, scale_factor);
+        if let Some(s) = self.vnc_session() {
+            for button in clicks {
+                for button_mask in [self.vnc_buttons | button, self.vnc_buttons] {
+                    let _ = s.send_input(VncInput::Pointer { button_mask, x, y });
+                }
+            }
+        }
+        true
     }
 
     /// Send the current button mask at `p` to the live remote desktop, if
@@ -1322,6 +1345,7 @@ impl RemoteApp {
             session.fb_canvas = None;
             session.vnc_buttons = 0;
             session.held_keys.clear();
+            session.vnc_wheel = (0.0, 0.0);
             session.live = None;
         }
         let readiness = connection_readiness(&c);
@@ -2752,6 +2776,10 @@ impl SessionPane {
                 }
                 false
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let p = core.pointer;
+                core.forward_vnc_wheel(p, delta, scale_factor)
+            }
             WindowEvent::MouseInput { state, button, .. } => {
                 let p = core.pointer;
                 if core.tilo_pointer_target(p).is_some() {
@@ -2892,7 +2920,9 @@ impl Widget for SessionPane {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let handled = match event {
-            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. } => {
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. } => {
                 if matches!(
                     event,
                     WindowEvent::MouseInput {
@@ -3005,6 +3035,52 @@ fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<
 
 /// Map a key press to an X11 keysym for VNC `KeyEvent`s (ASCII + a few
 /// named keys — enough for basic remote typing).
+/// The most wheel clicks one wheel event sends a VNC desktop, so a fling
+/// cannot fill the session's bounded input queue.
+const VNC_WHEEL_BURST: usize = 10;
+
+/// Trackpad pixels per wheel click sent to a VNC desktop.
+const VNC_WHEEL_CLICK_PX: f64 = 40.0;
+
+/// The wheel buttons to click on a VNC desktop for `delta`, carrying what is
+/// short of a whole click in `pending`. RFB's buttons 4 to 7 (mask bits 3 to
+/// 6) scroll up, down, left and right; winit's positive deltas move the
+/// content right and down, which is scrolling left and up.
+fn vnc_wheel_clicks(
+    pending: &mut (f64, f64),
+    delta: &MouseScrollDelta,
+    scale_factor: f64,
+) -> Vec<u8> {
+    let (dx, dy) = match delta {
+        MouseScrollDelta::LineDelta(x, y) => (f64::from(*x), f64::from(*y)),
+        MouseScrollDelta::PixelDelta(position) => {
+            let per_click = VNC_WHEEL_CLICK_PX * scale_factor.max(f64::MIN_POSITIVE);
+            (position.x / per_click, position.y / per_click)
+        }
+    };
+    let mut clicks = Vec::new();
+    for (moved, pending, toward, away) in [
+        (dy, &mut pending.1, 0x08_u8, 0x10_u8),
+        (dx, &mut pending.0, 0x20_u8, 0x40_u8),
+    ] {
+        if !moved.is_finite() {
+            continue;
+        }
+        *pending += moved;
+        let mut whole = pending.trunc();
+        *pending -= whole;
+        let button = if whole > 0.0 { toward } else { away };
+        for _ in 0..VNC_WHEEL_BURST {
+            if whole.abs() < 1.0 {
+                break;
+            }
+            clicks.push(button);
+            whole -= whole.signum();
+        }
+    }
+    clicks
+}
+
 fn vnc_keysym(key: &Key) -> Option<u32> {
     let named = match key {
         Key::Named(named) => named,
