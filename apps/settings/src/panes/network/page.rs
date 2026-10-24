@@ -13,7 +13,7 @@ use ui::widget::{
 use super::{
     IPV6_METHODS, MAC_POLICIES, METERED_POLICIES, NetworkEffect, NetworkModel, PROXY_MODES,
     ipv6_shown, mac_from_label, mac_id, mac_shown, metered_from_label, metered_id, metered_shown,
-    order, proxy_shown, security_shown, wifi_signal_words,
+    order, proxy_shown, security_shown,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -257,12 +257,10 @@ impl NetworkModel {
         } else {
             t("net-in-range")
         };
-        let mut signal = ListRow::new(
-            "settings.network.page.signal",
-            wifi_signal_words(net.signal),
-        )
-        .signal(SignalLevel::from_bars(net.signal))
-        .secondary(state);
+        let level = SignalLevel::from_bars(net.signal);
+        let mut signal = ListRow::new("settings.network.page.signal", level.name())
+            .signal(level)
+            .secondary(state);
         if !net.connected && !self.connecting.contains(&net.ssid) {
             signal = signal.trailing(Box::new(
                 self.cx.bind_row(
@@ -324,11 +322,14 @@ impl NetworkModel {
     /// and, on a work or school network, who it knows this device as.
     #[expect(clippy::too_many_lines, reason = "one row per setting")]
     fn settings_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
+        // Every setting here acts on the network's own row.
+        let live = self.profile_live(profile).into_resource();
         let uuid = profile.uuid.clone();
         let mut out = vec![setting_row(
             &t("net-autoconnect"),
             Box::new(
-                self.cx.bind(
+                self.cx.bind_on_row(
+                    &live,
                     Toggle::from_state(&LocalState::new(profile.autoconnect))
                         .with_id(&format!("network.profile.autoconnect.{uuid}")),
                     effect(NetworkEffect::SET_AUTOCONNECT).map({
@@ -346,7 +347,8 @@ impl NetworkModel {
             &t("net-priority"),
             &t("net-priority-caption"),
             Box::new(
-                self.cx.bind(
+                self.cx.bind_on_row(
+                    &live,
                     NumberInput::new(f64::from(settings.priority.unwrap_or(0)))
                         .with_range(-999.0, 999.0)
                         .with_step(1.0)
@@ -365,7 +367,8 @@ impl NetworkModel {
             &t("net-metered-connection"),
             &t("net-metered-caption"),
             Box::new(
-                self.cx.bind(
+                self.cx.bind_on_row(
+                    &live,
                     Dropdown::from_state(
                         METERED_POLICIES
                             .iter()
@@ -391,7 +394,8 @@ impl NetworkModel {
             &t("net-hardware-address"),
             &t("net-mac-caption"),
             Box::new(
-                self.cx.bind(
+                self.cx.bind_on_row(
+                    &live,
                     Dropdown::from_state(
                         MAC_POLICIES.iter().map(|id| mac_shown(id)).collect(),
                         &LocalState::new(mac_shown(mac)),
@@ -413,7 +417,8 @@ impl NetworkModel {
             &t("net-hidden-network"),
             &t("net-hidden-network-caption"),
             Box::new(
-                self.cx.bind(
+                self.cx.bind_on_row(
+                    &live,
                     Toggle::from_state(&LocalState::new(settings.hidden.unwrap_or(false)))
                         .with_id(&format!("network.profile.hidden.{uuid}")),
                     effect(NetworkEffect::SET_HIDDEN_NETWORK).map({
@@ -436,7 +441,8 @@ impl NetworkModel {
                     &format!("network.profile.ca.{uuid}"),
                     &t("net-ca-path"),
                 ),
-                self.button_row(
+                self.row_button_row(
+                    &live,
                     &format!("settings.network.profile.identity.apply.{uuid}"),
                     &t("net-apply-identity"),
                     NetworkEffect::SetEnterpriseIdentity {
@@ -526,6 +532,8 @@ impl NetworkModel {
     /// A saved network's addresses: IPv4, its name servers, IPv6 and the
     /// proxy its connections go through.
     fn address_rows(&self, profile: &SavedNetworkProfile) -> Vec<Item> {
+        // Every setting here acts on the network's own row.
+        let live = self.profile_live(profile).into_resource();
         let uuid = profile.uuid.clone();
         let id = format!("settings.network.profile.ipv4.{uuid}");
         let mut out = self.ipv4_rows(profile, &id);
@@ -538,7 +546,8 @@ impl NetworkModel {
                 &t("net-dns-servers"),
                 &t("net-dns-caption"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_on_row(
+                        &live,
                         TextInput::from_state(&LocalState::new(ipv4.dns.join(", ")))
                             .with_id(&format!("network.profile.dns.{uuid}"))
                             .with_placeholder(t("net-dns-automatic")),
@@ -573,7 +582,8 @@ impl NetworkModel {
                     &format!("network.profile.ipv6.gateway.{uuid}"),
                     &t("net-gateway"),
                 ),
-                self.button_row(
+                self.row_button_row(
+                    &live,
                     &format!("settings.network.profile.ipv6.apply.{uuid}"),
                     &t("net-apply-ipv6"),
                     NetworkEffect::SetIpv6 {
@@ -603,7 +613,8 @@ impl NetworkModel {
                     &format!("network.profile.proxy.address.{uuid}"),
                     &t("net-proxy-address"),
                 ),
-                self.button_row(
+                self.row_button_row(
+                    &live,
                     &format!("settings.network.profile.proxy.apply.{uuid}"),
                     &t("net-apply-proxy"),
                     NetworkEffect::SetProxy {

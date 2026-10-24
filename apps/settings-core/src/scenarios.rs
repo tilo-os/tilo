@@ -70,6 +70,8 @@ const NETWORK_MOBILE: &str = "network-mobile";
 const NETWORK_MOBILE_ROAMING: &str = "network-mobile-roaming";
 const NETWORK_MOBILE_LOCKED: &str = "network-mobile-locked";
 const NETWORK_MOBILE_PUK: &str = "network-mobile-puk";
+/// Network on its first page: the Wi-Fi list and the controls under it.
+const NETWORK_LIST: &str = "network-list";
 const NETWORK_ALL: &str = "network-all";
 const NETWORK_PAGE: &str = "network-page";
 const NETWORK_VPN: &str = "network-vpn";
@@ -77,7 +79,8 @@ const NETWORK_VPN_PROFILE: &str = "network-vpn-profile";
 const NETWORK_VPN_ADD: &str = "network-vpn-add";
 /// Every network capture.
 #[cfg(test)]
-const NETWORK_SCENARIOS: [&str; 12] = [
+const NETWORK_SCENARIOS: [&str; 13] = [
+    NETWORK_LIST,
     NETWORK_WIFI_OFF,
     NETWORK_SCANNING,
     NETWORK_KNOWN,
@@ -149,6 +152,7 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_MOBILE_ROAMING,
                 NETWORK_MOBILE_LOCKED,
                 NETWORK_MOBILE_PUK,
+                NETWORK_LIST,
                 NETWORK_ALL,
                 NETWORK_PAGE,
                 NETWORK_VPN,
@@ -256,6 +260,8 @@ pub enum NetworkSample {
     Scanning,
     /// The known networks.
     Known,
+    /// The first page: the Wi-Fi list and the controls under it.
+    List,
     /// Every network in range.
     AllNetworks,
     /// The page of the network in use.
@@ -380,6 +386,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_WIFI_OFF) => Some(NetworkSample::WifiOff),
             Some(NETWORK_SCANNING) => Some(NetworkSample::Scanning),
             Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
+            Some(NETWORK_LIST) => Some(NetworkSample::List),
             Some(NETWORK_ALL) => Some(NetworkSample::AllNetworks),
             Some(NETWORK_PAGE) => Some(NetworkSample::NetworkPage),
             Some(NETWORK_VPN) => Some(NetworkSample::VpnList),
@@ -670,6 +677,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             NETWORK_WIFI_OFF
             | NETWORK_SCANNING
             | NETWORK_KNOWN
+            | NETWORK_LIST
             | NETWORK_ALL
             | NETWORK_PAGE
             | NETWORK_VPN
@@ -833,7 +841,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 39 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 40 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),

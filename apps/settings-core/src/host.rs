@@ -444,6 +444,22 @@ impl PaneCx {
         .ok()
     }
 
+    /// `control`, invoking `effect` with each committed value on `row`,
+    /// which offers it: a setting of one item (a saved network's priority)
+    /// on that item's page. Unavailable where the row does not offer it.
+    #[must_use]
+    pub fn bind_on_row<I: 'static, C: ActionControl<I>>(
+        &self,
+        row: &ui::tilo_actions::Resource,
+        control: C,
+        effect: impl Binds<SettingsEffect, I>,
+    ) -> C {
+        match self.row_binding(row, effect) {
+            Some(binding) => control.bind_action(binding),
+            None => control.unavailable(),
+        }
+    }
+
     /// The binding of one fully specified `effect` that `row` offers, for a
     /// button or a row menu entry acting on that row. `None` outside a host,
     /// or where the row does not offer it now.

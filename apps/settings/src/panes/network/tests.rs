@@ -360,6 +360,12 @@ impl FakeNetwork {
                     if let Some(on) = patch.all_traffic {
                         held.all_traffic = on;
                     }
+                    if let Some(on) = patch.autoconnect {
+                        held.autoconnect = on;
+                    }
+                    if let Some(mtu) = patch.mtu {
+                        held.mtu = mtu;
+                    }
                 }
             }
             NetworkChange::VpnDelete { uuid, .. } => {
@@ -579,6 +585,20 @@ fn model(fake: &Arc<FakeNetwork>) -> NetworkModel {
         PaneCx::in_file(profile.join("settings.json")),
         Arc::clone(fake) as Arc<dyn NetworkService>,
     )
+}
+
+/// A model over `service` in `app`'s window, its controls bound to the
+/// actions the window publishes.
+fn hosted_model(
+    app: &mut ui::framework::testing::TestApp<crate::SettingsShell>,
+    service: Arc<dyn NetworkService>,
+) -> NetworkModel {
+    let cx = app
+        .surface::<SettingsApp, _>(|settings| {
+            crate::panes::network::area(settings).unwrap().cx.clone()
+        })
+        .unwrap();
+    NetworkModel::loaded_from(cx, service)
 }
 
 fn mount_network(
@@ -1009,11 +1029,8 @@ impl NetworkService for NmRadio {
 #[test]
 fn the_wifi_switch_follows_the_radio_and_not_the_request() {
     let nm = Arc::new(NmRadio::default());
-    let profile = tempfile::tempdir().unwrap().keep();
-    let mut model = NetworkModel::loaded_from(
-        PaneCx::in_file(profile.join("settings.json")),
-        Arc::clone(&nm) as Arc<dyn NetworkService>,
-    );
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    let mut model = hosted_model(&mut app, Arc::clone(&nm) as Arc<dyn NetworkService>);
     assert_eq!(wifi_switch(&model), (Some(false), true));
     let text = shown(&model).join("\n");
     assert!(
@@ -1267,6 +1284,95 @@ fn profile_settings_round_trip_through_the_effect_layer() {
     assert_eq!(
         held.proxy.and_then(|proxy| proxy.manual),
         Some("proxy.lan:3128".to_owned())
+    );
+}
+
+fn rendered_enabled(widget: &dyn ui::widget::Widget, id: &str) -> Option<bool> {
+    if widget.test_id() == Some(id) {
+        return Some(widget.is_enabled());
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| rendered_enabled(child, id))
+}
+
+/// A saved network's page and a VPN's page are live: every setting there
+/// is a control bound to its row's action, and changing one reaches the
+/// device.
+#[test]
+fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.networks.lock().unwrap() = networks();
+    *fake.profiles.lock().unwrap() = vec![saved("home-uuid", "Home_Network", 1)];
+    fake.settings
+        .lock()
+        .unwrap()
+        .insert("home-uuid".into(), SampleNetwork::profile_settings());
+    let vpn = work_vpn();
+    *fake.vpns.lock().unwrap() = vec![vpn.clone()];
+    fake.vpn_settings.lock().unwrap().insert(
+        vpn.uuid.clone(),
+        SampleNetwork::vpn_settings(SAMPLE_VPN_HOME).unwrap(),
+    );
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    let observed = hosted_model(&mut app, Arc::clone(&fake) as Arc<dyn NetworkService>);
+    mount_network(&mut app, observed).unwrap();
+    app.harness().resize((1600, 6000)).unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.call_on(
+        "network.wifi:Home_Network",
+        "open-network-page",
+        serde_json::json!({}),
+    )
+    .unwrap();
+    app.settle();
+    for id in [
+        "network.profile.autoconnect.home-uuid",
+        "network.profile.priority.home-uuid",
+        "network.profile.metered.home-uuid",
+        "network.profile.mac.home-uuid",
+        "network.profile.hidden.home-uuid",
+        "network.profile.dns.home-uuid",
+    ] {
+        assert_eq!(
+            rendered_enabled(app.harness().root_widget(), id),
+            Some(true),
+            "`{id}` is a live control"
+        );
+    }
+    app.harness()
+        .click_named("network.profile.hidden.home-uuid")
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(
+        fake.settings.lock().unwrap()["home-uuid"].hidden,
+        Some(true),
+        "the switch reached the device"
+    );
+
+    let row = format!("vpn.connection:{}", vpn.uuid);
+    app.call_on(&row, "show-vpn-profile", serde_json::json!({}))
+        .unwrap();
+    settle_until(&mut app, |model| model.vpn.settings.contains_key(&vpn.uuid));
+    for id in ["autoconnect", "all-traffic", "mtu", "name", "dns"] {
+        let id = format!("network.vpn.{id}.{}", vpn.uuid);
+        assert_eq!(
+            rendered_enabled(app.harness().root_widget(), &id),
+            Some(true),
+            "`{id}` is a live control"
+        );
+    }
+    let before = fake.vpn_settings.lock().unwrap()[&vpn.uuid].autoconnect;
+    app.harness()
+        .click_named(&format!("network.vpn.autoconnect.{}", vpn.uuid))
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(
+        fake.vpn_settings.lock().unwrap()[&vpn.uuid].autoconnect,
+        !before,
+        "the switch reached the device"
     );
 }
 
