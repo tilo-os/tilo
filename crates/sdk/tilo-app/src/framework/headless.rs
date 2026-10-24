@@ -336,7 +336,23 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// # Errors
     /// As [`Self::capture`].
     pub fn capture_at(scenario: Option<&str>, viewport: (u32, u32)) -> Result<Self, LaunchError> {
-        Self::capture_on(scenario, viewport, &[])
+        let capture = Capture::new(scenario.map(str::to_owned));
+        Self::capture_on(capture, viewport, &[])
+    }
+
+    /// The window `--headless-drive` drives when it names `scenario`
+    /// (`"scenario"` in the spec, or `--scenario NAME` beside it): built and
+    /// staged as [`Self::capture`] is, from the scenario's fixtures, but the
+    /// actions invoked on it run, as the drive's `invoke` steps run them. It
+    /// starts no work on its own, so what it shows stays the scenario's.
+    /// A drive that names no scenario drives the app someone uses
+    /// ([`Self::new`]).
+    ///
+    /// # Errors
+    /// As [`Self::capture`].
+    pub fn drive(scenario: &str) -> Result<Self, LaunchError> {
+        let capture = Capture::driven(Some(scenario.to_owned()));
+        Self::capture_on(capture, A::shot_viewport(Some(scenario)), &[])
     }
 
     /// [`Self::capture`] of the app launched with `arguments`, as
@@ -350,14 +366,17 @@ impl<A: ResourceApp> HeadlessApp<A> {
         arguments: &[&str],
     ) -> Result<Self, LaunchError> {
         let arguments: Vec<String> = arguments.iter().map(|&argument| argument.into()).collect();
-        Self::capture_on(scenario, A::shot_viewport(scenario), &arguments)
+        let capture = Capture::new(scenario.map(str::to_owned));
+        Self::capture_on(capture, A::shot_viewport(scenario), &arguments)
     }
 
     fn capture_on(
-        scenario: Option<&str>,
+        capture: Capture,
         viewport: (u32, u32),
         arguments: &[String],
     ) -> Result<Self, LaunchError> {
+        let scenario = capture.scenario().map(str::to_owned);
+        let scenario = scenario.as_deref();
         let profile = Rc::new(profile_directory().map_err(operation)?);
         let mut app = Self::open(
             Profile::Temporary(profile, TEST_ROOM.to_owned(), TEST_DEVICE.to_owned()),
@@ -366,7 +385,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             arguments,
             None,
             None,
-            Some((Capture::new(scenario.map(str::to_owned)), viewport)),
+            Some((capture, viewport)),
             |_| {},
         )?;
         super::stage::stage::<A>(app.harness(), scenario)?;
