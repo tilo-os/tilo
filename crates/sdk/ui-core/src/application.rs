@@ -154,17 +154,40 @@ pub struct LaunchOption {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capture {
     scenario: Option<String>,
+    driven: bool,
 }
 
 impl Capture {
     /// A capture of the named scenario; `None` is a plain `--shots`.
     pub fn new(scenario: Option<String>) -> Self {
-        Self { scenario }
+        Self {
+            scenario,
+            driven: false,
+        }
+    }
+
+    /// A headless drive of the named scenario (`--headless-drive` with
+    /// `--scenario`): built from the scenario's fixtures as its capture is,
+    /// and still starting nothing on its own, but an action the drive
+    /// invokes runs, as a person's click or an agent's call does. Every
+    /// action the app publishes is then reachable in the scene its
+    /// screenshots show.
+    pub fn driven(scenario: Option<String>) -> Self {
+        Self {
+            scenario,
+            driven: true,
+        }
     }
 
     /// The scenario captured; `None` for a plain `--shots`.
     pub fn scenario(&self) -> Option<&str> {
         self.scenario.as_deref()
+    }
+
+    /// Whether a headless drive invokes the window's actions
+    /// ([`Self::driven`]) rather than only photographing it.
+    pub fn is_driven(&self) -> bool {
+        self.driven
     }
 }
 

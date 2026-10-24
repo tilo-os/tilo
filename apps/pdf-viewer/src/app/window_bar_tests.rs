@@ -302,6 +302,46 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
     );
 }
 
+/// Invoke the document's action `id` by its address, as a headless drive's
+/// `invoke` step does: no coordinates, no shortcut.
+fn drive_invoke(app: &mut TestApp<PdfViewerShell>, id: &str) {
+    let address = ui::tilo_actions::ActionAddress::new("pdf.document", id);
+    app.harness()
+        .invoke_action(&address, &serde_json::Map::new(), false, None)
+        .unwrap_or_else(|error| panic!("{id}: {error}"));
+    app.settle();
+}
+
+#[test]
+#[serial(pdfium)]
+fn a_drive_of_a_scenario_zooms_and_fits_by_address() {
+    let mut app = TestApp::<PdfViewerShell>::drive("search").expect("the sample opens");
+    let zoom = reader_state(&mut app, |pdf| pdf.zoom());
+    drive_invoke(&mut app, "zoom-in");
+    let zoomed = reader_state(&mut app, |pdf| pdf.zoom());
+    assert!(zoomed > zoom, "Zoom in zooms in: {zoom} to {zoomed}");
+    drive_invoke(&mut app, "zoom-out");
+    assert!((reader_state(&mut app, |pdf| pdf.zoom()) - zoom).abs() < 1e-9);
+    drive_invoke(&mut app, "fit-page");
+    assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Page));
+    drive_invoke(&mut app, "fit-width");
+    assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Width));
+}
+
+#[test]
+#[serial(pdfium)]
+fn a_drive_of_every_scenario_reaches_every_published_action() {
+    for scenario in crate::scenarios::SCENARIOS {
+        let mut app = TestApp::<PdfViewerShell>::drive(scenario)
+            .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+        assert_eq!(
+            ui::framework::testing::unreachable_actions(&mut app),
+            Vec::<String>::new(),
+            "{scenario}: published actions a drive cannot invoke"
+        );
+    }
+}
+
 #[test]
 fn history_is_the_window_bars_control() {
     let mut app = TestApp::<PdfViewerShell>::capture(None).expect("the sample opens");
