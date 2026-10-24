@@ -1035,6 +1035,10 @@ class ExtensionTabs(unittest.TestCase):
         # Its popup closes with the window, the question unanswered.
         host.send(op='close_tab', tab=2)
         host.until(lambda e: e['event'] == 'closed' and e.get('tab') == 2)
+        # The window under it, which still shows the question, is told it is
+        # gone, so the person is not left answering it.
+        gone = self.told(host, lambda e: e['event'] == 'extension_permission_closed')
+        self.assertEqual((gone.get('tab'), gone['request']), (1, first['request']))
         # Opened again, it may ask again, and the person's answer counts.
         self.panel(host, 3, f'chrome-extension://{permit}/popup.html')
         self.title(host, 3, 'ready:')

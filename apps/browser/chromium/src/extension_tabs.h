@@ -1113,12 +1113,20 @@ class ExtensionTabs {
     const auto* found = Find(tabs, tab);
     // A request for more access asked where this tab was goes with it, as
     // when the person dismisses the question: the extension is told no and
-    // may ask again.
+    // may ask again. The window that still shows the question (a popup or
+    // side panel that closed itself leaves its window open) is told it is
+    // gone, so the person is not left answering a question no one asks.
     for (auto it = asking_.begin(); it != asking_.end();) {
       if (it->second.tab != tab) { ++it; continue; }
       auto refused = CefValue::Create();
       refused->SetBool(false);
       Succeed(it->second.reply, refused);
+      if (hooks_.event) {
+        auto fields = CefDictionaryValue::Create();
+        fields->SetInt("request", it->first);
+        for (const auto& open : tabs)
+          if (!open.panel && open.tab != tab) hooks_.event(open.tab, "extension_permission_closed", fields->Copy(false));
+      }
       it = asking_.erase(it);
     }
     sign_in_.Closed(tab, ExtensionSignIn::Clock::now());

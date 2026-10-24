@@ -317,6 +317,9 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value).is_some()
         }
+        "extension_permission_closed" => value["request"]
+            .as_u64()
+            .is_some_and(|request| request > 0 && i32::try_from(request).is_ok()),
         "devtools_result" => {
             value["request_id"]
                 .as_u64()

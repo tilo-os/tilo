@@ -2386,6 +2386,12 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value)?
         }
+        "extension_permission_closed" => WebViewEvent::ExtensionPermissionClosed {
+            request: value["request"]
+                .as_u64()
+                .filter(|request| *request > 0)
+                .and_then(|request| u32::try_from(request).ok())?,
+        },
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
         "extension_shortcuts" => {
             WebViewEvent::ExtensionShortcuts(decode_extension_shortcuts(value)?)
