@@ -29,6 +29,7 @@ const ALL_SCENARIOS: &[&str] = &[
     "context-menu",
     "dropmove",
     "drives",
+    "empty",
     "error",
     "grid",
     "history",
@@ -71,6 +72,7 @@ const PORTABLE_SCENARIOS: &[&str] = &[
     "context-menu",
     "dropmove",
     "drives",
+    "empty",
     "error",
     "grid",
     "loading",
@@ -156,6 +158,8 @@ fn write_scene(root: &Path, scenario: Option<&str>) -> std::io::Result<Scene> {
             write_archive(&home)?;
             (home.join("Downloads"), Vec::new())
         }
+        // A standard place with nothing in it yet.
+        Some("empty") => (home.join("Videos"), Vec::new()),
         _ => (home.clone(), Vec::new()),
     };
     Ok(Scene {

@@ -27,7 +27,6 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::lock::MutexRecover as _;
-use ui::paint::PaintCtx;
 #[cfg(test)]
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
 use ui::tilo_actions::{Availability, Resource};
@@ -35,8 +34,8 @@ use ui::time::{Duration, Instant, UNIX_EPOCH};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
-    Button, Collaborative, Column, EmptyState, EmptyStateContent, NavShell, ScrollAxis, Scrollable,
-    SidebarPlacement, Spacer, Spinner, TextInput, Widget,
+    Button, Collaborative, Column, EmptyState, NavShell, ScrollAxis, Scrollable, SidebarPlacement,
+    Stack, TextInput, Widget,
 };
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
@@ -354,15 +353,19 @@ fn retry_row(may_pass: bool) -> Resource {
         .with_action(crate::effects::row_action(&effect, "invoke", label))
 }
 
-/// The retained button under a failed listing, bound to [`retry_row`].
-fn recovery_button(may_pass: bool) -> Button {
+/// A failed listing's state: what went wrong, and its way on bound to
+/// [`retry_row`].
+fn failure_state(title: String, detail: String, may_pass: bool) -> EmptyState {
     let row = retry_row(may_pass);
-    let button = Button::new(RETRY_ROW, &row.label);
+    let state = EmptyState::error(title, detail)
+        .with_icon(ui::icons::Icon::FolderOpen)
+        .with_action(row.label.clone())
+        .with_action_id(RETRY_ROW);
     match row.actions.first().and_then(|action| {
         ui::tilo_actions::ActionBinding::static_json(&row, action, serde_json::Map::new()).ok()
     }) {
-        Some(binding) => button.on_action(binding),
-        None => button.with_enabled(false),
+        Some(binding) => state.on_action(binding),
+        None => state.with_enabled(false),
     }
 }
 
@@ -758,12 +761,6 @@ pub struct FileExplorerWidget {
     /// The user's template files, for the "New File" menus and the
     /// published rows; read from memory on the frame loop.
     templates: templates::Catalog,
-    /// Shared indeterminate progress indicator for the loading state. Its
-    /// reduced-motion behaviour and frame scheduling come from `Spinner`.
-    state_spinner: Spinner,
-    /// Retained shared control positioned beneath the painted failure state.
-    /// It publishes the same local Refresh operation as other retry routes.
-    state_retry: Button,
     /// Set once `build_layout` has composed the panes into `nav`. Used to
     /// detect "hosted in a `TabBar` that never ran `build_layout` for us yet" so
     /// paint can flag a structure rebuild (replaces the old `chrome_below`
@@ -1806,7 +1803,6 @@ impl FileExplorerWidget {
         };
         let trusted_humans = inputs.trusted_humans;
         let startup_accounts = injected.then_some(remote_accounts);
-        let state_retry = recovery_button(true);
         let mut widget = Self {
             services,
             startup_accounts,
@@ -1887,8 +1883,6 @@ impl FileExplorerWidget {
             header_in_bar: false,
             bar_query: None,
             declared_bar: None,
-            state_spinner: Spinner::new(),
-            state_retry,
             status_notice: ui::widget::toast::Transient::new(),
             status_said: None,
             archive_said: None,
@@ -3043,12 +3037,18 @@ impl FileExplorerWidget {
             return self.build_cloud_pane(theme);
         }
         let sp = &theme.tokens.spacing;
-        // Loading and failure are painted by the shared centered state surface
-        // in `draw_state_surface`. Keep this structural slot empty: it avoids
-        // a stale list beneath a failure while the surface owns the visual,
-        // semantic, and recovery treatment consistently at every width.
-        if self.is_loading || self.error.is_some() {
-            return Box::new(Spacer::new());
+        // Loading and failure replace the list, so no stale rows sit under
+        // a failure.
+        if let Some((title, detail, can_retry)) = self.state_surface_copy() {
+            return Box::new(if can_retry {
+                failure_state(
+                    title,
+                    detail,
+                    self.folder_recovery_command() == FileCommand::Refresh,
+                )
+            } else {
+                EmptyState::new(title).with_message(detail).busy()
+            });
         }
         let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
@@ -3095,7 +3095,14 @@ impl FileExplorerWidget {
                 );
             }
         }
-        view_col.into_widget()
+        if !self.entries.is_empty() {
+            return view_col.into_widget();
+        }
+        // An empty folder keeps its view underneath, so a press on the
+        // background, a drop or the context menu still reach the folder.
+        Box::new(Stack::new().push(view_col.into_widget()).push(Box::new(
+            EmptyState::new(self.empty_state_message()).with_icon(self.empty_state_icon()),
+        )))
     }
 
     /// The label for the floating status bubble: an operation status, else the
@@ -3214,96 +3221,11 @@ impl FileExplorerWidget {
         Some((crate::fileops::FolderFailure::of(cause), cause))
     }
 
-    /// What a failed listing's button says.
-    fn folder_recovery_label(&self) -> String {
-        retry_row(self.folder_recovery_command() == FileCommand::Refresh).label
-    }
-
     /// The command a failed listing's button runs.
     fn folder_recovery_command(&self) -> FileCommand {
         match self.folder_failure() {
             Some((failure, _)) if !failure.may_pass() => FileCommand::Up,
             _ => FileCommand::Refresh,
-        }
-    }
-
-    /// Draw the shared center-state primitive above the otherwise empty pane.
-    /// Loading adds the toolkit spinner (which stops requesting frames in
-    /// reduced-motion mode); failure uses the shared `EmptyState` visual plus a
-    /// retained shared Button for the same typed Refresh command every input
-    /// route uses.
-    fn draw_state_surface(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-        presence: &ui::presence::PresenceCtx,
-    ) {
-        let Some((title, detail, can_retry)) = self.state_surface_copy() else {
-            return;
-        };
-        let rect = self.content_body_rect();
-        if rect.width() <= 1.0 || rect.height() <= 1.0 {
-            return;
-        }
-        if can_retry {
-            // The shared empty state lays out the action as part of its
-            // centred stack (measured title, detail and label, so the pill
-            // clears the detail line at every text scale) and returns that
-            // rect; the retained shared Button — which owns hover, focus,
-            // keyboard activation and the typed Refresh command — is then
-            // painted over it, so the geometry has one author and the
-            // behaviour keeps the production control. Hover is suppressed on
-            // the underlay because the Button draws its own.
-            let action_rect = EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                &EmptyStateContent {
-                    icon: Some(ui::icons::Icon::FolderOpen),
-                    title: &title,
-                    message: Some(&detail),
-                    action_label: Some(&self.folder_recovery_label()),
-                    error: true,
-                    ..EmptyStateContent::new(&title)
-                },
-                Point::new(-1.0, -1.0),
-            );
-            let button_rect = action_rect.map_or(vello::kurbo::Rect::ZERO, |r| {
-                // Never narrower than four minimum pointer targets, so a short
-                // localized label still gets a comfortable retry button; widen
-                // symmetrically so the Button still covers the underlay pill.
-                let min_w = 4.0 * f64::from(theme.tokens.metrics.min_pointer_target);
-                let w = r.width().max(min_w);
-                vello::kurbo::Rect::from_center_size(r.center(), (w, r.height()))
-            });
-            self.state_retry.apply_layout_external(button_rect);
-            self.state_retry
-                .draw(scene, transform, text_renderer, theme, presence);
-        } else {
-            EmptyState::paint(
-                &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                rect,
-                &EmptyStateContent {
-                    title: &title,
-                    message: Some(&detail),
-                    ..EmptyStateContent::new(&title)
-                },
-                self.last_cursor,
-            );
-            let center = rect.center();
-            let side = f64::from(theme.tokens.metrics.icon_lg) + f64::from(theme.tokens.spacing.s1);
-            let spinner_rect = vello::kurbo::Rect::from_center_size(
-                Point::new(
-                    center.x,
-                    center.y - f64::from(theme.tokens.spacing.s16)
-                        + f64::from(theme.tokens.spacing.s1),
-                ),
-                (side, side),
-            );
-            self.state_spinner.set_rect(spinner_rect);
-            self.state_spinner
-                .draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3582,7 +3504,6 @@ impl FileExplorerWidget {
         self.entries.clear();
         self.is_loading = false;
         let denied = std::io::Error::from_raw_os_error(13).to_string();
-        self.state_retry = recovery_button(false);
         self.error = Some(t_args(
             "files-directory-read-failed",
             &[arg("error", denied)],
@@ -7036,26 +6957,9 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Draw the shared empty state in the file area when the current
-    /// directory has no entries (and isn't showing an error) — so an empty
-    /// folder, and especially an empty Trash, reads as intentionally empty
-    /// rather than broken. A muted icon over one context-aware sentence.
-    fn draw_empty_state(
-        &self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        text_renderer: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-    ) {
-        if self.cloud.active || !self.entries.is_empty() || self.error.is_some() || self.is_loading
-        {
-            return;
-        }
-        let rect = self.content_body_rect();
-        if rect.width() <= 1.0 || rect.height() <= 1.0 {
-            return;
-        }
-        let icon = if self.is_recent_view() {
+    /// The icon an empty folder shows above its sentence.
+    fn empty_state_icon(&self) -> ui::icons::Icon {
+        if self.is_recent_view() {
             ui::icons::Icon::History
         } else if self.is_applications_view() {
             ui::icons::Icon::LayoutGrid
@@ -7063,17 +6967,7 @@ impl FileExplorerWidget {
             ui::icons::Icon::Trash2
         } else {
             ui::icons::Icon::Folder
-        };
-        let message = self.empty_state_message();
-        EmptyState::paint(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            rect,
-            &EmptyStateContent {
-                icon: Some(icon),
-                ..EmptyStateContent::new(&message)
-            },
-            Point::new(-1.0, -1.0),
-        );
+        }
     }
 
     /// The sheet's spec: the title, a close control and, when the panel
@@ -10034,7 +9928,6 @@ impl Widget for FileExplorerWidget {
         // On its first frame select the name but not a file's extension, so
         // typing replaces the name and keeps the type (a folder's whole name).
         self.rename_input.sync(state, path);
-        self.state_retry.sync(state, path);
         if self.rename_select_pending {
             let is_dir = self
                 .renaming
@@ -10145,8 +10038,6 @@ impl Widget for FileExplorerWidget {
         self.paint_background(theme);
         self.nav
             .draw(scene, transform, text_renderer, theme, presence);
-        self.draw_state_surface(scene, transform, text_renderer, theme, presence);
-        self.draw_empty_state(scene, transform, text_renderer, theme);
         self.draw_rename_editor(scene, transform, text_renderer, theme, presence);
     }
 
@@ -10246,17 +10137,10 @@ impl Widget for FileExplorerWidget {
             *ctx.handled = true;
             return;
         }
-        // The shared EmptyState visual and the retained Button share one
-        // recovery route. The button's `on_effect` publishes a typed local
-        // control action; draining it below enters the ordinary Refresh path.
-        if self.error.is_some() {
-            self.state_retry
-                .handle_event(event, &mut ctx.reborrow(path, ctx.node_id));
-            if *ctx.handled {
-                self.structure_dirty |= self.drain_commands();
-                return;
-            }
-            if matches!(
+        // A failed listing has nothing else to act on, so Enter or Space
+        // anywhere takes its way on, as its button does.
+        if self.error.is_some()
+            && matches!(
                 event,
                 WindowEvent::KeyboardInput { event, .. }
                     if event.state == ElementState::Pressed
@@ -10267,11 +10151,11 @@ impl Widget for FileExplorerWidget {
                                     | winit::keyboard::NamedKey::Space
                             )
                         )
-            ) {
-                self.structure_dirty |= self.apply_command(self.folder_recovery_command());
-                *ctx.handled = true;
-                return;
-            }
+            )
+        {
+            self.structure_dirty |= self.apply_command(self.folder_recovery_command());
+            *ctx.handled = true;
+            return;
         }
         if self.collab_panel.is_some() {
             use winit::keyboard::{Key, NamedKey};
@@ -10382,7 +10266,6 @@ impl Widget for FileExplorerWidget {
             || self.cloud.chooser.is_some()
             || self.cloud_import_pending()
             || self.nav.needs_animation_frame()
-            || (self.is_loading && self.state_spinner.needs_animation_frame())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -10487,7 +10370,7 @@ impl Widget for FileExplorerWidget {
             );
         }
 
-        let mut root = AccessNode::new(Role::Group)
+        let root = AccessNode::new(Role::Group)
             .with_name(t("files-a11y-activity"))
             .with_description(t_args(
                 "files-a11y-current-folder",
@@ -10500,25 +10383,6 @@ impl Widget for FileExplorerWidget {
                 Politeness::Polite
             })
             .with_state(AccessState::new().busy(self.is_loading));
-        if let Some((title, detail, can_retry)) = self.state_surface_copy() {
-            let mut state = AccessNode::new(Role::Group)
-                .with_name(title)
-                .with_description(detail)
-                .with_live(if can_retry {
-                    Politeness::Assertive
-                } else {
-                    Politeness::Polite
-                })
-                .with_state(AccessState::new().busy(self.is_loading));
-            if can_retry {
-                state = state.with_children(vec![
-                    AccessNode::new(Role::Button)
-                        .with_name(self.folder_recovery_label())
-                        .with_action_target("files-retry-folder"),
-                ]);
-            }
-            root = root.with_children(vec![state]);
-        }
         Some(root)
     }
 
@@ -10538,11 +10402,6 @@ impl Widget for FileExplorerWidget {
                 self.settle_clash(choice);
             }
             return choice.is_some();
-        }
-        if target == "files-retry-folder" && matches!(action, Action::Activate) {
-            let changed = self.apply_command(self.folder_recovery_command());
-            self.structure_dirty |= changed;
-            return changed;
         }
         if let Some(version) = target.strip_prefix("files-history-version:") {
             let Ok(version) = uuid::Uuid::parse_str(version) else {
@@ -10634,11 +10493,9 @@ impl ui::widget::controls::ActionControls for FileExplorerWidget {
         if let Some(invocation) = self.app_chooser.take_control_invocation() {
             return Some(invocation);
         }
-        self.state_retry.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(ui::widget::controls::take_control_invocation)
-        })
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
     }
     fn has_action_control_bindings(&self) -> bool {
         // Own accessibility actions are semantic; only children emit actions.
