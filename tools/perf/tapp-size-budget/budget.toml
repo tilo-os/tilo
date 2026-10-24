@@ -177,10 +177,6 @@ aarch64 = 1310720
 x86_64 = 1310720
 aarch64 = 1245184
 
-# Initial ceiling uses web-search: both are portable, host-backed SDK UIs
-# packaged as thin apps against the shared runtime, without a bundled service.
-# Provider administration has no search engine payload. Measure its first
-# release packages on both architectures and ratchet these ceilings down.
 [apps."so.tilo.model-providers"]
 x86_64 = 917504
 aarch64 = 917504
@@ -213,7 +209,6 @@ aarch64 = 2097152
 x86_64 = 2490368
 aarch64 = 2228224
 
-# New, not measured yet: the KPI's max target until the first measurement.
 [apps."so.tilo.poker"]
 x86_64 = 786432
 aarch64 = 720896
@@ -262,7 +257,6 @@ aarch64 = 720896
 x86_64 = 2883584
 aarch64 = 2686976
 
-# New, not measured yet: the KPI's max target until the first measurement.
 [apps."so.tilo.tasks"]
 x86_64 = 1769472
 aarch64 = 1638400
