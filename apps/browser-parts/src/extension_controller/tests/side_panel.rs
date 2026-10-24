@@ -241,3 +241,61 @@ fn the_person_opens_and_closes_a_side_panel_from_the_window_and_the_door() {
     controller.sync(&shared, "");
     assert_eq!(controller.side_panel_shown(), None);
 }
+
+#[test]
+fn a_side_panel_asks_for_more_access_through_the_window() {
+    let window = ui::webview::test_engine::TestEngine::new();
+    let shared: SharedEngine = window.clone();
+    let mut controller = ExtensionController::new(true);
+    controller.refresh = false;
+    let notes = "n".repeat(32);
+    let set = |permissions: &[&str]| ExtensionPermissionSet {
+        permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+        origins: Vec::new(),
+    };
+    controller.installed = vec![installed(
+        &notes,
+        None,
+        toolbar::Access {
+            permissions: vec!["sidePanel".into()],
+            optional: set(&["tabs"]),
+            ..toolbar::Access::default()
+        },
+    )];
+    controller.on_engine_event(
+        WebViewEvent::ExtensionSidePanel {
+            id: notes.clone(),
+            change: ExtensionSidePanelChange::Open(format!(
+                "chrome-extension://{notes}/panel.html"
+            )),
+        },
+        &shared,
+    );
+    let panel = window.created_tabs().last().expect("its page").clone();
+
+    // Its page calls permissions.request: the host asks on the page that
+    // asks, which is the panel's, and the person must see the question, or
+    // the extension waits for good and may ask nothing again.
+    panel.push_event(WebViewEvent::ExtensionPermissionRequest {
+        request: 7,
+        id: notes.clone(),
+        asked: set(&["tabs"]),
+    });
+    assert!(controller.sync(&shared, ""));
+    assert_eq!(
+        controller
+            .take_questions()
+            .into_iter()
+            .map(|question| question.request)
+            .collect::<Vec<_>>(),
+        [7]
+    );
+    // What the engine then granted it, told on the panel's page, is kept.
+    panel.push_event(WebViewEvent::ExtensionPermissions {
+        id: notes.clone(),
+        granted: set(&["tabs"]),
+    });
+    controller.sync(&shared, "");
+    assert_eq!(controller.installed[0].access.granted, set(&["tabs"]));
+    assert_eq!(controller.side_panel_shown(), Some(notes.as_str()));
+}
