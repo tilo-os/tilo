@@ -505,8 +505,17 @@ impl ActionPalette {
             .map(|confirm| (&confirm.pending.address, confirm.question.as_str()))
     }
 
-    /// Ask the person to confirm `pending`: its own label as the question,
-    /// one Enter or click on Confirm to go ahead.
+    /// The published semantic target of the question's own action button
+    /// (named for the verb it confirms), while the palette asks. Activating
+    /// it goes ahead, as the person's click or assistive technology does; a
+    /// destructive question starts on Cancel, so Enter never confirms it.
+    #[must_use]
+    pub fn confirming_target(&self) -> Option<String> {
+        self.confirm.as_ref().map(|_| self.target("submit"))
+    }
+
+    /// Ask the person to confirm `pending`: its own label as the question
+    /// and as the button that goes ahead.
     fn ask_confirmation(&mut self, pending: PendingOperation) {
         let (label, description) = pending
             .ordinary

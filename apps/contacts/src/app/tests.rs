@@ -647,23 +647,10 @@ fn the_contact_menu_runs_the_canonical_actions() {
         "the sensitive export waits for the person's consent"
     );
     assert!(
-        app.harness_mut()
-            .a11y_nodes()
-            .iter()
-            .any(|(_, node)| node.role() == ui::accesskit::Role::Dialog
-                && node.label() == Some("Action confirmation")),
+        host_confirmation_is_up(&mut app),
         "the actual host confirms the contact menu's sensitive operation"
     );
-    act_named(
-        &mut app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    assert!(
-        app.export.is_none(),
-        "typing the consent phrase does not itself export the contact"
-    );
-    act_named(&mut app, "Confirm", &ui::a11y::Action::Activate);
+    confirm_on_host(&mut app);
     if app.export.is_none() {
         eprintln!(
             "Contacts menu export after explicit confirmation: controls={:?}; failures={:?}; refusal={:?}",
@@ -4608,23 +4595,18 @@ fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
 }
 
 fn host_confirmation_is_up(app: &mut Live) -> bool {
-    app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
-        node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Action confirmation")
-    })
+    app.settle();
+    app.harness_mut().asking().is_some()
 }
 
-/// Confirm the action the host asks about, as the person does.
+/// Confirm the action the host asks about, as the person does: its
+/// dialog's button named for the verb.
 fn confirm_on_host(app: &mut Live) {
     assert!(
         host_confirmation_is_up(app),
         "the host asks to confirm the action"
     );
-    act_named(
-        app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    act_named(app, "Confirm", &ui::a11y::Action::Activate);
+    assert!(app.harness_mut().confirm_asked().is_some());
     app.settle();
 }
 
@@ -4668,13 +4650,7 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
             .unwrap();
     });
     app.settle();
-    assert!(
-        app.harness().a11y_nodes().iter().any(|(_, node)| {
-            node.role() == ui::accesskit::Role::Dialog
-                && node.label() == Some("Action confirmation")
-        }),
-        "the host asks to confirm the merge"
-    );
+    assert!(app.asking().is_some(), "the host asks to confirm the merge");
 }
 
 /// A narrow window opens on the list, which stands alone: an empty book says

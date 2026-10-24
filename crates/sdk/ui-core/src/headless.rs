@@ -1447,13 +1447,20 @@ impl FrameHarness {
             .and_then(crate::action_palette::ActionPalette::asking_why)
     }
 
-    /// Confirm what the host is asking, as the person does: press Enter on
-    /// its question. Answers the action confirmed; `None`, changing nothing,
-    /// when nothing is asked.
+    /// Confirm what the host is asking, as the person does: activate the
+    /// dialog's own button named for the verb (a destructive question starts
+    /// on Cancel, so Enter would not go ahead). Answers the action
+    /// confirmed; `None`, changing nothing, when nothing is asked or the
+    /// dialog refused the activation.
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.invalidate_local();
         let (address, _question) = self.asking()?;
-        self.key("Enter");
+        let target = self
+            .action_palette
+            .as_deref()
+            .and_then(crate::action_palette::ActionPalette::confirming_target)?;
+        self.perform_palette_action(&target, &crate::a11y::Action::Activate)
+            .ok()?;
         Some(address)
     }
 
