@@ -486,10 +486,14 @@ impl ResourceApp for PhotosShell {
         // (their counts and the albums under a heading make it one), its
         // width, its drawer in a narrow window and its keys.
         let places = ui::widget::NavFeed::new();
+        // A narrow window opens on the timeline, the library's own grid;
+        // Back leads to the places.
+        let pane = ui::LocalState::new(ui::widget::NavPane::Content);
         let shell = NavShell::new()
             .with_id("photos-shell")
             .content_kind(ContentKind::Grid)
-            .with_window_toolbar();
+            .with_window_toolbar()
+            .with_pane_state(&pane);
         let app = app.in_shell(&places, shell.window_bar_link());
         let sidebar = NavList::new(Vec::new())
             .with_id("photos.places")

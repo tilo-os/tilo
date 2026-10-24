@@ -2780,3 +2780,34 @@ fn the_album_panel_leaves_an_empty_librarys_open_in_view() {
         );
     }
 }
+
+/// Photos opened in a narrow window draws its timeline on the first frame,
+/// as it does when a wide window narrows, with its places listed for the
+/// screen behind Back.
+#[test]
+fn photos_opened_narrow_draws_its_grid_on_the_first_frame() {
+    for viewport in [(1280, 800), (420, 800)] {
+        let mut app = ui::framework::testing::TestApp::<crate::resource::PhotosShell>::capture_at(
+            Some("library"),
+            viewport,
+        )
+        .expect("the library captures");
+        let photos = app
+            .harness()
+            .widget_mut::<PhotosApp>()
+            .unwrap_or_else(|| panic!("{viewport:?}: the window shows the library"));
+        assert!(
+            !photos.library_cards.is_empty(),
+            "{viewport:?}: the timeline shows photographs on the first frame"
+        );
+        let (_, selected) = photos
+            .chrome
+            .places
+            .shown()
+            .unwrap_or_else(|| panic!("{viewport:?}: the places are listed"));
+        assert!(
+            selected.is_some(),
+            "{viewport:?}: the open place is chosen in the list"
+        );
+    }
+}

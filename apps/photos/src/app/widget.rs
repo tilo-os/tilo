@@ -502,6 +502,10 @@ impl Widget for PhotosApp {
         self.refresh_chrome_text(doc);
         self.refresh_empty_state(doc);
         self.publish_notice();
+        // A narrow window shows the places on a screen of their own, where
+        // the library is not drawn: they come with what the library holds,
+        // not with its frame.
+        self.show_places();
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
