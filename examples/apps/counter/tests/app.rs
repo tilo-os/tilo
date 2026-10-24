@@ -71,16 +71,17 @@ fn buttons_invoke_the_action_and_undo_reverts_each_press() {
     assert_eq!(app.state().count, 9);
 }
 
-/// A destructive action is refused until it is confirmed, from any surface.
+/// A destructive action Undo takes back runs at once, from any surface, and
+/// Undo brings the count back.
 #[test]
-fn reset_needs_confirmation() {
+fn reset_runs_at_once_and_undo_takes_it_back() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.invoke(set(5)).expect("set");
-    assert!(app.invoke(Counter::RESET.invoke()).is_err());
-    assert_eq!(app.state().count, 5);
-    app.invoke_confirmed(Counter::RESET.invoke())
-        .expect("a confirmed reset");
+    app.invoke(Counter::RESET.invoke())
+        .expect("an undoable reset asks nothing");
     assert_eq!(app.state().count, 0);
+    assert!(app.undo(), "Undo takes the reset back");
+    assert_eq!(app.state().count, 5);
 }
 
 /// Permissions are enforced on every action: a viewer can read but not edit.

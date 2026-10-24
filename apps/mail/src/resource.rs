@@ -361,8 +361,10 @@ impl Mail {
     /// Delete permanently
     ///
     /// Deletes messages already in the Trash for good: all of them, or none
-    /// when one is no longer there.
-    #[action(destructive)]
+    /// when one is no longer there. The device holding the account deletes
+    /// them on the mail server too, which Undo cannot bring back, so this is
+    /// asked first.
+    #[action(destructive, irreversible)]
     pub fn purge(
         &mut self,
         #[param("Ids of the messages, every one in the Trash")] messages: Vec<String>,

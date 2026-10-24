@@ -53,7 +53,7 @@ impl Checklist {
         Ok(())
     }
 
-    /// Remove a task after confirmation.
+    /// Remove a task; Undo brings it back.
     ///
     /// # Errors
     /// Refuses a task that no longer exists.

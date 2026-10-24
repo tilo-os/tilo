@@ -50,8 +50,14 @@ impl Choice {
             .and(params.name, self.hint.label.clone())
             .declaration(Calendar::INVITE.id, t("calendar-contact-add"))?;
         // A name and an address from a private address book become visible
-        // to everyone the calendar is shared with: the person agrees first.
-        Some(declaration.describe(self.label()).destructive())
+        // to everyone the calendar is shared with, which Undo cannot take
+        // back: the person agrees first.
+        Some(
+            declaration
+                .describe(self.label())
+                .destructive()
+                .tagged(ui::tilo_actions::IRREVERSIBLE_TAG),
+        )
     }
 }
 

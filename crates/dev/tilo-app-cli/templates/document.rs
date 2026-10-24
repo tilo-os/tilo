@@ -24,8 +24,9 @@ impl Document {
         self.body = body;
     }
 
-    /// Erase the document. Declared destructive, so every surface that
-    /// invokes it asks for confirmation first.
+    /// Erase the document. Declared destructive and undoable, so every
+    /// surface runs it at once and offers Undo; one Undo cannot take back
+    /// would add `irreversible`, and then every surface asks first.
     #[action(destructive)]
     pub fn clear(&mut self) {
         *self = Self::default();

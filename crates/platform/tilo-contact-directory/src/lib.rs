@@ -148,7 +148,9 @@ impl ContactDirectory {
     /// Explicitly confirm that this service recipient belongs to this person.
     /// An uncertain candidate never becomes an association merely by appearing
     /// in a contact search or having a matching name/phone number.
-    #[action(destructive)]
+    // Messages sent to a wrong association reach someone else, which Undo
+    // cannot recall, so the association is asked first.
+    #[action(destructive, irreversible)]
     pub fn confirm_endpoint(
         &mut self,
         person: Id,
@@ -168,7 +170,9 @@ impl ContactDirectory {
 
     /// Confirm the exact provider-scoped account and observed identity revision.
     /// This is an address-book decision, not cryptographic proof or permission.
-    #[action(destructive)]
+    // Messages sent to a wrong association reach someone else, which Undo
+    // cannot recall, so the association is asked first.
+    #[action(destructive, irreversible)]
     pub fn confirm_account(
         &mut self,
         person: Id,
@@ -185,7 +189,9 @@ impl ContactDirectory {
     }
 
     /// Replace an address after review, clearing unavailable identity evidence.
-    #[action(destructive)]
+    // Messages sent to a wrong association reach someone else, which Undo
+    // cannot recall, so the association is asked first.
+    #[action(destructive, irreversible)]
     pub fn replace_endpoint(
         &mut self,
         person: Id,
@@ -205,7 +211,9 @@ impl ContactDirectory {
     }
 
     /// Replace a reviewed association atomically, retaining the old tombstone.
-    #[action(destructive)]
+    // Messages sent to a wrong association reach someone else, which Undo
+    // cannot recall, so the association is asked first.
+    #[action(destructive, irreversible)]
     pub fn replace_account(
         &mut self,
         person: Id,

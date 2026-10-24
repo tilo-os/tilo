@@ -62,8 +62,8 @@ impl Counter {
         Ok(())
     }
 
-    /// Reset the count to zero. `destructive` makes every surface, from the
-    /// button to an agent, confirm before it runs.
+    /// Reset the count to zero. `destructive` and undoable: every surface,
+    /// from the button to an agent, runs it at once and offers Undo.
     #[action(destructive)]
     pub fn reset(&mut self) {
         self.count = 0;

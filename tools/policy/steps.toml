@@ -121,9 +121,9 @@ inputs = ["apps/**/*.rs", "apps/*/Cargo.toml"]
 
 [[step]]
 name = "action-confirmation"
-label = "Undoable actions are never confirmed by typing; a typed phrase names what is lost"
+label = "Undoable actions are never confirmed by typing; a typed phrase names what is lost; a deletion runs at once only when Undo takes it back in full"
 run = "python3 tools/policy/check_action_confirmation.py"
-inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs"]
+inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs", "tools/policy/undoable-deletions.toml"]
 
 [[step]]
 name = "app-copy"

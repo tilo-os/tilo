@@ -12,7 +12,12 @@ so typing it means the person read it. This check refuses, in production Rust:
   or `ActionKind::Undoable`;
 - a typed phrase that is a generic word ("CONFIRM", "YES", "DELETE", ...),
   which says nothing about what is lost;
-- a `"CONFIRM"` literal anywhere: no person is ever asked to type it.
+- a `"CONFIRM"` literal anywhere: no person is ever asked to type it;
+- a destructive action that runs at once with Undo (`#[action(destructive)]`
+  without `irreversible`) and is not listed, with why Undo takes it back in
+  full, in tools/policy/undoable-deletions.toml. One that reaches outside
+  the record (a server, a device, an inbox, what others saw) is marked
+  `irreversible` and asked first instead.
 
 `ActionContract::validate_declaration` refuses the same at runtime; this check
 catches it before anything runs.
@@ -22,6 +27,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,6 +35,11 @@ from rust_source import is_test_file, line_number, production_source  # noqa: E4
 
 ROOT = Path(__file__).resolve().parents[2]
 TREES = ("apps", "crates", "examples")
+LEDGER = ROOT / "tools/policy/undoable-deletions.toml"
+
+ATTRIBUTE = re.compile(r"#\[\s*(action|effect)\s*\(([^\]]*)\)\s*\]")
+WORD = re.compile(r"[A-Za-z_]+")
+ITEM = re.compile(r"\bfn\s+([A-Za-z_][A-Za-z0-9_]*)|^\s*([A-Z][A-Za-z0-9_]*)\b", re.M)
 
 # Kept in step with `GENERIC_CONFIRMATION_WORDS` in
 # crates/collab/actions/src/contract.rs.
@@ -119,17 +130,62 @@ def check_source(relative: str, text: str) -> list[str]:
     return errors
 
 
+def undoable_deletions(relative: str, text: str) -> list[tuple[str, int]]:
+    """Each destructive action in `text` that Undo is taken to reverse, as
+    `<file>::<fn>` with its line: `#[action(destructive)]` without
+    `irreversible`, and an `#[effect]` that is both destructive and undoable."""
+    code = production_source(text)
+    found: list[tuple[str, int]] = []
+    for attribute in ATTRIBUTE.finditer(code):
+        kind, arguments = attribute.groups()
+        words = set(WORD.findall(arguments))
+        if "destructive" not in words or "irreversible" in words:
+            continue
+        if kind == "effect" and not re.search(r'kind\s*=\s*"undoable"', arguments):
+            continue
+        item = ITEM.search(code, attribute.end())
+        if item is None:
+            continue
+        name = item.group(1) or item.group(2)
+        found.append((f"{relative}::{name}", line_number(code, attribute.start())))
+    return found
+
+
+def check_ledger(found: dict[str, int], ledger: dict[str, str]) -> list[str]:
+    errors = []
+    for key, line in sorted(found.items()):
+        if not ledger.get(key, "").strip():
+            path, name = key.split("::")
+            errors.append(
+                f"{path}:{line}: `{name}` is destructive and runs at once with Undo: if "
+                "everything it does is in the record Undo restores, list it with why in "
+                "tools/policy/undoable-deletions.toml; if it reaches outside (a server, a "
+                "device, an inbox, what others saw), mark it `irreversible` so it is asked first"
+            )
+    for key in sorted(set(ledger) - set(found)):
+        errors.append(
+            f"tools/policy/undoable-deletions.toml: {key} is no destructive action Undo "
+            "takes back any more; take it off the list"
+        )
+    return errors
+
+
 def main() -> int:
     errors: list[str] = []
+    found: dict[str, int] = {}
     for tree in TREES:
         for path in sorted((ROOT / tree).rglob("*.rs")):
             relative = path.relative_to(ROOT)
             if "target" in relative.parts or is_test_file(relative):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
+            if "destructive" in text:
+                found.update(undoable_deletions(relative.as_posix(), text))
             if "Phrase" not in text and "CONFIRM" not in text:
                 continue
             errors.extend(check_source(relative.as_posix(), text))
+    ledger = tomllib.loads(LEDGER.read_text(encoding="utf-8")).get("undoable", {})
+    errors.extend(check_ledger(found, ledger))
     for error in errors:
         print(error, file=sys.stderr)
     if errors:
