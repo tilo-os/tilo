@@ -1108,7 +1108,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // This tab as extensions are told of it.
   tilo::ExtensionTab ExtensionState() const {
     tilo::ExtensionTab tab;tab.tab=id_;
-    if(browser_) {tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
+    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
     tab.title=title_;tab.favicon=favicon_;tab.width=geometry_.logical_width();tab.height=geometry_.logical_height();
     tab.panel=extension_panel_;tab.opener=panel_opener_;return tab;
   }

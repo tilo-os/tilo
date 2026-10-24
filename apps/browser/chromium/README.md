@@ -420,8 +420,15 @@ content scripts (with `sender.tab`) work without help.
   list (`extensions.rs` `policy_with_bridge`), and stays turned on. A failed
   call's callback finds `runtime.lastError` set, as in Chrome.
 - Tabs carry the id Chromium's extension APIs know them by, the one in
-  `sender.tab.id`. The Browser's own extension (`extension-manager`, with a
-  content script in every page) asks it for each page on first use.
+  `sender.tab.id`, from their first page on: a blank page, an extension's
+  own page in a tab and an internal one have it too, and keep it once they
+  show a web page. Chromium lists it with each tab's DevTools target to an
+  extension that may debug; the Browser's own extension (`extension-manager`)
+  may, and the host asks its worker for every tab not yet known at once,
+  before an extension is told of one. An extension's own page is listed
+  with no tab: it sends that extension a word only the host made, and
+  Chromium tells the worker the tab the message came from. An id another
+  tab has already is not taken.
 - What a tab shows an extension follows Chrome: its address and title with
   `tabs`, a host permission for the site, or a click on the extension's
   button over it (`activeTab`), which also lets it script the page until the
@@ -478,8 +485,9 @@ content scripts (with `sender.tab`) work without help.
   world of the extension in its new process.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
-  tab an extension was told of before the host learnt its id among
-  Chromium's keeps answering to the id it was told.
+  tab an extension was told of while the host could not learn its id among
+  Chromium's (the Browser's own extension did not start) keeps answering to
+  the id it was told.
 - `tabs.connect` also reaches an extension's declared content scripts,
   which Chromium cannot find by a tab it does not know: the host gives their
   world what a port needs, through the same binding.
