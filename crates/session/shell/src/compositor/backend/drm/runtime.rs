@@ -1374,20 +1374,7 @@ impl DrmDispatchState {
                 .iter()
                 .map(|entry| (entry.config_key.as_str(), entry.scale)),
         );
-        let layout = self
-            .live
-            .iter()
-            .map(|entry| {
-                let (width, height) = logical_output_size(entry.size, entry.transform);
-                settings_store::hardware::LiveOutputPlacement {
-                    connector: entry.config_key.clone(),
-                    x: entry.position.0,
-                    y: entry.position.1,
-                    width,
-                    height,
-                }
-            })
-            .collect();
+        let layout = self.live_placements();
         if outputs != self.display_capabilities {
             self.display_capabilities.clone_from(&outputs);
             // A disabled connector appearing changes the heads external
@@ -1414,6 +1401,32 @@ impl DrmDispatchState {
         if let Err(error) = snapshot.save() {
             tracing::debug!(%error, "DRM display: could not publish capability snapshot");
         }
+    }
+
+    /// Each live output's rectangle in the logical desktop, the space the
+    /// shell lays out in and Settings arranges: where its position is
+    /// published for readers that match a display by where it sits (the
+    /// identify cards). Its scene rectangle would put every display beside
+    /// a scaled one somewhere the shell has no display, and its card would
+    /// lose its number and name.
+    fn live_placements(&self) -> Vec<settings_store::hardware::LiveOutputPlacement> {
+        self.live
+            .iter()
+            .map(|entry| {
+                let (width, height) = settings_store::hardware::logical_extent(
+                    entry.size,
+                    entry.scale,
+                    entry.transform,
+                );
+                settings_store::hardware::LiveOutputPlacement {
+                    connector: entry.config_key.clone(),
+                    x: entry.logical_position.0,
+                    y: entry.logical_position.1,
+                    width,
+                    height,
+                }
+            })
+            .collect()
     }
 
     /// Send a command to whoever owns the scanouts.  `false` means there is
@@ -7557,6 +7570,33 @@ pub(super) mod tests {
         assert_eq!(table[0].position, (0, 0));
         assert_eq!(table[1].position, (2560, 0));
         assert_eq!(state.output_size, (4480, 1600));
+    }
+
+    #[test]
+    fn published_placements_are_where_each_display_sits_in_the_logical_desktop() {
+        let state = docked_hidpi_laptop();
+        let placed: Vec<_> = state
+            .live_placements()
+            .into_iter()
+            .map(|placement| (placement.x, placement.y, placement.width, placement.height))
+            .collect();
+        // The 2x panel is 1280 logical pixels wide and the monitor starts
+        // where it ends, as the shell lays them out; not at the panel's
+        // 2560 physical pixels, where no display of the shell's sits.
+        assert_eq!(placed, vec![(0, 0, 1280, 800), (1280, 0, 1920, 1080)]);
+        let table = state.output_table();
+        for (placement, output) in placed.iter().zip(&table) {
+            let rect = output.logical_rect();
+            assert_eq!(
+                (
+                    f64::from(placement.0),
+                    f64::from(placement.1),
+                    f64::from(placement.2),
+                    f64::from(placement.3)
+                ),
+                (rect.x0, rect.y0, rect.width(), rect.height())
+            );
+        }
     }
 
     #[test]
