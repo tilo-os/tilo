@@ -342,6 +342,12 @@ impl ContentBackend for RecordContent {
         self.local.shared() || self.lane.is_served()
     }
 
+    /// The route only brings what the record's other readers hold for it, so
+    /// what this store reads is as scoped as the window's own store.
+    fn room_scoped(&self) -> bool {
+        self.local.room_scoped()
+    }
+
     fn collect_unreferenced(
         &self,
         live: &std::collections::BTreeSet<String>,

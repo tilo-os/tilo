@@ -174,7 +174,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app",
- "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -17373,6 +17372,7 @@ dependencies = [
 name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
+ "tilo-test-env",
  "web-time",
 ]
 
@@ -20006,7 +20006,6 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
- "libc",
  "postcard",
  "serde",
  "serde_json",
@@ -24637,6 +24636,7 @@ dependencies = [
  "data-encoding-macro",
  "data-encoding-macro-internal",
  "data-url",
+ "davey",
  "db-client",
  "delegate",
  "der 0.7.10",
@@ -24864,6 +24864,7 @@ dependencies = [
  "heck",
  "hex",
  "hex-editor",
+ "hex-literal 0.3.4",
  "hex-literal 1.1.0",
  "hexane",
  "hexf-parse",
@@ -25131,6 +25132,8 @@ dependencies = [
  "openmls_traits",
  "option-ext",
  "option-operations",
+ "opus",
+ "opusic-sys",
  "ordered-channel",
  "ordered-float",
  "ordered-stream",
@@ -25361,6 +25364,7 @@ dependencies = [
  "rustypipe",
  "ruzstd",
  "ryu",
+ "salsa20 0.10.2",
  "salsa20 0.11.0",
  "same-file",
  "saturating",
@@ -25370,6 +25374,7 @@ dependencies = [
  "scoped-tls",
  "scopeguard",
  "scratchpad",
+ "scrypt 0.11.0",
  "scrypt 0.12.0",
  "sctk-adwaita",
  "sd-notify",

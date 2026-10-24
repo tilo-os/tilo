@@ -115,11 +115,20 @@ fn group_close_fade() -> Duration {
 /// every rebuild of one frame reads the same value. Closed form: a stalled
 /// frame lands where the motion is, and a new target mid-flight keeps the
 /// value and its velocity, so Super+M twice is one motion, not a queue.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 struct FrameSpring<T: crate::motion::Animatable> {
     motion: crate::motion::MotionValue<T>,
     drawn: T,
     at: Instant,
+}
+
+impl<T: crate::motion::Animatable> Drop for FrameSpring<T> {
+    /// A spring let go mid-way (a shortcut landing what it changed, a
+    /// close completing) is drawn no more: it asks for no more frames.
+    fn drop(&mut self) {
+        let target = self.motion.target();
+        self.motion.snap(target);
+    }
 }
 
 impl FrameSpring<f64> {

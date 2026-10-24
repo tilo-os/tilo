@@ -926,11 +926,8 @@ pub(crate) fn prepare_file_post(
     if name.is_empty() || name.chars().count() > 255 || name.contains(['/', '\\']) {
         return Err("a posted file has a short name without a slash".into());
     }
-    let store = ui::tilo_resource::content::current()
-        .ok_or("this window has no content store to post from")?;
-    let bytes = store
-        .read(&hash)
-        .ok_or("the handed-over file is not on this device; hand it over again here")?;
+    let bytes =
+        ui::tilo_resource::content::read_hash(&hash).map_err(|refusal| refusal.to_string())?;
     let meta = tilo_content::sniff(&bytes);
     let kind = if meta.mime.starts_with("image/") && meta.w > 0 && meta.h > 0 {
         "image"

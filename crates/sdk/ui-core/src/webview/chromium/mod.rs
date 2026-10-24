@@ -5,6 +5,7 @@
 )]
 mod audio;
 mod extension_notification;
+mod extension_omnibox;
 mod extension_permissions;
 mod extension_sign_in;
 pub mod install;
@@ -1987,7 +1988,10 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         | "extension_open_popup"
         | "extension_execute_action"
         | "extension_notification"
-        | "extension_sign_in" => decode_extension_event(value).is_some(),
+        | "extension_sign_in"
+        | "extension_omnibox_suggestions"
+        | "extension_omnibox_default"
+        | "extension_side_panel" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value).is_some()
@@ -2290,7 +2294,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         }
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
-        | WebViewCommand::ExtensionClick { id } => extension_id(id),
+        | WebViewCommand::ExtensionClick { id }
+        | WebViewCommand::ExtensionOpenSidePanel { id } => extension_id(id),
         WebViewCommand::ExtensionMenuChoice { id, key } => {
             extension_id(id) && !key.is_empty() && key.len() <= 1024
         }
@@ -2304,6 +2309,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         }
         WebViewCommand::ExtensionSignInPanel { id, flow } => {
             extension_id(id) && *flow > 0 && i32::try_from(*flow).is_ok()
+        }
+        WebViewCommand::ExtensionOmnibox { id, input } => {
+            extension_id(id) && extension_omnibox::within_limits(input)
         }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
@@ -2458,7 +2466,10 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         | "extension_open_popup"
         | "extension_execute_action"
         | "extension_notification"
-        | "extension_sign_in" => decode_extension_event(value)?,
+        | "extension_sign_in"
+        | "extension_omnibox_suggestions"
+        | "extension_omnibox_default"
+        | "extension_side_panel" => decode_extension_event(value)?,
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value)?
         }
@@ -2774,6 +2785,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         },
         WebViewCommand::ExtensionSignInPanel { id, flow } => {
             json!({"op":"extension_sign_in_panel","id":id,"flow":flow})
+        }
+        WebViewCommand::ExtensionOmnibox { id, input } => extension_omnibox::encode(&id, input),
+        WebViewCommand::ExtensionOpenSidePanel { id } => {
+            json!({"op":"extension_side_panel","id":id})
         }
         WebViewCommand::DevTools {
             request_id,

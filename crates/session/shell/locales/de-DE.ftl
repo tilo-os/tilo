@@ -3159,6 +3159,10 @@ storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und �
 graphics-app-name = Grafik
 graphics-stopped-title = Die Grafik reagiert nicht mehr
 graphics-stopped-body = Alles funktioniert weiter, kann aber langsamer sein, bis du den Computer neu startest.
+crash-notice-app-name = Desktop
+crash-notice-title = Der Desktop wurde neu gestartet
+crash-notice-froze-body = Er reagierte um { $time } nicht mehr. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Bericht darüber bleibt auf diesem Computer.
 
 ## Desk widgets
 

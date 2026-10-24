@@ -52,6 +52,10 @@ struct Openness {
     /// Opened or closed since it was made: a first-build default
     /// ([`DisclosureRow::opened`]) no longer applies.
     touched: bool,
+    /// The motion the person allows, as the row last laid out under it: an
+    /// open or close the view asks for (an agent's action) keeps reduced
+    /// motion as the row's own press does.
+    motion: EffectiveMotion,
 }
 
 impl DisclosureState {
@@ -69,6 +73,7 @@ impl DisclosureState {
             reveal: Presence::opened(),
             body_height: 0.0,
             touched: false,
+            motion: EffectiveMotion::default(),
         })))
     }
 
@@ -79,10 +84,19 @@ impl DisclosureState {
     }
 
     /// Open or close a lone row's state from the view, on the disclose
-    /// motion; a keyed row opens through its group
+    /// motion as the person allows it; a keyed row opens through its group
     /// ([`DisclosureGroup::open`]).
     pub fn set_open(&self, open: bool) {
-        self.show(open, crate::tokens::EffectiveMotion::default());
+        self.show(open, self.motion());
+    }
+
+    /// The motion the row was last laid out under.
+    fn motion(&self) -> EffectiveMotion {
+        self.0.borrow().motion
+    }
+
+    fn set_motion(&self, motion: EffectiveMotion) {
+        self.0.borrow_mut().motion = motion;
     }
 
     /// Open or close on the disclose motion. Returns whether it changed.
@@ -178,15 +192,15 @@ impl DisclosureGroup {
     /// details), closing the group's other rows, on the disclose motion.
     pub fn open(&self, key: &str) {
         let state = self.state(key);
-        let motion = crate::tokens::EffectiveMotion::default();
+        let motion = state.motion();
         state.show(true, motion);
         self.opened(Member::Key(key.to_owned()), &state, motion);
     }
 
     pub fn close(&self, key: &str) {
         let member = Member::Key(key.to_owned());
-        self.state(key)
-            .show(false, crate::tokens::EffectiveMotion::default());
+        let state = self.state(key);
+        state.show(false, state.motion());
         self.closed(&member);
     }
 
@@ -353,11 +367,13 @@ impl DisclosureRow {
             !state.open && !state.touched
         };
         if fresh {
+            let motion = self.state.motion();
             *self.state.0.borrow_mut() = Openness {
                 open: true,
                 reveal: Presence::opened(),
                 body_height: 0.0,
                 touched: false,
+                motion,
             };
             if let Some((group, member)) = &self.group {
                 *group.open.borrow_mut() = Some(member.clone());
@@ -555,6 +571,7 @@ impl Widget for DisclosureRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.motion = theme.motion();
+        self.state.set_motion(self.motion);
         self.follow_group();
         let icon = f64::from(theme.tokens.metrics.icon_control);
         let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
@@ -992,6 +1009,36 @@ mod tests {
                 .with_state(&state)
                 .is_open()
         );
+    }
+
+    /// A view opening its row (an agent's action) moves as the person
+    /// allows: under reduced motion the body lands at once, as it does for
+    /// the row's own press.
+    #[test]
+    fn a_view_opening_keeps_the_motion_its_row_was_laid_out_under() {
+        for (theme, moves) in [
+            (Theme::dark(), true),
+            (Theme::dark().with_reduce_motion(true), false),
+        ] {
+            let state = DisclosureState::new();
+            let mut row = DisclosureRow::new(
+                "Work or school network",
+                Box::new(crate::widget::Spacer::fixed(40.0)),
+            )
+            .with_state(&state);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            row.build_layout(&mut taffy, &theme, &mut nodes);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            state.set_open(true);
+            assert!(state.is_open());
+            assert_eq!(
+                state.is_moving(),
+                moves,
+                "reduced motion: {}",
+                theme.motion().reduced()
+            );
+        }
     }
 
     #[test]

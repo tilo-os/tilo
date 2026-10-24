@@ -220,6 +220,8 @@ fn list_row(row: &Row, engine: &str) -> Suggestion {
             }),
         ),
         RowKind::Suggestion => (Icon::Search, None),
+        // Which extension it goes to.
+        RowKind::Extension => (Icon::Box, Some(row.detail.clone())),
     };
     let suggestion = Suggestion::labelled(row.url.clone(), row.title.clone()).with_icon(icon);
     match subtitle.filter(|line| !line.is_empty()) {
@@ -238,7 +240,7 @@ fn row_key(row: &Row) -> String {
 
 fn describe(row: &Row) -> String {
     match row.kind {
-        RowKind::History => row.detail.clone(),
+        RowKind::History | RowKind::Extension => row.detail.clone(),
         RowKind::Go => format!("Open {}", row.detail),
         RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
     }

@@ -569,10 +569,7 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
             !app.compiling(),
             "the initial compile ran synchronously; nothing in flight"
         );
-        assert!(
-            !app.status.is_visible(ui::time::now()),
-            "no transient toast pending"
-        );
+        assert!(!app.status.is_shown(), "no notice pending");
         assert!(
             !app.needs_animation_frame(),
             "a focused-but-idle editor must not drive continuous redraws"
@@ -597,7 +594,13 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
         work.run_pending();
         app.sync(&doc, &ROOT);
         assert!(app.io.is_none());
-        assert!(app.next_wake_deadline().is_none());
+        // What the dialog came to may be said in the window's bar; only
+        // that notice leaving wakes the editor, no polling.
+        assert_eq!(
+            app.next_wake_deadline(),
+            app.status.deadline(),
+            "nothing polls once the dialog is done"
+        );
     }
     // Case `pending_compile_has_a_non_animation_deadline`.
     {
@@ -612,26 +615,22 @@ fn idle_and_pending_work_schedule_non_animation_deadlines() {
     // Caret/page metadata belongs to the semantic status strip; explicit
     // compile/export feedback remains transient and fades after its linger.
     {
-        let (mut app, _) = fresh();
+        let (mut app, doc) = fresh();
         app.layout_in(Rect::new(0.0, 0.0, 1280.0, 720.0));
         assert_eq!(app.editor_rect.y1, app.status_rect.y0);
         assert_eq!(app.preview_rect.y1, app.status_rect.y0);
         assert_eq!(app.status_rect.y1, app.rect.y1);
         assert!(!app.status_left_label().is_empty());
         assert!(!app.status_right_label().is_empty());
-        let now = ui::time::now();
-        app.status = ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(5));
-        app.status.show("Compiled", now);
-        assert!(app.status.is_visible(now));
-        let past = now
-            .checked_sub(std::time::Duration::from_millis(10))
-            .unwrap();
-        app.status.poke(past);
-        render_once(&mut app);
-        assert!(
-            !app.status.is_visible(ui::time::now()),
-            "transient feedback fades"
+        app.status.show("Compiled".to_owned());
+        app.sync(&doc, &ROOT);
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("Compiled".to_owned()),
+            "transient feedback is said in the window's bar"
         );
+        let gone = app.status.deadline().expect("it leaves on its own");
+        assert!(gone > ui::time::now(), "for a while");
     }
 }
 

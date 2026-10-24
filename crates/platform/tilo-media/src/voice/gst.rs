@@ -73,6 +73,8 @@ pub struct VoiceAudio {
     /// last one, which DTX silence never adds to.
     capture_run: u32,
     capture_last: Option<Instant>,
+    /// Plays silence in place of the call: the person is deafened.
+    deafened: bool,
 }
 impl VoiceAudio {
     /// Start the persistent output pipeline on the observer's exact socket.
@@ -150,6 +152,7 @@ impl VoiceAudio {
             timeline: CaptureTimeline::default(),
             capture_run: 0,
             capture_last: None,
+            deafened: false,
         })
     }
     /// Enqueue bounded startup. The current-authority callback must be a
@@ -482,7 +485,7 @@ impl VoiceAudio {
         } else {
             now
         };
-        let frames: Vec<Vec<i16>> = self
+        let mut frames: Vec<Vec<i16>> = self
             .decoders
             .iter_mut()
             .filter_map(|(publisher, decoder)| {
@@ -493,6 +496,11 @@ impl VoiceAudio {
                 })
             })
             .collect();
+        // Deafened, the call plays on unheard: undeafening hears it as it
+        // is then, never a backlog.
+        if self.deafened {
+            frames.clear();
+        }
         // Keep the playback graph clocked while listening or waiting for remote audio.
         // An idle live appsrc can leave a shared PipeWire graph waiting for its first
         // buffer, including independent capture streams. Empty mixing produces one
@@ -520,6 +528,15 @@ impl VoiceAudio {
     /// talking stays as they speak.
     pub fn set_volumes(&mut self, volumes: BTreeMap<String, u16>) {
         self.volumes = volumes;
+    }
+    /// Play silence in place of the call (`true`), or play it again.
+    pub const fn set_deafened(&mut self, deafened: bool) {
+        self.deafened = deafened;
+    }
+    /// Whether the call plays silence here.
+    #[must_use]
+    pub const fn deafened(&self) -> bool {
+        self.deafened
     }
     /// The publishers heard talking at `now`.
     pub fn heard(&self, now: Instant) -> Vec<PublicationId> {
@@ -1704,6 +1721,57 @@ mod tests {
         );
         audio.playout(now + RECEIVE_LIFETIME).unwrap();
         assert!(audio.decoders[&id].ready.is_empty());
+    }
+
+    #[test]
+    fn deafened_playout_plays_silence_and_consumes_the_call_unheard() {
+        let _device_test = device_test_lock();
+        let (mut audio, sink) = observed_output();
+        let id = PublicationId {
+            namespace: "deafened".into(),
+            carrier_generation: 1,
+            incarnation: 1,
+        };
+        // One frame of the call played at `at`, read back off the output.
+        let played = |audio: &mut VoiceAudio, at: Instant| {
+            let mut decoder = audio
+                .decoders
+                .remove(&id)
+                .unwrap_or_else(|| Decoder::new().unwrap());
+            decoder.ready.push_back(PcmFrame {
+                samples: vec![1000; 960],
+                expires_at: at + RECEIVE_LIFETIME,
+            });
+            audio.decoders.insert(id.clone(), decoder);
+            audio.playout(at).unwrap();
+            let sample = sink
+                .try_pull_sample(hang_bound())
+                .expect("the output carries a frame");
+            let buffer = sample.buffer().unwrap().map_readable().unwrap();
+            buffer
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0)
+        };
+        let start = Instant::now();
+        assert!(played(&mut audio, start) > 0, "the call is heard");
+        audio.set_deafened(true);
+        assert!(audio.deafened());
+        assert_eq!(
+            played(&mut audio, start + FRAME_DURATION),
+            0,
+            "deafened, the output is silent"
+        );
+        assert!(
+            audio.decoders[&id].ready.len() <= 1,
+            "the call plays on unheard, no backlog builds"
+        );
+        audio.set_deafened(false);
+        assert!(
+            played(&mut audio, start + FRAME_DURATION * 2) > 0,
+            "undeafened, heard again"
+        );
     }
 
     #[test]

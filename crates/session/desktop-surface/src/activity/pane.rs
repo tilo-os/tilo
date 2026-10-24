@@ -375,6 +375,13 @@ fn resume_card_ground(theme: &Theme) -> vello::peniko::Color {
     ui::tokens::colors::over(sheet, colors.text_primary, RESUME_CARD_WASH)
 }
 
+/// The explorer's browse and detail panes as they reach the screen: an
+/// opaque lift laid over the sheet, so text in them is measured here and not
+/// on the sheet (the light theme is darker here than on the sheet).
+fn explorer_pane_ground(theme: &Theme) -> vello::peniko::Color {
+    theme.tokens.colors.lift(0.35)
+}
+
 /// Accent-toned text on `ground`: the accent as ink, stepped out until it
 /// reads there as text. `intent.accent_hover` is a fill: on the dark theme
 /// it read at 1.9:1 on the resume card.
@@ -3184,7 +3191,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.lift(0.35),
+                explorer_pane_ground(theme),
                 None,
                 &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
             );
@@ -3359,7 +3366,7 @@ impl RoomActivityPane {
         tr.draw_style(
             scene,
             &t("activity-agent-task"),
-            accent_text_on(theme, ui::chrome::shell::panel_ground(theme)),
+            accent_text_on(theme, explorer_pane_ground(theme)),
             at(transform, x, y),
             None,
             &theme

@@ -26,7 +26,7 @@
 //! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
 //!
 //! What a participant shows besides its voice (its camera, a shared screen,
-//! whether its microphone is off) is [`Showing`], set with
+//! whether its microphone is off or it is deafened) is [`Showing`], set with
 //! [`Envelope::VoiceShow`](crate::Envelope::VoiceShow) and carried on its
 //! [`VoiceParticipant`] in every grant and call list, so everyone sees who
 //! has a camera on, shares a screen or is muted before any picture arrives.
@@ -201,6 +201,10 @@ pub struct Bridged {
 /// What a participant shows besides its voice: its pictures are published
 /// on the carrier while it shows them (tilo-video/1, `tilo_moq::video`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own fact the others see: camera, screen, muted, deafened"
+)]
 pub struct Showing {
     pub camera: bool,
     /// It shares a screen.
@@ -208,6 +212,9 @@ pub struct Showing {
     /// Its microphone is off: everyone sees it muted. A participant that may
     /// not publish counts as muted.
     pub muted: bool,
+    /// It hears nothing of the call (and is muted): everyone sees it
+    /// deafened.
+    pub deafened: bool,
 }
 
 /// The call that is room `room`'s window carrier: every member device of a

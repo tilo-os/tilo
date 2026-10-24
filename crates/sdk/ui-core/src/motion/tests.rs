@@ -763,6 +763,35 @@ fn any_motion_value_started_asks_the_clock_for_its_frames() {
     );
 }
 
+/// A motion jumped to its end mid-way (a shortcut landing what it changed,
+/// an owner letting it go) takes back its wish: the clock asks for no frame
+/// it would never draw, while another motion still moving keeps its own.
+#[test]
+fn a_motion_landed_mid_way_asks_for_no_more_frames() {
+    let start = crate::time::now();
+    let mut landed = MotionValue::new(0.0_f64);
+    let mut moving = MotionValue::new(0.0_f64);
+    landed.set(100.0, base_timing(), start);
+    moving.set(10.0, base_timing(), start);
+    assert!(frames_wanted(start));
+    landed.snap(100.0);
+    assert_eq!(
+        frames_until(),
+        moving.settles_at(),
+        "only the motion still moving asks"
+    );
+    moving.snap(10.0);
+    assert!(
+        !frames_wanted(start),
+        "both landed: no frame, not even one at rest, is owed by the clock"
+    );
+    // A retarget replaces the motion's wish rather than adding one.
+    let mut retargeted = MotionValue::new(0.0_f64);
+    retargeted.set(100.0, base_timing(), start);
+    retargeted.set(1.0, base_timing(), start);
+    assert_eq!(frames_until(), retargeted.settles_at());
+}
+
 /// A motion that asks the clock for frames is named while it moves: the
 /// place that started it, so a frame nobody can see in the widget tree
 /// (a menu an owner draws in its own pass) is still attributed.

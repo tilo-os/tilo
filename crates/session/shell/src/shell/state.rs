@@ -5314,6 +5314,9 @@ impl WorkspaceTree {
         // while replication still describes the old layout.
         let before_workspaces = self.desktop.workspaces.clone();
         let before_doc = self.doc.clone();
+        // The move hands the source strip's focus on when the window's group
+        // leaves with it; a refused move must leave that focus where it was.
+        let before_focus = self.desktop.active_group.get(&src_strip_id).copied();
         let Some(moved) = self.desktop.move_tab_across_strips(
             src_strip_id,
             dest_strip_id,
@@ -5337,6 +5340,14 @@ impl WorkspaceTree {
             );
             self.desktop.workspaces = before_workspaces;
             self.doc = before_doc;
+            match before_focus {
+                Some(group) => {
+                    self.desktop.active_group.insert(src_strip_id, group);
+                }
+                None => {
+                    self.desktop.active_group.remove(&src_strip_id);
+                }
+            }
             return false;
         }
         self.queue_save();
@@ -8830,6 +8841,45 @@ mod automerge_foundation_tests {
                 "failed document commit must restore the exact source layout"
             );
         }
+    }
+
+    #[test]
+    fn a_refused_move_leaves_the_strip_focused_on_the_window_that_stayed() {
+        // The person's focused window is its group's only tab; the move to
+        // another strip is refused because the document cannot record it
+        // ("Couldn't move the window. Try again."). The window stays, and
+        // so must the strip's focus: handing it to the neighbour, as a move
+        // that happened does, would leave the window the person was in
+        // unfocused for a move that never happened.
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let dst_strip = StripId::new();
+        tree.desktop.workspaces[0].strips.push(Strip {
+            id: dst_strip,
+            name: "Dest".into(),
+            window_groups: Vec::new(),
+        });
+        let src_strip = tree.desktop.workspaces[0].strips[0].id;
+        let mut alone = tree.desktop.workspaces[0].strips[0].window_groups[0].clone();
+        alone.id = next_id();
+        alone.tabs.truncate(1);
+        alone.tabs[0].id = next_id();
+        alone.active_tab = 0;
+        alone.focus_history.clear();
+        let (group, tab) = (alone.id, alone.tabs[0].id);
+        tree.desktop.workspaces[0].strips[0]
+            .window_groups
+            .push(alone);
+        tree.desktop.set_active_group(src_strip, group);
+        tree.doc = automerge::AutoCommit::new();
+
+        assert!(!tree.move_tab_across_strips(
+            src_strip,
+            dst_strip,
+            tab,
+            next_id(),
+            DropTarget::GroupGap { gap_index: 0 },
+        ));
+        assert_eq!(tree.desktop.active_group_for(src_strip), Some(group));
     }
 
     #[test]

@@ -53,9 +53,9 @@ use ui::text_render::{ParagraphAlign, TextRenderer};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, Container, ControlSize, DropZone, EmptyState, Field,
-    ListRow, ProgressRing, ProgressRingSize, Property, PropertyList, Row, Section, Spacer, Text,
-    TextInput, Tone, Widget,
+    Banner, Button, ButtonRole, Column, ControlSize, DropZone, EmptyState, Field, ListRow,
+    ProgressRing, ProgressRingSize, Property, PropertyList, Row, Section, Spacer, Text, TextInput,
+    Tone, Widget,
 };
 
 use crate::customize::CzField;
@@ -1153,23 +1153,10 @@ impl ImagerApp {
         Some(Box::new(row))
     }
 
+    /// The drives to write to. Rescan is the window bar's
+    /// ([`window_bar`]); the step's title stays the wizard's.
     fn drive_body(&self) -> Column {
-        let header = Row::new()
-            .no_wrap()
-            .with_align_items(taffy::AlignItems::Center)
-            .push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_flex_grow()
-                    .with_child(Box::new(page::title("Choose a drive"))),
-            ))
-            .push(Box::new(
-                self.button("imager.rescan", "Rescan", Command::Rescan)
-                    .with_icon(Icon::Refresh)
-                    .control_size(ControlSize::Small)
-                    .with_accessible_name("Rescan drives"),
-            ));
-        let body = page::body_with(Box::new(header)).push(Box::new(Text::new(
+        let body = page::body("Choose a drive").push(Box::new(Text::new(
             &self.required_capacity().map_or_else(
                 || crate::setup::strings::t("installer-media-capacity-checking"),
                 |required| {
@@ -3345,6 +3332,7 @@ impl Widget for ImagerApp {
     ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.take_window_toolbar_events();
         self.renew_prepared_artifact();
         if !self.seeded {
             // Start genuinely blank. In the live app a real `lsblk` probe
@@ -3399,15 +3387,24 @@ impl Widget for ImagerApp {
             self.export_config();
         }
         self.refresh_view();
+        self.declare_window_toolbar();
         self.composed.sync(_state, _path);
         self.dirty = true;
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        // The window bar's slots are pressed between events.
+        let asked = self.take_window_toolbar_events();
+        if asked {
+            self.drain_commands();
+        }
         self.refresh_view();
-        self.composed
+        self.declare_window_toolbar();
+        let changed = self
+            .composed
             .element_mut()
-            .is_some_and(|view| view.update(state, path))
+            .is_some_and(|view| view.update(state, path));
+        changed || asked
     }
 
     fn build_layout(
@@ -3572,6 +3569,8 @@ impl Widget for ImagerApp {
             || self.release_download.is_some()
     }
 }
+
+mod window_bar;
 
 #[cfg(test)]
 mod tests {

@@ -164,7 +164,9 @@ pub enum Command {
     /// as failed in every output's next wake, whatever it observes, so a test
     /// proves on hardware that never fails that the wake check sees it and
     /// redoes the modeset. Answered by the native test transport.
-    DisplayWakeFault { stage: String },
+    DisplayWakeFault {
+        stage: crate::compositor::backend::WakeStage,
+    },
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.

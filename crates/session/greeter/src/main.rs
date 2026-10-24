@@ -82,6 +82,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and keep them configured (hotplug) for as long as the greeter runs.
     // Session and sign-in use the same physical panel-DPI policy.
     let displays = greeter::output_scale::start();
+    // Record, for the boot assessment, the first keyboard or touch screen
+    // the kiosk gives this window.
+    greeter::seat_input::start();
 
     let wake_scope = ui::wake::WakeScope::new();
     let _wake_entry = wake_scope.enter();

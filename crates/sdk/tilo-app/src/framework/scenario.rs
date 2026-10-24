@@ -76,6 +76,10 @@ pub(crate) struct Run {
     pub(crate) people: super::People,
     /// Opens another record in this window, in a window someone uses.
     pub(crate) opener: Option<super::launch::OpenHere>,
+    /// A capture a headless drive invokes actions on
+    /// ([`Capture::driven`](ui_core::application::Capture::driven)): the
+    /// effects it is asked for run, though it starts no work on its own.
+    pub(crate) driven: bool,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -129,6 +133,7 @@ impl Run {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
         }
     }
 
@@ -156,7 +161,15 @@ impl Run {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
         }
+    }
+
+    /// The same run, a capture a headless drive invokes actions on when
+    /// `driven`.
+    pub(crate) fn driven_by_drive(mut self, driven: bool) -> Self {
+        self.driven = driven;
+        self
     }
 
     /// The same run, able to open another record in its window.
@@ -413,6 +426,7 @@ impl<R: Resource> Fixture<R> {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
         }
     }
 

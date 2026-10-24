@@ -3863,7 +3863,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_dirty
             || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self.drawn_signature != Some(self.paint_signature())
-            || self.faces.is_moving(crate::motion::frame_now())
+            || self.faces.needs_redraw(crate::motion::frame_now())
             || self.momentum.is_active()
             || self.fade_drawn < 1.0
             || self.fade_shown < 1.0
@@ -3917,11 +3917,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.faces.is_moving(crate::motion::frame_now())
-            || self
-                .bar_fade
-                .get()
-                .fading_at(crate::motion::frame_now(), self.bar_held.get())
+        // Painted checkboxes ask the motion clock for their own frames
+        // (`FaceMotions`); the host reads it.
+        self.bar_fade
+            .get()
+            .fading_at(crate::motion::frame_now(), self.bar_held.get())
             || self.momentum.is_active()
             || self.reveal_in_progress()
             || self.model.needs_poll()

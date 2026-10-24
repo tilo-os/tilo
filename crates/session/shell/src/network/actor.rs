@@ -793,10 +793,6 @@ struct TopicRuntime {
     /// When this device last announced its identity to the topic's
     /// neighbours ([`IDENTITY_ANSWER_INTERVAL`]).
     identity_announced: Option<Instant>,
-    /// Whether gossip has had a neighbour on the topic: a `NeighborUp`, or a
-    /// lag that may have hidden one. Until then nothing is handed to gossip
-    /// (see [`Self::broadcast`]).
-    linked: bool,
 }
 
 impl TopicRuntime {
@@ -813,32 +809,7 @@ impl TopicRuntime {
             pump,
             identity_sent: None,
             identity_announced: None,
-            linked: false,
         }
-    }
-
-    /// Broadcast `bytes` to the topic's swarm, once it has had a neighbour.
-    ///
-    /// Before that gossip has nobody to send it to, and a neighbour that
-    /// comes later is never offered an older message: the shell syncs it
-    /// when it joins (`NetEvent::PeerJoined`). All a broadcast into an
-    /// empty topic would do is start the topic's cache sweep
-    /// ([`GOSSIP_CACHE_SWEEP`]), which then runs until the message expires
-    /// (`gossip_caches_drain_within`), so a desktop alone with its rooms
-    /// would wake for every local change. Only a linked topic broadcasts.
-    async fn broadcast(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
-        if !self.linked {
-            return Ok(());
-        }
-        self.sender.broadcast(bytes).await
-    }
-
-    /// [`Self::broadcast`] to the topic's direct neighbours only.
-    async fn broadcast_neighbors(&self, bytes: Bytes) -> Result<(), iroh_gossip::api::ApiError> {
-        if !self.linked {
-            return Ok(());
-        }
-        self.sender.broadcast_neighbors(bytes).await
     }
 }
 
@@ -3183,17 +3154,6 @@ impl ActorState {
         )
     }
 
-    /// A neighbour on `ws`, traffic only a neighbour delivers, or a lag that
-    /// may have hidden one: from here on the topic broadcasts
-    /// ([`TopicRuntime::broadcast`]).
-    fn note_topic_linked(&mut self, ws: WorkspaceId, event: &GossipEvent) {
-        if !matches!(event, GossipEvent::NeighborDown(_))
-            && let Some(topic) = self.topics.get_mut(&ws)
-        {
-            topic.linked = true;
-        }
-    }
-
     /// [`InternalEvent::Topic`] arm of [`Self::handle_internal`], split out
     /// to keep that dispatcher short.
     /// Whether a message `peer` sent on `ws` is news. A codec advert
@@ -3221,7 +3181,6 @@ impl ActorState {
     }
 
     async fn handle_topic_event(&mut self, ws: WorkspaceId, event: GossipEvent) {
-        self.note_topic_linked(ws, &event);
         if matches!(event, GossipEvent::NeighborUp(_)) {
             // Authenticate this device, and say what it can decode, as soon
             // as the link is usable: once per link, never on a timer. State
@@ -3644,7 +3603,7 @@ impl ActorState {
             let Some(topic) = self.topics.get(&ws) else {
                 continue;
             };
-            if let Err(error) = topic.broadcast(bytes).await {
+            if let Err(error) = topic.sender.broadcast(bytes).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         }
@@ -3824,7 +3783,7 @@ impl ActorState {
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
         topic.identity_announced = Some(Instant::now());
-        if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
     }
@@ -3853,7 +3812,7 @@ impl ActorState {
         }
         tracing::info!(ws, "device identity material changed; announcing it again");
         topic.identity_announced = Some(Instant::now());
-        if let Err(error) = topic.broadcast_neighbors(Bytes::from(bytes)).await {
+        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
             tracing::warn!(ws, %error, "could not send collaboration identity announcement");
         }
         for ((session_ws, _), runtime) in &self.host_sessions {
@@ -3880,7 +3839,7 @@ impl ActorState {
         };
         self.caps_sent = Some(message_fingerprint(&bytes));
         if let Some(topic) = self.topics.get(&ws) {
-            let _ = topic.broadcast_neighbors(Bytes::from(bytes)).await;
+            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
         }
     }
 
@@ -3898,7 +3857,10 @@ impl ActorState {
             return;
         }
         for topic in self.topics.values() {
-            let _ = topic.broadcast_neighbors(Bytes::from(bytes.clone())).await;
+            let _ = topic
+                .sender
+                .broadcast_neighbors(Bytes::from(bytes.clone()))
+                .await;
         }
     }
 
@@ -4452,8 +4414,8 @@ async fn sleep_until_lapse(at: Option<Instant>) {
 /// [`GOSSIP_CACHE_SWEEP`] instead, a topic with messages wakes its runtime
 /// a tenth as often. The vendored iroh-gossip (`vendor/iroh-gossip/
 /// TILO-PATCH.md`) arms it on a topic's first cached message and stops it
-/// once the caches are empty (`gossip_caches_drain_within`); a topic that
-/// never had a neighbour caches nothing ([`TopicRuntime::broadcast`]).
+/// once the caches are empty (`gossip_caches_drain_within`); a topic with
+/// no neighbour caches nothing.
 const GOSSIP_CACHE_SWEEP: Duration = Duration::from_secs(10);
 /// How long gossip keeps a message to answer a neighbour's graft for it.
 /// iroh-gossip's 30 s less the longer sweep, so a message is still gone
@@ -4560,7 +4522,7 @@ async fn publish(
     }
     if broadcast_gossip {
         if let Some(topic) = topics.get(&ws) {
-            if let Err(error) = topic.broadcast(Bytes::from(bytes)).await {
+            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
                 tracing::warn!(ws, %error, "iroh gossip publish failed");
             }
         } else if host_sessions
@@ -5407,12 +5369,11 @@ mod tests {
         );
     }
 
-    /// A topic hands nothing to gossip until it has had a neighbour, so a
-    /// desktop alone with its rooms never arms gossip's per-topic cache
-    /// sweep, which would otherwise run for the rest of the session. Once
-    /// linked, it broadcasts and the sweep runs.
+    /// What a desktop alone with its rooms broadcasts reaches nobody, so it
+    /// never arms gossip's per-topic cache sweep, which would otherwise run
+    /// until the message expires (`gossip_caches_drain_within`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn a_topic_that_never_had_a_neighbour_never_arms_the_gossip_sweep() {
+    async fn a_topic_with_no_neighbour_never_arms_the_gossip_sweep() {
         const SWEEP: Duration = Duration::from_millis(20);
         let endpoint = Endpoint::builder(iroh::endpoint::presets::Minimal)
             .relay_mode(iroh::RelayMode::Disabled)
@@ -5432,33 +5393,23 @@ mod tests {
             .await
             .unwrap()
             .split();
-        let mut topic = TopicRuntime::new(sender, tokio::spawn(std::future::pending()));
+        let topic = TopicRuntime::new(sender, tokio::spawn(std::future::pending()));
         let timers = || gossip.metrics().actor_tick_timers.get();
 
         for _ in 0..3 {
             topic
+                .sender
                 .broadcast(Bytes::from_static(b"a local change"))
                 .await
                 .unwrap();
             topic
+                .sender
                 .broadcast_neighbors(Bytes::from_static(b"an identity"))
                 .await
                 .unwrap();
         }
         tokio::time::sleep(SWEEP.saturating_mul(10)).await;
         assert_eq!(timers(), 0, "gossip woke for a topic nobody else is on");
-
-        topic.linked = true;
-        topic
-            .broadcast(Bytes::from_static(b"a change a neighbour hears"))
-            .await
-            .unwrap();
-        tilo_test_env::within("a linked topic's cache sweep", async {
-            while timers() < 2 {
-                tokio::time::sleep(SWEEP).await;
-            }
-        })
-        .await;
         topic.pump.abort();
         endpoint.close().await;
     }

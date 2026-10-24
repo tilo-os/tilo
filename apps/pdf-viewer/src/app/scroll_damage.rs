@@ -14,10 +14,9 @@ pub(super) struct CanvasShown {
     pub(super) rect: Rect,
     pub(super) transform: Affine,
     pub(super) current_page: usize,
-    /// The vertical and horizontal scroll bar thumbs, and the page bubble,
-    /// which stay put while the content moves under them.
+    /// The vertical and horizontal scroll bar thumbs, which stay put while
+    /// the content moves under them.
     pub(super) thumbs: [Option<Rect>; 2],
-    pub(super) bubble: Rect,
     /// The selection's bar, which stands where the selection was when it
     /// was drawn while the pages scroll under it.
     pub(super) hud: Rect,
@@ -60,9 +59,6 @@ impl ui::scroll_copy::Shown for CanvasShown {
                 self.canvas.x1,
                 self.canvas.y1,
             ));
-        }
-        if self.bubble.area() > 0.0 {
-            out.push(self.bubble.expand());
         }
         if self.hud.area() > 0.0 {
             out.push(self.hud.expand());

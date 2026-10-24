@@ -41,7 +41,7 @@ elif args[0] in ('rm', 'run'):
 elif args[0] == 'build':
     if '--iidfile' in args:
         open(args[args.index('--iidfile')+1], 'w').write('sha256:' + '2'*64)
-    open(os.environ['CONTAINERFILE'], 'w').write(sys.stdin.read())
+    open(os.environ['CONTAINERFILE'], 'w').write(open(args[args.index('-f')+1]).read())
 elif args[:2] != ['image', 'exists']: sys.exit(99)
 ''')
         (self.root / 'podman').chmod(0o755)

@@ -272,6 +272,23 @@ pub struct ExtensionActionChange {
     pub icon: Option<Option<ExtensionActionIcon>>,
 }
 
+/// What an extension asks of its side panel beside a tab's page; each
+/// address is among the extension's own pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionSidePanelChange {
+    /// Show this page (`sidePanel.open`, or the person opening it).
+    Open(String),
+    /// A click on its toolbar button, when it asked for its panel to open
+    /// on one (`openPanelOnActionClick`): show this page, or close the
+    /// panel where it shows.
+    Toggle(String),
+    /// Its options changed: where it shows, show this page now, or close
+    /// for `None` (turned off for the tab).
+    Options(Option<String>),
+    /// `sidePanel.close`.
+    Close,
+}
+
 /// An icon an extension gave its toolbar button.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionActionIcon {
@@ -338,6 +355,35 @@ pub struct ExtensionNotice {
     pub buttons: Vec<String>,
     /// How far along a progress notification is, from 0 to 100.
     pub progress: Option<u8>,
+    /// Shown without a sound: the extension asked so, or this changes one
+    /// already shown (`notifications.update`, as a download's progress does).
+    pub silent: bool,
+}
+
+/// What the person did in the Browser's address after an extension's
+/// keyword (the manifest's `omnibox`), which the extension hears of as in
+/// Chrome (`chrome.omnibox`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OmniboxInput {
+    /// They typed the keyword and a space: what follows is the extension's.
+    Started,
+    /// What follows the keyword is now `text`; the extension's suggestions
+    /// for it answer `request`.
+    Changed { text: String, request: u32 },
+    /// They pressed Enter on `text`, or chose a suggestion whose content it
+    /// is: the extension acts, often sending the page somewhere.
+    Entered { text: String },
+    /// They left the keyword without Enter.
+    Cancelled,
+}
+
+/// One suggestion an extension made for what follows its keyword: what
+/// choosing it enters, and what it says, in Chrome's markup (`<match>`,
+/// `<dim>`, `<url>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmniboxSuggestion {
+    pub content: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -589,7 +635,8 @@ pub enum WebViewCommand {
         flow: u32,
     },
     /// The person clicked an extension's toolbar button over this page: the
-    /// extension hears of it (`action.onClicked`) and may script the page.
+    /// extension hears of it (`action.onClicked`) and may script the page,
+    /// or its side panel opens or closes when it asked for that.
     ExtensionClick {
         id: String,
     },
@@ -607,6 +654,19 @@ pub enum WebViewCommand {
         id: String,
         notification: String,
         button: Option<u8>,
+    },
+    /// The person typed after the extension's keyword in this page's
+    /// address: the extension hears of it (`chrome.omnibox`), and Enter lets
+    /// it act on the page as a click on its button would.
+    ExtensionOmnibox {
+        id: String,
+        input: OmniboxInput,
+    },
+    /// The person opened an extension's side panel beside this page: the
+    /// engine answers with [`WebViewEvent::ExtensionSidePanel`] once the
+    /// extension says which of its pages it shows here, if any.
+    ExtensionOpenSidePanel {
+        id: String,
     },
     DownloadDecision {
         id: u32,
@@ -720,6 +780,26 @@ pub enum WebViewEvent {
         url: String,
         interactive: bool,
         flow: u32,
+    },
+    /// What an extension suggests for what follows its keyword in this
+    /// page's address, answering `request` ([`OmniboxInput::Changed`]).
+    ExtensionOmniboxSuggestions {
+        id: String,
+        request: u32,
+        suggestions: Vec<OmniboxSuggestion>,
+    },
+    /// The suggestion an extension shows first while its keyword is typed
+    /// (`omnibox.setDefaultSuggestion`), in Chrome's markup with `%s` for
+    /// what is typed; `None` for none.
+    ExtensionOmniboxDefault {
+        id: String,
+        description: Option<String>,
+    },
+    /// What an extension asks of its side panel beside this tab's page
+    /// (`chrome.sidePanel`).
+    ExtensionSidePanel {
+        id: String,
+        change: ExtensionSidePanelChange,
     },
     SiteStatus(SiteStatus),
     SiteResult {

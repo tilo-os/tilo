@@ -61,6 +61,7 @@ mod inspector_layout;
 mod inspector_paint;
 mod interaction;
 mod layout;
+mod notices;
 mod paint;
 mod preview_paint;
 mod project_workflow;
@@ -253,27 +254,19 @@ enum NoticeLevel {
 }
 
 impl NoticeLevel {
-    /// The banner this level is told in.
-    fn banner_kind(self) -> ui::widget::BannerKind {
+    /// The kind of bar notice this level is told in.
+    fn toast_kind(self) -> ui::widget::toast::ToastKind {
+        use ui::widget::toast::ToastKind;
         match self {
-            Self::Ok => ui::widget::BannerKind::Info,
-            Self::Warning => ui::widget::BannerKind::Warning,
-            Self::Failed => ui::widget::BannerKind::Error,
-        }
-    }
-
-    /// The tone a badge or a progress fill takes at this level.
-    fn tone(self) -> ui::widget::Tone {
-        match self {
-            Self::Ok => ui::widget::Tone::Neutral,
-            Self::Warning => ui::widget::Tone::Warning,
-            Self::Failed => ui::widget::Tone::Danger,
+            Self::Ok => ToastKind::Info,
+            Self::Warning => ToastKind::Warning,
+            Self::Failed => ToastKind::Error,
         }
     }
 }
 
 /// How many refused files a batch names before it starts counting the rest.
-/// The bin's notice strip is one line; naming every refusal in a fifty-file
+/// The bar's notice is one line; naming every refusal in a fifty-file
 /// batch would elide the reasons away again.
 const IMPORT_REFUSALS_NAMED: usize = 2;
 
@@ -296,6 +289,8 @@ impl ImportReport {
 struct Notice {
     level: NoticeLevel,
     text: String,
+    /// What the person can do about it, when it asks them to act.
+    action: Option<notices::NoticeAction>,
 }
 
 impl Notice {
@@ -303,6 +298,7 @@ impl Notice {
         Self {
             level: NoticeLevel::Ok,
             text: text.into(),
+            action: None,
         }
     }
 
@@ -310,6 +306,7 @@ impl Notice {
         Self {
             level: NoticeLevel::Warning,
             text: text.into(),
+            action: None,
         }
     }
 
@@ -317,7 +314,14 @@ impl Notice {
         Self {
             level: NoticeLevel::Failed,
             text: text.into(),
+            action: None,
         }
+    }
+
+    /// The notice with `action` beside it in the bar.
+    fn with_action(mut self, action: notices::NoticeAction) -> Self {
+        self.action = Some(action);
+        self
     }
 
     #[cfg(test)]
@@ -1015,11 +1019,11 @@ pub struct VideoEditorApp {
     import_rx: Option<ImportChannel>,
     /// A contents chooser, where files have no path (a browser page).
     import_contents_rx: Option<ui::portal::ContentsChannel>,
-    /// A short, honest status line shown after an import attempt (how many
-    /// clips landed, which files were refused and why, or why the portal
-    /// round-trip failed). Never a fake success, and it carries its own
+    /// What the last import did, said in the window's bar: how many clips
+    /// landed, which files were refused and why, or why the portal
+    /// round-trip failed. Never a fake success, and it carries its own
     /// severity rather than leaving the tint to be guessed from its prose.
-    import_notice: Option<Notice>,
+    import_notice: ui::widget::toast::Transient<Notice>,
     /// A file queued to import on the next `sync` (deterministic `--shots` /
     /// tests seed a real clip here instead of opening the portal).
     pending_imports: Vec<PathBuf>,
@@ -1270,11 +1274,14 @@ pub struct VideoEditorApp {
     /// A project open/save portal round-trip in flight, drained each `sync`
     /// exactly like the import and export-destination ones.
     project_rx: Option<portal::ProjectChannel>,
-    /// A short, honest line about the last project-file operation. Never a
-    /// fake success: a save that failed says why, and a project opened with
-    /// sources this device cannot read says which. Carries its own severity —
-    /// see [`NoticeLevel`].
-    project_notice: Option<Notice>,
+    /// What the last project-file operation did, said in the window's bar.
+    /// Never a fake success: a save that failed says why, and a project
+    /// opened with sources this device cannot read says which. Carries its
+    /// own severity — see [`NoticeLevel`].
+    project_notice: ui::widget::toast::Transient<Notice>,
+    /// Why the last save of this project failed, until a save succeeds: its
+    /// notice stays in the bar with Try again for as long.
+    save_failure: Option<String>,
     /// The project file or render job an effect started, answered through
     /// `resource_reply` once it settles.
     resource_operation: Option<crate::actions::VideoEditorEffect>,
@@ -1430,7 +1437,7 @@ impl VideoEditorApp {
             export_status: ExportStatus::Idle,
             import_rx: None,
             import_contents_rx: None,
-            import_notice: None,
+            import_notice: ui::widget::toast::Transient::new(),
             pending_imports: Vec::new(),
             undo: ui::UndoAccess::default(),
             #[cfg(feature = "decode")]
@@ -1501,7 +1508,8 @@ impl VideoEditorApp {
             saving_heads: None,
             saved_heads: None,
             project_rx: None,
-            project_notice: None,
+            project_notice: ui::widget::toast::Transient::new(),
+            save_failure: None,
             resource_operation: None,
             resource_reply: None,
             resource_pending_operation: None,
@@ -1728,14 +1736,24 @@ impl VideoEditorApp {
     }
 
     /// Where the timeline starts in the room between the header row and
-    /// the window's bottom edge: the divider the person drags.
+    /// the window's bottom edge: the divider the person drags, held where
+    /// the picture fills the preview's width so the room past it goes to
+    /// the timeline (the ratio stays for a wider window).
     fn timeline_top(&self, below_header: f64, bottom: f64) -> f64 {
-        (below_header
-            + self
-                .timeline_split
-                .ratio()
-                .first_extent((bottom - below_header).max(0.0)))
-        .round()
+        let extent = self
+            .timeline_split
+            .ratio()
+            .first_extent((bottom - below_header).max(0.0))
+            .min(self.preview_fill_height());
+        (below_header + extent).round()
+    }
+
+    /// Hand the divider its room and the most the preview can use.
+    fn place_timeline_split(&mut self) {
+        let bounds = self.timeline_split_bounds();
+        let most = self.preview_fill_height();
+        self.timeline_split.set_first_max(Some(most));
+        self.timeline_split.set_rect(bounds, &self.chrome_theme);
     }
 
     /// The room the divider moves in: the whole editor.
@@ -1750,8 +1768,7 @@ impl VideoEditorApp {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+        self.place_timeline_split();
         self.timeline_split.handle_event(event, ctx)
     }
 
@@ -4999,7 +5016,8 @@ impl VideoEditorApp {
     /// (`ui::portal`). The picker is a pure-Rust round-trip compiled into every
     /// build; the chosen files are drained each frame in [`Self::drain_import`].
     fn trigger_import(&mut self) {
-        self.import_notice = Some(Notice::ok("Choose media to import…"));
+        self.import_notice
+            .show_progress(Notice::ok("Choose media to import…"));
         if tilo_files::available(tilo_files::Feature::NativePaths) {
             self.import_rx = Some(portal::request_import());
         } else {
@@ -5031,11 +5049,13 @@ impl VideoEditorApp {
                         Err(reason) => report.refused.push((file.name, reason)),
                     }
                 }
-                self.import_notice = Some(import_report_notice(&report));
+                self.import_notice.show(import_report_notice(&report));
             }
-            ui::portal::ContentsOutcome::Cancelled => self.import_notice = None,
+            ui::portal::ContentsOutcome::Cancelled => {
+                self.import_notice.dismiss();
+            }
             ui::portal::ContentsOutcome::Failed(reason) => {
-                self.import_notice = Some(Notice::failed(reason));
+                self.import_notice.show(Notice::failed(reason));
             }
         }
     }
@@ -5246,7 +5266,7 @@ impl VideoEditorApp {
             VideoEditorEffect::Import { .. }
                 if self.import_rx.is_none() && self.pending_imports.is_empty() =>
             {
-                self.import_notice.as_ref().map(|notice| {
+                self.import_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
                         Err(notice.text.clone())
                     } else {
@@ -5261,7 +5281,7 @@ impl VideoEditorApp {
                     && self.resource_pending_operation.is_none()
                     && self.pending_open.is_none() =>
             {
-                self.project_notice.as_ref().map(|notice| {
+                self.project_notice.get().map(|notice| {
                     if notice.level == NoticeLevel::Failed {
                         Err(notice.text.clone())
                     } else {
@@ -5297,7 +5317,7 @@ impl VideoEditorApp {
         if !self.pending_imports.is_empty() {
             let paths = std::mem::take(&mut self.pending_imports);
             let report = self.import_files(&paths);
-            self.import_notice = Some(import_report_notice(&report));
+            self.import_notice.show(import_report_notice(&report));
             if self.media_pipeline.auto_place_imports
                 && let Some(mid) = self.selected_media
             {
@@ -5322,10 +5342,10 @@ impl VideoEditorApp {
         match outcome {
             Some(ImportOutcome::Selected(paths)) => {
                 let report = self.import_files(&paths);
-                self.import_notice = Some(import_report_notice(&report));
+                self.import_notice.show(import_report_notice(&report));
             }
             Some(ImportOutcome::Cancelled) => {
-                self.import_notice = None;
+                self.import_notice.dismiss();
                 if self.resource_reply.is_some() {
                     self.settle_resource_job(Err("media selection was cancelled".into()));
                 }
@@ -5334,7 +5354,7 @@ impl VideoEditorApp {
             // the real-desktop build") is nothing like a probe's, which is
             // exactly why the tint cannot be read back out of the words.
             Some(ImportOutcome::Failed(reason)) => {
-                self.import_notice = Some(Notice::failed(reason));
+                self.import_notice.show(Notice::failed(reason));
             }
             None => {}
         }
@@ -5343,7 +5363,7 @@ impl VideoEditorApp {
     /// Import a batch of files, reporting what landed *and* what did not.
     ///
     fn import_files(&mut self, paths: &[PathBuf]) -> ImportReport {
-        self.import_notice = None;
+        self.import_notice.dismiss();
         let mut report = ImportReport::default();
         for path in paths {
             match self.try_import_one(path) {
@@ -6100,8 +6120,7 @@ impl VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
 
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, theme);
+        self.place_timeline_split();
         let mut regions = self.regions();
         if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
@@ -6185,6 +6204,7 @@ impl Widget for VideoEditorApp {
     )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
+        self.take_notice_actions();
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
@@ -6324,10 +6344,24 @@ impl Widget for VideoEditorApp {
         // the `--shots` warm-up (which pumps `sync`) captures a decoded frame.
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
+        self.publish_notices();
+    }
+
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // A notice's time runs out, and Try again is pressed, between
+        // events; the bar shows the change without a frame of the editor's.
+        let retry = self.take_notice_actions();
+        self.publish_notices();
+        retry
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.notice_deadline()
     }
 
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
         self.run_window_toolbar();
+        self.publish_notices();
     }
 
     /// Finite work a still capture must await: imports, thumbnails,
@@ -6354,6 +6388,8 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
+        // A clip's switch asks the motion clock for its own frames
+        // (`FaceMotions`); the runner reads it.
         #[cfg(feature = "decode")]
         let decoding = self
             .frame_source
@@ -6372,8 +6408,6 @@ impl Widget for VideoEditorApp {
             // A meter that stopped mid-fall reads as a level that is still
             // there. Frames keep coming until the bars are down.
             || self.mix_meter_is_live()
-            // A clip's switch turning as a click turns it.
-            || self.faces.is_moving(ui::motion::frame_now())
     }
 
     fn build_layout(
@@ -6457,7 +6491,6 @@ impl Widget for VideoEditorApp {
         }
         self.draw_preview(scene, transform, tr, theme, &r);
         self.draw_transport(scene, transform, tr, theme, &r);
-        self.draw_project_notice(scene, transform, tr, theme, &r);
         // Docked, the inspector draws in its column. As an overlay it floats
         // over the preview it is editing — no scrim, so the picture the
         // sliders are changing stays visible while they change it.
@@ -6664,8 +6697,8 @@ impl Widget for VideoEditorApp {
                     if self.commit_marker_rename(target, &name) {
                         self.marker_rename = None;
                     } else {
-                        self.project_notice =
-                            Some(Notice::failed("A marker needs a name to be found by"));
+                        self.project_notice
+                            .show(Notice::failed("A marker needs a name to be found by"));
                     }
                 }
                 EditOutcome::Cancelled => self.marker_rename = None,
@@ -6823,7 +6856,7 @@ impl Widget for VideoEditorApp {
                 // A drop is a batch of one, and reports like one: a refusal
                 // still names the file and carries the probe's own reason.
                 let report = self.import_files(std::slice::from_ref(path));
-                self.import_notice = Some(import_report_notice(&report));
+                self.import_notice.show(import_report_notice(&report));
                 *ctx.handled = true;
             }
             WindowEvent::HoveredFile(_) => {
@@ -8172,43 +8205,6 @@ impl VideoEditorApp {
             plate.x0 + S6,
             plate.y0 + S4,
         );
-    }
-
-    /// The last thing that happened to the project file, as a status badge
-    /// at the preview's top-trailing corner: above the picture, because it is not about the bin or
-    /// the timeline, and because a save that failed must not be findable
-    /// only by opening a panel.
-    fn draw_project_notice(
-        &self,
-        scene: &mut Scene,
-        tf: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: &Regions,
-    ) {
-        let Some(notice) = &self.project_notice else {
-            return;
-        };
-        let inset = S2 * self.chrome_scale();
-        let x1 = r.preview.x1 - inset;
-        let room = x1 - (r.preview.x0 + inset);
-        let pad = ui::widget::BadgeFace::intrinsic_width("", tr, theme);
-        if room <= pad + S6 {
-            return;
-        }
-        let shown = elide_at(
-            &notice.text,
-            (room - pad) as f32,
-            &theme.text(TextRole::Caption),
-            tr,
-        );
-        let w = ui::widget::BadgeFace::intrinsic_width(&shown, tr, theme).min(room);
-        let h = ui::widget::BadgeFace::height(theme);
-        let y0 = r.preview.y0 + inset;
-        let plate = Rect::new(x1 - w, y0, x1, y0 + h);
-        ui::widget::BadgeFace::new(plate, &shown)
-            .style(ui::widget::ChipStyle::Tinted(notice.level.tone()))
-            .paint(scene, tf, tr, theme);
     }
 
     /// Card and buttons for the unsaved-work question.

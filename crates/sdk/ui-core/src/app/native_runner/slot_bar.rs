@@ -77,6 +77,9 @@ pub(super) struct SlotBar {
     repaint: bool,
     /// The window's search, ending the row.
     search: WindowSearch,
+    /// The window is narrower than the compact breakpoint: a notice has a
+    /// strip of its own under the row.
+    compact: bool,
 }
 
 impl SlotBar {
@@ -91,6 +94,7 @@ impl SlotBar {
             pointer: Point::ORIGIN,
             repaint: false,
             search: WindowSearch::new(),
+            compact: false,
         }
     }
 
@@ -118,20 +122,15 @@ impl SlotBar {
         }
         let toolbar = shown.then(|| {
             with_history(
-                crate::window_toolbar::declared().unwrap_or_default(),
+                crate::window_toolbar::shown().unwrap_or_default(),
                 app.window_history_control(),
             )
         });
-        let height = if toolbar.is_some() {
-            TOOLBAR_ROW_HEIGHT
-        } else {
-            0.0
-        };
-        if (app.layout.slot_bar_inset - height).abs() > f64::EPSILON {
-            app.layout.slot_bar_inset = height;
-            app.layout.layout_dirty = true;
-        }
         let Some(toolbar) = toolbar else {
+            if app.layout.slot_bar_inset > 0.0 {
+                app.layout.slot_bar_inset = 0.0;
+                app.layout.layout_dirty = true;
+            }
             if self.shown.take().is_some() {
                 self.row
                     .show(WINDOW, None, app.theme.motion(), crate::motion::frame_now());
@@ -151,9 +150,15 @@ impl SlotBar {
             area.left + inset,
             area.top,
             (width - area.right - inset).max(area.left + inset),
-            area.top + height,
+            area.top + TOOLBAR_ROW_HEIGHT,
         );
-        if self.shown.as_ref() != Some(&(toolbar.clone(), rect)) {
+        // A compact window says a notice in a strip of its own under the
+        // row, as the desktop's bar does.
+        let compact = width < f64::from(app.theme.tokens.metrics.compact_breakpoint);
+        let restyled = self.compact != compact;
+        self.compact = compact;
+        if restyled || self.shown.as_ref() != Some(&(toolbar.clone(), rect)) {
+            self.row.set_compact(compact);
             self.row.show(
                 WINDOW,
                 Some(&toolbar),
@@ -166,6 +171,19 @@ impl SlotBar {
             self.row.lay_out(row);
             self.place_search(rect, row);
             self.shown = Some((toolbar, rect));
+            self.repaint = true;
+        }
+        self.repaint |= self.row.measure_strip(&app.theme, rect.width());
+        let strip = self.row.strip_height();
+        self.row.place_strip(if strip > 0.0 {
+            Rect::new(rect.x0, rect.y1, rect.x1, rect.y1 + strip)
+        } else {
+            Rect::ZERO
+        });
+        let height = TOOLBAR_ROW_HEIGHT + strip;
+        if (app.layout.slot_bar_inset - height).abs() > f64::EPSILON {
+            app.layout.slot_bar_inset = height;
+            app.layout.layout_dirty = true;
             self.repaint = true;
         }
         self.search.set_app_name(&window.title());
@@ -305,7 +323,7 @@ impl SlotBar {
             app.layout.safe_area.left,
             rect.y0,
             rect.x1 + f64::from(theme.tokens.spacing.s2),
-            rect.y1,
+            rect.y1 + self.row.strip_height(),
         );
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -337,7 +355,7 @@ impl SlotBar {
             let scale = window.scale_factor();
             self.pointer = Point::new(position.x / scale, position.y / scale);
         }
-        let over = rect.contains(self.pointer);
+        let over = rect.contains(self.pointer) || self.row.strip_rect().contains(self.pointer);
         let mut handled = false;
         let mut focus = None;
         // Find (and Find and Replace) opens the window's search, or gives

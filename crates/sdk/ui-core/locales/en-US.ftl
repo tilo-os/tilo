@@ -632,13 +632,11 @@ history-day-earlier = Earlier
 
 save-status-stalled = Couldn't save yet. Retrying…
 save-status-not-saved = Not saved
-save-status-not-saved-detail = Your changes are still here.
 save-status-not-saved-named = { $document } wasn't saved
 save-status-not-saved-notice = Your changes are still in { $app }.
 save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again
-save-status-dismiss = Dismiss
 
 # Find bar: the band at the top of a document that finds in it.
 find-bar-name = Find

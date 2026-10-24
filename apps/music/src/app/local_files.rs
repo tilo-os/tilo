@@ -1461,6 +1461,11 @@ mod tests {
             app.toast.get().map(|(text, _)| text),
             Some("This file type is not supported by Music")
         );
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("This file type is not supported by Music".to_owned()),
+            "the window bar says why"
+        );
         let failed = app.resource_stream_results.iter().any(|update| {
             matches!(update, tilo_actions::InvocationUpdate::Failed { error, .. }
                 if error.code == "music.open_file_failed")

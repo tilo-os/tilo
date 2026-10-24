@@ -14,6 +14,7 @@
 
 pub(crate) mod diagnostics;
 pub(crate) mod launch_history;
+mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
 #[cfg(target_os = "linux")]
@@ -3567,9 +3568,22 @@ impl Replay {
 /// build that fits. When the store has none yet, the app waits for its
 /// developer and does not start; when the update cannot be fetched, the
 /// place says so and offers to try again.
-fn update_then_start(app: InstalledApp, replay: Replay) {
+///
+/// `recorded` is the open's use being written to the store: the update waits
+/// for it, because the size sweep after the update evicts the app opened
+/// least recently, and the update keeps the app's last use.
+fn update_then_start(
+    app: InstalledApp,
+    replay: Replay,
+    recorded: Option<std::thread::JoinHandle<()>>,
+) {
     let package_id = app.package_id.clone();
-    crate::shell::app_versions::update_then(&package_id, move |outcome| {
+    let first = move || {
+        if let Some(recorded) = recorded {
+            let _ = recorded.join();
+        }
+    };
+    crate::shell::app_versions::update_after(&package_id, first, move |outcome| {
         let fail = |reason: LaunchFailure, detail: String| {
             push_event(LaunchEvent {
                 package_id: app.package_id.clone(),
@@ -3705,6 +3719,9 @@ fn execute_installed_inner(
     capability_snapshot: Option<LaunchGrants>,
     native_owner: Option<super::native_workspace_owner::NativeWorkspaceOwner>,
 ) -> Result<InstalledApp, LaunchError> {
+    // Opening it is a use, whichever window it opens in, and whether or not
+    // it must update first.
+    let recorded = recorded_use::record(&app);
     // A build speaks exactly the interface versions this system serves, or
     // it does not start: one that is behind is updated first and starts
     // after, in the place held for it now.
@@ -3727,6 +3744,7 @@ fn execute_installed_inner(
                     capability_snapshot,
                     native_owner,
                 },
+                recorded,
             );
             return Ok(app);
         }

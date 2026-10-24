@@ -265,18 +265,28 @@ fi
 # tilo-kernel-core out of it.  Cross-time reproducible.
 # An explicit digest is useful while validating a newly published kernel, but
 # it is held to the same repository and signature policy as the tracked pin.
+case "$(uname -m)" in
+  x86_64) _tilo_registry_arch=amd64 ;;
+  aarch64) _tilo_registry_arch=arm64 ;;
+  *) die "unsupported kernel architecture: $(uname -m)" ;;
+esac
 if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   # This target does not depend on the kernel stage. An inert scratch stage
   # avoids requiring or fabricating an unrelated architecture-specific pin.
   KERNEL_RPMS_REF=scratch
+elif [ -n "${TILO_LAYER_TARGET:-}" ] && ! grep -Fq 'FROM ${KERNEL_RPMS_REF}' "${TILO_CONTAINERFILE:-}"; then
+  # One layer action whose piece doesn't install the kernel neither resolves nor verifies
+  # its pin, so a new pin reruns only the kernel layer and those above it: t keys the others
+  # without os/kernel-snapshot.env.
+  KERNEL_RPMS_REF=scratch
+  _tilo_kernel_unread=1
 else
 _tilo_kernel_ref_override="${KERNEL_RPMS_REF:-}"
 # shellcheck disable=SC1091
 [ -f "$TILO_OS_DIR/kernel-snapshot.env" ] && . "$TILO_OS_DIR/kernel-snapshot.env"
 case "$(uname -m)" in
-  x86_64) _tilo_native_kernel_ref="${KERNEL_RPMS_X86_64_REF:-}"; _tilo_registry_arch=amd64 ;;
-  aarch64) _tilo_native_kernel_ref="${KERNEL_RPMS_AARCH64_REF:-}"; _tilo_registry_arch=arm64 ;;
-  *) die "unsupported kernel architecture: $(uname -m)" ;;
+  x86_64) _tilo_native_kernel_ref="${KERNEL_RPMS_X86_64_REF:-}" ;;
+  aarch64) _tilo_native_kernel_ref="${KERNEL_RPMS_AARCH64_REF:-}" ;;
 esac
 KERNEL_RPMS_REF="${_tilo_kernel_ref_override:-$_tilo_native_kernel_ref}"
 [ -n "${KERNEL_RPMS_REF:-}" ] || die "no KERNEL_RPMS_REF — run t test image-kernel-$(uname -m) (or podman build -f os/kernel/Containerfile) first"
@@ -339,7 +349,9 @@ else
   [ "$_tilo_rpms_platforms" = '[{"os":"linux","architecture":"amd64"},{"os":"linux","architecture":"arm64"}]' ] \
     || die "frozen RPM index does not contain exactly amd64 and arm64"
 fi
-if [ "$TILO_KERNEL_TRUST" = unsigned ]; then
+if [ "${_tilo_kernel_unread:-0}" = 1 ]; then
+  : # This layer action builds nothing FROM the kernel; the kernel layer verifies it.
+elif [ "$TILO_KERNEL_TRUST" = unsigned ]; then
   warn "TILO_KERNEL_TRUST=unsigned: not verifying the kernel signature or provenance of $KERNEL_RPMS_REF"
 else
   [[ "$KERNEL_RPMS_REF" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \

@@ -438,8 +438,8 @@ fn measure_scroll_repaint() {
 
 /// A scroll frame repaints the strip that scrolled in plus what changed —
 /// the host copies the rest — and the copied frames are pixel-identical to
-/// a full repaint, so nothing floating over the pages (the page bubble and
-/// its shadow, the scroll bar) is smeared along with them.
+/// a full repaint, so nothing floating over the pages (the scroll bar) is
+/// smeared along with them.
 #[test]
 #[serial_test::serial(pdfium)]
 fn scrolling_repaints_only_the_exposed_strip_and_matches_a_full_repaint() {
@@ -1007,8 +1007,8 @@ const PROBE_PITCH: u32 = 64;
 /// Pixels of the visible pages, in the rasterised `probes`, that show bare
 /// paper: the reader draws a page's paper first and the engine's pixels
 /// over it, and the fixture's own ink is never that light. Excludes a
-/// margin round each card edge, the scroll bars and the page bubble, which
-/// float over the pages. Returns (paper, sampled).
+/// margin round each card edge and the scroll bars, which float over the
+/// pages. Returns (paper, sampled).
 fn paper_showing(
     app: &PdfApp,
     pixels: &[u8],
@@ -1018,7 +1018,6 @@ fn paper_showing(
     let canvas = app.canvas_rect;
     let lane = 16.0;
     let view = vello::kurbo::Rect::new(canvas.x0, canvas.y0, canvas.x1 - lane, canvas.y1 - lane);
-    let bubble = app.bubble_rect.inflate(32.0, 32.0);
     let size = vello::kurbo::Size::new(app.pw(), app.ph()) * app.zoom();
     let (mut paper, mut sampled) = (0, 0);
     let cards: Vec<vello::kurbo::Rect> = app
@@ -1035,7 +1034,7 @@ fn paper_showing(
         for y in probe.y..probe.y + probe.height {
             for x in probe.x..probe.x + probe.width {
                 let at = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-                if bubble.contains(at) || !cards.iter().any(|card| card.contains(at)) {
+                if !cards.iter().any(|card| card.contains(at)) {
                     continue;
                 }
                 let i = (y as usize * width as usize + x as usize) * 4;

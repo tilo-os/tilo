@@ -5974,6 +5974,17 @@ async fn reconcile_pinned_hydration(
             .cloned()
             .collect::<Vec<_>>()
     };
+    // The pins decide what the cache budget may take, before this pass
+    // fetches anything: a fetch counts against the budget when it ends, and
+    // a pinned download can run for hours, so a file already here when it
+    // was pinned is held from now on, not from the end of the pass. What no
+    // pin covers any more (unpinned, an earlier version, a deleted file) is
+    // cache again.
+    let kept = pinned_files
+        .iter()
+        .filter_map(|candidate| candidate.hash.map(|hash| *hash.as_bytes()))
+        .collect();
+    keep_offline_only(&hydrator, kept).await;
     let mut probes = HashMap::with_capacity(pinned_files.len());
     for candidate in &pinned_files {
         let Some(hash) = candidate.hash else {
@@ -6005,14 +6016,6 @@ async fn reconcile_pinned_hydration(
         ));
     }
     while in_flight.join_next().await.is_some() {}
-    // The pins decide what the cache budget may take: a file already here
-    // when it was pinned is held from now on, and what no pin covers any
-    // more (unpinned, an earlier version, a deleted file) is cache again.
-    let kept = pinned_files
-        .iter()
-        .filter_map(|candidate| candidate.hash.map(|hash| *hash.as_bytes()))
-        .collect();
-    keep_offline_only(&hydrator, kept).await;
     plan.outcome
 }
 

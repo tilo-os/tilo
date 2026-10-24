@@ -96,6 +96,7 @@ impl MediaLane {
                         command.command,
                         crate::native_media::Command::Leave
                             | crate::native_media::Command::SetMuted { muted: true }
+                            | crate::native_media::Command::SetDeafened { deafened: true }
                     );
                     if !media || (!stop && self.pending.len() >= 16) || !command.valid() {
                         crate::widget::handle_collab_event(

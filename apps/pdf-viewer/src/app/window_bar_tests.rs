@@ -10,8 +10,8 @@ use ui::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolb
 use super::super::selection_tests::text_pdf;
 use super::super::tests::launched;
 use super::{
-    FIT_PAGE, FIT_WIDTH, MARKER_COLOUR, OPEN, REVIEW_PANEL, SAVE, TOOLS, ZOOM, ZOOM_IN, ZOOM_OUT,
-    colour_id, tool_id,
+    FIT_PAGE, FIT_WIDTH, MARKER_COLOUR, NEXT_PAGE, OPEN, PREVIOUS_PAGE, REVIEW_PANEL, SAVE, TOOLS,
+    ZOOM, ZOOM_IN, ZOOM_OUT, colour_id, tool_id,
 };
 use crate::actions::PdfEffect;
 use crate::markup::PdfMarkup;
@@ -97,11 +97,23 @@ fn the_reader_draws_no_toolbar_and_its_controls_are_in_the_window_bar() {
         .iter()
         .map(|action| action.id.as_str())
         .collect();
-    assert_eq!(ids, [TOOLS, MARKER_COLOUR, REVIEW_PANEL, ZOOM, OPEN, SAVE]);
+    assert_eq!(
+        ids,
+        [
+            TOOLS,
+            MARKER_COLOUR,
+            REVIEW_PANEL,
+            ZOOM,
+            PREVIOUS_PAGE,
+            NEXT_PAGE,
+            OPEN,
+            SAVE
+        ]
+    );
     assert_eq!(
         toolbar.row_actions(),
         3,
-        "zoom, Open and Save are in the menu"
+        "zoom, page stepping, Open and Save are in the menu"
     );
     let tools: Vec<String> = slot(&toolbar, TOOLS)
         .items
@@ -302,6 +314,47 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
     );
 }
 
+/// Invoke `effect` on the document by its address, as a headless drive's
+/// `invoke` step does: no coordinates, no shortcut.
+fn drive_invoke(app: &mut TestApp<PdfViewerShell>, effect: &PdfEffect) {
+    use ui::tilo_resource::{Effect as _, Resource as _};
+    let address = effect.address_on(PdfMarkup::KIND);
+    app.harness()
+        .invoke_action(&address, &effect.arguments(), false, None)
+        .unwrap_or_else(|error| panic!("{effect:?}: {error}"));
+    app.settle();
+}
+
+#[test]
+#[serial(pdfium)]
+fn a_drive_of_a_scenario_zooms_and_fits_by_address() {
+    let mut app = TestApp::<PdfViewerShell>::drive("search").expect("the sample opens");
+    let zoom = reader_state(&mut app, |pdf| pdf.zoom());
+    drive_invoke(&mut app, &PdfEffect::ZoomIn);
+    let zoomed = reader_state(&mut app, |pdf| pdf.zoom());
+    assert!(zoomed > zoom, "Zoom in zooms in: {zoom} to {zoomed}");
+    drive_invoke(&mut app, &PdfEffect::ZoomOut);
+    assert!((reader_state(&mut app, |pdf| pdf.zoom()) - zoom).abs() < 1e-9);
+    drive_invoke(&mut app, &PdfEffect::FitPage);
+    assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Page));
+    drive_invoke(&mut app, &PdfEffect::FitWidth);
+    assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Width));
+}
+
+#[test]
+#[serial(pdfium)]
+fn a_drive_of_every_scenario_reaches_every_published_action() {
+    for scenario in crate::scenarios::SCENARIOS {
+        let mut app = TestApp::<PdfViewerShell>::drive(scenario)
+            .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+        assert_eq!(
+            ui::framework::testing::unreachable_actions(&mut app),
+            Vec::<String>::new(),
+            "{scenario}: published actions a drive cannot invoke"
+        );
+    }
+}
+
 #[test]
 fn history_is_the_window_bars_control() {
     let mut app = TestApp::<PdfViewerShell>::capture(None).expect("the sample opens");
@@ -500,4 +553,222 @@ fn a_match_highlight_ends_at_its_last_glyph_advance() {
         right(band) <= next.x + 1e-6,
         "the highlight stops short of the glyph after the match: {band:?} against {next:?}"
     );
+}
+
+/// A host whose first Save fails where it keeps the file and whose next
+/// one saves there; every other chooser is refused.
+struct SaveFailsOnce {
+    asked: std::sync::Arc<std::sync::Mutex<usize>>,
+}
+
+impl ui::host::FilePicker for SaveFailsOnce {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::PortalOutcome::Failed("no chooser here".into()));
+        rx
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::MultiOutcome::Failed("no chooser here".into()));
+        rx
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::OpenFileOutcome::Failed(
+            "no chooser here".into(),
+        ));
+        rx
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::LaunchOutcome::Failed("no chooser here".into()));
+        rx
+    }
+    fn save_destination(&self, request: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        let first = {
+            let mut asked = self.asked.lock().unwrap();
+            *asked = asked.saturating_add(1);
+            *asked == 1
+        };
+        let name = request.suggested_name().unwrap_or("download").to_owned();
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Chosen(
+            ui::portal::SaveDestination::kept(name, move |_| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let _ = tx.send(if first {
+                    ui::portal::SaveOutcome::Failed("the disk is full".into())
+                } else {
+                    ui::portal::SaveOutcome::Saved
+                });
+                rx
+            }),
+        ))
+    }
+}
+
+fn note(app: &mut TestApp<PdfViewerShell>) -> String {
+    reader_state(app, |pdf| {
+        pdf.status_note.as_deref().unwrap_or_default().to_owned()
+    })
+}
+
+fn wait_for_note(app: &mut TestApp<PdfViewerShell>, says: &str) {
+    tilo_test_env::wait_until(format!("the bar to say {says}"), || {
+        app.settle();
+        note(app) == says
+    });
+}
+
+/// The name the reader suggests for its saved copy.
+fn suggested_name(app: &mut TestApp<PdfViewerShell>) -> String {
+    reader_state(app, |pdf| pdf.suggested_save_name())
+}
+
+/// A save that failed carries Try again: pressed by pointer or through its
+/// semantic action, wide or compact, it asks where to save again and saves.
+#[test]
+#[serial(pdfium)]
+fn a_failed_saves_try_again_saves_again() {
+    for (width, semantic) in [
+        (1280.0, false),
+        (1280.0, true),
+        (420.0, false),
+        (420.0, true),
+    ] {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(0));
+        let services =
+            ui::host::HostServices::null().with_files(std::sync::Arc::new(SaveFailsOnce {
+                asked: std::sync::Arc::clone(&asked),
+            }));
+        let _host = ui::host::enter(&services);
+        let (_directory, mut app) = reader();
+        let name = suggested_name(&mut app);
+        press(&mut app, action(SAVE));
+        wait_for_note(&mut app, &crate::app::save_failed_note(&name));
+        let buttons: Vec<String> = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the failure is in the bar")
+            .buttons
+            .into_iter()
+            .map(|button| button.name)
+            .collect();
+        assert_eq!(buttons, ["Try again"], "at {width} px");
+        let harness = app.harness();
+        let pressed = if semantic {
+            harness.invoke_window_notice_action(width, 0)
+        } else {
+            harness.click_window_notice_action(width, 0)
+        };
+        pressed.expect("Try again stands in the bar");
+        app.settle();
+        wait_for_note(&mut app, &crate::app::saved_note(&name));
+        assert_eq!(
+            *asked.lock().unwrap(),
+            2,
+            "Try again asked where to save again"
+        );
+        let saved = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the save is said");
+        assert!(saved.buttons.is_empty(), "a saved PDF only informs");
+    }
+}
+
+/// A host whose Open chooser answers with each of `files` in turn; every
+/// other chooser is refused.
+struct ChoosesInTurn {
+    files: std::sync::Mutex<std::collections::VecDeque<std::path::PathBuf>>,
+}
+
+impl ui::host::FilePicker for ChoosesInTurn {
+    fn pick(&self, _: ui::portal::PickRequest) -> ui::portal::PortalChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let next = self.files.lock().unwrap().pop_front();
+        let _ = tx.send(match next {
+            Some(path) => ui::portal::PortalOutcome::Opened(path),
+            None => ui::portal::PortalOutcome::Cancelled,
+        });
+        rx
+    }
+    fn pick_multiple(&self, _: ui::portal::PickRequest) -> ui::portal::MultiChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::MultiOutcome::Failed(
+            "one at a time here".into(),
+        ));
+        rx
+    }
+    fn open_file(&self, _: ui::portal::PickRequest) -> ui::portal::OpenFileChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::OpenFileOutcome::Failed(
+            "no descriptors here".into(),
+        ));
+        rx
+    }
+    fn launch(&self, _: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(ui::portal::LaunchOutcome::Failed("no launcher here".into()));
+        rx
+    }
+    fn save_destination(&self, _: ui::portal::PickRequest) -> ui::portal::DestinationChannel {
+        ui::portal::DestinationChannel::answered(ui::portal::DestinationOutcome::Failed(
+            "no saving here".into(),
+        ))
+    }
+}
+
+/// Pages that could not be imported carry Try again: pressed by pointer or
+/// through its semantic action, wide or compact, it asks which pages to
+/// import again and imports them.
+#[test]
+#[serial(pdfium)]
+fn a_failed_imports_try_again_imports_again() {
+    for (width, semantic) in [
+        (1280.0, false),
+        (1280.0, true),
+        (420.0, false),
+        (420.0, true),
+    ] {
+        let (directory, mut app) = reader();
+        let broken = directory.path().join("broken.pdf");
+        std::fs::write(&broken, b"not a PDF at all").unwrap();
+        let swatch = directory.path().join("swatch.png");
+        image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]))
+            .save(&swatch)
+            .unwrap();
+        let services =
+            ui::host::HostServices::null().with_files(std::sync::Arc::new(ChoosesInTurn {
+                files: std::sync::Mutex::new([broken, swatch].into()),
+            }));
+        let _host = ui::host::enter(&services);
+        let pages = reader_state(&mut app, |pdf| pdf.doc.page_count());
+        reader_state(&mut app, PdfApp::request_import_via_portal);
+        wait_for_note(&mut app, &crate::t("pdf-note-import-failed"));
+        let buttons: Vec<String> = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the failure is in the bar")
+            .buttons
+            .into_iter()
+            .map(|button| button.name)
+            .collect();
+        assert_eq!(buttons, ["Try again"], "at {width} px");
+        let harness = app.harness();
+        let pressed = if semantic {
+            harness.invoke_window_notice_action(width, 0)
+        } else {
+            harness.click_window_notice_action(width, 0)
+        };
+        pressed.expect("Try again stands in the bar");
+        app.settle();
+        wait_for_note(
+            &mut app,
+            &crate::t_args("pdf-note-imported", &[("count", 1_usize.into())]),
+        );
+        assert_eq!(
+            reader_state(&mut app, |pdf| pdf.doc.page_count()),
+            pages.saturating_add(1),
+            "Try again imported the chosen page"
+        );
+    }
 }

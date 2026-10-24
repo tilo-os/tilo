@@ -184,6 +184,17 @@ pub enum ProjectChannel {
 }
 
 impl ProjectChannel {
+    /// Whether this round-trip saves the project (its chooser or its
+    /// write), rather than opening one.
+    #[must_use]
+    pub fn is_save(&self) -> bool {
+        match self {
+            Self::Path { save, .. } => *save,
+            Self::Contents(_) => false,
+            Self::Destination(_) | Self::Saving(_) => true,
+        }
+    }
+
     /// Non-blocking drain, mirroring [`std::sync::mpsc::Receiver::try_recv`].
     ///
     /// # Errors
