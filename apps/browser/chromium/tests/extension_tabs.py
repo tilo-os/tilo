@@ -73,6 +73,12 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A script reaches the frame of a page an extension names (Bitwarden injects
   its form filler into each frame that asks), one of another site too, or
   every frame, and a message reaches one frame's content script.
+- A message to a tab that names no frame reaches the content script in every
+  frame, of the page's site and of another's, and the first reply answers
+  it, a later one too; one no frame answers comes back with nothing. A
+  script injected into every frame the extension may script, where it has
+  no content script, gets a world in each frame of the page's site, hears
+  such a message, and names its frame and document as Chromium does.
 - A keyboard shortcut an extension's manifest suggests runs its command with
   the page it was pressed on, which it may then script (activeTab), and the
   page does not get the key; its toolbar button's command asks the Browser
@@ -1511,6 +1517,43 @@ class ExtensionTabs(unittest.TestCase):
             'malformed': 'error: Invalid document id nope',
             'gone': 'error: No document with id 0123456789ABCDEF0123456789ABCDEF in tab with id %d' % tab,
             'ids': True,
+        })
+
+    def test_a_message_to_the_tab_reaches_every_frame(self):
+        host, ids = self.start('broadcaster', access={'broadcaster': (
+            ['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'], ['http://127.0.0.1/*', 'http://localhost/*'])})
+        host.navigate(self.url + '/framed')
+        every = ['/framed', '/inner', '/outer']
+        self.assertEqual(self.report('broadcaster'), {
+            # A message that names no frame reaches the content script in
+            # every frame, the other site's too, and the first reply
+            # answers it.
+            'everyone': 'a frame',
+            'heardEveryone': every,
+            # Heard everywhere and answered nowhere: nothing comes back.
+            'quiet': 'nothing',
+            'heardQuiet': every,
+            # The one frame that answers, later, answers it.
+            'later': '/outer',
+            # Each result names its frame and document as Chromium does.
+            'results': [[path, True, True] for path in every],
+        })
+
+    def test_a_script_injected_into_every_frame_hears_the_tab(self):
+        host, ids = self.start('spreader', access={'spreader': (['scripting', 'webNavigation'], ['http://127.0.0.1/*'])})
+        host.navigate(self.url + '/framed')
+        self.title(host, 1, 'page /framed')
+        self.assertEqual(json.loads(self.in_worker(host, ids['spreader'], 'spread()')), {
+            # Into the page and its frame of the same site, which it may
+            # script, not the other site's: each by the frame and document
+            # Chromium names.
+            'injected': [['/framed', True, True], ['/inner', True, True]],
+            'inner': True,
+            # A message to the tab reaches the script in both frames, and
+            # each frame's message names it.
+            'everyone': 'a frame',
+            'heard': {'/framed': True, '/inner': True},
+            'byFrame': '/inner',
         })
 
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):

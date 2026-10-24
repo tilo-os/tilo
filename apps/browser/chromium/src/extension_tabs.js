@@ -27,7 +27,7 @@
     });
     const reply = await response.json();
     if (reply.error) throw new Error(reply.error);
-    return reply.result;
+    return reply.unanswered ? undefined : reply.result;
   };
 
   // Calls not answered yet. In Chrome a call is on its way once made, so a
