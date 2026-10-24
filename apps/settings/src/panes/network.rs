@@ -1750,7 +1750,9 @@ pub struct NetworkModel {
     filter: String,
     /// The window's pages when the pane last composed.
     pages_seen: u64,
-    enterprise_open: bool,
+    /// Whether the work or school network's setup is open under its row,
+    /// and its reveal: the row's press and the setup action share it.
+    enterprise_setup: ui::widget::DisclosureState,
     /// When the open page last scanned for networks: it scans again every
     /// [`SCAN_EVERY`] while it shows them.
     scanned_at: Option<ui::time::Instant>,
@@ -1981,7 +1983,7 @@ impl NetworkModel {
             short_list: RefCell::new(order::HeldList::default()),
             all_list: RefCell::new(order::HeldList::default()),
             filter: String::new(),
-            enterprise_open: false,
+            enterprise_setup: ui::widget::DisclosureState::new(),
             scanned_at: None,
             scan_in_flight: false,
             hotspot_code_shown: false,
@@ -2901,7 +2903,8 @@ impl NetworkModel {
                 Begun::Done
             }
             NetworkEffect::ShowEnterpriseSetup => {
-                self.enterprise_open = !self.enterprise_open;
+                self.enterprise_setup
+                    .set_open(!self.enterprise_setup.is_open());
                 Begun::Done
             }
             NetworkEffect::ChooseCaCertificate => {
