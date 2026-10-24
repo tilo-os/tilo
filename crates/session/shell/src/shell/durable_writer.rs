@@ -130,14 +130,20 @@ impl DurableWriter {
         queue.submitted = queue.submitted.saturating_add(1);
         let ticket = queue.submitted;
         let job: Job = Box::new(job);
-        match queue.queued.entry(WriteKey::Snapshot(key)) {
-            std::collections::hash_map::Entry::Occupied(mut queued) => queued.get_mut().job = job,
+        let replaced = match queue.queued.entry(WriteKey::Snapshot(key)) {
+            std::collections::hash_map::Entry::Occupied(mut queued) => {
+                Some(std::mem::replace(&mut queued.get_mut().job, job))
+            }
             std::collections::hash_map::Entry::Vacant(slot) => {
                 slot.insert(Queued { ticket, job });
+                None
             }
-        }
+        };
         drop(queue);
         self.shared.work.notify_one();
+        // Dropped with the queue let go: what the replaced write owned may
+        // queue a write of its own as it goes.
+        drop(replaced);
     }
 
     /// Queue a command whose completion must not be replaced by a later
@@ -290,6 +296,33 @@ mod tests {
         release.send(()).unwrap();
         writer.flush();
         assert!(writer.progress() > before);
+    }
+
+    /// A write replaced before it ran is dropped, and what it owned may
+    /// queue a write of its own as it goes (a policy export does).
+    #[test]
+    fn a_replaced_write_may_queue_another_as_it_is_dropped() {
+        struct QueuesOnDrop(Arc<DurableWriter>, Arc<Mutex<Vec<&'static str>>>);
+        impl Drop for QueuesOnDrop {
+            fn drop(&mut self) {
+                let written = self.1.clone();
+                self.0.submit(PathBuf::from("follow-up"), move || {
+                    written.lock().push("follow-up");
+                });
+            }
+        }
+        let (writer, release) = blocked_writer();
+        let writer = Arc::new(writer);
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let owned = QueuesOnDrop(writer.clone(), written.clone());
+        writer.submit(PathBuf::from("state.json"), move || drop(owned));
+        let newest = written.clone();
+        writer.submit(PathBuf::from("state.json"), move || {
+            newest.lock().push("newest");
+        });
+        release.send(()).expect("release");
+        writer.flush();
+        assert_eq!(*written.lock(), vec!["newest", "follow-up"]);
     }
 
     #[test]

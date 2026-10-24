@@ -2500,6 +2500,7 @@ impl App {
         // The map built now describes the tree as it is: a replacement the
         // widgets reported before is part of it, not a change after it.
         self.take_composition_dirty();
+        self.layout.remount = false;
         tilo_startup_metrics::span("init-layout-history", || self.build_history_presentation());
         tilo_startup_metrics::span("init-layout-focus-order", || {
             self.update_focusable_order();
@@ -2535,6 +2536,7 @@ impl App {
 
     /// The root's structure flag, and framework History's: it is composed
     /// as a separate root, so its replaced controls are not the app's.
+    #[track_caller]
     pub(crate) fn take_composition_dirty(&mut self) -> bool {
         let root = self.take_root_structure_dirty();
         let history = self
@@ -2551,14 +2553,98 @@ impl App {
     /// call; a change they do not describe
     /// ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that
     /// follows undescribed.
+    #[track_caller]
     pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
         let change = self.root_widget.take_structure_change();
         if change == crate::widget::StructureChange::Rebuild {
             self.layout.rebuild_described = false;
+            #[cfg(test)]
+            {
+                self.layout.undescribed_by = Some(std::panic::Location::caller());
+            }
         }
         // A widget that replaced children without saying so is found here.
         let stale = self.layout_maps_stale();
+        // A change the widgets carry out in place leaves every admitted
+        // pointer valid: the next layout pass remounts it.
+        if change == crate::widget::StructureChange::Children && !stale {
+            self.layout.remount = true;
+            self.layout.layout_dirty = true;
+            return false;
+        }
         change.rebuilds() || stale
+    }
+
+    /// How many times the layout tree was rebuilt, and how many times widgets
+    /// changed it in place: a test asks whether a change kept the tree.
+    #[doc(hidden)]
+    pub fn layout_tree_changes(&self) -> (u64, u64) {
+        (self.layout.rebuilds, self.layout.remounts)
+    }
+
+    /// Carry out the change the root's widgets make in place
+    /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
+    /// admitting what they mounted, and sync them. Returns `false` when it
+    /// could not be carried out in place, and the caller rebuilds the tree.
+    #[cfg(feature = "native")]
+    pub(crate) fn remount_in_place(&mut self) -> bool {
+        self.layout.remount = false;
+        if self.layout.structure_dirty
+            || self.layout.root_node.is_none()
+            || self.history.as_ref().is_some_and(|history| {
+                !history.live_interactive() || history.returning_live() || history.review_is_open()
+            })
+            || self.close_admission.dialog.is_some()
+        {
+            return false;
+        }
+        let _entry = self.enter_wake_scope();
+        let mut remount = crate::widget::Remount::new(
+            &mut self.layout.taffy,
+            &self.theme,
+            &mut self.layout.node_map,
+        );
+        let applied = self.root_widget.remount_children(&mut remount);
+        let (mounted, unmounted) = remount.finish();
+        // The rows it mounted are checked against the live tree at once, as
+        // a build's are, so the next structure check finds the maps live.
+        self.admit_layout_maps();
+        // A change no widget carried out, or any other beside it, needs the
+        // whole tree.
+        if !applied
+            || self.root_widget.take_structure_change() != crate::widget::StructureChange::None
+        {
+            return false;
+        }
+        self.bindings.forget(&unmounted);
+        for (parent, child) in mounted {
+            // SAFETY: App exclusively owns this tree, its maps and widgets;
+            // the remount above admitted `child` into both.
+            if !unsafe {
+                self.bindings.admit_mounted(
+                    parent,
+                    child,
+                    &self.layout.taffy,
+                    &self.layout.node_map,
+                )
+            } {
+                return false;
+            }
+        }
+        self.layout.remounts = self.layout.remounts.wrapping_add(1);
+        self.layout.layout_dirty = true;
+        // Fresh controls have not seen where the pointer is.
+        self.input.pointer_replay.mark_unsettled();
+        // The mounted widgets are synced before they are measured, as a
+        // rebuild syncs its fresh ones; a sync that replaces delegates
+        // needs the whole tree after all.
+        self.root_widget.sync(&self.state.doc, &self.state.root);
+        self.needs_sync = false;
+        if self.take_composition_dirty() {
+            return false;
+        }
+        self.invalidate_widget_resource_cache();
+        true
     }
 
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
@@ -2608,6 +2694,8 @@ impl App {
         // replacement control at the same id still receives set_focus(true).
         self.focused_node = None;
         self.layout.rebuilds = self.layout.rebuilds.wrapping_add(1);
+        // The widgets carry out a change pending in place in this build.
+        self.layout.remount = false;
         // Fresh controls have not seen where the pointer is.
         self.input.pointer_replay.mark_unsettled();
         self.layout.taffy = TaffyTree::new();
@@ -3082,6 +3170,10 @@ mod participant_invocation_tests;
 #[cfg(test)]
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
+
+#[cfg(all(test, feature = "native"))]
+#[path = "app/scroll_cost_tests.rs"]
+mod scroll_cost_tests;
 
 #[cfg(test)]
 mod render_retry_tests {

@@ -7,8 +7,8 @@
 //! the last answer with when it was fetched, in memory and in the cache
 //! directory, and answers from that, offline too. A search reads only what
 //! is kept here ([`rates`]); a keystroke never waits for the helper. An
-//! answer older than [`REFRESH_AFTER`] is refetched in the background, and a
-//! failed fetch is not retried for [`RETRY_AFTER`].
+//! answer older than `REFRESH_AFTER` is refetched in the background, and a
+//! failed fetch is not retried for `RETRY_AFTER`.
 //!
 //! The same door serves every network answer: a new one is a
 //! [`tilo_net_answers::Source`] and a reader here.

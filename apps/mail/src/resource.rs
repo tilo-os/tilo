@@ -277,6 +277,16 @@ impl DraftState {
         *drafted == self.fingerprint(digest)
     }
 
+    /// Whether `sent` is this draft: it goes to the same recipients under
+    /// the same subject.
+    fn is_written_as(&self, sent: &DraftData) -> bool {
+        let written = DraftData::from_draft(&self.draft());
+        written.to == sent.to
+            && written.cc == sent.cc
+            && written.bcc == sent.bcc
+            && written.subject == sent.subject
+    }
+
     /// Whether it holds anything: a recipient, a subject, a body, an
     /// invitation, an attachment or a chosen sender.
     pub fn is_empty(&self) -> bool {
@@ -518,8 +528,15 @@ impl Mail {
                 "a message needs a sending account and a recipient",
             ));
         }
+        // The message being written is done with once it is sent: its draft
+        // empties, so it leaves Drafts and the next message starts afresh.
+        // Another message sent meanwhile leaves the draft alone.
+        if self.draft.is_written_as(&outgoing.draft) {
+            self.draft = DraftState::default();
+        } else {
+            self.draft.drafted = None;
+        }
         outbox.push(id, outgoing);
-        self.draft.drafted = None;
         Ok(())
     }
 
@@ -607,11 +624,9 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
             "{address:?} is not a content address: attach what another step handed over"
         ));
     }
+    let bytes = tilo_resource::content::read_hash(hash).map_err(|refusal| refusal.to_string())?;
     let store = tilo_resource::content::current()
         .ok_or("this window has no content store to attach from")?;
-    let bytes = store
-        .read(hash)
-        .ok_or("the handed-over file is not on this device; hand it over again here")?;
     let staged = crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?;
     params.content = staged.content_id;
     params.name = staged.filename;

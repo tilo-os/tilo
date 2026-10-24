@@ -37,7 +37,7 @@ mod facades;
 mod governance;
 pub use facades::{
     PeerGovernance, PeerGovernanceMut, PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox,
-    PeerOutboxMut, PeerWorkspace, PeerWorkspaceMut,
+    PeerOutboxMut, PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut,
 };
 mod bot_members;
 pub(crate) mod certificate_renewal;
@@ -349,7 +349,7 @@ pub(crate) enum LocalWrite<'a> {
 
 /// Most sealed writes, and their bytes, one record keeps for a key holder.
 /// Past them a key holder compacts the history
-/// ([`StatePeer::compact_sealed_history`]).
+/// ([`PeerPublicationMut::compact_sealed_history`]).
 const MAX_SEALED_OPS: usize = 4096;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 
@@ -2436,7 +2436,7 @@ impl StatePeer {
             now,
         )?;
         for document in seed.documents {
-            self.publish_document(
+            self.publication_mut().publish_document(
                 &document.app_id,
                 &document.record_id,
                 document.bytes,
@@ -2445,42 +2445,6 @@ impl StatePeer {
             )?;
         }
         Ok(())
-    }
-    /// Sign and admit a snapshot of `record`, returning the message to publish.
-    pub fn publish_document(
-        &mut self,
-        app: &str,
-        record: &str,
-        bytes: Vec<u8>,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
-    }
-    /// Sign and admit incremental changes to `record`, returning the message to publish.
-    pub fn publish_incremental(
-        &mut self,
-        app: &str,
-        record: &str,
-        bytes: Vec<u8>,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
-    }
-    /// Sign and admit `mutation` of `record`, returning the message to publish.
-    pub fn signed_mutation(
-        &mut self,
-        app: &str,
-        record: &str,
-        mutation: DocumentMutation,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<NeighbourMsg, String> {
-        let mut candidate = self.clone();
-        let message = candidate.signed_mutation_in_place(app, record, mutation, key, now)?;
-        *self = candidate;
-        Ok(message)
     }
     fn signed_mutation_in_place(
         &mut self,
@@ -2717,65 +2681,6 @@ impl StatePeer {
         }
         Ok(messages)
     }
-    /// Signed snapshots of every admitted document.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a snapshot cannot be signed or encoded.
-    pub fn signed_snapshots(
-        &mut self,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
-        let messages = candidate.signed_snapshots_in_place(key, now)?;
-        *self = candidate;
-        Ok(messages)
-    }
-    /// The governor publishes one consistent room coverage/checkpoint pair.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
-    pub fn bootstrap_messages(
-        &mut self,
-        key: &SigningKey,
-        now: SystemTime,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
-        let mut messages = vec![candidate.room_message()];
-        messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(None));
-        *self = candidate;
-        Ok(messages)
-    }
-    /// Prepare, but do not publish, a candidate bound to the next native commit.
-    /// The caller must commit this entire state and outgoing batch before exposing it.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
-    pub fn durable_bootstrap_messages(
-        &mut self,
-        key: &SigningKey,
-        now: SystemTime,
-        generation: u64,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        let mut candidate = self.clone();
-        let snapshots = candidate.signed_snapshots_with_receipts(key, now, Some(generation))?;
-        let room = candidate
-            .core
-            .room_doc
-            .as_deref_mut()
-            .ok_or("missing room governance")?;
-        crate::durability::monotonic(self.core.room_doc.as_deref(), room)?;
-        let mut messages = vec![candidate.room_message()];
-        messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(None));
-        *self = candidate;
-        Ok(messages)
-    }
     /// Publish exact checkpoints of the `dirty` routes and, in the same room
     /// change, their coverage plus the complete durable receipt set
     /// (`receipts` updated for each dirty route at `generation`). Equivalent
@@ -2862,137 +2767,6 @@ impl StatePeer {
         for message in &messages {
             self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
         }
-        Ok(messages)
-    }
-    /// Prepare route-selective publication against the last committed peer.
-    /// `SyncResp` here contains only room changes since `before` and MUST be retained
-    /// as a delta. Application messages remain exact covered snapshots. The caller
-    /// must durably commit the candidate and its baseline plus this tail before send.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one candidate publication built against a single committed baseline"
-    )]
-    pub fn durable_mutation_messages(
-        &mut self,
-        before: &StatePeer,
-        key: &SigningKey,
-        now: SystemTime,
-        generation: u64,
-    ) -> Result<Vec<NeighbourMsg>, String> {
-        self.admissions_since(before).map_err(err)?;
-        if self.core.room != before.core.room || self.core.authority != before.core.authority {
-            return Err("publication cannot replace the session namespace".into());
-        }
-        if key.verifying_key().to_bytes() != self.core.authority.device_public_key {
-            return Err("publication requires pinned authority".into());
-        }
-        self.permissions(key.verifying_key().to_bytes(), now)?;
-        if self.incomplete_reason().is_some() {
-            return Err("cannot publish incomplete encryption state".into());
-        }
-        let before_room = before
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("missing prior governance")?;
-        let mut candidate = self.clone();
-        for (route, prior) in &before.core.documents {
-            let document = candidate
-                .core
-                .documents
-                .get(route)
-                .ok_or("publication discards a record")?;
-            // A record still shared with `before` discards nothing.
-            if backend::StoredDocument::ptr_eq(prior, document) {
-                continue;
-            }
-            if prior
-                .doc
-                .base_heads()
-                .iter()
-                .any(|head| document.doc.get_change_by_hash(head).is_none())
-                || prior
-                    .channel
-                    .last_seq_per_author
-                    .iter()
-                    .any(|(author, seq)| {
-                        document
-                            .channel
-                            .last_seq_per_author
-                            .get(author)
-                            .copied()
-                            .unwrap_or(0)
-                            < *seq
-                    })
-            {
-                return Err("publication discards document history or replay floors".into());
-            }
-        }
-        let room = candidate
-            .core
-            .room_doc
-            .as_mut()
-            .ok_or("missing room governance")?;
-        let before_heads = before_room.base_heads();
-        if before_heads
-            .iter()
-            .any(|head| room.get_change_by_hash(head).is_none())
-        {
-            return Err("publication discards room history".into());
-        }
-        crate::coverage::monotonic(Some(before_room), room)?;
-        crate::durability::monotonic(Some(before_room), room)?;
-        let old_coverage = crate::coverage::entries(before_room)?;
-        let coverage = crate::coverage::entries(room)?;
-        let old_receipts = crate::durability::entries(before_room)?;
-        let receipts = crate::durability::entries(room)?;
-        let mut dirty = Vec::new();
-        for (route, document) in &candidate.core.documents {
-            let route_key = crate::coverage::route_key(&route.app, &route.record);
-            let changed = before.core.documents.get(route).is_none_or(|prior| {
-                // A record this change did not touch is still shared.
-                let same = backend::StoredDocument::ptr_eq(prior, document);
-                (!same
-                    && (prior.doc.base_heads() != document.doc.base_heads()
-                        || prior.channel.last_seq_per_author
-                            != document.channel.last_seq_per_author
-                        || prior.encryption_required != document.encryption_required
-                        || prior.covered != document.covered
-                        || prior.covered_snapshot != document.covered_snapshot))
-                    || old_coverage.get(&route_key) != coverage.get(&route_key)
-                    || old_receipts.get(&route_key) != receipts.get(&route_key)
-            });
-            if changed {
-                dirty.push((route.clone(), document.doc.saved()));
-            }
-        }
-        let snapshots = if dirty.is_empty() {
-            Vec::new()
-        } else {
-            candidate.publish_snapshots_with_receipts(&dirty, receipts, generation, key, now)?
-        };
-        let room = candidate
-            .core
-            .room_doc
-            .as_mut()
-            .ok_or("missing room governance")?;
-        crate::coverage::monotonic(Some(before_room), room)?;
-        crate::durability::monotonic(Some(before_room), room)?;
-        let changes = room
-            .get_changes(&before_heads)
-            .into_iter()
-            .map(|change| change.raw_bytes().to_vec())
-            .collect::<Vec<_>>();
-        let mut messages = Vec::new();
-        if !changes.is_empty() {
-            messages.push(NeighbourMsg::SyncResp {
-                changes,
-                room: self.core.room.clone(),
-            });
-        }
-        messages.extend(snapshots);
-        messages.extend(candidate.own_sealed_publications(Some(before)));
-        *self = candidate;
         Ok(messages)
     }
     /// A governed assertion alone is insufficient: bind it to the accepted exact checkpoint.
@@ -3512,6 +3286,243 @@ impl StatePeer {
         Ok(peer)
     }
 }
+
+impl PeerPublicationMut<'_> {
+    /// Sign and admit a snapshot of `record`, returning the message to publish.
+    pub fn publish_document(
+        self,
+        app: &str,
+        record: &str,
+        bytes: Vec<u8>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        self.signed_mutation(app, record, DocumentMutation::Snapshot(bytes), key, now)
+    }
+
+    /// Sign and admit incremental changes to `record`, returning the message to publish.
+    pub fn publish_incremental(
+        self,
+        app: &str,
+        record: &str,
+        bytes: Vec<u8>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        self.signed_mutation(app, record, DocumentMutation::Incremental(bytes), key, now)
+    }
+
+    /// Sign and admit `mutation` of `record`, returning the message to publish.
+    pub fn signed_mutation(
+        self,
+        app: &str,
+        record: &str,
+        mutation: DocumentMutation,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<NeighbourMsg, String> {
+        let mut candidate = self.peer.clone();
+        let message = candidate.signed_mutation_in_place(app, record, mutation, key, now)?;
+        *self.peer = candidate;
+        Ok(message)
+    }
+
+    /// Signed snapshots of every admitted document.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a snapshot cannot be signed or encoded.
+    pub fn signed_snapshots(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.peer.clone();
+        let messages = candidate.signed_snapshots_in_place(key, now)?;
+        *self.peer = candidate;
+        Ok(messages)
+    }
+
+    /// The governor publishes one consistent room coverage/checkpoint pair.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
+    pub fn bootstrap_messages(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.peer.clone();
+        let snapshots = candidate.signed_snapshots_in_place(key, now)?;
+        let mut messages = vec![candidate.room_message()];
+        messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
+        *self.peer = candidate;
+        Ok(messages)
+    }
+
+    /// Prepare, but do not publish, a candidate bound to the next native commit.
+    /// The caller must commit this entire state and outgoing batch before exposing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governor or a checkpoint cannot be produced.
+    pub fn durable_bootstrap_messages(
+        self,
+        key: &SigningKey,
+        now: SystemTime,
+        generation: u64,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let mut candidate = self.peer.clone();
+        let snapshots = candidate.signed_snapshots_with_receipts(key, now, Some(generation))?;
+        let room = candidate
+            .core
+            .room_doc
+            .as_deref_mut()
+            .ok_or("missing room governance")?;
+        crate::durability::monotonic(self.peer.core.room_doc.as_deref(), room)?;
+        let mut messages = vec![candidate.room_message()];
+        messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
+        *self.peer = candidate;
+        Ok(messages)
+    }
+
+    /// Prepare route-selective publication against the last committed peer.
+    /// `SyncResp` here contains only room changes since `before` and MUST be retained
+    /// as a delta. Application messages remain exact covered snapshots. The caller
+    /// must durably commit the candidate and its baseline plus this tail before send.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one candidate publication built against a single committed baseline"
+    )]
+    pub fn durable_mutation_messages(
+        self,
+        before: &StatePeer,
+        key: &SigningKey,
+        now: SystemTime,
+        generation: u64,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        self.peer.admissions_since(before).map_err(err)?;
+        if self.peer.core.room != before.core.room
+            || self.peer.core.authority != before.core.authority
+        {
+            return Err("publication cannot replace the session namespace".into());
+        }
+        if key.verifying_key().to_bytes() != self.peer.core.authority.device_public_key {
+            return Err("publication requires pinned authority".into());
+        }
+        self.peer.permissions(key.verifying_key().to_bytes(), now)?;
+        if self.peer.incomplete_reason().is_some() {
+            return Err("cannot publish incomplete encryption state".into());
+        }
+        let before_room = before
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("missing prior governance")?;
+        let mut candidate = self.peer.clone();
+        for (route, prior) in &before.core.documents {
+            let document = candidate
+                .core
+                .documents
+                .get(route)
+                .ok_or("publication discards a record")?;
+            // A record still shared with `before` discards nothing.
+            if backend::StoredDocument::ptr_eq(prior, document) {
+                continue;
+            }
+            if prior
+                .doc
+                .base_heads()
+                .iter()
+                .any(|head| document.doc.get_change_by_hash(head).is_none())
+                || prior
+                    .channel
+                    .last_seq_per_author
+                    .iter()
+                    .any(|(author, seq)| {
+                        document
+                            .channel
+                            .last_seq_per_author
+                            .get(author)
+                            .copied()
+                            .unwrap_or(0)
+                            < *seq
+                    })
+            {
+                return Err("publication discards document history or replay floors".into());
+            }
+        }
+        let room = candidate
+            .core
+            .room_doc
+            .as_mut()
+            .ok_or("missing room governance")?;
+        let before_heads = before_room.base_heads();
+        if before_heads
+            .iter()
+            .any(|head| room.get_change_by_hash(head).is_none())
+        {
+            return Err("publication discards room history".into());
+        }
+        crate::coverage::monotonic(Some(before_room), room)?;
+        crate::durability::monotonic(Some(before_room), room)?;
+        let old_coverage = crate::coverage::entries(before_room)?;
+        let coverage = crate::coverage::entries(room)?;
+        let old_receipts = crate::durability::entries(before_room)?;
+        let receipts = crate::durability::entries(room)?;
+        let mut dirty = Vec::new();
+        for (route, document) in &candidate.core.documents {
+            let route_key = crate::coverage::route_key(&route.app, &route.record);
+            let changed = before.core.documents.get(route).is_none_or(|prior| {
+                // A record this change did not touch is still shared.
+                let same = backend::StoredDocument::ptr_eq(prior, document);
+                (!same
+                    && (prior.doc.base_heads() != document.doc.base_heads()
+                        || prior.channel.last_seq_per_author
+                            != document.channel.last_seq_per_author
+                        || prior.encryption_required != document.encryption_required
+                        || prior.covered != document.covered
+                        || prior.covered_snapshot != document.covered_snapshot))
+                    || old_coverage.get(&route_key) != coverage.get(&route_key)
+                    || old_receipts.get(&route_key) != receipts.get(&route_key)
+            });
+            if changed {
+                dirty.push((route.clone(), document.doc.saved()));
+            }
+        }
+        let snapshots = if dirty.is_empty() {
+            Vec::new()
+        } else {
+            candidate.publish_snapshots_with_receipts(&dirty, receipts, generation, key, now)?
+        };
+        let room = candidate
+            .core
+            .room_doc
+            .as_mut()
+            .ok_or("missing room governance")?;
+        crate::coverage::monotonic(Some(before_room), room)?;
+        crate::durability::monotonic(Some(before_room), room)?;
+        let changes = room
+            .get_changes(&before_heads)
+            .into_iter()
+            .map(|change| change.raw_bytes().to_vec())
+            .collect::<Vec<_>>();
+        let mut messages = Vec::new();
+        if !changes.is_empty() {
+            messages.push(NeighbourMsg::SyncResp {
+                changes,
+                room: self.peer.core.room.clone(),
+            });
+        }
+        messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(Some(before)));
+        *self.peer = candidate;
+        Ok(messages)
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct GovernedIdentity {
     pub(crate) device_cert: DeviceCert,
@@ -3766,7 +3777,8 @@ mod delivery_admission_resource_tests {
         let before = peer.durable().unwrap();
         let document = peer.document("test.app", "tab:1").unwrap();
         assert!(
-            peer.publish_document("test.app", "tab:1", document, &key, now)
+            peer.publication_mut()
+                .publish_document("test.app", "tab:1", document, &key, now)
                 .is_err()
         );
         assert!(
@@ -3779,14 +3791,10 @@ mod delivery_admission_resource_tests {
         let (mut receiver, key, _, _, now) = crate::admission_tests::seeded();
         let mut author = receiver.clone();
         let later = now + Duration::from_secs(301);
+        let current_document = author.document("test.app", "tab:1").unwrap();
         let snapshot = author
-            .publish_document(
-                "test.app",
-                "tab:1",
-                author.document("test.app", "tab:1").unwrap(),
-                &key,
-                later,
-            )
+            .publication_mut()
+            .publish_document("test.app", "tab:1", current_document, &key, later)
             .unwrap();
         let origin = TransportOrigin::RelayDelta(key.verifying_key().to_bytes());
         receiver.select_admission_v5().unwrap();

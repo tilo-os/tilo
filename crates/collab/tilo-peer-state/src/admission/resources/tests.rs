@@ -6,14 +6,10 @@ fn actual_index() -> (ExactAdmissions, Vec<DocumentAdmission>) {
     let mut index = ExactAdmissions::default();
     let mut admissions = Vec::new();
     for _ in 0..2 {
+        let current_document = peer.document("test.app", "tab:1").unwrap();
         let crate::NeighbourMsg::AppDocument { envelope, .. } = peer
-            .publish_document(
-                "test.app",
-                "tab:1",
-                peer.document("test.app", "tab:1").unwrap(),
-                &key,
-                now,
-            )
+            .publication_mut()
+            .publish_document("test.app", "tab:1", current_document, &key, now)
             .unwrap()
         else {
             panic!("actual signed publication required")

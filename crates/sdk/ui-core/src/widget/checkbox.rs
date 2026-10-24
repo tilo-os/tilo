@@ -42,6 +42,157 @@ pub struct CheckboxFace {
     interact: CheckboxInteract,
     /// A radio: a circle with a dot, one of a set.
     radio: bool,
+    /// Where its [`CheckMotion`] is this frame; at rest on the value when
+    /// unset.
+    pose: Option<CheckPose>,
+}
+
+/// The mark a checked box shows: a tick, or the mixed bar of a partly
+/// selected group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckGlyph {
+    Check,
+    Mixed,
+}
+
+impl CheckGlyph {
+    fn of(indeterminate: bool) -> Self {
+        if indeterminate {
+            Self::Mixed
+        } else {
+            Self::Check
+        }
+    }
+}
+
+/// How a checkbox or radio is drawn this frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CheckPose {
+    /// How much of the checked state shows, `0..=1`: the fill and the mark.
+    pub level: f32,
+    /// The glyph shown (the newest).
+    pub glyph: CheckGlyph,
+    /// The shown glyph's opacity while it cross-fades in.
+    pub incoming: f32,
+    /// The glyph it replaced, and its opacity, while it still shows.
+    pub outgoing: Option<(CheckGlyph, f32)>,
+}
+
+impl CheckPose {
+    /// A box at rest.
+    #[must_use]
+    pub fn at_rest(marked: bool, glyph: CheckGlyph) -> Self {
+        Self {
+            level: if marked { 1.0 } else { 0.0 },
+            glyph,
+            incoming: 1.0,
+            outgoing: None,
+        }
+    }
+}
+
+/// The motion of one checkbox or radio: the retained [`Checkbox`] keeps one,
+/// and so does any host painting [`CheckboxFace`]s ([`CheckboxFace::pose`]),
+/// one per box.
+///
+/// Checked by a click or a finger, the fill fades in and the mark scales in
+/// at `fast` (`motion::ControlChange`); unchecked, they go quicker. A key,
+/// an assistive action or a value nobody just caused lands at once. Mixed
+/// and checked cross-fade their glyphs. Under reduced motion it still
+/// fades, without the scale. The first value shown rests; settled, it asks
+/// for no frames.
+#[derive(Clone, Debug)]
+pub struct CheckMotion {
+    mark: crate::motion::Mark,
+    glyph: crate::motion::CrossFade<CheckGlyph>,
+    shown: Option<(bool, CheckGlyph)>,
+}
+
+impl Default for CheckMotion {
+    fn default() -> Self {
+        Self {
+            mark: crate::motion::Mark::default(),
+            glyph: crate::motion::CrossFade::new(CheckGlyph::Check),
+            shown: None,
+        }
+    }
+}
+
+impl CheckMotion {
+    /// Show the box `marked` (checked or mixed) with `glyph`, moving as
+    /// `source` asks. The first value shown rests.
+    #[track_caller]
+    pub fn follow(
+        &mut self,
+        marked: bool,
+        glyph: CheckGlyph,
+        motion: crate::tokens::EffectiveMotion,
+        source: crate::tokens::MotionSource,
+        now: crate::time::Instant,
+    ) {
+        let Some((was_marked, had)) = self.shown else {
+            self.snap(marked, glyph);
+            return;
+        };
+        // An empty box has no glyph to change.
+        let glyph = if marked { glyph } else { had };
+        if (was_marked, had) == (marked, glyph) {
+            return;
+        }
+        self.shown = Some((marked, glyph));
+        match (was_marked, marked) {
+            // Marking: the glyph it comes in with is the one it shows.
+            (false, true) => self.glyph = crate::motion::CrossFade::new(glyph),
+            // Mixed and checked swap their glyphs in place.
+            (true, true) => self.glyph.show(glyph, motion, source, now),
+            // Unmarking: the glyph it had goes with the fill.
+            _ => {}
+        }
+        self.mark.set(marked, motion, source, now);
+        if let Some(until) = self.glyph.settles_at() {
+            crate::motion::want_frames_until(until);
+        }
+    }
+
+    /// [`Self::follow`] as the input the person just made caused it
+    /// (`motion::recent_input`): a change nobody just caused lands.
+    #[track_caller]
+    pub fn follow_input(
+        &mut self,
+        marked: bool,
+        glyph: CheckGlyph,
+        motion: crate::tokens::EffectiveMotion,
+        now: crate::time::Instant,
+    ) {
+        let source =
+            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Action);
+        self.follow(marked, glyph, motion, source, now);
+    }
+
+    /// Rest at once.
+    pub fn snap(&mut self, marked: bool, glyph: CheckGlyph) {
+        self.shown = Some((marked, glyph));
+        self.mark.snap(marked);
+        self.glyph = crate::motion::CrossFade::new(glyph);
+    }
+
+    /// How to draw the box at `now`.
+    #[track_caller]
+    #[must_use]
+    pub fn pose(&self, now: crate::time::Instant) -> CheckPose {
+        CheckPose {
+            level: self.mark.level(now),
+            glyph: *self.glyph.shown(),
+            incoming: self.glyph.incoming(now),
+            outgoing: self.glyph.outgoing(now).map(|(glyph, o)| (*glyph, o)),
+        }
+    }
+
+    /// Whether it is still on its way at `now`.
+    #[track_caller]
+    pub fn is_moving(&self, now: crate::time::Instant) -> bool {
+        self.mark.is_moving(now) || self.glyph.is_moving(now)
+    }
 }
 
 impl CheckboxFace {
@@ -52,7 +203,25 @@ impl CheckboxFace {
             indeterminate: false,
             interact: CheckboxInteract::default(),
             radio: false,
+            pose: None,
         }
+    }
+
+    /// Draw the box where its [`CheckMotion`] is this frame rather than at
+    /// rest on its value.
+    #[must_use]
+    pub fn pose(mut self, pose: CheckPose) -> Self {
+        self.pose = Some(pose);
+        self
+    }
+
+    fn drawn(&self) -> CheckPose {
+        self.pose.unwrap_or_else(|| {
+            CheckPose::at_rest(
+                self.checked || self.indeterminate,
+                CheckGlyph::of(self.indeterminate),
+            )
+        })
     }
 
     /// Paint a radio: a circle, filled with the on state and a dot when
@@ -110,11 +279,26 @@ pub struct Checkbox {
     drawing: Option<Painted>,
     /// A radio of a set rather than a checkbox.
     radio: bool,
+    /// How far the fill and the mark have come.
+    motion: CheckMotion,
+    /// A view that builds the box anew on each change: the one built in its
+    /// place goes on from its mark (`motion::keep`).
+    hand_on: crate::motion::HandOn<KeptCheck>,
+}
+
+/// What a box leaves for the one a rebuild puts in its place: its mark,
+/// and what it held, so a successor showing another box's value (another
+/// page, a row that moved) does not fade.
+struct KeptCheck {
+    motion: CheckMotion,
+    shown: (bool, CheckGlyph),
 }
 
 /// What a checkbox's paint depends on besides its place and the theme:
-/// checked, mixed, hovered, focused, enabled, and the catalogue its label reads.
-type Painted = (bool, bool, bool, bool, bool, u64);
+/// checked, mixed, hovered, focused, enabled, the catalogue its label reads,
+/// and the drawn fill and glyph opacities (as bits, so a settled box
+/// compares equal).
+type Painted = (bool, bool, bool, bool, bool, u64, [u32; 3]);
 
 impl Checkbox {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
@@ -149,6 +333,36 @@ impl Checkbox {
             painted: None,
             drawing: None,
             radio: false,
+            motion: CheckMotion::default(),
+            hand_on: crate::motion::HandOn::default(),
+        }
+    }
+
+    /// What the box shows: marked, and with which glyph.
+    fn shown(&self) -> (bool, CheckGlyph) {
+        (
+            self.control.is_checked || self.indeterminate,
+            CheckGlyph::of(self.indeterminate),
+        )
+    }
+
+    /// What names the box across rebuilds: an id it was given, else its
+    /// label, else nothing (it is known by its place).
+    fn identity(&self) -> Option<String> {
+        self.control
+            .id_override
+            .clone()
+            .or_else(|| self.label.as_ref().map(|label| format!("label:{label}")))
+    }
+
+    /// Go on from the box a rebuild dropped: its mark, on its way or at
+    /// rest. Showing what it showed, a change since moves from there, as
+    /// the input that made it asks; showing something else, it rests.
+    fn take_up(&mut self, kept: KeptCheck) {
+        self.motion = kept.motion;
+        let shown = self.shown();
+        if kept.shown != shown {
+            self.motion.snap(shown.0, shown.1);
         }
     }
 
@@ -161,6 +375,7 @@ impl Checkbox {
     }
 
     fn painted_now(&self) -> Painted {
+        let pose = self.motion.pose(crate::motion::frame_now());
         (
             self.control.is_checked,
             self.indeterminate,
@@ -168,6 +383,11 @@ impl Checkbox {
             self.control.is_focused,
             self.control.effectively_enabled(),
             crate::i18n::I18nManager::revision(),
+            [
+                pose.level.to_bits(),
+                pose.incoming.to_bits(),
+                pose.outgoing.map_or(0, |(_, o)| o.to_bits()),
+            ],
         )
     }
 
@@ -226,11 +446,12 @@ impl Checkbox {
 
         // HIG §9.5: unchecked is the raised control surface with an edge
         // derived from it, and hover is that surface's lift; a declared
-        // `border_standard` vanished on a raised dark card.
-        let marked = face.checked || face.indeterminate;
-        let box_color = if marked {
-            theme.tokens.colors.intent.on_state
-        } else if face.interact.hovered {
+        // `border_standard` vanished on a raised dark card. Checking fills
+        // it with the on state, as far as the motion has come.
+        let pose = face.drawn();
+        let level = pose.level.clamp(0.0, 1.0);
+        let on_box = theme.tokens.colors.intent.on_state;
+        let off_box = if face.interact.hovered {
             theme
                 .tokens
                 .colors
@@ -238,57 +459,50 @@ impl Checkbox {
         } else {
             theme.tokens.colors.surfaces.raised
         };
-        {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                box_color,
-                None,
-                &shape,
-            );
-        }
+        let box_color = match level {
+            l if l >= 1.0 => on_box,
+            l if l <= 0.0 => off_box,
+            l => crate::tokens::colors::mix8(off_box, on_box, l),
+        };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            box_color,
+            None,
+            &shape,
+        );
 
+        // The mark's ink is read against the filled box it rests on, and
+        // fades and scales in with the fill (only fades, under reduced
+        // motion).
         let mark = theme.tokens.colors.ink_on_any(
-            &[box_color],
+            &[on_box],
             theme.tokens.colors.intent.on_state_mark,
             crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
-        if marked && face.radio {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                mark,
-                None,
-                &vello::kurbo::Circle::new(rect.center(), rect.width() * 0.2),
-            );
-        } else if marked {
-            let mut path = BezPath::new();
-            if face.indeterminate {
-                path.move_to((rect.x0 + rect.width() * 0.25, rect.center().y));
-                path.line_to((rect.x0 + rect.width() * 0.75, rect.center().y));
+        if level > 0.0 {
+            let mark_transform = if level >= 1.0 || theme.motion().reduced() {
+                transform
             } else {
-                path.move_to(Point::new(
-                    rect.x0 + rect.width() * 0.25,
-                    rect.y0 + rect.height() * 0.50,
-                ));
-                path.line_to(Point::new(
-                    rect.x0 + rect.width() * 0.42,
-                    rect.y0 + rect.height() * 0.67,
-                ));
-                path.line_to(Point::new(
-                    rect.x0 + rect.width() * 0.75,
-                    rect.y0 + rect.height() * 0.25,
-                ));
+                transform
+                    * Affine::scale_about(
+                        MARK_START_SCALE + (1.0 - MARK_START_SCALE) * f64::from(level),
+                        rect.center(),
+                    )
+            };
+            let glyphs = std::iter::once((pose.glyph, pose.incoming)).chain(pose.outgoing);
+            for (glyph, opacity) in glyphs {
+                let opacity = opacity * level;
+                if opacity <= 0.0 {
+                    continue;
+                }
+                let ink = if opacity >= 1.0 {
+                    mark
+                } else {
+                    mark.multiply_alpha(opacity)
+                };
+                paint_glyph(scene, mark_transform, rect, face.radio, glyph, ink);
             }
-            scene.stroke(
-                &Stroke::new((rect.width().min(rect.height()) * 0.105).max(1.5))
-                    .with_caps(vello::kurbo::Cap::Round)
-                    .with_join(vello::kurbo::Join::Round),
-                transform,
-                mark,
-                None,
-                &path,
-            );
         }
 
         if face.interact.disabled {
@@ -303,10 +517,15 @@ impl Checkbox {
         // ground, so it is held to the 3:1 a control's bounds need there.
         let edge = if face.interact.focused {
             Some((2.0, theme.tokens.colors.intent.accent_ink))
-        } else if marked {
+        } else if level >= 1.0 {
             None
+        } else if level <= 0.0 {
+            Some((1.0, unchecked_edge(theme, off_box)))
         } else {
-            Some((1.0, unchecked_edge(theme, box_color)))
+            Some((
+                1.0,
+                unchecked_edge(theme, off_box).multiply_alpha(1.0 - level),
+            ))
         };
         if let Some((width, color)) = edge {
             // Rest edge and focus ring share one half-pixel-inset outline.
@@ -319,6 +538,61 @@ impl Checkbox {
             );
         }
     }
+}
+
+/// How small the mark starts as it scales in, about the box's centre.
+const MARK_START_SCALE: f64 = 0.6;
+
+/// One glyph of a marked box in `ink`: a radio's dot, a tick or the mixed
+/// bar.
+fn paint_glyph(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    radio: bool,
+    glyph: CheckGlyph,
+    ink: vello::peniko::Color,
+) {
+    if radio {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            ink,
+            None,
+            &vello::kurbo::Circle::new(rect.center(), rect.width() * 0.2),
+        );
+        return;
+    }
+    let mut path = BezPath::new();
+    match glyph {
+        CheckGlyph::Mixed => {
+            path.move_to((rect.x0 + rect.width() * 0.25, rect.center().y));
+            path.line_to((rect.x0 + rect.width() * 0.75, rect.center().y));
+        }
+        CheckGlyph::Check => {
+            path.move_to(Point::new(
+                rect.x0 + rect.width() * 0.25,
+                rect.y0 + rect.height() * 0.50,
+            ));
+            path.line_to(Point::new(
+                rect.x0 + rect.width() * 0.42,
+                rect.y0 + rect.height() * 0.67,
+            ));
+            path.line_to(Point::new(
+                rect.x0 + rect.width() * 0.75,
+                rect.y0 + rect.height() * 0.25,
+            ));
+        }
+    }
+    scene.stroke(
+        &Stroke::new((rect.width().min(rect.height()) * 0.105).max(1.5))
+            .with_caps(vello::kurbo::Cap::Round)
+            .with_join(vello::kurbo::Join::Round),
+        transform,
+        ink,
+        None,
+        &path,
+    );
 }
 
 /// The edge of an unchecked box: derived from its face and resolved until
@@ -371,6 +645,9 @@ impl Widget for Checkbox {
             flex_shrink: 1.0,
             ..Default::default()
         };
+        if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
+            self.take_up(kept);
+        }
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -418,6 +695,9 @@ impl Widget for Checkbox {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        if let Some(kept) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept);
+        }
     }
 
     #[allow(
@@ -432,6 +712,9 @@ impl Widget for Checkbox {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        let now = crate::motion::frame_now();
+        let (marked, glyph) = self.shown();
+        self.motion.follow_input(marked, glyph, theme.motion(), now);
         self.drawing = Some(self.painted_now());
         let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {
@@ -445,6 +728,7 @@ impl Widget for Checkbox {
         let visual = Rect::from_center_size(visual_center, (BOX_EDGE, BOX_EDGE));
         let face = CheckboxFace::new(visual, self.control.is_checked)
             .indeterminate(self.indeterminate)
+            .pose(self.motion.pose(now))
             .hovered(self.control.is_hovered)
             .focused(self.control.focus_visible())
             .disabled(!self.control.effectively_enabled());
@@ -483,6 +767,19 @@ impl Widget for Checkbox {
         self.painted != Some(self.painted_now())
     }
 
+    /// Frames only while the fill or the mark is on its way.
+    fn needs_animation_frame(&self) -> bool {
+        self.motion.is_moving(crate::motion::frame_now())
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        self.control.handle_event(event, ctx);
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.label.is_some()
             && self.label_layout_revision
@@ -496,6 +793,12 @@ impl Widget for Checkbox {
         if let Some(drawing) = self.drawing.take() {
             self.painted = Some(drawing);
         }
+    }
+
+    /// The node below never sets `hidden`: answered without translating
+    /// its name, for every checkbox of a list on every focus walk.
+    fn accessibility_hidden(&self) -> bool {
+        false
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -537,6 +840,15 @@ bool_control_capabilities!(Checkbox, "checkbox");
 fn square_box(rect: Rect) -> Rect {
     let side = rect.width().min(rect.height());
     Rect::from_center_size(rect.center(), (side, side))
+}
+
+/// A box a rebuild drops leaves its mark for the one put in its place.
+impl Drop for Checkbox {
+    fn drop(&mut self) {
+        let motion = std::mem::take(&mut self.motion);
+        let shown = self.shown();
+        self.hand_on.leave(KeptCheck { motion, shown });
+    }
 }
 
 #[cfg(test)]
@@ -1145,6 +1457,164 @@ mod tests {
         assert!(
             rect.width() < 300.0,
             "a hugging box is as wide as its label: {rect:?}"
+        );
+    }
+
+    fn box_at_origin(checkbox: &mut Checkbox) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = checkbox.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        checkbox.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    fn present(checkbox: &mut Checkbox, theme: &Theme) {
+        checkbox.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        checkbox.mark_drawn();
+    }
+
+    #[test]
+    fn a_click_fades_the_box_in_unchecking_goes_quicker_and_a_key_lands() {
+        use crate::synthetic_input::{cursor_moved, mouse_press};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let ms = |t0: crate::time::Instant, ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        let theme = Theme::dark();
+        let state = crate::LocalState::new(false);
+        let mut checkbox = Checkbox::from_state(&state);
+        box_at_origin(&mut checkbox);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || present(&mut checkbox, &theme));
+        assert!(!checkbox.needs_animation_frame(), "the first paint rests");
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut checkbox, &cursor_moved(16.0, 16.0));
+            dispatch(&mut checkbox, &mouse_press());
+            assert!(state.get(), "checked on the press, at once");
+            present(&mut checkbox, &theme);
+        });
+        let came = checkbox.motion.mark.settles_at().expect("fading in") - t0;
+        with_monotonic_time(ms(t0, 40), || {
+            assert!(checkbox.needs_redraw() && checkbox.needs_animation_frame());
+            present(&mut checkbox, &theme);
+            let level = checkbox.motion.pose(ms(t0, 40)).level;
+            assert!(level > 0.0 && level < 1.0, "on its way: {level}");
+        });
+        with_monotonic_time(ms(t0, 1_000), || {
+            assert!(!checkbox.needs_animation_frame(), "settled: no frames");
+            present(&mut checkbox, &theme);
+            assert!(!checkbox.needs_redraw(), "settled: no repaint");
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut checkbox, &mouse_press());
+            assert!(!state.get());
+            present(&mut checkbox, &theme);
+        });
+        let went = checkbox.motion.mark.settles_at().expect("fading out") - ms(t0, 1_000);
+        assert!(went < came, "out {went:?} vs in {came:?}");
+        let mut doc = AutoCommit::new();
+        with_monotonic_time(ms(t0, 2_000), || {
+            crate::motion::note_source(MotionSource::Keyboard);
+            assert!(Widget::perform_action(
+                &mut checkbox,
+                &crate::a11y::Action::ToggleCheck,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            present(&mut checkbox, &theme);
+            assert_eq!(
+                checkbox.motion.pose(ms(t0, 2_000)).level,
+                1.0,
+                "a key lands"
+            );
+            assert!(!checkbox.needs_animation_frame());
+        });
+    }
+
+    #[test]
+    fn mixed_and_checked_cross_fade_their_glyphs_and_reduced_motion_still_fades() {
+        use crate::tokens::MotionSource;
+        let now = crate::time::now();
+        let later = now + crate::time::Duration::from_millis(40);
+        let motion = Theme::dark().motion();
+        let mut boxed = CheckMotion::default();
+        boxed.follow(true, CheckGlyph::Mixed, motion, MotionSource::Pointer, now);
+        assert_eq!(
+            boxed.pose(now),
+            CheckPose::at_rest(true, CheckGlyph::Mixed),
+            "first rests"
+        );
+        boxed.follow(true, CheckGlyph::Check, motion, MotionSource::Pointer, now);
+        // Early on: the old glyph is gone by 60 % of the fade.
+        let pose = boxed.pose(now + crate::time::Duration::from_millis(12));
+        assert_eq!(pose.glyph, CheckGlyph::Check);
+        assert_eq!(pose.level, 1.0, "the box stays filled");
+        assert!(pose.incoming > 0.0 && pose.incoming < 1.0);
+        assert!(matches!(pose.outgoing, Some((CheckGlyph::Mixed, o)) if o < 1.0));
+        let settled = now + crate::time::Duration::from_secs(1);
+        assert_eq!(
+            boxed.pose(settled),
+            CheckPose::at_rest(true, CheckGlyph::Check)
+        );
+        assert!(!boxed.is_moving(settled));
+        // A key swaps the glyph at once.
+        boxed.follow(
+            true,
+            CheckGlyph::Mixed,
+            motion,
+            MotionSource::Keyboard,
+            settled,
+        );
+        assert_eq!(
+            boxed.pose(settled),
+            CheckPose::at_rest(true, CheckGlyph::Mixed)
+        );
+        // Reduced motion: still a fade (no scale), at `fast`.
+        let reduced = Theme::dark().with_reduce_motion(true).motion();
+        let mut calm = CheckMotion::default();
+        calm.follow(
+            false,
+            CheckGlyph::Check,
+            reduced,
+            MotionSource::Pointer,
+            now,
+        );
+        calm.follow(true, CheckGlyph::Check, reduced, MotionSource::Pointer, now);
+        let level = calm.pose(later).level;
+        assert!(level > 0.0 && level < 1.0, "fades: {level}");
+        // A painted box part-way differs from both ends; at rest it is the
+        // box it always was.
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::dark();
+        let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
+        let render = |face: CheckboxFace| {
+            let mut scene = Scene::new();
+            Checkbox::paint(&mut scene, Affine::IDENTITY, &theme, &face);
+            OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
+        };
+        let half = CheckPose {
+            level: 0.5,
+            ..CheckPose::at_rest(true, CheckGlyph::Check)
+        };
+        let partway = render(CheckboxFace::new(rect, true).pose(half));
+        assert_ne!(partway, render(CheckboxFace::new(rect, true)));
+        assert_ne!(partway, render(CheckboxFace::new(rect, false)));
+        assert_eq!(
+            render(
+                CheckboxFace::new(rect, false).pose(CheckPose::at_rest(true, CheckGlyph::Check))
+            ),
+            render(CheckboxFace::new(rect, true)),
         );
     }
 }

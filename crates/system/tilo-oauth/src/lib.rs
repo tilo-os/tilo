@@ -38,8 +38,6 @@ use sha2::{Digest as _, Sha256};
 
 #[cfg(feature = "client")]
 pub mod client;
-/// RFC 8628 device authorization: a code the person enters on another
-/// page, for issuers that register no loopback redirect (GitHub).
 #[cfg(feature = "client")]
 pub mod device;
 #[cfg(any(test, feature = "fake"))]

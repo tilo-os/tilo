@@ -693,7 +693,7 @@ fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_devi
                 .into_iter()
                 .flat_map(|change| change.raw_bytes().to_vec())
                 .collect();
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 APP,
                 "",
                 changes,

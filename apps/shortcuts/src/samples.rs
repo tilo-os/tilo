@@ -14,10 +14,11 @@ use ui::tilo_actions::{
     InputSpec, OperationKind, ParamType, ResultSpec,
 };
 
-use crate::door::{DoorState, Drafting, Loaded, RunRecord, RunStatus};
+use crate::door::{DoorState, Drafting, RunRecord, RunStatus};
 use crate::drafting::Drafted;
 use crate::model::Workbench;
 use crate::view;
+use ui::Arrival;
 
 /// The `--shots` scenarios.
 pub const SCENARIOS: &[&str] = &[
@@ -311,8 +312,8 @@ pub fn stage(
             started: started.into(),
         };
         door.set(DoorState {
-            catalogue: Loaded::Ready(staged_catalog()),
-            library: Loaded::Ready(if first_run { Vec::new() } else { saved }),
+            catalogue: Arrival::Ready(staged_catalog()),
+            library: Arrival::Ready(if first_run { Vec::new() } else { saved }),
             runs: if first_run {
                 Vec::new()
             } else {

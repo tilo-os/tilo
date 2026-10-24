@@ -281,24 +281,6 @@ impl PdfApp {
         true
     }
 
-    /// A click on the floating page bubble: its chevrons step pages. Hit-tests
-    /// the rects the bubble captured this frame, so a click only lands when the
-    /// bubble is actually visible.
-    fn apply_page_bubble(&mut self, p: Point) -> bool {
-        if self.bubble_rect == Rect::ZERO || !self.bubble_rect.contains(p) {
-            return false;
-        }
-        if self.bubble_prev.contains(p) {
-            self.prev_page();
-        } else if self.bubble_next.contains(p) {
-            self.next_page();
-        }
-        // Keep the indicator up right after a nav click.
-        self.page_bubble.poke(ui::time::now());
-        self.dirty = true;
-        true
-    }
-
     /// Pointer-down inside the page canvas: dispatch by the active tool.
     fn apply_canvas_press(&mut self, p: Point, state: &mut ui::widget::Edits<'_>) -> bool {
         if !self.canvas_rect.contains(p) {
@@ -761,10 +743,6 @@ impl PdfApp {
             }
             self.commit_edit(state);
         }
-        if self.apply_page_bubble(p) {
-            *handled = true;
-            return true;
-        }
         if self.apply_sidebar(p, state) {
             *handled = true;
             return true;
@@ -913,8 +891,7 @@ impl PdfApp {
         }
         // End an image-region marquee: crop + copy the region.
         if self.region.is_some() {
-            self.copy_region();
-            self.region = None;
+            self.release_region();
             *handled = true;
             return;
         }

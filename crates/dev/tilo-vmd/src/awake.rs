@@ -88,7 +88,7 @@ impl Lease {
 
 /// Whether `change` needs the lease file rewritten, and the lease it then
 /// holds. A request that would move a running lease's deadline by less than
-/// [`RENEW_GRANULARITY`] needs nothing; an explicit hold or release always
+/// `RENEW_GRANULARITY` needs nothing; an explicit hold or release always
 /// writes.
 pub fn renewal(stored: Option<Lease>, now: u64, change: Change) -> (Lease, bool) {
     let old = stored.unwrap_or_default();

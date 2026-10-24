@@ -57,6 +57,7 @@ chat-call-issue-camera-denied = Camera blocked. Allow it in settings, then turn 
 chat-call-issue-camera-lost = Camera stopped
 chat-call-issue-screen-denied = Screen sharing was not allowed
 chat-call-issue-screen-lost = Screen sharing stopped
+chat-call-issue-unsupported = This browser can't join calls. Use a current Chrome, Edge, Firefox or Safari.
 
 chat-call-title = Call: { $channel }
 chat-call-count = { $count ->
@@ -75,6 +76,12 @@ chat-call-input-hint = Input from call status
 
 # The call window's connection line under its video.
 chat-call-connected = Connected
+chat-call-bridged = This call is bridged to { $services }
+chat-call-bridged-short = Bridged to { $services }
+chat-call-status-bridged = { $connection }. { $note }
+chat-call-participant = { $name }: volume and mute for you
+chat-call-silence = Mute for me
+chat-call-volume = Volume { $percent }%
 chat-call-reconnecting = Reconnecting
 chat-call-joining = Joining
 chat-call-voice-unavailable = Voice unavailable

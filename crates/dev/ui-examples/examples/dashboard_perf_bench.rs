@@ -874,6 +874,53 @@ struct BenchState<'a> {
     /// `TILO_UI_DASH_PEER=1`: a collaborator whose pointer moves on every
     /// event, painted over the widgets the way an app window paints it.
     peer: Option<&'a mut PeerBench>,
+    /// The time the tree reads while it handles events, lays out and draws.
+    clock: FrameClock,
+}
+
+/// Time between two benchmark events on the tree's clock: a 1 kHz pointer,
+/// so 200 events span 0.2 s and the 30 Hz indicators step six times beside
+/// the redraws the events themselves cause.
+const EVENT_INTERVAL: tilo_ui::time::Duration = tilo_ui::time::Duration::from_millis(1);
+
+/// Events of the unmeasured pass before the measured loop: the event mix
+/// repeats every 40 events (`dispatch_bench_event`), so this is each of its
+/// states once.
+const WARM_EVENTS: usize = 40;
+
+/// The clock the dashboard's widgets read: it starts when the tree is built
+/// and moves a fixed interval per event, whatever the wall time. On the
+/// wall clock a spinner steps as often as the node is slow: a loaded node
+/// redraws more frames, each with more indicators changed, and the redraw
+/// counters measure the node instead of the toolkit. Rendering and the
+/// benchmark's own timings stay on the wall clock.
+#[derive(Clone, Copy)]
+struct FrameClock {
+    at: tilo_ui::time::Instant,
+    interval: tilo_ui::time::Duration,
+}
+
+impl FrameClock {
+    fn new(interval: tilo_ui::time::Duration) -> Self {
+        Self {
+            at: tilo_ui::time::now(),
+            interval,
+        }
+    }
+
+    fn advance(&mut self, by: tilo_ui::time::Duration) {
+        self.at = self.at.checked_add(by).unwrap_or(self.at);
+    }
+
+    /// Advance to the next event.
+    fn tick(&mut self) {
+        self.advance(self.interval);
+    }
+
+    /// Run `op` with the tree's clock reading this clock's time.
+    fn pin<T>(self, op: impl FnOnce() -> T) -> T {
+        tilo_clock::testing::with_monotonic_time(self.at, op)
+    }
 }
 
 /// A remote collaborator's pointer, drawn through the framework's presence
@@ -967,27 +1014,30 @@ fn full_draw(
         .as_ref()
         .map(|_| crate::allocation_profile_snapshot());
     let t_layout = tilo_ui::time::now();
+    let clock = state.clock;
     let layout_dirty = state.root.is_layout_dirty();
     if layout_dirty {
-        let node_map = state.node_map;
-        let text_renderer = &mut *state.text_renderer;
-        let _ = state.taffy.compute_layout_with_measure(
-            state.root_node,
-            Size {
-                width: AvailableSpace::Definite(canvas_f32(state.canvas_w)),
-                height: AvailableSpace::Definite(canvas_f32(state.canvas_h)),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, text_renderer) }
-                } else {
-                    Size::ZERO
-                }
-            },
-        );
-        state
-            .root
-            .apply_layout(state.taffy, state.root_node, Point::ZERO);
+        clock.pin(|| {
+            let node_map = state.node_map;
+            let text_renderer = &mut *state.text_renderer;
+            let _ = state.taffy.compute_layout_with_measure(
+                state.root_node,
+                Size {
+                    width: AvailableSpace::Definite(canvas_f32(state.canvas_w)),
+                    height: AvailableSpace::Definite(canvas_f32(state.canvas_h)),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, text_renderer) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            );
+            state
+                .root
+                .apply_layout(state.taffy, state.root_node, Point::ZERO);
+        });
     }
     phase.layout_us = t_layout.elapsed().as_micros();
     if let (Some(before), Some(breakdown)) = (
@@ -1015,19 +1065,21 @@ fn full_draw(
         f64::from(state.canvas_w),
         f64::from(state.canvas_h),
     );
-    let prev_vp = state.presence.push_viewport(vp);
-    state.root.draw(
-        state.scene,
-        Affine::IDENTITY,
-        state.text_renderer,
-        state.theme,
-        state.presence,
-    );
-    state.presence.pop_viewport(prev_vp);
-    let peer_damage = state
-        .peer
-        .as_deref_mut()
-        .map(|peer| peer.draw(state.scene, state.text_renderer, state.theme, vp));
+    let peer_damage = clock.pin(|| {
+        let prev_vp = state.presence.push_viewport(vp);
+        state.root.draw(
+            state.scene,
+            Affine::IDENTITY,
+            state.text_renderer,
+            state.theme,
+            state.presence,
+        );
+        state.presence.pop_viewport(prev_vp);
+        state
+            .peer
+            .as_deref_mut()
+            .map(|peer| peer.draw(state.scene, state.text_renderer, state.theme, vp))
+    });
     phase.draw_us = t_draw.elapsed().as_micros();
     if let (Some(before), Some(breakdown)) =
         (allocation_before_draw, allocation_breakdown.as_deref_mut())
@@ -1049,7 +1101,7 @@ fn full_draw(
     if layout_dirty || matches!(peer_damage, Some(None)) {
         state.damage_regions.push(vp);
     } else {
-        state.root.collect_damage(state.damage_regions);
+        clock.pin(|| state.root.collect_damage(state.damage_regions));
         for rect in &mut *state.damage_regions {
             *rect = rect.inflate(16.0, 16.0).intersect(vp);
         }
@@ -1103,7 +1155,7 @@ fn full_draw(
         );
     }
 
-    state.root.mark_drawn();
+    clock.pin(|| state.root.mark_drawn());
     if let Some(peer) = state.peer.as_deref_mut() {
         peer.layer.presented();
     }
@@ -1113,19 +1165,21 @@ fn dispatch(state: &mut BenchState<'_>, doc: &mut AutoCommit, event: &WindowEven
     let mut handled = false;
     let mut focus_target: Option<NodeId> = None;
     let modifiers = Modifiers::default();
-    state.root.handle_event(
-        event,
-        &mut tilo_ui::widget::EventCtx {
-            scale_factor: 1.0,
-            modifiers: &modifiers,
-            state: tilo_ui::widget::Edits::lend(doc),
-            path: &automerge::ObjId::Root,
-            handled: &mut handled,
-            focus_target: &mut focus_target,
-            node_id: state.root_node,
-            taffy: state.taffy,
-        },
-    );
+    state.clock.pin(|| {
+        state.root.handle_event(
+            event,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: tilo_ui::widget::Edits::lend(doc),
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: state.root_node,
+                taffy: state.taffy,
+            },
+        );
+    });
 }
 
 fn make_cursor(x: f64, y: f64) -> WindowEvent {
@@ -1300,8 +1354,14 @@ fn prime_frozen_cursor(state: &mut BenchState<'_>, doc: &mut AutoCommit) {
 }
 
 /// Two warm-up frames: first `compute_layout`, second post-cache.
+///
+/// Each moves the indicators a step, as the wall clock did while a warm-up
+/// frame rendered: the measured loop then starts with the paths a stepping
+/// spinner takes (its damage, the retained raster's partial redraw) already
+/// warm, not with their first use.
 fn warm_up(state: &mut BenchState<'_>) {
     for _ in 0..2 {
+        state.clock.advance(tilo_ui::animation::INDICATOR_STEP);
         let mut warm = Phase::default();
         full_draw(state, &mut warm, None, None);
     }
@@ -1310,11 +1370,13 @@ fn warm_up(state: &mut BenchState<'_>) {
 fn print_warmup_report(state: &BenchState<'_>) {
     println!(
         "after warm-up: root.needs_redraw()={} root.is_layout_dirty()={}",
-        state.root.needs_redraw(),
+        state.clock.pin(|| state.root.needs_redraw()),
         state.root.is_layout_dirty()
     );
     let mut culprits = Vec::new();
-    dirty_culprits(state.root.as_ref(), 0, &mut culprits);
+    state
+        .clock
+        .pin(|| dirty_culprits(state.root.as_ref(), 0, &mut culprits));
     println!("dirty culprits after warmup: {} widgets", culprits.len());
     for (name, d) in culprits.iter().take(8) {
         println!("  {name} (depth {d})");
@@ -1449,6 +1511,7 @@ fn run_bench_loop(
         let allocation_before_handle = allocation_breakdown
             .as_ref()
             .map(|_| crate::allocation_profile_snapshot());
+        state.clock.tick();
         let t_handle = tilo_ui::time::now();
         dispatch_bench_event(
             state,
@@ -1470,7 +1533,7 @@ fn run_bench_loop(
 
         // App-style gate: only draw if the tree signals dirty (or the peer
         // moved).
-        let redrew = state.root.needs_redraw() || state.peer.is_some();
+        let redrew = state.clock.pin(|| state.root.needs_redraw()) || state.peer.is_some();
         if redrew {
             total_redraws = total_redraws.saturating_add(1);
             let render_timing = render_timings
@@ -2877,10 +2940,17 @@ pub fn run(_args: &[String]) {
     let presence = PresenceCtx::default();
     let mut doc = AutoCommit::new();
 
-    let mut root = build_tree(include_animated);
+    // Damage verification compares every frame it asks for, so there each
+    // event moves the indicators one step and redraws.
+    let clock = FrameClock::new(if verify_damage {
+        tilo_ui::animation::INDICATOR_STEP
+    } else {
+        EVENT_INTERVAL
+    });
+    let mut root = clock.pin(|| build_tree(include_animated));
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
+    let root_node = clock.pin(|| root.build_layout(&mut taffy, &theme, &mut node_map));
     let mut scene = Scene::new();
     let mut damage_regions = Vec::with_capacity(8);
 
@@ -2912,6 +2982,7 @@ pub fn run(_args: &[String]) {
         canvas_w,
         canvas_h,
         peer: peer.as_mut(),
+        clock,
     };
 
     warm_up(&mut state);
@@ -2947,6 +3018,25 @@ pub fn run(_args: &[String]) {
         || tilo_ui::env::var_os("TILO_UI_DASH_ALLOC_PROFILE").is_some_and(|raw| !raw.is_empty());
     let frame_breakdown =
         tilo_ui::env::var_os("TILO_UI_DASH_FRAME_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
+    // One pass of the event mix, unmeasured: every state it reaches (each
+    // segment chosen, the thumb on its way, a bar wrapping around) has been
+    // drawn and rendered once, so the measured loop counts what each redraw
+    // allocates, not a buffer's one-time growth to the largest of them. On
+    // the wall clock whether that growth landed in the measured loop
+    // depended on which states the node's pace happened to reach there.
+    let _ = run_bench_loop(
+        &mut state,
+        &mut doc,
+        WARM_EVENTS.min(iters),
+        BenchLoopOptions {
+            scroll_mode,
+            frozen,
+            profile_allocations: false,
+            profile_allocation_breakdown: false,
+            profile_render_timing: false,
+        },
+        None,
+    );
     let run = run_bench_loop(
         &mut state,
         &mut doc,

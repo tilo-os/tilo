@@ -4,7 +4,7 @@
 //! A page's `fetch` only exposes a cross-origin response when the site sends
 //! `Access-Control-Allow-Origin`. Most APIs and feeds do not, so an HTTP
 //! tester or a feed reader in a page needs a relay. The workspace host the
-//! page is admitted to offers one: [`host`] is its implementation, which
+//! page is admitted to offers one: `host` is its implementation, which
 //! `tilo-relay` serves and, in development, the `tilo-fetch-proxy` program
 //! behind `tilo-web-desktop/scripts/serve.mjs`. The app opts in per client
 //! or per request with [`ProxyUse::CrossOrigin`]; the host enables it with

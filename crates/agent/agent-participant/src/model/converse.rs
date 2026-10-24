@@ -82,10 +82,16 @@ pub(crate) const TURN_OUTPUT_TOKENS: u32 = 16_384;
 /// usage line.
 const MOST_REFUSAL_CHARS: usize = 300;
 
+/// How long a turn whose call was lost to the network waits before it is
+/// asked again: long enough for a dropped connection to be replaced.
+const LOST_TURN_WAIT: Duration = Duration::from_millis(1500);
+
 /// What carries a planning conversation's turns, holding the credential.
 pub trait PlanTurns: Send {
     /// Answer one turn's `request`. `key` names the turn, the same for
-    /// every attempt at it, so a metered endpoint bills it once.
+    /// every attempt at it, so a metered endpoint bills it once; `retry`
+    /// says this is the turn asked again after its first call was lost to
+    /// the network, for the usage log.
     ///
     /// # Errors
     ///
@@ -95,6 +101,7 @@ pub trait PlanTurns: Send {
         request: &ModelRequest,
         key: &str,
         deadline: Instant,
+        retry: bool,
     ) -> Result<ModelResponse, ModelError>;
 
     /// The model's name, for the usage log.
@@ -124,6 +131,7 @@ impl PlanTurns for GatewayTurns {
         request: &ModelRequest,
         _: &str,
         deadline: Instant,
+        retry: bool,
     ) -> Result<ModelResponse, ModelError> {
         if !tilo_model_gateway::available() {
             return Err(ModelError::new(ErrorKind::Unavailable));
@@ -146,7 +154,10 @@ impl PlanTurns for GatewayTurns {
             request,
             started.elapsed(),
             &answer,
-            false,
+            Attempt {
+                hedge: false,
+                retry,
+            },
         );
         answer
     }
@@ -243,7 +254,7 @@ pub(crate) fn plan(
             turn,
             &serde_json::json!((turns.model(), &request)),
         );
-        let response = match turns.turn(&request, &key, deadline) {
+        let response = match ask(turns, (&request, &key), deadline, &asked.briefing.retries) {
             Ok(response) => response,
             // A turn that could not be read has most often lost a call its
             // server could not parse: the plan is asked for as plain text.
@@ -284,6 +295,44 @@ pub(crate) fn plan(
         }
     }
     Err("the model exhausted its discovery turns".into())
+}
+
+/// One turn's answer. A call lost to the network before any answer
+/// ([`lost_in_transit`]) is asked once more, under the same key, after
+/// [`LOST_TURN_WAIT`], while the task's `retries` last and the plan's
+/// deadline leaves room: a turn only plans, so asking it again costs
+/// tokens and nothing else. A second loss is the turn's answer.
+fn ask(
+    turns: &mut dyn PlanTurns,
+    (request, key): (&ModelRequest, &str),
+    deadline: Instant,
+    retries: &crate::planner::TurnRetries,
+) -> Result<ModelResponse, ModelError> {
+    let error = match turns.turn(request, key, deadline, false) {
+        Err(error) if lost_in_transit(&error) => error,
+        answer => return answer,
+    };
+    let room = Instant::now()
+        .checked_add(LOST_TURN_WAIT)
+        .is_some_and(|resumed| resumed < deadline);
+    if !room || !retries.take() {
+        return Err(error);
+    }
+    tracing::info!(
+        %error,
+        left = retries.left(),
+        "agent: a planning call was lost to the network; asking it again"
+    );
+    std::thread::sleep(LOST_TURN_WAIT);
+    turns.turn(request, key, deadline, true)
+}
+
+/// Whether a failed call was lost in transit (the connection failed or
+/// timed out) rather than answered: a refusal, a bad key or request, a
+/// context too long or credit run out would only be answered the same way
+/// again.
+const fn lost_in_transit(error: &ModelError) -> bool {
+    matches!(error.kind, ErrorKind::Transport | ErrorKind::TimedOut)
 }
 
 /// One planning conversation as it goes: its messages, what it revealed
@@ -976,17 +1025,27 @@ pub(crate) fn carried_gap(answer: &Answer, catalogue: &Catalogue) -> Option<Stri
     None
 }
 
+/// Which call of a turn a usage line counts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Attempt {
+    /// The same request sent again while the first was slow.
+    pub hedge: bool,
+    /// The turn asked again after its first call was lost to the network.
+    pub retry: bool,
+}
+
 /// Appends one JSON line per model call to `TILO_AGENT_USAGE_LOG`, when
 /// set: which agent asked (its thread's name), how long it took, the
 /// provider's token counts, why it stopped and a refusal's words, how many
 /// pictures it carried and their encoded bytes (never the pictures), and
-/// whether it was a hedge. Benchmarks price runs from these lines.
+/// whether it was a hedge or a lost call asked again. Benchmarks price runs
+/// from these lines.
 pub(crate) fn record_usage(
     (model, tier): (&str, Option<&str>),
     request: &ModelRequest,
     elapsed: Duration,
     answer: &Result<ModelResponse, ModelError>,
-    hedge: bool,
+    attempt: Attempt,
 ) {
     use std::io::Write as _;
     let Some(path) = std::env::var_os("TILO_AGENT_USAGE_LOG") else {
@@ -998,7 +1057,7 @@ pub(crate) fn record_usage(
         agent.as_deref(),
         (elapsed, crate::vision::pictures_in(request)),
         answer,
-        hedge,
+        attempt,
     );
     if let (Some(tier), Some(fields)) = (tier, line.as_object_mut()) {
         fields.insert("service_tier".into(), tier.into());
@@ -1038,7 +1097,7 @@ pub(crate) fn usage_line(
     agent: Option<&str>,
     (elapsed, (pictures, picture_bytes)): (Duration, (usize, usize)),
     answer: &Result<ModelResponse, ModelError>,
-    hedge: bool,
+    attempt: Attempt,
 ) -> serde_json::Value {
     let response = answer.as_ref().ok();
     serde_json::json!({
@@ -1055,6 +1114,7 @@ pub(crate) fn usage_line(
         "refusal": response.and_then(refusal),
         "pictures": pictures,
         "picture_bytes": picture_bytes,
-        "hedge": hedge,
+        "hedge": attempt.hedge,
+        "retry": attempt.retry,
     })
 }

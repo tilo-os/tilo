@@ -202,7 +202,7 @@ impl Native {
                 let heads = doc.get_heads();
                 doc.put(ROOT, key, value).unwrap();
                 doc.commit_edit("fixture", "fixture");
-                view.peer().clone().publish_incremental(
+                view.peer().clone().publication_mut().publish_incremental(
                     APP,
                     "",
                     doc.save_after(&heads),
@@ -374,6 +374,7 @@ async fn a_native_device_of_another_person_joins_a_relay_governed_room() {
     doc.put(ROOT, "topic", "from Alice").unwrap();
     doc.commit_edit("fixture", "topic");
     let message = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop_key, SystemTime::now())
         .unwrap();
     publish(&alice_session, &message);

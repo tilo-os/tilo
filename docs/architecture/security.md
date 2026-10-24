@@ -574,8 +574,8 @@ What it can read depends on the channel and on its certificate:
 ## What leaves the device by default
 
 Tilo's own components carry no telemetry, analytics or crash-upload client: no
-such crate is in the build (`tools/policy/check_no_telemetry.py`), panics are written only to `~/.cache/tilo/crashes/`
-(`crash_log`), and the image removes `systemd-coredump`. A feedback report
+such crate is in the build (`tools/policy/check_no_telemetry.py`), panics and desktop freezes are written only to
+`~/.cache/tilo/crashes/` (`crash_log`), and the image removes `systemd-coredump`. A feedback report
 leaves only when the person has configured a destination room and approved the
 reviewed report; it travels to that room over the collaboration transport,
 never to a Tilo service (`docs/architecture/feedback.md`). What does leave,
@@ -738,14 +738,22 @@ this person authority.
 
 Only accepted workspace-state publication exports policy. The export retains
 matching person/membership policy and exact-app/action scopes, excludes host
-paths, devices, network and other apps, and checks current native custody before
-renewal. The existing launch supervisor holds the projection lease; the normal
-idle deadline and durable writer renew it once per second while that supervisor
-is live. An expired, future-dated, missing, malformed or foreign binding denies
-Admin admission. The maximum lease is three seconds: host death or failed file
-replacement cannot preserve stale admission indefinitely. Atomic replacement
-is visible through the read-only directory mount, and ordinary hosted model
-pumps republish changed authority without forcing a redraw.
+paths, devices, network and other apps, and checks current native custody
+whenever it is judged. The existing launch supervisor holds the projection
+lease. The projection carries no lifetime: the host holds an exclusive lock on
+each projection file it publishes, taken before the file is renamed into
+place, and the SDK admits a projection only while that lock is held. Host
+death releases it in the kernel, and a failed replacement withdraws the file
+and lets go of it, so neither preserves stale admission and nothing is renewed
+on a clock. A missing, unheld, malformed or foreign binding denies Admin
+admission. Projections and running sandboxes are judged again when what they
+read changes: an accepted publication, a policy-change announcement (owner
+fencing, identity invalidation, an uncertain state write, an owner retiring),
+the state writer retiring, an export dropped unpublished, or the wall-clock
+expiry of a grant a running sandbox captured. A projection is rewritten only
+when it changed. Atomic replacement is visible through the read-only directory
+mount, and ordinary hosted model pumps republish changed authority without
+forcing a redraw.
 
 This projection is action discovery/admission, not privileged backend proof.
 Host-mediated operations must independently authenticate the launcher-bound

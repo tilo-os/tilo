@@ -1,13 +1,13 @@
 //! Data-driven keyboard layouts + pure geometry.
 //!
-//! A [`KeyboardLayout`] is just rows of [`Key`]s. Adding AZERTY, QWERTZ, a
+//! A [`KeyboardLayout`](crate::touch::KeyboardLayout) is just rows of [`Key`](crate::touch::Key)s. Adding AZERTY, QWERTZ, a
 //! Dvorak layer, an emoji layer, … is *data* — build a `KeyboardLayout` and
 //! register it on the OSK widget.
 //! Nothing about rendering, sizing, or input is layout-specific.
 //!
 //! The *same* normalized key positions double as the FUTO
 //! swipe `load_layout_json()` geometry — one source of truth for rendering and
-//! (later) swipe decoding. [`key_rects`] is that single geometry pass;
+//! (later) swipe decoding. [`key_rects`](crate::touch::key_rects) is that single geometry pass;
 //! a swipe decoder can normalise its output rects into 0..1 space.
 
 /// Bundled letter layouts, in their legacy switching order.
@@ -153,7 +153,7 @@ impl Key {
     /// press released without sliding types it), then its accented forms,
     /// cased for `shift`. `usage` says how often the typing language uses a
     /// form: forms it uses come first, most used first; the rest follow in
-    /// [`ALTERNATES`] order. Empty for keys without accented forms.
+    /// `ALTERNATES` order. Empty for keys without accented forms.
     pub fn alternates(&self, shift: ShiftState, usage: impl Fn(char) -> f64) -> Vec<String> {
         let KeyAction::Char(s) = &self.action else {
             return Vec::new();

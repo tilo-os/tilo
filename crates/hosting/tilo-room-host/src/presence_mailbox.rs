@@ -293,7 +293,7 @@ impl PresenceMailbox {
 
     /// Take everything due at `now`, in posting order; with `ride`, also
     /// everything that may go early because something is being written to
-    /// the connection anyway (see [`may_ride`]). When unslotted presence is
+    /// the connection anyway (see `may_ride`). When unslotted presence is
     /// taken, everything pending is taken with it, so it never overtakes
     /// presence posted before it.
     pub fn take(&self, now: Instant, ride: bool) -> Vec<DuePresence> {

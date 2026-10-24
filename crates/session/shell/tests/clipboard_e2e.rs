@@ -2047,14 +2047,25 @@ fn an_app_secret_copy_pastes_as_plain_text_and_keeps_its_secret_markers() {
     );
 }
 
+/// A client whose display a borrowing `WaylandClipboard` may use for the
+/// rest of the process. That constructor's contract is that the display
+/// outlives the value and every loader it retains; a timed-out read keeps its
+/// loader past the value's drop. Dropping the client at the end of a test, or
+/// while a failing one unwinds, freed the display under such a loader, which
+/// then aborted the test process inside libwayland.
+fn borrowed_display_client(compositor: &Compositor, app_id: &str) -> &'static mut TestClient {
+    Box::leak(Box::new(TestClient::new(compositor.connect(), app_id)))
+}
+
 #[test]
 fn native_borrowed_display_pastes_the_compositors_current_selection() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-paste");
+    let client = borrowed_display_client(&compositor, "org.tilo.test.native-paste");
     client.assert_is_tilo_compositor();
     // This is the native runner's constructor, including its smithay-clipboard
     // readers, rather than the publication-only protocol fixture constructor.
-    // SAFETY: client owns the display and outlives this backend.
+    // SAFETY: the client is never dropped, so its display outlives this
+    // backend and every loader it retains (see `borrowed_display_client`).
     let clipboard =
         unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
     assert!(clipboard.wait_ready_for_wayland_test(deadline()));
@@ -2068,7 +2079,7 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
     // reader observes it, another poll must not discard that observation.
     let observed_payload = std::cell::Cell::new(false);
     wait_for_clipboard_before(
-        &mut client,
+        client,
         || {
             assert!(
                 !observed_payload.get(),
@@ -2098,9 +2109,10 @@ fn native_borrowed_display_pastes_the_compositors_current_selection() {
 #[should_panic(expected = "missing native selection: fixture exceeded its deadline")]
 fn native_borrowed_display_wait_refuses_a_missing_selection() {
     let compositor = Compositor::start();
-    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.native-missing-paste");
+    let client = borrowed_display_client(&compositor, "org.tilo.test.native-missing-paste");
     client.assert_is_tilo_compositor();
-    // SAFETY: client owns the display and outlives this backend.
+    // SAFETY: the client is never dropped, so its display outlives this
+    // backend and every loader it retains (see `borrowed_display_client`).
     let clipboard =
         unsafe { ui::clipboard::WaylandClipboard::new(client.conn.backend().display_ptr().cast()) };
     assert!(clipboard.wait_ready_for_wayland_test(deadline()));
@@ -2108,7 +2120,7 @@ fn native_borrowed_display_wait_refuses_a_missing_selection() {
     client.roundtrip();
     assert_eq!(clipboard.text(ClipboardTarget::Clipboard), None);
     wait_for_clipboard_before(
-        &mut client,
+        client,
         || clipboard.text(ClipboardTarget::Clipboard).is_some(),
         "missing native selection",
         // Nothing was copied, so no wait could observe one: refuse at once.
@@ -5491,6 +5503,7 @@ fn assert_tiled_drag_clients_visible(compositor: &Compositor) {
 /// pointer scans; a single test thread must service both applications.
 #[test]
 fn pointer_discovery_keeps_another_tiled_client_connected() {
+    const SCANS: u32 = 512;
     let compositor = Compositor::start();
     compositor.place_next_window("org.tilo.test.pointer-discovery-peer");
     let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.pointer-discovery-peer");
@@ -5511,12 +5524,18 @@ fn pointer_discovery_keeps_another_tiled_client_connected() {
     peer.clear_touch_and_pointer_trace();
 
     let started = Instant::now();
-    for _ in 0..512 {
+    // The bound covers the whole loop, so a failure has to say whether one
+    // scan stalled (a hang) or every scan ran slow (the compositor's turn
+    // per pointer move and client sync grew under load).
+    let mut slowest = Duration::ZERO;
+    for scan in 1..=SCANS {
+        let scan_started = Instant::now();
         let found = target.scan_pointer_grid_with_peer(
             &compositor,
             |x, y| x == point.0 && (y == point.1 || y == point.1 + 40.0),
             &mut peer,
         );
+        slowest = slowest.max(scan_started.elapsed());
         if found.is_some() {
             peer.pump();
         }
@@ -5524,9 +5543,12 @@ fn pointer_discovery_keeps_another_tiled_client_connected() {
             found.is_none(),
             "pointer scans over the peer must not enter this tiled client"
         );
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() < deadline(),
-            "pointer discovery exceeded its existing hang bound"
+            elapsed < deadline(),
+            "pointer discovery exceeded its existing hang bound: {scan} of {SCANS} scans took \
+             {elapsed:?}, {:?} on average and {slowest:?} for the slowest",
+            elapsed.checked_div(scan).unwrap_or_default(),
         );
     }
     peer.pump();

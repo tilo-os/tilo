@@ -1,7 +1,7 @@
 //! Pure data model for the calendar/todo app.
 //!
 //! This is the in-memory source of truth. It is mirrored into the
-//! Automerge document by [`crate::doc`] (events / tasks / projects as
+//! Automerge document by [`crate::resource`] (events / tasks / projects as
 //! CRDT objects), and each event/task's rich-text **notes** live in the
 //! CRDT as rich text edited in the SDK rich-text editor.
 //!
@@ -554,8 +554,9 @@ impl Identified for Event {
     }
 }
 
-/// How many minutes before an event its reminder may ring.
-pub const REMINDERS: [i64; 3] = [10, 30, 60];
+/// How many minutes before an event its reminder may ring: the alerts the
+/// editor offers, from the start itself to a day before.
+pub const REMINDERS: [i64; 7] = [0, 5, 10, 15, 30, 60, 1440];
 
 impl Event {
     fn valid(&self) -> Result<(), Refusal> {
@@ -566,7 +567,9 @@ impl Event {
             .reminder_min
             .is_some_and(|minutes| !REMINDERS.contains(&minutes))
         {
-            return Err(Refusal::new("a reminder rings 10, 30 or 60 minutes before"));
+            return Err(Refusal::new(
+                "a reminder rings at the start, 5, 10, 15 or 30 minutes, an hour or a day before",
+            ));
         }
         if self.recurrence_interval == 0 {
             return Err(Refusal::new("an event repeats every 1 or more"));
@@ -853,7 +856,7 @@ impl Task {
 /// it keeps it, its version there and what it holds. An event whose content
 /// differs from what its server holds is queued for upload; a copy whose
 /// event is gone, or on another calendar, is queued for deletion (see
-/// [`crate::outbox`]).
+/// `crate::outbox`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Model)]
 pub struct RemoteCopy {
     /// The remote calendar it is in

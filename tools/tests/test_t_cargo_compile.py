@@ -50,17 +50,21 @@ class WasmPassTests(unittest.TestCase):
     def test_clippy_lints_a_package_with_the_features_its_tests_are_verified_with(self):
         argv = ["cargo", "clippy", *FORMAT, "-p", "shell", "-p", "tilo-media",
                 "--locked", "--all-targets", "--", "-D", "warnings"]
-        features = package_features.arguments(["tilo-media"])
-        self.assertTrue(features)
-        self.assertEqual(t_cargo_compile.with_test_features(argv),
-                         [*argv[:-3], *features, "--", "-D", "warnings"])
+        # Through workspace-unify, which depends on tilo-media with them, never as --features.
+        self.assertEqual(t_cargo_compile.unified(argv),
+                         [*argv[:-3], "-p", "workspace-unify", "--", "-D", "warnings"])
+        anchor = tomllib.loads((ROOT / "crates/dev/workspace-unify/Cargo.toml").read_text())
+        for table in anchor["target"].values():
+            media = table.get("dependencies", {}).get("tilo-media")
+            if media is not None:
+                self.assertLessEqual(set(package_features.NATIVE_TEST_FEATURES["tilo-media"]), set(media["features"]))
         self.assertEqual(t_cargo_compile.with_test_features(["cargo", "clippy", "-p", "shell"]),
                          ["cargo", "clippy", "-p", "shell"])
 
     def test_the_workspace_form_lints_every_package_s_test_features_and_default_builds(self):
         argv = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--", "-D", "warnings"]
         features = package_features.arguments(list(package_features.NATIVE_TEST_FEATURES))
-        self.assertEqual(t_cargo_compile.with_test_features(argv),
+        self.assertEqual(t_cargo_compile.unified(argv),
                          [*argv[:-3], *features, "--", "-D", "warnings"])
         self.assertEqual(t_cargo_compile.default_build_passes(argv), [
             ["cargo", "clippy", "--locked", "--all-targets", "-p", name, "--", "-D", "warnings"]

@@ -341,6 +341,16 @@ pub(super) fn next_wake_deadline(each: EachChild<'_>) -> Option<Instant> {
     earliest
 }
 
+pub(super) fn holds_frame_until(each: EachChild<'_>, now: Instant) -> Option<Instant> {
+    let mut latest = None;
+    each(&mut |child| {
+        if let Some(until) = child.holds_frame_until(now) {
+            latest = Some(latest.map_or(until, |old: Instant| old.max(until)));
+        }
+    });
+    latest
+}
+
 pub(super) fn modal_capture(each: EachChild<'_>) -> Option<Rect> {
     let mut capture = None;
     each(&mut |child| {

@@ -4,7 +4,7 @@
 //! Two layers live here:
 //!
 //!  * [`Settings`] — the durable preferences (ad-blocking, clear-on-exit,
-//!    search engine, homepage) as the [`Browser`](crate::resource::Browser)
+//!    search engine, homepage) as the [`Browser`]
 //!    resource reads them from its document.
 //!
 //!  * [`SettingsPane`] — a `ui` [`Widget`] that renders process-local

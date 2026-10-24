@@ -592,7 +592,8 @@ fn gossip_stops_shuffling_after_its_last_peer_leaves_and_restarts_on_join() {
 }
 
 /// iroh-gossip sweeps a topic's message cache only while something is
-/// cached: the first message arms the sweep, it stops once the caches have
+/// cached: a message with no neighbour to hear it is not cached, the first
+/// one a neighbour hears arms the sweep, it stops once the caches have
 /// expired, and the next message arms it once more. Driven through the
 /// public sans-IO topic state, with Tilo's gossip timings.
 #[test]
@@ -610,7 +611,7 @@ fn gossip_sweeps_a_topic_cache_only_while_it_holds_messages() {
         broadcast: plumtree.clone(),
         ..Config::default()
     };
-    let mut state: topic::State<u64, _> = topic::State::new(1, None, config);
+    let mut state: topic::State<u64, _> = topic::State::new(1, None, config.clone());
     let sweeps = |events: Vec<topic::OutEvent<u64>>| -> Vec<topic::Timer<u64>> {
         events
             .into_iter()
@@ -637,6 +638,22 @@ fn gossip_sweeps_a_topic_cache_only_while_it_holds_messages() {
 
     let start = Instant::now();
     let mut now = start;
+    assert!(
+        broadcast(&mut state, b"alone", now).is_empty(),
+        "a message nobody hears arms no sweep"
+    );
+    let mut peer: topic::State<u64, _> = topic::State::new(2, None, config);
+    let join = peer
+        .handle(topic::InEvent::Command(Command::Join(vec![1])), now)
+        .find_map(|event| match event {
+            topic::OutEvent::SendMessage(1, message) => Some(message),
+            _ => None,
+        })
+        .expect("the peer sends its join request");
+    let _ = state
+        .handle(topic::InEvent::RecvMessage(2, join), now)
+        .count();
+    assert!(state.has_active_peers(), "the peer joined the topic");
     let mut armed = broadcast(&mut state, b"first", now);
     assert_eq!(armed.len(), 1, "the first message arms one sweep");
     assert!(

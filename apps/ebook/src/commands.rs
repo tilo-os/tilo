@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use ui::background::Pumped;
 use ui::framework::Command;
-use ui::framework::views::{Item, QueryEngine, QuerySpec, RemoteSource, RemoteState};
+use ui::framework::views::{Item, QueryEngine, QuerySpec, RemoteSource};
 
 /// The commands [`crate::EbookShell`] declares.
 pub const COMMANDS: &[Command] = &[
@@ -234,12 +234,12 @@ fn bench_store(queries: &[&str]) {
                     got = true;
                     break;
                 }
-                if engine.results().remote.first().is_some_and(|section| {
-                    matches!(
-                        section.state,
-                        RemoteState::Unreachable(_) | RemoteState::Idle
-                    )
-                }) {
+                if engine
+                    .results()
+                    .remote
+                    .first()
+                    .is_some_and(|section| section.state.is_none() || section.failure().is_some())
+                {
                     failed += 1;
                     break;
                 }

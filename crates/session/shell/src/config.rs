@@ -62,7 +62,7 @@ pub enum EncoderChoice {
 }
 
 /// Read `$XDG_CONFIG_HOME/tilo-desktop/desktop.toml`, else the image's
-/// [`SYSTEM_CONFIG`], else the defaults. A file that does not parse is
+/// `SYSTEM_CONFIG`, else the defaults. A file that does not parse is
 /// reported and skipped rather than quietly read as the defaults.
 pub fn load_config() -> DesktopConfig {
     let user = tilo_paths::config_dir().map(|dir| dir.join("tilo-desktop").join("desktop.toml"));

@@ -177,6 +177,9 @@ impl<'a> ModalAction<'a> {
 pub struct ModalSpec<'a> {
     /// The sheet's title, set in the `Title` role.
     pub title: &'a str,
+    /// An icon leading the title that names who asks (a lock for a
+    /// password, the network for a Wi-Fi join).
+    pub icon: Option<Icon>,
     /// Draw a close control. Escape always dismisses; this is its visible
     /// half, for a sheet with no Cancel action.
     pub closable: bool,
@@ -202,6 +205,7 @@ impl Default for ModalSpec<'_> {
     fn default() -> Self {
         Self {
             title: "",
+            icon: None,
             closable: true,
             actions: &[],
             platform: PlatformConventions::default(),
@@ -224,6 +228,11 @@ impl<'a> ModalSpec<'a> {
     #[must_use]
     pub fn actions(mut self, actions: &'a [ModalAction<'a>]) -> Self {
         self.actions = actions;
+        self
+    }
+    #[must_use]
+    pub fn icon(mut self, icon: Option<Icon>) -> Self {
+        self.icon = icon;
         self
     }
     #[must_use]
@@ -394,6 +403,19 @@ fn title_row_height(theme: &Theme) -> f64 {
     line.max(f64::from(theme.tokens.metrics.min_pointer_target))
 }
 
+/// The side of a title icon: the large icon size.
+fn title_icon_side(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_lg)
+}
+
+/// Where a title icon is drawn: before the title, centred on its first row.
+pub fn title_icon_rect(layout: &ModalLayout, theme: &Theme) -> Rect {
+    let side = title_icon_side(theme);
+    let x1 = layout.title.x0 - f64::from(theme.tokens.spacing.s3);
+    let mid = layout.title.y0 + title_row_height(theme).min(layout.title.height()) / 2.0;
+    Rect::new(x1 - side, mid - side / 2.0, x1, mid + side / 2.0)
+}
+
 /// The title wrapped to `width`: one or two lines, the second elided.
 fn title_lines(
     text_renderer: &mut TextRenderer,
@@ -447,12 +469,18 @@ pub fn layout(
     let close_overhang = (close_side - f64::from(theme.tokens.metrics.icon_md)) / 2.0;
     // The title stops where the close control starts, so a long title wraps
     // (and then elides) instead of running under it.
+    // A title icon stands at the leading edge; the title starts after it.
+    let icon_lead = if spec.icon.is_some() && has_title {
+        title_icon_side(theme) + f64::from(spacing.s3)
+    } else {
+        0.0
+    };
     let title_w = if spec.closable {
         w - pad * 2.0 + close_overhang - close_side - f64::from(spacing.s2)
     } else {
         w - pad * 2.0
-    }
-    .max(0.0);
+    } - icon_lead;
+    let title_w = title_w.max(0.0);
     let lines = title_lines(text_renderer, spec.title, title_w, theme).len();
     let line_h = f64::from(theme.text(TextRole::Title).line_height_px());
     let title_h = if has_title {
@@ -500,9 +528,9 @@ pub fn layout(
         )
     });
     let title = Rect::new(
-        card.x0 + pad,
+        card.x0 + pad + icon_lead,
         title_top,
-        card.x0 + pad + title_w,
+        card.x0 + pad + icon_lead + title_w,
         title_top + title_h,
     );
 
@@ -719,6 +747,18 @@ pub fn paint_sheet(
         floating_surface::paint(scene, transform, layout.card, theme);
     }
 
+    if let Some(icon) = spec.icon.filter(|_| layout.title.height() > 0.0) {
+        let (ink, _) = ink(theme);
+        let rect = title_icon_rect(layout, theme);
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            rect,
+            icon,
+            ink,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+    }
     if !spec.title.is_empty() {
         let (ink, _) = ink(theme);
         let style = theme.text(TextRole::Title);
@@ -1305,6 +1345,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     action_identity: uuid::Uuid,
     test_id: Option<String>,
     title: String,
+    /// Leads the title ([`ModalSpec::icon`]).
+    icon: Option<Icon>,
     primary_action: Option<DialogAction>,
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
@@ -1378,6 +1420,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             action_identity: uuid::Uuid::new_v4(),
             test_id: None,
             title: title.into(),
+            icon: None,
             content,
             primary_action: None,
             secondary_action: None,
@@ -1412,6 +1455,13 @@ impl<C: Widget + 'static> ModalDialog<C> {
             layout_theme: Theme::dark(),
             appear: crate::motion::Appearing::closed(),
         }
+    }
+
+    /// An icon before the title naming who asks.
+    #[must_use]
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     /// A stable address for inspection, headless scenarios and `tilo-control`.
@@ -1639,6 +1689,20 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         self.open
     }
 
+    /// Whether anything of it is drawn now: open, arriving, or closed and
+    /// still leaving. A host that stops holding a closed dialog drops it
+    /// once this is false.
+    #[must_use]
+    pub fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
+    /// How far it has arrived now, `0..=1` (`motion::Appear`).
+    #[must_use]
+    pub fn appear_progress(&self) -> f64 {
+        self.appear.progress()
+    }
+
     fn slot_rect(&self, slot: Slot) -> Rect {
         let Some(layout) = &self.layout else {
             return Rect::ZERO;
@@ -1761,6 +1825,7 @@ impl ModalDialog<dyn Widget> {
     fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         let (actions, slots) = self.actions();
         let spec = ModalSpec::new(&self.title)
+            .icon(self.icon)
             .actions(&actions)
             .platform_conventions(self.platform)
             .body_height(self.content_size.1)
@@ -2295,6 +2360,7 @@ impl Widget for ModalDialog<dyn Widget> {
         }
         let close_hovered = layout.close.is_some_and(|c| self.hovered(c));
         let spec = ModalSpec::new(&self.title)
+            .icon(self.icon)
             .actions(&actions)
             .platform_conventions(self.platform)
             .closable(layout.close.is_some())
@@ -2563,17 +2629,21 @@ impl Widget for ModalDialog<dyn Widget> {
         self.open
     }
 
+    // A closed dialog is hidden from the tree.
+    fn accessibility_hidden(&self) -> bool {
+        !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The title is the accessible name (FTL-resolved). A closed dialog
-        // is hidden from the tree.
+        // The title is the accessible name (FTL-resolved).
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
         let mut node = AccessNode::new(Role::Dialog)
             .with_optional_name(name)
             .with_state(AccessState {
                 modal: true,
-                hidden: !self.open,
+                hidden: self.accessibility_hidden(),
                 ..Default::default()
             });
         // Footer actions a host laid out are buttons of their own focus

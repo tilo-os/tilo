@@ -2,8 +2,8 @@
 //!
 //! [`ContainersApp`] owns the engine snapshot (containers, images, volumes
 //! and distroboxes mirrored from rootless podman) and presents it in a
-//! [`NavShell`]: the sections are the sidebar, the container list is the
-//! overview and the chosen container is the content (see [`crate::view`]).
+//! [`NavShell`](ui::widget::NavShell): the sections are the sidebar, the container list is the
+//! overview and the chosen container is the content (see `crate::view`).
 //! Dialogs (confirming a removal, asking for a name, the new-container form,
 //! pull progress) are [`ModalDialog`]s mounted beside the shell.
 //!
@@ -31,7 +31,7 @@ use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::Effect as _;
 use ui::time::Instant;
 use ui::tokens::TextRole;
-use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
+use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AppModel, Column, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text, TextInput,
     Widget,
@@ -1495,27 +1495,9 @@ impl ContainersApp {
         }
         out
     }
-
-    fn paint_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        self.toast.paint(
-            scene,
-            transform,
-            tr,
-            theme,
-            window,
-            ToastAnchor::BottomCenter,
-        );
-    }
 }
 
-/// How a finished lifecycle verb reads in a toast.
+/// How a finished lifecycle verb reads in the window bar's notice.
 pub(crate) fn past_tense(action: Action) -> &'static str {
     match action {
         Action::Start => "Started",
@@ -1564,6 +1546,8 @@ impl Widget for ContainersApp {
                 self.rebuild_pull();
             }
             self.toast.expire();
+            // The result says so in the window's bar while it lasts.
+            self.toast.publish();
             self.publish_model();
         }
         self.window.sync(state, path);
@@ -1684,8 +1668,6 @@ impl Widget for ContainersApp {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, tr, theme, presence);
         }
-        let window = presence.viewport.get().unwrap_or(self.rect);
-        self.paint_toast(scene, transform, tr, theme, window);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1762,16 +1744,12 @@ impl Widget for ContainersApp {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("Containers")
-            .with_description(&self.engine.connection)
-            .with_bounds(self.rect);
-        root.children.extend(
-            self.toast
-                .access_node()
-                .map(|node| node.with_hashed_key("containers.toast")),
-        );
-        Some(root)
+        Some(
+            AccessNode::new(Role::Window)
+                .with_name("Containers")
+                .with_description(&self.engine.connection)
+                .with_bounds(self.rect),
+        )
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -2074,6 +2052,24 @@ mod tests {
 
     fn app_of(driver: &mut ui::headless::FrameHarness) -> &mut ContainersApp {
         driver.root_mut::<ContainersApp>()
+    }
+
+    /// A finished verb says so in the window's bar, not over the list.
+    #[test]
+    fn a_result_is_the_window_bars_notice() {
+        let mut d = driver(staged());
+        app_of(&mut d).show_toast("Stopped web", false);
+        d.relayout();
+        let notice = ui::window_toolbar::notice().expect("the bar shows the result");
+        assert_eq!(notice.text, "Stopped web");
+        assert_eq!(notice.kind, ToastKind::Success);
+        app_of(&mut d).show_toast("Podman isn't running", true);
+        d.relayout();
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| (notice.text, notice.kind)),
+            Some(("Podman isn't running".to_owned(), ToastKind::Error)),
+            "a newer result replaces the older one"
+        );
     }
 
     #[test]

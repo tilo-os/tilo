@@ -8298,7 +8298,10 @@ fn start_session_peer_sync(
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
             let net = Arc::new(
                 crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(|error| error.to_string())?
+                    .with_continuation_labels(Box::new(
+                        crate::shell::doc_open::DesktopContinuationLabels,
+                    )),
             );
             // Joining reads the enrolled rooms, this device's identities and
             // the community configuration, and redeems a boot invitation:
@@ -9457,6 +9460,8 @@ pub fn run() {
     // Continuity checks run per fabric message on this loop: from here on
     // they read this snapshot, never the settings document.
     crate::shell::continuity_policy::follow(&live_settings);
+    #[cfg(target_os = "linux")]
+    crate::shell::device_vpn::follow(&live_settings);
     spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.
@@ -10216,6 +10221,7 @@ pub fn run() {
     state.set_share_encode_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     crate::shell::storage_notice::start(Arc::clone(&session_wake));
+    crate::shell::crash_notice::start(Arc::clone(&session_wake));
     // NTFS drives open only through the shell's own sheet; see shell::drives.
     crate::shell::drives::start(Arc::clone(&session_wake));
     crate::shell::app_list::set_wake(Arc::clone(&session_wake));
@@ -10242,6 +10248,8 @@ pub fn run() {
     // What the broker asks of the person's records the session holds
     // wakes the loop, which runs it.
     crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
+    // So do the reads and writes apps ask of the workspace activity model.
+    crate::shell::activity_provider::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.
@@ -10895,13 +10903,14 @@ pub fn run() {
         }};
     }
     // From here the compositor thread turns this loop. A turn that stops for
-    // good is recorded and ends the process, so a hang hands the display back
+    // good is recorded (in the journal and the crash directory, which the
+    // next start reads to tell the person) and ends the process, so a hang hands the display back
     // and the session returns to the login screen instead of needing the
     // power button (`watchdog`). Start-up before it may wait without a bound
     // on purpose: the seat is not ours until logind activates the session.
     let watchdog = crate::compositor::watchdog::Watchdog::watch_this_thread(
         crate::compositor::watchdog::Policy::COMPOSITOR,
-        crate::compositor::watchdog::end_process,
+        crate::compositor::watchdog::record_and_end_process,
     )
     .map_err(|error| eprintln!("tilo compositor: the main-loop watchdog did not start: {error}"))
     .ok();
@@ -10916,7 +10925,6 @@ pub fn run() {
             break;
         }
         let iter_t0 = Instant::now();
-        crate::shell::launcher::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics::profile::expire(iter_t0);
         metrics.begin_tick(iter_t0);
@@ -11106,6 +11114,10 @@ pub fn run() {
             service.pump_identity_backup(&chrome, || {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
+            let broker = collab_broker
+                .as_ref()
+                .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker);
+            service.pump_app_opens(&chrome, broker.as_ref());
         }
         input_steps.step("services");
         // A pen goes to a tablet-aware client directly and stands in for the
@@ -12044,6 +12056,7 @@ pub fn run() {
         frame_builder.with_chrome(|chrome| {
             session_changed |= chrome.post_queued(crate::shell::storage_notice::drain());
             session_changed |= chrome.post_queued(crate::shell::graphics_notice::drain());
+            session_changed |= chrome.post_queued(crate::shell::crash_notice::drain());
             session_changed |=
                 chrome.post_consent_notices(crate::shell::app_action_consent::drain_notices());
         });
@@ -12841,8 +12854,12 @@ pub fn run() {
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
+        // A shell password prompt takes the keyboard over any window: its
+        // field takes the input method even while an application keeps
+        // focus beneath.
         let shell_field = (!session.is_locked()
-            && state.client_input.keyboard_focus().is_none()
+            && (state.client_input.keyboard_focus().is_none()
+                || frame_builder.host().shell_prompt_up())
             && (!receipts_only || speech_field_needed))
             .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
             .flatten();
@@ -12857,24 +12874,32 @@ pub fn run() {
         if let Some(proxy) = shell_text_input.as_mut() {
             let identity = if frame_builder.host().palette_visible() {
                 Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
+            } else if frame_builder.host().shell_prompt_up() {
+                Some(crate::compositor::shell_text_input::NativeFieldId::Prompt)
             } else {
                 test_control_ctx.focus.map(|node| {
                     crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
                 })
             };
-            let mut typed = proxy.sync_for_field(&mut state, shell_field, identity);
-            state.shell_field_active = proxy.holds_focus(&state);
-            typed.append(&mut state.shell_field_keys);
-            for event in &typed {
+            let typed = proxy.sync_for_field(&mut state, shell_field, identity);
+            let keys = state.take_shell_field_keys();
+            // Text carries the keyboard's modifiers; a virtual keyboard's key
+            // carries the ones it held for it, so its Ctrl+C is a chord.
+            let delivered = typed
+                .iter()
+                .map(|event| (event, test_control_ctx.modifiers))
+                .chain(keys.iter().map(|(event, modifiers)| (event, *modifiers)))
+                .collect::<Vec<_>>();
+            for (event, modifiers) in &delivered {
                 frame_builder.dispatch_event(
                     event,
-                    &test_control_ctx.modifiers,
+                    modifiers,
                     &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                     &test_control_ctx.root_obj,
                     &mut test_control_ctx.focus,
                 );
             }
-            if !typed.is_empty() {
+            if !delivered.is_empty() {
                 injected_redraw_pending = true;
             }
             if state.has_dictation_target() && shell_field.is_some() {
@@ -14113,7 +14138,9 @@ pub fn run() {
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
             if paint_ticks {
-                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+                crate::stderr_guard::write_line(format_args!(
+                    "paint-tick: painted={should_paint} woke={last_wake}"
+                ));
             }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
@@ -14132,7 +14159,8 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
-                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    if animation_demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0
+                        && animating_content_leaves.is_empty()
                     {
                         animating_content_leaves = frame_builder.content_animating_leaves();
                     }
@@ -14153,17 +14181,17 @@ pub fn run() {
                 stats_since = Instant::now();
             } else if stats_since.elapsed() >= Duration::from_secs(2) {
                 if !paint_stats_idle.is_zero() {
-                    eprintln!(
+                    crate::stderr_guard::write_line(format_args!(
                         "paint-stats: idle {:.0}s before this, nothing painted",
                         paint_stats_idle.as_secs_f64()
-                    );
+                    ));
                     paint_stats_idle = Duration::ZERO;
                 }
                 let animation_host_labels =
                     crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
                         .collect::<Vec<_>>()
                         .join(",");
-                eprintln!(
+                crate::stderr_guard::write_line(format_args!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
@@ -14185,7 +14213,7 @@ pub fn run() {
                     present_pipe
                         .as_ref()
                         .map_or(0, super::present::PresentPipe::backpressured),
-                );
+                ));
                 frames_total = 0;
                 frames_painted = 0;
                 cause_events = 0;
@@ -14193,11 +14221,11 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
-                eprintln!(
+                crate::stderr_guard::write_line(format_args!(
                     "paint-stats: wakes {} | widget-deadline owner {:?}",
                     wakes_seen.take_summary(),
                     widget_wake_owner.take().unwrap_or_default(),
-                );
+                ));
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
@@ -14388,11 +14416,6 @@ pub fn run() {
                         .with_hdr_layers(frame_builder.take_hdr_layers())
                         .with_backdrop(frame_builder.take_backdrop())
                 };
-                // Without this a window group's width spring stepped once and
-                // stopped: its once-per-drawn-frame token returns only when
-                // content is marked drawn, which this loop never does, and
-                // the group asked for animation frames forever.
-                frame_builder.frame_presented();
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.
@@ -14827,7 +14850,7 @@ pub fn run() {
             // asynchronous one dates it when it retires that serial. A lost
             // render thread queued nothing.
             if !async_present || submitted_serial.is_some() {
-                let holding = frame_builder.host().workspace_switch_holding();
+                let holding = frame_builder.host().workspace_switch_owed();
                 if let Some(switch) = frame_builder
                     .host_mut()
                     .workspace_switch_latency_mut()
@@ -15250,10 +15273,6 @@ pub fn run() {
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
                 ("profile-end", metrics::profile::deadline()),
-                (
-                    "app-action-authority",
-                    crate::shell::launcher::action_authority::next_deadline(),
-                ),
                 ("controller-nav", controller_nav.next_deadline(park_now)),
                 ("backend-service", backend.next_service_deadline()),
                 (
@@ -21221,7 +21240,7 @@ fn apply_shell_gesture(
             if switched {
                 frame_builder
                     .host_mut()
-                    .start_workspace_switch_frames(ui::tokens::MotionSource::Gesture);
+                    .start_workspace_switch(ui::tokens::MotionSource::Gesture);
             }
         }
         GestureAction::ShowOverview => {

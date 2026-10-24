@@ -130,7 +130,7 @@ impl AppCatalogue {
     /// What `doc`, a record of `app_id`, is called when its app names it
     /// (a document's first heading): `None` for a name that is only the
     /// resource's label. Run in a confined worker for a record not opened
-    /// ([`crate::worker::ConfinedTitles`]), as it reads untrusted bytes.
+    /// (`crate::worker::ConfinedTitles`), as it reads untrusted bytes.
     #[must_use]
     pub fn resource_title(&self, app_id: &str, doc: &automerge::AutoCommit) -> Option<String> {
         let kind = self.kind(app_id)?;

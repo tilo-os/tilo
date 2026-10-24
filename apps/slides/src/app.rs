@@ -34,7 +34,7 @@ use ui::theme::Theme;
 use ui::tilo_resource::ActionDecl;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::toast::{Notice, ToastAnchor, ToastKind};
+use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AudiencePresentationProvider, ColorPicker, Dropdown, FullscreenProvider, NumberInput,
     PageSidebar, PageSidebarEvent, Scrollable, SidebarDrawer, SplitLayout, TextInput, Widget,
@@ -2405,7 +2405,10 @@ impl Widget for SlidesApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
+        // An open's or a save's result says so in the window's bar while it
+        // lasts.
         self.io_toast.expire();
+        self.io_toast.publish();
         self.adopt_deferred();
         let opened = std::mem::take(&mut self.opened.borrow_mut().requests);
         for slide in opened {
@@ -2522,14 +2525,6 @@ impl Widget for SlidesApp {
         // flag, suppress the overlay, and swallow all later navigation keys.
         self.help_overlay
             .draw(scene, transform, text_renderer, theme, self.rect);
-        self.io_toast.paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.rect,
-            ToastAnchor::BottomCenter,
-        );
         // The words' menu and the right-click context menu float above
         // everything else.
         self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
@@ -2850,7 +2845,7 @@ impl Widget for SlidesApp {
                 .collect()
         });
 
-        let mut children = vec![
+        let children = vec![
             AccessNode::new(Role::Toolbar)
                 .with_name("Slides controls")
                 .with_children(controls),
@@ -2866,7 +2861,6 @@ impl Widget for SlidesApp {
                 .with_name(format!("Slide {} canvas", self.cur_slide + 1))
                 .with_children(elements),
         ];
-        children.extend(self.io_toast.access_node());
         Some(
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
@@ -2878,7 +2872,7 @@ impl Widget for SlidesApp {
     }
 
     /// An assistive technology operates the words being edited, through
-    /// the node [`Self::words_access_node`] gave them.
+    /// the node `Self::words_access_node` gave them.
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,

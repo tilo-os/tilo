@@ -3,7 +3,7 @@
 //! The app's own binary reports what its resource publishes (its verbs, their
 //! parameters and kinds, its stored fields) and which of its view's controls
 //! are bound to something the resource does not publish
-//! (`ui::framework::testing::surface_report`, run as `<app> --surface`).
+//! (`ui::framework::headless::surface_report`, run as `<app> --surface`).
 //! `tilo-app surface` commits the surface next to the manifest, where review
 //! sees every rename and the OS reads what an app that is not running
 //! offers. `tilo-app check` and CI compare the committed file with the code:

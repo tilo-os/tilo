@@ -43,7 +43,7 @@
 "apps/settings/src/panes/audio.rs" = 3500
 "apps/settings/src/panes/display.rs" = 3500
 "apps/settings/src/panes/mouse_keyboard.rs" = 3500
-"apps/settings/src/panes/network.rs" = 5500
+"apps/settings/src/panes/network.rs" = 4000
 "apps/sheets/src/app.rs" = 7000
 "apps/sheets/src/formula.rs" = 3500
 "apps/sheets/src/grid.rs" = 4000
@@ -104,7 +104,6 @@
 "crates/sdk/ui-core/src/widget/activity_timeline.rs" = 6500
 "crates/sdk/ui-core/src/widget/block_editor.rs" = 13500
 "crates/sdk/ui-core/src/widget/button.rs" = 4000
-"crates/sdk/ui-core/src/widget/capture_studio.rs" = 3500
 "crates/sdk/ui-core/src/widget/cartesian_plot.rs" = 4000
 "crates/sdk/ui-core/src/widget/command_palette.rs" = 4500
 "crates/sdk/ui-core/src/widget/context_menu.rs" = 3500
@@ -124,7 +123,7 @@
 "crates/sdk/ui-core/src/widget/toolbar.rs" = 4000
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
 "crates/sdk/ui-core/src/widget/virtual_list.rs" = 3500
-"crates/sdk/ui-core/src/widget/window_group.rs" = 7000
+"crates/sdk/ui-core/src/widget/window_group.rs" = 6500
 "crates/session/desktop-surface/src/activity/pane.rs" = 8000
 "crates/session/desktop-surface/src/activity/pane_tests.rs" = 4500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500

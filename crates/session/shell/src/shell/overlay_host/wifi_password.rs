@@ -5,6 +5,7 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
+use ui::widget::{FieldRole, Presentation, PromptOutcome, SecretKind};
 
 impl ShellOverlayHost {
     /// Hit rect for the back-chevron in the drill-in header. Click here
@@ -43,27 +44,44 @@ impl ShellOverlayHost {
         self.sync_wifi_password_input();
     }
 
-    /// Attempt the join. `nmcli device wifi connect` blocks until it
-    /// succeeds or fails, which can be seconds on a busy band — but a
-    /// background join with no prompt left to report into would be
-    /// worse. The prompt stays up on failure, carrying the reason.
+    /// Join with what the prompt holds, as Connect and Enter do. The
+    /// join runs off this thread; the prompt stays up, busy, until it
+    /// succeeds or fails, and on failure says why.
     pub fn submit_wifi_password(&mut self) {
+        if !self.sync_wifi_password_input() {
+            return;
+        }
+        self.wifi_prompt.submit();
+        self.settle_wifi_prompt();
+    }
+
+    /// Carry out what the person did in the prompt: join with the password
+    /// or back out.
+    pub(super) fn settle_wifi_prompt(&mut self) {
+        match self.wifi_prompt.take_outcome() {
+            Some(PromptOutcome::Cancel) => self.cancel_wifi_password(),
+            Some(PromptOutcome::Submit(answer)) => self.join_with_wifi_password(answer),
+            None => {}
+        }
+    }
+
+    fn join_with_wifi_password(&mut self, mut answer: ui::widget::SecretAnswer) {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        self.sync_wifi_password_input();
-        let password = self.wifi_password_input.value();
         let Some(ssid) = ({
             let st = chrome.borrow();
             st.quick_settings
                 .wifi_password
                 .as_ref()
-                .filter(|p| p.can_submit(password))
+                .filter(|p| p.can_submit(&answer.secret))
                 .map(|p| p.ssid.clone())
         }) else {
             return;
         };
-        let password = password.to_owned();
+        // The answer's own buffer moves on to the join. The field keeps
+        // its text, so a rejection can select it for retyping.
+        let password = std::mem::take(&mut *answer.secret);
         {
             let mut st = chrome.borrow_mut();
             if let Some(p) = st.quick_settings.wifi_password.as_mut() {
@@ -73,6 +91,7 @@ impl ShellOverlayHost {
             st.quick_settings.wifi_joining = Some(ssid.clone());
             st.bump();
         }
+        self.wifi_prompt.set_busy(Some(t("qs-connecting")));
         self.qs_refresh.kick_wifi_join(ssid, Some(password), false);
     }
 
@@ -115,6 +134,7 @@ impl ShellOverlayHost {
             state.quick_settings.wifi_joining = Some(ssid.clone());
             state.bump();
         }
+        self.sync_wifi_password_input();
         self.qs_refresh.kick_wifi_join(ssid, Some(password), true);
         true
     }
@@ -125,26 +145,39 @@ impl ShellOverlayHost {
         if !self.sync_wifi_password_input() {
             return;
         }
-        self.wifi_password_input.set_text(text);
-        if select_all {
-            self.wifi_password_input.select_all();
-        } else {
-            self.wifi_password_input.set_cursor_pos(text.len());
+        if let Some(field) = self.wifi_prompt.field_mut(FieldRole::Secret) {
+            field.set_text(text);
+            if select_all {
+                field.select_all();
+            } else {
+                field.set_cursor_pos(text.len());
+            }
         }
     }
 
-    pub(super) fn new_wifi_password_input() -> TextInput {
-        TextInput::local()
-            .with_id("qs-wifi-password")
-            .with_placeholder(t("portal-network-password"))
-            .with_secret(true)
-            .with_enter_submits(true)
+    /// The passphrase field of the prompt.
+    pub fn wifi_password_field(&self) -> Option<&TextInput> {
+        self.wifi_prompt.field(FieldRole::Secret)
     }
 
-    /// Bind the passphrase field to the prompt up now. Another prompt, or
-    /// none, gets a fresh field — empty and hidden — and the old value is
-    /// wiped, so nothing typed for one network survives into the next.
-    /// Whether a prompt is up.
+    /// A fresh prompt: an empty, hidden field with the keyboard.
+    pub(super) fn new_wifi_prompt() -> SecretPrompt {
+        let mut prompt = SecretPrompt::new(SecretKind::Secret)
+            .with_presentation(Presentation::Inline)
+            .with_id("qs-wifi-password")
+            .with_label(FieldRole::Secret, t("portal-network-password"))
+            .with_primary_label(t("portal-connect"))
+            .with_cancel_label(t("portal-cancel"));
+        prompt.set_notice(Some(t("qs-wifi-password-for")));
+        Widget::set_focus(&mut prompt, true);
+        prompt
+    }
+
+    /// Bind the prompt to the one Quick Settings asks with now. Another
+    /// prompt, or none, gets a fresh one — empty and hidden — and the old
+    /// value is wiped, so nothing typed for one network survives into the
+    /// next. The join's progress and its failure are shown in it. Whether
+    /// a prompt is up.
     pub(super) fn sync_wifi_password_input(&mut self) -> bool {
         let current = self.chrome.as_ref().and_then(|chrome| {
             chrome
@@ -152,16 +185,33 @@ impl ShellOverlayHost {
                 .quick_settings
                 .wifi_password
                 .as_ref()
-                .map(|prompt| prompt.id)
+                .map(|prompt| (prompt.id, prompt.connecting, prompt.error.clone()))
         });
-        if current != self.wifi_password_prompt {
-            self.wifi_password_input = Self::new_wifi_password_input();
-            self.wifi_password_prompt = current;
+        let id = current.as_ref().map(|(id, _, _)| *id);
+        if id != self.wifi_password_prompt {
+            self.wifi_prompt = Self::new_wifi_prompt();
+            self.wifi_password_prompt = id;
         }
-        // The field is always focused; nothing else on the pane takes
-        // the keyboard while the prompt owns it.
-        self.wifi_password_input.set_focus(current.is_some());
-        current.is_some()
+        let Some((_, connecting, error)) = current else {
+            Widget::set_focus(&mut self.wifi_prompt, false);
+            return false;
+        };
+        // Nothing else on the pane takes the keyboard while the prompt is
+        // up; Tab walks its own field and buttons.
+        if !Widget::is_focused(&self.wifi_prompt) {
+            Widget::set_focus(&mut self.wifi_prompt, true);
+        }
+        if connecting != self.wifi_prompt.busy().is_some() {
+            self.wifi_prompt
+                .set_busy(connecting.then(|| t("qs-connecting")));
+        }
+        if let Some(error) = error
+            && !connecting
+            && self.wifi_prompt.error() != Some(error.as_str())
+        {
+            self.wifi_prompt.reject(error);
+        }
+        true
     }
 
     pub(super) fn is_pointer_event(event: &WindowEvent) -> bool {
@@ -188,10 +238,10 @@ impl ShellOverlayHost {
             || (self.overlay_flags().shortcut_help && self.shortcut_rebind.is_some())
     }
 
-    /// Routes an event into the passphrase field, if a prompt is up: keys
-    /// and IME text to edit it (Enter joins, Escape backs out), pointer
-    /// events for its caret and show/hide control. `true` when the prompt
-    /// used the event.
+    /// Routes an event into the prompt, if one is up: keys and IME text to
+    /// its field and buttons (Enter joins, Escape backs out, Tab walks
+    /// them), pointer and touch events for its caret, its show/hide control
+    /// and its buttons. `true` when the prompt used the event.
     pub(super) fn route_wifi_password_event(
         &mut self,
         event: &WindowEvent,
@@ -200,39 +250,62 @@ impl ShellOverlayHost {
         if !self.sync_wifi_password_input() {
             return false;
         }
-        let field = self.qs_password_field_rect();
         let pointer = Self::is_pointer_event(event);
-        let pressed_in_field = matches!(
-            event,
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
+        if !pointer
+            && !matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::Ime(_)
+                    | WindowEvent::CursorLeft { .. }
+            )
+        {
+            return false;
+        }
+        // A press is placed where the pointer last was, which may have
+        // been over a window whose motion never reached this tree.
+        if let (WindowEvent::MouseInput { .. }, Some(point)) = (event, self.last_cursor) {
+            let moved = ui::synthetic_input::cursor_moved(
+                point.x * ctx.scale_factor,
+                point.y * ctx.scale_factor,
+            );
+            self.forward_to_wifi_prompt(&moved, ctx);
+        }
+        let used = self.forward_to_wifi_prompt(event, ctx);
+        if let Some(chrome) = self.chrome.as_ref()
+            && (used || pointer)
+        {
+            let mut st = chrome.borrow_mut();
+            // Typing clears a rejection message — it was about the old value.
+            if self.wifi_prompt.error().is_none()
+                && let Some(prompt) = st.quick_settings.wifi_password.as_mut()
+            {
+                prompt.error = None;
             }
-        ) && self.last_cursor.is_some_and(|point| field.contains(point));
-        let key = match event {
-            WindowEvent::KeyboardInput {
-                event:
-                    KeyEvent {
-                        logical_key,
-                        state: ElementState::Pressed,
-                        ..
-                    },
-                ..
-            } => Some(logical_key),
-            WindowEvent::Ime(_) => None,
-            _ if pointer => None,
-            _ => return false,
-        };
-        self.wifi_password_input.apply_layout_external(field);
+            st.bump();
+        }
+        self.settle_wifi_prompt();
+        if used {
+            *ctx.handled = true;
+        }
+        used
+    }
+
+    /// Give `event` to the prompt, which is drawn outside any widget tree;
+    /// `true` when it used the event.
+    fn forward_to_wifi_prompt(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
         let mut used = false;
         let mut taffy = TaffyTree::<()>::new();
         let Ok(node) = taffy.new_leaf(Style::default()) else {
             return false;
         };
-        // The prompt keeps the field focused itself; the node is a stand-in
-        // that must never become the frame's focus target.
+        // The prompt keeps its own focus; the node is a stand-in that must
+        // never become the frame's focus target.
         let mut focus_target = None;
-        self.wifi_password_input.handle_event(
+        self.wifi_prompt.handle_event(
             event,
             &mut ui::widget::EventCtx {
                 taffy: &taffy,
@@ -241,84 +314,50 @@ impl ShellOverlayHost {
                 ..ctx.reborrow(ctx.path, node)
             },
         );
-        self.wifi_password_input.set_focus(true);
-        // The value stays in the field; drop the copy this hands out.
-        let edited = self.wifi_password_input.take_dirty().is_some_and(|value| {
-            drop(zeroize::Zeroizing::new(value));
-            true
-        });
-        if let Some(chrome) = self.chrome.as_ref()
-            && (used || edited || pointer)
-        {
-            let mut st = chrome.borrow_mut();
-            // Typing clears a rejection message — it was about the old value.
-            if edited && let Some(prompt) = st.quick_settings.wifi_password.as_mut() {
-                prompt.error = None;
-            }
-            st.bump();
-        }
-        if self.wifi_password_input.take_submit() {
-            self.submit_wifi_password();
-            *ctx.handled = true;
-            return true;
-        }
-        if !used && matches!(key, Some(Key::Named(NamedKey::Escape))) {
-            self.cancel_wifi_password();
-            *ctx.handled = true;
-            return true;
-        }
-        // A key the field passes on (Tab, a shortcut chord) falls through;
-        // a press on the field is the field's whatever it did with it.
-        let claimed =
-            (used && !matches!(event, WindowEvent::CursorMoved { .. })) || pressed_in_field;
-        if claimed {
-            *ctx.handled = true;
-        }
-        claimed
+        used
     }
 
-    /// The inline passphrase field, where the Wi-Fi section leaves room for
-    /// it; empty while it is not shown. Derived rather than stored so the
-    /// hit tests and the paint cannot drift apart.
-    pub(super) fn qs_password_field_rect(&self) -> Rect {
+    /// The inline prompt, where the Wi-Fi section leaves room for it;
+    /// empty while it is not shown. Derived rather than stored so the hit
+    /// tests and the paint cannot drift apart.
+    pub(super) fn qs_password_rect(&self) -> Rect {
         self.chrome
             .as_ref()
             .and_then(|chrome| {
                 self.qs_root
-                    .wifi_password_field_rect(&chrome.borrow().quick_settings)
+                    .wifi_password_rect(&chrome.borrow().quick_settings)
             })
             .unwrap_or(Rect::ZERO)
     }
 
-    /// Cancel and Connect under the inline passphrase.
-    pub(super) fn qs_password_button_rects(&self) -> (Rect, Rect) {
-        self.chrome
-            .as_ref()
-            .and_then(|chrome| {
-                self.qs_root
-                    .wifi_password_button_rects(&chrome.borrow().quick_settings)
-            })
-            .unwrap_or((Rect::ZERO, Rect::ZERO))
-    }
-
-    /// The passphrase field, hidden until its show/hide control is used.
-    /// Its status line and buttons are the Wi-Fi section's.
-    pub(super) fn draw_qs_wifi_password_field(
+    /// The prompt — field, status line, Cancel and Connect — where the
+    /// Wi-Fi section leaves room for it. The section is told how tall the
+    /// prompt is, so it can leave exactly that much.
+    pub(super) fn draw_qs_wifi_prompt(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        field: Rect,
+        rect: Rect,
     ) {
-        self.wifi_password_input.apply_layout_external(field);
-        self.wifi_password_input.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            &PresenceCtx::default(),
+        self.wifi_prompt.place(rect, text_renderer, theme);
+        self.wifi_prompt
+            .paint(scene, transform, text_renderer, theme);
+        let height = ui::num::u32_of_f64(
+            self.wifi_prompt
+                .preferred_height(rect.width(), text_renderer, theme)
+                .ceil(),
         );
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut st = chrome.borrow_mut();
+            if let Some(prompt) = st.quick_settings.wifi_password.as_mut()
+                && prompt.height != height
+            {
+                prompt.height = height;
+                st.bump();
+            }
+        }
     }
 
     /// Root slider geometry exposed for integration click routing tests.

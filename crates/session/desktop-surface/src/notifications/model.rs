@@ -27,8 +27,8 @@ impl NotificationSeverity {
         }
     }
 
-    /// Maps onto the shared toast ramp so a desktop notification and an
-    /// in-app `ui::ToastStack` toast tint identically.
+    /// Maps onto the shared notice ramp so a desktop notification and a
+    /// window bar's notice tint identically.
     pub fn toast_kind(self) -> ToastKind {
         match self {
             Self::Info => ToastKind::Info,
@@ -126,7 +126,7 @@ pub const PERSISTENT_DISMISS: Duration = Duration::from_secs(86400);
 pub const NOT_NOW_ACTION: &str = "not-now";
 
 /// Max notifications in the active stack; older entries retire to history
-/// from the front (same FIFO as `ui::widget::toast::ToastStack`).
+/// from the front.
 pub const MAX_NOTIFICATIONS: usize = 6;
 
 /// Max entries in notification history (every banner that leaves the active

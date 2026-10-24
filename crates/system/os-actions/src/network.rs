@@ -925,12 +925,15 @@ pub fn captive_portal_uri() -> Result<String, String> {
     })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SavedNetworkProfile {
     pub name: String,
     pub uuid: String,
     pub kind: String,
     pub autoconnect: bool,
+    /// When this device last connected with it, in seconds since the Unix
+    /// epoch; `None` when it never has.
+    pub last_used: Option<u64>,
 }
 
 /// The only `NetworkManager` profile fields eligible for personal-device
@@ -1016,6 +1019,10 @@ pub enum MacPolicy {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProxyConfiguration {
     pub automatic_url: Option<String>,
+    /// One proxy server for everything, `host:port`. `NetworkManager` keeps
+    /// proxies as auto-configuration only, so it is stored as the one-line
+    /// script that names it ([`manual_proxy_script`]).
+    pub manual: Option<String>,
     pub browser_only: bool,
 }
 
@@ -1035,6 +1042,13 @@ pub struct ConnectionProfileSettings {
     pub mac: Option<MacPolicy>,
     pub proxy: Option<ProxyConfiguration>,
     pub ipv4: Option<IpConfiguration>,
+    /// Which saved network wins when several are in range: higher first.
+    pub priority: Option<i32>,
+    /// A Wi-Fi network that does not broadcast its name.
+    pub hidden: Option<bool>,
+    pub ipv6: Option<crate::network_settings::Ipv6Configuration>,
+    /// Who a work or school (802.1X) network knows this device as.
+    pub enterprise: Option<crate::network_settings::EnterpriseIdentity>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -1042,6 +1056,40 @@ pub struct ConnectionPolicyPatch {
     pub metered: Option<MeteredPolicy>,
     pub mac: Option<MacPolicy>,
     pub proxy: Option<ProxyConfiguration>,
+    pub priority: Option<i32>,
+    pub hidden: Option<bool>,
+}
+
+/// Writes which saved network wins when several are in range, and whether
+/// the network hides its name: the patch's `priority` and `hidden`.
+fn configure_order_and_visibility(uuid: &str, patch: &ConnectionPolicyPatch) -> Result<(), String> {
+    if let Some(priority) = patch.priority {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "connection.autoconnect-priority",
+                &priority.clamp(-999, 999).to_string(),
+            ],
+        )?;
+    }
+    if let Some(hidden) = patch.hidden {
+        run(
+            "nmcli",
+            &[
+                "connection",
+                "modify",
+                "uuid",
+                uuid,
+                "802-11-wireless.hidden",
+                if hidden { "yes" } else { "no" },
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 /// # Errors
@@ -1061,6 +1109,14 @@ pub fn configure_connection_policy_patch(
     {
         return Err("automatic proxy URL must use HTTP or HTTPS and be at most 2048 bytes".into());
     }
+    if let Some(server) = patch.proxy.as_ref().and_then(|p| p.manual.as_deref())
+        && !crate::network_settings::valid_proxy_server(server)
+    {
+        return Err(
+            "a proxy server is a host name or address and a port: proxy.example:8080".into(),
+        );
+    }
+    configure_order_and_visibility(uuid, patch)?;
     if let Some(value) = patch.metered {
         run(
             "nmcli",
@@ -1079,6 +1135,12 @@ pub fn configure_connection_policy_patch(
         )?;
     }
     if let Some(proxy) = &patch.proxy {
+        let script = proxy
+            .manual
+            .as_deref()
+            .map(crate::network_settings::manual_proxy_script)
+            .unwrap_or_default();
+        let automatic = proxy.automatic_url.is_some() || proxy.manual.is_some();
         run(
             "nmcli",
             &[
@@ -1087,13 +1149,15 @@ pub fn configure_connection_policy_patch(
                 "uuid",
                 uuid,
                 "proxy.method",
-                if proxy.automatic_url.is_some() {
-                    "auto"
-                } else {
-                    "none"
-                },
+                if automatic { "auto" } else { "none" },
                 "proxy.pac-url",
-                proxy.automatic_url.as_deref().unwrap_or(""),
+                if proxy.manual.is_some() {
+                    ""
+                } else {
+                    proxy.automatic_url.as_deref().unwrap_or("")
+                },
+                "proxy.pac-script",
+                &script,
                 "proxy.browser-only",
                 if proxy.browser_only { "yes" } else { "no" },
             ],
@@ -1126,6 +1190,7 @@ pub fn configure_connection_policy(uuid: &str, policy: &ConnectionPolicy) -> Res
             metered: Some(policy.metered),
             mac: policy.mac,
             proxy: Some(policy.proxy.clone()),
+            ..ConnectionPolicyPatch::default()
         },
     )
 }
@@ -1246,7 +1311,7 @@ pub fn list_saved_network_profiles() -> Result<Vec<SavedNetworkProfile>, String>
             "--escape",
             "yes",
             "-f",
-            "NAME,UUID,TYPE,AUTOCONNECT",
+            "NAME,UUID,TYPE,AUTOCONNECT,TIMESTAMP",
             "connection",
             "show",
         ],
@@ -1258,9 +1323,13 @@ fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
     out.lines()
         .filter_map(|line| {
             let fields = split_terse(line);
-            let [name, uuid, kind, autoconnect] = fields.as_slice() else {
+            let [name, uuid, kind, autoconnect, rest @ ..] = fields.as_slice() else {
                 return None;
             };
+            let last_used = rest
+                .first()
+                .and_then(|stamp| stamp.trim().parse::<u64>().ok())
+                .filter(|stamp| *stamp > 0);
             matches!(
                 kind.as_str(),
                 "802-11-wireless" | "802-3-ethernet" | "gsm" | "cdma"
@@ -1270,6 +1339,7 @@ fn parse_saved_profiles(out: &str) -> Vec<SavedNetworkProfile> {
                 uuid: uuid.clone(),
                 kind: kind.clone(),
                 autoconnect: autoconnect == "yes",
+                last_used,
             })
         })
         .collect()
@@ -1309,7 +1379,7 @@ pub struct IpConfiguration {
     pub dns: Vec<String>,
 }
 
-fn valid_ip_token(value: &str) -> bool {
+pub(crate) fn valid_ip_token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value
@@ -1372,7 +1442,7 @@ pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettin
             "--escape",
             "yes",
             "-f",
-            "connection.metered,802-11-wireless.cloned-mac-address,proxy.method,proxy.pac-url,proxy.browser-only,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns",
+            "connection.metered,802-11-wireless.cloned-mac-address,proxy.method,proxy.pac-url,proxy.pac-script,proxy.browser-only,ipv4.method,ipv4.addresses,ipv4.gateway,ipv4.dns,connection.autoconnect-priority,802-11-wireless.hidden,ipv6.method,ipv6.addresses,ipv6.gateway,ipv6.dns,802-1x.identity,802-1x.ca-cert",
             "connection",
             "show",
             "uuid",
@@ -1380,6 +1450,40 @@ pub fn connection_profile_settings(uuid: &str) -> Result<ConnectionProfileSettin
         ],
     )?;
     parse_connection_profile_settings(&out)
+}
+
+/// The proxy a profile's `proxy.*` properties describe; `None` when they
+/// describe none this device reads.
+fn proxy_of<'v>(value: impl Fn(&str) -> &'v str) -> Option<ProxyConfiguration> {
+    let browser_only = matches!(value("proxy.browser-only"), "yes" | "true" | "1");
+    match value("proxy.method") {
+        "none" => Some(ProxyConfiguration {
+            automatic_url: None,
+            manual: None,
+            browser_only,
+        }),
+        "auto" => {
+            let url = value("proxy.pac-url");
+            let script = value("proxy.pac-script");
+            if (url.is_empty() || url == "--")
+                && let Some(server) = crate::network_settings::manual_proxy_of(script)
+            {
+                Some(ProxyConfiguration {
+                    automatic_url: None,
+                    manual: Some(server),
+                    browser_only,
+                })
+            } else {
+                ((url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 2048)
+                    .then(|| ProxyConfiguration {
+                        automatic_url: Some(url.to_string()),
+                        manual: None,
+                        browser_only,
+                    })
+            }
+        }
+        _ => None,
+    }
 }
 
 fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSettings, String> {
@@ -1411,22 +1515,7 @@ fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSetti
         "permanent" | "preserve" => Some(MacPolicy::Permanent),
         _ => None,
     };
-    let proxy = match value("proxy.method") {
-        "none" => Some(ProxyConfiguration {
-            automatic_url: None,
-            browser_only: matches!(value("proxy.browser-only"), "yes" | "true" | "1"),
-        }),
-        "auto" => {
-            let url = value("proxy.pac-url");
-            ((url.starts_with("http://") || url.starts_with("https://")) && url.len() <= 2048).then(
-                || ProxyConfiguration {
-                    automatic_url: Some(url.to_string()),
-                    browser_only: matches!(value("proxy.browser-only"), "yes" | "true" | "1"),
-                },
-            )
-        }
-        _ => None,
-    };
+    let proxy = proxy_of(value);
     let ipv4 = match value("ipv4.method") {
         "auto" | "manual" => {
             let list = |raw: &str| {
@@ -1457,11 +1546,23 @@ fn parse_connection_profile_settings(out: &str) -> Result<ConnectionProfileSetti
         }
         _ => None,
     };
+    let priority = value("connection.autoconnect-priority").parse::<i32>().ok();
+    let hidden = match value("802-11-wireless.hidden") {
+        "yes" | "true" | "1" => Some(true),
+        "no" | "false" | "0" => Some(false),
+        _ => None,
+    };
+    let ipv6 = crate::network_settings::ipv6_of(value);
+    let enterprise = crate::network_settings::enterprise_identity_of(value);
     Ok(ConnectionProfileSettings {
         metered,
         mac,
         proxy,
         ipv4,
+        priority,
+        hidden,
+        ipv6,
+        enterprise,
     })
 }
 
@@ -1703,6 +1804,7 @@ mod profile_tests {
             let policy = ConnectionPolicy {
                 proxy: ProxyConfiguration {
                     automatic_url: Some("file:///tmp/proxy.pac".into()),
+                    manual: None,
                     browser_only: false,
                 },
                 ..Default::default()
@@ -2580,6 +2682,7 @@ mod wifi_radio_tests {
             uuid: format!("{name}-uuid"),
             kind: kind.into(),
             autoconnect: true,
+            last_used: None,
         };
         mark_known(
             &mut networks,

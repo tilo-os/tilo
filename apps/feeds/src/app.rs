@@ -1,7 +1,7 @@
 //! Root widget for the Feeds reader — RSS, Atom and Gemini.
 //!
 //! The window is the shared [`NavShell`]: the sidebar lists the library's
-//! places (smart lists, folders with their feeds, tags) in a [`NavList`],
+//! places (smart lists, folders with their feeds, tags) in a [`NavList`](ui::widget::NavList),
 //! the overview is the article list of the chosen place, and the content is
 //! the open article. The shell owns the header row, the sidebar toggle, the
 //! drawer at narrow widths and the push to the article at very narrow
@@ -9,8 +9,8 @@
 //!
 //! State that *converges* (subscriptions, read and star flags, cached
 //! articles, reading settings) lives in the Automerge document via
-//! [`crate::doc`]. State that is *local* to this peer (the chosen place, the
-//! open article, scroll offsets, open dialogs and menus) lives in [`Core`].
+//! [`crate::resource`]. State that is *local* to this peer (the chosen place, the
+//! open article, scroll offsets, open dialogs and menus) lives in `Core`.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -784,13 +784,20 @@ impl Core {
 
     /// Start a refresh of every subscription. Only enqueues on the worker:
     /// no network I/O on the UI thread. Results drain every frame.
+    /// While one runs this does nothing: it is already fetching every
+    /// subscription, and asking again would fetch each twice and restart
+    /// its count.
     pub(crate) fn refresh_all(&mut self) {
+        if self.refresh.in_progress() {
+            return;
+        }
         let ids: Vec<Id> = self.store.feeds.ids().cloned().collect();
         self.refresh_feeds(&ids);
         self.toast = Some(ToastChange::Dismiss);
     }
 
-    /// Enqueue a background refresh of `ids`.
+    /// Enqueue a background refresh of `ids`. While a refresh runs they
+    /// join it, so its progress and its answer wait for them too.
     pub(crate) fn refresh_feeds(&mut self, ids: &[Id]) {
         let reqs: Vec<FetchRequest> = ids
             .iter()
@@ -811,10 +818,14 @@ impl Core {
         for r in reqs {
             w.send(r);
         }
-        self.refresh = RefreshState {
-            total: n,
-            ..Default::default()
-        };
+        if self.refresh.in_progress() {
+            self.refresh.total += n;
+        } else {
+            self.refresh = RefreshState {
+                total: n,
+                ..Default::default()
+            };
+        }
     }
 
     /// Add a subscription through the library's verb, in the folder the

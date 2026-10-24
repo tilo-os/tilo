@@ -1,7 +1,7 @@
 //! Trusted local files through the existing Store capability and installer.
 //!
 //! The Store reads an archive ([`review_archive`]) and holds a host review;
-//! reviewing against host trust and installing ([`review`], [`install`]) run
+//! reviewing against host trust and installing ([`review`], [`install()`]) run
 //! in the daemon and need the `service` feature.
 #[cfg(feature = "service")]
 use std::io::Write;

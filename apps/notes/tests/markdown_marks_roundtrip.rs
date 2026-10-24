@@ -16,7 +16,7 @@ fn inline_marks_round_trip_byte_stably_in_every_block_kind() {
         ("italic in heading", "# A *taste* of\n"),
         ("code in bullet", "- run `cargo build` first\n"),
         ("link in paragraph", "See [[Welcome]] for details.\n"),
-        ("nested bold italic", "**bold *italic***\n"),
+        ("nested bold italic", "***italic* bold**\n"),
         (
             "multiple marks in one paragraph",
             "This has **bold**, *italic*, and `code`.\n",

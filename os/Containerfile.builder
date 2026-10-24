@@ -102,6 +102,9 @@ RUN --mount=type=bind,source=tools/ci/install-android-ndk.sh,target=/tmp/install
     fi
 # The browser target for the wasm lint (t.toml's `wasm`).
 RUN rustup target add --toolchain "${RUST_CHANNEL}" wasm32-unknown-unknown
+# musl for this architecture: t's release builds link its compiler cache's
+# wrapper statically against it, so the wrapper runs in any job image.
+RUN rustup target add --toolchain "${RUST_CHANNEL}" "$(uname -m)-unknown-linux-musl"
 # The web build's toolchain (`tilo-app build --platform web`, the web core's
 # scripts): binaryen's wasm-opt, lld's wasm-ld, Node.js, brotli, binutils' ar,
 # and wasm-bindgen's CLI at exactly the version Cargo.lock pins the crate at,

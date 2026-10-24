@@ -48,6 +48,33 @@ pub(crate) struct NativeOwnerCommitService {
     owner: owner_source::OwnerSource,
     network: Option<Arc<super::network::ShellNetwork>>,
     history_keys: Option<tilo_action_broker::channel_encryption::ChannelKeyProvider>,
+    writes: OwnerWrites,
+}
+
+/// Where the owner's commits run. A commit waits for the disk (opening the
+/// owner, the state file's data and directory syncs), which on a loaded disk
+/// takes seconds, and its future is awaited on the broker's single-threaded
+/// loop, which answers every peer action, catalogue and liveness probe. So a
+/// commit runs on a blocking thread instead, and the loop goes on answering
+/// while it waits. Commits still run one at a time, in the order they were
+/// asked for: the turn is held until the write is done, also when the future
+/// awaiting it is dropped (a dropped wait never cancels a started commit).
+#[derive(Clone, Default)]
+struct OwnerWrites(Arc<tokio::sync::Mutex<()>>);
+impl OwnerWrites {
+    async fn run<T: Send + 'static>(
+        self,
+        write: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let turn = self.0.lock_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let written = write();
+            drop(turn);
+            written
+        })
+        .await
+        .map_err(|_| "native owner commit ended without an outcome".to_string())?
+    }
 }
 impl NativeOwnerCommitService {
     pub(crate) fn new(
@@ -59,6 +86,7 @@ impl NativeOwnerCommitService {
             tree,
             network,
             history_keys: None,
+            writes: OwnerWrites::default(),
         }
     }
     /// The owner, waiting for its open: for a worker thread, never the loop.
@@ -85,7 +113,8 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
-        Box::pin(async move {
+        let writes = self.writes.clone();
+        Box::pin(writes.run(move || {
             let owner = owner
                 .resolve()
                 .map_err(|error| format!("native effect governor unavailable: {error}"))?;
@@ -109,7 +138,7 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
                 network.schedule_native_owner_publication(room);
             }
             Ok(receipt)
-        })
+        }))
     }
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
@@ -125,32 +154,67 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     ) -> tilo_owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
+        let writes = self.writes.clone();
         Box::pin(async move {
-            let owner = owner
-                .resolve()
-                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
-            let room = super::state::RoomId::parse(&request.room).ok_or("invalid native room")?;
-            if let Some(network) = network {
-                network.check_native_custody(&owner, room)?;
-                // The room's receipts are its governor's to record: its
-                // host's, never this device's.
-                if let tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } =
-                    &request.operation
-                {
-                    return record_receipt_elsewhere(&network, &owner, room, &request, redacted)
-                        .await;
+            let committed = writes
+                .run({
+                    let network = network.clone();
+                    move || {
+                        let owner = owner.resolve().map_err(|error| {
+                            format!("native durable owner unavailable: {error}")
+                        })?;
+                        let room = super::state::RoomId::parse(&request.room)
+                            .ok_or("invalid native room")?;
+                        if let Some(network) = network.as_ref() {
+                            network.check_native_custody(&owner, room)?;
+                            // The room's receipts are its governor's to record:
+                            // its host's, never this device's.
+                            if matches!(
+                                request.operation,
+                                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
+                            ) {
+                                return Ok(Committed::Elsewhere(Box::new(Elsewhere {
+                                    owner,
+                                    room,
+                                    request,
+                                })));
+                            }
+                        }
+                        let now = std::time::SystemTime::now();
+                        if matches!(
+                            request.operation,
+                            tilo_owner_commit::CommitOperation::EffectReceipt { .. }
+                        ) {
+                            let (key, governor) =
+                                tilo_identity_host::broker::trusted_current_device(&request.room)
+                                    .map_err(|error| {
+                                    format!("effect governor custody unavailable: {error}")
+                                })?;
+                            owner
+                                .commit_effect_receipt(&request, &governor, &key, now)
+                                .map(Committed::Here)
+                        } else {
+                            owner.commit_document(request, now).map(Committed::Here)
+                        }
+                    }
+                })
+                .await?;
+            match committed {
+                Committed::Here(receipt) => Ok(receipt),
+                Committed::Elsewhere(elsewhere) => {
+                    let Elsewhere {
+                        owner,
+                        room,
+                        request,
+                    } = *elsewhere;
+                    let network = network.ok_or("effect governor unavailable")?;
+                    let tilo_owner_commit::CommitOperation::EffectReceipt { redacted, .. } =
+                        &request.operation
+                    else {
+                        return Err("missing effect receipt operation".into());
+                    };
+                    record_receipt_elsewhere(&network, &owner, room, &request, redacted).await
                 }
-            }
-            if matches!(
-                request.operation,
-                tilo_owner_commit::CommitOperation::EffectReceipt { .. }
-            ) {
-                let (key, governor) =
-                    tilo_identity_host::broker::trusted_current_device(&request.room)
-                        .map_err(|error| format!("effect governor custody unavailable: {error}"))?;
-                owner.commit_effect_receipt(&request, &governor, &key, std::time::SystemTime::now())
-            } else {
-                owner.commit_document(request, std::time::SystemTime::now())
             }
         })
     }
@@ -357,6 +421,18 @@ async fn grant_authorship_at_host(
     .map_err(|_| "the host committed the app authorship but it did not reach this device in time")?
 }
 
+/// A commit's outcome on the owner's thread: done here, or a receipt for
+/// the room's governor on another device, recorded over the network.
+enum Committed {
+    Here(tilo_owner_commit::OwnerCommitReceipt),
+    Elsewhere(Box<Elsewhere>),
+}
+struct Elsewhere {
+    owner: super::native_workspace_owner::NativeWorkspaceOwner,
+    room: super::state::RoomId,
+    request: tilo_owner_commit::OwnerCommitRequest,
+}
+
 /// Have the governor of `room` record an effect receipt this device's broker
 /// produced, and answer with this device's committed view of the room.
 async fn record_receipt_elsewhere(
@@ -508,6 +584,46 @@ pub(super) fn with_session_blobs<T>(
         *SESSION_BLOBS.lock_recover() = None;
     }
     result
+}
+
+/// The filesystem daemon's content store, as content puts write to it:
+/// each room's under the neutral [`CONTENT_PUT_SCOPE`], which every app of
+/// the room reads by reference.
+///
+/// [`CONTENT_PUT_SCOPE`]: tilo_action_broker::services::CONTENT_PUT_SCOPE
+struct SessionContentPuts;
+
+impl tilo_action_broker::services::ContentStoreServices for SessionContentPuts {
+    fn max_bytes(&self) -> u64 {
+        runtime_fs::blobs::MAX_BLOB_BYTES
+    }
+
+    fn begin(
+        &self,
+        room: &str,
+    ) -> Result<Box<dyn tilo_action_broker::services::ContentSink>, String> {
+        with_session_blobs(|client| {
+            client
+                .scope(room, tilo_action_broker::services::CONTENT_PUT_SCOPE)?
+                .begin_upload("application/octet-stream")
+        })
+        .map(|upload| Box::new(SessionContentSink(upload)) as Box<_>)
+        .map_err(|error| error.to_string())
+    }
+}
+
+/// One upload into the daemon's store; dropped unfinished, it is aborted.
+struct SessionContentSink(runtime_fs::blobs::BlobUpload);
+
+impl tilo_action_broker::services::ContentSink for SessionContentSink {
+    fn append(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.0.append(bytes).map_err(|error| error.to_string())
+    }
+
+    fn finish(self: Box<Self>) -> Result<(String, u64), String> {
+        let stored = self.0.finish().map_err(|error| error.to_string())?;
+        Ok((stored.hash, stored.len))
+    }
 }
 
 /// Decide every change this session's rooms receive by its claim against
@@ -1068,7 +1184,7 @@ impl LauncherServices for NativeLauncher {
         app: &str,
         room: &str,
     ) -> bool {
-        let Some((_, start)) = super::launcher::proc_stat(launcher_pid) else {
+        let Some((_, start)) = super::host_runtime::proc_stat(launcher_pid) else {
             return false;
         };
         super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room).is_some()
@@ -1913,7 +2029,10 @@ pub fn native_services(
             })
             .into_iter()
             .flatten()
-            .chain([super::settings_records::broker_door()])
+            .chain([
+                super::settings_records::broker_door(),
+                super::activity_provider::broker_door(),
+            ])
             .collect(),
         legacy_workspace: membership.map(|tree| {
             Arc::new(NativeWorkspaceAuthority(tree)) as Arc<dyn LegacyWorkspaceProjection>
@@ -1928,6 +2047,7 @@ pub fn native_services(
                 crate::shell::search::app_content_index::session(),
             ),
         )),
+        content_store: Some(Arc::new(SessionContentPuts)),
         speakers: network.clone().map(|network| {
             Arc::new(NativeSpeakers(network))
                 as Arc<dyn tilo_action_broker::services::SpeakerServices>
@@ -2028,6 +2148,12 @@ pub struct NativeSpeakers(pub Arc<super::network::ShellNetwork>);
 impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
         crate::shell::speaker_settings::handle(&self.0, command)
+    }
+
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::SpeakerChange> {
+        Some(Box::pin(crate::shell::speaker_settings::changed(
+            &self.0, after,
+        )))
     }
 }
 /// Wi-Fi credentials carried between the person's certified devices.

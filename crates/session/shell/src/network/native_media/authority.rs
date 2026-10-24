@@ -23,10 +23,27 @@ pub(super) fn inventory(ticket: &Ticket) -> runtime_collab::native_media::Invent
         .unwrap_or_default()
 }
 
-/// The people the call hears talking, as person ids (user root keys in
-/// lowercase hex, sorted and distinct): whoever publishes one of the `heard`
-/// namespaces in `ticket`'s current grant, and this device's person while
-/// its own microphone is heard (`own`).
+/// Who a call participant is to an app: its person (a user root key in
+/// lowercase hex), or for someone a bridge carries in from another service
+/// their guest id (`<service>:<account>`); `None` for a bridge's own
+/// participation, which only listens to carry the call out. A bridge's
+/// participations are held by the bridge's person, so never shown as it.
+pub(super) fn call_id(
+    participant: &tilo_relay_protocol::voice::VoiceParticipant,
+) -> Option<String> {
+    match &participant.bridged {
+        Some(bridged) => bridged
+            .account
+            .as_deref()
+            .map(|account| runtime_collab::native_media::Guest::id_of(&bridged.service, account)),
+        None => Some(hex::encode(participant.user_public_key)),
+    }
+}
+
+/// Who the call hears talking, by [`call_id`] (sorted and distinct):
+/// whoever publishes one of the `heard` namespaces in `ticket`'s current
+/// grant, and this device's person while its own microphone is heard
+/// (`own`).
 pub(super) fn speakers(ticket: &Ticket, heard: &[String], own: bool) -> Vec<String> {
     ticket
         .inspect_current(|_, grant| {
@@ -37,7 +54,7 @@ pub(super) fn speakers(ticket: &Ticket, heard: &[String], own: bool) -> Vec<Stri
                 .filter(|participant| {
                     heard.contains(&participant.namespace) || mine == Some(&participant.namespace)
                 })
-                .map(|participant| hex::encode(participant.user_public_key))
+                .filter_map(call_id)
                 .collect();
             Ok(people.into_iter().collect())
         })

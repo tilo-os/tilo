@@ -1,6 +1,7 @@
 # CI signed-target offline installer media
 
-The normal Lenovo OS is built and signed by the `Release / OS` workflow. The
+The normal Lenovo OS is a signed Lenovo board release, which t does not build
+yet (`os-board-lenovo-83ed` builds the unsigned dev board image). The
 `Release / imager` workflow can wrap **that exact signed ARM64 child manifest**
 in a bootable installer medium for native ARM64 CI and Windows ARM64 WHPX tests.
 The Windows laptop does not build or upload an OS image.

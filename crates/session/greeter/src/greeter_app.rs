@@ -110,7 +110,7 @@ const LARGER_TEXT_SCALE: f32 = 1.5;
 const BACKDROP_PHASE_SECONDS: f64 = ui::auth_backdrop::STILL_SECONDS;
 
 /// How the screen arranges the time and the credentials. Each is a complete
-/// composition; see [`GreeterApp::build_composition`].
+/// composition; see `GreeterApp::build_composition`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Direction {
     /// The lock screen's arrangement: time and date on the left, the person

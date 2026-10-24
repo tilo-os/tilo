@@ -775,6 +775,113 @@ fn with_nobody_yet_the_window_says_how_to_start() {
         location.choices.is_empty(),
         "no route to choose while no conversation is open"
     );
+
+    // Open Contacts runs the published action that asks the window's
+    // session to open Contacts in its workspace.
+    let session = std::sync::Arc::new(OpeningSession::default());
+    harness.set_session_door(
+        ui::RemoteActions::with_host(
+            session.clone(),
+            ui::tilo_actions::remote::Caller::local_app("so.tilo.messages").in_room("room"),
+        ),
+        Some("room".into()),
+    );
+    let button = harness
+        .a11y_nodes()
+        .into_iter()
+        .find(|(_, node)| node.label() == Some("Open Contacts"))
+        .map(|(_, node)| node)
+        .expect("the empty state offers to open Contacts");
+    assert!(button.bounds().is_some_and(|b| b.width() > 1.0));
+    let contacts = ui::tilo_actions::remote::application_open_target("room", "so.tilo.contacts");
+    assert!(
+        harness.resources().iter().any(offers_open_contacts),
+        "the button's action is one the app publishes"
+    );
+    harness
+        .invoke_published(
+            "tilo.messages",
+            crate::OPEN_CONTACTS,
+            &serde_json::Map::new(),
+        )
+        .expect("the session opens Contacts");
+    let asked = std::mem::take(&mut *session.asked.lock().unwrap());
+    assert_eq!(asked.len(), 1, "one open, asked of the session");
+    assert_eq!(asked[0].target, contacts);
+
+    // Pressing the button is the same request.
+    harness
+        .click_named("messages.open-contacts")
+        .expect("the button is pressed");
+    app.settle();
+    let asked = std::mem::take(&mut *session.asked.lock().unwrap());
+    assert_eq!(asked.len(), 1, "the press asks the session once");
+    assert_eq!(asked[0].target, contacts);
+}
+
+/// Whether `resource` or one inside it offers Open Contacts.
+fn offers_open_contacts(resource: &ui::tilo_actions::Resource) -> bool {
+    resource
+        .actions
+        .iter()
+        .any(|action| action.id == crate::OPEN_CONTACTS)
+        || resource.children.iter().any(offers_open_contacts)
+}
+
+/// A session that records what it is asked to open.
+#[derive(Default)]
+struct OpeningSession {
+    asked: std::sync::Mutex<Vec<ui::tilo_actions::remote::InvokeRequest>>,
+}
+
+impl ui::tilo_actions::remote::ActionHost for OpeningSession {
+    fn query(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        _query: ui::tilo_actions::remote::CatalogueQuery,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<ui::tilo_actions::remote::CataloguePage, ui::tilo_actions::remote::ActionHostError>,
+    > {
+        ui::tilo_actions::remote::Pending::ready(Ok(
+            ui::tilo_actions::remote::CataloguePage::default(),
+        ))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        request: ui::tilo_actions::remote::InvokeRequest,
+    ) -> ui::tilo_actions::remote::Pending<
+        Result<
+            ui::tilo_actions::remote::InvocationReceipt,
+            ui::tilo_actions::remote::ActionHostError,
+        >,
+    > {
+        let invocation = request.invocation;
+        self.asked.lock().unwrap().push(request);
+        ui::tilo_actions::remote::Pending::ready(Ok(ui::tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: ui::tilo_actions::remote::ReceiptStatus::Completed {
+                output: ui::tilo_actions::ActionOutput::default(),
+            },
+        }))
+    }
+
+    fn observe(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        _id: &ui::tilo_actions::InvocationId,
+    ) -> Option<ui::tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &ui::tilo_actions::remote::Caller,
+        _id: &ui::tilo_actions::InvocationId,
+    ) -> Result<(), ui::tilo_actions::remote::ActionHostError> {
+        Ok(())
+    }
 }
 
 #[test]

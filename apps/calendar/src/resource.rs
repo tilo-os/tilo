@@ -13,7 +13,7 @@
 //! agent, a collaborator, an undo: after every change the calendar queues
 //! the upload or delete of what differs from what each server last
 //! confirmed ([`Calendar::remote`]) in its outboxes, which the device
-//! holding the account carries out ([`crate::outbox`]).
+//! holding the account carries out (`crate::outbox`).
 
 use std::rc::Rc;
 

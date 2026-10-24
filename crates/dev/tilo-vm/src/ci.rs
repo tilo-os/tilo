@@ -5,8 +5,8 @@
 //! dev-overrides rebuilds (the shell) on top, and dev images accept it
 //! (os/dev-image's container policy rejects the bare `tilo-ci` OS image).
 //!
-//! CI tags main commits `main-<sha7>` and pull requests `pr-<n>-<sha7>`
-//! (`build-image.yml`), each an index of the architectures that built, so a
+//! Main commits are tagged `main-<sha7>` (t's publish-os-dev-<arch>), each
+//! an index of the architectures that built, so a
 //! pull takes the one the VM or device runs. The pull happens inside the VM
 //! when its image has podman; otherwise on this host with podman, for the
 //! VM's architecture, and the layer is uploaded.

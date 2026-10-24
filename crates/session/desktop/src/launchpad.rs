@@ -30,6 +30,22 @@ use ui::TextRole;
 
 pub const EMPTY_WORKSPACE_OPEN_APP: &str = "shell.empty-workspace.open-app";
 
+/// Whether any launchpad request (a card or "Open an app") waits in `doc`
+/// for the host to take, read without taking it.
+pub fn requested(doc: &automerge::AutoCommit, root: &ObjId) -> bool {
+    std::iter::once(LaunchpadChoice::OpenApp)
+        .chain(LaunchpadAction::ALL.into_iter().map(LaunchpadChoice::Card))
+        .any(|choice| is_requested(doc, root, &choice))
+}
+
+fn is_requested(doc: &automerge::AutoCommit, root: &ObjId, choice: &LaunchpadChoice) -> bool {
+    matches!(
+        doc.get(root, choice.path()),
+        Ok(Some((Value::Scalar(value), _)))
+            if matches!(value.as_ref(), ScalarValue::Boolean(true))
+    )
+}
+
 /// Whether "Open an app" was chosen, cleared from `doc` so it fires once.
 pub fn take_open_app(doc: &mut ui::widget::Edits<'_>, root: &ObjId) -> bool {
     consume_launchpad(doc, root, LaunchpadChoice::OpenApp)
@@ -258,11 +274,7 @@ fn consume_launchpad(
     root: &ObjId,
     choice: LaunchpadChoice,
 ) -> bool {
-    if !matches!(
-        edits.doc().get(root, choice.path()),
-        Ok(Some((Value::Scalar(value), _)))
-            if matches!(value.as_ref(), ScalarValue::Boolean(true))
-    ) {
+    if !is_requested(edits.doc(), root, &choice) {
         return false;
     }
     let action = ConsumeLaunchpad {

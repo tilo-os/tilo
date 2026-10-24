@@ -1,13 +1,14 @@
 //! A host's read-only, app-scoped view of a person's authority in one room:
 //! the room's owner, the person's role and the grants that can reach this
 //! app. Its provenance is the launcher-owned read-only namespace, not a
-//! caller-supplied value.
+//! caller-supplied value, and it is current only while the host that wrote
+//! it holds it (`tilo_files::native::held`): it carries no lifetime of its own.
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Authority, RoomPolicy, TreePath, roles};
 
 pub const PROJECTION_PATH: &str = "/run/tilo/action-authority/current.json";
 pub const MAX_PROJECTION_BYTES: usize = 64 * 1024;
-pub const SCHEMA_VERSION: u16 = 2;
+pub const SCHEMA_VERSION: u16 = 3;
 const MAX_GRANTS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,22 +25,13 @@ pub struct AppActionAuthorityProjection {
     /// not govern.
     #[serde(default)]
     pub foreign: bool,
-    pub issued_at_unix_ms: u64,
-    pub valid_until_unix_ms: u64,
 }
 
 impl AppActionAuthorityProjection {
     /// The projection for `app_id` of `person`'s authority in `policy`: the
     /// grants are narrowed to those that can decide one of the app's actions.
     #[must_use]
-    pub fn project(
-        policy: &RoomPolicy,
-        app_id: &str,
-        person: &str,
-        foreign: bool,
-        issued_at_unix_ms: u64,
-        valid_until_unix_ms: u64,
-    ) -> Self {
+    pub fn project(policy: &RoomPolicy, app_id: &str, person: &str, foreign: bool) -> Self {
         let app = policy.node().app(app_id);
         let mut narrowed = policy.clone();
         narrowed.grants.retain(|grant| grant.node.overlaps(&app));
@@ -50,8 +42,6 @@ impl AppActionAuthorityProjection {
             person: person.to_owned(),
             policy: narrowed,
             foreign,
-            issued_at_unix_ms,
-            valid_until_unix_ms,
         }
     }
 
@@ -59,7 +49,7 @@ impl AppActionAuthorityProjection {
     /// further than one app.
     ///
     /// # Errors
-    /// Refuses malformed, foreign-scoped or excessively long-lived policy.
+    /// Refuses malformed or foreign-scoped policy.
     pub fn validate(&self) -> Result<(), &'static str> {
         let valid_name = |value: &str| {
             !value.is_empty() && value.len() <= 256 && !value.chars().any(char::is_control)
@@ -75,12 +65,6 @@ impl AppActionAuthorityProjection {
                 .as_deref()
                 .is_some_and(|owner| !valid_name(owner))
             || self.policy.grants.len() > MAX_GRANTS
-            || self.issued_at_unix_ms == 0
-            || self.valid_until_unix_ms <= self.issued_at_unix_ms
-            || self
-                .valid_until_unix_ms
-                .saturating_sub(self.issued_at_unix_ms)
-                > 3_000
         {
             return Err("invalid host action policy projection");
         }
@@ -95,18 +79,6 @@ impl AppActionAuthorityProjection {
 
     pub fn matches(&self, room: &str, app: &str, person: &str) -> bool {
         self.room == room && self.app_id == app && self.person == person
-    }
-
-    pub fn is_current_at(&self, now: u64) -> bool {
-        self.issued_at_unix_ms <= now && now < self.valid_until_unix_ms
-    }
-
-    pub fn same_policy(&self, other: &Self) -> bool {
-        self.room == other.room
-            && self.app_id == other.app_id
-            && self.person == other.person
-            && self.policy == other.policy
-            && self.foreign == other.foreign
     }
 
     /// The node of this app in the room.
@@ -140,27 +112,16 @@ mod tests {
     fn policy() -> AppActionAuthorityProjection {
         let mut room = RoomPolicy::new("room-a", "person-a");
         room.members.insert("person-b".into(), Role::Editor);
-        AppActionAuthorityProjection::project(
-            &room,
-            "so.tilo.store",
-            "person-b",
-            false,
-            10_000,
-            13_000,
-        )
+        AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-b", false)
     }
 
     #[test]
-    fn action_authority_lease_and_scope_are_bounded() {
+    fn action_authority_scope_is_bounded() {
         let original = policy();
         original.validate().unwrap();
-        assert!(!original.is_current_at(9_999));
-        assert!(original.is_current_at(10_000));
-        assert!(original.is_current_at(12_999));
-        assert!(!original.is_current_at(13_000));
         let mut invalid = original.clone();
-        invalid.valid_until_unix_ms += 1;
-        assert!(invalid.validate().is_err());
+        invalid.schema_version = 2;
+        assert!(invalid.validate().is_err(), "another schema is refused");
         for node in [
             TreePath::room("room-a").app("so.tilo.settings"),
             TreePath::room("room-b"),
@@ -177,12 +138,6 @@ mod tests {
             ));
             assert!(invalid.validate().is_err());
         }
-        let mut renewed = original.clone();
-        renewed.issued_at_unix_ms += 1;
-        renewed.valid_until_unix_ms += 1;
-        assert!(original.same_policy(&renewed));
-        renewed.policy.owner = None;
-        assert!(!original.same_policy(&renewed));
     }
 
     #[test]
@@ -200,7 +155,7 @@ mod tests {
             ));
         }
         let projection =
-            AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-b", false, 1, 2);
+            AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-b", false);
         projection.validate().unwrap();
         assert!(
             projection
@@ -239,7 +194,7 @@ mod tests {
     fn a_foreign_device_never_governs() {
         let room = RoomPolicy::new("room-a", "person-a");
         let mut projection =
-            AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-a", true, 1, 2);
+            AppActionAuthorityProjection::project(&room, "so.tilo.store", "person-a", true);
         projection.policy.grants.push(Grant::new(
             "governance",
             Subject::person("person-a"),

@@ -7,7 +7,8 @@ it says that it waits for the clock. fs stays up waiting instead of exiting into
 loop. When the clock steps back to the real time, as network time does, fs serves the
 workspace and the session starts its network and broker without anyone acting.
 
-It moves the VM's clock, so it runs last and puts the clock and chronyd back however it ends.
+It moves the VM's clock and restarts the session, so it runs after the checks that judge what
+the run opened, and puts the clock and chronyd back however it ends.
 """
 
 from __future__ import annotations

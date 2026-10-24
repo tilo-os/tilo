@@ -138,7 +138,7 @@ pub(crate) fn admitted(names_only: bool, tier: MatchTier, weight: FieldWeight) -
         )
 }
 
-/// [`infix_allowed`] for typed text: whether `query` may match inside a word
+/// `infix_allowed` for typed text: whether `query` may match inside a word
 /// ([`MatchTier::Contains`]) rather than only at word starts.
 #[must_use]
 pub fn matches_inside_words(query: &str) -> bool {

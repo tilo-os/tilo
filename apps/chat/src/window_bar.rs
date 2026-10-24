@@ -37,36 +37,53 @@ impl ChatApp {
                 Hit::AgentWindow,
             ));
         }
+        // The call in progress, its microphone and leaving it, whatever the
+        // window shows and whoever else is in the room: someone alone in a
+        // call, or in a room where nobody else has written yet, still mutes
+        // and leaves it.
+        if self.call.active {
+            let name = self.channel(&self.call.channel).map_or_else(
+                || crate::i18n::t("chat-header-call-open"),
+                |channel| channel.name.clone(),
+            );
+            actions.push((
+                ToolbarAction::new("call", "volume-2", name).on(true),
+                Hit::StartCall,
+            ));
+            // The microphone stays at hand wherever the call is.
+            let (icon, label) = if self.microphone_missing() {
+                ("mic-off", "chat-call-no-microphone")
+            } else if self.call.muted {
+                ("mic-off", "chat-call-unmute")
+            } else {
+                ("mic", "chat-call-mute")
+            };
+            let label = crate::i18n::t(label);
+            actions.push((ToolbarAction::new("call-mute", icon, label), Hit::CallMute));
+            // Hearing the call, beside speaking into it: in the menu, so
+            // the row keeps the call, its microphone and Leave.
+            let (icon, label) = if self.call.deafened {
+                ("headphone-off", "chat-call-undeafen")
+            } else {
+                ("headphones", "chat-call-deafen")
+            };
+            actions.push((
+                ToolbarAction::new("call-deafen", icon, crate::i18n::t(label))
+                    .on(self.call.deafened)
+                    .in_menu(),
+                Hit::CallDeafen,
+            ));
+            actions.push((
+                ToolbarAction::new(
+                    "call-leave",
+                    "phone-off",
+                    crate::i18n::t("chat-call-leave-action"),
+                )
+                .destructive(),
+                Hit::CallLeave,
+            ));
+        }
         if self.direct_person.is_none() && self.has_other_collaborator() {
-            if self.call.active {
-                let name = self.channel(&self.call.channel).map_or_else(
-                    || crate::i18n::t("chat-header-call-open"),
-                    |channel| channel.name.clone(),
-                );
-                actions.push((
-                    ToolbarAction::new("call", "volume-2", name).on(true),
-                    Hit::StartCall,
-                ));
-                // The microphone stays at hand wherever the call is.
-                let (icon, label) = if self.microphone_missing() {
-                    ("mic-off", "chat-call-no-microphone")
-                } else if self.call.muted {
-                    ("mic-off", "chat-call-unmute")
-                } else {
-                    ("mic", "chat-call-mute")
-                };
-                let label = crate::i18n::t(label);
-                actions.push((ToolbarAction::new("call-mute", icon, label), Hit::CallMute));
-                actions.push((
-                    ToolbarAction::new(
-                        "call-leave",
-                        "phone-off",
-                        crate::i18n::t("chat-call-leave-action"),
-                    )
-                    .destructive(),
-                    Hit::CallLeave,
-                ));
-            }
             let pins = self.pins_open && self.right_flap_open() && self.thread_open.is_none();
             actions.push((
                 ToolbarAction::new("pins", "pin", "Pinned messages").on(pins),

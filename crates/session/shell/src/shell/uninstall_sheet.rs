@@ -1,4 +1,4 @@
-//! "Uninstall <name>?": the one question asked before an app leaves the
+//! "Uninstall \<name\>?": the one question asked before an app leaves the
 //! person's apps, whichever door it was asked from (Files, search, the
 //! Store).
 //!
@@ -131,13 +131,15 @@ impl Asking {
         }
         let (on_confirm, on_cancel, on_dismiss) =
             (confirmed.clone(), dismissed.clone(), dismissed.clone());
-        let dialog = ModalDialog::new(title.clone(), body)
+        let mut dialog = ModalDialog::new(title.clone(), body)
             .with_test_id(SHEET)
             .primary_action(action.clone(), move || on_confirm.set(true))
             .secondary_action(t("app-uninstall-cancel"), move || on_cancel.set(true))
             .on_dismiss(move || on_dismiss.set(true))
-            .with_destructive(removal != AppRemoval::RemoveFromApps)
-            .open(true);
+            .with_destructive(removal != AppRemoval::RemoveFromApps);
+        // Asked now: it arrives (`motion::Appear`), from a click on a
+        // motion, from a key or an action at once.
+        dialog.set_open(true);
         Self {
             item,
             title,

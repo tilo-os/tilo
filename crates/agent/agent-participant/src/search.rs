@@ -316,7 +316,7 @@ pub struct Hit {
 /// The records of `docs` (only `app`'s, when given) that best match
 /// `query`, best first, at most `most`: each record's text and title
 /// scored by BM25 over the query's terms, the title's words weighted
-/// [`TITLE_WEIGHT`] times, a record that holds the query's words together
+/// `TITLE_WEIGHT` times, a record that holds the query's words together
 /// as a phrase raised, and one holding fewer of them lowered. Among equal
 /// scores the most recently changed comes first.
 #[must_use]

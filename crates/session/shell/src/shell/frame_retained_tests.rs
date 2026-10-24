@@ -474,7 +474,7 @@ fn workspace_root_rebuild_frames_carry_the_new_scene() {
         !rebuilt.scene.encoding().is_empty(),
         "the rebuilt workspace root reaches the screen"
     );
-    // The rest of the switch's frame run draws the same desktop. A presenter
+    // Any frame after the switch draws the same desktop. A presenter
     // keeps every pixel it already shows, on one display or several.
     for index in 0..3 {
         let following = frame.paint_with_damage();
@@ -1389,6 +1389,10 @@ fn one_line_of_client_damage_repaints_only_that_line() {
     );
     store.forget(surface);
 }
+
+#[cfg(target_os = "linux")]
+#[path = "frame_offscreen_damage_tests.rs"]
+mod offscreen_damage_tests;
 
 #[cfg(target_os = "linux")]
 fn render_cpu(scene: &Scene, (width, height): (u32, u32)) -> Vec<u8> {

@@ -8,14 +8,6 @@
 # chrome or renderer paths they still reach.
 [modules]
 
-# The workspace model asks the launcher for installed apps and action authority, and
-# doc_open for file labels. These go when those answers are handed to the model, ahead
-# of moving it into its own crate.
-"src/shell/state.rs" = [
-    "crate::shell::doc_open",
-    "crate::shell::launcher",
-]
-
 # Persistence reads launch keys from the launcher's process-wide table. This goes when
 # the model records a window's launch key itself.
 "src/shell/persist.rs" = [
@@ -28,14 +20,6 @@
 "src/shell/network.rs" = [
     "crate::shell::launcher",
     "crate::shell::overlay_host",
-]
-
-# The headless runtime session publishes its room's accepted action policy at start, as
-# the native shell does when it builds the desktop, through the launcher's process-wide
-# policy table that launches are admitted against. This goes when that table moves below
-# the launcher with the workspace model.
-"src/runtime_host.rs" = [
-    "crate::shell::launcher",
 ]
 
 # Peer presence measures tiles with vello's re-exported geometry types. This goes when
@@ -232,6 +216,7 @@ grandfathered = [
 ]
 
 [shell_dependencies.added]
+"tilo-device-vpn" = "Routing a device's traffic through another device of the same person: the shell owns the iroh endpoint, so it accepts the tunnel ALPN and drives the client and exit; built with only the tunnel feature (wire format, packet loop, typed helper protocol), which brings iroh, tokio and serde that the shell already depends on, and none of the privileged helper"
 "settings-sections" = "The person's settings sections as resource models, carved out of the Settings app: the session keeps them as records and serves their field edits and verbs to the palette, agents and scripts whether or not Settings is open; it brings settings-store, tilo-wallpapers, tilo-accessibility-settings and tilo-app, which the shell already depends on, and tilo-locale, which itself brings only tilo-app and serde"
 "tasks" = "Runs of issues assigned to an agent (broker_services::tracker_runs) come from the tracker record, read with the Tasks app's own model as the shell already reads Notes, Code and Word records; it brings only tilo-document, tilo-rich-text and tilo-app, which the shell already depends on"
 "tilo-documents" = "The files a person chooses for an app in the shell's chooser, served into that app's sandbox: the shell mounts the store and gives into it; the table, the beneath-only host access and the FUSE adapter live in this crate, which the launcher shares for the paths"

@@ -23,7 +23,9 @@
 //! A notification may carry an activation URI
 //! ([`Notification::with_activation`]); a click hands it to the handler the
 //! app installed for the URI's scheme ([`set_activation_handler`]) where the
-//! platform reports clicks.
+//! platform reports clicks. Buttons ([`Notification::with_button`]) carry
+//! URIs of their own, handed over the same way where the platform shows
+//! them (Linux; elsewhere they are left out).
 //!
 //! [`availability`] says which [`Feature`]s the target has; a backend may do
 //! less at run time (no notification service on this session), never more.
@@ -73,6 +75,26 @@ pub struct Notification {
     /// How much it asks of the person: a host marks a warning or an error
     /// the way it marks its own.
     pub severity: Severity,
+    /// Buttons beside the notification's own activation, at most
+    /// [`MAX_BUTTONS`].
+    pub buttons: Vec<NotificationButton>,
+    /// Shown without a sound: one asked for so, or a change to one already
+    /// shown (a download's progress), which would otherwise sound at every
+    /// step. Linux carries it; macOS plays no sound for any.
+    pub silent: bool,
+}
+
+/// The most buttons a notification carries, as the Tilo shell shows them.
+pub const MAX_BUTTONS: usize = 3;
+
+/// A button on a notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationButton {
+    /// What choosing it does, in the person's words ("Pause").
+    pub label: String,
+    /// The URI handed to the app's [`set_activation_handler`] when the
+    /// person chooses it.
+    pub activation: String,
 }
 
 /// How much a notification asks of the person.
@@ -97,7 +119,27 @@ impl Notification {
             activation: None,
             action: None,
             severity: Severity::Info,
+            buttons: Vec::new(),
+            silent: false,
         }
+    }
+
+    /// Show it without a sound.
+    #[must_use]
+    pub fn quietly(mut self) -> Self {
+        self.silent = true;
+        self
+    }
+
+    /// Add a button named `label` that hands `uri` to the app's activation
+    /// handler when the person chooses it.
+    #[must_use]
+    pub fn with_button(mut self, label: impl Into<String>, uri: impl Into<String>) -> Self {
+        self.buttons.push(NotificationButton {
+            label: label.into(),
+            activation: uri.into(),
+        });
+        self
     }
 
     /// Hand `uri` to the app's activation handler when the user clicks.
@@ -326,6 +368,19 @@ pub(crate) fn validate(notification: &Notification) -> Result<(), NotifyError> {
             "a notification's activation must be a URI with a scheme",
         ));
     }
+    if notification.buttons.len() > MAX_BUTTONS {
+        return Err(NotifyError::Invalid("a notification has too many buttons"));
+    }
+    for button in &notification.buttons {
+        if button.label.trim().is_empty() || button.label.chars().any(char::is_control) {
+            return Err(NotifyError::Invalid("a notification's button needs a name"));
+        }
+        if !valid_activation(&button.activation) {
+            return Err(NotifyError::Invalid(
+                "a notification button's activation must be a URI with a scheme",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -513,6 +568,22 @@ mod tests {
         assert_eq!(validate(&notification("tilo-clocks:timer/1")), Ok(()));
         for bad in ["no scheme", "1x:y", "tilo:a b", "tilo:\n"] {
             assert!(validate(&notification(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn buttons_are_named_bounded_and_carry_uris() {
+        let notification =
+            Notification::new("t", "Title", "").with_button("Pause", "tilo-test:pause");
+        assert_eq!(validate(&notification), Ok(()));
+        for bad in [
+            Notification::new("t", "Title", "").with_button(" ", "tilo-test:pause"),
+            Notification::new("t", "Title", "").with_button("Pause", "no scheme"),
+            (0..=MAX_BUTTONS).fold(Notification::new("t", "Title", ""), |n, i| {
+                n.with_button(format!("B{i}"), "tilo-test:b")
+            }),
+        ] {
+            assert!(validate(&bad).is_err(), "{bad:?}");
         }
     }
 

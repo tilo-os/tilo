@@ -269,7 +269,7 @@ impl ResourceApp for DbClientShell {
 
     /// `empty` is the first run; every other scenario shows the bundled
     /// sample catalog with a query run against it, on the tab or dialog it
-    /// names (see [`DbClientApp::stage_scenario`]).
+    /// names (see `DbClientApp::stage_scenario`).
     fn scenarios() -> &'static [&'static str] {
         &[
             "data",

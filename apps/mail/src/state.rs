@@ -1,5 +1,5 @@
 //! Shared, render-free mail state, owned by the app and borrowed by each of the
-//! three [`crate::pane::Pane`]s through an `Rc<RefCell<_>>`.
+//! three panes through an `Rc<RefCell<_>>`.
 //!
 //! The panes are siblings inside a [`ui::widget::NavShell`], so they can't call
 //! each other directly. Instead they mutate this shared state and raise
@@ -235,9 +235,10 @@ pub struct MailState {
     /// wanted from the server.
     pub wants_older: std::cell::Cell<bool>,
     /// The open account's mail has not arrived yet: nothing is kept on this
-    /// device and its first fetch is running. The list shows the rows that
-    /// are coming, not an empty mailbox.
-    pub fetching_first: bool,
+    /// device and its first fetch is running, timed from when it began and
+    /// from the server it comes from. The list shows the rows that are
+    /// coming, not an empty mailbox.
+    pub first_fetch: Option<ui::arriving::ArrivalClock>,
     /// The senders (lower-case addresses) whose remote images the person
     /// allowed. Part of the person's Mail preferences, so it follows them.
     pub remote_senders: std::collections::BTreeSet<String>,
@@ -417,7 +418,7 @@ impl MailState {
             all_inboxes: false,
             sync_error: None,
             wants_older: std::cell::Cell::new(false),
-            fetching_first: false,
+            first_fetch: None,
             avatars,
             narrow: false,
             detail_pushed: false,

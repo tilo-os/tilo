@@ -19,6 +19,7 @@ fields = [
   { path = "merge.theirs", type = "Atom" },
   { path = "merged", type = "String" },
   { path = "resolutions", type = "BTreeMap<String, HunkChoice>", readonly = true },
+  { path = "written", type = "BTreeMap<String, String>", readonly = true },
 ]
 
 [[resources.verbs]]

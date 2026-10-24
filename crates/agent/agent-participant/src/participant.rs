@@ -48,6 +48,7 @@ mod logs;
 mod parts;
 mod planning;
 mod records;
+mod room_content;
 mod running;
 pub(crate) mod unopened;
 mod waits;
@@ -275,6 +276,9 @@ pub struct AgentParticipant {
     /// The records the current task's plans read while they were made: a
     /// follow-up plan is offered them, as it is the records it touched.
     task_read: Vec<DocumentRoute>,
+    /// The current task's budget for asking a model call lost to the
+    /// network again, shared by all of its plans.
+    task_retries: crate::planner::TurnRetries,
     /// When others' changes last merged into an open record.
     last_merge: Option<Instant>,
     /// Message records ([`MESSAGE_APPS`]) others changed since the running
@@ -283,6 +287,9 @@ pub struct AgentParticipant {
     /// Who last changed each message record, by device: whom what a
     /// waiting task waited for came from.
     news_from: BTreeMap<DocumentRoute, [u8; 32]>,
+    /// What each record of [`Self::news`] held before the change that made
+    /// it news: what arrived since is what the re-plan is told.
+    news_before: BTreeMap<DocumentRoute, Arc<str>>,
     left: bool,
     /// Bumped whenever what the open records publish may have changed; the
     /// revision remote catalogues are issued at.
@@ -405,9 +412,11 @@ impl AgentParticipant {
             task_touched: Vec::new(),
             previous_touched: Vec::new(),
             task_read: Vec::new(),
+            task_retries: crate::planner::TurnRetries::default(),
             last_merge: None,
             news: Vec::new(),
             news_from: BTreeMap::new(),
+            news_before: BTreeMap::new(),
             left: false,
             generation: 0,
             remote: Vec::new(),
@@ -444,7 +453,7 @@ impl AgentParticipant {
 
     /// Take in what the session delivered, answer remote actions, then take
     /// the current task's steps: local ones back to back for up to
-    /// [`STEP_SLICE`], at most one that plans. Says when to pump again.
+    /// `STEP_SLICE`, at most one that plans. Says when to pump again.
     pub fn pump(&mut self) -> Next {
         let now = tilo_clock::unix_now_ms();
         for event in self.events.drain() {
@@ -574,6 +583,9 @@ impl AgentParticipant {
                     self.news_from
                         .insert(document.route.clone(), document.author);
                     if !self.news.contains(&document.route) {
+                        // Read before the change merges below.
+                        let before = self.record_messages(&document.route).unwrap_or_default();
+                        self.news_before.insert(document.route.clone(), before);
                         self.news.push(document.route.clone());
                     }
                 }
@@ -638,6 +650,13 @@ impl AgentParticipant {
                 active,
             } if workspace_id == self.workspace_id => {
                 self.live.member(device, active);
+            }
+            PeerEvent::ContentWanted {
+                workspace_id,
+                from,
+                request,
+            } if workspace_id == self.workspace_id && from != self.device() => {
+                self.content_wanted(from, &request);
             }
             _ => {}
         }
@@ -856,9 +875,11 @@ impl AgentParticipant {
         self.previous_touched = std::mem::take(&mut self.task_touched);
         self.task_read.clear();
         self.task_made.clear();
+        self.task_retries = crate::planner::TurnRetries::default();
         // What arrived before the task began is in the room it is planned on.
         self.news.clear();
         self.news_from.clear();
+        self.news_before.clear();
         self.plan(id, &text, None);
     }
 
@@ -1052,9 +1073,24 @@ impl AgentParticipant {
                         running.observe(app, seen);
                     }
                     running.looked_at(rendered);
-                    running.queue_rest(steps);
+                    running.queue_answer(steps);
                     self.plan_ready_at = Some(ready_at);
                 }
+            }
+            // News that changes nothing for the task is no reason to end
+            // it: a re-plan for it that found nothing to do goes on with
+            // the steps it replaced, a wait among them waiting again (at
+            // most MOST_NEWS_REPLANS re-plans, and MOST_WAITS waits).
+            Err(error)
+                if continues
+                    && running_it
+                    && error.starts_with(NOTHING_LEFT)
+                    && self
+                        .running
+                        .as_mut()
+                        .is_some_and(Running::resume_after_news) =>
+            {
+                tracing::debug!(%error, "agent: news changed nothing; the task goes on");
             }
             Err(error) => {
                 if !continues && error.starts_with(NOTHING_LEFT) && self.reopen_for(&task, &text) {

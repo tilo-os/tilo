@@ -2,7 +2,9 @@
 //! an answer, the conversation over scripted turns (reads, looks, searches,
 //! refusals), and the OpenAI-compatible transport over a local endpoint.
 
-use super::converse::{PlanTurns, Repeats, TURN_OUTPUT_TOKENS, planning_tools, usage_line};
+use super::converse::{
+    Attempt, PlanTurns, Repeats, TURN_OUTPUT_TOKENS, planning_tools, usage_line,
+};
 use super::scripted::{clauses, names_app, words};
 use super::*;
 use crate::planner::read_answer;
@@ -175,7 +177,7 @@ fn the_usage_log_keeps_cached_input_and_reasoning() {
         Some("ada"),
         (std::time::Duration::from_millis(5), (0, 0)),
         &Ok(answer),
-        false,
+        Attempt::default(),
     );
     assert_eq!(line["usage"]["input_tokens"], 1000);
     assert_eq!(line["usage"]["input_tokens_details"]["cached_tokens"], 900);
@@ -1994,6 +1996,7 @@ impl PlanTurns for Script {
         request: &ModelRequest,
         _: &str,
         _: std::time::Instant,
+        _: bool,
     ) -> Result<ModelResponse, ModelError> {
         self.sent.lock().unwrap().push(request.clone());
         self.answers
@@ -2528,7 +2531,7 @@ fn a_refusal_ends_the_plan_saying_so_and_is_logged() {
         Some("pia"),
         (std::time::Duration::from_millis(5), (1, 400)),
         &refused,
-        false,
+        Attempt::default(),
     );
     assert_eq!(line["stop_reason"], "refusal");
     assert_eq!(line["refusal"], "");
@@ -2546,11 +2549,15 @@ fn a_refusal_ends_the_plan_saying_so_and_is_logged() {
         None,
         (std::time::Duration::from_millis(5), (0, 0)),
         &plan_turn,
-        true,
+        Attempt {
+            hedge: true,
+            retry: false,
+        },
     );
     assert_eq!(line["stop_reason"], "tool_calls");
     assert!(line["refusal"].is_null());
     assert_eq!(line["hedge"], true);
+    assert_eq!(line["retry"], false);
     assert_eq!(line["usage"]["output_tokens"], 0);
 }
 
@@ -2676,4 +2683,172 @@ fn first_turn_text(
 ) -> String {
     let (stable, rest) = converse::first_turn_parts(task, briefing, catalogue, revealed);
     stable + &rest
+}
+
+/// Turns answered from a script, keeping each call's key and whether it
+/// was a turn asked again after a lost call.
+#[derive(Default)]
+struct Lossy {
+    answers: std::collections::VecDeque<Result<ModelResponse, ModelError>>,
+    calls: Vec<(String, bool)>,
+}
+
+impl PlanTurns for Lossy {
+    fn turn(
+        &mut self,
+        _: &ModelRequest,
+        key: &str,
+        _: std::time::Instant,
+        retry: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.calls.push((key.to_owned(), retry));
+        self.answers
+            .pop_front()
+            .unwrap_or_else(|| Err(ModelError::new(ErrorKind::Unavailable)))
+    }
+
+    fn model(&self) -> &'static str {
+        "lossy"
+    }
+}
+
+fn lossy_plan(
+    answers: Vec<Result<ModelResponse, ModelError>>,
+    briefing: &Briefing,
+) -> (Result<Answer, String>, Vec<(String, bool)>) {
+    let mut turns = Lossy {
+        answers: answers.into(),
+        calls: Vec::new(),
+    };
+    let planned = converse::plan(
+        &mut turns,
+        &converse::Asked {
+            task: "open notes",
+            briefing,
+            catalogue: &open_notes(),
+            most_steps: MOST_STEPS,
+            sees: false,
+            timeout: tilo_test_env::hang_bound(),
+        },
+        &mut NoPlanReads,
+    );
+    (planned, turns.calls)
+}
+
+fn open_notes_plan() -> ModelResponse {
+    let offer = open_notes().offers[0].id();
+    called(
+        "p1",
+        tilo_agent::tools::PLAN,
+        &serde_json::json!({"steps": [{"operation": offer, "arguments": {}}], "then": ""}),
+    )
+}
+
+/// The turn keeps its key, so a metered endpoint bills it once.
+#[test]
+fn a_planning_call_lost_to_the_network_is_asked_once_more() {
+    for kind in [ErrorKind::Transport, ErrorKind::TimedOut] {
+        let briefing = Briefing::default();
+        let (planned, calls) = lossy_plan(
+            vec![Err(ModelError::new(kind)), Ok(open_notes_plan())],
+            &briefing,
+        );
+        let answer = planned.unwrap();
+        assert_eq!(answer.actions, vec![open_notes().offers[0].id()]);
+        let [(first, false), (again, true)] = calls.as_slice() else {
+            panic!("one call, then the same asked again: {calls:?}");
+        };
+        assert_eq!(first, again, "the turn keeps its key");
+        assert_eq!(
+            briefing.retries.left(),
+            crate::planner::MOST_TURN_RETRIES - 1
+        );
+    }
+    let line = usage_line(
+        "claude-x",
+        Some("ana"),
+        (std::time::Duration::from_millis(5), (0, 0)),
+        &Err(ModelError::new(ErrorKind::Transport)),
+        Attempt {
+            hedge: false,
+            retry: true,
+        },
+    );
+    assert_eq!(line["retry"], true);
+    assert_eq!(line["ok"], false);
+}
+
+#[test]
+fn a_call_lost_again_or_past_the_budget_ends_the_plan() {
+    let lost = || Err(ModelError::new(ErrorKind::Transport));
+    let briefing = Briefing::default();
+    let (planned, calls) = lossy_plan(vec![lost(), lost(), Ok(open_notes_plan())], &briefing);
+    assert_eq!(
+        planned.unwrap_err(),
+        ModelError::new(ErrorKind::Transport).to_string()
+    );
+    assert_eq!(calls.len(), 2, "{calls:?}");
+
+    let spent = Briefing::default();
+    while spent.retries.take() {}
+    let (planned, calls) = lossy_plan(vec![lost(), Ok(open_notes_plan())], &spent);
+    assert_eq!(
+        planned.unwrap_err(),
+        ModelError::new(ErrorKind::Transport).to_string()
+    );
+    assert_eq!(calls.len(), 1, "{calls:?}");
+}
+
+#[test]
+fn a_call_answered_with_another_failure_is_not_asked_again() {
+    for kind in [
+        ErrorKind::Refused,
+        ErrorKind::Authentication,
+        ErrorKind::PermissionDenied,
+        ErrorKind::InvalidRequest,
+        ErrorKind::ContextLimit,
+        ErrorKind::CreditsExhausted,
+        ErrorKind::RateLimited,
+        ErrorKind::Provider,
+        ErrorKind::Unavailable,
+        ErrorKind::Cancelled,
+        ErrorKind::Truncated,
+    ] {
+        let briefing = Briefing::default();
+        let (planned, calls) = lossy_plan(
+            vec![Err(ModelError::new(kind)), Ok(open_notes_plan())],
+            &briefing,
+        );
+        assert!(planned.is_err(), "{kind:?}");
+        assert_eq!(calls.len(), 1, "{kind:?}");
+        assert_eq!(
+            briefing.retries.left(),
+            crate::planner::MOST_TURN_RETRIES,
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn a_task_spends_its_own_retries_across_its_plans() {
+    let context = context();
+    let open = offer_id(&context, "record.so.tilo.sheets.s1#open");
+    let plan = serde_json::json!({"steps": [{"operation": open, "arguments": {}}], "then": ""});
+    let mut planner = ModelPlanner::new(Box::new(ScriptModel {
+        turns: Script {
+            answers: vec![
+                Err(ModelError::new(ErrorKind::Transport)),
+                Ok(called("p1", tilo_agent::tools::PLAN, &plan)),
+            ]
+            .into(),
+            sent: Sent::default(),
+        },
+        sees: false,
+    }));
+    let steps = planner.plan("open the sheet", &context).unwrap();
+    assert_eq!(steps.len(), 1, "{steps:?}");
+    assert_eq!(
+        context.retries.left(),
+        crate::planner::MOST_TURN_RETRIES - 1
+    );
 }

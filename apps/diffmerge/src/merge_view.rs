@@ -310,6 +310,7 @@ impl MergeView {
         if self.model.hunks.len() == model.hunks.len() {
             for (shown, stored) in self.model.hunks.iter_mut().zip(&model.hunks) {
                 shown.resolution = stored.resolution;
+                shown.written.clone_from(&stored.written);
             }
         } else {
             self.model = model;
@@ -763,7 +764,8 @@ impl MergeView {
     ) -> (Option<Color>, Option<Color>) {
         let washed = |tone| pane::washed(theme, tone, active);
         match resolution {
-            Resolution::Unchanged => (None, None),
+            // Nothing changed, or neither side was taken.
+            Resolution::Unchanged | Resolution::Written => (None, None),
             Resolution::Conflict => (
                 Some(washed(ui::widget::Tone::Danger)),
                 Some(washed(ui::widget::Tone::Danger)),
@@ -1421,6 +1423,7 @@ fn resolution_badge(res: Resolution) -> Option<(String, ChipStyle)> {
         Resolution::TookOurs => ("hunk-took-ours", ChipStyle::Tinted(Tone::Success)),
         Resolution::TookTheirs => ("hunk-took-theirs", ChipStyle::Tinted(Tone::Success)),
         Resolution::TookBoth => ("hunk-took-both", ChipStyle::Tinted(Tone::Success)),
+        Resolution::Written => ("hunk-written", ChipStyle::Tinted(Tone::Success)),
         Resolution::Unchanged => return None,
     };
     Some((t(key), style))

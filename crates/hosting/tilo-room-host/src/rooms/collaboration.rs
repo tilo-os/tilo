@@ -1141,7 +1141,7 @@ impl RoomTxn for HeldRoom<'_> {
 
 /// This relay's rooms, to the governor that answers their workspace-join
 /// exchange: a change is staged in the room's record and written once for
-/// everyone who staged one meanwhile ([`Rooms::written`]); a governance
+/// everyone who staged one meanwhile (`Rooms::written`); a governance
 /// change is committed under the room's lock and published before the
 /// lock is released.
 impl GovernorStore for Rooms {

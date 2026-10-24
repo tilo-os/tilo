@@ -1,16 +1,20 @@
 //! Allocation-free decomposition of compositor animation demand.
+//!
+//! This is the demand itself, not a report beside it: the shell asks for a
+//! frame exactly when one of these sources is set
+//! (`ShellOverlayHost::needs_animation_frame_at`), so every motion the shell
+//! draws is named here while it moves, and a source missing from this list
+//! is a motion that gets no frames.
 
 use std::time::{Duration, Instant};
 
-pub(crate) const HOST_SOURCE_NAMES: [&str; 16] = [
+pub(crate) const HOST_SOURCE_NAMES: [&str; 29] = [
     "root-transition",
     "quick-settings",
     "workspace-settings",
     "palette",
     "power-menu",
-    "room-activity",
     "follow",
-    "room-replay",
     "capture-studio",
     "projection",
     "content",
@@ -19,6 +23,21 @@ pub(crate) const HOST_SOURCE_NAMES: [&str; 16] = [
     "screenshot-markup",
     "notification",
     "workspace-switch",
+    "desk",
+    "strip-indicators",
+    "cursor-chat",
+    "collaborators",
+    "osd",
+    "acknowledgement",
+    "window-previews",
+    "peer-sync",
+    "directory-sheet",
+    "arrival-line",
+    "tab-menu",
+    "window-switcher",
+    "dictation",
+    "emoji-picker",
+    "display-confirm",
 ];
 
 #[allow(
@@ -37,9 +56,7 @@ pub(crate) struct HostDemandInputs {
     pub workspace_settings: bool,
     pub palette: bool,
     pub power_menu: bool,
-    pub room_activity: bool,
     pub follow: bool,
-    pub room_replay: bool,
     pub projection: bool,
     pub content: bool,
     pub strip_switcher: bool,
@@ -47,7 +64,25 @@ pub(crate) struct HostDemandInputs {
     pub screenshot_markup: bool,
     pub notification: bool,
     pub workspace_switch: bool,
+    pub desk: bool,
+    pub strip_indicators: bool,
+    pub cursor_chat: bool,
+    pub collaborators: bool,
+    pub osd: bool,
+    pub acknowledgement: bool,
+    pub window_previews: bool,
+    pub peer_sync: bool,
+    pub directory_sheet: bool,
+    pub arrival_line: bool,
+    pub tab_menu: bool,
+    pub window_switcher: bool,
+    pub dictation: bool,
+    pub emoji_picker: bool,
+    pub display_confirm: bool,
 }
+
+/// The bit of [`host_bits`] that says the workspace content animates.
+pub(crate) const CONTENT_BIT: u32 = 1 << 8;
 
 pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
     if inputs.onboarding {
@@ -58,17 +93,30 @@ pub(crate) fn host_bits(inputs: &HostDemandInputs) -> u32 {
         | (u32::from(inputs.workspace_settings) << 2)
         | (u32::from(inputs.palette) << 3)
         | (u32::from(inputs.power_menu) << 4)
-        | (u32::from(inputs.room_activity) << 5)
-        | (u32::from(inputs.follow) << 6)
-        | (u32::from(inputs.room_replay) << 7)
-        | (u32::from(inputs.capture_studio) << 8)
-        | (u32::from(inputs.projection) << 9)
-        | (u32::from(inputs.content) << 10)
-        | (u32::from(inputs.strip_switcher) << 11)
-        | (u32::from(inputs.capture_mirror) << 12)
-        | (u32::from(inputs.screenshot_markup) << 13)
-        | (u32::from(inputs.notification) << 14)
-        | (u32::from(inputs.workspace_switch) << 15)
+        | (u32::from(inputs.follow) << 5)
+        | (u32::from(inputs.capture_studio) << 6)
+        | (u32::from(inputs.projection) << 7)
+        | (if inputs.content { CONTENT_BIT } else { 0 })
+        | (u32::from(inputs.strip_switcher) << 9)
+        | (u32::from(inputs.capture_mirror) << 10)
+        | (u32::from(inputs.screenshot_markup) << 11)
+        | (u32::from(inputs.notification) << 12)
+        | (u32::from(inputs.workspace_switch) << 13)
+        | (u32::from(inputs.desk) << 14)
+        | (u32::from(inputs.strip_indicators) << 15)
+        | (u32::from(inputs.cursor_chat) << 16)
+        | (u32::from(inputs.collaborators) << 17)
+        | (u32::from(inputs.osd) << 18)
+        | (u32::from(inputs.acknowledgement) << 19)
+        | (u32::from(inputs.window_previews) << 20)
+        | (u32::from(inputs.peer_sync) << 21)
+        | (u32::from(inputs.directory_sheet) << 22)
+        | (u32::from(inputs.arrival_line) << 23)
+        | (u32::from(inputs.tab_menu) << 24)
+        | (u32::from(inputs.window_switcher) << 25)
+        | (u32::from(inputs.dictation) << 26)
+        | (u32::from(inputs.emoji_picker) << 27)
+        | (u32::from(inputs.display_confirm) << 28)
 }
 
 pub(crate) fn host_labels(bits: u32) -> impl Iterator<Item = &'static str> {
@@ -154,7 +202,7 @@ mod tests {
     #[test]
     fn host_labels_decode_stable_source_bits() {
         assert_eq!(
-            host_labels((1 << 1) | (1 << 10) | (1 << 14)).collect::<Vec<_>>(),
+            host_labels((1 << 1) | (1 << 8) | (1 << 12)).collect::<Vec<_>>(),
             ["quick-settings", "content", "notification"],
         );
         assert!(host_labels(0).next().is_none());
@@ -171,9 +219,7 @@ mod tests {
             workspace_settings: false,
             palette: false,
             power_menu: false,
-            room_activity: false,
             follow: false,
-            room_replay: false,
             projection: false,
             content: false,
             strip_switcher: false,
@@ -181,6 +227,21 @@ mod tests {
             screenshot_markup: false,
             notification: false,
             workspace_switch: false,
+            desk: false,
+            strip_indicators: false,
+            cursor_chat: false,
+            collaborators: false,
+            osd: false,
+            acknowledgement: false,
+            window_previews: false,
+            peer_sync: false,
+            directory_sheet: false,
+            arrival_line: false,
+            tab_menu: false,
+            window_switcher: false,
+            dictation: false,
+            emoji_picker: false,
+            display_confirm: false,
         };
         assert_eq!(host_bits(&inputs(false, false)), 0);
         assert_eq!(host_bits(&inputs(true, false)), 1);

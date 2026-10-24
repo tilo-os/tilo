@@ -245,17 +245,12 @@ and `/usr/share/tilo/tpm2-pcr-signing.public.pem` for PCR authorization.
 The signer and every parent directory must be root-owned and not group/world
 writable, and it must not live in the checkout or runner temporary directory.
 Tagged releases fail closed when this protected variable is absent.
-The same direct signer is also used by both native `Release / OS` publication
-lanes before their child manifests can enter the multi-architecture index. Its
-server-side OIDC policy must therefore accept either the protected
-`release-imager.yml` semantic-tag identity above or `build-image.yml` on a
-protected `vMAJOR.MINOR.PATCH` tag, an authorized publishing dispatch from
-`main`, the nightly scheduled run on protected `main`, or an enabled continuous
-publication push to protected `main`. Reject all pull requests, branch
-rehearsals, non-main dispatches, and other workflows. Tag lanes run on the
-`imager-linux-*` hosts; `main` publication lanes run on `runner-disk-100g` and
-`runner-disk-100g-arm64`, so the wrapper must be installed at the same
-canonical path on those runner images too.
+OS releases on t sign the same two inputs with the same keys in KMS directly
+(`sign-os-boot-<arch>`, tools/signing/boot-signer.sh) as the release signing
+role, which t's identity tokens get only for `stable` and `v*` tags. Its
+server-side OIDC policy must accept only the protected `release-imager.yml`
+semantic-tag identity above. Reject all pull requests, branch rehearsals,
+dispatches and other workflows. Tag lanes run on the `imager-linux-*` hosts.
 
 For `linux`, `windows`, and `macos`, the broker configures the native signer and
 writes only these non-secret handles to the environment-file output, one

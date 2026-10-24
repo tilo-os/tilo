@@ -237,7 +237,11 @@ fn app_waits_for_governance_then_signed_state_converges_without_reexecuting_acti
     native.install_seed(seed, &a, now).unwrap();
     let mut browser =
         StatePeer::new(room, ac.clone(), vec![ac, bc], RevocationList::new(), now).unwrap();
-    let app = native.signed_snapshots(&a, now).unwrap().remove(0);
+    let app = native
+        .publication_mut()
+        .signed_snapshots(&a, now)
+        .unwrap()
+        .remove(0);
     assert!(
         browser
             .receive(a.verifying_key().to_bytes(), app.clone(), now)
@@ -307,7 +311,11 @@ fn source_room_signature_and_aged_checkpoint_fail_closed() {
     receiver
         .receive(a.verifying_key().to_bytes(), native.room_message(), now)
         .unwrap();
-    let message = native.signed_snapshots(&a, now).unwrap().remove(0);
+    let message = native
+        .publication_mut()
+        .signed_snapshots(&a, now)
+        .unwrap()
+        .remove(0);
     assert!(
         receiver
             .receive(bc.device_public_key, message.clone(), now)
@@ -1277,6 +1285,7 @@ fn retained_relay_replay_accepts_certified_document_after_live_freshness_window(
     let origin = TransportOrigin::RetainedRelayDelta(authority.verifying_key().to_bytes());
 
     for message in governor
+        .publication_mut()
         .bootstrap_messages(&authority, authored_at)
         .unwrap()
     {
@@ -1297,9 +1306,13 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     doc.put(ROOT, "other", "B").unwrap();
     doc.commit_edit("fixture", "other");
     let old = native
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
-    let bootstrap = native.bootstrap_messages(&a, now).unwrap();
+    let bootstrap = native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap();
     let mut fresh = StatePeer::new(
         native.room(),
         native.authority().clone(),
@@ -1362,6 +1375,7 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
     doc.put(ROOT, "new", "B2").unwrap();
     doc.commit_edit("fixture", "new");
     let next = reload
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &b, now)
         .unwrap();
     assert!(matches!(next,NeighbourMsg::AppDocument{envelope,..} if envelope.seq==2));
@@ -1369,7 +1383,10 @@ fn fresh_checkpoint_covers_compacted_other_author_and_restore_never_reuses_seque
 #[test]
 fn state_on_presence_cannot_install_governance_or_advance_watermarks() {
     let (mut native, a, _, bc, now) = seeded();
-    let bootstrap = native.bootstrap_messages(&a, now).unwrap();
+    let bootstrap = native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap();
     let mut fresh = StatePeer::new(
         native.room(),
         native.authority().clone(),
@@ -1405,7 +1422,10 @@ fn state_on_presence_cannot_install_governance_or_advance_watermarks() {
 #[test]
 fn forged_or_mismatched_coverage_cannot_install_snapshot() {
     let (mut native, a, _, bc, now) = seeded();
-    let bootstrap = native.bootstrap_messages(&a, now).unwrap();
+    let bootstrap = native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap();
     let mut fresh = StatePeer::new(
         native.room(),
         native.authority().clone(),
@@ -1464,7 +1484,10 @@ fn forged_or_mismatched_coverage_cannot_install_snapshot() {
 #[test]
 fn checkpoint_without_coverage_remains_deferred_and_metadata_cannot_regress() {
     let (mut native, a, _, bc, now) = seeded();
-    let messages = native.bootstrap_messages(&a, now).unwrap();
+    let messages = native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap();
     let NeighbourMsg::SyncResp { changes, room } = messages[0].clone() else {
         panic!("unexpected fixture shape")
     };
@@ -1526,7 +1549,11 @@ fn fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation() {
         now,
     )
     .unwrap();
-    for message in native.bootstrap_messages(&a, now).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
         receiver
             .receive_from(
                 TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
@@ -1536,7 +1563,10 @@ fn fresh_same_head_checkpoint_is_still_a_durable_watermark_mutation() {
             .unwrap();
     }
     let heads = receiver.rows();
-    let fresh = native.bootstrap_messages(&a, now).unwrap();
+    let fresh = native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap();
     receiver
         .receive_from(
             TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
@@ -1566,7 +1596,11 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
         now,
     )
     .unwrap();
-    for message in native.bootstrap_messages(&a, now).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
         receiver
             .receive_from(
                 TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
@@ -1575,7 +1609,10 @@ fn authenticated_missing_mls_is_durable_and_later_plaintext_cannot_downgrade() {
             )
             .unwrap();
     }
-    let messages = native.bootstrap_messages(&a, now).unwrap();
+    let messages = native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap();
     let mut encrypted = messages[1].clone();
     if let NeighbourMsg::AppDocument {
         envelope,
@@ -1655,7 +1692,10 @@ fn self_issued_identity_presence_cannot_expand_the_admitted_roster() {
 fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_ready_state() {
     let (mut native, key, _, browser_cert, created) = seeded();
     let delayed = created + Duration::from_secs(301);
-    let stale = native.bootstrap_messages(&key, created).unwrap();
+    let stale = native
+        .publication_mut()
+        .bootstrap_messages(&key, created)
+        .unwrap();
     let mut receiver = StatePeer::new(
         native.room(),
         native.authority().clone(),
@@ -1678,7 +1718,11 @@ fn aged_retained_checkpoint_rejects_without_poisoning_fresh_sync_or_durable_read
     assert_eq!(receiver.durable().unwrap(), before);
     assert!(receiver.rows().is_empty());
     assert_eq!(receiver.incomplete_reason(), None);
-    for message in native.bootstrap_messages(&key, delayed).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&key, delayed)
+        .unwrap()
+    {
         receiver.receive_from(origin, message, delayed).unwrap();
     }
     assert_eq!(receiver.rows(), native.rows());
@@ -1708,7 +1752,11 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
         now,
     )
     .unwrap();
-    for msg in native.bootstrap_messages(&a, now).unwrap() {
+    for msg in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
         receiver
             .receive_from(
                 TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
@@ -1793,6 +1841,7 @@ fn learned_revocation_and_governed_identity_survive_stale_enrollment_restore() {
     doc.put(ROOT, "new", "forbidden").unwrap();
     doc.commit_edit("fixture", "new");
     let op = native
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
     assert!(
@@ -1824,7 +1873,11 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
         )
         .unwrap();
         if existing {
-            for msg in native.bootstrap_messages(&a, now).unwrap() {
+            for msg in native
+                .publication_mut()
+                .bootstrap_messages(&a, now)
+                .unwrap()
+            {
                 receiver
                     .receive_from(
                         TransportOrigin::RelayDelta(a.verifying_key().to_bytes()),
@@ -1834,7 +1887,10 @@ fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance
                     .unwrap();
             }
         }
-        let messages = native.bootstrap_messages(&a, now).unwrap();
+        let messages = native
+            .publication_mut()
+            .bootstrap_messages(&a, now)
+            .unwrap();
         // Install exactly the room we will drain again: the existing path then
         // has no changed room heads, only the deferred metadata obligation.
         if existing {
@@ -1968,12 +2024,14 @@ fn reordered_incrementals_are_pending_durable_and_drain_after_predecessor() {
     document.put(ROOT, "first", "A").unwrap();
     document.commit_edit("fixture", "first");
     let first = author
+        .publication_mut()
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
     let before = document.get_heads();
     document.put(ROOT, "second", "B").unwrap();
     document.commit_edit("fixture", "second");
     let second = author
+        .publication_mut()
         .publish_incremental(app, record, document.save_after(&before), &author_key, now)
         .unwrap();
 
@@ -2044,6 +2102,7 @@ fn dynamic_governed_identity_import_preserves_history_and_requires_authority() {
     doc.put(ROOT, "joined", true).unwrap();
     doc.commit_edit("fixture", "joined");
     let message = existing
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&before), &new_key, now)
         .unwrap();
     assert!(
@@ -2353,7 +2412,11 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
         now,
     )
     .unwrap();
-    for message in native.bootstrap_messages(&a, now).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&a, now)
+        .unwrap()
+    {
         browser
             .receive(a.verifying_key().to_bytes(), message, now)
             .unwrap();
@@ -2365,7 +2428,10 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
             .is_none(),
         "legacy accepted coverage is not a durable receipt"
     );
-    let messages = native.durable_bootstrap_messages(&a, now, 7).unwrap();
+    let messages = native
+        .publication_mut()
+        .durable_bootstrap_messages(&a, now, 7)
+        .unwrap();
     browser
         .receive(a.verifying_key().to_bytes(), messages[0].clone(), now)
         .unwrap();
@@ -2427,6 +2493,7 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     doc.put(ROOT, "value", 2).unwrap();
     doc.commit_edit("fixture", "value");
     let local = browser
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), &b, now)
         .unwrap();
     assert!(
@@ -2449,7 +2516,11 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     native
         .receive(b.verifying_key().to_bytes(), local, now)
         .unwrap();
-    for message in native.durable_bootstrap_messages(&a, now, 8).unwrap() {
+    for message in native
+        .publication_mut()
+        .durable_bootstrap_messages(&a, now, 8)
+        .unwrap()
+    {
         browser
             .receive(a.verifying_key().to_bytes(), message, now)
             .unwrap();
@@ -2544,258 +2615,12 @@ fn nonowner_topology_and_record_route_changes_are_rejected_before_admission() {
     let _ = doc.get(ROOT, "contents").unwrap();
 }
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn selective_publication_covers_foreign_metadata_only_admission_and_new_records() {
-    let (mut governor, a, b, bc, now) = seeded();
-    let app = "test.app";
-    let record = "tab:1";
-    let bytes = governor.document(app, record).unwrap();
-    governor
-        .publish_document("untouched.app", "other", bytes, &a, now)
-        .unwrap();
-    let baseline = governor.durable_bootstrap_messages(&a, now, 1).unwrap();
-    let untouched = governor
-        .durable_coverage("untouched.app", "other")
-        .unwrap()
-        .unwrap();
-    let mut offline = governor.clone();
-    let mut before = governor.clone();
-    let mut doc = AutoCommit::load(&governor.document(app, record).unwrap()).unwrap();
-    doc.set_actor(automerge::ActorId::from(
-        b.verifying_key().to_bytes().to_vec(),
-    ));
-    let heads = doc.get_heads();
-    doc.put(ROOT, "foreign", "original effect").unwrap();
-    doc.commit_edit("fixture", "foreign");
-    let change = doc.save_after(&heads);
-    let original = governor
-        .publish_incremental(app, record, change.clone(), &b, now)
-        .unwrap();
-    let mut tail = governor
-        .durable_mutation_messages(&before, &a, now, 2)
-        .unwrap();
-    assert_eq!(tail.len(), 2);
-    assert_eq!(
-        governor.durable_coverage("untouched.app", "other").unwrap(),
-        Some(untouched.clone())
-    );
-    let NeighbourMsg::SyncResp { changes, .. } = &tail[0] else {
-        panic!("room delta first")
-    };
-    let NeighbourMsg::SyncResp { changes: all, .. } = governor.room_message() else {
-        panic!("unexpected fixture shape")
-    };
-    assert!(
-        changes.len() < all.len(),
-        "ordinary room publication must exclude prior causal history"
-    );
-    before = governor.clone();
-    let rows = governor.rows();
-    let metadata_only = governor
-        .publish_incremental(app, record, change, &b, now)
-        .unwrap();
-    assert_eq!(governor.rows(), rows);
-    let metadata = governor
-        .durable_mutation_messages(&before, &a, now, 3)
-        .unwrap();
-    assert_eq!(
-        metadata.len(),
-        2,
-        "same-head watermark advance still needs a covered exact snapshot"
-    );
-    assert_eq!(
-        governor
-            .durable_coverage(app, record)
-            .unwrap()
-            .unwrap()
-            .generation,
-        3
-    );
-    tail.extend(metadata);
-    before = governor.clone();
-    let mut new = AutoCommit::new();
-    new.put(ROOT, "created", true).unwrap();
-    new.commit_edit("fixture", "created");
-    governor
-        .publish_document("new.app", "new-record", new.save(), &a, now)
-        .unwrap();
-    let created = governor
-        .durable_mutation_messages(&before, &a, now, 4)
-        .unwrap();
-    assert_eq!(created.len(), 2);
-    assert!(
-        matches!(&created[1], NeighbourMsg::AppDocument { app_id, record_id, envelope, .. } if app_id == "new.app" && record_id == "new-record" && matches!(collab_types::DocumentMutation::decode(&envelope.payload).unwrap(), collab_types::DocumentMutation::Snapshot(_)))
-    );
-    tail.extend(created);
-    let mut fresh = StatePeer::new(
-        governor.room(),
-        governor.authority().clone(),
-        vec![bc],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    for message in baseline.into_iter().chain(tail.clone()) {
-        fresh
-            .receive(a.verifying_key().to_bytes(), message, now)
-            .unwrap();
-    }
-    for message in tail.iter().chain(tail.iter()).cloned() {
-        offline
-            .receive(a.verifying_key().to_bytes(), message, now)
-            .unwrap();
-    }
-    for receiver in [&fresh, &offline] {
-        assert_eq!(receiver.rows(), governor.rows());
-        assert!(receiver.covers(&original));
-        assert!(receiver.covers(&metadata_only));
-        assert_eq!(
-            receiver.durable_coverage("untouched.app", "other").unwrap(),
-            Some(untouched.clone())
-        );
-        assert!(
-            receiver
-                .durable_covers_current("new.app", "new-record")
-                .unwrap()
-        );
-    }
-    let restored = StatePeer::restore(
-        &fresh.durable().unwrap(),
-        governor.room(),
-        governor.authority().clone(),
-        governor.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(restored.covers(&original));
-    assert!(restored.covers(&metadata_only));
-    // The covered floor is not coverage of whatever bytes claim it. The
-    // incremental is decoded in the isolate, which refuses a covered change
-    // followed by a copy of it with a bad checksum rather than keeping the
-    // valid prefix and reporting the checkpoint's heads unchanged.
-    let NeighbourMsg::AppDocument { envelope, .. } = &original else {
-        panic!("document publication")
-    };
-    let collab_types::DocumentMutation::Incremental(covered) =
-        collab_types::DocumentMutation::decode(&envelope.payload).unwrap()
-    else {
-        panic!("incremental publication")
-    };
-    let mut bad_checksum = covered.clone();
-    bad_checksum[4] ^= 0x01;
-    let mut corrupt = covered;
-    corrupt.extend_from_slice(&bad_checksum);
-    let mut forged = original.clone();
-    let NeighbourMsg::AppDocument { envelope, .. } = &mut forged else {
-        panic!("document publication")
-    };
-    envelope.payload = collab_types::DocumentMutation::Incremental(corrupt)
-        .encode()
-        .unwrap();
-    assert!(!restored.covers(&forged));
-    let before = governor.clone();
-    assert!(
-        governor
-            .durable_mutation_messages(&before, &a, now, 5)
-            .unwrap()
-            .is_empty(),
-        "no-op must not invent publication sequences or receipts"
-    );
-}
-
-#[test]
-fn selective_publication_compares_restored_checkpoints_by_exact_bytes() {
-    let (mut governor, a, _, _, now) = seeded();
-    governor.durable_bootstrap_messages(&a, now, 1).unwrap();
-    let restored = StatePeer::restore(
-        &governor.durable().unwrap(),
-        governor.room(),
-        governor.authority().clone(),
-        governor.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-
-    assert!(
-        governor
-            .durable_coverage("test.app", "tab:1")
-            .unwrap()
-            .is_some(),
-        "warm only the candidate checkpoint decode cache"
-    );
-    assert!(
-        governor
-            .durable_mutation_messages(&restored, &a, now, 2)
-            .unwrap()
-            .is_empty(),
-        "restored identical checkpoint bytes must not create a publication"
-    );
-}
-
-#[test]
-fn selective_room_only_publication_rechecks_current_governor_authority() {
-    let (mut governor, key, _, _, now) = seeded();
-    governor.durable_bootstrap_messages(&key, now, 1).unwrap();
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let mut revoked = tilo_user_identity::RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: key.verifying_key().to_bytes(),
-        revoked_at_ns: 1,
-        reason: tilo_user_identity::RevocationReason::Retired,
-        signature: [0; 64],
-    };
-    tilo_user_identity::sign_revocation_entry(&mut revoked, &root).unwrap();
-    let mut revocations = RevocationList::new();
-    revocations.insert(revoked).unwrap();
-    assert!(
-        StatePeer::restore(
-            &governor.durable().unwrap(),
-            governor.room(),
-            governor.authority().clone(),
-            governor.certificates(),
-            revocations,
-            now,
-        )
-        .err()
-        .unwrap()
-        .contains("authority device is revoked")
-    );
-}
-
-#[test]
-fn selective_publication_cannot_discard_prior_document_basis() {
-    let (mut governor, key, _, _, now) = seeded();
-    governor.durable_bootstrap_messages(&key, now, 1).unwrap();
-    let mut candidate = StatePeer::new(
-        governor.room(),
-        governor.authority().clone(),
-        governor.certificates(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    candidate
-        .receive(key.verifying_key().to_bytes(), governor.room_message(), now)
-        .unwrap();
-    assert!(candidate.rows().is_empty());
-    assert!(
-        candidate
-            .durable_mutation_messages(&governor, &key, now, 2)
-            .is_err(),
-        "publication must preserve the prior record basis"
-    );
-}
-
 #[path = "copy_on_write_tests.rs"]
 pub(crate) mod copy_on_write;
 #[path = "delivery_admission_tests.rs"]
 mod delivery_admission;
+#[path = "selective_publication_tests.rs"]
+mod selective_publication;
 
 /// An invitation for `guest_cert` with `nonce`, redeemed by its device.
 fn guest_redemption(

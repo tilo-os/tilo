@@ -152,6 +152,24 @@ if grep -Fq 'cpu steal' "$work/fast"; then
   exit 1
 fi
 
+# The boot's waits on the host leave the budget: the last sample at or before
+# the greeter (here 24.5 s: 8 s of I/O pressure and 400 ticks of steal over 4
+# CPUs, 1 s), or else the first after it less the time since (12 s at 30 s:
+# at least 7 s at the greeter, 5 s before it).
+printf '20.0 3000000 0\n24.5 8000000 400\n26.0 10000000 400\n' >"$work/samples"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_BOOT_HOST_SAMPLES="$work/samples" \
+  TILO_TEST_ACTIVE_US=25000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/host-wait" \
+  || fail 'a boot that was over budget only by waiting on its host failed'
+grep -Fq 'usable greeter in 25.000s (budget: 20s)' "$work/host-wait"
+grep -Fq 'of it 9.000s waiting on the host (I/O pressure and CPU steal), 16.000s the image' "$work/host-wait" \
+  || { cat "$work/host-wait" >&2; fail 'the gate did not name the host wait it took off'; }
+printf '30.0 12000000 0\n' >"$work/late-samples"
+PATH="$work:$PATH" TILO_PROC_STAT="$work/stat" TILO_BOOT_HOST_SAMPLES="$work/late-samples" \
+  TILO_TEST_ACTIVE_US=25000000 "$repo/os/tests/boot_performance_gate.sh" >"$work/late-wait" 2>&1 \
+  || { cat "$work/late-wait" >&2; fail 'a boot within budget once its host wait was taken off failed'; }
+grep -Fq 'of it 7.000s waiting on the host' "$work/late-wait" \
+  || { cat "$work/late-wait" >&2; fail 'a late sample was not reduced by the time since the greeter'; }
+
 if PATH="$work:$PATH" TILO_TEST_ACTIVE_US=10000000 TILO_TEST_GREETD_US=20000001 \
   "$repo/os/tests/boot_performance_gate.sh" >"$work/late-greeter.out" 2>"$work/late-greeter.err"; then
   echo 'boot performance gate accepted a greeter that became usable over budget' >&2
@@ -295,8 +313,6 @@ if grep -Eq '^(After|Wants)=.*network-online.target|^Before=.*(greetd|graphical)
   exit 1
 fi
 grep -Fq 'After=local-fs.target network.target systemd-tmpfiles-setup.service' "$fs_unit"
-grep -Fq 'TILO_BOOT_USERSPACE_BUDGET_SEC=20 "$TILO_GUEST_TESTS/boot-performance-gate.sh"' \
-  "$repo/.forgejo/workflows/build-image.yml"
 
 # Native Tilo performs personal setup in the compositor OOBE. The old system
 # unit only created /root/.config, yet its oneshot delayed multi-user.target

@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine} from './arrival.mjs';
+import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine, waitListFailure} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -27,13 +27,13 @@ import {createIdentityActions, syncProfile} from './identity-actions.mjs';
 import {countryName, deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {qrSvg} from './qr.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
-import {browserIdentity, browserPerson, currentIdentity, IdentityError, MAX_DISPLAY_NAME_BYTES} from './root-identity.mjs';
+import {browserIdentity, browserPerson, currentIdentity, fetchEnvelope, IdentityError, MAX_DISPLAY_NAME_BYTES, signInWithPasskey} from './root-identity.mjs';
 import {followRefusal, refusalText, rejoinedName, retryRejoin} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, INVITE} from './workspace-actions.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneRooms, HostAdmissionError,
-  hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, listedWorkspaces,
+  hostDeviceOf, hostToReconnect, isPublicHome, joinViaHost, keepJoinedHost, keepOwnedHost, keptMembership, leaveOnWaitList, listedWorkspaces,
   doorPresence, joinWhenSeated, membershipOrigins, nameEntered, OPEN_WORKSPACE, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
   settleFailedRoom, spectate, workspaceActions as workspaceSwitchActions, workspaceChoices,
 } from './workspaces.mjs';
@@ -429,15 +429,23 @@ function shareCard({title, body, link}) {
   });
 }
 
-/** The people waiting to join, each to let in or turn away; read again
- * after every decision. Resolves when closed. */
-function waitingCard({load, admit, decline}) {
+/** When a wait-list address was left, as the inviter reads dates. */
+const addedAt = atMs => new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'short'}).format(new Date(atMs));
+
+/** The people waiting to join, each to let in or turn away, and the
+ * addresses on the room's wait list, each to invite (`invite(entry)` makes
+ * and shares an invitation for it) or take off the list (`unlist`), as
+ * `load()` resolves them (`{people, waitList}`); read again after every
+ * decision. Resolves when closed. */
+function waitingCard({load, admit, decline, invite, unlist}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
-    form.className = 'tilo-entry-card';
+    form.className = 'tilo-entry-card tilo-waiting';
     form.dataset.card = 'waiting';
-    const heading = Object.assign(document.createElement('p'), {textContent: 'Waiting to join'});
+    const heading = Object.assign(document.createElement('h2'), {textContent: 'Waiting to join'});
     const list = document.createElement('ul');
+    const listed = document.createElement('section');
+    listed.dataset.list = 'wait-list';
     const error = document.createElement('p');
     error.className = 'tilo-entry-error';
     error.setAttribute('role', 'alert');
@@ -445,27 +453,49 @@ function waitingCard({load, admit, decline}) {
     const close = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Close'});
     form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
     const said = refusal => { error.textContent = refusal?.message ?? String(refusal); error.hidden = false; };
+    const button = (text, run) => {
+      const made = Object.assign(document.createElement('button'), {type: 'button', textContent: text});
+      made.addEventListener('click', run);
+      return made;
+    };
     const show = async () => {
       let people = [];
-      try { people = await load(); } catch (refusal) { said(refusal); }
+      let contacts = [];
+      try { ({people, waitList: contacts} = await load()); } catch (refusal) { said(refusal); }
       list.replaceChildren(...people.map(person => {
         const item = document.createElement('li');
-        const who = Object.assign(document.createElement('span'), {textContent: `${person.name} (${person.role}) `});
-        const letIn = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Let in'});
-        letIn.addEventListener('click', () => decide(admit, person.requestId));
-        const turnAway = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Turn away'});
-        turnAway.addEventListener('click', () => decide(decline, person.requestId));
-        item.append(who, letIn, turnAway);
+        const who = Object.assign(document.createElement('span'), {className: 'tilo-waiting-who', textContent: `${person.name} (${person.role})`});
+        item.append(who, button('Let in', () => decide(admit, person.requestId)), button('Turn away', () => decide(decline, person.requestId)));
         return item;
       }));
-      if (!people.length) list.replaceChildren(Object.assign(document.createElement('li'), {textContent: 'Nobody is waiting.'}));
+      // Nobody to let in: said only where there is no wait list to show instead.
+      list.hidden = !people.length && contacts.length > 0;
+      if (!people.length) list.replaceChildren(Object.assign(document.createElement('li'), {className: 'tilo-waiting-none', textContent: 'Nobody is waiting to be let in.'}));
+      // The wait list: addresses people left at the door, oldest first.
+      listed.replaceChildren();
+      if (!contacts.length) return;
+      const title = Object.assign(document.createElement('h3'), {textContent: `Wait list · ${contacts.length}`});
+      const about = Object.assign(document.createElement('p'), {className: 'tilo-waiting-note',
+        textContent: 'They asked to join without an invitation. Invite makes a link for you to email them.'});
+      const rows = document.createElement('ul');
+      rows.append(...contacts.map(entry => {
+        const item = document.createElement('li');
+        const who = document.createElement('span');
+        who.className = 'tilo-waiting-who';
+        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: entry.contact, title: entry.contact}),
+          Object.assign(document.createElement('time'), {dateTime: new Date(entry.addedAtMs).toISOString(), textContent: addedAt(entry.addedAtMs)}));
+        item.append(who, button('Invite', () => decide(() => invite(entry), entry.requestId)),
+          button('Remove', () => decide(unlist, entry.requestId)));
+        return item;
+      }));
+      listed.append(title, about, rows);
     };
     const decide = async (choice, requestId) => {
       error.hidden = true;
       try { await choice(requestId); } catch (refusal) { said(refusal); }
       await show();
     };
-    form.append(heading, list, error, close);
+    form.append(heading, list, listed, error, close);
     document.body.append(form);
     void show();
   });
@@ -998,7 +1028,7 @@ export async function startEntryPage({mode}) {
     status.textContent = said;
     // Turned away for coming without an invitation: a place to open the
     // one they get.
-    if (error?.code === 'invitation-only') offerInviteLink(messages, named);
+    if (error?.code === 'invitation-only') offerDoor({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home});
     const known = admitting && remembering(() => rememberedRoom(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the room.
@@ -1022,6 +1052,10 @@ export async function startEntryPage({mode}) {
         if (!offered && refused) offerOwnDesktop({...admitting, runtime});
       });
     }
+    // Turned away at the door of a room taking people by invitation: its
+    // answer, shown above, not a failure of this page to report as an
+    // uncaught error (every stranger at such a door would send one).
+    if (error?.code === 'invitation-only') return;
     throw error;
   }
 }
@@ -1134,34 +1168,176 @@ async function offerUpdate({page, status}) {
   location.reload();
 }
 
-/** On a page turned away for coming without an invitation, the door
- * (index.html): a heading naming the workspace `named`, how to get in, and
- * the field to paste the invite link someone sends them into, opened in
- * this tab; their own desktop under it. */
-function offerInviteLink(messages, named) {
+/** Set for the one reload after signing in at the door, to the person
+ * signed in as: refused again, the door says that identity is not in yet. */
+const DOOR_SIGNED_IN = 'tilo-door-signed-in';
+
+/**
+ * On a page turned away for coming without an invitation, the door
+ * (index.html, `#arrival-door`). Where the host keeps a wait list
+ * (`error.door`), it apologises that Tilo is invite-only for now and asks
+ * for an email to invite (`leaveOnWaitList`); else it names the workspace
+ * `named` and asks for the invite link someone sends. Under either: signing
+ * in with an identity the person already has (a passkey, then the page
+ * loads again and joins as them, and a member gets in), and the field to
+ * paste an invite link into, opened in this tab. Their own desktop waits at
+ * the foot of the page (`offerOwnDesktop`).
+ */
+function offerDoor({messages, named, error, workspace}) {
   const door = document.getElementById('arrival-door');
   const form = document.getElementById('arrival-invite');
+  const toggle = document.getElementById('arrival-invite-toggle');
   const field = document.getElementById('arrival-invite-link');
   const problem = document.getElementById('arrival-invite-error');
-  if (!door || !form || !field || !problem) return;
+  if (!door || !form || !toggle || !field || !problem) return;
   const say = (key, english, args) => localized(messages, key, english, args);
-  document.getElementById('arrival-door-heading').textContent = named
-    ? say('arrival-door-heading', '{ $workspace } is invite-only for now', {workspace: named})
-    : say('arrival-door-heading-unnamed', 'This workspace is invite-only for now');
-  document.getElementById('arrival-door-body').textContent =
-    say('arrival-door-body', 'Ask someone in it for an invite link, then paste it here.');
+  const waitList = Boolean(error?.door?.waitList && workspace?.admission);
+  const copy = doorCopy({workspace: named, waitList, messages});
+  document.getElementById('arrival-door-heading').textContent = copy.heading;
+  document.getElementById('arrival-door-body').textContent = copy.body;
   const own = document.getElementById('arrival-own');
-  if (own) door.append(own);
+  if (own) {
+    own.textContent = say('arrival-door-own', 'Or try Tilo on your own');
+    door.querySelector('.door-foot')?.append(own);
+  }
+  if (waitList) offerWaitList({workspace, contact: error.door.contact, messages});
+  offerSignIn({workspace, named, messages});
+  // The invite link: behind a small toggle beside the wait list; shown
+  // where it is the only way in.
+  toggle.textContent = say('arrival-invite-toggle', 'Have an invite link?');
   field.placeholder = say('arrival-invite-placeholder', 'Paste an invite link');
   field.setAttribute('aria-label', say('arrival-invite-link', 'Invite link'));
   form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
+  form.hidden = waitList;
+  toggle.addEventListener('click', () => {
+    form.hidden = !form.hidden;
+    toggle.setAttribute('aria-expanded', String(!form.hidden));
+    if (!form.hidden) field.focus();
+  });
   form.addEventListener('submit', event => {
     event.preventDefault();
     const target = inviteLinkTarget(field.value);
     problem.textContent = target ? '' : say('arrival-invite-not-a-link', 'That isn’t an invite link. Paste the whole link you were sent.');
     if (target) loadPage(target);
   });
-  document.documentElement.dataset.inviteLink = '';
+  document.documentElement.dataset.door = waitList ? 'wait-list' : 'invite';
+}
+
+/** The door's wait list: an email field that leaves the address at the
+ * host's door, the address confirmed once it took it, and a note on what the
+ * address is for and where to be taken off the list (`contact`). */
+function offerWaitList({workspace, contact, messages}) {
+  const say = (key, english, args) => localized(messages, key, english, args);
+  const wait = document.getElementById('arrival-wait');
+  const email = document.getElementById('arrival-wait-email');
+  const note = document.getElementById('arrival-wait-note');
+  const done = document.getElementById('arrival-wait-done');
+  const submit = wait?.querySelector('button');
+  if (!wait || !email || !note || !done || !submit) return;
+  email.placeholder = say('arrival-wait-placeholder', 'you@example.com');
+  email.setAttribute('aria-label', say('arrival-wait-email', 'Email'));
+  submit.textContent = say('arrival-wait-join', 'Join the wait list');
+  const privacy = () => {
+    note.classList.remove('door-problem');
+    note.removeAttribute('role');
+    const used = say('arrival-wait-privacy', 'We only use your email to send you an invite.');
+    if (!contact) {
+      note.textContent = used;
+      return;
+    }
+    // The contact is a link inside the localized sentence: split at it.
+    const marker = '\u0000';
+    const [before, after = ''] = say('arrival-wait-removal', 'To be taken off the list, write to { $contact }.', {contact: marker}).split(marker);
+    const page = contact.startsWith('https://');
+    const link = Object.assign(document.createElement('a'), {
+      textContent: page ? contact.slice('https://'.length) : contact,
+      href: page ? contact : `mailto:${contact}`, rel: 'noopener',
+    });
+    if (page) link.target = '_blank';
+    note.replaceChildren(`${used} ${before}`, link, after);
+  };
+  privacy();
+  email.addEventListener('input', () => {
+    if (email.getAttribute('aria-invalid') !== 'true') return;
+    email.removeAttribute('aria-invalid');
+    privacy();
+  });
+  wait.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (submit.disabled) return;
+    if (!email.value.trim()) {
+      email.focus();
+      return;
+    }
+    submit.disabled = true;
+    try {
+      const kept = await leaveOnWaitList({workspace, email: email.value});
+      done.textContent = say('arrival-wait-done', 'You’re on the list. We’ll email you at { $email }.', {email: kept});
+      document.documentElement.dataset.waitListed = '';
+      privacy();
+    } catch (refusal) {
+      console.warn('wait list:', refusal?.message ?? refusal);
+      note.textContent = waitListFailure(refusal?.code, messages);
+      note.classList.add('door-problem');
+      note.setAttribute('role', 'alert');
+      email.setAttribute('aria-invalid', 'true');
+      email.focus();
+    } finally {
+      submit.disabled = false;
+    }
+  });
+}
+
+/**
+ * Signing in at the door with an identity the person already has: their
+ * passkey opens it (its envelope from the hosts that keep it), and the page
+ * loads again to join as them. A member gets in; anyone else is told this
+ * identity is not in `named` yet, with the wait list still there.
+ */
+function offerSignIn({workspace, named, messages}) {
+  const say = (key, english, args) => localized(messages, key, english, args);
+  const row = document.getElementById('arrival-sign-in');
+  const button = document.getElementById('arrival-sign-in-button');
+  const note = document.getElementById('arrival-sign-in-note');
+  if (!row || !button || !note) return;
+  document.getElementById('arrival-sign-in-ask').textContent = say('arrival-sign-in-ask', 'Already have a Tilo identity?');
+  button.textContent = say('arrival-sign-in', 'Sign in');
+  // A browser without passkeys cannot open an identity kept with one.
+  if (typeof globalThis.PublicKeyCredential !== 'function' || !navigator.credentials?.get) {
+    row.hidden = true;
+    return;
+  }
+  let signedIn = null;
+  try {
+    signedIn = sessionStorage.getItem(DOOR_SIGNED_IN);
+    sessionStorage.removeItem(DOOR_SIGNED_IN);
+  } catch { /* No storage: nothing to say about a sign-in. */ }
+  if (signedIn && signedIn === currentIdentity()?.userPublicKey) {
+    note.textContent = named
+      ? say('arrival-sign-in-not-member', 'You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.', {workspace: named})
+      : say('arrival-sign-in-not-member-unnamed', 'You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.');
+  }
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    note.textContent = '';
+    note.classList.remove('door-problem');
+    try {
+      const origins = [...new Set([workspace?.host?.origin, ...membershipOrigins(),
+        ...listedWorkspaces({home: workspace}).map(listed => listed.host.origin)].filter(Boolean))];
+      const identity = await signInWithPasskey({fetchEnvelope: root => fetchEnvelope(root, origins)});
+      try { sessionStorage.setItem(DOOR_SIGNED_IN, identity.userPublicKey); } catch { /* Said less, nothing lost. */ }
+      location.reload();
+    } catch (error) {
+      console.warn('signing in at the door:', error);
+      button.disabled = false;
+      // Closing the passkey prompt is the person's own answer.
+      if (error?.code === 'passkey-cancelled' || ['NotAllowedError', 'AbortError'].includes(error?.name)) return;
+      note.classList.add('door-problem');
+      note.textContent = ['no-envelope', 'not-tilo', 'no-wrap'].includes(error?.code)
+        ? say('arrival-sign-in-unknown', 'That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.')
+        : say('arrival-sign-in-failed', 'Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.');
+    }
+  });
 }
 
 /** The page's own-desktop button (index.html), shown on a refusal: it opens

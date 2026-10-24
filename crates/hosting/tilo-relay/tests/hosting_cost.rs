@@ -1,7 +1,7 @@
 //! What one keystroke costs the host: bytes on the wire, bytes on disk.
 //!
 //! One-character edits take the production path end to end: the toolkit's
-//! Automerge change, `StatePeer::publish_incremental`, the host retention
+//! Automerge change, `PeerPublicationMut::publish_incremental`, the host retention
 //! classifier, `RelayCoeditSession::publish_retained_delta` on a real
 //! `RelayClient`, and the relay's authenticated ingress, retention and
 //! fan-out. A subscriber reads the frames the relay actually writes it, whose
@@ -441,6 +441,7 @@ async fn one_keystroke_costs_the_host_bounded_bytes_on_the_wire_and_disk() {
         let change = doc.save_after(&heads);
         change_bytes.push(change.len() as u64);
         let message = owner
+            .publication_mut()
             .publish_incremental(app, record, change, &author.sk, SystemTime::now())
             .unwrap();
         let (channel, kind) = neighbour_wire::retention(&message, false).unwrap();

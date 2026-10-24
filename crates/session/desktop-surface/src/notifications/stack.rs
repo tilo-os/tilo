@@ -1,5 +1,5 @@
 //! The live banner stack: title + body cards pinned top-right, sliding in,
-//! fading out and auto-dismissing. Richer than `ui::widget::toast::ToastStack`:
+//! fading out and auto-dismissing, each on the shared `ui::widget::toast::ToastCard`:
 //! dual-line layout, a severity tint, a close affordance, a card for the
 //! banners that do not fit, keyboard focus on request and the
 //! locked-session redaction.
@@ -190,6 +190,36 @@ impl NotificationStack {
         self.clear_top = y;
     }
 
+    /// Keep the banners off `bars`, the window bars on screen: the first
+    /// banner starts below every bar it would otherwise cover, so a window's
+    /// controls under the corner (History, maximize, close) stay visible and
+    /// keep their clicks. Only bars under the stack's column and reaching
+    /// into its first slot count; a window further down keeps its banners
+    /// at the corner. Call after [`Self::set_viewport`], every frame the
+    /// windows may have moved.
+    pub fn keep_clear_of(&mut self, bars: &[Rect]) {
+        let x1 = self.viewport.x1 - EDGE_INSET;
+        let x0 = x1 - self.toast_width();
+        let mut under: Vec<Rect> = bars
+            .iter()
+            .copied()
+            .filter(|bar| bar.area() > 0.0 && bar.x0 < x1 && bar.x1 > x0)
+            .collect();
+        under.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+        let mut top = self.viewport.y0 + EDGE_INSET;
+        let mut clear = 0.0_f64;
+        for bar in under {
+            if bar.y0 >= top + TOAST_HEIGHT {
+                break;
+            }
+            if bar.y1 + TOAST_GAP > top {
+                clear = clear.max(bar.y1);
+                top = top.max(bar.y1 + TOAST_GAP);
+            }
+        }
+        self.set_clear_top(clear);
+    }
+
     /// Where the first banner's top sits: inset from the viewport's corner,
     /// and below the window bars the host keeps clear.
     fn first_top(&self) -> f64 {
@@ -202,7 +232,7 @@ impl NotificationStack {
     }
 
     /// Whether the person holds the banners: keyboard focus is in the
-    /// stack, or the pointer reaches for it ([`Self::pointer_holds`]).
+    /// stack, or the pointer reaches for it (`Self::pointer_holds`).
     /// Held banners do not age.
     pub fn held(&self) -> bool {
         self.held_at(ui::time::now())
@@ -1523,6 +1553,51 @@ pub(super) mod tests {
             "{:?} covers a window bar",
             stack.rect()
         );
+    }
+
+    /// The stack keeps clear of the window bars under its column at the
+    /// top, and only of those: a bar beside the column or a window further
+    /// down leaves the banners at the corner.
+    #[test]
+    fn banners_keep_clear_of_the_window_bars_under_the_corner() {
+        let _settled = ui::motion::testing::settled();
+        let host = TestHost::default();
+        host.push(Notification::new("Jonas is calling", "Video call"));
+        let viewport = Rect::new(0.0, 32.0, 1440.0, 900.0);
+        let corner = 32.0 + EDGE_INSET;
+        let mut stack = NotificationStack::new();
+        stack.set_viewport(viewport);
+
+        // A window on the left half: its bar is not under the banners.
+        stack.keep_clear_of(&[Rect::new(0.0, 36.0, 700.0, 80.0)]);
+        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
+        // A window lower down, under the first slot: no bar to clear.
+        stack.keep_clear_of(&[Rect::new(0.0, 400.0, 1440.0, 444.0)]);
+        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
+
+        // A window reaching the right edge, its bar with a toolbar row: the
+        // banner starts below it.
+        let bar = Rect::new(720.0, 36.0, 1428.0, 120.0);
+        stack.keep_clear_of(&[Rect::new(0.0, 36.0, 700.0, 80.0), bar]);
+        draw(&mut stack, &host, &Theme::dark());
+        let (_, card, _) = stack
+            .hit_rects
+            .first()
+            .copied()
+            .expect("the banner is painted");
+        assert!(
+            (card.y0 - (bar.y1 + TOAST_GAP)).abs() < 0.5,
+            "{card:?} rests just below the window bar {bar:?}"
+        );
+        assert!(
+            stack.rect().intersect(bar).area() <= 0.0,
+            "{:?} covers the window bar {bar:?}",
+            stack.rect()
+        );
+
+        // The window goes: the banners go back to the corner.
+        stack.keep_clear_of(&[]);
+        assert!((stack.first_top() - corner).abs() < f64::EPSILON);
     }
 
     #[test]

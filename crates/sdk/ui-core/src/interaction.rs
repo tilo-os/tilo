@@ -366,7 +366,7 @@ pub enum TouchClaim {
     Pointer,
     /// A drag moves something (a canvas item, a text selection): past the
     /// tap's slop it is a left-button drag; a tap and a hold are as for
-    /// [`Self::Pointer`] ([`Widget::drags_by_touch`](crate::widget::Widget::drags_by_touch)).
+    /// [`Self::Pointer`] ([`Widget::touch_claim`](crate::widget::Widget::touch_claim)).
     Drag,
     /// A held item can be picked up and moved (a page in a list that also
     /// scrolls): a drag scrolls as for [`Self::Pointer`], but a still hold
@@ -375,6 +375,12 @@ pub enum TouchClaim {
     /// click, made before the left button lifts: a widget ends the pick-up
     /// there, as for a mouse's right press during a drag.
     HoldDrag,
+    /// A sideways drag moves something (a switch's knob) while a column of
+    /// such things still scrolls: the contact's direction is read once, as
+    /// it passes the tap's slop. Mostly across, it is a drag as for
+    /// [`Self::Drag`]; mostly up or down, it scrolls as for
+    /// [`Self::Pointer`]. A tap and a hold are as for [`Self::Pointer`].
+    DragAcross,
     /// The widget reads the raw contact stream itself
     /// ([`Widget::claims_raw_touch`](crate::widget::Widget::claims_raw_touch)).
     Raw,
@@ -443,6 +449,9 @@ struct ActiveTouch {
     long_pressed: bool,
     /// A drag of this contact is a pointer drag ([`TouchClaim::Drag`]).
     drag: bool,
+    /// Whether it drags is read from its direction at the slop
+    /// ([`TouchClaim::DragAcross`]).
+    across: bool,
     /// A hold picks up what is under the finger ([`TouchClaim::HoldDrag`]).
     hold_drag: bool,
     /// The hold has picked it up: the left button is down where it began.
@@ -563,6 +572,7 @@ impl TouchPointerEmulator {
                 scrolling: false,
                 long_pressed: false,
                 drag: claim == TouchClaim::Drag,
+                across: claim == TouchClaim::DragAcross,
                 hold_drag: claim == TouchClaim::HoldDrag,
                 lifted: false,
             });
@@ -679,8 +689,19 @@ impl TouchPointerEmulator {
                 let total_x = touch.location.x - active.start.x;
                 let total_y = touch.location.y - active.start.y;
                 if !active.scrolling && total_x.hypot(total_y) <= Self::TAP_SLOP {
-                    Vec::new()
-                } else if active.lifted {
+                    return Vec::new();
+                }
+                // Past the slop, a contact that drags only across goes the
+                // way it heads: across, a drag; otherwise a scroll.
+                let active = if active.across && !active.scrolling {
+                    ActiveTouch {
+                        drag: total_x.abs() > total_y.abs(),
+                        ..active
+                    }
+                } else {
+                    active
+                };
+                if active.lifted {
                     // The button went down at the hold: the item follows.
                     self.active = Some(ActiveTouch {
                         last: touch.location,
@@ -1205,6 +1226,85 @@ mod tests {
                 vec![Move((90.0, 60.0).into()), Release(MouseButton::Left), gone]
             );
         }
+    }
+
+    /// Where a drag moves things only across (a switch's knob), the
+    /// direction at the slop decides: across drags, up or down scrolls.
+    #[test]
+    fn where_a_drag_goes_only_across_a_vertical_swipe_still_scrolls() {
+        use TouchPointerEvent::{Move, Press, Release, Scroll};
+        use winit::event::{MouseButton, TouchPhase};
+        let feed_across = |emulator: &mut TouchPointerEmulator, phase, x: f64, y: f64| {
+            emulator.events_claimed(&touch(phase, 1, x, y), |_| TouchClaim::DragAcross)
+        };
+        let gone = Move((-1.0, -1.0).into());
+        let mut emulator = TouchPointerEmulator::default();
+        assert!(feed_across(&mut emulator, TouchPhase::Started, 50.0, 60.0).is_empty());
+        assert!(
+            feed_across(&mut emulator, TouchPhase::Moved, 54.0, 66.0).is_empty(),
+            "within the slop nothing is decided"
+        );
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Moved, 58.0, 90.0),
+            vec![
+                Move((50.0, 60.0).into()),
+                Scroll {
+                    delta: (8.0, 30.0).into(),
+                    phase: TouchPhase::Moved
+                }
+            ],
+            "mostly down: a scroll"
+        );
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Moved, 100.0, 92.0),
+            vec![
+                Move((50.0, 60.0).into()),
+                Scroll {
+                    delta: (42.0, 2.0).into(),
+                    phase: TouchPhase::Moved
+                }
+            ],
+            "once scrolling, it stays a scroll whichever way it turns"
+        );
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Ended, 100.0, 92.0),
+            vec![Scroll {
+                delta: (0.0, 0.0).into(),
+                phase: TouchPhase::Ended
+            }]
+        );
+
+        assert!(feed_across(&mut emulator, TouchPhase::Started, 50.0, 60.0).is_empty());
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Moved, 70.0, 66.0),
+            vec![
+                Move((50.0, 60.0).into()),
+                Press(MouseButton::Left),
+                Move((70.0, 66.0).into())
+            ],
+            "mostly across: a drag from where the finger landed"
+        );
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Moved, 72.0, 120.0),
+            vec![Move((72.0, 120.0).into())],
+            "once dragging, it stays a drag"
+        );
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Ended, 72.0, 120.0),
+            vec![Move((72.0, 120.0).into()), Release(MouseButton::Left), gone]
+        );
+
+        assert!(feed_across(&mut emulator, TouchPhase::Started, 10.0, 20.0).is_empty());
+        assert_eq!(
+            feed_across(&mut emulator, TouchPhase::Ended, 11.0, 21.0),
+            vec![
+                Move((11.0, 21.0).into()),
+                Press(MouseButton::Left),
+                Release(MouseButton::Left),
+                gone
+            ],
+            "a tap clicks"
+        );
     }
 
     #[test]

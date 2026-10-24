@@ -154,7 +154,7 @@ impl NativeTaskActionRequirement {
         Ok(())
     }
 
-    /// Whether `error`, from [`Self::check`], says the action waits for the
+    /// Whether `error`, from [`Self::check_tracker`], says the action waits for the
     /// person's confirmation rather than being refused.
     #[must_use]
     pub fn awaits_confirmation(error: &str) -> bool {
@@ -298,7 +298,7 @@ pub trait TrackerRuns: Send + Sync {
     /// The agent is no longer admitted, or the room cannot be read.
     fn check_agent(&self, room: &str, agent: &str) -> Result<(), String>;
     /// Apply the room's grants for the run's agent, acting for the run's
-    /// starter, to `requirement`, as [`NativeTaskActionRequirement::check`]
+    /// starter, to `requirement`, as [`NativeTaskActionRequirement::check_tracker`]
     /// does for a room task. Where any of them asks first, the error starts
     /// with [`tilo_actions::draft::AWAITING_CONFIRMATION`].
     fn authorize_action(

@@ -326,6 +326,7 @@ pub async fn create_voice_channel(
         .expect("a room's chat opens with a voice channel")
         .id;
     let message = peer
+        .publication_mut()
         .publish_incremental(
             CHAT,
             "",

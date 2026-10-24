@@ -1,0 +1,6 @@
+{"manifest_version": 3, "name": "Spotter", "version": "1.0",
+ "action": {"default_title": "Spotter"},
+ "permissions": ["declarativeNetRequest", "declarativeNetRequestFeedback"],
+ "host_permissions": ["<all_urls>"],
+ "background": {"service_worker": "worker.js"},
+ "declarative_net_request": {"rule_resources": [{"id": "beacons", "enabled": true, "path": "rules.json"}]}}

@@ -1626,7 +1626,7 @@ impl FilePicker {
     }
 
     /// Go where the typed path says, once the worker has checked what it
-    /// really is ([`Self::go_to_location`]).
+    /// really is (`Self::go_to_location`).
     pub fn commit_location(&mut self) {
         if self.check.is_some() {
             return;

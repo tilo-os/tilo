@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Rect, Vec2};
 
 use crate::Theme;
 
@@ -17,6 +17,9 @@ pub struct PaintPart {
     /// Whether `damage` covers every pixel `scene` paints, so the part may
     /// come, go or move between frames ([`Self::placed`]).
     placed: bool,
+    /// Whether the part stands in the frame's scrolled content
+    /// ([`PaintFrame::scrolling`]), and moves with it ([`Self::scrolling`]).
+    scrolls: bool,
 }
 
 impl PaintPart {
@@ -31,7 +34,25 @@ impl PaintPart {
             scene,
             damage,
             placed: false,
+            scrolls: false,
         }
+    }
+
+    /// A part of the frame's scrolled content (a row of a list or a
+    /// table): `rect`, where it stands this frame, covers every pixel it
+    /// paints, and `scene` is drawn where it stands in the content, as if
+    /// unscrolled, so it reads the same at any offset. A scroll that only
+    /// moved it repaints nothing of it ([`PaintDamage::collect_scrolled`]).
+    pub fn scrolling(key: String, rect: Rect, scene: Scene) -> Self {
+        Self {
+            scrolls: true,
+            ..Self::placed(key, rect, scene, vec![rect])
+        }
+    }
+
+    /// The scene, as drawn.
+    pub fn scene(&self) -> &Scene {
+        &self.scene
     }
 
     /// [`Self::new`] for a part whose `damage` covers every pixel its scene
@@ -52,6 +73,20 @@ pub struct PaintFrame {
     theme: Theme,
     outside: Scene,
     parts: Vec<PaintPart>,
+    scrolled: Option<ScrolledContent>,
+}
+
+/// The content a frame scrolls ([`PaintFrame::scrolling`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrolledContent {
+    /// Where the content paints, in logical pixels.
+    pub viewport: Rect,
+    /// How far it is scrolled: a part drawn at `y` in the content stands at
+    /// `y - offset.y` on screen.
+    pub offset: Vec2,
+    /// The transform it lands on screen with
+    /// ([`crate::scroll_copy::on_screen`]).
+    pub on_screen: Affine,
 }
 
 impl PaintFrame {
@@ -69,7 +104,16 @@ impl PaintFrame {
             theme: theme.clone(),
             outside,
             parts,
+            scrolled: None,
         }
+    }
+
+    /// The frame scrolls `content`: its [`PaintPart::scrolling`] parts move
+    /// with it, and the others stand over it where they are (a scroll bar).
+    #[must_use]
+    pub fn scrolling(mut self, content: ScrolledContent) -> Self {
+        self.scrolled = Some(content);
+        self
     }
 
     fn finite(&self) -> bool {
@@ -169,6 +213,87 @@ fn changed_parts(previous: &PaintFrame, current: &PaintFrame) -> Option<Vec<Rect
     let bits = |rect: &Rect| [rect.x0, rect.y0, rect.x1, rect.y1].map(f64::to_bits);
     damage.compact_sort_by_key(bits);
     damage.dedup_by_key(|rect| bits(rect));
+    Some(damage)
+}
+
+/// [`changed_parts`] for two frames of one scrolled content whose parts
+/// moved by `delta` on screen since `previous` (a host copies them there):
+/// a scrolling part that only moved by it changed nothing; one that changed
+/// or moved otherwise damages where the copy left it and where it is; one
+/// that came damages where it is, and one that went where the copy left it.
+/// A part standing over the content compares as in [`changed_parts`].
+fn scrolled_parts(
+    previous: &PaintFrame,
+    current: &PaintFrame,
+    delta: Vec2,
+    viewport: Rect,
+) -> Option<Vec<Rect>> {
+    let old = previous.keyed()?;
+    let new = current.keyed()?;
+    let nothing = Scene::new();
+    let painting = |part: &PaintPart| !part.scene.encoding_eq(&nothing);
+    // Where the copy leaves what a part painted last frame, and the part
+    // of that it shows.
+    let carried = |part: &PaintPart| {
+        if part.scrolls {
+            part.rect + delta
+        } else {
+            part.rect
+        }
+    };
+    let shown = |part: &PaintPart, rect: Rect| {
+        if part.scrolls {
+            rect.intersect(viewport)
+        } else {
+            rect
+        }
+    };
+    let same = |a: Rect, b: Rect| {
+        [a.x0 - b.x0, a.y0 - b.y0, a.x1 - b.x1, a.y1 - b.y1]
+            .iter()
+            .all(|gap| gap.abs() <= 1e-6)
+    };
+    let mut damage = Vec::new();
+    for part in &current.parts {
+        let Some(was) = old.get(part.key.as_str()).copied() else {
+            if !part.placed {
+                return None;
+            }
+            if painting(part) {
+                damage.push(shown(part, part.rect));
+            }
+            continue;
+        };
+        if was.scrolls != part.scrolls {
+            return None;
+        }
+        if same(carried(was), part.rect) && was.scene.encoding_eq(&part.scene) {
+            continue;
+        }
+        if was.placed && part.placed {
+            // Where it was and where it is, once when that is one place.
+            let gone = painting(was).then(|| shown(was, carried(was)));
+            let here = painting(part).then(|| shown(part, part.rect));
+            damage.extend(gone);
+            damage.extend(here.filter(|here| !gone.is_some_and(|gone| same(gone, *here))));
+        } else if !part.scrolls && was.rect == part.rect {
+            if part.damage.is_empty() {
+                return None;
+            }
+            damage.extend(part.damage.iter().copied());
+        } else {
+            return None;
+        }
+    }
+    for part in &previous.parts {
+        if !new.contains_key(part.key.as_str()) {
+            if !part.placed {
+                return None;
+            }
+            damage.extend(painting(part).then(|| shown(part, carried(part))));
+        }
+    }
+    damage.retain(|rect| rect.width() > 0.0 && rect.height() > 0.0);
     Some(damage)
 }
 
@@ -284,6 +409,63 @@ impl PaintDamage {
         }
     }
 
+    /// [`Self::collect`] for a frame that scrolls its content
+    /// ([`PaintFrame::scrolling`]): when the content only moved since the
+    /// last frame, `owner` offers its host a copy of what stays on screen
+    /// ([`crate::scroll_copy::offer`]), the parts standing over the content
+    /// being what does not move with it, and the damage is what changed
+    /// besides. A host that copies nothing gets the whole extent.
+    pub fn collect_scrolled<T: ?Sized>(&self, owner: &T, fallback: Rect, regions: &mut Vec<Rect>) {
+        let Some((previous, current)) = self.previous.as_ref().zip(self.current.as_ref()) else {
+            regions.push(self.full_bounds(fallback));
+            return;
+        };
+        let (Some(was), Some(now)) = (previous.scrolled, current.scrolled) else {
+            self.collect(fallback, regions);
+            return;
+        };
+        if !previous.matches_geometry(current)
+            || !previous.outside.encoding_eq(&current.outside)
+            || was.viewport != now.viewport
+            || was.on_screen != now.on_screen
+        {
+            regions.push(self.full_bounds(fallback));
+            return;
+        }
+        let delta = was.offset - now.offset;
+        let Some(changed) = scrolled_parts(previous, current, delta, now.viewport) else {
+            regions.push(self.full_bounds(fallback));
+            return;
+        };
+        if delta == Vec2::ZERO {
+            regions.extend(changed);
+            return;
+        }
+        // What stands over the content where it paints: a placed part over
+        // its rect, any other over what it certified.
+        let nothing = Scene::new();
+        let overlays = previous
+            .parts
+            .iter()
+            .chain(&current.parts)
+            .filter(|part| !part.scrolls && !part.scene.encoding_eq(&nothing))
+            .flat_map(|part| {
+                if part.placed {
+                    vec![part.rect]
+                } else {
+                    part.damage.clone()
+                }
+            })
+            .map(|rect| rect.intersect(now.viewport))
+            .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
+            .collect();
+        if crate::scroll_copy::offer(owner, now.viewport, delta, overlays, now.on_screen) {
+            regions.extend(changed);
+        } else {
+            regions.push(self.full_bounds(fallback));
+        }
+    }
+
     /// Whether this frame's paint was recorded, so [`Self::collect`] covers
     /// every pixel it changed: where its parts were and are, or its whole
     /// extent then and now.
@@ -369,6 +551,126 @@ mod tests {
         let mut regions = Vec::new();
         damage.collect(BOUNDS, &mut regions);
         regions
+    }
+
+    /// The rows `first..first + count` of a content scrolled `offset` down
+    /// in a 100 × 100 viewport, each drawn where it stands in the content,
+    /// and a bar over them that does not scroll; `changed` is drawn
+    /// another colour.
+    fn scrolled_rows(
+        offset: f64,
+        first: usize,
+        count: usize,
+        changed: Option<usize>,
+    ) -> PaintFrame {
+        let mut parts: Vec<PaintPart> = (first..first + count)
+            .map(|index| {
+                let top = index as f64 * 20.0;
+                let mut scene = filled(row(top));
+                if changed == Some(index) {
+                    scene = Scene::new();
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        Affine::IDENTITY,
+                        vello::peniko::Color::from_rgba8(10, 20, 30, 255),
+                        None,
+                        &row(top),
+                    );
+                }
+                PaintPart::scrolling(index.to_string(), row(top - offset), scene)
+            })
+            .collect();
+        let bar = Rect::new(90.0, 0.0, 100.0, 100.0);
+        parts.push(PaintPart::placed("bar".into(), bar, filled(bar), vec![bar]));
+        PaintFrame::new(
+            vec![VIEWPORT],
+            Affine::IDENTITY,
+            &Theme::dark(),
+            Scene::new(),
+            parts,
+        )
+        .scrolling(ScrolledContent {
+            viewport: VIEWPORT,
+            offset: Vec2::new(0.0, offset),
+            on_screen: Affine::IDENTITY,
+        })
+    }
+
+    const VIEWPORT: Rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+    /// What a scrolled frame after `previous` repaints, and the copies it
+    /// offers to a host that copies (`copies`) or none.
+    fn scrolled_damage(
+        previous: PaintFrame,
+        next: PaintFrame,
+        copies: bool,
+    ) -> (Vec<Rect>, Vec<crate::scroll_copy::ScrollOffer>) {
+        let mut damage = PaintDamage::default();
+        for frame in [previous, next] {
+            damage.mark_drawn();
+            damage.record(VIEWPORT, Some(frame));
+        }
+        let owner = 0_u8;
+        let mut regions = Vec::new();
+        let offers = if copies {
+            crate::scroll_copy::accepting(|| {
+                damage.collect_scrolled(&owner, VIEWPORT, &mut regions)
+            })
+        } else {
+            damage.collect_scrolled(&owner, VIEWPORT, &mut regions);
+            Vec::new()
+        };
+        (regions, offers)
+    }
+
+    #[test]
+    fn rows_a_scroll_only_moved_are_offered_as_a_copy_and_repaint_nothing() {
+        // Scrolled 20 px down: row 0 went, row 5 came, rows 1–4 moved up.
+        let (regions, offers) = scrolled_damage(
+            scrolled_rows(0.0, 0, 5, None),
+            scrolled_rows(20.0, 1, 5, None),
+            true,
+        );
+        assert_eq!(offers.len(), 1);
+        assert_eq!(offers[0].delta(), Vec2::new(0.0, -20.0));
+        assert_eq!(offers[0].viewport(), VIEWPORT);
+        assert_eq!(
+            regions,
+            vec![row(80.0)],
+            "only the row that came repaints; the one that went left the view"
+        );
+    }
+
+    #[test]
+    fn a_row_that_changed_during_a_scroll_repaints_where_it_is() {
+        let (regions, offers) = scrolled_damage(
+            scrolled_rows(0.0, 0, 5, None),
+            scrolled_rows(20.0, 1, 5, Some(3)),
+            true,
+        );
+        assert_eq!(offers.len(), 1);
+        assert_eq!(regions, vec![row(40.0), row(80.0)]);
+    }
+
+    #[test]
+    fn a_frame_that_did_not_scroll_repaints_only_the_rows_that_changed() {
+        let (regions, offers) = scrolled_damage(
+            scrolled_rows(20.0, 1, 5, None),
+            scrolled_rows(20.0, 1, 5, Some(2)),
+            true,
+        );
+        assert!(offers.is_empty(), "nothing moved: {offers:?}");
+        assert_eq!(regions, vec![row(20.0)]);
+    }
+
+    #[test]
+    fn a_host_that_copies_nothing_repaints_the_whole_scroller() {
+        let (regions, _) = scrolled_damage(
+            scrolled_rows(0.0, 0, 5, None),
+            scrolled_rows(20.0, 1, 5, None),
+            false,
+        );
+        assert_eq!(regions, vec![VIEWPORT]);
     }
 
     #[test]

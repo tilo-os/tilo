@@ -68,6 +68,7 @@ impl Session {
         self.merged = inputs.model().merged_text();
         self.merge = Some(inputs);
         self.resolutions.clear();
+        self.written.clear();
     }
 
     /// Take ours for a change.
@@ -97,6 +98,10 @@ impl Session {
     ) -> Result<(), Refusal> {
         let (model, index) = self.change(hunk)?;
         self.merged = compose_custom(&model, index, &text);
+        // Recorded, so the result is still what the record composes and the
+        // other changes can still take a side.
+        self.resolutions.remove(&index.to_string());
+        self.written.insert(index.to_string(), text);
         Ok(())
     }
 }
@@ -129,6 +134,7 @@ impl Session {
     fn take(&mut self, hunk: u64, choice: HunkChoice) -> Result<(), Refusal> {
         let (model, index) = self.change(hunk)?;
         self.merged = compose_choice(&model, index, choice);
+        self.written.remove(&index.to_string());
         self.resolutions.insert(index.to_string(), choice);
         Ok(())
     }

@@ -5,7 +5,7 @@
 //! only needs [`live_grant`] from here.
 //!
 //! A [`HttpsLink`] is the same session an iroh peer has: the
-//! [`auth`](tilo_relay_protocol::auth) challenge (the device signs only the
+//! [`auth`] challenge (the device signs only the
 //! host's challenge digest), then [`Envelope`]s out through batched `/send`
 //! and in through the long-polled `/events`, acknowledged by host cursor.
 

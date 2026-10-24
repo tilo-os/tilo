@@ -32,12 +32,6 @@ pub(crate) fn body(title_text: &str) -> Column {
         .push(Box::new(title(title_text)))
 }
 
-/// A page body whose first row is built by the caller (a title with a
-/// trailing control).
-pub(crate) fn body_with(header: Box<dyn Widget>) -> Column {
-    stack().with_rhythm(Rhythm::Group).push(header)
-}
-
 /// A group of related lines inside a section.
 pub(crate) fn related() -> Column {
     stack().with_rhythm(Rhythm::Related)

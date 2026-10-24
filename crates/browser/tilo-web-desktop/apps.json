@@ -263,6 +263,14 @@
   ],
   "unavailable": [
     {
+      "id": "so.tilo.activity",
+      "name": "Activity",
+      "category": "Office",
+      "platforms": [
+        "tilo-os"
+      ]
+    },
+    {
       "id": "so.tilo.backups",
       "name": "Backups",
       "category": "System",
@@ -441,14 +449,6 @@
       "platforms": [
         "linux",
         "macos"
-      ]
-    },
-    {
-      "id": "so.tilo.vpn",
-      "name": "VPN Studio",
-      "category": "Network",
-      "platforms": [
-        "tilo-os"
       ]
     },
     {

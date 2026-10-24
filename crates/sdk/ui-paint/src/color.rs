@@ -443,7 +443,7 @@ const HUE_MIN_MEAN_CHROMA: f64 = 0.012;
 /// The dominant OKLCH hue of an RGBA8 image (`pixels.len()` a multiple of
 /// four), or `None` for an image with no hue to speak of.
 ///
-/// Cheap and deterministic: a fixed stride of at most [`HUE_SAMPLES`] pixels,
+/// Cheap and deterministic: a fixed stride of at most `HUE_SAMPLES` pixels,
 /// each voting for its hue with its chroma (greys do not vote, transparent
 /// pixels do not vote), into a 10° histogram smoothed over its neighbours.
 /// The peak bin's chroma-weighted circular mean is the answer. Only the hue

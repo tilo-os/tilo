@@ -390,7 +390,7 @@ impl Touched {
     }
 }
 
-/// The session's settings document: see the [module docs](self).
+/// The session's settings document: see the module docs.
 pub struct SessionSettings {
     paths: SessionPaths,
     copy_access: CopyAccess,

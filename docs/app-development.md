@@ -722,15 +722,17 @@ builds on demand); `tree` begins with a stable-id hierarchy, keyboard and
 multi-selection behavior, accessibility semantics, a retained row action that
 pins nodes in the resource, bounded virtualization, safe subtree reparenting,
 and structural motion already supplied by `TreeView`; `list` begins with a
-sparse 100-million-item `ListModel`, background page loading, explicit
-loading/error delegates, measured variable-height delegates, stable-key
+sparse 100-million-item `ListModel`, background page loading with the list's
+own placeholders for rows on their way, measured variable-height delegates, stable-key
 multi-selection, and an independently interactive button inside each mounted
 row; `graph` emits a model-bound `ui/main.json` screen, editable without
 rewriting the app, above native controls bound to the resource.
-The `async` starter keeps its input (the folder to scan) in the resource and
-runs the scan as an effect action with `LatestTask` for automatic event-loop
-wakeup, cancellation, and stale-result suppression, plus
-`ModelView::from_state_by` for keyed loading, success, and failure subtrees.
+The `async` starter keeps its input in the resource and runs the work as an
+effect action with `LatestTask` for automatic event-loop wakeup,
+cancellation, and stale-result suppression, plus `ModelView::from_state_by`
+for keyed idle, running and done subtrees: an operation the person started,
+which is what a spinner is for. Data that loads is an `Arriving` read
+instead (see "Data that arrives later").
 The `qr` starter demonstrates a compact generated-visual composition path: an
 IME-capable input invokes `set-payload`, `cx.value` follows the payload,
 `ModelView::from_state` replaces only the generated `QrWidget`, and
@@ -1909,70 +1911,87 @@ lifecycle, synchronizes bound widgets, and requests a frame. No event-loop
 proxy, string message, polling timer, or app-specific `on_external_event`
 implementation is required.
 
+#### Data that arrives later
+
+Data that is not here yet — a file read, a page from a host, rows from
+another device — is an `Arriving<T>`: pending (with the `Source` its answer
+comes from), ready, or failed. The view says only what shows once the data
+is there; the framework owns every placeholder and every timing:
+
 ```rust
-let result = LocalState::new(LoadState::Loading);
-let worker_result = result.writer();
-let unavailable = result.writer();
-
-let spawned = ui::background::Background::current().spawn("load project", move || {
-    worker_result.set(load_project().map_or_else(
-        |error| LoadState::Failed(error.to_string()),
-        LoadState::Ready,
-    ));
-});
-if spawned.is_err() {
-    unavailable.set(LoadState::Failed("Loading is unavailable on this host".into()));
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LoadScreen { Loading, Ready, Failed }
-
-let body = ModelView::from_state_by(
-    &result,
-    |result| match result {
-        LoadState::Loading => LoadScreen::Loading,
-        LoadState::Ready(_) => LoadScreen::Ready,
-        LoadState::Failed(_) => LoadScreen::Failed,
-    },
-    |result| match result {
-        LoadState::Loading => Box::new(Spinner::new()),
-        LoadState::Ready(project) => Box::new(project_view(project)),
-        LoadState::Failed(message) => Box::new(Banner::error(message)),
-    },
-);
+// Read on a background worker; a failure offers a retry that reads again.
+let project = Arriving::local("load project", || load_project());
+let body = project.view(|project| project_view(project));
+// Optional: say what the content looks like, so the reserved space and the
+// skeleton take its geometry.
+let body = project
+    .view(|project| project_view(project))
+    .shaped(SkeletonShape::Media(MediaAspect::Square));
 ```
+
+- **Data on this device** normally answers within a frame or two. The frame
+  that would show the view waits for it up to one frame budget at the
+  display's rate, so the window opens complete: no placeholder and no motion
+  when the answer is inside the budget. A local read that misses the budget
+  (a cold disk) is treated as remote from then on.
+- **Data from elsewhere** gets its space reserved at the content's geometry
+  from the first frame. Nothing but that ground shows for 150 ms; then a
+  skeleton in the content's shape, which stays at least 300 ms so it never
+  flashes; after 2 s the placeholder says where the data comes from ("From
+  Laptop"). The answer cross-fades in at the theme's `fast` duration, also
+  under reduced motion. A failure turns the reserved space into the error,
+  with a retry when the read has one (`Arriving::on_retry`).
+
+Each step is a deadline the window sleeps until: a pending view draws no
+frames between them. Never build a `Spinner` for data; it is for an
+indeterminate operation the person started ("Exporting…").
+
+Where the answer comes from is said by the read itself: `RemoteActions`
+answers and the framework's own reads fill in their `Source`. A read of your
+own names it when it starts:
+
+```rust
+let page: Arriving<Page> = Arriving::pending(Source::host("eu1.tilo.coffee"));
+let completion = page.begin(Source::host("eu1.tilo.coffee"));
+let _ = ui::background::Background::current().spawn("fetch page", move || {
+    completion.finish(fetch_page());
+});
+```
+
+`begin` restarts the read and makes every older `ArrivalCompletion` stale,
+so a slow answer never overwrites a newer one; `writer` publishes more than
+one answer (pages gathering) without restarting it. A host that cannot run
+background work refuses it with `Unsupported`; `Arriving::local` reports the
+refusal as the read's failure.
 
 Start workers through `ui::background::Background::current().spawn`, not
 `std::thread::spawn`. The host decides how background work runs: a native
 process uses a thread pool, a deterministic test drives a pumped queue, and a
 host that cannot run background work refuses it with `Unsupported`. Report a
-refusal as a failure instead of leaving a spinner running. Later examples omit that branch
-for brevity.
+refusal as a failure. Later examples omit that branch for brevity.
 
 Use the ordinary `LocalState` handle for UI-thread reads and callbacks. Move
 `LocalStateWriter` into workers so an idle window cannot miss their changes.
 Several writers may update the same state; updates are serialized and each
 completed update advances one observable revision.
 
-For restartable work such as search, import, or refresh, use `LatestTask<T>`
-instead of coordinating request generations in app code. `begin` publishes
-the running state and returns a single-use `TaskCompletion`; only the newest
-run may complete. Starting again or calling `cancel` invalidates older
-capabilities atomically, so a late worker cannot overwrite newer UI state:
+For restartable operations the person starts, such as an import or an
+export, use `LatestTask<T>` instead of coordinating request generations in
+app code (a read of data is an `Arriving`, above, which is built on it).
+`begin` publishes the running state and returns a single-use
+`TaskCompletion`; only the newest run may complete. Starting again or calling
+`cancel` invalidates older capabilities atomically, so a late worker cannot
+overwrite newer UI state:
 
 ```rust
-let task = LatestTask::new(LoadState::Idle);
-let result = task.state();
+let task = LatestTask::new(Export::Idle);
+let progress = task.state();
 let run_task = task.clone();
 
 let run_job = move || {
-    let completion = run_task.begin(LoadState::Loading);
-    let _ = ui::background::Background::current().spawn("load project", move || {
-        let value = load_project().map_or_else(
-            |error| LoadState::Failed(error.to_string()),
-            LoadState::Ready,
-        );
-        let _ = completion.complete(value);
+    let completion = run_task.begin(Export::Running);
+    let _ = ui::background::Background::current().spawn("export", move || {
+        let _ = completion.complete(Export::Done(export_project()));
     });
 };
 ```
@@ -2062,12 +2081,15 @@ invoke = false  # invoke other apps' actions as this app
 
 ```rust
 let remote = ui::RemoteActions::current();
-let page = remote.catalogue(CatalogueQuery::default()); // LocalState<CatalogueCall>
+let page = remote.catalogue(CatalogueQuery::default()); // CatalogueCall
 let run = remote.invoke(row.target().unwrap(), InvokeArgument::None, None);
+let body = page.view(|page| catalogue_view(page));
 ```
 
-Answers arrive as `LocalState`s, so a bound view updates and an idle window
-wakes. The root that owns the client returns it from
+Answers arrive as `Arriving` reads (`CatalogueCall`, `InvocationCall`,
+`CancellationCall`) that know where they come from, so `view` shows the
+framework's placeholders while they are on the way, a bound view updates, and
+an idle window wakes. A failed catalogue read offers a retry. The root that owns the client returns it from
 `Widget::collaborative_mut` (a `Decorator` can), which is how its requests
 reach the connection. Tests stand in for the session with
 `RemoteActions::enter(host, caller)` and an in-process `ActionHost`.
@@ -2421,10 +2443,8 @@ materialized, implement `TableModel` and construct the same widget with
 states in the visible pixel window plus overscan:
 
 ```rust
-use ui::LatestRequest;
-use ui::widget::data_table::{
-    DataTable, TableModel, TableModelChange, TableRowState,
-};
+use ui::{Arrival, LatestRequest};
+use ui::widget::data_table::{DataTable, TableModel, TableModelChange};
 
 impl TableModel for QueryRows {
     type Row = ResultRow;
@@ -2432,7 +2452,7 @@ impl TableModel for QueryRows {
     fn len(&self) -> usize { self.total_count }
     fn key_at(&self, index: usize) -> Option<u64> { self.order.key_at(index) }
     fn index_of(&self, key: u64) -> Option<usize> { self.order.index_of(key) }
-    fn row_state(&self, index: usize) -> TableRowState<'_, ResultRow> {
+    fn row_state(&self, index: usize) -> Arrival<&ResultRow, &str> {
         self.cache.row_state(index)
     }
     fn request_range(&mut self, visible: std::ops::Range<usize>) {
@@ -2476,8 +2496,14 @@ inside the corresponding virtual `Row` and `Cell`, not duplicated beside the
 table. The tallest mounted control also contributes to variable row
 measurement and stable scroll anchoring.
 
-Return `TableRowState::Loading` or `TableRowState::Error` for non-resident
-rows; both remain real rows with stable geometry and accessibility semantics.
+Return `Arrival::Pending` (with the `Source` the row comes from) or
+`Arrival::Failed` for non-resident rows; both remain real rows with stable
+geometry and accessibility semantics. The table paints a pending row's
+placeholder itself, with the same timing as any data that arrives later: the
+reserved row, a skeleton after the grace period, the source named after a
+while, and the row fading into its slot without moving the others. A model
+that can ask again for a failed row says so with `can_retry`; pressing the
+row then calls `retry`.
 `poll_changes` drains completed work during the framework update pass.
 For a model mutated through another shared owner, call
 `notify_model_changes` after applying the batch. Report `RowsInserted`,
@@ -2582,29 +2608,27 @@ row content changed, while `update_model` conservatively rebuilds all mounted
 delegates.
 
 Paged lists can also implement `row_state`, `request_range`, `poll_changes`,
-and `needs_poll`, then use `VirtualList::new_async`. The delegate receives a
-`ListRowState` for every mounted key, so the app supplies localized ready,
-loading, and error rows without making the whole data source resident:
+and `needs_poll`. `row_state` answers an `Arrival<(), &str>`: a row on its
+way says where it comes from, and the list keeps its slot (its measured or
+estimated height) and paints its placeholder there, with the same timing as
+any data that arrives later. The delegate builds only rows that are there; a
+failed row shows why, with a retry when `can_retry` says the model can ask
+again (`retry`):
 
 ```rust
-let list = VirtualList::new_async(model, 28.0, |model, index, key, state| {
-    match state {
-        ListRowState::Ready => model.row_widget(index, key),
-        ListRowState::Loading => Box::new(Text::new("Loading…")),
-        ListRowState::Error(message) => Box::new(Text::new(message)),
-    }
-});
+let list = VirtualList::new(model, 28.0, |model, index, key| model.row_widget(index, key));
 ```
 
 The list requests one visible-plus-overscan range when its virtual window or
 model state changes. A `poll_changes` batch reconciles keys and replaces
-delegates whose loading state changed or whose keys appear in `RowsChanged`.
+delegates whose state changed or whose keys appear in `RowsChanged`; a row
+that lands fades into its slot.
 Loading rows expose `busy` and error rows expose `invalid` plus the model's
 error description to accessibility; unavailable rows cannot be selected,
 activated, or used as reorder targets. `needs_poll` schedules frames only
 while the source has work in flight. The older boolean `poll_changed` hook
 remains supported; pair it with `invalidate_rows` when ready row content
-changed but its key and `ListRowState` did not.
+changed but its key and `row_state` did not.
 
 `TreeView::new(TreeNode<T>)` is the shortest form for an app-owned hierarchy.
 Give collection controls an explicit `with_id` when scenarios or inspection
@@ -2637,9 +2661,10 @@ tree.update_source(
 ```
 
 Paged models may know `child_count` before the corresponding ids are in memory.
-Override `TreeModel::child_state` and return `TreeChildState::Loading` or
-`TreeChildState::Error`; the tree keeps the slot in layout and accessibility
-instead of collapsing it. A model-owned source implements `request_load` and
+Override `TreeModel::child_state` and return `Arrival::Pending` (with the
+`Source` the child comes from) or `Arrival::Failed`; the tree keeps the slot
+in layout and accessibility instead of collapsing it, and paints its
+placeholder with the same timing as any data that arrives later. A model-owned source implements `request_load` and
 drains `poll_changes`; `LatestRequest` supplies stale-result suppression and
 the event-loop wakeup:
 
@@ -2669,31 +2694,10 @@ request when clicked or activated with Enter or Space. Sources that cannot
 wake the application may return `true` from `needs_poll`; idle workers should
 prefer `LatestRequest`.
 
-Use `with_slot_delegate` to replace the built-in placeholder copy with
-localized retained widgets. The delegate receives the stable `TreeSlot`, its
-depth, and `TreeSlotState::Loading` or `TreeSlotState::Error`. Only unresolved
-rows in the virtual window are mounted. The tree keeps the outer tree-item
-semantics, marks loading rows busy and error rows invalid, measures variable
-placeholder heights, and preserves click/keyboard activation as retry:
-
-```rust
-tree.with_slot_delegate(|_, slot, _depth, state| {
-    let message = match state {
-        TreeSlotState::Loading => "project-tree-loading",
-        TreeSlotState::Error { .. } => "project-tree-load-error",
-    };
-    Box::new(Text::new(message).with_id(format!("tree-slot-{}", slot.index)))
-});
-```
-
-Generated tree components install this localized delegate by default. Replace
-it with a progress indicator, diagnostic detail, or a retry button when the app
-needs richer loading UI; ordinary child-widget focus and accessibility remain
-nested beneath the slot's `TreeItem` semantic node.
-
 When a slot changes state, send `TreeModelChange::SlotsChanged`. The tree
 invalidates request deduplication and transfers focus, measured height, and the
-viewport anchor from the placeholder to the loaded node id.
+viewport anchor from the placeholder to the loaded node id, which fades in
+over the placeholder.
 
 ```rust
 tree.notify_model_changes(&[TreeModelChange::SlotsChanged {

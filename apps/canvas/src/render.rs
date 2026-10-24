@@ -2006,7 +2006,7 @@ fn byte_of(value: f64) -> u8 {
     value.round().clamp(0.0, 255.0) as u8
 }
 
-/// A tile of light and shade (see [`speck`]) laid over marks: grain, or the
+/// A tile of light and shade (see `speck`) laid over marks: grain, or the
 /// ground's tooth showing through a layer.
 #[derive(Clone)]
 pub struct Speckle {

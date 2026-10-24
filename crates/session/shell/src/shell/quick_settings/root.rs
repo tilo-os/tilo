@@ -87,8 +87,6 @@ pub enum WifiIntent {
     Join(String),
     /// Ask for a protected network's password, in place.
     AskPassword(String),
-    SubmitPassword,
-    CancelPassword,
 }
 
 /// What a press in the Bluetooth section asks for.
@@ -326,10 +324,19 @@ pub struct QuickSettingsRoot {
     followed: Option<QsSection>,
     /// The motion settings and input source of the last change.
     motion: Option<(EffectiveMotion, MotionSource)>,
-    /// The password typed into the inline Wi-Fi prompt can be submitted
-    /// (the field itself is the host's secret input).
-    password_ready: bool,
+    /// The switches the open sections paint, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
+    /// Where each slider's thumb is drawn: on its value, except while it
+    /// glides to where its track was pressed.
+    slider_thumbs: std::cell::RefCell<HashMap<usize, ui::motion::Thumb>>,
+    /// The slider whose thumb glides to a press, and where the press was:
+    /// past a few pixels from there the drag is welded to the hand.
+    slider_glide: std::cell::Cell<Option<(usize, Point)>>,
 }
+
+/// How far the hand moves from a press on a slider before the drag is the
+/// hand's: a thumb gliding to the press gives way to it there.
+const SLIDER_DRAG_SLOP: f64 = 3.0;
 
 impl Default for QuickSettingsRoot {
     /// Deterministic for tests. Production construction calls
@@ -398,7 +405,9 @@ impl QuickSettingsRoot {
             reveal: HashMap::new(),
             followed: None,
             motion: None,
-            password_ready: false,
+            faces: ui::widget::FaceMotions::default(),
+            slider_thumbs: std::cell::RefCell::default(),
+            slider_glide: std::cell::Cell::new(None),
         }
     }
     pub fn reset_focus(&mut self) {
@@ -409,12 +418,6 @@ impl QuickSettingsRoot {
         self.root_focus = None;
         // Each opening starts at the top of the page.
         self.scroll.set_offset(vello::kurbo::Vec2::ZERO);
-    }
-
-    /// Whether the password typed into the inline Wi-Fi prompt can be
-    /// submitted; the host owns the secret field and says so each frame.
-    pub fn set_wifi_password_ready(&mut self, ready: bool) {
-        self.password_ready = ready;
     }
 
     /// Single-line height of a chrome type role at the user's text scale.
@@ -566,11 +569,16 @@ impl QuickSettingsRoot {
         self.scroll
             .handle_window_event(event, scale_factor, modifiers, handled, theme)
     }
+    /// Step a glide after a flick to the frame's time; returns whether the
+    /// page moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        self.scroll.advance()
+    }
     /// Whether the page's scrollbar is being dragged.
     pub fn scroll_dragging(&self) -> bool {
         self.scroll.is_dragging()
     }
-    /// The scrollbar's fade, for the host's frame clock.
+    /// The scrollbar's fade and a glide, for the host's frame clock.
     pub fn scroll_needs_frame(&self, theme: &Theme) -> bool {
         self.scrolls() && self.scroll.needs_animation_frame(theme)
     }
@@ -702,7 +710,8 @@ impl QuickSettingsRoot {
         }
     }
 
-    /// Whether a section is still opening or closing.
+    /// Whether a section is still opening or closing. Its switches,
+    /// boxes and slider thumbs ask the motion clock for their own frames.
     pub fn is_animating(&self, now: Instant) -> bool {
         self.reveal.values().any(|extent| extent.is_moving(now))
     }
@@ -1662,8 +1671,6 @@ impl QuickSettingsRoot {
                     RootAction::Wifi(WifiIntent::Join(network.ssid.clone()))
                 }
             }
-            SectionStop::PasswordCancel => RootAction::Wifi(WifiIntent::CancelPassword),
-            SectionStop::PasswordConnect => RootAction::Wifi(WifiIntent::SubmitPassword),
             SectionStop::Settings => RootAction::OpenSettings(Some(match state.section {
                 Some(QsSection::Bluetooth) => "settings://bluetooth",
                 Some(QsSection::Battery | QsSection::PowerMode) => "settings://power",
@@ -2151,6 +2158,15 @@ impl QuickSettingsRoot {
             // The pointer target is the painted face — the same rect the
             // accessibility tree publishes — not a second band around the track.
             if self.slider_face_rect(layout.sliders, i).contains(point) {
+                // The value goes where the press is at once; a press away
+                // from the thumb glides it there.
+                let drawn = self
+                    .slider_thumbs
+                    .borrow()
+                    .get(&i)
+                    .map(|thumb| bar.x0 + thumb.get(ui::motion::frame_now()) * bar.width());
+                let away = drawn.is_some_and(|x| (point.x - x).abs() > SliderFace::overhang());
+                self.slider_glide.set(away.then_some((i, point)));
                 let value = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
                 self.set_slider_value(state, i, value);
                 self.slider_drag = Some(i);
@@ -2283,6 +2299,14 @@ impl QuickSettingsRoot {
         let panel = self.lay_out(panel, state);
         if let Some(i) = self.slider_drag {
             let (bar, _) = self.slider_geometry_for(panel, i);
+            // The hand moved off its press: the thumb is welded to it.
+            if self
+                .slider_glide
+                .get()
+                .is_some_and(|(_, from)| (point.x - from.x).abs() > SLIDER_DRAG_SLOP)
+            {
+                self.slider_glide.set(None);
+            }
             let v = f32v(((point.x - bar.x0) / bar.width()).clamp(0., 1.));
             self.set_slider_value(state, i, v);
             return true;
@@ -2326,8 +2350,6 @@ impl QuickSettingsRoot {
         self.slider_drag.is_some() || self.edit_drag.is_pending()
     }
 
-    /// The inline Wi-Fi password field, where the host draws its secret
-    /// input: inside the open Wi-Fi section, while it is revealed.
     /// Where row `index` of the host-described rows of `section` is on the
     /// page, while that section is the open one. The host hit-tests the
     /// row's buttons against it with [`super::hosted`]'s geometry.
@@ -2352,7 +2374,9 @@ impl QuickSettingsRoot {
             .map(|item| on_page(slot.rect, item.rect))
     }
 
-    pub fn wifi_password_field_rect(&self, state: &QuickSettingsState) -> Option<Rect> {
+    /// The inline Wi-Fi password prompt, where the host draws it: inside
+    /// the open Wi-Fi section, while it is revealed.
+    pub fn wifi_password_rect(&self, state: &QuickSettingsState) -> Option<Rect> {
         if self.edit_mode || state.wifi_password.is_none() {
             return None;
         }
@@ -2366,19 +2390,7 @@ impl QuickSettingsRoot {
             .items
             .iter()
             .find(|item| item.kind == sections::ItemKind::Password)?;
-        Some(on_page(
-            slot.rect,
-            sections::password_field(item.rect, self.section_metrics()),
-        ))
-    }
-
-    /// The inline prompt's Cancel and Connect, while it shows.
-    pub fn wifi_password_button_rects(&self, state: &QuickSettingsState) -> Option<(Rect, Rect)> {
-        self.wifi_password_field_rect(state)?;
-        Some((
-            self.stop_rect(RootStop::Section(SectionStop::PasswordCancel), state),
-            self.stop_rect(RootStop::Section(SectionStop::PasswordConnect), state),
-        ))
+        Some(on_page(slot.rect, item.rect))
     }
 
     /// What the page shows of itself: the popover, less the bar lane while
@@ -2498,6 +2510,29 @@ impl QuickSettingsRoot {
     /// its glyph on the leading inset, in the tiles' glyph column. No Control
     /// surface of its own: the panel is already the surface, and a card in it
     /// read as a card in a card. The list rows below sit on the panel too.
+    /// Where slider `i`'s thumb is drawn this frame for a value of `value`
+    /// (`0..=1`): gliding there from a press away from it, under the hand
+    /// while dragged, and at once for a key, the hardware or a sync.
+    fn drawn_thumb(&self, i: usize, value: f64, motion: EffectiveMotion) -> f64 {
+        let now = ui::motion::frame_now();
+        let mut thumbs = self.slider_thumbs.borrow_mut();
+        let thumb = thumbs
+            .entry(i)
+            .or_insert_with(|| ui::motion::Thumb::at(value));
+        let gliding = self.slider_glide.get().is_some_and(|(glide, _)| glide == i);
+        if thumb.target().to_bits() != value.clamp(0.0, 1.0).to_bits() {
+            if gliding {
+                thumb.go(value, motion, MotionSource::Pointer, now);
+            } else {
+                thumb.snap(value);
+            }
+        }
+        if gliding && !thumb.is_moving(now) && self.slider_drag != Some(i) {
+            self.slider_glide.set(None);
+        }
+        thumb.get(now)
+    }
+
     fn draw_sliders(&self, ctx: &mut PaintCtx<'_>, layout: &PageLayout, frame: &RootFrame<'_>) {
         let (state, cursor) = (frame.state, frame.cursor);
         let (scene, transform, text, theme) =
@@ -2562,6 +2597,7 @@ impl QuickSettingsRoot {
             } else {
                 f64::from(self.slider_value(state, i))
             };
+            let shown = self.drawn_thumb(i, shown, theme.motion());
             Slider::paint(
                 scene,
                 transform,
@@ -2755,7 +2791,7 @@ impl QuickSettingsRoot {
                     .filter(|point| open && clip.contains(*point))
                     .map(|point| Point::new(point.x - origin.x, point.y - origin.y)),
                 focused,
-                password_ready: self.password_ready,
+                faces: &self.faces,
             },
         );
         ctx.scene.pop_layer();
@@ -3425,8 +3461,6 @@ fn section_stop_name(stop: SectionStop, state: &QuickSettingsState) -> String {
                 .get(index)
                 .map_or_else(String::new, |n| n.ssid.clone())
         ),
-        SectionStop::PasswordCancel => "wifi_password_cancel".into(),
-        SectionStop::PasswordConnect => "wifi_password_connect".into(),
         SectionStop::Settings => "section_settings".into(),
         SectionStop::Device(index) => format!(
             "bluetooth_device_{}",
@@ -3494,10 +3528,6 @@ fn section_access_node(stop: SectionStop, state: &QuickSettingsState) -> ui::a11
                     Some(n) if n.secure => "qs-wifi-secured",
                     _ => "qs-wifi-open",
                 }))
-        }
-        SectionStop::PasswordCancel => AccessNode::new(Role::Button).with_name(t("portal-cancel")),
-        SectionStop::PasswordConnect => {
-            AccessNode::new(Role::Button).with_name(t("portal-connect"))
         }
         SectionStop::Settings => AccessNode::new(Role::Link).with_name(t(match state.section {
             Some(QsSection::Bluetooth) => "qs-bluetooth-pair",

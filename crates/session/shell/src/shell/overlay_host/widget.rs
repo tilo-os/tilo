@@ -95,7 +95,7 @@ impl Widget for ShellOverlayHost {
             child.settle(edits, path);
         }
         if self.onboarding.is_none() {
-            self.harvest_empty_workspace_launchpad(edits, path);
+            self.settle_launchpad(edits, path);
             self.retry_pending_launchpad_app(edits, path);
         }
     }
@@ -109,6 +109,14 @@ impl Widget for ShellOverlayHost {
         // the dates and numbers it formats never reads the settings file.
         let _ = ui::format::region::current();
         let mut steps = UpdateSteps::start();
+        // The roster, the display sheet's list and the quick settings page
+        // glide on after a flick, repainted as a wheel's scroll is.
+        let glided = self.collaborators_overlay.advance_scroll()
+            | self.projection_overlay.advance_scroll()
+            | self.advance_qs_root_scroll();
+        if glided && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
         let person_activation = self.pump_person_cursor_activation();
         let person_context_dirty = self.validate_person_composer();
         let person_action_dirty = {
@@ -145,6 +153,14 @@ impl Widget for ShellOverlayHost {
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
         crate::shell::settings_records::pump();
+        // Records Activity reads from disk are read off the loop; one that
+        // came in refreshes the glance and what the Activity app reads on this frame.
+        let activity_records_dirty = self.room_activity.take_persisted_reads();
+        if activity_records_dirty {
+            self.activity_refresh.invalidate();
+        }
+        self.pump_room_activity();
+        self.serve_activity();
         if let Some(chrome) = &self.chrome
             && let Some(apps) = chrome.borrow().hosted_inputs.in_process()
         {
@@ -189,12 +205,6 @@ impl Widget for ShellOverlayHost {
         self.pump_shortcut_step_prompts();
         self.record_finished_shortcut_runs();
         steps.mark("shortcut-triggers");
-        // Records Activity reads from disk are read off the loop; one that
-        // came in refreshes the glance and the open window on this frame.
-        let activity_records_dirty = self.room_activity.take_persisted_reads();
-        if activity_records_dirty {
-            self.activity_refresh.invalidate();
-        }
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
@@ -342,9 +352,12 @@ impl Widget for ShellOverlayHost {
             let state = chrome.borrow();
             // Release native document launch data once its tab is gone —
             // covers removals through workspace/peer reconciliation as well
-            // as the explicit close action.
+            // as the explicit close action. Looked for through the guard
+            // first, so a frame with nothing to release writes nothing.
             let mut tree = state.tree_mut();
-            if state.hosted_inputs.prune_documents(&mut tree) {
+            if state.hosted_inputs.documents_to_prune(&tree)
+                && state.hosted_inputs.prune_documents(&mut tree)
+            {
                 tree.queue_save();
             }
             drop(tree);
@@ -375,9 +388,16 @@ impl Widget for ShellOverlayHost {
             false
         };
         // Stamp the wall clock on whatever `doc_*` left open, or automerge
-        // closes it implicitly with a zero timestamp — undatable later.
+        // closes it implicitly with a zero timestamp — undatable later. A
+        // frame that left nothing open has nothing to stamp, and takes no
+        // write that would announce a change.
         if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow().tree_mut().commit_room_change();
+            use automerge::transaction::Transactable as _;
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            if tree.doc.pending_ops() > 0 {
+                tree.commit_room_change();
+            }
         }
         let desk_dirty = self.update_desk(ui::time::now());
         // A window bar's tooltip whose dwell ran out shows on this tick: its
@@ -1599,9 +1619,6 @@ impl ShellOverlayHost {
             }
         }
         if self.route_qs_pointer_capture(event, ctx.scale_factor, ctx.handled) {
-            return;
-        }
-        if self.route_room_activity_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {
             return;
         }
         if self.route_qs_root_scroll(event, ctx.scale_factor, *ctx.modifiers, ctx.handled) {

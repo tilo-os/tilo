@@ -431,3 +431,34 @@ fn successful_radio_reading_refreshes_the_recovered_public_action_availability()
         "actual recovered radio metadata must refresh both public actions"
     );
 }
+
+/// The desk's widgets fading in are motion the compositor must paint: the
+/// demand the frame pump reads names them while they move and lets go once
+/// they rest. The shell's demand is one model, so a motion missing from its
+/// named sources would get no frames at all.
+#[test]
+fn the_desk_appearing_is_named_demand_until_it_rests() {
+    let chrome = crate::shell::chrome_state::ChromeState::new(
+        crate::shell::state::WorkspaceTree::bootstrap_demo(),
+    );
+    let mut host =
+        ShellOverlayHost::new(Box::new(ui::widget::Container::new())).with_chrome(chrome);
+    let doc = automerge::AutoCommit::new();
+    let now = ui::time::now();
+    ui::time::testing::with_monotonic_time(now, || host.update(&doc, &automerge::ROOT));
+    let named = |host: &ShellOverlayHost| {
+        crate::shell::animation_diagnostics::host_labels(host.animation_demand_bits(now))
+            .any(|label| label == "desk")
+    };
+    assert!(
+        host.desk_animating(now),
+        "the desk's widgets fade in with the first update"
+    );
+    assert!(named(&host), "the desk fading in is named demand");
+    assert!(
+        host.needs_animation_frame_at(now),
+        "and the frame pump paints for it"
+    );
+    host.force_desk_settled(now);
+    assert!(!named(&host), "a desk at rest asks for nothing");
+}

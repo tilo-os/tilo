@@ -247,7 +247,9 @@ def main() -> int:
         wait_until("strip switcher to close",
                    lambda: not state()["chrome"].get("strip_switcher_open"))
 
-        # 4. Fresh profiles use Super+Space for machine-wide search.
+        # 4. Fresh profiles use Super+Space for global search, which opens
+        # scoped to the workspace in front (its launcher's scope); typing
+        # still reaches other workspaces, the scope only ranks what is here.
         # Hold the modifier through the production key-down/up path.
         require_ok(call(SOCKET, {"op": "key_down", "key": "Super"}))
         require_ok(call(SOCKET, {"op": "key", "key": "Space"}))
@@ -258,8 +260,8 @@ def main() -> int:
             "palette query to become Files",
             lambda: palette()["visible"] and palette()["query"] == "Files",
         )
-        if state()["chrome"]["search_scope"] != "All":
-            raise RuntimeError("Super+Space did not select machine-wide search scope")
+        if state()["chrome"]["search_scope"] != "Workspace":
+            raise RuntimeError("Super+Space did not open global search on the workspace")
         input_target = next(
             (t for t in call(SOCKET, {"op": "list_targets"})["targets"]
              if t["name"] == "command_palette_input"), None,

@@ -803,7 +803,7 @@ impl Relay {
     /// Let visitors watch `workspace_id` read-only as `spectators`: every
     /// device the spectator root certified reads the room's state and
     /// writes nothing, up to `spectators.seats` subscribed at once (see
-    /// [`crate::room_access`]). The spectator person must be a member of the
+    /// `crate::room_access`). The spectator person must be a member of the
     /// room, which is also what lets its devices through the handshake.
     pub async fn admit_spectators(
         &self,

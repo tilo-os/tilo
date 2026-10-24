@@ -22,7 +22,7 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay::RelayClient;
 use tilo_relay::coedit::RelayCoeditSession;
 use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallOperation, CallSummary, Showing};
+use tilo_relay_protocol::voice::{CallOperation, CallSummary, Directions, Showing};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use call::{CHAT, create_voice_channel, endpoint, enter, granted, invite, native, operate};
@@ -158,7 +158,7 @@ fn shows(list: &[CallSummary], channel: &str, user: [u8; 32], showing: Showing) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn turning_a_camera_on_and_sharing_a_screen_reach_everyone_watching_the_call() {
+async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() {
     let alice = SigningKey::generate(&mut UnwrapErr(SysRng));
     let host = enrol(&alice, "alice-home", DeviceCapabilities::host());
     let laptop = enrol(&alice, "alice-laptop", DeviceCapabilities::primary());
@@ -224,7 +224,7 @@ async fn turning_a_camera_on_and_sharing_a_screen_reach_everyone_watching_the_ca
     // Alice's own participation, in its next grant.
     let camera = Showing {
         camera: true,
-        screen: false,
+        ..Showing::default()
     };
     owner
         .send(Envelope::VoiceShow {
@@ -251,8 +251,8 @@ async fn turning_a_camera_on_and_sharing_a_screen_reach_everyone_watching_the_ca
 
     // She shares her screen and turns the camera off.
     let screen = Showing {
-        camera: false,
         screen: true,
+        ..Showing::default()
     };
     owner
         .send(Envelope::VoiceShow {
@@ -286,6 +286,88 @@ async fn turning_a_camera_on_and_sharing_a_screen_reach_everyone_watching_the_ca
         shows(&after, &channel, laptop.cert.user_public_key, screen),
         "a foreign VoiceShow changed nothing"
     );
+
+    // She mutes, then deafens: everyone sees it, and sees her unmuted and
+    // hearing again.
+    let muted = Showing {
+        muted: true,
+        ..screen
+    };
+    let deafened = Showing {
+        deafened: true,
+        ..muted
+    };
+    for showing in [muted, deafened, screen] {
+        owner
+            .send(Envelope::VoiceShow {
+                workspace_id: room.workspace_id,
+                call: opened.call,
+                participation: grant.participation,
+                showing,
+            })
+            .unwrap();
+        native(&bob_link, |envelope| {
+            listed(envelope)
+                .filter(|list| shows(list, &channel, laptop.cert.user_public_key, showing))
+        })
+        .await;
+    }
+
+    // Bob joins and Alice takes his voice away: whatever he says, everyone
+    // sees him muted and showing nothing.
+    bob_link
+        .send(Envelope::VoiceJoin {
+            workspace_id: room.workspace_id,
+            call: opened.call,
+            participation: None,
+        })
+        .unwrap();
+    let bob_grant = native(&bob_link, granted).await;
+    operate(
+        &owner,
+        room.workspace_id,
+        2,
+        CallOperation::SetDenial {
+            call: opened.call,
+            epoch: opened.epoch,
+            person: bob.verifying_key().to_bytes(),
+            denied: Directions {
+                publish: true,
+                subscribe: false,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    native(&bob_link, |envelope| {
+        granted(envelope).filter(|grant| !grant.directions.publish)
+    })
+    .await;
+    bob_link
+        .send(Envelope::VoiceShow {
+            workspace_id: room.workspace_id,
+            call: opened.call,
+            participation: bob_grant.participation,
+            showing: Showing {
+                camera: true,
+                ..Showing::default()
+            },
+        })
+        .unwrap();
+    bob_link
+        .send(Envelope::VoiceCalls {
+            workspace_id: room.workspace_id,
+        })
+        .unwrap();
+    let silenced = Showing {
+        muted: true,
+        ..Showing::default()
+    };
+    native(&bob_link, |envelope| {
+        listed(envelope)
+            .filter(|list| shows(list, &channel, bob_laptop.cert.user_public_key, silenced))
+    })
+    .await;
 
     drop(web);
     relay.shutdown().await;

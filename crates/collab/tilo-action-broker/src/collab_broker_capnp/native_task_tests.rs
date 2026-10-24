@@ -609,7 +609,7 @@ fn put_grant(f: &Fixture, grant: tilo_action_policy::Grant) {
             let mut next = before.clone();
             next.governance_mut()
                 .put_governed_grants(&[grant], &f.native.key, now)?;
-            next.durable_mutation_messages(
+            next.publication_mut().durable_mutation_messages(
                 &before,
                 &f.native.key,
                 now,

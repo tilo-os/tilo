@@ -349,6 +349,7 @@ fn bound_spec(
     decl: Option<EffectDecl>,
     args: serde_json::Map<String, serde_json::Value>,
 ) -> ActionSpec {
+    let fixed = args.clone().into_iter().collect();
     let build = encoder(operation, id, args, Bound::Only);
     match decl {
         Some(decl) => decl.spec_with(operation, Vec::new(), build),
@@ -362,6 +363,7 @@ fn bound_spec(
             build,
         ),
     }
+    .with_bound(fixed)
 }
 
 /// [`Effect::bound_asking_params`] of the effect `decl` declares, bound to
@@ -372,8 +374,13 @@ fn asking_spec(
     params: Vec<ActionParam>,
     args: serde_json::Map<String, serde_json::Value>,
 ) -> ActionSpec {
+    let fixed = args
+        .iter()
+        .filter(|(name, _)| !params.iter().any(|param| param.name == name.as_str()))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
     let build = encoder(operation, decl.id, args, Bound::UnderCaller);
-    decl.spec_with(operation, params, build)
+    decl.spec_with(operation, params, build).with_bound(fixed)
 }
 
 /// [`Effect::item_specs`] of the declarations `decls`.
@@ -392,8 +399,12 @@ fn item_specs(
                 first.name.to_string(),
                 serde_json::Value::String(item.as_str().to_owned()),
             )]);
+            let fixed = bound.clone().into_iter().collect();
             let build = encoder(operation, decl.id, bound, Bound::OverCaller);
-            Some(decl.spec_with(operation, rest.to_vec(), build))
+            Some(
+                decl.spec_with(operation, rest.to_vec(), build)
+                    .with_bound(fixed),
+            )
         })
         .collect()
 }

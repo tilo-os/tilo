@@ -27,7 +27,16 @@ metadata = json.loads(subprocess.check_output([
 packages = {p["name"]: p for p in metadata["packages"]}
 staging = recipe[recipe.index("    && build_phase rust-stage-outputs", end):
                  recipe.index("    && build_phase rust-thin-apps", end)]
-shipped = set(re.findall(r"target/release/([a-zA-Z0-9_-]+)", staging))
+# Libraries are staged as lib<name>.so and built by their own `--lib` step, not selected
+# by `--bin`.
+outputs = re.findall(r"target/release/([a-zA-Z0-9_-]+)(\.so)?", staging)
+shipped = {name for name, library in outputs if not library}
+libraries = {name for name, library in outputs if library}
+for library in libraries:
+    owners = [p["name"] for p in packages.values() for t in p["targets"]
+              if "cdylib" in t["kind"] and f"lib{t['name']}" == library]
+    assert len(owners) == 1, (library, owners)
+    assert f"-p {owners[0]} --lib" in recipe, f"{library}.so is staged but never built"
 vm_bins = {"tilo-windows-vm-control", "tilo-windows-rail"}
 desktop_bins = {"shell", "tilo-launcher", "tilo-runtime-mcp", "tilo-unlock-helper"}
 excluded = set()

@@ -112,9 +112,9 @@ pub struct Person {
     /// Where they are, saying only what their status line does not:
     /// "Strip · App", the strip only where the workspace has more than one,
     /// the app only where the status does not already name it
-    /// ([`worded_place`]). Where no window here shows their record, as in
+    /// (`worded_place`). Where no window here shows their record, as in
     /// a room whose layout is personal: "In App", from the app their
-    /// presence focuses ([`focused_app`]).
+    /// presence focuses (`focused_app`).
     pub place: Option<String>,
     pub status: Option<Line>,
     pub recent: Option<Line>,
@@ -191,7 +191,7 @@ impl HereState {
     /// person who was not in the room before. The first roster this page
     /// sees is who was already here, not arrivals; this page's person and
     /// agents are never announced, and leaving is not news. A device back
-    /// within [`REJOIN_QUIET_MS`] of dropping out never left, and another
+    /// within `REJOIN_QUIET_MS` of dropping out never left, and another
     /// device of someone here is not them arriving. One whose name is not
     /// known yet (neither their presence nor the host's lines carry it) is
     /// announced once it is, by that name, as the bar shows them.

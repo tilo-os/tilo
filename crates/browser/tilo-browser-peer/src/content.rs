@@ -72,7 +72,7 @@ impl<T> Default for ContentWants<T> {
 impl<T> ContentWants<T> {
     /// The request device `device` sends on the room's presence for content
     /// `hash` a record of `app_id` in room `cluster_id` references, named
-    /// `tag`; `None` when it was asked for within [`WANT_TTL_MS`].
+    /// `tag`; `None` when it was asked for within `WANT_TTL_MS`.
     pub fn ask(
         &mut self,
         device: &[u8; 32],

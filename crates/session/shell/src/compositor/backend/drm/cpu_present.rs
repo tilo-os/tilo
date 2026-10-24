@@ -6,7 +6,7 @@
 //! premultiplied RGBA canvas held in cached memory, and the scanout copies
 //! the changed rectangles into its dumb buffers. Where its GLES driver comes
 //! up, a lone output is composited with GLES instead, from a canvas per layer
-//! of the desktop ([`super::gl_present`]): a strip pan then rasterizes
+//! of the desktop (`super::gl_present`): a strip pan then rasterizes
 //! nothing.
 //!
 //! The canvas keeps the desktop between frames. Which of its tiles hold the
@@ -22,7 +22,7 @@
 //!
 //! What changed on screen since the last presented frame accumulates in
 //! [`CpuRenderer::pending`]. The scanout's per-buffer destination history
-//! ([`super::xrgb_history`]) turns that into the rectangles each dumb buffer
+//! (`super::xrgb_history`) turns that into the rectangles each dumb buffer
 //! is missing.
 #![allow(
     clippy::arithmetic_side_effects,

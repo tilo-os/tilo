@@ -148,8 +148,4 @@ for path in root.iterdir():
     assert width > 0 and height > 0, path
 PY
 
-# Every image build boots its own UKI on a panel larger than the firmware's
-# mode and films the splash through the disk unlock.
-grep -Fq 'os/dev/check-boot-splash.py' "$root/.forgejo/workflows/build-image.yml"
-
 printf 'boot UX invariants hold\n'

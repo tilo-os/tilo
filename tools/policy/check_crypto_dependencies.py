@@ -8,9 +8,10 @@ workspace manifest names one of the raw primitive crates directly, in any
 dependency table (normal, dev, build, or target-specific), including through
 ``package = "..."`` renames and ``workspace = true`` inheritance.
 
-The cargo-hakari package (``hakari-package`` in ``.config/hakari.toml``) names
-dependencies only to unify their features, and a crate can use only its own
-direct dependencies, so it is exempt while its sources contain no code.
+The cargo-hakari package (``hakari-package`` in ``.config/hakari.toml``) and
+workspace-unify (tools/ci/workspace_unify.py) name dependencies only to unify
+their features, and a crate can use only its own direct dependencies, so they
+are exempt while their sources contain no code.
 """
 
 from __future__ import annotations
@@ -150,6 +151,10 @@ def code_free(crate: Path) -> bool:
     return True
 
 
+# tools/ci/workspace_unify.py's package: every library the workspace builds, to unify features.
+UNIFY_PACKAGE = "workspace-unify"
+
+
 def violations(root: Path = ROOT) -> list[str]:
     renames = workspace_renames(root)
     feature_crate = hakari_package(root)
@@ -161,7 +166,7 @@ def violations(root: Path = ROOT) -> list[str]:
         manifest = load_manifest(manifest_path)
         package = manifest.get("package", {}).get("name", member)
         allowed = ALLOWED.get(package, frozenset())
-        if package == feature_crate and code_free(root / member):
+        if package in (feature_crate, UNIFY_PACKAGE) and code_free(root / member):
             allowed = FORBIDDEN
         for table_name, table in dependency_tables(manifest):
             for key, dependency in named_packages(table, renames):

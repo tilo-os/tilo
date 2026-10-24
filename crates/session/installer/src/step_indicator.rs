@@ -58,6 +58,18 @@ impl StepIndicator {
         self.rect.x0 + (ui::num::f64_of_usize(i) + 0.5) * (w / n)
     }
 
+    /// The `i`th circle's fill and number ink. Done and active steps take the
+    /// accent with the theme's own label for it: the accent is light in high
+    /// contrast and on a soft dark theme, where a white number vanishes.
+    fn circle_face(&self, i: usize, theme: &Theme) -> (Color, Color) {
+        let colors = &theme.tokens.colors;
+        if i <= self.current {
+            (colors.intent.accent, colors.intent.on_accent)
+        } else {
+            (colors.surfaces.raised, theme.text_dim)
+        }
+    }
+
     /// Captions must fit their own columns at the renderer's actual text scale.
     /// Reserve the themed gap for related items between neighbouring captions.
     fn needs_compact(&self, text_renderer: &mut TextRenderer, theme: &Theme) -> bool {
@@ -153,7 +165,6 @@ impl Widget for StepIndicator {
         }
         let cy = self.rect.y0 + CIRCLE_CY;
         let accent = theme.tokens.colors.intent.accent;
-        let upcoming_bg = theme.tokens.colors.surfaces.raised;
 
         if self.needs_compact(text_renderer, theme) {
             self.draw_compact(scene, transform, text_renderer, theme);
@@ -183,11 +194,9 @@ impl Widget for StepIndicator {
         for (i, label) in self.steps.iter().enumerate() {
             let cx = self.column_center_x(i);
             let circle = Circle::new(Point::new(cx, cy), RADIUS);
-            let done_or_active = i <= self.current;
-            if done_or_active {
-                scene.fill(Fill::NonZero, transform, accent, None, &circle);
-            } else {
-                scene.fill(Fill::NonZero, transform, upcoming_bg, None, &circle);
+            let (fill, num_color) = self.circle_face(i, theme);
+            scene.fill(Fill::NonZero, transform, fill, None, &circle);
+            if i > self.current {
                 scene.stroke(
                     &Stroke::new(1.5),
                     transform,
@@ -208,11 +217,6 @@ impl Widget for StepIndicator {
             }
 
             let num = format!("{}", i.saturating_add(1));
-            let num_color = if done_or_active {
-                Color::WHITE
-            } else {
-                theme.text_dim
-            };
             let (nw, nh) = text_renderer.measure(&num, NUMBER_SIZE, None);
             text_renderer.draw_text(
                 scene,
@@ -321,6 +325,27 @@ mod tests {
                 assert_eq!(node.name.as_deref(), Some("Installation setup: Disk"));
                 assert_eq!(node.value.as_deref(), Some("step 4 of 9"));
             });
+        }
+    }
+
+    #[test]
+    fn every_step_number_reads_on_its_circle_in_every_theme() {
+        use ui::theme::Preset;
+        use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+
+        let indicator = wizard_indicator(480.0);
+        for preset in Preset::ALL {
+            let theme = Theme::preset(preset);
+            for i in 0..indicator.steps.len() {
+                let (fill, ink) = indicator.circle_face(i, &theme);
+                let ratio = ui::a11y::contrast_ratio(ink, fill);
+                assert!(
+                    ratio >= ON_FILL_MIN_CONTRAST,
+                    "{}: step {} number reads at {ratio:.2}:1 on its circle",
+                    preset.id(),
+                    i.saturating_add(1)
+                );
+            }
         }
     }
 

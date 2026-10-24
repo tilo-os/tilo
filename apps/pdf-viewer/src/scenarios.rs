@@ -5,7 +5,7 @@
 //! with fixed ids, dates and authors, so every capture of a scenario is the
 //! same frame. The view state
 //! a scenario shows (an open editor, a selection, a menu) is staged by the
-//! reader itself once these have applied ([`crate::PdfApp::stage`]).
+//! reader itself once these have applied (`crate::PdfApp::stage`).
 
 use ui::framework::Fixture;
 use ui::tilo_resource::{Collection, Edit, Id, Invoke};

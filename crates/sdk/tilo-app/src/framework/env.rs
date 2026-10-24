@@ -334,6 +334,45 @@ impl<R: Resource> RecordEnv<R> {
         self.storage.device()
     }
 
+    /// Read the result of the view action at `target` with `argument`,
+    /// through the session's action door as the person using the app, and
+    /// keep it current ([`Query`](super::Query)): a live action's answer
+    /// follows its provider's changes, one that answers once is read once.
+    /// It is followed while this scope lives.
+    pub fn query<T>(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) -> super::Query<T>
+    where
+        T: serde::de::DeserializeOwned + Send + Sync + 'static,
+    {
+        if !self.run.mode.is_live() {
+            // A past version or a capture reaches no provider: a capture
+            // reads what its scenario answers for the action.
+            let answers = self.run.fixture::<super::scenario::Answers>();
+            return super::Query::fixed(
+                answers.as_deref().and_then(|answers| answers.get(&target)),
+            );
+        }
+        super::Query::start(self.dispatch.opener(), &self.alive, target, argument)
+    }
+
+    /// Invoke the action at `target` of another provider with `argument`,
+    /// through the session's action door as the person using the app: a
+    /// write a [`Self::query`] then reads back. Why it did not go ahead is
+    /// told as any refused call of the window is. A past version or a
+    /// capture invokes nothing.
+    pub fn invoke(
+        &self,
+        target: tilo_actions::remote::RemoteActionTarget,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) {
+        if self.run.mode.is_live() {
+            self.dispatch.opener().invoke(target, argument);
+        }
+    }
+
     /// The person's own record of `P` ([`PersonRecord`](super::PersonRecord)):
     /// theirs alone, kept in their own room and synced to their other
     /// devices, never to a collaborator, whatever room this record is in.

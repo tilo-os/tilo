@@ -1,4 +1,4 @@
-//! Flatpak's local deploy/<ref> GC roots are aliases, not signed logical names.
+//! Flatpak's local `deploy/<ref>` GC roots are aliases, not signed logical names.
 //! Check their logical binding without deleting or rewriting repository refs.
 use std::{
     collections::BTreeMap,

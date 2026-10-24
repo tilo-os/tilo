@@ -71,6 +71,87 @@ fn native_member_terminal_audit_uses_installed_governor_and_original_retry_recei
     drop(fixture);
 }
 
+/// The broker awaits owner commits on its one-threaded loop, the loop that
+/// also answers every peer action before its deadline. A commit waiting for
+/// its state-file write, as on a loaded disk whose syncs take seconds, must
+/// leave that loop answering everything else.
+#[test]
+fn a_commit_waiting_for_a_slow_disk_leaves_the_broker_loop_answering() {
+    use tilo_owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService as _};
+    let fixture = fixture();
+    let tree = native_workspace_owner::test_tree_of(&fixture.owner);
+    let service = super::NativeOwnerCommitService::new(tree.clone(), None);
+    let invocation = tilo_actions::InvocationId::new();
+    let effect = tilo_desktop_model::WorkspaceEffectReceipt::redacted(
+        invocation,
+        &hex::encode(fixture.certificate.user_public_key),
+        tilo_actions::ActionContext::default(),
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
+    );
+    let request = OwnerCommitRequest {
+        room: fixture.room.to_string(),
+        operation: CommitOperation::EffectReceipt {
+            invocation: invocation.0,
+            redacted: serde_json::to_vec(&effect).unwrap(),
+        },
+    };
+    let before = std::fs::read(&fixture.path).unwrap();
+    // The disk: each write waits until the test lets it go.
+    let (writing, at_write) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let released = std::sync::Mutex::new(released);
+    let writer = tree.read().native_runtime.clone();
+    let held = native_workspace_owner::store::test_seam::hold_writes(&writer, move || {
+        let _ = writing.send(());
+        let _ = released
+            .lock()
+            .unwrap()
+            .recv_timeout(tilo_test_env::hang_bound());
+    });
+    // The broker's own loop: one thread, its tasks local to it.
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let receipt = tokio::task::LocalSet::new().block_on(&runtime, async {
+        let commit = tokio::task::spawn_local(
+            service.commit_member_effect_receipt(request, fixture.certificate.clone()),
+        );
+        tilo_test_env::within("the commit to reach its state-file write", async {
+            while at_write.try_recv().is_err() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await;
+        // Another request the loop answers, as it answers a peer action.
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        tokio::task::spawn_local(async move {
+            let _ = reply.send(());
+        });
+        tilo_test_env::within("the loop to answer while the commit writes", answer)
+            .await
+            .unwrap();
+        assert!(
+            !commit.is_finished(),
+            "the answer came only once the commit had written"
+        );
+        release.send(()).unwrap();
+        tilo_test_env::within("the commit to finish once its write goes", commit)
+            .await
+            .unwrap()
+    });
+    drop(held);
+    receipt.unwrap();
+    assert_ne!(
+        std::fs::read(&fixture.path).unwrap(),
+        before,
+        "the commit reached the state file"
+    );
+    drop(service);
+    drop(fixture);
+}
+
 #[test]
 fn native_published_authorship_requires_admin_and_durably_enables_the_actual_app() {
     let fixture = fixture();

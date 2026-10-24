@@ -6,7 +6,7 @@
 //! desktop for development, `drm` the shipped session, `headless` a display-free one for CI.
 //!
 //! The legacy `--mode hosted` loop was removed; [`removed_run_mode_refusal`] refuses it rather than
-//! silently booting a different session. Its bootstrap now lives once, in [`session_bootstrap`].
+//! silently booting a different session. Its bootstrap now lives once, in `session_bootstrap`.
 
 #[cfg(target_os = "linux")]
 pub mod accessibility;
@@ -42,6 +42,8 @@ pub(crate) mod control_invocation;
 pub(crate) mod control_listing;
 pub mod controller_nav;
 pub mod cursor;
+#[cfg(target_os = "linux")]
+pub mod descriptor_table;
 pub mod dev_env;
 pub mod dev_test_identity;
 #[cfg(target_os = "linux")]

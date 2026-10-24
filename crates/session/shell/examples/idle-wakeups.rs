@@ -311,6 +311,35 @@ fn key_rounds(lines: &[(Instant, String)]) -> usize {
         .count()
 }
 
+/// Most logged lines the report quotes; the count covers the rest.
+const LOGGED_LINES_SHOWN: usize = 40;
+
+/// What the desktop and its children wrote to their output in the window,
+/// leaving out the frame loop's own lines, which [`LoopStats`] summarises.
+/// Every line wakes the compositor's stderr relay, and a line repeated on a
+/// timer names the waker the table only shows as `stderr-relay`.
+fn logged_lines(lines: &[(Instant, String)], from: Instant) -> String {
+    let logged: Vec<String> = lines
+        .iter()
+        .filter(|(_, line)| !line.contains("paint-tick: ") && !line.contains("paint-stats:"))
+        .map(|(at, line)| {
+            format!(
+                "  +{:.3}s {line}",
+                at.saturating_duration_since(from).as_secs_f64()
+            )
+        })
+        .collect();
+    let mut shown = vec![format!("{} lines logged in the window", logged.len())];
+    shown.extend(logged.iter().take(LOGGED_LINES_SHOWN).cloned());
+    if logged.len() > LOGGED_LINES_SHOWN {
+        shown.push(format!(
+            "  and {} more",
+            logged.len().saturating_sub(LOGGED_LINES_SHOWN)
+        ));
+    }
+    shown.join("\n")
+}
+
 /// Leave `desktop` alone until its startup work is behind it.
 fn settle(desktop: &Desktop) {
     // GStreamer builds its plugin registry once, in a child, into the fresh
@@ -403,8 +432,9 @@ fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget() {
     let rounds_per_second =
         f64::from(u32::try_from(rounds).unwrap_or(u32::MAX)) / wakeups.window.as_secs_f64();
     let round_budget = KEY_ROUND_BUDGET * f64::from(u32::try_from(shovels).unwrap_or(u32::MAX));
+    let logged = logged_lines(&in_window, measured_from);
     let report = format!(
-        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}, in {rounds} rounds of channel-key questions\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}",
+        "{wakeups}\nblocked {:.2} times a second; the collaboration shovel and identity client {key_asks:.2}, in {rounds} rounds of channel-key questions\ncompositor frame loop: {:.1} ticks/s ({} ticks, woken by: {}), {} frames painted (after: {}), {clock_turns} clock minute(s) turned; its paint-stats in the window:\n  {}\n{logged}",
         wakeups.blocking_per_second(),
         frame_loop.ticks_per_second(),
         frame_loop.ticks,

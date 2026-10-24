@@ -137,6 +137,33 @@ async fn refused_grant_is_answered_denied_and_never_reaches_moq() {
     assert_eq!(relay.counters().accepted, 0);
 }
 
+/// A browser reads the answer after the host sent it, and some (Firefox)
+/// drop what is unread when the session closes under them: the session
+/// waits for the client to close it, so the refusal is read as one, not
+/// as a lost connection.
+#[tokio::test]
+async fn a_refused_session_stays_open_for_its_client_to_read_the_refusal() {
+    let authority = Arc::new(Counting::default());
+    let relay = LoopbackRelay::start(authority.clone()).unwrap();
+    let session = open(&relay).await;
+    let (mut send, mut recv) = session.open_bi().await.unwrap();
+    send.write_all(&[PREFACE_VERSION, 0, 6]).await.unwrap();
+    send.write_all(b"forged").await.unwrap();
+    let mut status = [0u8; 1];
+    tilo_test_env::within("the refusal", recv.read_exact(&mut status))
+        .await
+        .unwrap();
+    assert_eq!(status, [STATUS_DENIED]);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), session.closed())
+            .await
+            .is_err(),
+        "the host leaves the client to close the session"
+    );
+    // A client that does not close it is closed after a moment anyway.
+    assert_eq!(close_code(&session).await, Some(CLOSE_DENIED));
+}
+
 #[tokio::test]
 async fn admitted_grant_reaches_moq() {
     let authority = Arc::new(Counting::default());

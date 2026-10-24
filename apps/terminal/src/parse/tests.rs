@@ -92,10 +92,46 @@ fn test_results_are_one_item_per_test() {
             "parse::fixture_tests::fixture_fails"
         )
         .as_deref(),
-        Some("cargo test -p terminal -- --exact parse::fixture_tests::fixture_fails")
+        Some("cargo test -p terminal --lib -- --exact parse::fixture_tests::fixture_fails")
     );
     assert_eq!(rerun_test("make test", "a::fails"), None);
     assert_eq!(rerun_test("cargo test", "a; rm -rf /"), None);
+}
+
+/// One test runs again as its run ran: with the run's environment,
+/// toolchain and target, so the command is still cargo and only that
+/// target builds; the run's own filters and anything after them are not
+/// repeated.
+#[test]
+fn a_test_reruns_with_its_runs_environment_toolchain_and_target() {
+    for (command, rerun) in [
+        (
+            "RUST_BACKTRACE=1 cargo test -p shell --test it interaction_test::",
+            "RUST_BACKTRACE=1 cargo test -p shell --test it -- --exact a::fails",
+        ),
+        (
+            "cargo +nightly test --package=sheets --features csv,ods fixture -- --nocapture",
+            "cargo +nightly test --package=sheets --features csv,ods -- --exact a::fails",
+        ),
+        (
+            "cargo test --release 2>&1 | tee log",
+            "cargo test --release -- --exact a::fails",
+        ),
+        (
+            "cargo nextest run -p sheets --no-fail-fast -E 'test(a)'",
+            "cargo test -p sheets -- --exact a::fails",
+        ),
+        (
+            "cargo test --features \"$(rm -rf ~)\" a",
+            "cargo test -- --exact a::fails",
+        ),
+    ] {
+        assert_eq!(
+            rerun_test(command, "a::fails").as_deref(),
+            Some(rerun),
+            "{command}"
+        );
+    }
 }
 
 #[test]

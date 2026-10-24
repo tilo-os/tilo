@@ -3393,13 +3393,13 @@ fn lyrics_load_bundled_sync_and_balance_the_wide_layout() {
         assert!((nc.x1 - (narrow.x1 - 24.0)).abs() < 0.5);
         // Synced lyrics hold the current line a third of the way down;
         // plain lyrics read from the top.
-        assert!(render::lyrics_scroll(None, 36.0, 600.0).abs() < 1e-9);
-        let first = render::lyrics_scroll(Some(0), 36.0, 600.0);
+        assert!(render::lyrics_scroll(None, 600.0).abs() < 1e-9);
+        let first = render::lyrics_scroll(Some(0.0), 600.0);
         assert!(
             (-first - 200.0).abs() < 0.5,
             "the first line sits a third down"
         );
-        let tenth = render::lyrics_scroll(Some(10), 36.0, 600.0);
+        let tenth = render::lyrics_scroll(Some(10.0 * 36.0), 600.0);
         assert!((10.0 * 36.0 - tenth - 200.0).abs() < 0.5);
     }
 }
@@ -4796,3 +4796,5 @@ mod query_view_tests;
 
 #[path = "handoff_tests.rs"]
 mod handoff_tests;
+#[path = "shuffle_tests.rs"]
+mod shuffle_tests;

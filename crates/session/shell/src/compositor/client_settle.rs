@@ -79,11 +79,11 @@ pub enum ProbeStep {
     Wait,
     /// It was, and another round is due: send a ping.
     Ping,
-    /// [`ROUNDS`] quiet rounds in a row were answered.
+    /// `ROUNDS` quiet rounds in a row were answered.
     Done,
 }
 
-/// Ping round trips to one client until [`ROUNDS`] in a row pass without
+/// Ping round trips to one client until `ROUNDS` in a row pass without
 /// the client drawing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rounds {

@@ -27,7 +27,7 @@ use ui_core::history_mode::checked_files::FileHistorySource;
 
 use super::surface::ResourceSelection;
 
-/// What a view is built for. See the [module docs](self).
+/// What a view is built for. See the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunMode {
     /// A window someone uses: real sources, and the work that keeps them
@@ -76,6 +76,10 @@ pub(crate) struct Run {
     pub(crate) people: super::People,
     /// Opens another record in this window, in a window someone uses.
     pub(crate) opener: Option<super::launch::OpenHere>,
+    /// A capture a headless drive invokes actions on
+    /// ([`Capture::driven`](ui_core::application::Capture::driven)): the
+    /// effects it is asked for run, though it starts no work on its own.
+    pub(crate) driven: bool,
 }
 
 /// The arguments, the app's own options, the file and the playback handoff
@@ -129,6 +133,7 @@ impl Run {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
         }
     }
 
@@ -156,7 +161,15 @@ impl Run {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
         }
+    }
+
+    /// The same run, a capture a headless drive invokes actions on when
+    /// `driven`.
+    pub(crate) fn driven_by_drive(mut self, driven: bool) -> Self {
+        self.driven = driven;
+        self
     }
 
     /// The same run, able to open another record in its window.
@@ -209,6 +222,28 @@ impl Run {
     }
 }
 
+/// What other providers' actions answer in a capture
+/// ([`Fixture::answer`]), by the action.
+#[derive(Clone, Default)]
+pub(crate) struct Answers(HashMap<String, serde_json::Value>);
+
+impl Answers {
+    fn key(target: &tilo_actions::remote::RemoteActionTarget) -> String {
+        format!(
+            "{}/{}/{}",
+            target.provider, target.address.resource, target.address.action
+        )
+    }
+
+    /// What the action at `target` answers in this capture.
+    pub(crate) fn get(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Option<&serde_json::Value> {
+        self.0.get(&Self::key(target))
+    }
+}
+
 /// A version of the resource another person wrote before the capture.
 struct Version<R: Resource> {
     author: String,
@@ -256,6 +291,27 @@ impl<R: Resource> Fixture<R> {
     /// second replaces the first.
     pub fn provide<T: 'static>(&mut self, value: T) {
         self.values.insert(TypeId::of::<T>(), Rc::new(value));
+    }
+
+    /// Stand `value` in for what another provider's action at `target`
+    /// answers: a view's [`RecordEnv::query`](super::RecordEnv::query) of
+    /// it reads `value`, as the action's result, in this capture.
+    pub fn answer(
+        &mut self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        value: &impl serde::Serialize,
+    ) {
+        let mut answers = self
+            .values
+            .remove(&TypeId::of::<Answers>())
+            .and_then(|answers| answers.downcast::<Answers>().ok())
+            .map(|answers| (*answers).clone())
+            .unwrap_or_default();
+        answers.0.insert(
+            Answers::key(target),
+            serde_json::to_value(value).unwrap_or_default(),
+        );
+        self.provide(answers);
     }
 
     /// A private scratch directory for files the scene shows (a folder to
@@ -370,6 +426,7 @@ impl<R: Resource> Fixture<R> {
             file_history: None,
             people: super::People::new(None),
             opener: None,
+            driven: false,
         }
     }
 

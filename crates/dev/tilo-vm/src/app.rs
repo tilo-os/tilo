@@ -3052,7 +3052,7 @@ impl App {
         }
     }
 
-    /// `--from ci:<tag>`: the dev image dev-disk.yml published for that build,
+    /// `--from ci:<tag>`: the dev image published for that build (publish-os-dev-<arch>),
     /// which the VM pulls itself; else the production image it was built FROM,
     /// pulled here so a dev image can be built on top of it.
     fn resolve_ci_upgrade(&mut self, tag: &str, target: &CiTarget) -> Result<CiUpgrade, CliError> {
@@ -3451,6 +3451,7 @@ impl App {
                 stderr: format!("expected {want}, bootc staged {}", next.digest),
             });
         }
+        self.put_on_trial(vm, endpoint, Some(&next))?;
         self.keep_esp_writable(vm, endpoint)?;
         if stage.no_reboot {
             // WHPX starts a host-side kernel. A manual stop/start must use the
@@ -3525,6 +3526,59 @@ impl App {
                 held: Vec::new(),
                 dropped: Vec::new(),
                 freed_bytes: 0,
+            }),
+        }
+    }
+
+    /// Gives the deployments bootc just staged or reordered their boot loader
+    /// try counters, before anything reboots into them (see
+    /// `imageup::BOOT_ENTRIES`). `staged` is the deployment the next boot
+    /// takes; when the VM's image is too old for its own pass to see the ESP,
+    /// that one entry is counted here instead, so moving a machine off such an
+    /// image is protected too.
+    fn put_on_trial(
+        &mut self,
+        vm: &Resolved,
+        endpoint: &SshEndpoint,
+        staged: Option<&imageup::Deployment>,
+    ) -> Result<(), CliError> {
+        let output = self.vm_sh(vm, endpoint, imageup::BOOT_ENTRIES)?;
+        match imageup::parse_entries(&output.stdout) {
+            imageup::EntriesOutcome::Done => return Ok(()),
+            imageup::EntriesOutcome::Failed(detail) => {
+                return Err(CliError::CommandFailed {
+                    command: "tilo-deployment entries".into(),
+                    status: output.status,
+                    stderr: format!(
+                        "{detail}\nthe next boot would have no boot loader try counter, so a deployment that fails to boot would be chosen again instead of the previous one; fix this before rebooting VM {}",
+                        vm.name
+                    ),
+                });
+            }
+            imageup::EntriesOutcome::NoLayout | imageup::EntriesOutcome::Absent => {}
+        }
+        let Some(verity) = staged.and_then(|d| d.verity.as_deref()) else {
+            return Ok(());
+        };
+        let output = self.vm_sh(vm, endpoint, &imageup::count_staged_entry_script(verity))?;
+        match imageup::parse_counted(&output.stdout) {
+            imageup::Counted::Entries(0) => {
+                self.warnings.push(format!(
+                    "VM {}: no boot loader entry boots the staged deployment (composefs {}), so it has no try counter; if it fails to boot, choose the previous entry in the boot menu",
+                    vm.name,
+                    verity.get(..16).unwrap_or(verity)
+                ));
+                Ok(())
+            }
+            imageup::Counted::Entries(_) | imageup::Counted::NoBootLoader => Ok(()),
+            imageup::Counted::Failed(why) => Err(CliError::CommandFailed {
+                command: "count the staged boot entry".into(),
+                status: output.status,
+                stderr: format!(
+                    "{why}; {}\nVM {}'s image cannot give the staged deployment a boot loader try counter itself, and neither could tilo-vm",
+                    output.stderr.trim(),
+                    vm.name
+                ),
             }),
         }
     }
@@ -3871,6 +3925,7 @@ impl App {
                 stderr: output.stderr.trim().to_owned(),
             });
         }
+        self.put_on_trial(&vm, &endpoint, None)?;
         let current = facts
             .bootc
             .booted

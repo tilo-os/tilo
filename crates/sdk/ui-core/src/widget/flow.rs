@@ -68,6 +68,16 @@ pub(super) struct Flow {
     pub vertical: bool,
     /// The gap between children the layout was built with.
     pub laid_gap: f64,
+    /// The column takes its content's height: a band moving in it makes it
+    /// grow by transform ([`super::Disclosing::Grows`]) instead of being
+    /// clipped to its box.
+    pub content_sized: bool,
+    /// The cache holds children drawn shifted: drawn again at rest.
+    drawn_shifted: bool,
+    /// Bands its view stopped building, drawn leaving (a column only).
+    ghosts: super::Ghosts,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
 }
 
 /// The parts of a [`Theme`] a cached subtree's pixels depend on beyond its
@@ -120,16 +130,46 @@ impl Flow {
             style_dirty: false,
             vertical: false,
             laid_gap: 0.0,
+            content_sized: false,
+            drawn_shifted: false,
+            ghosts: super::Ghosts::default(),
+            motion: crate::tokens::EffectiveMotion::default(),
         }
     }
 
     /// The widgets after each child are drawn this much lower while a band
-    /// before them discloses; `None` at rest and in a row.
+    /// before them moves, then how much taller the column is drawn; `None`
+    /// at rest and in a row.
     pub fn follower_shifts(&self) -> Option<Vec<f64>> {
         if !self.vertical {
             return None;
         }
-        super::follower_shifts(self.children.iter().map(|child| &**child), self.laid_gap)
+        let gap = self.laid_gap;
+        let shifts = super::follower_shifts(self.children.iter().map(|child| &**child), |_| gap);
+        // A band leaving moves what followed it up with its edge.
+        self.ghosts.shift(shifts, self.children.len())
+    }
+
+    /// Whether a band its view stopped building is still leaving.
+    pub fn has_ghosts(&self) -> bool {
+        !self.ghosts.is_empty()
+    }
+
+    /// Leave the bands still leaving for the column a rebuild makes.
+    fn keep_ghosts(&mut self) {
+        self.ghosts.keep();
+    }
+
+    /// While a band moves in a content-sized column, how much taller the
+    /// column is drawn than laid out.
+    pub fn disclosing(&self) -> Option<super::Disclosing> {
+        if !self.content_sized {
+            return None;
+        }
+        let shifts = self.follower_shifts()?;
+        Some(super::Disclosing::Grows(
+            shifts.last().copied().unwrap_or(0.0),
+        ))
     }
 
     /// Redraw the subtree on the next frame instead of replaying the cache.
@@ -138,12 +178,14 @@ impl Flow {
     }
 
     pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
+        self.keep_ghosts();
         self.child_nodes.clear();
         self.invalidate();
         std::mem::take(&mut self.children)
     }
 
     pub fn set_children(&mut self, children: Vec<Box<dyn Widget>>) {
+        self.keep_ghosts();
         self.children = children;
         self.child_nodes.clear();
         self.invalidate();
@@ -156,6 +198,7 @@ impl Flow {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) {
+        self.motion = theme.motion();
         self.child_nodes = self
             .children
             .iter_mut()
@@ -186,6 +229,15 @@ impl Flow {
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
             child_widget.apply_layout(taffy, *child_node, new_origin);
+        }
+        if self.vertical {
+            // A band on its way stands out of the layout, in its slot.
+            let gap = self.laid_gap;
+            let content = super::content_box(taffy, node, self.rect);
+            super::place_bands(&mut self.children, content, |_| gap);
+            // A band its view stopped building leaves where it stood.
+            self.ghosts
+                .find("Column", &mut self.children, content, |_| gap, self.motion);
         }
     }
 
@@ -224,6 +276,8 @@ impl Flow {
             || theme_changed
             || any_child_dirty
             || self.cache_carries_material
+            || self.drawn_shifted
+            || !self.ghosts.is_empty()
             || (tracked && self.cache_parts.is_none());
 
         if needs_rebuild {
@@ -244,12 +298,16 @@ impl Flow {
             local.reset();
             crate::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
-            // While a band discloses, what follows it is drawn shifted by
-            // transform and clipped to the column, laid out where it rests.
+            // While a band moves, what follows it is drawn shifted by
+            // transform, laid out once without the band, and clipped to a
+            // column of its own height; a content-sized one grows instead.
+            self.ghosts.retain_drawn();
             let shifts = self.follower_shifts();
-            let clip = self.rect;
+            self.drawn_shifted = shifts.is_some();
+            let ghosts = &self.ghosts;
+            let clip = (shifts.is_some() && !self.content_sized).then_some(self.rect);
             let mut draw_children = |local: &mut Scene| {
-                if shifts.is_some() {
+                if let Some(clip) = clip {
                     local.push_layer(
                         vello::peniko::Fill::NonZero,
                         vello::peniko::BlendMode::default(),
@@ -271,7 +329,8 @@ impl Flow {
                         presence,
                     );
                 }
-                if shifts.is_some() {
+                ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
+                if clip.is_some() {
                     local.pop_layer();
                 }
             };
@@ -490,7 +549,16 @@ macro_rules! flow_widget_methods {
         /// `Vec` via `children()`, which the subtree-cache check
         /// hits per frame.
         fn needs_redraw(&self) -> bool {
-            self.flow.children.iter().any(|c| c.needs_redraw())
+            self.flow.has_ghosts() || self.flow.children.iter().any(|c| c.needs_redraw())
+        }
+
+        /// Frames while a band its view stopped building leaves, and one
+        /// more to draw it gone.
+        fn needs_animation_frame(&self) -> bool {
+            self.flow.has_ghosts()
+                || $crate::widget::defaults::needs_animation_frame(&|visit| {
+                    self.for_each_child(visit)
+                })
         }
 
         fn is_layout_dirty(&self) -> bool {

@@ -20,7 +20,7 @@ use tilo_model_gateway::host_backend::protocol::{
 use tilo_model_gateway::host_backend::{CompletionClient, ProviderProtocol};
 use tilo_model_gateway::openai::Target as ApiTarget;
 
-use super::converse::{self, PlanTurns, record_usage};
+use super::converse::{self, Attempt, PlanTurns, record_usage};
 use super::{
     ApiKey, Briefing, GatewayModel, ModelPlanner, NoPlanReads, PlanModel, ReadView, ScriptedModel,
 };
@@ -222,14 +222,14 @@ impl EndpointTurns {
         }
     }
 
-    /// One call on a thread of its own, its answer (and that it was a
-    /// `hedge`) sent to `answers`, its usage logged, its client handed back.
+    /// One call on a thread of its own, its answer sent to `answers`, its
+    /// usage logged as the `attempt` it is, its client handed back.
     fn spawn(
         &self,
         request: &ModelRequest,
         key: String,
         deadline: Instant,
-        hedge: bool,
+        attempt: Attempt,
         answers: &std::sync::mpsc::Sender<Result<ModelResponse, ModelError>>,
     ) -> Result<(), ModelError> {
         let mut client = self.client()?;
@@ -265,7 +265,7 @@ impl EndpointTurns {
                     &call.request,
                     started.elapsed(),
                     &answer,
-                    hedge,
+                    attempt,
                 );
                 idle.lock_recover().push(client);
                 let _ = answers.send(answer);
@@ -292,6 +292,7 @@ impl PlanTurns for EndpointTurns {
         request: &ModelRequest,
         key: &str,
         deadline: Instant,
+        retry: bool,
     ) -> Result<ModelResponse, ModelError> {
         let Some(after) = self.profile.hedge_after() else {
             let mut client = self.client()?;
@@ -310,20 +311,38 @@ impl PlanTurns for EndpointTurns {
                 request,
                 started.elapsed(),
                 &answer,
-                false,
+                Attempt {
+                    hedge: false,
+                    retry,
+                },
             );
             self.idle.lock_recover().push(client);
             return answer;
         };
         let (sent, answers) = std::sync::mpsc::channel();
-        self.spawn(request, key.to_owned(), deadline, false, &sent)?;
+        self.spawn(
+            request,
+            key.to_owned(),
+            deadline,
+            Attempt {
+                hedge: false,
+                retry,
+            },
+            &sent,
+        )?;
         if let Ok(answer) = answers.recv_timeout(after) {
             return answer;
         }
         // Slower than a call of this model takes nearly always: the same
         // request again under its own key, and whichever answers first is
         // the answer. A failed first answer waits for the other.
-        self.spawn(request, format!("{key}-hedge"), deadline, true, &sent)?;
+        self.spawn(
+            request,
+            format!("{key}-hedge"),
+            deadline,
+            Attempt { hedge: true, retry },
+            &sent,
+        )?;
         drop(sent);
         match answers.recv() {
             Ok(Ok(answer)) => Ok(answer),

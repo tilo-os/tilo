@@ -380,7 +380,7 @@ mod files_clipboard_tests {
             entry_label: Option<&str>,
         ) -> tilo_actions::InvocationUpdate {
             let (job, _) = self.start_invoke_at(index, action, arguments, entry_label);
-            self.settle_job(job)
+            self.settle_named(job, action)
         }
 
         fn start_invoke_at(
@@ -430,15 +430,46 @@ mod files_clipboard_tests {
         }
 
         fn settle_job(&mut self, job: u64) -> tilo_actions::InvocationUpdate {
-            let mut update = None;
+            self.settle_named(job, "the job")
+        }
+
+        /// Frames until `job`, started for `action`, settles. A wait that
+        /// runs out names the action, how long it waited and the job's last
+        /// status, so a slow step is told from one that never moved.
+        fn settle_named(&mut self, job: u64, action: &str) -> tilo_actions::InvocationUpdate {
+            struct Settling<'a> {
+                action: &'a str,
+                started: std::time::Instant,
+                last: &'a std::cell::RefCell<Option<tilo_actions::InvocationUpdate>>,
+            }
+            impl std::fmt::Display for Settling<'_> {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    write!(
+                        f,
+                        "actual Files {} settles; after {:?} its job was {:?}",
+                        self.action,
+                        self.started.elapsed(),
+                        self.last.borrow()
+                    )
+                }
+            }
+            let last = std::cell::RefCell::new(None);
+            let what = Settling {
+                action,
+                started: std::time::Instant::now(),
+                last: &last,
+            };
             let [first, second] = &mut self.shown;
-            until(&mut [first, second], "actual Files job settles", || {
-                update = self.broker.state().invocation_status(job);
-                update
+            until(&mut [first, second], &what, || {
+                let update = self.broker.state().invocation_status(job);
+                let settled = update
                     .as_ref()
-                    .is_some_and(tilo_actions::InvocationUpdate::is_terminal)
+                    .is_some_and(tilo_actions::InvocationUpdate::is_terminal);
+                *last.borrow_mut() = update;
+                settled
             });
-            update.unwrap()
+            let settled = last.borrow_mut().take();
+            settled.unwrap()
         }
 
         fn agent_invoke(

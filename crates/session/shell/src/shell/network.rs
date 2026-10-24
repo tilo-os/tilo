@@ -1644,6 +1644,9 @@ pub struct ShellNetwork {
     /// Recent reader/transport exits, retained independently of mutable room
     /// state so cleanup cannot erase the evidence it needs to diagnose.
     peer_departures: Arc<PeerDepartureHistory>,
+    /// How tabs another of the person's devices has open are titled here
+    /// ([`Self::with_continuation_labels`]).
+    continuation_labels: Box<dyn crate::shell::state::ContinuationLabels + Send + Sync>,
 }
 
 /// One remote-action request kept until its sender's identity is accepted.
@@ -1969,6 +1972,19 @@ impl ShellNetwork {
     /// As [`Self::spawn`], and when the session has no state directory.
     pub fn spawn_for_session(tree: WorkspaceTreeHandle) -> std::io::Result<Self> {
         Self::spawn(tree, &peer_key_path(), &peer_state_dir()?)
+    }
+
+    /// Title the placeholder tabs of what the person's other devices have
+    /// open with the session's `labels`. Without them an app goes by its id
+    /// and a file by a generic name
+    /// ([`crate::shell::state::UnresolvedContinuationLabels`]).
+    #[must_use]
+    pub fn with_continuation_labels(
+        mut self,
+        labels: Box<dyn crate::shell::state::ContinuationLabels + Send + Sync>,
+    ) -> Self {
+        self.continuation_labels = labels;
+        self
     }
 
     /// [`Self::spawn`] reaching peers as `reach` says, authenticating to
@@ -2340,6 +2356,7 @@ impl ShellNetwork {
             inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
             workspace_control_observers: Mutex::new(Vec::new()),
             peer_departures: Arc::new(PeerDepartureHistory::default()),
+            continuation_labels: Box::new(crate::shell::state::UnresolvedContinuationLabels),
         };
         if !app_continuations_permitted {
             network.enforce_app_continuations_policy();
@@ -2774,7 +2791,7 @@ impl ShellNetwork {
     /// Send one window's stream traffic on `workspace_topic` to exactly
     /// `viewers` (peer handles) over the direct media route, and to nobody
     /// else in the room; a room's window carrier among them carries it,
-    /// sealed, through the room's relay ([`room_window_carriers`]).
+    /// sealed, through the room's relay (`room_window_carriers`).
     pub fn publish_legacy_to(
         &self,
         workspace_topic: u64,
@@ -3507,7 +3524,7 @@ impl ShellNetwork {
     /// where browsers and agents draw it: the pointer and caret in the
     /// record, under this person's name. It is presence inside a shared
     /// resource, so "That I'm here" lets it out as it does over the room's
-    /// presence channel ([`visibility_allows`]).
+    /// presence channel (`visibility_allows`).
     pub fn publish_live_presence(
         &self,
         app_id: &str,
@@ -4533,7 +4550,7 @@ impl ShellNetwork {
 
     /// Reload newly approved same-identity home peers, reading the files here
     /// and waiting for the disk. The compositor's loop does not call this: its
-    /// refresh reads them on a worker ([`Self::refresh_home_peer_hosts_periodically`]).
+    /// refresh reads them on a worker (`Self::refresh_home_peer_hosts_periodically`).
     pub fn refresh_home_peer_hosts(&self) -> bool {
         self.apply_home_peer_inputs(&HomePeerInputs::read())
     }
@@ -5052,7 +5069,7 @@ impl ShellNetwork {
         match route {
             InviteRoute::Host => {
                 let held = self
-                    .administered_room(ws.room())
+                    .hosted_room(ws.room())
                     .ok_or("this workspace's host is not reachable yet; try again in a moment")?;
                 if held.hosted_here() {
                     // The invitee dials this device's host, so the
@@ -6725,7 +6742,7 @@ impl ShellNetwork {
 
     /// [`Self::tick`] for the compositor's frame loop, which must never wait
     /// for the state file: signed relay input is admitted on a worker
-    /// ([`native_admission`]), and no later event is handled until that
+    /// (`native_admission`), and no later event is handled until that
     /// admission's remainder ran here.
     pub fn frame_tick(&self) {
         self.tick_with(Admission::OffLoop, &mut TurnSteps::default());
@@ -7838,7 +7855,11 @@ impl ShellNetwork {
                     materializations
                         .into_iter()
                         .fold(false, |changed, (source, workspace)| {
-                            tree.materialize_continuation_workspace(&source, &workspace) || changed
+                            tree.materialize_continuation_workspace(
+                                &source,
+                                &workspace,
+                                &*self.continuation_labels,
+                            ) || changed
                         });
                 let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
                 let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
@@ -8103,7 +8124,7 @@ fn selected_device_cert(
     Ok(cert)
 }
 
-fn host_identity_for_key(
+pub(crate) fn host_identity_for_key(
     keypair: &iroh::SecretKey,
     keypair_path: &std::path::Path,
 ) -> Option<HostIdentity> {
@@ -8357,6 +8378,7 @@ pub(crate) fn shell_network_for_test(
         inbound_legacy: Arc::new(Mutex::new(std::collections::VecDeque::new())),
         workspace_control_observers: Mutex::new(Vec::new()),
         peer_departures: Arc::new(PeerDepartureHistory::default()),
+        continuation_labels: Box::new(crate::shell::doc_open::DesktopContinuationLabels),
     };
     (net, cmd_rx)
 }

@@ -549,7 +549,7 @@ impl Theme {
 
     /// The accessibility comforts the person chose in this process's
     /// settings document (the installed source, else the settings file), with
-    /// what the launcher requested ([`crate::host::environment`]) on top:
+    /// what the launcher requested ([`crate::host::environment()`]) on top:
     /// high contrast, text size, interface scale and reduced motion. The
     /// layer [`Theme::configured`] leaves to its host, which applies it over
     /// that theme on every settings change, so a change in Settings reaches a

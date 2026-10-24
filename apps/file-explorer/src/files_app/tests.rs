@@ -3967,6 +3967,21 @@ mod command_path_tests {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
         }));
 
+        // The row says it is unavailable to an agent before anyone opens it.
+        let resource = w.entry_resource(&w.entries[0]);
+        let presentation = resource.presentation.as_ref().expect("unavailable badge");
+        assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
+        assert!(presentation.is_valid());
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("open action");
+        assert_eq!(
+            open.description.as_deref(),
+            Some("Unavailable until a device that keeps it is online")
+        );
+
         w.apply_command(FileCommand::ShowAvailability);
         let panel = w.collab_panel.as_ref().expect("availability panel");
         assert!(panel.summary.contains("Not stored"));
@@ -3975,7 +3990,17 @@ mod command_path_tests {
             panel
                 .lines
                 .iter()
-                .any(|line| line.contains("No available replica"))
+                .any(|line| line == "Unavailable until a device that keeps it is online"),
+            "{:?}",
+            panel.lines
+        );
+        assert!(
+            !panel
+                .lines
+                .iter()
+                .any(|line| line.contains("No available replica")),
+            "the daemon's own wording never reaches the person: {:?}",
+            panel.lines
         );
     }
 
@@ -5145,8 +5170,7 @@ mod responsive_body_tests {
                 .handled
         }
 
-        /// Paint the window's top layer: the notice, the status bubble and
-        /// open menus.
+        /// Paint the window's top layer: open menus.
         fn draw_overlay(&mut self) {
             let theme = Theme::dark();
             let presence = ui::presence::PresenceCtx::empty();
@@ -5162,7 +5186,7 @@ mod responsive_body_tests {
     }
 
     /// Feedback is quiet unless there is something to do about it: selecting
-    /// never pops the status bubble, a move to Trash is one notice whose Undo
+    /// says nothing in the bar, a move to Trash is one notice whose Undo
     /// asks the host for the window's Undo, and Ctrl+Z is the host's.
     #[test]
     fn changes_announce_once_with_the_windows_undo() {
@@ -5177,7 +5201,7 @@ mod responsive_body_tests {
         h.w.select(Some(1));
         h.draw_overlay();
         assert!(
-            !h.w.status_bubble.is_visible(ui::time::now()) || ui::time::wall_frozen(),
+            !h.w.status_notice.is_shown(),
             "selecting a file is not news"
         );
 
@@ -5206,12 +5230,16 @@ mod responsive_body_tests {
             "one plain line, no meta text"
         );
         h.lay_out(1000.0, 720.0);
-        h.draw_overlay();
-        let undo = h.w.notice.action_rect();
-        assert!(undo.width() > 0.0, "the notice paints its Undo");
-        h.cursor(undo.center().x, undo.center().y);
-        h.left_press();
-        h.left_release();
+        let shown = ui::window_toolbar::notice().expect("the window's bar says it");
+        assert_eq!(shown.text, told);
+        let undo = shown
+            .actions
+            .into_iter()
+            .next()
+            .expect("Undo is the bar's action while it shows");
+        assert_eq!(undo.name, t("files-notice-undo"));
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
+        h.lay_out(1000.0, 720.0);
         assert_eq!(
             ui::undo::UndoControl::take_undo_request(&mut h.w),
             Some(ui::UndoRequest::Undo),
@@ -5244,6 +5272,60 @@ mod responsive_body_tests {
         let told = h.w.notice_line().expect("a failed rename is said");
         assert!(told.contains(&t("files-error-permission")), "{told}");
         assert!(!told.contains("os error"), "{told}");
+    }
+
+    /// A move to Trash's Undo stands in the window's bar right after the
+    /// notice, wide and compact: it names itself where the row has room and
+    /// never goes into the overflow menu, and the notice is cut short only
+    /// where nothing that yields to it stands beside it.
+    #[test]
+    fn a_move_to_trash_keeps_its_undo_in_the_window_bar_wide_and_compact() {
+        use crate::file_ops::Change;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, None);
+        files.navigate(dir.path().to_path_buf());
+        files.wait_for_archive();
+        let mut harness = ui::headless::FrameHarness::for_app(
+            ui::State::new(),
+            files,
+            (1280, 720),
+            Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        let gone = dir.path().join("a.txt").display().to_string();
+        let w = harness.root_mut::<FileExplorerWidget>();
+        ui::undo::UndoControl::set_undo_status(w, &mut || ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        w.settle_op(
+            OpFollowUp::Trash { count: 1 },
+            &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
+                from: gone,
+                entry: Some("/trash/files/a.txt".into()),
+            }]),
+        );
+        harness.recompose().unwrap();
+        for width in [1280.0, 420.0] {
+            let shown = harness
+                .window_bar_notice(width)
+                .expect("the move is said in the bar");
+            let button = shown.buttons.first().expect("Undo stands in the row");
+            assert_eq!(button.name, t("files-notice-undo"));
+            assert!(
+                button.bounds.x0 > shown.text_bounds.x1,
+                "{width} px: {shown:?}"
+            );
+            // Wide, inline; compact, in a strip of its own under the row,
+            // its text whole.
+            assert_eq!(
+                shown.strip.is_some(),
+                width < 1280.0,
+                "{width} px: {shown:?}"
+            );
+            assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
+        }
     }
 
     /// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
@@ -5321,23 +5403,6 @@ mod responsive_body_tests {
         assert_eq!(rename_stem_end("photos.2024", true), None);
     }
 
-    fn first_scrollable_viewport(
-        widget: &mut dyn Widget,
-    ) -> Option<(vello::kurbo::Rect, vello::kurbo::Rect)> {
-        if let Some(scrollable) = widget
-            .as_any_mut()
-            .and_then(|value| value.downcast_mut::<Scrollable>())
-        {
-            return Some((scrollable.get_rect(), scrollable.content_viewport_rect()));
-        }
-        for child in widget.children_mut() {
-            if let Some(viewport) = first_scrollable_viewport(child) {
-                return Some(viewport);
-            }
-        }
-        None
-    }
-
     /// Wide/narrow body modes and the narrow places drawer, each phase on its
     /// own temp dir and harness.
     #[test]
@@ -5348,7 +5413,6 @@ mod responsive_body_tests {
         narrow_places_are_a_screen_of_their_own();
         narrow_places_screen_takes_input_the_files_do_not();
         narrow_navigation_returns_to_the_files();
-        floating_status_bubble_reserves_a_noninteractive_bottom_lane();
     }
 
     fn body_docks_wide_and_reflows_to_push_when_narrowed() {
@@ -5602,6 +5666,11 @@ mod responsive_body_tests {
             "archive toolbar must not expose a one-item duplicate menu"
         );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
+        assert_eq!(
+            h.w.status_notice.get().cloned(),
+            Some(t("files-archive-read-only")),
+            "entering an archive says it is read-only in the window's bar"
+        );
 
         h.lay_out(1200.0, 760.0);
         if h.w.take_structure_dirty() {
@@ -5645,28 +5714,6 @@ mod responsive_body_tests {
         assert!(
             (h.w.debug_content_rect().width() - 480.0).abs() <= f64::EPSILON,
             "the content pane spans the whole narrow window",
-        );
-    }
-
-    fn floating_status_bubble_reserves_a_noninteractive_bottom_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        for index in 0..40 {
-            std::fs::write(dir.path().join(format!("item-{index}.txt")), b"x").unwrap();
-        }
-        let mut h = H::new(Some(dir.path()), 390.0, 720.0);
-        // The grid scrolls under the shared scrollable; the list is a table
-        // that scrolls itself and keeps the lane clear in its own layout (see
-        // `FileView`'s list tests).
-        h.w.set_view_mode(crate::model::ViewMode::Grid);
-        h.lay_out(390.0, 720.0);
-        let (scrollable, content_viewport) = first_scrollable_viewport(&mut h.w)
-            .expect("Files grid is wrapped in the shared scrollable");
-
-        assert!(
-            scrollable.y1 - content_viewport.y1
-                >= f64::from(status_bubble_safe_inset(&ui::Theme::dark())) - f64::EPSILON,
-            "the item/status pill has a dedicated bottom lane rather than overlaying files: \
-             scrollable={scrollable:?} viewport={content_viewport:?}"
         );
     }
 

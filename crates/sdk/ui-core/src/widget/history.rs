@@ -1,5 +1,5 @@
 //! History data types shared by [`activity_timeline`] and
-//! [`history_scrubber`].
+//! `history_scrubber`.
 //!
 //! Source-agnostic by design: the producer (today an in-memory iterator
 //! over automerge history, later a signed-op stream) is external, so the
@@ -7,7 +7,6 @@
 //! broker.
 //!
 //! [`activity_timeline`]: crate::widget::activity_timeline
-//! [`history_scrubber`]: crate::widget::history_scrubber
 
 use crate::time::SystemTime;
 

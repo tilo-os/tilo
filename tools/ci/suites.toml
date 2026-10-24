@@ -117,9 +117,9 @@ suites = [
   "os/tests/interactive_priority.sh",
   "os/tests/board_session.sh",
   "os/tests/boot_health_greeter.sh",
-  "os/tests/board_release_promotion.py",
   "os/tests/board_generation_series.py",
   "os/tests/cage_session_env.sh",
+  "os/tests/firewalld_names.sh",
   "os/tests/clock_floor.sh",
   "os/tests/board_audio_contract.sh",
   "os/tests/disk_image_firstboot_seed.sh",
@@ -137,6 +137,7 @@ suites = [
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/esp_generator.sh",
   "os/tests/deployment_dual_esp.sh",
+  "os/tests/boot_fallback.sh",
   "os/tests/airplay_encrypted_session_test.sh",
   "os/tests/firstboot_autologin_cleanup.sh",
   "os/tests/firstboot_password_hash.sh",
@@ -436,7 +437,6 @@ name = "image-size"
 requirement = { cores = 1, memory = "1GiB" }
 inputs = [
   "os/image-size-budget.toml", "os/tests/image_size_budget.py", "tools/perf/image_size.py",
-  ".forgejo/workflows/build-image.yml",
 ]
 suites = ["os/tests/test_image_size_budget.py"]
 
@@ -1036,9 +1036,10 @@ readers = [
 
 [[cargo]]
 package = "greeter"
-# The greeter offers exactly the sessions the image ships.
-inputs = ["os/usr/share/wayland-sessions/*.desktop"]
-readers = ["crates/session/greeter/src/greeter_app.rs"]
+# The greeter offers exactly the sessions the image ships, and records its
+# input where the boot assessment reads it.
+inputs = ["os/usr/share/wayland-sessions/*.desktop", "os/usr/libexec/tilo-boot-health", "os/usr/libexec/tilo-cage-session"]
+readers = ["crates/session/greeter/src/greeter_app.rs", "crates/session/greeter/src/seat_input.rs"]
 
 [[cargo]]
 package = "launcher"
@@ -1637,27 +1638,26 @@ reason = "boots VMs (KVM) from a built installer image"
 [[unrequired]]
 suite = "os/tests/validation_drive_qemu.sh"
 reason = "requires a native ARM KVM host and QEMU"
-workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-joined-device-startup.sh"
-reason = "boots the installed OS image in a VM and signs in"
-workflow = "build-image.yml"
+reason = "boots the gated dev disk in a VM and signs in; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-nearby-pairing.sh"
-reason = "boots two VMs (KVM) from the gated dev disk; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect"
-workflow = "build-image.yml"
+reason = "boots three VMs (KVM) from the gated dev disk, the third pairing through a device without the identity key; with --unlock (os/dev/nearby-unlock-phase.sh) encrypts one and reboots it through sibling unlock; --wake (os/dev/nearby-wake-phase.sh) also proves suspend, wake and link-cut reconnect; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-device-admin-reach.sh"
-reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs"
-workflow = "build-image.yml"
+reason = "boots three VMs (KVM) from the gated dev disk on separate networks; two reach each other only through a relay the third runs; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/dev/test-installed-desktop.sh"
+reason = "boots the gated dev disk in a VM and signs in at its greeter; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-slow-frame-launch.sh"
-reason = "signs in again on the booted, gated dev disk's VM and opens apps there"
-workflow = "build-image.yml"
+reason = "signs in again on the booted, gated dev disk's VM and opens apps there; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
@@ -1722,8 +1722,7 @@ reason = "needs a booted image (SSH into a VM)"
 
 [[unrequired]]
 suite = "os/tests/booted_app_update.sh"
-reason = "drives a booted, logged-in dev VM over SSH (the dev image gate)"
-workflow = "build-image.yml"
+reason = "drives a booted, logged-in dev VM over SSH (the dev image gate); t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/booted_flatpak_lifecycle.sh"
@@ -1735,8 +1734,7 @@ reason = "build helper: needs a Windows guest SDK"
 
 [[unrequired]]
 suite = "os/tests/collaborative-files-image-contract.sh"
-reason = "needs an assembled image root (OS_ROOT)"
-workflow = "build-image.yml"
+reason = "needs an assembled image root (OS_ROOT); t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/container_build_context.py"
@@ -1808,13 +1806,15 @@ reason = "needs a built tilo-installer binary"
 
 [[unrequired]]
 suite = "os/tests/installed-admin-actions.sh"
-reason = "runs inside a booted guest as its device admin, after first login"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest as its device admin, after first login; t's os-acceptance-<arch> runs it"
+
+[[unrequired]]
+suite = "os/tests/live-update-check.sh"
+reason = "runs inside a booted dev VM as root and stages an update; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/input-hotplug-check.sh"
-reason = "runs inside a booted guest's graphical session, partly as root"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest's graphical session, partly as root; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/internal_bundle_export.sh"
@@ -1847,8 +1847,7 @@ reason = "needs a FEX runtime container"
 
 [[unrequired]]
 suite = "os/tests/projection-boot-check.sh"
-reason = "runs inside a booted guest"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/prove_kernel_failure_cache.py"
@@ -1868,7 +1867,7 @@ reason = "runs inside a booted guest, as root"
 
 [[unrequired]]
 suite = "os/tests/boot_assessment_rollback.sh"
-reason = "stages an update on a booted disk and reboots it until the boot loader falls back"
+reason = "stages an update on a booted disk and reboots it until the boot loader falls back: t's boot-assessment-x86_64 check runs it"
 workflow = "dev-disk-boot-diagnostic.yml"
 
 [[unrequired]]
@@ -1902,8 +1901,7 @@ reason = "needs a compiled kernel, OVMF and QEMU; kernel-acceptance-<arch> runs 
 
 [[unrequired]]
 suite = "os/tests/session-context-check.sh"
-reason = "runs inside a booted guest after a greetd login"
-workflow = "build-image.yml"
+reason = "runs inside a booted guest after a greetd login; t's os-acceptance-<arch> runs it"
 
 [[unrequired]]
 suite = "os/tests/staging_helper_loop.sh"

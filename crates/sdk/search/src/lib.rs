@@ -4,7 +4,7 @@
 //! launcher, an app's own search) indexes its records in a
 //! [`SearchIndex`] and asks it for ranked pages:
 //!
-//! - text is folded ([`fold`]) so case, diacritics and compatibility forms
+//! - text is folded ([`fold()`]) so case, diacritics and compatibility forms
 //!   never hide a match;
 //! - fields are found by substring and prefix as the person types, through
 //!   gram phrases ([`GramTokenizer`]);

@@ -4,7 +4,7 @@
 //! grids, track lists, detail pages, search and the now-playing transport
 //! bar), so the app owns its layout math and hit-testing rather than
 //! composing stock taffy widgets. User-authored library state is the
-//! [`Library`](crate::model::Library) resource; `sync` refreshes that render
+//! [`Library`] resource; `sync` refreshes that render
 //! snapshot each frame. Playback, downloads and other device effects stay
 //! local so one device can never start audio or consume another device's disk.
 
@@ -91,6 +91,8 @@ pub enum View {
     Browse,
     Queue,
     Lyrics,
+    /// The song playing, large: what the transport's cover opens.
+    NowPlaying,
     Album(String),
     Artist(String),
     Playlist(String),
@@ -507,6 +509,8 @@ pub struct MusicApp {
     places: NavFeed,
     /// What plays, as the transport in the shell's band shows it.
     transport: TransportFeed,
+    /// The Now Playing page's song and its cover's flight from the band.
+    now_playing: render::NowPlaying,
     /// What the transport's actions read when they are invoked.
     playing_now: std::sync::Arc<shell::Playing>,
     /// The shell's own buttons in the window's bar; none outside a shell.
@@ -916,6 +920,7 @@ impl MusicApp {
             content_height: 0.0,
             places: NavFeed::new(),
             transport: TransportFeed::new(),
+            now_playing: render::NowPlaying::default(),
             playing_now: std::sync::Arc::default(),
             bar: None,
             pane: None,
@@ -1165,10 +1170,11 @@ impl MusicApp {
             .collect()
     }
 
-    /// Show a transient message: a confirmation (`Success`), something under
-    /// way (`Info`) or a failure (`Error`).
+    /// Show a transient message in the window's bar: a confirmation
+    /// (`Success`), something under way (`Info`) or a failure (`Error`).
     fn notify(&mut self, kind: ToastKind, text: impl Into<String>) {
         self.toast.show(text, kind);
+        self.toast.publish();
     }
 
     fn update_device_cache(&mut self, id: &str, state: CacheState) {
@@ -2138,8 +2144,13 @@ impl MusicApp {
             self.play_index(0);
             return;
         }
+        if self.pb.shuffle {
+            self.ensure_shuffle_order();
+        }
         let at = (self.pb.queue_index + 1).min(self.pb.queue.len());
         self.pb.queue.insert(at, id);
+        shuffle_inserted(&mut self.shuffle_order, at);
+        shuffle_put_next(&mut self.shuffle_order, at, self.pb.queue_index);
     }
 
     /// Remove the queue entry at an absolute index, keeping `queue_index`
@@ -2150,19 +2161,24 @@ impl MusicApp {
             return;
         }
         self.pb.queue.remove(index);
+        let slot = shuffle_removed(&mut self.shuffle_order, index);
         if index < self.pb.queue_index {
             self.pb.queue_index = self.pb.queue_index.saturating_sub(1);
         } else if index == self.pb.queue_index {
             self.pb.position_ms = 0;
             self.playhead_ms = 0.0;
             // The current track was dropped: clamp and re-bind to whatever now
-            // sits at this slot (or stop if the queue emptied).
+            // sits at this slot, or to the next shuffled song, which is what
+            // would have played after it (or stop if the queue emptied).
             if self.pb.queue.is_empty() {
                 self.pb.current = None;
                 self.pb.playing = false;
                 self.pb.queue_index = 0;
             } else {
-                self.pb.queue_index = self.pb.queue_index.min(self.pb.queue.len() - 1);
+                let shuffled = slot.and_then(|slot| self.shuffle_order.get(slot).copied());
+                self.pb.queue_index = shuffled
+                    .unwrap_or(self.pb.queue_index)
+                    .min(self.pb.queue.len() - 1);
                 self.pb.current = self.pb.queue.get(self.pb.queue_index).cloned();
             }
         }
@@ -2178,16 +2194,11 @@ impl MusicApp {
         let item = self.pb.queue.remove(from);
         self.pb.queue.insert(to, item);
         // Track the occurrence, not its song id: a queue can hold duplicates.
-        let current = self.pb.queue_index;
-        self.pb.queue_index = if current == from {
-            to
-        } else if from < current && current <= to {
-            current - 1
-        } else if to <= current && current < from {
-            current + 1
-        } else {
-            current
-        };
+        // The shuffled order follows its songs to their new places too.
+        self.pb.queue_index = moved_index(self.pb.queue_index, from, to);
+        for index in &mut self.shuffle_order {
+            *index = moved_index(*index, from, to);
+        }
     }
 
     // --- name-prompt dialog (shared ModalDialog + real TextInput) --------
@@ -2748,6 +2759,7 @@ impl MusicApp {
 
     fn on_add_to_queue(&mut self, id: &str, state: &mut ui::widget::Edits<'_>) {
         self.pb.queue.push(id.to_string());
+        shuffle_inserted(&mut self.shuffle_order, self.pb.queue.len() - 1);
         self.notify(ToastKind::Success, "Added to the queue");
         self.persist_playback(state);
     }
@@ -3243,7 +3255,7 @@ impl MusicApp {
         self.audio.stop();
         let message = "Audio startup timed out before playback could begin.";
         self.playback_error = Some(message.into());
-        self.toast.show(message, ToastKind::Error);
+        self.notify(ToastKind::Error, message);
         self.fail_resource_stream(
             "music.stream_start_timed_out",
             message,
@@ -3299,19 +3311,21 @@ impl MusicApp {
             }
             _ => {}
         }
+        // Transport preferences must not discard which shuffled tracks have
+        // already played. Only a different shuffle mode, or a different
+        // queue the order was not carried over to (`follow_shuffled_edit`),
+        // invalidates it.
+        if self.pb.shuffle != playback.shuffle
+            || (self.pb.queue != playback.queue && self.shuffle_order.len() != playback.queue.len())
+        {
+            self.shuffle_order.clear();
+        }
         let requested_playing = playback.playing;
         let changed_track = self.pb.current != playback.current;
         let changed_position = self.pb.position_ms != playback.position_ms;
-        let changed_shuffle =
-            self.pb.shuffle != playback.shuffle || self.pb.queue != playback.queue;
         self.pb = playback;
         self.playhead_ms = self.pb.position_ms as f64;
         self.bound_track.clone_from(&self.pb.current);
-        // Transport preferences must not discard which shuffled tracks have
-        // already played. Only a different queue or shuffle mode invalidates it.
-        if changed_shuffle {
-            self.shuffle_order.clear();
-        }
         self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
         if changed_track && !self.pb.playing {
             self.retire_replaced_playback();
@@ -3349,6 +3363,50 @@ impl MusicApp {
             return Err(error);
         }
         Ok(request)
+    }
+
+    /// Carry the shuffled order over to the queue `edit` turns this one
+    /// into, `next`'s, as the person's own queue edits do; a removed playing
+    /// song hands over to the next shuffled one in `next`. Answers the order
+    /// as it was, or `None` when nothing is shuffled.
+    pub(super) fn follow_shuffled_edit(
+        &mut self,
+        edit: crate::actions::QueueEdit,
+        next: &mut Playback,
+    ) -> Option<Vec<usize>> {
+        use crate::actions::QueueEdit;
+        if !self.pb.shuffle || next.shuffle != self.pb.shuffle {
+            return None;
+        }
+        if matches!(edit, QueueEdit::PutNext(_)) {
+            self.ensure_shuffle_order();
+        }
+        if self.shuffle_order.len() != self.pb.queue.len() {
+            // No order drawn for this queue yet: one is drawn when needed.
+            self.shuffle_order.clear();
+            return None;
+        }
+        let before = self.shuffle_order.clone();
+        match edit {
+            QueueEdit::Added(at) => shuffle_inserted(&mut self.shuffle_order, at),
+            QueueEdit::PutNext(at) => {
+                shuffle_inserted(&mut self.shuffle_order, at);
+                shuffle_put_next(&mut self.shuffle_order, at, self.pb.queue_index);
+            }
+            QueueEdit::Removed(index) => {
+                let slot = shuffle_removed(&mut self.shuffle_order, index);
+                let shuffled = slot.and_then(|slot| self.shuffle_order.get(slot).copied());
+                if index == self.pb.queue_index
+                    && next.current.is_some()
+                    && let Some(following) = shuffled
+                    && let Some(song) = next.queue.get(following)
+                {
+                    next.queue_index = following;
+                    next.current = Some(song.clone());
+                }
+            }
+        }
+        Some(before)
     }
 
     fn retire_replaced_playback(&mut self) {
@@ -4292,6 +4350,10 @@ impl MusicApp {
                 .open(ui::search::SearchRequest::this_app()),
             "skeleton" => self.snap_skeleton(),
             "nowplaying" => self.snap_nowplaying(),
+            "nowplaying-page" => {
+                self.shot_stage = Some(ShotStage::NowPlaying);
+                self.view = View::NowPlaying;
+            }
             "queue" => self.snap_queue(),
             "lyrics" => self.snap_lyrics(),
             "downloading" => self.snap_downloading(),
@@ -5450,6 +5512,64 @@ pub(crate) fn image_fetcher() -> ui::Fetcher {
 pub(crate) fn image_fetcher() -> ui::Fetcher {
     // No HTTP stack, but a portal-picked portable PNG still renders offline.
     Arc::new(embedded_cover_bytes)
+}
+
+/// Where a queue position moves when the song at `from` moves to `to`.
+fn moved_index(index: usize, from: usize, to: usize) -> usize {
+    if index == from {
+        to
+    } else if from < index && index <= to {
+        index - 1
+    } else if to <= index && index < from {
+        index + 1
+    } else {
+        index
+    }
+}
+
+/// A song joined the queue at `at`: the shuffled order keeps its songs, and
+/// the new one is heard after every song still to come. Nothing changes
+/// while no order is shuffled.
+fn shuffle_inserted(order: &mut Vec<usize>, at: usize) {
+    if order.is_empty() {
+        return;
+    }
+    for index in order.iter_mut() {
+        if *index >= at {
+            *index += 1;
+        }
+    }
+    order.push(at);
+}
+
+/// Under shuffle, play the queue's song at `index` right after the one at
+/// `current`: "Play next" means next in the order heard, not only in the
+/// queue's own order.
+fn shuffle_put_next(order: &mut Vec<usize>, index: usize, current: usize) {
+    let Some(from) = order.iter().position(|&i| i == index) else {
+        return;
+    };
+    order.remove(from);
+    let after = order
+        .iter()
+        .position(|&i| i == current)
+        .map_or(order.len(), |at| at + 1);
+    order.insert(after, index);
+}
+
+/// The song at `index` left the queue: the shuffled order drops it and
+/// keeps every other song in its place. Answers where in the order it was.
+fn shuffle_removed(order: &mut Vec<usize>, index: usize) -> Option<usize> {
+    let slot = order.iter().position(|&i| i == index);
+    if let Some(slot) = slot {
+        order.remove(slot);
+    }
+    for i in order.iter_mut() {
+        if *i > index {
+            *i -= 1;
+        }
+    }
+    slot
 }
 
 mod local_files;

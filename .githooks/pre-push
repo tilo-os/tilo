@@ -3,8 +3,9 @@
 # reach a release"), and it has to be fast: main is where changes integrate, not what ships, and
 # CI on main runs everything else on every commit and tells whoever broke it. The gate runs
 # (tools/ci/pre_push.py): rustfmt of the changed Rust files, the policy steps, generated-file and
-# manifest checks whose inputs the change touches, the diff gates (`changes`) and clippy of the
-# packages it changes. No tests, VM checks, images, suites or dependents. A check red on main
+# manifest checks whose inputs the change touches, the diff gates (`changes`), clippy of the
+# packages it changes and the aarch64 size check of the apps it changes, when t has the commit's
+# shared runtime built. No tests, VM checks, images, suites or dependents. A check red on main
 # runs too: t compares its failures with main's where the push branched off, lints and policy
 # problems one finding at a time, so what main has too passes and a finding the change adds
 # refuses the push; one t can fix is fixed for you to commit (never amended). A change that
@@ -88,6 +89,15 @@ git diff --name-only "${base:-$pushed^}" "$pushed" -- >"$out/changed" 2>/dev/nul
 python3 -I "$top/tools/ci/pre_push.py" select --scope "$out/scope.json" --changed "$out/changed" >"$out/plan.json"
 plan() { python3 -I -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))[sys.argv[2]]))' "$out/plan.json" "$1"; }
 read -r -a gate <<<"$(plan run)"
+# The size checks of the apps the commit touches, when they are at most three and t has the
+# commit's shared runtime built; a skip is said. Each decision is recorded in the clone, one line
+# each, to be counted.
+read -r -a sizes <<<"$(plan sizes)"
+if [ "${#sizes[@]}" -gt 0 ]; then
+  read -r -a sized <<<"$(python3 -I "$top/tools/ci/pre_push.py" sizes --top "$top" --rev "$pushed" \
+    --record "$(git rev-parse --git-common-dir)/t-gate-sizes" "${sizes[@]}")"
+  gate+=(${sized[@]+"${sized[@]}"})
+fi
 
 # The opt-in checks the change touches, which a push doesn't run (`t suggest`, of the working
 # tree: it has no --rev, so only when the pushed commit is HEAD).

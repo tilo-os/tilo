@@ -502,6 +502,10 @@ pub struct TileHost {
     /// Adjacent canvas windows own exactly their layout rectangle, including
     /// their border; neither outlines nor shadows may spill into a sibling.
     flush_edges: bool,
+    /// The window's frame is growing past what this tile last drew (a
+    /// window maximizing keeps its last layout until its frame rests): the
+    /// frame's ground continues the tile, so no edge marks where it ends.
+    inside_growing_frame: bool,
     /// The window fills its display ([`Widget::set_full_bleed`]): square,
     /// unclipped and without an edge.
     full_bleed: bool,
@@ -888,6 +892,7 @@ impl TileHost {
             focused: false,
             pointer: None,
             flush_edges: false,
+            inside_growing_frame: false,
             full_bleed: false,
             square_bottom: false,
             spawned_at: None,
@@ -907,6 +912,10 @@ impl TileHost {
 
     pub(crate) fn set_flush_edges(&mut self, flush: bool) {
         self.flush_edges = flush;
+    }
+
+    pub(crate) fn set_inside_growing_frame(&mut self, inside: bool) {
+        self.inside_growing_frame = inside;
     }
 
     /// Offer the window's bar to the hosted app's header row (see
@@ -1785,7 +1794,9 @@ impl TileHost {
         if !painted {
             return None;
         }
-        self.draw_edge_at(scene, transform, theme, radius, rect);
+        if !self.inside_growing_frame {
+            self.draw_edge_at(scene, transform, theme, radius, rect);
+        }
         Some(rect)
     }
 
@@ -3479,9 +3490,11 @@ impl TileHost {
             .into_iter()
             .map(|band| transform.transform_rect_bbox(band))
             .collect();
-        crate::scene_parts::part(scene, edge, bounds, |scene| {
-            self.draw_edge(scene, transform, theme, radius);
-        });
+        if !self.inside_growing_frame {
+            crate::scene_parts::part(scene, edge, bounds, |scene| {
+                self.draw_edge(scene, transform, theme, radius);
+            });
+        }
     }
 
     /// A tile filling its display: the content edge to edge, square and

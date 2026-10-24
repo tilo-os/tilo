@@ -507,7 +507,7 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
                 c.addresses.push(addr);
             }
         }
-        "BDAY" => c.birthday = Birthday::parse(&unescape(value)),
+        "BDAY" => c.birthday = birthday_value(line),
         // An embedded picture only: a `VALUE=uri` link to a server is never
         // fetched. vCard 4 writes a `data:` URI, vCard 3 `ENCODING=b`.
         "PHOTO" => {
@@ -537,6 +537,27 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
         }
         _ => {}
     }
+}
+
+/// A `BDAY` as other clients write it. Apple writes a birthday whose year is
+/// unknown with a placeholder year it names in `X-APPLE-OMIT-YEAR`
+/// (`BDAY;X-APPLE-OMIT-YEAR=1604:1604-03-15`), and a date-and-time keeps its
+/// date.
+fn birthday_value(line: &ContentLine) -> Option<Birthday> {
+    let value = unescape(&line.value);
+    let date = value
+        .split_once('T')
+        .map_or(value.as_str(), |(date, _)| date);
+    let birthday = Birthday::parse(date)?;
+    let omitted_year = line
+        .param_value("X-APPLE-OMIT-YEAR")
+        .and_then(|year| year.trim().parse::<i32>().ok());
+    Some(match birthday {
+        Birthday::Full { year, month, day } if omitted_year == Some(year) => {
+            Birthday::MonthDay { month, day }
+        }
+        birthday => birthday,
+    })
 }
 
 /// Empty BEGIN/END pairs are not contacts.  They occur in truncated exports
@@ -729,6 +750,49 @@ mod tests {
             assert!(doc.contains("URL:https://example.com/a,b;c\r\n"), "{doc}");
             assert_eq!(parse_vcards(&doc)[0].website, c.website);
         }
+    }
+
+    /// Birthdays as an iPhone and other clients export them: Apple's
+    /// placeholder year stands for an unknown one, and a time is dropped.
+    #[test]
+    fn other_clients_birthdays_import_as_the_date_they_mean() {
+        let birthday = |line: &str| {
+            let card = format!("BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Ada\r\n{line}\r\nEND:VCARD\r\n");
+            parse_vcards(&card)[0].birthday
+        };
+        assert_eq!(
+            birthday("BDAY;X-APPLE-OMIT-YEAR=1604;VALUE=date:1604-03-15"),
+            Some(Birthday::MonthDay { month: 3, day: 15 })
+        );
+        assert_eq!(
+            birthday("BDAY;X-APPLE-OMIT-YEAR=1604:1604-02-29"),
+            Some(Birthday::MonthDay { month: 2, day: 29 })
+        );
+        // The marker only drops the year it names.
+        assert_eq!(
+            birthday("BDAY;X-APPLE-OMIT-YEAR=1604:1990-03-15"),
+            Some(Birthday::Full {
+                year: 1990,
+                month: 3,
+                day: 15
+            })
+        );
+        assert_eq!(
+            birthday("BDAY:1990-05-12T00:00:00Z"),
+            Some(Birthday::Full {
+                year: 1990,
+                month: 5,
+                day: 12
+            })
+        );
+        assert_eq!(
+            birthday("BDAY:19900512T000000"),
+            Some(Birthday::Full {
+                year: 1990,
+                month: 5,
+                day: 12
+            })
+        );
     }
 
     /// The parser handles legacy bare types, folding, multiple cards, tel URIs, quoted types and parameters, and URI UIDs.

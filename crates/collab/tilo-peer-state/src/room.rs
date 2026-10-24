@@ -24,7 +24,7 @@ use tilo_automerge::ReadTyped as _;
 /// decoded form: equality is the byte-exact comparison
 /// [`governance_unchanged`] needs, so a non-governor cannot slip a changed but
 /// undecodable (or re-encoded) row past it. Decoded views of the same document
-/// state live on its cache ([`crate::cached_document::CachedDocument::policy`]).
+/// state live on its cache (`crate::cached_document::CachedDocument::policy`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RoomGovernance {
     /// The structural owner's person key (`owner`).

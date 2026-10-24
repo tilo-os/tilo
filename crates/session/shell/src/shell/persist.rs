@@ -120,7 +120,7 @@ pub fn fs_capability_export_path() -> PathBuf {
 }
 
 /// Native file envelope; the portable desktop schema remains independently versioned.
-pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 4;
+pub const NATIVE_STATE_SCHEMA_VERSION: u32 = 5;
 
 /// `state.json` as a versioned format: a file of an older version comes up
 /// to [`NATIVE_STATE_SCHEMA_VERSION`] when it is loaded, after a snapshot of
@@ -132,7 +132,7 @@ pub(crate) const STATE_FORMAT: tilo_files::native::migration::Format =
         name: "desktop state",
         version: NATIVE_STATE_SCHEMA_VERSION,
         oldest: 3,
-        steps: &[drop_untouched_lounges],
+        steps: &[drop_untouched_lounges, activity_becomes_an_app],
     };
 
 /// Version 3 to 4: workspaces no longer get a Lounge. Version 3 gave every
@@ -234,6 +234,46 @@ fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&file).map_err(|error| error.to_string())
 }
 
+/// Version 4 to 5: Activity is an app. Version 4 kept the Activity window
+/// as a tile of its own kind; it becomes the Activity app's window, in the
+/// same place under the same tab id, and opens the app when the session
+/// starts like any app's window.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
+)]
+fn activity_becomes_an_app(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    use serde_json::Value;
+    let mut file: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+    let tabs = file
+        .get_mut("workspaces")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|workspace| workspace.get_mut("strips").and_then(Value::as_array_mut))
+        .flatten()
+        .filter_map(|strip| strip.get_mut("window_groups").and_then(Value::as_array_mut))
+        .flatten()
+        .filter_map(|group| group.get_mut("tabs").and_then(Value::as_array_mut))
+        .flatten();
+    for tab in tabs {
+        if tab.get("tile").and_then(Value::as_str) == Some("WorkspaceActivity") {
+            tab["tile"] = serde_json::json!({
+                "LocalApp": {
+                    "app_id": tilo_actions::remote::workspace_activity::APP_ID,
+                    "label": crate::shell::i18n::t("shell-activity-title"),
+                    "note": "",
+                }
+            });
+        }
+    }
+    let Some(fields) = file.as_object_mut() else {
+        return Err("a state file is a JSON object".into());
+    };
+    fields.insert("schema_version".into(), Value::from(5_u32));
+    serde_json::to_vec(&file).map_err(|error| error.to_string())
+}
+
 /// A Lounge as version 3 made it: a strip and three windows under ids in
 /// the reserved namespace, derived from `seed`; with `touched_by`, a window
 /// under that device's salt that the person put into it.
@@ -251,7 +291,11 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
         tabs: vec![Tab {
             id,
             title: title.into(),
-            tile: TileContent::WorkspaceActivity,
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: title.into(),
+                note: String::new(),
+            },
             app_title: None,
         }],
         active_tab: id,
@@ -274,20 +318,90 @@ fn v3_lounge(seed: u64, touched_by: Option<u16>) -> tilo_desktop_model::Strip {
 }
 
 /// A file the previous version of [`STATE_FORMAT`] wrote, which its step
-/// is tested against: version 3, whose every workspace had a Lounge first.
+/// is tested against: version 4, with the Activity window as a tile of its
+/// own kind.
 #[cfg(test)]
 #[allow(
     clippy::unnecessary_wraps,
     reason = "a format at its first version has no previous file, which the test reads as None"
 )]
 fn previous_state_file() -> Option<Vec<u8>> {
-    let mut tree = WorkspaceTree::bootstrap_default();
-    let workspace = &mut tree.desktop.workspaces[0];
-    workspace.strips.insert(0, v3_lounge(workspace.id.0, None));
+    Some(v4_with_activity().1)
+}
+
+/// A state file as version 4 wrote it: the demo desktop's windows, and
+/// beside them an Activity window as its own kind of tile; and that
+/// window's tab id.
+#[cfg(test)]
+fn v4_with_activity() -> (u64, Vec<u8>) {
+    use tilo_desktop_model::{Tab, TileContent, WindowGroup};
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    tree.persist_path = None;
+    let id = crate::shell::state::next_id();
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id,
+            tabs: vec![Tab {
+                id,
+                title: "Activity".into(),
+                tile: TileContent::Stub {
+                    kind: tilo_desktop_model::AppKind::Terminal,
+                    label: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: id,
+            width: tilo_desktop_model::WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
     let bytes = encode_tree(&tree).expect("encoded").bytes;
     let mut file: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-    file["schema_version"] = serde_json::Value::from(3_u32);
-    Some(serde_json::to_vec(&file).expect("json"))
+    *tab_tile(&mut file, id).expect("the Activity tab is in the file") =
+        serde_json::Value::from("WorkspaceActivity");
+    file["schema_version"] = serde_json::Value::from(4_u32);
+    (id, serde_json::to_vec(&file).expect("json"))
+}
+
+/// The tile of the tab `id` in a state file's JSON.
+#[cfg(test)]
+fn tab_tile(file: &mut serde_json::Value, id: u64) -> Option<&mut serde_json::Value> {
+    file.get_mut("workspaces")?
+        .as_array_mut()?
+        .iter_mut()
+        .filter_map(|workspace| workspace.get_mut("strips")?.as_array_mut())
+        .flatten()
+        .filter_map(|strip| strip.get_mut("window_groups")?.as_array_mut())
+        .flatten()
+        .filter_map(|group| group.get_mut("tabs")?.as_array_mut())
+        .flatten()
+        .find(|tab| tab.get("id").and_then(serde_json::Value::as_u64) == Some(id))?
+        .get_mut("tile")
+}
+
+/// Every window id and tab id a state file's JSON holds, in its order.
+#[cfg(test)]
+fn window_ids(file: &serde_json::Value) -> Vec<u64> {
+    let ids = |value: &serde_json::Value, key: &str| -> Vec<serde_json::Value> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut found = Vec::new();
+    for workspace in ids(file, "workspaces") {
+        for strip in ids(&workspace, "strips") {
+            for group in ids(&strip, "window_groups") {
+                found.extend(group.get("id").and_then(serde_json::Value::as_u64));
+                for tab in ids(&group, "tabs") {
+                    found.extend(tab.get("id").and_then(serde_json::Value::as_u64));
+                }
+            }
+        }
+    }
+    found
 }
 
 /// The version a state file says it is, read before anything else of it.
@@ -490,7 +604,7 @@ fn encode_durable(durable: &DurableTree) -> std::io::Result<EncodedTree> {
 /// of the fields `state.json` holds, and the tree document's changes since
 /// the previous save, cut from it (see `doc_log`). No document is copied;
 /// encoding, the size checks and every write happen in
-/// [`TreeSnapshot::write_to`].
+/// `TreeSnapshot::write_to`.
 pub struct TreeSnapshot {
     durable: DurableTree,
     runtime: super::native_workspace_owner::NativeStateRuntime,
@@ -1208,6 +1322,64 @@ mod tests {
         let now: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(now["schema_version"], NATIVE_STATE_SCHEMA_VERSION);
+    }
+
+    /// An Activity window a version 4 file kept comes up as the Activity
+    /// app's window, in the same place under the same id, and nothing else
+    /// in the file changes: every other window, tab and field is as it was.
+    #[test]
+    fn a_v4_activity_window_becomes_the_activity_apps_window_and_nothing_else_changes() {
+        let (id, v4) = v4_with_activity();
+        let before: serde_json::Value = serde_json::from_slice(&v4).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_slice(&activity_becomes_an_app(v4.clone()).unwrap()).unwrap();
+        let mut expected = before.clone();
+        *tab_tile(&mut expected, id).unwrap() = serde_json::json!({
+            "LocalApp": {
+                "app_id": tilo_actions::remote::workspace_activity::APP_ID,
+                "label": crate::shell::i18n::t("shell-activity-title"),
+                "note": "",
+            }
+        });
+        expected["schema_version"] = serde_json::Value::from(5_u32);
+        assert_eq!(
+            after, expected,
+            "only the Activity tile and the version moved"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, &v4).unwrap();
+        let loaded = load_tree_from(&path).expect("a v4 file comes up to date");
+        let tab = loaded
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| &workspace.strips)
+            .flat_map(|strip| &strip.window_groups)
+            .flat_map(|group| &group.tabs)
+            .find(|tab| tab.id == id)
+            .expect("the Activity window keeps its id");
+        assert!(
+            matches!(
+                &tab.tile,
+                crate::shell::state::TileContent::LocalApp { app_id, .. }
+                    if app_id == tilo_actions::remote::workspace_activity::APP_ID
+            ),
+            "the window is the Activity app's: {:?}",
+            tab.tile
+        );
+        let now: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(window_ids(&now), window_ids(&before), "every window stays");
+        assert_eq!(
+            std::fs::read(tilo_files::native::migration::Format::snapshot_path(
+                &path, 4
+            ))
+            .unwrap(),
+            v4,
+            "the v4 file is kept as it was"
+        );
     }
 
     /// Preparing for sleep makes the settings and the queued saves durable

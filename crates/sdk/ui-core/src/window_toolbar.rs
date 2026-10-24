@@ -143,6 +143,70 @@ pub struct WindowToolbar {
     /// The app's views of what the window shows, one of them chosen.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub views: Option<ToolbarViews>,
+    /// A transient notice ([`notify`]), shown in the location's place while
+    /// it is up. The window's notice, not a declaration's: [`shown`] puts
+    /// it here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<ToolbarNotice>,
+}
+
+/// What just happened, said in the window's bar for a while: an operation's
+/// result or failure ("Page 1 captured"). The bar shows it in the
+/// location's place, its kind's icon first, and announces it. A notice that
+/// asks the person to act carries what they can do: at most
+/// [`MAX_NOTICE_ACTIONS`] actions ("Sync again", "Open Settings"), standing
+/// in order right after its text, each a button that names itself where the
+/// row has room and its icon where not (the last first), and never in the
+/// overflow menu.
+/// Notices replace each other; none stack. A message the person must act
+/// on before it goes is not a notice.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolbarNotice {
+    /// What happened, in a few words.
+    pub text: String,
+    /// Whether it is a confirmation, information, a warning or a failure.
+    #[serde(default)]
+    pub kind: crate::widget::toast::ToastKind,
+    /// What the person can do about it, in order, at most
+    /// [`MAX_NOTICE_ACTIONS`]; each is sent as [`ToolbarEvent::Action`] when
+    /// pressed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ToolbarAction>,
+}
+
+/// The most actions a notice carries.
+pub const MAX_NOTICE_ACTIONS: usize = 2;
+
+impl ToolbarNotice {
+    #[must_use]
+    pub fn new(text: impl Into<String>, kind: crate::widget::toast::ToastKind) -> Self {
+        Self {
+            text: text.into(),
+            kind,
+            actions: Vec::new(),
+        }
+    }
+
+    /// The notice with `action` ("Undo") beside it, after any it has.
+    #[must_use]
+    pub fn action(mut self, action: ToolbarAction) -> Self {
+        self.actions.push(action);
+        self
+    }
+
+    /// As [`WindowToolbar::bounded`] takes it: its texts cut, an action
+    /// without an icon of the set dropped, at most [`MAX_NOTICE_ACTIONS`].
+    fn bound(&mut self) {
+        cut(&mut self.text);
+        self.actions
+            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+        self.actions.truncate(MAX_NOTICE_ACTIONS);
+        for action in &mut self.actions {
+            cut(&mut action.id);
+            cut(&mut action.name);
+            action.items.clear();
+        }
+    }
 }
 
 /// Tabs switching between an app's views (Month, Week, Day).
@@ -410,6 +474,11 @@ pub struct ToolbarAction {
     /// destructive button does.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
+    /// Where the row has room it is a text button saying its name, as a
+    /// calendar's Today; narrower it is its icon, and then an overflow
+    /// row, in the row's fold order.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub labelled: bool,
 }
 
 fn enabled() -> bool {
@@ -433,6 +502,7 @@ impl ToolbarAction {
             navigates: false,
             toggles: false,
             destructive: false,
+            labelled: false,
         }
     }
 
@@ -476,6 +546,14 @@ impl ToolbarAction {
     #[must_use]
     pub fn navigating(mut self) -> Self {
         self.navigates = true;
+        self
+    }
+
+    /// Its name as a text button where the row has room
+    /// ([`Self::labelled`]).
+    #[must_use]
+    pub fn labelled(mut self) -> Self {
+        self.labelled = true;
         self
     }
 }
@@ -694,6 +772,29 @@ impl WindowToolbar {
                 .views
                 .as_ref()
                 .is_none_or(|views| views.choices.is_empty())
+            && self.notice.is_none()
+    }
+
+    /// The slots as the bar lays them out: the notice up, if any, in the
+    /// location's place (its kind's icon, then its text). Its action is the
+    /// notice's own, laid out right after its text, never among the
+    /// actions.
+    #[must_use]
+    pub fn presented(&self) -> Self {
+        let mut shown = self.clone();
+        let Some(notice) = self.notice.as_ref() else {
+            return shown;
+        };
+        shown.location = Some(ToolbarLocation {
+            label: notice.text.clone(),
+            icon: Some(
+                crate::widget::toast::kind_icon(notice.kind)
+                    .name()
+                    .to_owned(),
+            ),
+            ..ToolbarLocation::default()
+        });
+        shown
     }
 
     /// How many of the actions may stand in the row: those not declared for
@@ -740,6 +841,9 @@ impl WindowToolbar {
         // Leading actions stand in the row whatever they say.
         for action in &mut self.leading {
             action.menu = false;
+        }
+        if let Some(notice) = &mut self.notice {
+            notice.bound();
         }
         if let Some(views) = &mut self.views {
             views.choices.truncate(MAX_VIEWS);
@@ -853,8 +957,10 @@ const MAX_PENDING: usize = 32;
 
 thread_local! {
     static DECLARED: RefCell<Option<WindowToolbar>> = const { RefCell::new(None) };
+    static NOTICE: RefCell<Option<ToolbarNotice>> = const { RefCell::new(None) };
     static REVISION: Cell<u64> = const { Cell::new(0) };
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
+    static NOTICE_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_REQUESTED: Cell<Option<SearchOpening>> = const { Cell::new(None) };
@@ -920,7 +1026,7 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
         return;
     }
     let toolbar = toolbar
-        .map(WindowToolbar::bounded)
+        .map(declaration)
         .filter(|toolbar| !toolbar.is_empty());
     DECLARED.with(|declared| {
         let mut declared = declared.borrow_mut();
@@ -929,6 +1035,15 @@ pub fn declare(toolbar: Option<WindowToolbar>) {
             REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
         }
     });
+}
+
+/// `toolbar` as a declaration: bounded, without a notice, which is the
+/// window's ([`notify`]) rather than any declaration's.
+pub(crate) fn declaration(toolbar: WindowToolbar) -> WindowToolbar {
+    WindowToolbar {
+        notice: None,
+        ..toolbar.bounded()
+    }
 }
 
 /// Take the slots back, as [`declare`] with `None` does, unless the thread
@@ -951,8 +1066,81 @@ pub fn declared() -> Option<WindowToolbar> {
     DECLARED.with(|declared| declared.borrow().clone())
 }
 
-/// Bumped by every [`declare`] that changed something, so a runner sends
-/// a declaration once.
+/// Show `notice` in the window's bar, replacing the notice up (`None`: take
+/// it down). Cheap when nothing changed. Whoever shows a notice takes it
+/// down with [`withdraw`], so a later notice from elsewhere stays.
+pub fn notify(notice: Option<ToolbarNotice>) {
+    let notice = notice.map(|mut notice| {
+        notice.bound();
+        notice
+    });
+    if let Some(window) = window() {
+        window.notify(notice);
+        return;
+    }
+    NOTICE.with(|current| {
+        let mut current = current.borrow_mut();
+        if *current != notice {
+            *current = notice;
+            REVISION.with(|revision| revision.set(revision.get().wrapping_add(1)));
+        }
+    });
+}
+
+/// Take `notice` down if it is the one up; a notice that replaced it stays.
+/// Nothing once the thread is ending: its window is gone with it.
+pub fn withdraw(notice: &ToolbarNotice) {
+    let mut bounded = notice.clone();
+    bounded.bound();
+    let Ok(window) = WINDOW.try_with(|current| current.borrow().clone()) else {
+        return;
+    };
+    if let Some(window) = window {
+        if window.notice().as_ref() == Some(&bounded) {
+            window.notify(None);
+        }
+        return;
+    }
+    let _ = NOTICE.try_with(|current| {
+        let mut current = current.borrow_mut();
+        if current.as_ref() == Some(&bounded) {
+            *current = None;
+            let _ = REVISION.try_with(|revision| revision.set(revision.get().wrapping_add(1)));
+        }
+    });
+}
+
+/// The notice up in the window's bar.
+#[must_use]
+pub fn notice() -> Option<ToolbarNotice> {
+    if let Some(window) = window() {
+        return window.notice();
+    }
+    NOTICE.with(|notice| notice.borrow().clone())
+}
+
+/// What the window's bar shows: the slots declared, with the notice up.
+#[must_use]
+pub fn shown() -> Option<WindowToolbar> {
+    with_notice(declared(), notice())
+}
+
+/// `toolbar` with `notice` up in it.
+pub(crate) fn with_notice(
+    toolbar: Option<WindowToolbar>,
+    notice: Option<ToolbarNotice>,
+) -> Option<WindowToolbar> {
+    match (toolbar, notice) {
+        (toolbar, None) => toolbar,
+        (toolbar, Some(notice)) => Some(WindowToolbar {
+            notice: Some(notice),
+            ..toolbar.unwrap_or_default()
+        }),
+    }
+}
+
+/// Bumped by every [`declare`] and [`notify`] that changed something, so a
+/// runner sends what the bar shows once.
 #[must_use]
 pub fn revision() -> u64 {
     if let Some(window) = window() {
@@ -971,6 +1159,34 @@ pub fn hands_keyboard_to_app(event: &ToolbarEvent) -> bool {
         event,
         ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar
     )
+}
+
+/// The id of the notice's button `event` presses, if it presses one: such a
+/// press is the notice's poster's ([`take_notice_press`]), never among the
+/// app's slot events.
+pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent) -> Option<String> {
+    let ToolbarEvent::Action { id } = event else {
+        return None;
+    };
+    notice
+        .filter(|notice| notice.actions.iter().any(|action| action.id == *id))
+        .map(|_| id.clone())
+}
+
+/// Whether the button `id` of a notice was pressed in the bar since the
+/// last call: the notice's poster takes it, whatever else the window does
+/// with its bar's events.
+#[must_use]
+pub fn take_notice_press(id: &str) -> bool {
+    if let Some(window) = window() {
+        return window.take_notice_press(id);
+    }
+    NOTICE_PRESSES.with(|presses| {
+        let mut presses = presses.borrow_mut();
+        let before = presses.len();
+        presses.retain(|pressed| pressed != id);
+        presses.len() != before
+    })
 }
 
 /// What the person did in the bar since the last call, oldest first.
@@ -1040,6 +1256,15 @@ pub fn deliver(event: ToolbarEvent) {
         window.deliver(event);
         return;
     }
+    if let Some(id) = NOTICE.with(|notice| notice_press(notice.borrow().as_ref(), &event)) {
+        NOTICE_PRESSES.with(|presses| {
+            let mut presses = presses.borrow_mut();
+            if presses.len() < MAX_PENDING {
+                presses.push(id);
+            }
+        });
+        return;
+    }
     EVENTS.with(|events| {
         let mut events = events.borrow_mut();
         if events.len() < MAX_PENDING {
@@ -1082,6 +1307,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1163,6 +1389,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1176,6 +1403,7 @@ mod tests {
             navigates: false,
             toggles: false,
             destructive: false,
+            labelled: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1189,6 +1417,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             });
         }
         let bounded = many.clone().bounded();

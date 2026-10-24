@@ -6,8 +6,7 @@
 //! `ColorSwatchPicker`, the settings an immediate-mode modal sheet
 //! (`modal_dialog`) with chips and a segmented control inside, and the palette
 //! a `CommandPalette` over the modal scrim. All of them paint in the window's
-//! top layer (`Widget::draw_overlay`), so they sit above the grid, the bars and
-//! the status bubble.
+//! top layer (`Widget::draw_overlay`), so they sit above the grid and the bars.
 
 use super::{
     Affine, ContextMenu, Currency, DATE_STYLES, MenuItem, MenuRow, Point, PresenceCtx, Rect, Scene,

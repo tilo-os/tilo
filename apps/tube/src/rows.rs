@@ -82,6 +82,9 @@ fn current_watch(model: &TubeModel) -> Option<LiveRow> {
         .effect(&TubeEffect::OpenCreator {
             creator: video.channel_id.clone(),
         });
+    if model.show_skip_end().is_some() {
+        row = row.effect(&TubeEffect::SkipSegment);
+    }
     for comment in video.comments.iter().take(MAX_COMMENTS) {
         row = row.row(comment_row(video_id, comment));
     }
@@ -377,13 +380,28 @@ pub(crate) fn live_row(model: &TubeModel, view: &SyncView, id: &str) -> Option<L
 }
 
 /// The effects whose availability the surface reports: downloads have no
-/// storage to go to, and device sync may be unavailable on this device.
-pub(crate) fn effect_statuses(view: &SyncView) -> Vec<EffectStatus> {
+/// storage to go to, seeking needs an open video and skipping a segment
+/// one playing, and device sync may be unavailable on this device.
+pub(crate) fn effect_statuses(model: &TubeModel, view: &SyncView) -> Vec<EffectStatus> {
     let mut statuses = vec![EffectStatus::unavailable(
         TubeEffect::DOWNLOAD,
         "download_storage_unavailable",
         "Tube has no host-granted download storage capability",
     )];
+    if !matches!(model.route, Route::Watch(_)) {
+        statuses.push(EffectStatus::unavailable(
+            TubeEffect::SEEK,
+            "no_video",
+            "Open a video to seek in it",
+        ));
+    }
+    if model.show_skip_end().is_none() {
+        statuses.push(EffectStatus::unavailable(
+            TubeEffect::SKIP_SEGMENT,
+            "no_segment",
+            "No segment to skip is playing",
+        ));
+    }
     if matches!(view.status, SyncStatus::Unavailable) {
         let reason = if view.summary.trim().is_empty() {
             crate::sync::capability().summary.to_string()

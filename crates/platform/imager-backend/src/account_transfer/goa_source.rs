@@ -1,8 +1,8 @@
 //! Selected GOA refresh grants retain the original installed-app registration.
 //! Source contracts:
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goautils.c
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goaoauth2provider.c
-//! https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goautils.c>
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/src/goabackend/goaoauth2provider.c>
+//! <https://github.com/GNOME/gnome-online-accounts/blob/master/data/dbus-interfaces.xml>
 use super::{Candidate, ConnectionError, Connector, Origin, SourceRoots};
 #[cfg(test)]
 use account_custody::OAuthCloud;

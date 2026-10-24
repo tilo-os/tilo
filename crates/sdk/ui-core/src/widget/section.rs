@@ -924,6 +924,15 @@ pub struct Section {
     labels: crate::widget::property_list::PropertyColumn,
     /// The width the section's dropdowns share.
     choosers: crate::widget::dropdown::ChooserColumn,
+    /// The space laid out above each item: where a band on its way stands,
+    /// and how far what follows it moves (`widget::Disclosing`).
+    gaps: Vec<f64>,
+    /// Bands its view stopped building, drawn leaving.
+    ghosts: crate::widget::Ghosts,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
+    /// Told whether the pointer is over the section.
+    pointer: Option<Rc<Cell<bool>>>,
 }
 
 impl Section {
@@ -936,7 +945,34 @@ impl Section {
             expanded: None,
             labels: crate::widget::property_list::PropertyColumn::new(),
             choosers: crate::widget::dropdown::ChooserColumn::default(),
+            gaps: Vec::new(),
+            ghosts: crate::widget::Ghosts::default(),
+            motion: crate::tokens::EffectiveMotion::default(),
+            pointer: None,
         }
+    }
+
+    /// Keep `over` saying whether the pointer is over the section: a host
+    /// that reorders the section's rows holds them still while it is, so no
+    /// row moves under the pointer.
+    #[must_use]
+    pub fn pointer_over(mut self, over: Rc<Cell<bool>>) -> Self {
+        self.pointer = Some(over);
+        self
+    }
+
+    /// While a band moves in the section, how far below its laid-out place
+    /// each shown item is drawn, then how much taller the section is drawn.
+    fn follower_shifts(&self) -> Option<Vec<f64>> {
+        let gaps = &self.gaps;
+        let shown = self.shown();
+        let shifts = crate::widget::follower_shifts(
+            self.parts.children.iter().take(shown).map(|child| &**child),
+            |index| gaps.get(index).copied().unwrap_or(0.0),
+        );
+        // A band its view stopped building moves what followed it up.
+        self.ghosts
+            .shift(shifts, shown.min(self.parts.children.len()))
     }
 
     pub fn titled(title: impl Into<String>, items: Vec<Element>) -> Self {
@@ -1115,6 +1151,14 @@ impl Widget for Section {
     // A section paints nothing of its own: what changed is what its rows
     // changed, so a hover or a meter in one row does not repaint the group.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        // A band on its way moves every item after it, and the section is
+        // drawn taller by as much.
+        if let Some(shifts) = self.follower_shifts() {
+            let mut rect = self.parts.rect;
+            rect.y1 += shifts.last().copied().unwrap_or(0.0).max(0.0);
+            regions.push(rect);
+            return;
+        }
         for child in &self.parts.children {
             child.collect_damage(regions);
         }
@@ -1138,6 +1182,7 @@ impl Widget for Section {
         theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let rhythm = &theme.tokens.spacing.rhythm;
         let node = self.parts.build(
             Style {
@@ -1184,6 +1229,7 @@ impl Widget for Section {
         }
         let rows = self.row_flags();
         let shown = self.shown();
+        self.gaps = vec![0.0; self.parts.nodes.len()];
         for (index, &node) in self.parts.nodes.iter().enumerate() {
             let Ok(style) = taffy.style(node) else {
                 continue;
@@ -1202,6 +1248,9 @@ impl Widget for Section {
                     rhythm.sibling
                 };
                 style.margin.top = length(gap);
+                if let Some(laid) = self.gaps.get_mut(index) {
+                    *laid = f64::from(gap);
+                }
             }
             let _ = taffy.set_style(node, style);
         }
@@ -1211,6 +1260,29 @@ impl Widget for Section {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(taffy, node, origin);
+        // A band on its way stands out of the layout, in its slot.
+        let shown = self.shown();
+        let gaps = &self.gaps;
+        crate::widget::place_bands(
+            self.parts.children.iter_mut().take(shown),
+            self.parts.rect,
+            |index| gaps.get(index).copied().unwrap_or(0.0),
+        );
+        // A band its view stopped building leaves where it stood.
+        let shown = shown.min(self.parts.children.len());
+        // The room a band leaving gives back: its own space above it, or,
+        // first, the space above the item after it, which then comes first
+        // and has none.
+        self.ghosts.find(
+            "Section",
+            &mut self.parts.children[..shown],
+            self.parts.rect,
+            |index| {
+                let above = if index == 0 { 1 } else { index };
+                gaps.get(above).copied().unwrap_or(0.0)
+            },
+            self.motion,
+        );
     }
 
     fn draw(
@@ -1223,13 +1295,68 @@ impl Widget for Section {
     ) {
         self.sync_rows(text, theme);
         let shown = self.shown();
-        for child in self.parts.children.iter_mut().take(shown) {
-            child.draw(scene, transform, text, theme, presence);
+        // While a band moves, what follows it is drawn shifted by transform.
+        let shifts = self.follower_shifts();
+        for (index, child) in self.parts.children.iter_mut().take(shown).enumerate() {
+            let dy = shifts
+                .as_deref()
+                .and_then(|shifts| shifts.get(index).copied())
+                .unwrap_or(0.0);
+            child.draw(
+                scene,
+                transform * Affine::translate((0.0, dy)),
+                text,
+                theme,
+                presence,
+            );
         }
+        self.ghosts.retain_drawn();
+        self.ghosts.draw(scene, transform, shifts.as_deref());
+    }
+
+    /// Frames while a band its view stopped building leaves, and one more
+    /// to draw it gone.
+    fn needs_animation_frame(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+    }
+
+    /// A section grows with a band moving in it, and so moves what follows
+    /// it.
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        let shifts = self.follower_shifts()?;
+        Some(crate::widget::Disclosing::Grows(
+            shifts.last().copied().unwrap_or(0.0),
+        ))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(over) = &self.pointer {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    over.set(self.parts.rect.contains(ctx.logical(position)));
+                }
+                WindowEvent::CursorLeft { .. } => over.set(false),
+                _ => {}
+            }
+        }
         let shown = self.shown();
+        if let Some(shifts) = self.follower_shifts() {
+            let shown = shown.min(self.parts.nodes.len());
+            crate::widget::route_to_shifted_children(
+                &mut self.parts.children[..shown],
+                &self.parts.nodes[..shown],
+                Some(&shifts),
+                event,
+                ctx,
+            );
+            return;
+        }
         for (child, &node) in self
             .parts
             .children

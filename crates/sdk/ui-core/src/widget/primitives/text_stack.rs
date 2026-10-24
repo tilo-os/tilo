@@ -50,6 +50,9 @@ pub struct TextStackFace<'a> {
     size: StackSize,
     /// The secondary line's status ink ([`Tone::Neutral`]: secondary ink).
     secondary_tone: Tone,
+    /// Type set at a scale of the surface's own (the lock screen's), in
+    /// place of the theme's roles.
+    styles: Option<(&'a TextStyle, &'a TextStyle)>,
 }
 
 /// The styles and inks of a stack in one theme.
@@ -59,8 +62,14 @@ struct StackStyles {
 }
 
 impl StackStyles {
-    fn of(size: StackSize, theme: &Theme) -> Self {
-        let role = match size {
+    fn of(face: &TextStackFace<'_>, theme: &Theme) -> Self {
+        if let Some((title, caption)) = face.styles {
+            return Self {
+                title: title.clone(),
+                caption: caption.clone(),
+            };
+        }
+        let role = match face.size {
             StackSize::Regular => TextRole::Body,
             StackSize::Dense => TextRole::Label,
         };
@@ -80,7 +89,16 @@ impl<'a> TextStackFace<'a> {
             tertiary: None,
             size: StackSize::Regular,
             secondary_tone: Tone::Neutral,
+            styles: None,
         }
+    }
+
+    /// Set the title and the caption lines in `title` and `caption`, for a
+    /// surface that scales its type itself.
+    #[must_use]
+    pub fn styled(mut self, title: &'a TextStyle, caption: &'a TextStyle) -> Self {
+        self.styles = Some((title, caption));
+        self
     }
 
     /// The secondary line says a status (a playback error): it reads in
@@ -121,7 +139,7 @@ impl<'a> TextStackFace<'a> {
     /// The stack's height: its lines and the gaps between them.
     #[must_use]
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let line = |text: &mut TextRenderer, style: &TextStyle| {
             f64::from(text.measure_style("Ag", None, style).1)
         };
@@ -139,7 +157,7 @@ impl<'a> TextStackFace<'a> {
     /// The widest line's natural width.
     #[must_use]
     pub fn natural_width(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let mut width = f64::from(text.measure_style(self.title, None, &styles.title).0);
         for line in [self.secondary, self.tertiary].into_iter().flatten() {
             width = width.max(f64::from(text.measure_style(line, None, &styles.caption).0));
@@ -151,7 +169,7 @@ impl<'a> TextStackFace<'a> {
     /// `rect`: what a leading icon beside a multi-line stack lines up with.
     #[must_use]
     pub fn title_centre(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> f64 {
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let title = f64::from(text.measure_style("Ag", None, &styles.title).1);
         rect.y0 + (rect.height() - self.height(text, theme)) / 2.0 + title / 2.0
     }
@@ -161,7 +179,7 @@ impl<'a> TextStackFace<'a> {
     /// stack on a selected row or a floating panel reads.
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         let theme = ctx.theme;
-        let styles = StackStyles::of(self.size, theme);
+        let styles = StackStyles::of(self, theme);
         let colors = &theme.tokens.colors;
         let height = self.height(ctx.text, theme);
         let mut y = rect.y0 + (rect.height() - height) / 2.0;

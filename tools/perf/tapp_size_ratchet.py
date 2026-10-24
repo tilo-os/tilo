@@ -13,7 +13,10 @@ max <= 6 MB, ratcheted per app. Two gates hold it:
 - **The fleet, nightly.** `fleet ENTRIES_JSON` reads the public registry's
   `entries` index (t's perf-footprint, footprint group). Each budgeted app's
   newest tapp is held to its budget, and the median, p90 and max of those
-  apps are held to the fleet ceilings.
+  apps are held to the fleet ceilings. The budgets are those of the commit
+  the newest release was built from: the registry serves the last release
+  until the next one publishes, and a later commit's budgets describe apps
+  that are not published yet (its `app-sizes-<arch>` checks measure those).
 
 `check-budget --base REV` runs in t.toml's diff-based gates without building
 anything. It fails when a budget is larger than at REV beyond what the raise
@@ -47,7 +50,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from typing import Any
+from typing import Any, Iterable
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
@@ -230,8 +233,8 @@ def measure(directory: pathlib.Path, budget: Budget, arch: str | None = None) ->
     return judge_apps(sizes, built, budget)
 
 
-def newest_tapps(entries: dict[str, Any]) -> dict[tuple[str, str], int]:
-    """Bytes of the newest tilo-os tapp per (package, architecture) in a registry index."""
+def newest_versions(entries: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """The newest tilo-os version per (package, architecture) in a registry index."""
     newest: dict[tuple[str, str], dict[str, Any]] = {}
     for entry in entries.get("entries", []):
         for version in entry.get("versions", []):
@@ -241,8 +244,44 @@ def newest_tapps(entries: dict[str, Any]) -> dict[tuple[str, str], int]:
             key = (entry["package_id"], target["architecture"])
             if key not in newest or version["released_at_unix"] > newest[key]["released_at_unix"]:
                 newest[key] = version
+    return newest
+
+
+def release_commit(versions: Iterable[dict[str, Any]]) -> str:
+    """The commit that built the newest of these published versions (`+g<sha>` in its version).
+
+    A published package is held to the budgets of the commit that built it. Budgets move with
+    the source, and the registry only changes when a release publishes: between releases it
+    still serves the previous release's packages, which today's budgets do not describe.
+    """
+    newest = max(versions, key=lambda version: version["released_at_unix"], default=None)
+    if newest is None:
+        raise ValueError("no published version to read a release commit from")
+    match = re.search(r"\+g([0-9a-f]{40})$", str(newest.get("version", "")))
+    if match is None:
+        raise ValueError(f"published version {newest.get('version')!r} names no source commit (+g<sha>)")
+    return match.group(1)
+
+
+def fetch_commit(commit: str, git_dir: pathlib.Path, remote: str | None) -> None:
+    """Make `commit` readable in `git_dir`: fetched from `remote` (trees only, files on demand)."""
+    if remote is None or (git_dir.is_dir() and git(
+            git_dir, "rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}").returncode == 0):
+        return
+    if not (git_dir / "HEAD").is_file():
+        git_dir.mkdir(parents=True, exist_ok=True)
+        for args in (("init", "-q", "--bare"), ("remote", "add", "origin", remote)):
+            if (done := git(git_dir, *args)).returncode != 0:
+                raise ValueError(f"git {' '.join(args)} in {git_dir}: {done.stderr.strip()}")
+    fetched = git(git_dir, "fetch", "-q", "--depth=1", "--filter=blob:none", "--no-tags", "origin", commit)
+    if fetched.returncode != 0:
+        raise ValueError(f"cannot fetch {commit} from {remote}: {fetched.stderr.strip()}")
+
+
+def newest_tapps(entries: dict[str, Any]) -> dict[tuple[str, str], int]:
+    """Bytes of the newest tilo-os tapp per (package, architecture) in a registry index."""
     sizes = {}
-    for key, version in newest.items():
+    for key, version in newest_versions(entries).items():
         size = version["tapp_size_bytes"]
         if not isinstance(size, int) or size <= 0:
             raise ValueError(f"invalid tapp_size_bytes {size!r}")
@@ -429,6 +468,9 @@ def main(argv: list[str] | None = None) -> int:
     fleet_parser = commands.add_parser("fleet", help="the registry index against the budgets and fleet ceilings")
     fleet_parser.add_argument("entries", type=pathlib.Path)
     fleet_parser.add_argument("--summary", type=pathlib.Path)
+    fleet_parser.add_argument("--git-dir", type=pathlib.Path, default=REPO,
+                              help="where to read the release commit's budgets (default: this checkout)")
+    fleet_parser.add_argument("--fetch-from", help="fetch the release commit from this repository when missing")
     checked = commands.add_parser("check-budget", help="budgets only decrease without a raise file")
     checked.add_argument("--base", required=True)
     seeded = commands.add_parser("seed", help="print [apps] tables from a registry index")
@@ -439,7 +481,17 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "measure":
             return emit(*measure(args.directory, current, args.arch), args.summary)
         if args.command == "fleet":
-            return emit(*fleet(json.loads(args.entries.read_text(encoding="utf-8")), current), args.summary)
+            entries = json.loads(args.entries.read_text(encoding="utf-8"))
+            apps = current.apps()
+            commit = release_commit(version for (package, _), version in newest_versions(entries).items()
+                                    if package in apps)
+            fetch_commit(commit, args.git_dir, args.fetch_from)
+            released = load_at(commit, args.git_dir)
+            if released is None:
+                raise ValueError(f"{commit} has no {DIRECTORY}/budget.toml")
+            status, lines = fleet(entries, released)
+            lines.insert(1, f"held to the budgets of {commit}, which built the newest release")
+            return emit(status, lines, args.summary)
         if args.command == "seed":
             entries = json.loads(args.entries.read_text(encoding="utf-8"))
             return emit(0, seed(entries, current, default_collection()), None)

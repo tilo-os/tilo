@@ -619,7 +619,7 @@ pub fn initials_fill(fill: Color, theme: &Theme) -> Color {
 
 /// The initials ink on `fill`.
 ///
-/// One direction per presence palette ([`dark_initials`]). The ink takes
+/// One direction per presence palette (`dark_initials`). The ink takes
 /// the fill's own hue, as deep (or as pale) as it must be to reach
 /// small-text contrast (7:1) on that fill, or the extreme where it cannot.
 #[must_use]

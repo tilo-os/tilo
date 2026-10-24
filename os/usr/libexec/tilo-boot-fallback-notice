@@ -1,0 +1,53 @@
+#!/usr/bin/bash
+# Tell the person, once, that the machine went back to an earlier version.
+#
+# tilo-boot-fallback.service writes one report per deployment that failed its
+# boot tries, under /var/lib/tilo/boot-fallback/<when>-<composefs>/. This runs
+# in each graphical session, shows each report this person has not seen as a
+# desktop notification that stays until dismissed, and remembers it in their
+# state directory. A report is marked seen only once the notification was
+# delivered, so a session whose notification server never came up shows it at
+# the next sign-in instead of never.
+set -uo pipefail
+
+FALLBACK_DIR="${TILO_FALLBACK_DIR:-/var/lib/tilo/boot-fallback}"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/tilo/boot-fallback-seen"
+NAME=org.freedesktop.Notifications
+# The compositor owns the notification server; it comes up with the session.
+WAIT="${TILO_NOTIFICATIONS_WAIT:-120}"
+
+field() {  # REPORT KEY
+  sed -n "s/^$2=//p" "$1" | head -1
+}
+
+unseen=()
+for dir in "$FALLBACK_DIR"/*-*; do
+  [ -f "$dir/report" ] || continue
+  grep -qxF "${dir##*/}" "$STATE" 2>/dev/null && continue
+  unseen+=("$dir")
+done
+[ "${#unseen[@]}" -gt 0 ] || exit 0
+
+gdbus wait --session --timeout "$WAIT" "$NAME" || {
+  printf 'tilo-boot-fallback-notice: no notification server in this session; the report stays unseen\n' >&2
+  exit 1
+}
+
+mkdir -p "${STATE%/*}" || exit 1
+for dir in "${unseen[@]}"; do
+  image="$(field "$dir/report" image)"
+  version="$(field "$dir/report" version)"
+  tries="$(field "$dir/report" tries)"
+  running="$(field "$dir/report" running_version)"
+  what="${version:-${image:-The new version}}"
+  body="$what did not start after ${tries:-several} tries, so this machine went back to ${running:-the version before}. What the failed tries left behind: $dir/summary.txt, and tilo status."
+  # Critical urgency and no expiry: it stays until the person dismisses it.
+  if gdbus call --session --dest "$NAME" --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify \
+      "Tilo" 0 "system-software-update" "Went back to the version before" "$body" \
+      "[]" "{'urgency': <byte 2>}" 0 >/dev/null; then
+    printf '%s\n' "${dir##*/}" >> "$STATE"
+  else
+    printf 'tilo-boot-fallback-notice: the notification for %s was not delivered\n' "$dir" >&2
+  fi
+done

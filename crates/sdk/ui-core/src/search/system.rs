@@ -456,8 +456,7 @@ pub fn starting_point_rank(package_id: &str) -> i32 {
         "so.tilo.totp" => 40,
 
         "so.tilo.monitor" | "so.tilo.disks" | "so.tilo.logs" | "so.tilo.firewall"
-        | "so.tilo.vpn" | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager"
-        | "so.tilo.themes" => 25,
+        | "so.tilo.remote" | "so.tilo.backups" | "so.tilo.imager" | "so.tilo.themes" => 25,
         "so.tilo.api-tester"
         | "so.tilo.snippets"
         | "so.tilo.diffmerge"

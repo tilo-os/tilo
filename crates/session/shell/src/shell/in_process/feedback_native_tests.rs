@@ -272,7 +272,7 @@ fn prepare_existing_chat(owner: &NativeWorkspaceOwner, key: &ed25519_dalek::Sign
                     chat::model::ChannelKind::Text,
                 )
                 .map_err(|error| error.to_string())?;
-                let message = view.peer().clone().publish_incremental(
+                let message = view.peer().clone().publication_mut().publish_incremental(
                     "so.tilo.chat",
                     "",
                     document.save_after(&heads),

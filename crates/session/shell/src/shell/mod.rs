@@ -7,6 +7,7 @@
 //! and recordings with `cargo run --bin shots`. `--backend winit` (the default)
 //! runs the compositor in a window inside an existing X11/Wayland session.
 
+pub(crate) mod action_authority;
 pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
@@ -14,6 +15,7 @@ pub mod app_action_consent;
 pub mod app_close;
 pub mod app_list;
 pub mod app_notice_card;
+pub mod app_opens;
 pub mod app_tabs;
 pub(crate) mod app_versions;
 pub(crate) mod audio_output;
@@ -24,6 +26,7 @@ pub mod automation_records;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
 pub use broker_services::decide_receipt_against_surfaces;
+pub(crate) mod activity_provider;
 pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
 pub mod arrival_line;
@@ -47,6 +50,7 @@ pub(crate) mod collaborator_versions;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
+pub mod crash_notice;
 pub mod desk_widgets;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
@@ -61,6 +65,8 @@ pub mod device_local_actions;
 pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
+#[cfg(target_os = "linux")]
+pub mod device_vpn;
 pub mod device_wake;
 pub mod directory_sheet;
 #[cfg(test)]
@@ -97,6 +103,7 @@ pub mod heap_trim;
 pub(crate) mod held_layers;
 pub mod history_narrative;
 pub mod host_apps;
+pub(crate) mod host_runtime;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
@@ -314,8 +321,6 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
         | ShellTile::PeerWindow { app_id, .. }
         | ShellTile::HostedWindow { app_id, .. }
         | ShellTile::LocalApp { app_id, .. } => UiKind::App(ui::icons::app_glyph(app_id, None)),
-        // The device-local activity tile has no app of its own.
-        ShellTile::WorkspaceActivity => UiKind::Settings,
     }
 }
 
@@ -368,14 +373,6 @@ fn try_to_ui_tile_for_tab(
     tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
     Ok(match t {
-        // The retained activity controller is painted into this ordinary
-        // tile by `ShellOverlayHost`, which also owns the workspace-history
-        // index. The neutral body exists only for the first reconciliation
-        // frame before that controller has its content rect.
-        ShellTile::WorkspaceActivity => UiTile::Notice {
-            title: crate::shell::i18n::t("shell-activity-title"),
-            detail: crate::shell::i18n::t("shell-activity-loading"),
-        },
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
             label: label.clone(),
@@ -1244,8 +1241,8 @@ pub fn build_tilo_overlay_host_with_inputs(
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
-    launcher::action_authority::Export::of(&tree).publish();
-    launcher::action_authority::follow_tree(&tree_handle);
+    action_authority::Export::of(&tree).publish();
+    action_authority::follow_tree(&tree_handle);
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

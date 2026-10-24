@@ -26,13 +26,13 @@
 //!
 //! The frame loop keeps records and presentations without waiting for the
 //! disk, and the app that opens them next reads them from it. So a record,
-//! or a View naming it, is [`landing`] until its writes have reached the
+//! or a View naming it, is `landing` until its writes have reached the
 //! disk, and nothing opens a window on it before then: hydration says
 //! [`Hydration::Waiting`], and callers that point a window at it wait too.
 //!
 //! Nor does the frame loop read the disk: a profile's store answers it
 //! Opening while the store's own thread opens or reads a document, and the
-//! loop asks the same store again on a later round ([`open_profile`]).
+//! loop asks the same store again on a later round (`open_profile`).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -503,7 +503,7 @@ fn settle(entry: &mut Entry, data_home: &Path) {
 }
 
 /// Keep bytes another device sent as `address` in this device's profile.
-/// The record is [`landing`] until it has reached the disk. `None` while the
+/// The record is `landing` until it has reached the disk. `None` while the
 /// profile's store is still opening it for a thread that may not wait on
 /// the disk: keep the same bytes again later.
 ///
@@ -536,7 +536,7 @@ pub fn keep(
 /// Give `instance` of `address`'s app on this device a saved presentation
 /// naming `address`'s record, unless it already names it: how a window
 /// opened here reopens on a record brought from elsewhere. `record` is the
-/// record as kept, when the caller has it. The presentation is [`landing`]
+/// record as kept, when the caller has it. The presentation is `landing`
 /// until it has reached the disk; start the window after that. `false`
 /// while the profile's store is still reading for a thread that may not
 /// wait on the disk: ask again later.

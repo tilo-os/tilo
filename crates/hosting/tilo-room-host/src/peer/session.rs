@@ -4,6 +4,7 @@
 //! plus the inbound-frame helpers the reader uses.
 
 mod reader;
+mod wire;
 mod writer;
 
 use super::{
@@ -11,7 +12,9 @@ use super::{
     PEER_OUTBOUND_CAPACITY, PeerContext, PeerError, ReplayWrite, SessionCtx, SessionReader,
     StateDelivery, mpsc,
 };
+use crate::metrics::EgressWrite;
 use reader::{ReaderQueues, SessionReaderLoop};
+use wire::{Heartbeats, Wire};
 use writer::{SessionWriter, WriterQueues};
 
 /// What the reader and the writer of one session both borrow while they
@@ -25,6 +28,8 @@ struct SessionLoop<'s, 'a> {
     pending_replays: &'s std::sync::atomic::AtomicUsize,
     /// Woken each time the writer finishes one of those replays.
     replay_written: &'s tokio::sync::Notify,
+    /// Pings read and not yet answered; the wire answers them at once.
+    heartbeats: &'s Heartbeats,
 }
 
 impl<'s, 'a> SessionLoop<'s, 'a> {
@@ -33,12 +38,14 @@ impl<'s, 'a> SessionLoop<'s, 'a> {
         session: &'s SessionCtx<'a>,
         pending_replays: &'s std::sync::atomic::AtomicUsize,
         replay_written: &'s tokio::sync::Notify,
+        heartbeats: &'s Heartbeats,
     ) -> Self {
         Self {
             peer,
             session,
             pending_replays,
             replay_written,
+            heartbeats,
         }
     }
 
@@ -143,7 +150,8 @@ where
     let lag = Arc::new(Lag::default());
     // Everything this session is sent passes here, so its egress and the
     // relay's are what the stream accepted, not an estimate.
-    let mut write = crate::metrics::EgressWrite::new(write, &metrics, peer.device_public_key);
+    let wire = Wire::new(EgressWrite::new(write, &metrics, peer.device_public_key));
+    let (mut write, beats) = (wire.writer(), Heartbeats::default());
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
@@ -197,7 +205,7 @@ where
     let pending_replays = std::sync::atomic::AtomicUsize::new(0);
     let replay_written = tokio::sync::Notify::new();
     let outcome = {
-        let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written);
+        let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written, &beats);
         let reading = SessionReaderLoop::new(
             &mut reader,
             &mut subscribed,
@@ -212,6 +220,7 @@ where
         until_ended(
             reading,
             writing,
+            wire.answer_heartbeats(&beats),
             end_writer,
             &mut closed,
             &mut disconnect_rx,
@@ -224,7 +233,8 @@ where
         .0
         .store(false, std::sync::atomic::Ordering::SeqCst);
     let outcome = finish_peer_outcome(outcome, &metrics, &peer.device_public_key);
-    trace_session_end(&peer, write.bytes_sent(), &outcome, &subscribed);
+    let sent = wire.io(EgressWrite::bytes_sent);
+    trace_session_end(&peer, sent, &outcome, &subscribed);
     unregister_subscriber(
         &workspaces,
         &subscribed,
@@ -244,12 +254,13 @@ where
 async fn until_ended<C: std::future::Future>(
     reading: impl std::future::Future<Output = Result<(), PeerError>>,
     writing: impl std::future::Future<Output = Result<(), PeerError>>,
+    heartbeats: impl std::future::Future<Output = Result<(), PeerError>>,
     end_writer: tokio::sync::watch::Sender<bool>,
     closed: &mut std::pin::Pin<&mut C>,
     disconnect: &mut mpsc::Receiver<()>,
     metrics: &crate::metrics::Metrics,
 ) -> Result<(), PeerError> {
-    tokio::pin!(reading, writing);
+    tokio::pin!(reading, writing, heartbeats);
     tokio::select! {
         _ = closed.as_mut() => Ok(()),
         _ = disconnect.recv() => {
@@ -265,6 +276,7 @@ async fn until_ended<C: std::future::Future>(
             result
         }
         result = &mut writing => result,
+        result = &mut heartbeats => result,
     }
 }
 

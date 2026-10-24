@@ -19,7 +19,7 @@
 //! app is given at startup) and records an `ImportPhoto` action naming them by
 //! hash; every edit after that is a `SetEdits` action replayed onto that
 //! original. The CRDT holds the hash, small metadata and the edits in force
-//! ([`doc`]); it never holds the pixels, and a rendered edit (Copy, Save, the
+//! (`doc`); it never holds the pixels, and a rendered edit (Copy, Save, the
 //! export operation) is an output that never replaces the original. The decode
 //! and the render live in the app instance, because an automerge change big
 //! enough to carry a photograph is dropped by the sync transport and freezes

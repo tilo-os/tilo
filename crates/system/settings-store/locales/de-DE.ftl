@@ -3,7 +3,7 @@
 
 settings-index-page-network = Netzwerk
 settings-index-page-network-subtitle = WLAN, kabelgebundene Verbindungen und VPN
-settings-index-page-network-words = wlan, kabel, ethernet, vpn, proxy, internet, verbindung, netzwerk, ip-adresse, funknetz
+settings-index-page-network-words = wlan, kabel, ethernet, vpn, wireguard, openvpn, proxy, internet, verbindung, netzwerk, ip-adresse, funknetz
 settings-index-page-bluetooth = Bluetooth
 settings-index-page-bluetooth-subtitle = Bluetooth-Geräte koppeln und verwalten
 settings-index-page-bluetooth-words = koppeln, kopfhörer, bluetooth-tastatur, bluetooth-maus, drahtlos, geräte, lautsprecher

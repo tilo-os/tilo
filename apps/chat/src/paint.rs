@@ -2,7 +2,7 @@
 //!
 //! Thin wrappers over the toolkit's role-based text painting so the render
 //! code reads as layout intent. Every style comes from a `TextRole` of the
-//! [`Theme`] the caller passes, and every colour from its tokens.
+//! [`Theme`](ui::theme::Theme) the caller passes, and every colour from its tokens.
 
 use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextStyle};

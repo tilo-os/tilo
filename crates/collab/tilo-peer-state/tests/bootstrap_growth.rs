@@ -119,7 +119,10 @@ struct Measurement {
 fn measure(count: usize) -> Measurement {
     let (key, mut peer, now) = fixture_with_documents(count);
     let baseline = room_stats(&peer.room_message());
-    let first_batch = peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    let first_batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     assert_eq!(first_batch.len(), count + 1);
     assert!(matches!(first_batch[0], NeighbourMsg::SyncResp { .. }));
     assert_eq!(
@@ -132,7 +135,10 @@ fn measure(count: usize) -> Measurement {
     );
     let first_full = room_stats(&first_batch[0]);
 
-    let repeated_batch = peer.durable_bootstrap_messages(&key, now, 2).unwrap();
+    let repeated_batch = peer
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 2)
+        .unwrap();
     assert_eq!(repeated_batch.len(), count + 1);
     assert!(matches!(repeated_batch[0], NeighbourMsg::SyncResp { .. }));
     let repeated_full = room_stats(&repeated_batch[0]);
@@ -196,6 +202,7 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
     for row in baseline.rows() {
         expected_messages.push(
             serial
+                .publication_mut()
                 .publish_document(
                     &row.app_id,
                     &row.record_id,
@@ -219,7 +226,10 @@ fn durable_bootstrap_batches_exact_snapshots_coverage_receipts_and_replay() {
         .collect::<BTreeMap<_, _>>();
 
     let mut batched = baseline;
-    let messages = batched.durable_bootstrap_messages(&key, now, 7).unwrap();
+    let messages = batched
+        .publication_mut()
+        .durable_bootstrap_messages(&key, now, 7)
+        .unwrap();
     assert_eq!(&messages[1..], expected_messages);
     let batched_room = room_document(&messages[0]);
     assert_eq!(
@@ -280,6 +290,7 @@ fn failed_public_snapshot_batch_keeps_the_original_peer_exact() {
     let (key, mut peer, now) = fixture_with_documents_and_expiry(8, Some(expiration));
     let before = peer.durable().unwrap();
     let error = peer
+        .publication_mut()
         .signed_snapshots(&key, now + Duration::from_secs(1_000))
         .unwrap_err();
     assert!(error.contains("expired"), "unexpected failure: {error}");
@@ -300,7 +311,10 @@ fn empty_durable_bootstrap_writes_empty_receipts_once() {
 fn nondurable_bootstrap_batches_coverage_into_one_change() {
     let (key, mut peer, now) = fixture_with_documents(8);
     let before = room_stats(&peer.room_message());
-    let messages = peer.bootstrap_messages(&key, now).unwrap();
+    let messages = peer
+        .publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     assert_eq!(messages.len(), 9);
     assert_eq!(room_delta(room_stats(&messages[0]), before).changes, 1);
 }
@@ -313,7 +327,9 @@ fn nondurable_bootstrap_batches_coverage_into_one_change() {
 fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usize, usize) {
     use automerge::ScalarValue;
     let (key, mut peer, now) = fixture_with_documents(documents);
-    peer.durable_bootstrap_messages(&key, now, 1).unwrap();
+    peer.publication_mut()
+        .durable_bootstrap_messages(&key, now, 1)
+        .unwrap();
     let start = room_stats(&peer.room_message());
     let mut whole_map = AutoCommit::new();
     let mut whole_map_bytes = 0usize;
@@ -334,15 +350,17 @@ fn durable_generation_growth(documents: usize, generations: u64) -> (usize, usiz
         doc.put(ROOT, "value", format!("edit-{generation}"))
             .unwrap();
         doc.commit_edit("fixture", "value");
-        peer.publish_incremental(
-            APP,
-            &format!("tab-{index:02}"),
-            doc.save_after(&heads),
-            &key,
-            now,
-        )
-        .unwrap();
-        peer.durable_mutation_messages(&before, &key, now, generation)
+        peer.publication_mut()
+            .publish_incremental(
+                APP,
+                &format!("tab-{index:02}"),
+                doc.save_after(&heads),
+                &key,
+                now,
+            )
+            .unwrap();
+        peer.publication_mut()
+            .durable_mutation_messages(&before, &key, now, generation)
             .unwrap();
         // The whole-map layout: both maps rewritten as one scalar each.
         let room = peer.admitted_room().unwrap();

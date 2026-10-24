@@ -27,7 +27,6 @@ hex.workspace = true
 # The peer network: a sibling is reached directly or through a relay.
 iroh.workspace = true
 iroh-base.workspace = true
-libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }

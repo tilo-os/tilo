@@ -438,8 +438,8 @@ fn measure_scroll_repaint() {
 
 /// A scroll frame repaints the strip that scrolled in plus what changed —
 /// the host copies the rest — and the copied frames are pixel-identical to
-/// a full repaint, so nothing floating over the pages (the page bubble and
-/// its shadow, the scroll bar) is smeared along with them.
+/// a full repaint, so nothing floating over the pages (the scroll bar) is
+/// smeared along with them.
 #[test]
 #[serial_test::serial(pdfium)]
 fn scrolling_repaints_only_the_exposed_strip_and_matches_a_full_repaint() {
@@ -1007,8 +1007,8 @@ const PROBE_PITCH: u32 = 64;
 /// Pixels of the visible pages, in the rasterised `probes`, that show bare
 /// paper: the reader draws a page's paper first and the engine's pixels
 /// over it, and the fixture's own ink is never that light. Excludes a
-/// margin round each card edge, the scroll bars and the page bubble, which
-/// float over the pages. Returns (paper, sampled).
+/// margin round each card edge and the scroll bars, which float over the
+/// pages. Returns (paper, sampled).
 fn paper_showing(
     app: &PdfApp,
     pixels: &[u8],
@@ -1018,7 +1018,6 @@ fn paper_showing(
     let canvas = app.canvas_rect;
     let lane = 16.0;
     let view = vello::kurbo::Rect::new(canvas.x0, canvas.y0, canvas.x1 - lane, canvas.y1 - lane);
-    let bubble = app.bubble_rect.inflate(32.0, 32.0);
     let size = vello::kurbo::Size::new(app.pw(), app.ph()) * app.zoom();
     let (mut paper, mut sampled) = (0, 0);
     let cards: Vec<vello::kurbo::Rect> = app
@@ -1035,7 +1034,7 @@ fn paper_showing(
         for y in probe.y..probe.y + probe.height {
             for x in probe.x..probe.x + probe.width {
                 let at = vello::kurbo::Point::new(f64::from(x), f64::from(y));
-                if bubble.contains(at) || !cards.iter().any(|card| card.contains(at)) {
+                if !cards.iter().any(|card| card.contains(at)) {
                     continue;
                 }
                 let i = (y as usize * width as usize + x as usize) * 4;
@@ -1295,12 +1294,19 @@ fn drive_input(
     let mut out = Vec::with_capacity(frames);
     let mut fingers = ui::interaction::TouchPointerEmulator::default();
     let mut next = ui::time::now();
+    // Each frame's input and work see the 60 Hz clock a host's frames keep,
+    // so a loaded machine that oversleeps a frame cannot age the finger's
+    // last move out of the release velocity's window.
+    let mut frame_clock = next;
     for frame in 0..frames {
         next += period;
+        frame_clock += period;
         let t = ui::time::now();
-        send_scroll_input(&mut app, &surface, &mut fingers, input, frame, at);
-        scene.reset();
-        app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        ui::time::testing::with_monotonic_time(frame_clock, || {
+            send_scroll_input(&mut app, &surface, &mut fingers, input, frame, at);
+            scene.reset();
+            app.surface_frame_with_damage(&surface, &mut scene, &mut damage);
+        });
         let ui_ms = t.elapsed().as_secs_f64() * 1000.0;
         let t = ui::time::now();
         let frame = damage.take_copying();

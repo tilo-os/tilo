@@ -64,6 +64,7 @@ fn activate_context_menu_action(
         MenuTarget::Category(_) => MenuAction::for_category().to_vec(),
         MenuTarget::Message(_) => MenuAction::for_message().to_vec(),
         MenuTarget::Room => MenuAction::for_room().to_vec(),
+        MenuTarget::CallParticipant(_) => MenuAction::for_call_participant().to_vec(),
     };
     let index = items
         .iter()
@@ -2425,3 +2426,60 @@ fn floating_pins_leave_the_composer_whole() {
 
 mod calls_and_peers;
 mod room_state;
+
+/// Each Discord guest in the expanded call is their own tile, named as
+/// their bridged messages read, and opens how loud they play here.
+#[test]
+fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
+    use ui::native_media::{Guest, Roster};
+    let (mut app, mut doc) = app_with_doc();
+    app.call.join("c_standup");
+    app.call.expanded = true;
+    app.native_voice.snapshot.rosters = vec![Roster {
+        channel_id: "c_standup".into(),
+        people: vec!["u_aria".into()],
+        guests: vec![Guest {
+            id: "discord:1".into(),
+            name: "Dana".into(),
+            avatar: None,
+            service: "discord".into(),
+            linked: None,
+            muted: false,
+        }],
+        bridges: vec!["discord".into()],
+        ..Default::default()
+    }];
+    app.refresh_native_streams();
+    render_frame(&mut app, 1280.0, 720.0);
+    let dana = app
+        .semantic_hits()
+        .into_iter()
+        .find(|(_, hit, ..)| matches!(hit, Hit::CallParticipant(id) if id == "discord:1"))
+        .expect("Dana has a tile of her own");
+    assert_eq!(dana.2, "Dana (via Discord): volume and mute for you");
+    assert!(
+        app.semantic_hits()
+            .iter()
+            .all(|(_, hit, ..)| !matches!(hit, Hit::CallParticipant(id) if app.is_me(id))),
+        "this person's own tile has no volume"
+    );
+
+    app.on_hit(dana.1, &mut ui::widget::Edits::lend(&mut doc));
+    let menu = app.menu.as_ref().expect("her tile opens the volume menu");
+    assert_eq!(menu.target, MenuTarget::CallParticipant("discord:1".into()));
+    activate_context_menu_action(
+        &mut app,
+        &mut doc,
+        MenuTarget::CallParticipant("discord:1".into()),
+        MenuAction::Silence,
+    );
+    assert!(app.call_listening("discord:1").silenced);
+    activate_context_menu_action(
+        &mut app,
+        &mut doc,
+        MenuTarget::CallParticipant("discord:1".into()),
+        MenuAction::Volume(50),
+    );
+    let listening = app.call_listening("discord:1");
+    assert_eq!((listening.percent, listening.silenced), (50, false));
+}

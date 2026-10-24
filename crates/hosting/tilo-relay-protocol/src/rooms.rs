@@ -380,6 +380,18 @@ pub enum RoomsRequest {
         /// (`room:<id>/app:<app>/…`).
         node: String,
     },
+    /// The requests left at `room`'s door, oldest first: answered with
+    /// [`RoomsReply::WaitList`]. Whoever may invite.
+    WaitList {
+        room: String,
+    },
+    /// Take a request left at `room`'s door off its wait list, once it was
+    /// invited or is not to be: answered with [`RoomsReply::WaitList`].
+    Unlist {
+        room: String,
+        /// The entry.
+        request_id: [u8; 32],
+    },
 }
 
 /// The answer to a [`RoomsRequest`].
@@ -405,6 +417,8 @@ pub enum RoomsReply {
     Notices(Vec<RoomNotice>),
     /// Whether the caller may, for [`RoomsRequest::Permits`].
     Permits(bool),
+    /// The requests left at the door, oldest first.
+    WaitList(Vec<WaitListEntry>),
 }
 
 /// One `/join` step.
@@ -497,6 +511,61 @@ pub enum JoinReply {
     Refused(String),
 }
 
+// Requests left at the door. A room that takes people by invitation also
+// keeps the requests of people who asked at its door without one, each an
+// address to be invited at ([`WaitListEntry`]).
+
+/// The longest address a request left at the door gives ([`WaitListEntry`]):
+/// the longest an email address can be.
+pub const MAX_CONTACT_CHARS: usize = 254;
+
+/// `text` as the address a request left at a room's door keeps
+/// ([`WaitListEntry`]): an email address, trimmed and lowercased, so
+/// one address is one request however it was typed.
+///
+/// # Errors
+///
+/// Anything that is not one plausible email address of at most
+/// [`MAX_CONTACT_CHARS`] characters: one `@` with something before it and a
+/// dotted domain after it, and no space or control character.
+pub fn contact_address(text: &str) -> Result<String, &'static str> {
+    let address = text.trim().to_lowercase();
+    if address.chars().count() > MAX_CONTACT_CHARS {
+        return Err("an email address is at most 254 characters");
+    }
+    let plausible = address.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && !domain.contains('@')
+            && domain
+                .split('.')
+                .all(|label| !label.is_empty() && !label.starts_with('-'))
+            && domain.contains('.')
+    }) && !address
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'));
+    if plausible {
+        Ok(address)
+    } else {
+        Err("that is not an email address")
+    }
+}
+
+/// A request left at the door of a room that takes people by invitation:
+/// someone who has no invitation, and so no identity the room knows yet,
+/// left an address to be invited at. Someone who may invite sends an
+/// invitation of their own there, then takes the entry off the list
+/// ([`RoomsRequest::Unlist`]). Unlike a [`JoinRequest`] it names no person
+/// or device: it is not anyone to admit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitListEntry {
+    /// The entry, for [`RoomsRequest::Unlist`].
+    pub request_id: [u8; 32],
+    /// The address ([`contact_address`]).
+    pub contact: String,
+    /// When it was left.
+    pub added_at_ns: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,5 +576,34 @@ mod tests {
         assert_eq!(digest, join_proof_digest(b"challenge"));
         assert_ne!(digest, join_proof_digest(b"challengf"));
         assert_ne!(digest, *blake3::hash(b"challenge").as_bytes());
+    }
+
+    #[test]
+    fn a_contact_is_one_email_address_however_it_was_typed() {
+        assert_eq!(
+            contact_address("  Ada@Example.ORG "),
+            Ok("ada@example.org".to_owned())
+        );
+        assert_eq!(
+            contact_address("ada+tilo@mail.example.co.uk"),
+            Ok("ada+tilo@mail.example.co.uk".to_owned())
+        );
+        for typed in [
+            "",
+            "ada",
+            "ada@",
+            "@example.org",
+            "ada@example",
+            "ada@example.",
+            "ada@.org",
+            "ada@@example.org",
+            "a da@example.org",
+            "ada@example.org, bob@example.org",
+            "Ada <ada@example.org>",
+        ] {
+            assert!(contact_address(typed).is_err(), "{typed:?}");
+        }
+        let long = format!("{}@example.org", "a".repeat(MAX_CONTACT_CHARS));
+        assert!(contact_address(&long).is_err());
     }
 }

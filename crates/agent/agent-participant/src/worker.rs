@@ -6,8 +6,8 @@
 //! runs over whatever a room's members put in a record, so it does not run
 //! there. Each record the host's room actions or an agent holds lives in
 //! its own worker process ([`ConfinedReplica`]); the registered reads of a
-//! record's component ([`ConfinedRead`]) and the views of an existing
-//! resource ([`ConfinedViews`]) each run in one too.
+//! record's component (`ConfinedRead`) and the views of an existing
+//! resource (`ConfinedViews`) each run in one too.
 //!
 //! A worker is the host's own executable started again in worker mode. It
 //! prepares what it cannot load later (the app catalogue; a reader's

@@ -20,14 +20,10 @@ class RpmResolveContractTests(unittest.TestCase):
 
     def test_release_build_resolves_before_using_rpms(self) -> None:
         build = (ROOT / "os/dev/build-image.sh").read_text()
-        workflow = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
         self.assertIn('resolve-rpm-snapshot.sh', build)
         self.assertIn('cosign verify --key "$TILO_REPO/keys/cosign.pub" "$RPMS_REF"', build)
         self.assertIn('cosign verify-attestation', build)
         self.assertIn('verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"', build)
-        self.assertIn('Resolve RPMS_REF (frozen package snapshot)', workflow)
-        self.assertIn('verify-rpm-snapshot-buildkit.py "$RPMS_REF"', workflow)
-        self.assertIn('Resolve the exact signed RPM snapshot fingerprint', workflow)
 
 
 if __name__ == "__main__":

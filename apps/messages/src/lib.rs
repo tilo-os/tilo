@@ -243,6 +243,22 @@ impl std::fmt::Debug for MessagesEffect {
 
 ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
 
+/// The id of [`open_contacts_action`] on the app's resource.
+pub(crate) const OPEN_CONTACTS: &str = "open-contacts";
+
+/// Opening Contacts, where the people Messages lists are added: the
+/// workspace opens the app ([`ApplicationLaunch`]), so the empty state's
+/// button, search and agents all ask for the same thing.
+///
+/// [`ApplicationLaunch`]: ui::tilo_actions::remote::ApplicationLaunch
+pub(crate) fn open_contacts_action() -> ui::tilo_actions::ActionSpec {
+    ui::tilo_actions::remote::ApplicationLaunch::app("so.tilo.contacts").spec(
+        OPEN_CONTACTS,
+        &CATALOG.t("messages-open-contacts"),
+        &CATALOG.t("messages-open-contacts-description"),
+    )
+}
+
 pub struct MessagesShell;
 
 /// What the binary runs instead of opening a window.
@@ -281,6 +297,10 @@ impl ResourceApp for MessagesShell {
     }
     fn view(cx: &mut ViewCx<Messages>) -> Element {
         view::build(cx)
+    }
+    /// Open Contacts, where the people you message are added.
+    fn local_operations() -> Vec<ui::tilo_actions::ActionSpec> {
+        vec![open_contacts_action()]
     }
     fn scenarios() -> &'static [&'static str] {
         &[

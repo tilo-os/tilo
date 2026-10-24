@@ -243,7 +243,7 @@
 //!   the latest request takes over, and finish like an effect's.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
-//!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
+//!   — are drained with [`RecordEnv::outbox`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
 //! * **Files of the mounted filesystem** an app shows (a file manager's
@@ -324,6 +324,9 @@ mod each;
 mod effect;
 mod env;
 mod form;
+// The headless host discovers native presentation, which the browser has not got.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod headless;
 pub mod history;
 mod kinds;
 mod launch;
@@ -332,6 +335,7 @@ pub mod page_part;
 mod people;
 mod person;
 mod preview;
+mod query;
 mod reactive;
 mod record;
 pub mod reference;
@@ -377,6 +381,7 @@ pub use live::Live;
 pub use people::People;
 pub use person::PersonRecord;
 pub use preview::PastVersion;
+pub use query::{Answer, Query};
 pub use record::{Declare, OtherRecord, Records};
 pub use root::{reserved_action_ids, with_surface};
 pub use rows::LiveRow;
@@ -391,10 +396,6 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use view::{Bindable, EffectsHandle, ViewCx};
-
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod headless_results_tests;
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host

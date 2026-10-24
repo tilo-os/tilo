@@ -157,7 +157,7 @@ pub async fn connect(
 
 /// Apply `invoke` to `doc` as `owner` acting in the app `(id, name)`,
 /// confirmed as a person confirms it.
-fn apply_as_owner<R: tilo_resource::Resource>(
+pub(super) fn apply_as_owner<R: tilo_resource::Resource>(
     doc: &mut automerge::AutoCommit,
     owner: &str,
     (app, name): (&str, &str),

@@ -2,7 +2,7 @@
 //!
 //! A graphical systemd-journal viewer, composed from the toolkit: one
 //! [`NavShell`] whose content is the journal table with its filters
-//! ([`JournalPane`]) and whose inspector shows every field of the selected
+//! (`JournalPane`) and whose inspector shows every field of the selected
 //! entry. The content header holds the journal's commands: refresh, live
 //! tail and export.
 //!
@@ -854,7 +854,7 @@ impl Widget for LogsApp {
         (self.reads && self.live_tail) || self.reading.is_some()
     }
 
-    /// Live tail reads the journal once a [`POLL_INTERVAL`]: a deadline,
+    /// Live tail reads the journal once a `POLL_INTERVAL`: a deadline,
     /// not a frame pump. A read and an export wake the app when they finish.
     fn next_wake_deadline(&self) -> Option<Instant> {
         let poll = (self.reads && self.live_tail && self.reading.is_none())

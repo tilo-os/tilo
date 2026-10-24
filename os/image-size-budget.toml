@@ -3,9 +3,11 @@
 # Ceilings on the deployed /usr of a built image (each hard-linked file once,
 # bytes of regular files; os/tests/image_size_budget.py), checked by t on every
 # image it builds: os-image-size-<arch> holds os-image-<arch> to
-# production-<arch> before nightly-os-image-<arch> boots it, and
+# production-<arch> before os-acceptance-<arch> boots it (and os-release-image-size-<arch>
+# the release image before os-release-seal-<arch> does), and
 # os-board-size-<board> holds os-board-<board> to board-<board> before
-# publish-os-board-<board> pushes it (tools/ci/os/image-size.sh, which also
+# publish-os-board-<board> pushes it, and os-release-image-size-<board> the board's
+# release image before os-release-seal-<board> seals it (tools/ci/os/image-size.sh, which also
 # writes the breakdown by layer, directory, file and package). The nightly KPI
 # budgets in tools/perf/kpi-budgets.toml watch the whole image over time; these
 # stop a single change that grows /usr before it ships.

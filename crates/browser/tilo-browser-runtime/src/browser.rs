@@ -55,6 +55,9 @@ thread_local! {
     /// What the device's set-up waits on now, for a mount whose first frame
     /// is late (`watch_first_frame`).
     static GPU_STEP: Cell<GpuStep> = const { Cell::new(GpuStep::Queued) };
+    /// How many of the renderer's awaited pipelines have compiled on this
+    /// page: progress within the pipelines step (`watch_first_frame`).
+    static PIPELINES_BUILT: Cell<u32> = const { Cell::new(0) };
     /// Mounts presenting a desktop, which applications' notifications wake.
     static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
@@ -1788,7 +1791,9 @@ impl GpuStep {
 /// rasteriser (`SwiftShader` in CI) the device alone took 28 s and the
 /// pipelines 10 s, leaving a first frame that takes 15-35 s there too
 /// little of one bound from the mount; on a GPU the whole start takes
-/// about 2 s.
+/// about 2 s. Each pipeline compiled is progress too: on a node short of
+/// memory the pipelines step alone took over 60 s while compiles still
+/// finished, so the bound runs from the last one, not from the step's start.
 const FIRST_FRAME_BOUND_MS: u32 = 60_000;
 /// How often [`watch_first_frame`] looks.
 const FIRST_FRAME_TICK_MS: u32 = 1_000;
@@ -1809,7 +1814,7 @@ pub(crate) async fn sleep_ms(ms: u32) {
 /// Watch mount `id` until its first frame is out: say each step graphics
 /// start-up moves to (`gpuStep`), and fail the mount with that step as its
 /// error once it has been visible for [`FIRST_FRAME_BOUND_MS`] on that step
-/// without a frame. Time hidden (a background tab draws nothing) does not
+/// without a frame or a pipeline compiled. Time hidden (a background tab draws nothing) does not
 /// count.
 async fn watch_first_frame(id: u64) {
     let mut visible_ms: u32 = 0;
@@ -1828,8 +1833,13 @@ async fn watch_first_frame(id: u64) {
             } else {
                 GPU_STEP.get()
             };
-            if said != Some(step) {
-                said = Some(step);
+            let built = PIPELINES_BUILT.get();
+            if said.is_some_and(|(on, before)| on == step && before != built) {
+                said = Some((step, built));
+                visible_ms = 0;
+            }
+            if said.map(|(on, _)| on) != Some(step) {
+                said = Some((step, built));
                 visible_ms = 0;
                 emit(
                     &m.status,
@@ -1956,13 +1966,14 @@ async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Re
 /// needs one sooner creates it there and then, so nothing is ever drawn
 /// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
-    vello::Renderer::new_async_deferring(
+    vello::Renderer::new_async_deferring_reporting(
         device,
         vello::RendererOptions {
             antialiasing_support: vello::AaSupport::area_only(),
             ..Default::default()
         },
         vello::PipelineDeferral::Unused,
+        &mut || PIPELINES_BUILT.set(PIPELINES_BUILT.get().saturating_add(1)),
     )
     .await
     .map_err(|e| e.to_string())
@@ -2436,6 +2447,10 @@ impl Mount {
             let stage = self.metric_start();
             crate::replication::publish(peer);
             self.metric_end("replicate", stage);
+        }
+        // A frame input or an idle pass ran and skipped reports here.
+        if let Some(line) = self.frame.take_skip_report() {
+            web_sys::console::error_1(&JsValue::from_str(&line));
         }
         if let Some(error) = unsettled {
             if let Some(line) = self.frame.skip_frame(&error) {

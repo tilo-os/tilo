@@ -1,7 +1,7 @@
 //! The questions about the person's apps as the shell hosts them, one at a
 //! time, modal above the desktop, their answers carried out on a worker:
-//! "Uninstall <name>?" ([`crate::shell::uninstall_sheet`]), asked for
-//! through [`crate::shell::app_list::ask`], and "Add <name> to apps?"
+//! "Uninstall \<name\>?" ([`crate::shell::uninstall_sheet`]), asked for
+//! through [`crate::shell::app_list::ask`], and "Add \<name\> to apps?"
 //! ([`crate::shell::add_app_sheet`]), asked the first time a downloaded
 //! program runs ([`crate::shell::downloaded_apps::take_ask`]).
 
@@ -38,7 +38,7 @@ impl AppSheet {
 }
 
 impl ShellOverlayHost {
-    /// Whether "Uninstall <name>?" is up.
+    /// Whether "Uninstall \<name\>?" is up.
     pub fn uninstall_sheet_open(&self) -> bool {
         matches!(self.app_sheet, Some(AppSheet::Uninstall(_)))
     }
@@ -51,7 +51,7 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The "Add <name> to apps?" sheet on screen, for tests and captures.
+    /// The "Add \<name\> to apps?" sheet on screen, for tests and captures.
     pub fn add_app_sheet(&self) -> Option<&add_app_sheet::Asking> {
         match &self.app_sheet {
             Some(AppSheet::Add(asking)) => Some(asking),
@@ -143,8 +143,12 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Take the answered question down: it takes no more input, and is
+    /// drawn leaving (`motion::Appear`) until it has gone.
     fn close_app_sheet(&mut self) {
-        if self.app_sheet.take().is_some() {
+        if let Some(mut sheet) = self.app_sheet.take() {
+            sheet.dialog_mut().set_open(false);
+            self.app_sheet_leaving = Some(sheet);
             self.app_sheet_nodes = None;
             self.app_sheet_changed = true;
         }
@@ -234,18 +238,25 @@ impl ShellOverlayHost {
         theme: &ui::theme::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if self.app_sheet_nodes.is_none() {
-            return;
-        }
         let area = self.overlay_area();
-        let Some(sheet) = self.app_sheet.as_mut() else {
-            return;
-        };
         // The sheet's scrim covers the display it measures against.
         let outer = presence.viewport.replace(Some(area));
-        sheet
-            .dialog_mut()
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
+        // The answered one, drawn as it was laid out until it has gone.
+        if let Some(leaving) = self.app_sheet_leaving.as_mut() {
+            leaving
+                .dialog_mut()
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+            if !leaving.dialog_mut().is_drawn() {
+                self.app_sheet_leaving = None;
+            }
+        }
+        if self.app_sheet_nodes.is_some()
+            && let Some(sheet) = self.app_sheet.as_mut()
+        {
+            sheet
+                .dialog_mut()
+                .draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
         presence.viewport.set(outer);
     }
 
@@ -256,5 +267,94 @@ impl ShellOverlayHost {
                 .app_sheet
                 .as_mut()
                 .is_some_and(|sheet| sheet.dialog_mut().take_structure_dirty())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::time::testing::with_monotonic_time;
+    use ui::tokens::MotionSource;
+
+    fn notes() -> app_list::AppListItem {
+        app_list::AppListItem {
+            id: "so.tilo.notes".into(),
+            name: "Notes".into(),
+            icon: None,
+            source: app_list::AppSource::Tilo { added: true },
+            size: None,
+        }
+    }
+
+    fn host() -> ShellOverlayHost {
+        ShellOverlayHost::new(Box::new(ui::widget::Container::new()))
+    }
+
+    fn draw(host: &mut ShellOverlayHost) {
+        host.draw_app_sheet(
+            &mut vello::Scene::new(),
+            vello::kurbo::Affine::IDENTITY,
+            &mut ui::text_render::TextRenderer::new(),
+            &ui::theme::Theme::dark(),
+            &ui::presence::PresenceCtx::empty(),
+        );
+    }
+
+    fn progress(host: &ShellOverlayHost) -> f64 {
+        host.uninstall_sheet()
+            .map_or(0.0, |asking| asking.dialog.appear_progress())
+    }
+
+    /// "Uninstall <name>?" asked after a click arrives on the standard
+    /// motion, scrim and all, and answered by a click leaves on it, drawn
+    /// until it has gone while it takes no input.
+    #[test]
+    fn the_uninstall_sheet_arrives_and_leaves_on_the_appear_motion_after_a_click() {
+        let mut host = host();
+        let start = ui::time::now();
+        let open = start + std::time::Duration::from_secs(1);
+        let gone = open + std::time::Duration::from_secs(1);
+        with_monotonic_time(start, || {
+            ui::motion::note_source(MotionSource::Pointer);
+            host.ask_uninstall(notes());
+            let arriving = progress(&host);
+            assert!(arriving < 0.5, "not in one frame: {arriving}");
+        });
+        with_monotonic_time(open, || {
+            assert!((progress(&host) - 1.0).abs() < f64::EPSILON, "it arrives");
+            ui::motion::note_source(MotionSource::Pointer);
+            host.close_app_sheet();
+            assert!(!host.uninstall_sheet_open(), "answered, it takes no input");
+            assert!(
+                host.app_sheet_leaving
+                    .as_mut()
+                    .is_some_and(|sheet| sheet.dialog_mut().is_drawn()),
+                "and is drawn leaving"
+            );
+            draw(&mut host);
+            assert!(host.app_sheet_leaving.is_some(), "until it has gone");
+        });
+        with_monotonic_time(gone, || {
+            draw(&mut host);
+            assert!(host.app_sheet_leaving.is_none(), "then it is let go");
+        });
+    }
+
+    /// Asked or answered by a key (or an action), the sheet is there, and
+    /// gone, on the next frame.
+    #[test]
+    fn the_uninstall_sheet_lands_at_once_from_a_key() {
+        let mut host = host();
+        with_monotonic_time(ui::time::now(), || {
+            ui::motion::note_source(MotionSource::Keyboard);
+            host.ask_uninstall(notes());
+            assert!((progress(&host) - 1.0).abs() < f64::EPSILON);
+            host.close_app_sheet();
+            draw(&mut host);
+            assert!(
+                host.app_sheet_leaving.is_none(),
+                "an Escape takes it down at once"
+            );
+        });
     }
 }

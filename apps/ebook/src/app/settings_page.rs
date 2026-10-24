@@ -566,6 +566,7 @@ impl BooksApp {
             let x1 = col.x1();
             self.switch_at(
                 ctx,
+                ("watch-folder", &folder),
                 x1,
                 row.center().y,
                 watched,
@@ -733,6 +734,7 @@ impl BooksApp {
         x += stepper_w + gap;
         self.switch_at(
             ctx,
+            ("font-shown", &f.id),
             x + switch_w,
             cy,
             f.shown,
@@ -939,6 +941,7 @@ impl BooksApp {
             |x1: f64, w: f64| Rect::new(x1 - w, cy - m.small_h / 2.0, x1, cy + m.small_h / 2.0);
         self.switch_at(
             ctx,
+            ("scheme-enabled", &s.id),
             x1,
             cy,
             s.enabled,

@@ -283,6 +283,11 @@ impl Desktop {
         }
     }
 
+    /// The compositor's `XDG_CACHE_HOME`, where its crash records go.
+    pub fn cache_home(&self) -> PathBuf {
+        self.runtime_dir.join("cache")
+    }
+
     /// The wayland socket's file name, as `WAYLAND_DISPLAY` takes it.
     pub fn display_name(&self) -> String {
         self.wayland_socket
@@ -725,6 +730,12 @@ impl Desktop {
                 lines[start..].join("\n")
             })
             .unwrap_or_default()
+    }
+
+    /// The compositor's `/proc/<pid>/NAME` file (`status`, `limits`, ...).
+    pub fn proc_file(&self, name: &str) -> String {
+        let pid = self.child.lock().map_or(0, |child| child.id());
+        std::fs::read_to_string(format!("/proc/{pid}/{name}")).unwrap_or_default()
     }
 
     /// CPU the compositor process used, in milliseconds, per `/proc`.

@@ -3,6 +3,8 @@
 # `app-tagline` in apps/<app>/search/<tag>.ftl); app UI language support is
 # detected from each app's checked-in locale resources.
 
+[apps.activity]
+description = "See what changed in a workspace while you were away, who changed it, and replay or undo it."
 [apps.agent]
 description = "A collaborative assistant that works through your apps' own actions."
 [apps.api-tester]
@@ -121,8 +123,6 @@ description = "Write polished Typst documents with a native editing workspace."
 description = "Arrange clips, sound, and stories in a native video editor."
 [apps.video-player]
 description = "Watch local video with simple, dependable playback."
-[apps.vpn]
-description = "Connect and manage private network access from one place."
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
 [apps.web-search]

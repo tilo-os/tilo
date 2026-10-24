@@ -213,6 +213,51 @@ pub struct Popup {
     pub height: u32,
 }
 
+/// API permissions and site patterns, as `chrome.permissions` names a set
+/// of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionPermissionSet {
+    pub permissions: Vec<String>,
+    pub origins: Vec<String>,
+}
+
+impl ExtensionPermissionSet {
+    pub fn is_empty(&self) -> bool {
+        self.permissions.is_empty() && self.origins.is_empty()
+    }
+}
+/// What a page asks with a dialog of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageDialogKind {
+    /// `alert`: a message to acknowledge.
+    Alert,
+    /// `confirm`: OK or Cancel.
+    Confirm,
+    /// `prompt`: a line of text, or Cancel.
+    Prompt,
+    /// "Leave this page?" from a `beforeunload` handler, or "Reload this
+    /// page?" when the person reloads it.
+    Leave { reload: bool },
+}
+
+/// A question the page waits on until it is answered with
+/// [`WebViewCommand::AnswerPageDialog`], or the engine says it no longer
+/// waits ([`WebViewEvent::PageDialogClosed`]). Everything but `id` and
+/// `kind` is the page's own text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageDialog {
+    pub id: u32,
+    pub kind: PageDialogKind,
+    /// The asking page's http(s) origin; empty for any other page.
+    pub origin: String,
+    pub message: String,
+    /// What a prompt suggests as its answer.
+    pub default_text: String,
+}
+
+/// The longest answer to a page's prompt an engine takes, in bytes.
+pub const MAX_PAGE_DIALOG_ANSWER: usize = 64 * 1024;
+
 /// What an extension changed of its toolbar button (`chrome.action`). Each
 /// field is `None` when it did not change; `Some(None)` takes back what it
 /// set for one tab, so that tab shows what every tab shows.
@@ -227,6 +272,23 @@ pub struct ExtensionActionChange {
     pub icon: Option<Option<ExtensionActionIcon>>,
 }
 
+/// What an extension asks of its side panel beside a tab's page; each
+/// address is among the extension's own pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionSidePanelChange {
+    /// Show this page (`sidePanel.open`, or the person opening it).
+    Open(String),
+    /// A click on its toolbar button, when it asked for its panel to open
+    /// on one (`openPanelOnActionClick`): show this page, or close the
+    /// panel where it shows.
+    Toggle(String),
+    /// Its options changed: where it shows, show this page now, or close
+    /// for `None` (turned off for the tab).
+    Options(Option<String>),
+    /// `sidePanel.close`.
+    Close,
+}
+
 /// An icon an extension gave its toolbar button.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionActionIcon {
@@ -238,6 +300,90 @@ pub enum ExtensionActionIcon {
         height: u32,
         rgba: Vec<u8>,
     },
+}
+
+/// A row of a page's context menu, as the engine offers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuItem {
+    /// A command, chosen by `id` ([`WebViewCommand::ContextMenuAction`]).
+    /// `checked` is `Some` for a checkbox or radio item.
+    Command {
+        id: u32,
+        label: String,
+        checked: Option<bool>,
+        enabled: bool,
+    },
+    /// A row that opens a nested menu of `items`.
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<ContextMenuItem>,
+    },
+    Separator,
+}
+
+/// A row of an extension's toolbar button menu (`chrome.contextMenus` items
+/// made for its button), chosen by `key`
+/// ([`WebViewCommand::ExtensionMenuChoice`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionMenuItem {
+    Command {
+        key: String,
+        label: String,
+        /// `Some` for a checkbox or radio item.
+        checked: Option<bool>,
+        enabled: bool,
+    },
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<ExtensionMenuItem>,
+    },
+    Separator,
+}
+
+/// What an extension's notification (`chrome.notifications`) shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionNotice {
+    pub title: String,
+    pub message: String,
+    /// A line under the message (`contextMessage`), empty for none.
+    pub context: String,
+    /// A list notification's items: each a title and a message.
+    pub items: Vec<(String, String)>,
+    /// Its buttons' names, at most two.
+    pub buttons: Vec<String>,
+    /// How far along a progress notification is, from 0 to 100.
+    pub progress: Option<u8>,
+    /// Shown without a sound: the extension asked so, or this changes one
+    /// already shown (`notifications.update`, as a download's progress does).
+    pub silent: bool,
+}
+
+/// What the person did in the Browser's address after an extension's
+/// keyword (the manifest's `omnibox`), which the extension hears of as in
+/// Chrome (`chrome.omnibox`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OmniboxInput {
+    /// They typed the keyword and a space: what follows is the extension's.
+    Started,
+    /// What follows the keyword is now `text`; the extension's suggestions
+    /// for it answer `request`.
+    Changed { text: String, request: u32 },
+    /// They pressed Enter on `text`, or chose a suggestion whose content it
+    /// is: the extension acts, often sending the page somewhere.
+    Entered { text: String },
+    /// They left the keyword without Enter.
+    Cancelled,
+}
+
+/// One suggestion an extension made for what follows its keyword: what
+/// choosing it enters, and what it says, in Chrome's markup (`<match>`,
+/// `<dim>`, `<url>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OmniboxSuggestion {
+    pub content: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -302,6 +448,13 @@ pub enum WebViewCommand {
     ContextMenuAction {
         id: u32,
         command: u32,
+    },
+    /// Answer the page's question `id`: OK (or Leave) when `accept`, else
+    /// Cancel (or Stay), with a prompt's `text`.
+    AnswerPageDialog {
+        id: u32,
+        accept: bool,
+        text: Option<String>,
     },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`]
@@ -430,9 +583,32 @@ pub enum WebViewCommand {
     ExtensionAccess {
         id: String,
         permissions: Vec<String>,
+        /// Its host permissions: the sites the tab APIs let it read and
+        /// script.
         hosts: Vec<String>,
+        /// Where its declared content scripts run, which, as in Chrome, gives
+        /// no access to the tab APIs.
+        scriptable: Vec<String>,
         /// What its service worker shows the engine to be known as its.
         token: Option<String>,
+        /// Its keyboard shortcuts: the manifest's `commands` object, whose
+        /// suggested keys the engine gives and runs.
+        commands: Option<serde_json::Value>,
+    },
+    /// What an extension may ask for later (its manifest's
+    /// `optional_permissions` and `optional_host_permissions`), and what of
+    /// it the person granted: the engine answers `chrome.permissions` within
+    /// them, and its tab APIs within what was granted too.
+    ExtensionGrants {
+        id: String,
+        optional: ExtensionPermissionSet,
+        granted: ExtensionPermissionSet,
+    },
+    /// The person answered an extension's request for more access
+    /// ([`WebViewEvent::ExtensionPermissionRequest`]).
+    ExtensionPermissionDecision {
+        request: u32,
+        allow: bool,
     },
     /// An extension that left the profile: it is told nothing more.
     ExtensionForget {
@@ -450,9 +626,46 @@ pub enum WebViewCommand {
     ExtensionPanel {
         action: Option<String>,
     },
+    /// This tab shows the page of sign-in `flow` of extension `id`
+    /// ([`WebViewEvent::ExtensionSignIn`]), over the page used last or out
+    /// of sight: to extensions it is no tab, and its closing turns the
+    /// sign-in down.
+    ExtensionSignInPanel {
+        id: String,
+        flow: u32,
+    },
     /// The person clicked an extension's toolbar button over this page: the
-    /// extension hears of it (`action.onClicked`) and may script the page.
+    /// extension hears of it (`action.onClicked`) and may script the page,
+    /// or its side panel opens or closes when it asked for that.
     ExtensionClick {
+        id: String,
+    },
+    /// The person chose the item `key` of extension `id`'s toolbar button
+    /// menu over this page: the extension hears of it
+    /// (`contextMenus.onClicked`).
+    ExtensionMenuChoice {
+        id: String,
+        key: String,
+    },
+    /// The person chose the notification `notification` of the extension
+    /// `id`: its body, or the button at `button`. The extension hears of it
+    /// and of the notification closing.
+    ExtensionNotificationChosen {
+        id: String,
+        notification: String,
+        button: Option<u8>,
+    },
+    /// The person typed after the extension's keyword in this page's
+    /// address: the extension hears of it (`chrome.omnibox`), and Enter lets
+    /// it act on the page as a click on its button would.
+    ExtensionOmnibox {
+        id: String,
+        input: OmniboxInput,
+    },
+    /// The person opened an extension's side panel beside this page: the
+    /// engine answers with [`WebViewEvent::ExtensionSidePanel`] once the
+    /// extension says which of its pages it shows here, if any.
+    ExtensionOpenSidePanel {
         id: String,
     },
     DownloadDecision {
@@ -513,6 +726,81 @@ pub enum WebViewEvent {
         id: String,
         url: String,
     },
+    /// The person pressed the keyboard shortcut of an extension's toolbar
+    /// button (`_execute_action`) over this tab's page: act as a click on
+    /// the button does.
+    ExtensionExecuteAction {
+        id: String,
+    },
+    /// What extension `id`'s toolbar button menu holds now; empty when it
+    /// holds nothing.
+    ExtensionMenu {
+        id: String,
+        items: Vec<ExtensionMenuItem>,
+    },
+    /// An extension showed or changed its notification `notification`
+    /// (`notice`), or took it away (`None`). A notification is no tab's:
+    /// it comes through the page the person used last.
+    ExtensionNotification {
+        id: String,
+        notification: String,
+        notice: Option<ExtensionNotice>,
+    },
+    /// An extension asks for more access (`chrome.permissions.request`),
+    /// all of it among what its manifest offers for later: ask the person,
+    /// and answer with [`WebViewCommand::ExtensionPermissionDecision`].
+    ExtensionPermissionRequest {
+        request: u32,
+        id: String,
+        asked: ExtensionPermissionSet,
+    },
+    /// What an extension holds of what it may ask for changed: it was
+    /// granted more, or gave some up. `granted` is all it holds now, which
+    /// the Browser keeps with the extension.
+    ExtensionPermissions {
+        id: String,
+        granted: ExtensionPermissionSet,
+    },
+    /// An extension asked to open one of the engine's complete downloads
+    /// (`chrome.downloads.open`), or show it in its folder (`reveal`,
+    /// `chrome.downloads.show`), from this tab's window.
+    ExtensionDownloadOpen {
+        id: u32,
+        reveal: bool,
+    },
+    /// An extension asks the person to sign in on the web page `url`
+    /// (`identity.launchWebAuthFlow`), over this tab's page: show it where
+    /// its popup shows, or when it may not ask the person (`interactive`
+    /// false) load it out of sight, in a tab marked with
+    /// [`WebViewCommand::ExtensionSignInPanel`] for sign-in `flow`. The
+    /// engine ends the sign-in, and closes that tab, once the page goes to
+    /// the extension's own address.
+    ExtensionSignIn {
+        id: String,
+        url: String,
+        interactive: bool,
+        flow: u32,
+    },
+    /// What an extension suggests for what follows its keyword in this
+    /// page's address, answering `request` ([`OmniboxInput::Changed`]).
+    ExtensionOmniboxSuggestions {
+        id: String,
+        request: u32,
+        suggestions: Vec<OmniboxSuggestion>,
+    },
+    /// The suggestion an extension shows first while its keyword is typed
+    /// (`omnibox.setDefaultSuggestion`), in Chrome's markup with `%s` for
+    /// what is typed; `None` for none.
+    ExtensionOmniboxDefault {
+        id: String,
+        description: Option<String>,
+    },
+    /// What an extension asks of its side panel beside this tab's page
+    /// (`chrome.sidePanel`).
+    ExtensionSidePanel {
+        id: String,
+        change: ExtensionSidePanelChange,
+    },
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,
@@ -532,9 +820,16 @@ pub enum WebViewEvent {
         x: f64,
         y: f64,
         link: String,
-        items: Vec<(u32, String)>,
+        items: Vec<ContextMenuItem>,
     },
     ContextMenuClosed {
+        id: u32,
+    },
+    /// The page asks a question of its own and waits for its answer.
+    PageDialog(PageDialog),
+    /// The page no longer waits on its question `id`: it was answered, or
+    /// the page navigated or asked another.
+    PageDialogClosed {
         id: u32,
     },
     FindResult {
@@ -761,6 +1056,16 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_popups(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_popups();
+        }
+    }
+
+    /// Have the page's own questions (`alert`, `confirm`, `prompt`, "leave
+    /// this page?") sent as [`WebViewEvent::PageDialog`] for the embedder to
+    /// show and answer. Until then, and in an engine that cannot, each is
+    /// declined at once and a page may always be left.
+    fn accept_page_dialogs(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_page_dialogs();
         }
     }
 

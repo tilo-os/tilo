@@ -10,9 +10,12 @@
 //! workspace grant to the app. Nothing here widens that: the client only
 //! carries requests and answers.
 //!
-//! Answers arrive as [`LocalState`] values, so a bound view updates and an
-//! idle window wakes when one lands. A root that owns a client returns it
-//! from [`Widget::collaborative_mut`](crate::widget::Widget::collaborative_mut)
+//! Answers arrive as [`Arriving`] reads ([`crate::arriving`]), so a bound
+//! view updates, an idle window wakes when one lands, and
+//! [`Arriving::view`] shows them with the framework's placeholders. Each
+//! read says where its answer comes from: this device's broker, or the
+//! room's host for the room's own governance. A root that owns a client returns it
+//! as its [`Collaborative`] capability
 //! (or forwards to it), which is how its requests reach the connection and
 //! the answers come back.
 //!
@@ -27,12 +30,12 @@ use tilo_actions::InvocationUpdate;
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus, RemoteActionMessage,
-    RemoteActionTarget, UpdateMark, serve,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ROOM_GOVERNANCE_PROVIDER, ReceiptStatus,
+    RemoteActionMessage, RemoteActionTarget, UpdateMark, serve,
 };
 
+use crate::arriving::{Arrival, ArrivalWriter, Arriving, Source};
 use crate::collaboration::{CollabEvent, CollabRequest};
-use crate::local_state::{LocalState, LocalStateWriter};
 use crate::wake::WakeHandle;
 use crate::widget::Collaborative;
 use tilo_lock::MutexRecover as _;
@@ -77,50 +80,65 @@ pub const CATALOGUE_WAIT: Duration = Duration::from_secs(20);
 pub const CATALOGUE_UNANSWERED: &str =
     "nothing in reach answered the request for the actions apps offer";
 
-/// Where one request stands.
-#[derive(Clone, Debug, PartialEq)]
-pub enum RemoteCall<T> {
-    /// Sent; no answer yet.
-    Pending,
-    /// The host answered.
-    Done(T),
-    /// The host refused: nothing ran.
-    Refused(ActionHostError),
-}
+/// A catalogue read: every page of one query, gathered.
+pub type CatalogueCall = Arriving<CataloguePage, ActionHostError>;
+/// An invocation: its latest lifecycle update, or the host's refusal (then
+/// nothing ran).
+pub type InvocationCall = Arriving<InvocationUpdate, ActionHostError>;
+/// A request to cancel a running invocation: `Ready(())` is the host's
+/// acknowledgement. Acknowledgement is not a terminal invocation outcome;
+/// callers must keep observing the original [`InvocationCall`] until it
+/// reports `Cancelled` or another terminal state.
+pub type CancellationCall = Arriving<(), ActionHostError>;
 
-impl<T> RemoteCall<T> {
-    /// Whether no answer has arrived yet.
-    #[must_use]
-    pub const fn is_pending(&self) -> bool {
-        matches!(self, Self::Pending)
-    }
-}
-
-impl RemoteCall<InvocationUpdate> {
+impl Arrival<InvocationUpdate, ActionHostError> {
     /// Whether the invocation can no longer change: refused, or finished.
     #[must_use]
-    pub fn is_settled(&self) -> bool {
+    pub fn is_finished(&self) -> bool {
         match self {
-            Self::Pending => false,
-            Self::Done(update) => update.is_terminal(),
-            Self::Refused(_) => true,
+            Self::Pending { .. } => false,
+            Self::Ready(update) => update.is_terminal(),
+            Self::Failed(_) => true,
         }
     }
 }
 
-/// A catalogue read: every page of one query, gathered.
-pub type CatalogueCall = RemoteCall<CataloguePage>;
-/// An invocation: its latest lifecycle update.
-pub type InvocationCall = RemoteCall<InvocationUpdate>;
+/// A live result [`RemoteActions::follow`] follows. Dropping it stops
+/// following: the invocation is cancelled.
+pub struct Followed {
+    remote: RemoteActions,
+    invocation: InvocationId,
+    answer: InvocationCall,
+}
 
-/// Receipt for a request to cancel a running invocation. Acknowledgement is
-/// not a terminal invocation outcome; callers must keep observing the original
-/// [`InvocationCall`] until it reports `Cancelled` or another terminal state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CancellationCall {
-    Pending,
-    Acknowledged,
-    Refused(ActionHostError),
+impl Followed {
+    /// The invocation's latest update: each new result is an `Item`.
+    #[must_use]
+    pub const fn call(&self) -> &InvocationCall {
+        &self.answer
+    }
+
+    /// The invocation it follows.
+    #[must_use]
+    pub const fn invocation(&self) -> InvocationId {
+        self.invocation
+    }
+}
+
+impl Drop for Followed {
+    fn drop(&mut self) {
+        if !self.answer.with(Arrival::is_finished) {
+            let _ = self.remote.cancel(self.invocation);
+        }
+    }
+}
+
+impl std::fmt::Debug for Followed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Followed")
+            .field("invocation", &self.invocation)
+            .finish_non_exhaustive()
+    }
 }
 
 enum Transport {
@@ -136,7 +154,7 @@ enum Transport {
 struct CatalogueWalk {
     query: CatalogueQuery,
     gathered: CataloguePage,
-    answer: LocalStateWriter<CatalogueCall>,
+    answer: ArrivalWriter<CataloguePage, ActionHostError>,
     pages_remaining: usize,
     seen_cursors: HashSet<(Option<String>, Vec<u8>)>,
     follow_pages: bool,
@@ -145,14 +163,30 @@ struct CatalogueWalk {
 }
 
 struct Running {
-    answer: LocalStateWriter<InvocationCall>,
-    cancellation: Option<LocalState<CancellationCall>>,
+    answer: ArrivalWriter<InvocationUpdate, ActionHostError>,
+    /// Told each update as it lands, before the call shows it: how a
+    /// follower reads each result once.
+    then: Option<Box<dyn FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send>>,
+    cancellation: Option<CancellationCall>,
     /// When to observe it next, while a host that does not wait is still
     /// running it.
     observe_at: Option<Instant>,
     /// The waiting observe in flight: when it was sent, and how far it had
     /// seen the invocation get.
     waiting: Option<(Instant, UpdateMark)>,
+}
+
+impl Running {
+    fn publish(&mut self, update: Arrival<InvocationUpdate, ActionHostError>) {
+        if let Some(then) = &mut self.then {
+            then(&update);
+        }
+        match update {
+            Arrival::Ready(update) => self.answer.ready(update),
+            Arrival::Failed(error) => self.answer.fail(error),
+            Arrival::Pending { .. } => {}
+        }
+    }
 }
 
 struct Inner {
@@ -244,7 +278,7 @@ impl RemoteActions {
 
     /// Read every page of `query` from the catalogue the app is offered.
     #[must_use]
-    pub fn catalogue(&self, query: CatalogueQuery) -> LocalState<CatalogueCall> {
+    pub fn catalogue(&self, query: CatalogueQuery) -> CatalogueCall {
         self.start_catalogue(query, true)
     }
 
@@ -255,16 +289,25 @@ impl RemoteActions {
     /// cursor is opaque and may only be sent back with the same provider,
     /// parent and revision.
     #[must_use]
-    pub fn catalogue_page(&self, query: CatalogueQuery) -> LocalState<CatalogueCall> {
+    pub fn catalogue_page(&self, query: CatalogueQuery) -> CatalogueCall {
         self.start_catalogue(query, false)
     }
 
-    fn start_catalogue(
-        &self,
-        query: CatalogueQuery,
-        follow_pages: bool,
-    ) -> LocalState<CatalogueCall> {
-        let answer = LocalState::new(RemoteCall::Pending);
+    fn start_catalogue(&self, query: CatalogueQuery, follow_pages: bool) -> CatalogueCall {
+        let client = self.clone();
+        let asked = query.clone();
+        let answer = Arriving::pending(self.source(None)).on_retry(move |answer| {
+            client.ask_catalogue(answer, asked.clone(), follow_pages);
+        });
+        self.ask_catalogue(&answer, query, follow_pages);
+        answer
+    }
+
+    /// Ask for `query`'s catalogue into `answer`: first, or again after a
+    /// failure.
+    fn ask_catalogue(&self, answer: &CatalogueCall, query: CatalogueQuery, follow_pages: bool) {
+        let writer = answer.writer();
+        writer.pending(self.source(None));
         let background = crate::background::Background::current();
         let due = background.now() + CATALOGUE_WAIT;
         let message = {
@@ -282,7 +325,7 @@ impl RemoteActions {
                 CatalogueWalk {
                     query: first.clone(),
                     gathered: CataloguePage::default(),
-                    answer: answer.writer(),
+                    answer: writer,
                     pages_remaining: MAX_CATALOGUE_PAGES,
                     seen_cursors,
                     follow_pages,
@@ -295,7 +338,24 @@ impl RemoteActions {
             }
         };
         self.send(message);
-        answer
+    }
+
+    /// Where this client's answer to a request for `target` (none: the
+    /// catalogue) comes from. An in-process host and the session's broker
+    /// are this device; a room's own governance is answered by the room's
+    /// host, named as the person knows its workspace.
+    fn source(&self, target: Option<&RemoteActionTarget>) -> Source {
+        let session = matches!(self.lock().transport, Transport::Session);
+        let governance = target.is_some_and(|target| target.provider == ROOM_GOVERNANCE_PROVIDER);
+        if session && governance {
+            if let Some(sync) = crate::room_sync::current() {
+                let workspace = sync.workspace.trim();
+                if !workspace.is_empty() {
+                    return Source::host(workspace);
+                }
+            }
+        }
+        Source::Local
     }
 
     /// Invoke the action at `target` with `argument`, carrying the person's
@@ -306,7 +366,7 @@ impl RemoteActions {
         target: RemoteActionTarget,
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
-    ) -> LocalState<InvocationCall> {
+    ) -> InvocationCall {
         self.invoke_with_id(InvocationId::new(), target, argument, confirmation)
     }
 
@@ -322,10 +382,25 @@ impl RemoteActions {
         target: RemoteActionTarget,
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
-    ) -> LocalState<InvocationCall> {
-        let answer = LocalState::new(RemoteCall::Pending);
+    ) -> InvocationCall {
+        self.invoke_continuing(None, invocation, target, argument, confirmation)
+    }
+
+    /// [`Self::invoke_with_id`] for a request made while running
+    /// `on_behalf_of`, an invocation the host delivered here: the host
+    /// decides it as that invocation's caller.
+    #[must_use]
+    pub fn invoke_continuing(
+        &self,
+        on_behalf_of: Option<InvocationId>,
+        invocation: InvocationId,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> InvocationCall {
+        let answer = Arriving::pending(self.source(Some(&target)));
         let request = InvokeRequest {
-            on_behalf_of: None,
+            on_behalf_of,
             invocation,
             target,
             argument,
@@ -340,6 +415,7 @@ impl RemoteActions {
             request.invocation,
             Running {
                 answer: answer.writer(),
+                then: None,
                 cancellation: None,
                 observe_at: None,
                 waiting: None,
@@ -347,6 +423,58 @@ impl RemoteActions {
         );
         self.send(RemoteActionMessage::Invoke(request));
         answer
+    }
+
+    /// Follow the live result of the action at `target`
+    /// ([`ExecutionMode::Live`](tilo_actions::ExecutionMode::Live)): the
+    /// call's latest update is each new result as an `Item`, for as long as
+    /// the returned handle lives; dropping it cancels the invocation. An
+    /// action that answers once settles as any invocation does.
+    #[must_use]
+    pub fn follow(&self, target: RemoteActionTarget, argument: InvokeArgument) -> Followed {
+        self.follow_with(target, argument, |_| {})
+    }
+
+    /// [`Self::follow`], telling `then` each update as it lands, before
+    /// the call shows it.
+    #[must_use]
+    pub fn follow_with(
+        &self,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        then: impl FnMut(&Arrival<InvocationUpdate, ActionHostError>) + Send + 'static,
+    ) -> Followed {
+        let invocation = InvocationId::new();
+        let answer = Arriving::pending(self.source(Some(&target)));
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation,
+            target,
+            argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+            // It never settles: the receipt is the admission, and each
+            // result arrives on the observe that follows it.
+            wait_ms: None,
+            appearance: None,
+        };
+        self.lock().invocations.insert(
+            invocation,
+            Running {
+                answer: answer.writer(),
+                then: Some(Box::new(then)),
+                cancellation: None,
+                observe_at: None,
+                waiting: None,
+            },
+        );
+        self.send(RemoteActionMessage::Invoke(request));
+        Followed {
+            remote: self.clone(),
+            invocation,
+            answer,
+        }
     }
 
     /// Whether any request is still waiting for its answer.
@@ -361,17 +489,18 @@ impl RemoteActions {
     /// that the host accepted the cancellation request; the invocation's own
     /// call is the authority for whether it actually stopped.
     #[must_use]
-    pub fn cancel(&self, invocation: InvocationId) -> Option<LocalState<CancellationCall>> {
+    pub fn cancel(&self, invocation: InvocationId) -> Option<CancellationCall> {
+        let source = self.source(None);
         let answer = {
             let mut inner = self.lock();
             let running = inner.invocations.get_mut(&invocation)?;
             if let Some(answer) = &running.cancellation {
-                let refused = answer.with(|state| matches!(state, CancellationCall::Refused(_)));
+                let refused = answer.with(|state| matches!(state, Arrival::Failed(_)));
                 if !refused {
                     return Some(answer.clone());
                 }
             }
-            let answer = LocalState::new(CancellationCall::Pending);
+            let answer = Arriving::pending(source);
             running.cancellation = Some(answer.clone());
             answer
         };
@@ -421,10 +550,9 @@ impl RemoteActions {
                 if walk.due > now {
                     return true;
                 }
-                walk.answer
-                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
-                        reason: CATALOGUE_UNANSWERED.into(),
-                    }));
+                walk.answer.fail(ActionHostError::Unavailable {
+                    reason: CATALOGUE_UNANSWERED.into(),
+                });
                 false
             });
             inner
@@ -463,28 +591,25 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             let page = match result {
                 Ok(page) => page,
                 Err(error) => {
-                    walk.answer.set(RemoteCall::Refused(error));
+                    walk.answer.fail(error);
                     return None;
                 }
             };
             walk.pages_remaining = walk.pages_remaining.saturating_sub(1);
             if !walk.follow_pages {
-                walk.answer.set(RemoteCall::Done(page));
+                walk.answer.ready(page);
                 return None;
             }
             if page.budget_exhausted {
-                walk.answer
-                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
-                        reason: "catalogue provider exhausted its work budget".into(),
-                    }));
+                walk.answer.fail(ActionHostError::Unavailable {
+                    reason: "catalogue provider exhausted its work budget".into(),
+                });
                 return None;
             }
             if !page.stale_cursor && page.exhausted != page.next_cursor.is_empty() {
-                walk.answer
-                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
-                        reason: "catalogue provider returned inconsistent completion metadata"
-                            .into(),
-                    }));
+                walk.answer.fail(ActionHostError::Unavailable {
+                    reason: "catalogue provider returned inconsistent completion metadata".into(),
+                });
                 return None;
             }
             if !page.stale_cursor
@@ -494,11 +619,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     .as_ref()
                     .is_some_and(|revision| revision != &page.revision)
             {
-                walk.answer
-                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
-                        reason: "catalogue provider changed revision without a stale response"
-                            .into(),
-                    }));
+                walk.answer.fail(ActionHostError::Unavailable {
+                    reason: "catalogue provider changed revision without a stale response".into(),
+                });
                 return None;
             }
             if page.stale_cursor {
@@ -515,25 +638,23 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                 }
                 if page.exhausted {
                     walk.gathered.exhausted = true;
-                    walk.answer.set(RemoteCall::Done(walk.gathered));
+                    walk.answer.ready(walk.gathered);
                     return None;
                 }
                 walk.query.cursor = page.next_cursor;
                 walk.query.revision = Some(page.revision);
             }
             if walk.pages_remaining == 0 {
-                walk.answer
-                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
-                        reason: "catalogue traversal exceeded its page budget".into(),
-                    }));
+                walk.answer.fail(ActionHostError::Unavailable {
+                    reason: "catalogue traversal exceeded its page budget".into(),
+                });
                 return None;
             }
             let cursor = (walk.query.revision.clone(), walk.query.cursor.clone());
             if !walk.seen_cursors.insert(cursor) {
-                walk.answer
-                    .set(RemoteCall::Refused(ActionHostError::Unavailable {
-                        reason: "catalogue traversal repeated a cursor".into(),
-                    }));
+                walk.answer.fail(ActionHostError::Unavailable {
+                    reason: "catalogue traversal repeated a cursor".into(),
+                });
                 return None;
             }
             let next = inner.next_correlation;
@@ -561,8 +682,8 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
                     message,
                 },
                 ReceiptStatus::Rejected { error } => {
-                    let running = inner.invocations.remove(&invocation)?;
-                    running.answer.set(RemoteCall::Refused(error));
+                    let mut running = inner.invocations.remove(&invocation)?;
+                    running.publish(Arrival::Failed(error));
                     return None;
                 }
             };
@@ -572,20 +693,15 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
             if let Some(state) = state {
                 return settle(inner, invocation, state.update);
             }
-            if let Some(running) = inner.invocations.remove(&invocation) {
-                running
-                    .answer
-                    .set(RemoteCall::Refused(ActionHostError::UnknownInvocation));
+            if let Some(mut running) = inner.invocations.remove(&invocation) {
+                running.publish(Arrival::Failed(ActionHostError::UnknownInvocation));
             }
             None
         }
         RemoteActionMessage::CancelResponse { invocation, result } => {
             let running = inner.invocations.get_mut(&invocation)?;
             let answer = running.cancellation.as_ref()?;
-            answer.set(match result {
-                Ok(()) => CancellationCall::Acknowledged,
-                Err(error) => CancellationCall::Refused(error),
-            });
+            answer.writer().finish(result);
             None
         }
         RemoteActionMessage::CatalogueRequest { .. }
@@ -608,8 +724,8 @@ fn settle(
 ) -> Option<RemoteActionMessage> {
     let terminal = update.is_terminal();
     if terminal {
-        if let Some(running) = inner.invocations.remove(&invocation) {
-            running.answer.set(RemoteCall::Done(update));
+        if let Some(mut running) = inner.invocations.remove(&invocation) {
+            running.publish(Arrival::Ready(update));
         }
         return None;
     }
@@ -624,7 +740,7 @@ fn settle(
             && now.saturating_duration_since(sent)
                 < Duration::from_millis(u64::from(OBSERVE_WAIT_MS / 2))
     });
-    running.answer.set(RemoteCall::Done(update));
+    running.publish(Arrival::Ready(update));
     if unheld {
         inner.host_waits = false;
     }

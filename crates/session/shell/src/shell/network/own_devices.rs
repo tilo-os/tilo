@@ -25,6 +25,28 @@ impl ShellNetwork {
         )
     }
 
+    /// The person's other devices, by endpoint key, as the worker last read
+    /// them.
+    pub(crate) fn personal_device_keys(&self) -> Vec<[u8; 32]> {
+        let local = *self.local_peer_id.as_bytes();
+        self.personal_device_peers.lock().map_or_else(
+            |_| Vec::new(),
+            |mut peers| {
+                peers
+                    .devices_at(|| self.own_device_sources())
+                    .iter()
+                    .copied()
+                    .filter(|device| *device != local)
+                    .collect()
+            },
+        )
+    }
+
+    /// The shell's peer endpoint, which the person's devices reach it on.
+    pub(crate) fn peer_endpoint(&self) -> Option<iroh::Endpoint> {
+        self.private_chat_endpoint.clone()
+    }
+
     /// Apply the revocations of this person's devices a peer carried: the
     /// revoked devices stop counting as theirs at once, and stay refused
     /// after a restart through the fleet.

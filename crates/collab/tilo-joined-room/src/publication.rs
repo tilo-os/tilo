@@ -304,7 +304,8 @@ fn allowed(
     }
     Ok(allowed)
 }
-/// Whether a host file of layout `version` may carry `storage`.
+/// Whether a host file of layout `version` may carry `storage`. Room
+/// records came in with layout 4; later layouts carry them as it does.
 ///
 /// # Errors
 /// A room record or its publication does not belong in that layout.
@@ -314,8 +315,8 @@ pub fn validate_file_layout(
 ) -> Result<(), String> {
     for room in storage.rooms.values() {
         match (version, room.version, room.publication.is_some()) {
-            (4, 2, true) if room.effect_history_root.is_none() => {}
-            (4, 3, true) if room.effect_history_root.is_some() => {}
+            (4.., 2, true) if room.effect_history_root.is_none() => {}
+            (4.., 3, true) if room.effect_history_root.is_some() => {}
             _ => return Err("native publication record/file layout mismatch".into()),
         }
         if let Some(publication) = &room.publication {

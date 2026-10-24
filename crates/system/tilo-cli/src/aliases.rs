@@ -4,7 +4,7 @@
 //! off `PATH`; each old name is a link to `tilo`, which runs the program
 //! under the name it was called by, adding nothing. Scripts, units and
 //! habits keep working while people learn `tilo <noun> <verb>`. The few in
-//! [`DIRECT`] are links straight to their program instead.
+//! `DIRECT` are links straight to their program instead.
 
 use std::ffi::OsString;
 use std::os::unix::process::CommandExt;
@@ -56,7 +56,7 @@ pub const MOVED: &[&str] = &[
 #[cfg(test)]
 pub const DIRECT: &[&str] = &["tilo-vmd"];
 
-/// The old name argv[0] is, if it is one.
+/// The old name `argv[0]` is, if it is one.
 pub fn moved(args: &[OsString]) -> Option<&'static str> {
     let name = args
         .first()
@@ -82,7 +82,7 @@ pub fn target(name: &str) -> PathBuf {
     libexec().join(name)
 }
 
-/// Become the program `name` stands for, with `args` after argv[0]. Returns
+/// Become the program `name` stands for, with `args` after `argv[0]`. Returns
 /// only when that can't happen.
 pub fn exec(name: &str, args: &[OsString]) -> Result<std::convert::Infallible> {
     let program = target(name);

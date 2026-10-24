@@ -887,12 +887,12 @@ pub fn resolve_runtime_test_helper(
     resolve_runtime(manifest, opts)
 }
 
-/// The launch argv after [`splice_optional_runtimes`] ran on a bare `entry`
+/// The launch argv after `splice_optional_runtimes` ran on a bare `entry`
 /// token, and the mounts it returned for Landlock.
 ///
 /// # Errors
 ///
-/// As [`splice_optional_runtimes`].
+/// As `splice_optional_runtimes`.
 pub fn optional_runtimes_test_helper(
     manifest: &crate::manifest::ManifestView,
     opts: &RunOptions,
@@ -1255,7 +1255,7 @@ fn enforce_bundle_policy(
 }
 
 /// A runtime bundle a person installed into their own store, verified by the
-/// policy a launch applies to it ([`enforce_bundle_policy`]): every payload
+/// policy a launch applies to it (`enforce_bundle_policy`): every payload
 /// byte proven (by its signed fs-verity digest, else hashed), signed by a
 /// trusted publisher. Returns its manifest, whose root hash is the bundle's
 /// identity.
@@ -5951,8 +5951,6 @@ bin = \"store\"
             &manifest.package_id,
             "person-a",
             false,
-            10_000,
-            13_000,
         );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
         let opts = RunOptions {

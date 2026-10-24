@@ -280,8 +280,7 @@ fn choose(
     negotiate(local, receivers).map(|n| (n.codec, None))
 }
 
-/// A live share session on the owner side. Drop it — or call [`Self::stop`]
-/// for an explicit tear-down — to release the encoder and registry entries.
+/// A live share session on the owner side. Drop it to release the encoder and registry entries.
 pub struct SharedFlatpakSession {
     pub host_user_id: PeerId,
     pub app_id: String,

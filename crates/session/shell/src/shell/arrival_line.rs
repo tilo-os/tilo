@@ -74,7 +74,7 @@ pub struct ArrivalLine {
 
 impl ArrivalLine {
     /// Show that the person arrived in `workspace`, where `people` are now,
-    /// until [`SHOWN_FOR`] after `now`.
+    /// until `SHOWN_FOR` after `now`.
     pub fn show(&mut self, workspace: &str, people: Vec<Present>, now: Instant) {
         self.shown = Some(Shown {
             workspace: workspace.to_owned(),

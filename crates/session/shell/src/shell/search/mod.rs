@@ -76,7 +76,7 @@ pub(crate) fn index_page(
                 .id
                 .len()
                 .saturating_add(row.title.len())
-                .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+                .saturating_add(row.secondary_len());
             if results.len() >= budget.max_results
                 || bytes.saturating_add(row_bytes) > budget.max_bytes
             {
@@ -313,6 +313,15 @@ const HEADLESS_MAX_PAGES: usize = 256;
 const HEADLESS_MAX_RESULTS: usize = 16_384;
 const HEADLESS_MAX_BYTES: usize = 16 * 1024 * 1024;
 impl SearchResult {
+    /// Bytes on the secondary line, whether it is `subtitle` or facts.
+    #[must_use]
+    pub fn secondary_len(&self) -> usize {
+        self.facts.iter().fold(
+            self.subtitle.as_ref().map_or(0, String::len),
+            |bytes, fact| bytes.saturating_add(fact.len()),
+        )
+    }
+
     /// Show the secondary line as these facts ([`Self::facts`]): each its
     /// own run, never one string joined by a glyph.
     #[must_use]
@@ -858,7 +867,7 @@ fn estimated_result_bytes(result: &SearchResult) -> usize {
         .len()
         .saturating_add(result.id.len())
         .saturating_add(result.title.len())
-        .saturating_add(result.subtitle.as_ref().map_or(0, String::len))
+        .saturating_add(result.secondary_len())
         .saturating_add(result.params.len().saturating_mul(64))
 }
 

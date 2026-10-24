@@ -32,7 +32,8 @@ pub struct Holder {
 impl Holder {
     /// Whether the process still runs.
     pub fn is_live(self) -> bool {
-        crate::shell::launcher::proc_stat(self.pid).is_some_and(|(_, start)| start == self.start)
+        crate::shell::host_runtime::proc_stat(self.pid)
+            .is_some_and(|(_, start)| start == self.start)
     }
 }
 
@@ -277,7 +278,7 @@ mod tests {
 
     fn me() -> Holder {
         let pid = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid).expect("own stat");
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("own stat");
         Holder { pid, start }
     }
 
@@ -289,7 +290,7 @@ mod tests {
             .spawn()
             .expect("a tab's shell");
         let pid = shell.id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid).expect("its stat");
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("its stat");
         let tab = Holder { pid, start };
         grants.allow_tab(TabGrant {
             holder: tab,

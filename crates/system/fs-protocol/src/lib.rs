@@ -69,10 +69,11 @@ pub use files::{
 pub use projection::{
     AVAILABILITY_CONTROL_XATTR, AVAILABILITY_XATTR, AvailabilityPolicy, AvailabilityProjectionV1,
     CONTENT_HASH_XATTR, HISTORY_CONTROL_XATTR, HISTORY_XATTR, HistoryProjectionV1, METADATA_XATTR,
-    MetadataProjectionV1, PIN_XATTR, ProjectedFreshness, ProjectedReplicaEvidence,
-    ProjectedTransfer, ProjectionError, RECORD_ID_XATTR, Residency, SHARE_CONTROL_XATTR,
-    SHARE_XATTR, SYNC_XATTR, ShareGrantProjectionV1, ShareGrantStatus, ShareProjectionV1,
-    ShareSubjectProjection, SyncState, THUMB_XATTR, TransferPhase, TransferProgress,
+    MetadataProjectionV1, NO_PEER_DELIVERED_ERROR, PIN_XATTR, ProjectedFreshness,
+    ProjectedReplicaEvidence, ProjectedTransfer, ProjectionError, RECORD_ID_XATTR, Residency,
+    SHARE_CONTROL_XATTR, SHARE_XATTR, SYNC_XATTR, ShareGrantProjectionV1, ShareGrantStatus,
+    ShareProjectionV1, ShareSubjectProjection, SyncState, THUMB_XATTR, TransferPhase,
+    TransferProgress,
 };
 pub use recipient_control::{
     MAX_RECIPIENT_CONTROL_CONNECTIONS, MAX_RECIPIENT_CONTROL_FRAME_BYTES,

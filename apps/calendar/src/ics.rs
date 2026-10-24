@@ -348,9 +348,8 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     let mut attendees: Vec<Attendee> = Vec::new();
     let mut organizer = None;
     let mut recurrence_interval = 1;
-    let mut recurrence_until = None;
     let mut recurrence_count = None;
-    let mut recurrence_exdates = Vec::new();
+    let mut exdates: Vec<String> = Vec::new();
     let mut recurrence_id = None;
     let mut cancelled = false;
 
@@ -392,9 +391,9 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                     rrule = val;
                     recurrence_interval = rrule_u32(&rrule, "INTERVAL").unwrap_or(1).max(1);
                     recurrence_count = rrule_u32(&rrule, "COUNT").filter(|value| *value > 0);
-                    recurrence_until = rrule_value(&rrule, "UNTIL").and_then(parse_cal_date);
                 }
-                "EXDATE" => recurrence_exdates.extend(val.split(',').filter_map(parse_cal_date)),
+                // Resolved once DTSTART's zone is known, which may come later.
+                "EXDATE" => exdates.extend(val.split(',').map(str::to_owned)),
                 "ATTENDEE" => {
                     if let Some(attendee) = parse_participant(line) {
                         if let Some(existing) =
@@ -449,6 +448,10 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     }) else {
         return (None, i);
     };
+    // A timed series states its end and exclusions as date-times (RFC 5545
+    // §3.3.10 requires UNTIL to match DTSTART's value type), often in UTC.
+    let recurrence_until =
+        rrule_value(&rrule, "UNTIL").and_then(|value| series_until(value, start, &timezone));
     let mut end_later_fold = false;
     let mut end = match (end, duration) {
         (Some(end), _) => end,
@@ -493,7 +496,10 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                 recurrence_interval,
                 recurrence_until,
                 recurrence_count,
-                recurrence_exdates: recurrence_exdates.into_iter().collect(),
+                recurrence_exdates: exdates
+                    .iter()
+                    .filter_map(|value| recurrence_wall(value, &timezone).map(|wall| wall.date()))
+                    .collect(),
                 occurrence_overrides: Keyed::default(),
                 timezone,
                 organizer,
@@ -528,7 +534,7 @@ fn parse_vtodo(lines: &[Option<ContentLine>], mut i: usize) -> (Option<Task>, us
             match line.name.as_str() {
                 "UID" => id = parse_uid(val),
                 "SUMMARY" => title = unescape(val),
-                "DUE" => due = parse_cal_date(val),
+                "DUE" => due = parse_cal_datetime(line).map(|(due, _)| due.date()),
                 "STATUS" => done = val.eq_ignore_ascii_case("COMPLETED"),
                 "PRIORITY" => {
                     priority = match val.trim().parse::<u8>().unwrap_or(0) {
@@ -696,6 +702,39 @@ fn rrule_u32(rule: &str, name: &str) -> Option<u32> {
     rrule_value(rule, name)?.parse().ok()
 }
 
+/// The wall time in `zone` of an UNTIL or EXDATE value: a DATE at midnight,
+/// a local DATE-TIME as written, and a UTC one (`Z`) moved into the series'
+/// zone, so its date is the one the person sees the occurrence on.
+fn recurrence_wall(value: &str, zone: &str) -> Option<NaiveDateTime> {
+    let value = value.trim();
+    if let Some(date) = parse_cal_date(value) {
+        return Some(date.and_time(NaiveTime::MIN));
+    }
+    let Some(utc) = value.strip_suffix('Z') else {
+        return NaiveDateTime::parse_from_str(value, DT_LOCAL).ok();
+    };
+    let instant = NaiveDateTime::parse_from_str(utc, DT_LOCAL).ok()?.and_utc();
+    Some(match zone.parse::<chrono_tz::Tz>() {
+        Ok(zone) => instant.with_timezone(&zone).naive_local(),
+        Err(_) => instant.naive_utc(),
+    })
+}
+
+/// The last date a series starting at `start` occurs on, from its UNTIL.
+/// UNTIL is inclusive of an occurrence starting at that very instant, so a
+/// DATE-TIME before the series' time of day ends it the day before.
+fn series_until(value: &str, start: NaiveDateTime, zone: &str) -> Option<NaiveDate> {
+    if let Some(date) = parse_cal_date(value) {
+        return Some(date);
+    }
+    let until = recurrence_wall(value, zone)?;
+    if until.time() >= start.time() {
+        Some(until.date())
+    } else {
+        until.date().pred_opt()
+    }
+}
+
 fn parse_cal_date(val: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(val.trim(), D_ONLY).ok()
 }
@@ -703,12 +742,20 @@ fn parse_cal_date(val: &str) -> Option<NaiveDate> {
 /// RFC 5545 event durations are positive weeks, days or time spans, not
 /// calendar months. Checked arithmetic keeps an untrusted file from overflowing.
 fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
+    duration_parts(value).filter(|(days, time)| *days > 0 || *time > chrono::Duration::zero())
+}
+
+/// An RFC 5545 duration's nominal days and its elapsed time, zero included.
+fn duration_parts(value: &str) -> Option<(i64, chrono::Duration)> {
     let value = value.trim();
     let value = value.strip_prefix('+').unwrap_or(value);
     let mut rest = value.strip_prefix('P')?;
     if let Some(weeks) = rest.strip_suffix('W') {
+        if !weeks.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
         let days = weeks.parse::<i64>().ok()?.checked_mul(7)?;
-        return (days > 0).then_some((days, chrono::Duration::zero()));
+        return Some((days, chrono::Duration::zero()));
     }
     let mut days = 0_i64;
     let mut seconds = 0_i64;
@@ -746,9 +793,6 @@ fn parse_event_duration(value: &str) -> Option<(i64, chrono::Duration)> {
         }
         rest = rest.get(digits + 1..)?;
     }
-    if days == 0 && seconds == 0 {
-        return None;
-    }
     Some((days, chrono::Duration::try_seconds(seconds)?))
 }
 
@@ -773,16 +817,18 @@ fn duration_span(
     Some((end_wall, later_fold))
 }
 
+/// Minutes before the start a VALARM's relative TRIGGER rings: `-PT15M`,
+/// `-PT1H30M`, `-P1D`, or `PT0S` at the start itself. A trigger after the
+/// start is no reminder Calendar can hold.
 fn parse_trigger_minutes(v: &str) -> Option<i64> {
-    // e.g. "-PT15M", "-PT1H", "-PT720M".
-    let s = v.trim().trim_start_matches('-').trim_start_matches("PT");
-    if let Some(num) = s.strip_suffix('M') {
-        num.parse::<i64>().ok()
-    } else if let Some(num) = s.strip_suffix('H') {
-        num.parse::<i64>().ok().map(|h| h * 60)
-    } else {
-        None
-    }
+    let v = v.trim();
+    let (before, duration) = match v.strip_prefix('-') {
+        Some(duration) => (true, duration),
+        None => (false, v.strip_prefix('+').unwrap_or(v)),
+    };
+    let (days, time) = duration_parts(duration)?;
+    let minutes = days.checked_mul(24 * 60)?.checked_add(time.num_minutes())?;
+    (before || minutes == 0).then_some(minutes)
 }
 
 fn color_from_name(name: &str) -> Palette {
@@ -1124,6 +1170,81 @@ mod tests {
             let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:bad@example\r\nSUMMARY:Broken\r\nDTSTART:not-a-date\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
             assert!(parse(payload).0.is_empty());
         }
+    }
+
+    /// Alarms as other calendars write them keep their time before the start,
+    /// through the import an action makes of them.
+    #[test]
+    fn imported_alarms_keep_their_time_before_the_start() {
+        let reminder = |trigger: &str| {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:alarm@example.com\r\n\
+                 DTSTART:20261020T090000\r\nDTEND:20261020T100000\r\nSUMMARY:Dentist\r\n\
+                 BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:{trigger}\r\nEND:VALARM\r\n\
+                 END:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let parsed = parse(&payload).0[0].reminder_min;
+            let (events, _) = crate::actions::import_payload(&payload).expect("one event");
+            (parsed, events[0].reminder)
+        };
+        assert_eq!(reminder("-PT15M"), (Some(15), 15));
+        assert_eq!(reminder("-PT1H"), (Some(60), 60));
+        assert_eq!(reminder("-P1D"), (Some(1440), 1440));
+        assert_eq!(reminder("PT0S"), (Some(0), 0));
+        // Parsed, but no alert Calendar offers: the event comes without one.
+        assert_eq!(reminder("-PT1H30M"), (Some(90), -1));
+        // After the start is not a reminder before it.
+        assert_eq!(reminder("PT15M"), (None, -1));
+    }
+
+    /// What a `CalDAV` server or an emailed invite sends for a timed series:
+    /// UNTIL and EXDATE as date-times, UTC or zoned, and a task due at a time.
+    #[test]
+    fn date_time_series_ends_exclusions_and_due_times_import() {
+        let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date");
+        let weekly = |until: &str, exdate: &str| {
+            let payload = format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:standup@example.com\r\n\
+                 RRULE:FREQ=WEEKLY;UNTIL={until}\r\n\
+                 DTSTART;TZID=Europe/Berlin:20261005T090000\r\n\
+                 DTEND;TZID=Europe/Berlin:20261005T093000\r\n\
+                 {exdate}\r\nSUMMARY:Standup\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+            );
+            let (events, _) = parse(&payload);
+            events[0].occurrences_in(date(1), date(31) + chrono::Duration::days(90))
+        };
+        // UNTIL at the last occurrence's own start (09:00 in Berlin, 07:00
+        // UTC in summer time) keeps it; the zoned exclusion drops the 12th.
+        assert_eq!(
+            weekly(
+                "20261019T070000Z",
+                "EXDATE;TZID=Europe/Berlin:20261012T090000"
+            ),
+            vec![date(5), date(19)]
+        );
+        // 07:59 UTC on the 26th is 08:59 in Berlin after the clocks went
+        // back, a minute before that day's occurrence: the series ends on
+        // the 19th. A UTC exclusion lands on its Berlin date.
+        assert_eq!(
+            weekly("20261026T075959Z", "EXDATE:20261005T070000Z"),
+            vec![date(12), date(19)]
+        );
+        // A DATE UNTIL, as Calendar writes it, still ends on that date.
+        assert_eq!(
+            weekly("20261026", "EXDATE;VALUE=DATE:20261019"),
+            vec![date(5), date(12), date(26)]
+        );
+
+        let (_, tasks) = parse(
+            "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:ship@example.com\r\nSUMMARY:Ship\r\n\
+             DUE;TZID=Europe/Berlin:20261015T170000\r\nEND:VTODO\r\n\
+             BEGIN:VTODO\r\nUID:file@example.com\r\nSUMMARY:File\r\n\
+             DUE:20261016T120000Z\r\nEND:VTODO\r\nEND:VCALENDAR\r\n",
+        );
+        assert_eq!(
+            tasks.iter().map(|task| task.due).collect::<Vec<_>>(),
+            vec![Some(date(15)), Some(date(16))]
+        );
     }
 
     #[test]

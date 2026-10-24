@@ -316,6 +316,69 @@ fn an_image_put_by_one_process_is_read_by_another_and_the_session_only() {
     );
 }
 
+/// Content put piece by piece through room A's neutral scope (as the
+/// content put door does) is read by any app of room A that holds its hash
+/// and by nothing of room B; an upload dropped unfinished stores nothing.
+#[test]
+fn content_put_through_one_rooms_scope_is_unavailable_through_another_rooms() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("fs-blobs.sock");
+    let _server = {
+        let _guard = runtime.enter();
+        let media = DocumentMedia::new(Arc::new(ContentStore::memory()));
+        serve_socket(&socket, media).unwrap()
+    };
+    let session = BlobClient::connect_session(&socket).unwrap();
+    let content = pattern(runtime_fs::blobs::MAX_PUT_CHUNK + 4321);
+    let mut upload = session
+        .scope("room-a", "tilo.content")
+        .unwrap()
+        .begin_upload("application/octet-stream")
+        .unwrap();
+    for piece in content.chunks(512 * 1024 + 7) {
+        upload.append(piece).unwrap();
+    }
+    assert_eq!(upload.len(), content.len() as u64);
+    let stored = upload.finish().unwrap();
+    assert_eq!(stored.hash, blake3::hash(&content).to_hex().to_string());
+    assert_eq!(stored.len, content.len() as u64);
+
+    let notes = launcher_connection(&socket, "room-a", "so.tilo.notes");
+    assert_eq!(
+        notes.read_all(&stored.hash).unwrap(),
+        ReadOutcome::Ready {
+            bytes: content.clone(),
+            total_len: content.len() as u64,
+        }
+    );
+    for (room, app) in [("room-b", "tilo.content"), ("room-b", "so.tilo.notes")] {
+        let elsewhere = launcher_connection(&socket, room, app);
+        assert_eq!(
+            elsewhere.read_all(&stored.hash).unwrap(),
+            ReadOutcome::Unavailable,
+            "{room}/{app}"
+        );
+        assert!(!elsewhere.has(&stored.hash).unwrap(), "{room}/{app}");
+    }
+
+    let abandoned = b"never finished";
+    let mut upload = session
+        .scope("room-a", "tilo.content")
+        .unwrap()
+        .begin_upload("application/octet-stream")
+        .unwrap();
+    upload.append(abandoned).unwrap();
+    drop(upload);
+    let hash = blake3::hash(abandoned).to_hex().to_string();
+    assert!(!notes.has(&hash).unwrap());
+    assert_eq!(notes.read_all(&hash).unwrap(), ReadOutcome::Unavailable);
+}
+
 /// A public file's origin that serves one version and answers "unchanged"
 /// to a request naming it, counting what it was asked.
 struct OneVersion(Vec<u8>, Arc<std::sync::atomic::AtomicUsize>);

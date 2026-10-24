@@ -10,7 +10,6 @@ t_toml="$repo/t.toml"
 rpms_build="$repo/tools/ci/publish/rpms-build.sh"
 rpms_provenance="$repo/tools/ci/publish/rpms-provenance.sh"
 snapshot="$repo/os/Containerfile.rpms"
-image_workflow="$repo/.forgejo/workflows/build-image.yml"
 build_script="$repo/os/dev/build-image.sh"
 asset_manifest="$repo/os/external-assets/github-assets.tsv"
 derive="$repo/os/dev/derive-rpm-package-set.py"
@@ -248,7 +247,9 @@ has "$rpms_provenance" '"internalParameters": {"expectedReleaseDigest": digest}'
   'snapshot provenance binds the index digest'
 has_t sign-rpms run 'bash tools/ci/publish/oci-attest.sh registry.tilo.so/tilo/rpms /target/publish/rpms/index' \
   'snapshot signing attests the index provenance'
-has "$repo/tools/ci/publish/oci-attest.sh" 'args=(--yes --type slsaprovenance1 --predicate "$predicate"' \
+has "$repo/tools/ci/publish/oci-attest.sh" 'type=${4:-slsaprovenance1}' \
+  'snapshot provenance is attested as SLSA provenance'
+has "$repo/tools/ci/publish/oci-attest.sh" 'args=(--yes --type "$type" --predicate "$predicate"' \
   'snapshot publishes signed SLSA provenance'
 has "$repo/tools/ci/publish/oci-attest.sh" 'die "the provenance predicate is not for $expected"' \
   'attestation refuses a predicate for another digest'
@@ -263,17 +264,6 @@ has "$resolve_script" 'derive-rpm-package-set.py" --arch aarch64' \
   'fingerprint resolve derives the explicit ARM64 RPM package set'
 has "$resolve_script" '.buildDefinition.externalParameters.packageSetSha256ByArchitecture' \
   'fingerprint resolve verifies architecture-specific RPM package-set provenance'
-has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
-  'OS CI resolves RPMS_REF by fingerprint before building'
-resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$image_workflow")
-if grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' <<<"$resolver_job" \
-  && grep -Fq './os/dev/resolve-rpm-snapshot.sh' <<<"$resolver_job" \
-  && grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' <<<"$resolver_job" \
-  && ! grep -Fq 'enable-openid-connect: true' <<<"$resolver_job"; then
-  ok "$(basename "$image_workflow") resolves the signed RPM fingerprint without reusable OIDC"
-else
-  bad "$(basename "$image_workflow") may sign in a reusable job or accept an unverified RPM snapshot"
-fi
 # The relay image installs only from the snapshot rpm-snapshot resolved and verified.
 has_t image-relay needs rpm-snapshot 'the relay image builds from the verified RPM snapshot'
 has "$repo/tools/ci/publish/relay-build.sh" '[[ $rpms_ref =~ ^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$ ]]' \
@@ -332,8 +322,6 @@ has "$snapshot" 'dnf upgrade -y --best --store=/tmp/tilo-upgrade' \
   'snapshot includes upgrades of installed direct specs and their reverse dependencies'
 has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
-has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
-  'production CI rejects a stale frozen package manifest before building'
 has "$resolve_script" 'registry.tilo.so/tilo/rpms@$digest' \
   'fingerprint resolve returns a digest-pinned RPM registry path'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \

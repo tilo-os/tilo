@@ -164,8 +164,8 @@ pub fn wait_for_wall_clock(unix_ns: u64) -> io::Result<WallClockWait> {
         .map_or(0, |since| {
             u64::try_from(since.as_nanos()).unwrap_or(u64::MAX)
         });
-    if unix_ns > now {
-        std::thread::sleep(std::time::Duration::from_nanos(unix_ns - now));
+    if let Some(remaining) = unix_ns.checked_sub(now).filter(|ns| *ns > 0) {
+        std::thread::sleep(std::time::Duration::from_nanos(remaining));
     }
     Ok(WallClockWait::Reached)
 }

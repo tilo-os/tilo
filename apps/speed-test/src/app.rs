@@ -586,20 +586,31 @@ fn stopped(signal: &RunSignal, progress: &Progress) -> Result<(), String> {
     Ok(())
 }
 
-async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String> {
-    progress.report("ping", Some(0), Some(3));
-    let client = tilo_net::Client::builder()
+/// The server every stage measures against.
+const SERVER: &str = "https://speed.cloudflare.com";
+/// Bytes the download stage fetches.
+const DOWNLOAD_BYTES: u64 = 10_000_000;
+/// Bytes the upload stage sends.
+const UPLOAD_BYTES: usize = 2_000_000;
+
+fn client() -> Result<tilo_net::Client, String> {
+    tilo_net::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
         .build()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error.to_string())
+}
+
+async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String> {
+    progress.report("ping", Some(0), Some(3));
+    let client = client()?;
     let mut samples = Vec::new();
     let mut server = "Cloudflare".to_owned();
     for request in 0..6 {
         stopped(signal, progress)?;
         let ping_start = ui::time::now();
         let reached = client
-            .get("https://speed.cloudflare.com/__down?bytes=1")
+            .get(format!("{SERVER}/__down?bytes=1"))
             .send()
             .await
             .and_then(tilo_net::Response::error_for_status)
@@ -625,43 +636,16 @@ async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String>
     signal.live_bits.store(0.0_f64.to_bits(), Ordering::Release);
     signal.set(RunSignal::DOWNLOAD);
     progress.report("download", Some(1), Some(3));
-    let download_start = ui::time::now();
-    let mut response = client
-        .get("https://speed.cloudflare.com/__down?bytes=10000000")
-        .send()
-        .await
-        .map_err(|error| format!("Download test failed: {error}"))?;
-    let mut bytes = 0_usize;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("Download test failed: {error}"))?
-    {
-        stopped(signal, progress)?;
-        bytes += chunk.len();
-        signal.bytes.store(bytes as u64, Ordering::Release);
-        signal.live_bits.store(
-            crate::measure::mbps(bytes as u64, download_start.elapsed()).to_bits(),
-            Ordering::Release,
-        );
-    }
-    let download = crate::measure::mbps(bytes as u64, download_start.elapsed());
+    let (bytes, download) =
+        download_stage(&client, SERVER, signal, || stopped(signal, progress)).await?;
 
     signal.live_bits.store(0.0_f64.to_bits(), Ordering::Release);
     signal.set(RunSignal::UPLOAD);
     progress.report("upload", Some(2), Some(3));
-    let upload_body = vec![0_u8; 2_000_000];
-    let upload_start = ui::time::now();
-    client
-        .post("https://speed.cloudflare.com/__up")
-        .body(upload_body)
-        .send()
-        .await
-        .map_err(|error| format!("Upload test failed: {error}"))?;
+    let upload = upload_stage(&client, SERVER).await?;
     stopped(signal, progress)?;
-    let upload = crate::measure::mbps(2_000_000, upload_start.elapsed());
     Ok(Run {
-        bytes: bytes as u64 + 2_000_000,
+        bytes: bytes + UPLOAD_BYTES as u64,
         result: ResultSet {
             ping,
             jitter,
@@ -670,6 +654,49 @@ async fn measure(signal: &RunSignal, progress: &Progress) -> Result<Run, String>
         },
         server,
     })
+}
+
+/// Download from `server`, showing the rate on `signal` as it runs: the
+/// bytes moved and the rate they came at. A refusal (a busy server's 429,
+/// say) is a failed stage, never its error page timed as the connection.
+async fn download_stage(
+    client: &tilo_net::Client,
+    server: &str,
+    signal: &RunSignal,
+    stopped: impl Fn() -> Result<(), String> + Send,
+) -> Result<(u64, f64), String> {
+    let failed = |error: tilo_net::NetError| format!("Download test failed: {error}");
+    let start = ui::time::now();
+    let mut response = client
+        .get(format!("{server}/__down?bytes={DOWNLOAD_BYTES}"))
+        .send()
+        .await
+        .and_then(tilo_net::Response::error_for_status)
+        .map_err(failed)?;
+    let mut bytes = 0_u64;
+    while let Some(chunk) = response.chunk().await.map_err(failed)? {
+        stopped()?;
+        bytes += chunk.len() as u64;
+        signal.bytes.store(bytes, Ordering::Release);
+        signal.live_bits.store(
+            crate::measure::mbps(bytes, start.elapsed()).to_bits(),
+            Ordering::Release,
+        );
+    }
+    Ok((bytes, crate::measure::mbps(bytes, start.elapsed())))
+}
+
+/// Upload to `server` and the rate it went at; a refusal fails the stage.
+async fn upload_stage(client: &tilo_net::Client, server: &str) -> Result<f64, String> {
+    let start = ui::time::now();
+    client
+        .post(format!("{server}/__up"))
+        .body(vec![0_u8; UPLOAD_BYTES])
+        .send()
+        .await
+        .and_then(tilo_net::Response::error_for_status)
+        .map_err(|error| format!("Upload test failed: {error}"))?;
+    Ok(crate::measure::mbps(UPLOAD_BYTES as u64, start.elapsed()))
 }
 
 #[cfg(test)]
@@ -690,6 +717,77 @@ mod tests {
                 || panic!("{id} is published"),
                 |action| action.contract.availability.clone(),
             )
+    }
+
+    /// A local server that reads each request whole and answers it with
+    /// `status` and `body`.
+    fn serve(status: &'static str, body: Vec<u8>) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut head = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let sent = String::from_utf8_lossy(&head)
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<u64>().ok())
+                            .flatten()
+                    })
+                    .unwrap_or(0);
+                let _ = std::io::copy(&mut (&mut stream).take(sent), &mut std::io::sink());
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(&body);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn a_server_that_refuses_fails_the_stage_instead_of_timing_its_refusal() {
+        let client = client().unwrap();
+        let signal = RunSignal::default();
+        let busy = serve("429 Too Many Requests", b"rate limited".to_vec());
+        let download = ui::rt::block_on(download_stage(&client, &busy, &signal, || Ok(())))
+            .expect("a test thread may block");
+        assert!(
+            download
+                .as_ref()
+                .is_err_and(|e| e.starts_with("Download test failed")),
+            "a refused download is no measurement: {download:?}"
+        );
+        let upload =
+            ui::rt::block_on(upload_stage(&client, &busy)).expect("a test thread may block");
+        assert!(
+            upload
+                .as_ref()
+                .is_err_and(|e| e.starts_with("Upload test failed")),
+            "a refused upload is no measurement: {upload:?}"
+        );
+
+        let answering = serve("200 OK", vec![0; 4096]);
+        let (bytes, rate) =
+            ui::rt::block_on(download_stage(&client, &answering, &signal, || Ok(())))
+                .expect("a test thread may block")
+                .expect("an answered download is measured");
+        assert_eq!(bytes, 4096);
+        assert!(rate > 0.0);
+        assert_eq!(signal.bytes.load(Ordering::Acquire), 4096);
+        ui::rt::block_on(upload_stage(&client, &answering))
+            .expect("a test thread may block")
+            .expect("an answered upload is measured");
     }
 
     #[test]

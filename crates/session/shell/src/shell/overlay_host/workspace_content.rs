@@ -8,7 +8,7 @@ use super::*;
 
 impl ShellOverlayHost {
     /// Override where the band under the top bar begins
-    /// ([`CHROME_TOP_OFFSET_PX`] by default).
+    /// (`CHROME_TOP_OFFSET_PX` by default).
     #[must_use]
     pub fn with_chrome_top(mut self, y: f32) -> Self {
         self.chrome_top_y = y;
@@ -289,16 +289,21 @@ impl ShellOverlayHost {
         let Some((desktop, failures)) = rebuild else {
             return false;
         };
+        let shown_before = self.content_built_for_ws;
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
-            // A chord already started this switch's frames, before demand
-            // was sampled; keep its source rather than lengthening them.
-            let source = if self.workspace_switch_holding() {
+            // A chord announced its switch before making it; any other
+            // switch follows the input the person last used (a click in the
+            // workspace menu, a key on its row) and owes its frame now.
+            let made_by = if self.workspace_switch_owed() {
                 self.workspace_switch_source
             } else {
-                ui::tokens::MotionSource::Pointer
+                self.input_source
             };
-            self.start_workspace_switch_frames(source);
+            self.slide_workspace(shown_before, &desktop, made_by);
+            if !self.workspace_switch_owed() {
+                self.start_workspace_switch(made_by);
+            }
         }
         swapped
     }
@@ -462,9 +467,14 @@ impl ShellOverlayHost {
 
     /// The shared desktop surface, when the content is one. Hand-built test
     /// content is not.
-    /// A frame was presented. The compositor never marks its content drawn,
-    /// so the window groups' once-per-drawn-frame motion is told here.
+    /// A frame was painted. The frame builder's paint says so itself, for
+    /// every host that paints it (the compositor, captures, tests): the
+    /// content is never marked drawn, so the window groups' once-per-drawn-
+    /// frame motion is told here, and a host that forgot to say it left
+    /// every width spring stopped after one step, asking for frames.
     pub(crate) fn frame_presented(&mut self) {
+        // The frame that shows a switched workspace has been painted.
+        self.workspace_switch_owed = false;
         if let Some(surface) = self.desktop_surface_mut() {
             surface.frame_presented();
         }

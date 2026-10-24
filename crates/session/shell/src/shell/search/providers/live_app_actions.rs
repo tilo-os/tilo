@@ -37,6 +37,27 @@ pub const PROVIDER_ID: &str = "app-actions";
 const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
 
+/// An action row's secondary line: the record it acts on unless its label
+/// already names it, then the app.
+fn row_facts(action_label: &str, resource_label: &str, app: &str) -> Vec<String> {
+    let named = resource_label.trim().is_empty()
+        || action_label
+            .to_lowercase()
+            .contains(&resource_label.trim().to_lowercase());
+    let app = app_name(app);
+    if named {
+        vec![app]
+    } else {
+        vec![resource_label.to_owned(), app]
+    }
+}
+
+/// The app's name as a person knows it, never its package id.
+fn app_name(app: &str) -> String {
+    crate::shell::launcher::display_name_for_app_id_without_waiting(app)
+        .unwrap_or_else(|| crate::shell::launcher::display_name_for_package_id(app))
+}
+
 struct ResultParts<'a> {
     app: &'a str,
     kind: &'a str,
@@ -964,7 +985,7 @@ impl LiveAppActionsProvider {
                 Some(std::thread::current().id());
         }
         let source_generation = broker.surfaces_generation();
-        let entries = broker
+        let mut entries = broker
             .surfaces()
             .into_iter()
             .filter(|surface| match scope.scope {
@@ -993,6 +1014,21 @@ impl LiveAppActionsProvider {
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
+        // The broker lists surfaces in no particular order, and the index
+        // answers equal matches by position: give positions a fixed order,
+        // by title and then by address, so equal rows never reshuffle. How
+        // recently each was chosen is weighed where providers' rows merge.
+        entries.sort_by_cached_key(|(surface, action)| {
+            (
+                action.action_label.to_lowercase(),
+                action.action_label.clone(),
+                surface.app_id.clone(),
+                surface.route.cluster_id.clone(),
+                surface.route.record_id.clone(),
+                action.resource.clone(),
+                action.action.clone(),
+            )
+        });
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
         SurfaceSnapshot::new(
@@ -1986,10 +2022,7 @@ impl LiveAppActionsProvider {
             return page;
         }
         let row = Self::job_result(id, &job_subtitle(&update), cancel, &actor, lifecycle);
-        let bytes = row
-            .title
-            .len()
-            .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+        let bytes = row.title.len().saturating_add(row.secondary_len());
         if bytes > budget.max_bytes {
             page.budget_exhausted = true;
         } else {
@@ -2463,7 +2496,6 @@ impl LiveAppActionsProvider {
         let resource = address.resource.clone();
         let action = address.action.clone();
         SearchResult {
-            facts: Vec::new(),
             shortcut: None,
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
@@ -2472,10 +2504,16 @@ impl LiveAppActionsProvider {
                 "directory{ID_SEPARATOR}{peer_id}{ID_SEPARATOR}{revision}{ID_SEPARATOR}{resource}{ID_SEPARATOR}{action}"
             ),
             title: descriptor.action_label.clone(),
-            subtitle: descriptor
-                .description
-                .clone()
-                .or_else(|| Some(format!("{} · {}", descriptor.resource_label, root.app_id))),
+            facts: if descriptor.description.is_none() {
+                row_facts(
+                    &descriptor.action_label,
+                    &descriptor.resource_label,
+                    &root.app_id,
+                )
+            } else {
+                Vec::new()
+            },
+            subtitle: descriptor.description.clone(),
             badge: None,
             score,
             params,
@@ -2556,7 +2594,6 @@ impl LiveAppActionsProvider {
         };
         let title = row.resource.label.clone();
         SearchResult {
-            facts: Vec::new(),
             shortcut: None,
             operation_kind: tilo_actions::OperationKind::View,
             kind: ResourceKind::Custom(if row.resource.kind.is_empty() {
@@ -2570,20 +2607,14 @@ impl LiveAppActionsProvider {
                 root.peer_id, row.resource.id
             ),
             title,
-            subtitle: Some(
-                presentation
-                    .as_ref()
-                    .and_then(|value| value.detail.as_deref())
-                    .map_or_else(
-                        || {
-                            t_args(
-                                "search-app-resource-contains",
-                                &[("app", root.app_id.as_str().into())],
-                            )
-                        },
-                        |detail| format!("{} · {detail}", root.app_id),
-                    ),
-            ),
+            subtitle: None,
+            facts: {
+                let app = app_name(&root.app_id);
+                match presentation.as_ref().and_then(|value| value.detail.clone()) {
+                    Some(detail) => vec![app, detail],
+                    None => vec![app, t("search-app-resource-contains")],
+                }
+            },
             badge: presentation.and_then(|value| value.badge),
             score: rank,
             params: Vec::new(),
@@ -2615,6 +2646,16 @@ impl SearchProvider for LiveAppActionsProvider {
 
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.resource_kinds
+    }
+
+    /// An app's action wears that app's icon, live or retained alike.
+    fn row_icon(&self, result: &SearchResult) -> Option<ui::icons::Icon> {
+        let parts = Self::result_parts(&result.id)?;
+        Some(ui::icons::app_glyph(parts.app, None))
+    }
+
+    fn row_image(&self, result: &SearchResult) -> Option<ui::icons::AppImage> {
+        crate::app_icons::for_window_app_id(Self::result_parts(&result.id)?.app)
     }
 
     fn action_hierarchy(&self, id: &str) -> Option<ActionHierarchy> {
@@ -2897,28 +2938,22 @@ impl SearchProvider for LiveAppActionsProvider {
                 let open_start = Rc::clone(&start);
                 let open_unavailable = unavailable.clone();
                 results.push(SearchResult {
-            facts: Vec::new(),
                     shortcut: None,
                     kind: ResourceKind::Action,
                     operation_kind: action.operation_kind,
                     provider_id: PROVIDER_ID.to_string(),
                     id: Self::result_id(&surface, action),
                     title: action.action_label.clone(),
-                    subtitle: Some(unavailable_reason.clone().unwrap_or_else(|| {
-                        action.description.clone().unwrap_or_else(|| {
-                            if surface_live {
-                                format!("{} · {}", action.resource_label, surface.app_id)
-                            } else {
-                                t_args(
-                                    "search-app-action-launches",
-                                    &[
-                                        ("resource", action.resource_label.as_str().into()),
-                                        ("app", surface.app_id.as_str().into()),
-                                    ],
-                                )
-                            }
-                        })
-                    })),
+                    // Live or retained, the row reads as the record and the
+                    // app a person knows; only what opening it does differs.
+                    subtitle: unavailable_reason
+                        .clone()
+                        .or_else(|| action.description.clone()),
+                    facts: if unavailable_reason.is_none() && action.description.is_none() {
+                        row_facts(&action.action_label, &action.resource_label, &surface.app_id)
+                    } else {
+                        Vec::new()
+                    },
                     badge: None,
                     score,
                     params,
@@ -3370,10 +3405,7 @@ impl SearchProvider for LiveAppActionsProvider {
                 };
                 position = position.saturating_add(1);
                 work = work.saturating_add(1);
-                let row_bytes = row
-                    .title
-                    .len()
-                    .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+                let row_bytes = row.title.len().saturating_add(row.secondary_len());
                 if bytes.saturating_add(row_bytes) <= budget.max_bytes {
                     bytes = bytes.saturating_add(row_bytes);
                     results.push(row);
@@ -3497,10 +3529,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         )
                 });
             if let Some(row) = row {
-                let row_bytes = row
-                    .title
-                    .len()
-                    .saturating_add(row.subtitle.as_ref().map_or(0, String::len));
+                let row_bytes = row.title.len().saturating_add(row.secondary_len());
                 if bytes.saturating_add(row_bytes) > budget.max_bytes {
                     break;
                 }
@@ -6105,10 +6134,8 @@ mod tests {
             drop(chrome_ref);
             assert_eq!(page.results.len(), 1);
             assert_eq!(page.results[0].title, "Book of Tilo");
-            assert_eq!(
-                page.results[0].subtitle.as_deref(),
-                Some("so.tilo.reader · Chapter 7")
-            );
+            assert_eq!(page.results[0].subtitle, None);
+            assert_eq!(page.results[0].facts, ["Reader", "Chapter 7"]);
             assert_eq!(page.results[0].badge.as_deref(), Some("2 collaborators"));
             (page.results[0].on_open)(
                 &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
@@ -6291,3 +6318,11 @@ mod tests {
 #[cfg(test)]
 #[path = "live_app_actions/job_progress_tests.rs"]
 mod job_progress_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/window_records_tests.rs"]
+mod window_records_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/row_order_tests.rs"]
+mod row_order_tests;

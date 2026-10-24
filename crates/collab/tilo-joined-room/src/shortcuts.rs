@@ -55,7 +55,12 @@ impl NativeWorkspaceOwner {
             .generation()
             .checked_add(1)
             .ok_or("native shortcut generation exhausted")?;
-        peer.durable_mutation_messages(&candidate.peer, key, now, next_generation)?;
+        peer.publication_mut().durable_mutation_messages(
+            &candidate.peer,
+            key,
+            now,
+            next_generation,
+        )?;
         candidate.peer = peer;
         candidate.record.peer = candidate.peer.durable()?;
         candidate.record.generation = next_generation;

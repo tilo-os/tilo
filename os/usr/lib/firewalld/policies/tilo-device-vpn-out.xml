@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the person's other devices send leaves through this device's uplink.
+     Masquerade and the refusal of new connections into the tunnel are the
+     helper's own nftables table, which is there only while this device is an
+     exit; firewalld turns on no forwarding for it. -->
+<policy target="ACCEPT">
+  <short>Device VPN out</short>
+  <description>The person's other devices' traffic leaves through this device.</description>
+  <ingress-zone name="tilo-device-vpn"/>
+  <egress-zone name="ANY"/>
+</policy>

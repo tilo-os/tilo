@@ -14,5 +14,9 @@ pub mod process;
 pub mod protocol;
 
 pub use event_log::{EventLog, LoggedEvent};
-pub use process::{BlobAccess, ConnectorProcess, PerformError, WorkerCommand};
-pub use protocol::{FromWorker, Outcome, PROTOCOL_VERSION, ToWorker};
+pub use process::{
+    BlobAccess, CallsReport, ConnectorProcess, OutsideAudio, PerformError, WorkerCommand,
+};
+pub use protocol::{
+    CallLink, FromWorker, Outcome, OutsideCall, OutsidePerson, PROTOCOL_VERSION, ToWorker,
+};

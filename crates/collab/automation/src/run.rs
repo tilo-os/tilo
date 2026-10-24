@@ -165,7 +165,7 @@ pub trait RunHooks: Sync {
 
     /// Resolve when the running invocation `invocation` is worth observing
     /// again — after a poll interval. Only called for a host whose
-    /// [`ActionHost::next_change`](tilo_actions::remote::ActionHost::next_change)
+    /// [`ActionHost::next_change`]
     /// cannot tell when the invocation changes. Abandoning the answer stops
     /// the run.
     fn settle(&self, invocation: InvocationId) -> Pending<()>;

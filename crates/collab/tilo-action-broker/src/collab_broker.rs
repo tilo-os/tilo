@@ -685,6 +685,23 @@ impl AppActionBroker {
         &self.state
     }
 
+    /// Admit app `caller_app`'s request to open `target` in `room` for the
+    /// running invocation `parent` the broker delivered to it
+    /// ([`CapnpBrokerState::admit_app_open`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`CapnpBrokerState::admit_app_open`].
+    pub fn admit_app_open(
+        &self,
+        caller_app: &str,
+        room: &str,
+        parent: tilo_actions::InvocationId,
+        target: &str,
+    ) -> Result<crate::collab_broker_capnp::AppOpen, String> {
+        self.state.admit_app_open(caller_app, room, parent, target)
+    }
+
     /// Read what each application declared on the action door from
     /// `resolver` from now on.
     pub fn set_app_action_access(&self, resolver: crate::app_actions::AppActionAccessResolver) {

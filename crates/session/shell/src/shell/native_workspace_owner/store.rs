@@ -142,12 +142,16 @@ pub(super) struct Runtime {
     /// The tree document beside the state file.
     document: crate::shell::persist::DocLog,
     /// The action policy this writer's tree has published.
-    action_authority: Arc<crate::shell::launcher::action_authority::Authority>,
+    action_authority: Arc<crate::shell::action_authority::Authority>,
     /// An owner publication between taking its sequence and installing its
     /// record, and whether a snapshot of the tree was taken meanwhile. Read
     /// and changed only with the tree held, so a snapshot and the install
     /// are ordered by the tree's lock.
     in_flight: Mutex<Option<InFlight>>,
+    /// Run before each state-file write of this writer, on whichever thread
+    /// makes it; see [`test_seam::hold_writes`].
+    #[cfg(test)]
+    before_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 /// See [`Runtime::in_flight`].
 #[derive(Default)]
@@ -170,7 +174,16 @@ impl Default for Runtime {
             document: crate::shell::persist::DocLog::default(),
             action_authority: Arc::default(),
             in_flight: Mutex::new(None),
+            #[cfg(test)]
+            before_write: Mutex::new(None),
         }
+    }
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // The policy this writer's tree published is no longer accepted by
+        // a writer that holds it: what was judged against it is judged again.
+        self.action_authority.judge_again();
     }
 }
 #[derive(Default)]
@@ -245,9 +258,7 @@ impl NativeStateRuntime {
         NativeStateWitness(Arc::downgrade(&self.0))
     }
     /// The action policy this writer's tree has published.
-    pub(crate) fn action_authority(
-        &self,
-    ) -> Arc<crate::shell::launcher::action_authority::Authority> {
+    pub(crate) fn action_authority(&self) -> Arc<crate::shell::action_authority::Authority> {
         self.0.action_authority.clone()
     }
     pub(crate) fn owner(&self) -> Option<NativeWorkspaceOwner> {
@@ -430,7 +441,13 @@ impl NativeStateRuntime {
             )));
         }
         #[cfg(test)]
-        test_seam::before_write();
+        {
+            test_seam::before_write();
+            let held = self.0.before_write.lock().clone();
+            if let Some(hook) = held {
+                hook();
+            }
+        }
         match tilo_files::native::atomic::replace(
             path,
             &encoded.bytes,
@@ -444,6 +461,8 @@ impl NativeStateRuntime {
                         uncertain.extend(next.rooms());
                     }
                     self.0.healthy.store(false, Ordering::Release);
+                    // Every authority this writer vouched for is withdrawn.
+                    tilo_identity_host::policy_change::announce();
                     return Err(WriteError::Uncertain(error.into_io_error()));
                 }
                 Err(WriteError::Refused(error.into_io_error()))
@@ -729,6 +748,25 @@ pub(crate) mod test_seam {
                 hook();
             }
         });
+    }
+
+    /// Call `hook` before every state-file write `runtime` makes, on any
+    /// thread, until the returned guard is dropped: a disk whose syncs take
+    /// as long as `hook` does.
+    pub(crate) fn hold_writes(
+        runtime: &super::NativeStateRuntime,
+        hook: impl Fn() + Send + Sync + 'static,
+    ) -> HeldWrites {
+        *runtime.0.before_write.lock() = Some(std::sync::Arc::new(hook));
+        HeldWrites(runtime.clone())
+    }
+
+    /// Lets the writer's state-file writes go at full speed again when dropped.
+    pub(crate) struct HeldWrites(super::NativeStateRuntime);
+    impl Drop for HeldWrites {
+        fn drop(&mut self) {
+            self.0.0.before_write.lock().take();
+        }
     }
 
     /// Run `body` with `hook` called before each state-file write this

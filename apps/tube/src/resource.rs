@@ -155,7 +155,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "watch",
 ];
 
-/// Framework app: the Tube widget is the surface over [`Tube`].
+/// Framework app: the Tube widget is the surface over [`Library`].
 pub struct TubeShell;
 
 /// What the binary runs instead of opening a window.
@@ -296,7 +296,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
-        crate::rows::effect_statuses(self.device_sync_view())
+        crate::rows::effect_statuses(self.model_ref(), self.device_sync_view())
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

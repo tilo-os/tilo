@@ -3,7 +3,7 @@
 //! An app offers to open another installed app as an action of its own
 //! ([`ApplicationLaunch`]). Run, that action becomes the workspace's `open`
 //! of the app ([`ApplicationLaunch::target`]), asked of the session's action
-//! door: the window never starts anything itself. [`start_application_launch`]
+//! door: the window never starts anything itself. `start_application_launch`
 //! is that step for every host; a host supplies only its door
 //! ([`SessionDoor`]). A native window's door is its session broker; a page's
 //! is the page's own session, served to it as a [`RemoteActions`] client
@@ -12,8 +12,8 @@
 use tilo_actions::remote::{ActionHostError, ApplicationLaunch, InvokeRequest};
 use tilo_actions::{ActionOutput, DoorError, InvocationId, InvocationUpdate};
 
-use crate::local_state::LocalState;
-use crate::remote_actions::{InvocationCall, RemoteActions, RemoteCall};
+use crate::arriving::Arrival;
+use crate::remote_actions::{InvocationCall, RemoteActions};
 use crate::widget::ResourceOperationStart;
 
 /// Where a host sends what an action asks of the session beyond its app.
@@ -54,6 +54,11 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
 /// Open the app `payload` names, through `door`, in the workspace of the
 /// action's `route` (else the door's own).
 ///
+/// The request continues the invocation the broker delivered for it
+/// (`operation`, when `admitted`; else the one being handled here), so the
+/// session decides it as that invocation's caller; without one, only the
+/// person's own press in this app is behind it.
+///
 /// # Errors
 /// An invalid launch, no door or workspace to open it in, or the door's
 /// refusal.
@@ -81,11 +86,16 @@ pub(crate) fn start_application_launch(
             reason: "Opening an application requires an admitted workspace route".into(),
         });
     };
+    let on_behalf_of = if admitted {
+        Some(operation)
+    } else {
+        crate::invocation_scope::delivered_invocation()
+    };
     door.invoke(
         operation,
         admitted,
         InvokeRequest {
-            on_behalf_of: None,
+            on_behalf_of,
             invocation: InvocationId::new(),
             target: launch.target(&room),
             argument: launch.argument(),
@@ -121,18 +131,20 @@ pub fn door_error(error: &ActionHostError) -> DoorError {
 }
 
 /// How a finished call ended for the operation that made it.
-fn finished(call: &InvocationCall) -> Option<Result<ActionOutput, DoorError>> {
+fn finished(
+    call: &Arrival<InvocationUpdate, ActionHostError>,
+) -> Option<Result<ActionOutput, DoorError>> {
     match call {
-        RemoteCall::Refused(error) => Some(Err(door_error(error))),
-        RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
+        Arrival::Failed(error) => Some(Err(door_error(error))),
+        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(Ok(output.clone())),
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => {
             Some(Err(DoorError::Failed(error.message.clone())))
         }
-        RemoteCall::Done(InvocationUpdate::Cancelled { message, .. }) => Some(Err(
+        Arrival::Ready(InvocationUpdate::Cancelled { message, .. }) => Some(Err(
             DoorError::Failed(message.clone().unwrap_or_else(|| "It was cancelled".into())),
         )),
         // Still running: its end arrives later.
-        RemoteCall::Pending | RemoteCall::Done(_) => None,
+        Arrival::Pending { .. } | Arrival::Ready(_) => None,
     }
 }
 
@@ -141,7 +153,7 @@ fn finished(call: &InvocationCall) -> Option<Result<ActionOutput, DoorError>> {
 pub struct ClientDoor {
     client: RemoteActions,
     workspace: Option<String>,
-    running: Vec<(InvocationId, LocalState<InvocationCall>)>,
+    running: Vec<(InvocationId, InvocationCall)>,
 }
 
 impl ClientDoor {
@@ -189,7 +201,8 @@ impl SessionDoor for ClientDoor {
         _admitted: bool,
         request: InvokeRequest,
     ) -> Result<ResourceOperationStart, DoorError> {
-        let call = self.client.invoke_with_id(
+        let call = self.client.invoke_continuing(
+            request.on_behalf_of,
             request.invocation,
             request.target,
             request.argument,
