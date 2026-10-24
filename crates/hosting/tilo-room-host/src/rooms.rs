@@ -1949,11 +1949,15 @@ impl Rooms {
     ) {
         let (mut changed, mut again) = (false, false);
         for retained in retained {
+            // What the relay's device wrote is retained under its key, the
+            // governor's own commits and its sessions' writes alike: the
+            // first are the governor's copy already, the second it took in
+            // as they came (`absorb`). Neither is replayed into it.
             if retained.author == self.inner.host.cert.device_public_key {
                 continue;
             }
             if let Ok(message) = postcard::from_bytes(&retained.body)
-                && self.recalls(room, retained.author, &message)
+                && self.recalls(room, &message)
             {
                 let followed = room.follow(retained.author, message);
                 changed |= followed.changed;
