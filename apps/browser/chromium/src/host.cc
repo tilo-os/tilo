@@ -1786,7 +1786,16 @@ void StartExtensionTabs() {
     client->Event("extension_download_open",fields);
     return "";
   };
-  hooks.activated=[](int tab) {auto client=ClientOf(tab);return client && client->activated();};
+  // The person's click or key lands in the focused frame, and Chromium
+  // counts it for that frame and those it is in: one of them must be the
+  // extension's page.
+  hooks.activated=[](int tab,const std::string& extension) {
+    auto client=ClientOf(tab);if(!client || !client->activated() || !client->browser_)return false;
+    const auto page="chrome-extension://"+extension+"/";
+    for(auto frame=client->browser_->GetFocusedFrame();frame;frame=frame->GetParent())
+      if(frame->GetURL().ToString().rfind(page,0)==0)return true;
+    return false;
+  };
   hooks.pipe_listen=[](const std::string& session,tilo::ExtensionTabs::PipeListener listener) {
     if(listener)pipe_listeners[session]=std::move(listener);else pipe_listeners.erase(session);
   };
