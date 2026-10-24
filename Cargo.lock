@@ -10878,6 +10878,7 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bounded-command",
  "getrandom 0.4.3",
  "libc",
@@ -10898,6 +10899,7 @@ dependencies = [
  "tracing",
  "uuid",
  "workspace-hack",
+ "x25519-dalek 3.0.0",
  "zbus",
  "zeroize",
 ]
