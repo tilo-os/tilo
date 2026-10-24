@@ -235,7 +235,7 @@ pub fn stops(entries: &[PstoreEntry]) -> Vec<Stop> {
     dumps
         .into_iter()
         .map(|((reason, _), mut parts)| {
-            parts.sort_by(|a, b| b.0.cmp(&a.0));
+            parts.sort_by_key(|part| std::cmp::Reverse(part.0));
             Stop {
                 reason,
                 written: parts.iter().filter_map(|part| part.2).max(),

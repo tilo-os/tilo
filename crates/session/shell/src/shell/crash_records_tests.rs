@@ -250,6 +250,44 @@ fn request(step: &str, argument: InvokeArgument) -> InvokeRequest {
     }
 }
 
+/// What `agent`'s invocation of `request` answered, once it finished.
+fn answered(
+    broker: &tilo_action_broker::collab_broker::AppActionBroker,
+    agent: &Caller,
+    request: &InvokeRequest,
+) -> serde_json::Value {
+    let mut changes = broker.invocation_changes();
+    broker
+        .state()
+        .action_invoke(agent, None, None, request)
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .expect("admission answers at once")
+        .expect("a read asks nothing");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    loop {
+        match broker
+            .state()
+            .action_observe(agent, &request.invocation)
+            .map(|state| state.update)
+        {
+            Some(InvocationUpdate::Succeeded { output, .. }) => {
+                return output.value.expect("an answer");
+            }
+            Some(InvocationUpdate::Failed { error, .. }) => panic!("{}", error.message),
+            _ => {}
+        }
+        let woke = runtime.block_on(async {
+            tokio::time::timeout(tilo_test_env::hang_bound(), changes.changed()).await
+        });
+        assert!(woke.is_ok(), "the read answers");
+    }
+}
+
 /// An agent allowed to look at Settings in a room lists the records and
 /// reads one, through the broker, as Settings does: the list without a
 /// stack, the stack only for the record it names.
@@ -315,41 +353,12 @@ fn an_agent_lists_the_records_and_reads_one_through_the_broker() {
         );
     }
 
-    let answered = |request: &InvokeRequest| -> serde_json::Value {
-        let mut changes = broker.invocation_changes();
-        broker
-            .state()
-            .action_invoke(&agent, None, None, request)
-            .wait_timeout(tilo_test_env::hang_bound())
-            .ok()
-            .flatten()
-            .expect("admission answers at once")
-            .expect("a read asks nothing");
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_time()
-            .build()
-            .unwrap();
-        loop {
-            match broker
-                .state()
-                .action_observe(&agent, &request.invocation)
-                .map(|state| state.update)
-            {
-                Some(InvocationUpdate::Succeeded { output, .. }) => {
-                    return output.value.expect("an answer");
-                }
-                Some(InvocationUpdate::Failed { error, .. }) => panic!("{}", error.message),
-                _ => {}
-            }
-            let woke = runtime.block_on(async {
-                tokio::time::timeout(tilo_test_env::hang_bound(), changes.changed()).await
-            });
-            assert!(woke.is_ok(), "the read answers");
-        }
-    };
-
-    let listed: Vec<CrashRecord> =
-        serde_json::from_value(answered(&request(wire::LIST, InvokeArgument::None))).unwrap();
+    let listed: Vec<CrashRecord> = serde_json::from_value(answered(
+        &broker,
+        &agent,
+        &request(wire::LIST, InvokeArgument::None),
+    ))
+    .unwrap();
     assert_eq!(listed.len(), 5, "{listed:#?}");
     assert!(listed.iter().any(|record| record.kind == CrashKind::Froze));
     let stopped = listed
@@ -359,8 +368,12 @@ fn an_agent_lists_the_records_and_reads_one_through_the_broker() {
 
     let mut id = serde_json::Map::new();
     id.insert("id".into(), stopped.id.clone().into());
-    let text: CrashRecordText =
-        serde_json::from_value(answered(&request(wire::READ, InvokeArgument::Json(id)))).unwrap();
+    let text: CrashRecordText = serde_json::from_value(answered(
+        &broker,
+        &agent,
+        &request(wire::READ, InvokeArgument::Json(id)),
+    ))
+    .unwrap();
     assert_eq!(&text.record, stopped);
     assert!(
         text.text.contains("Call trace"),
