@@ -1071,7 +1071,7 @@ impl Collaborator {
             return None;
         }
         let [_, r, g, b] = packed.to_be_bytes();
-        crate::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+        crate::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
     }
 }
 

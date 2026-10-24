@@ -735,7 +735,7 @@ pub(crate) fn read_local_user_id() -> UserId {
 /// sees them agrees. Presence frames carry it to collaborators many times a
 /// second, so this reads it again at most once a second;
 /// [`read_local_presence_hue`] reads it now.
-pub fn local_presence_hue() -> ui::tokens::PresenceHue {
+pub fn local_presence_hue() -> collab_types::presence::PresenceHue {
     const FRESH: std::time::Duration = std::time::Duration::from_secs(1);
     if let Ok(known) = LOCAL_PRESENCE_HUE.lock()
         && let Some((at, hue)) = *known
@@ -746,15 +746,17 @@ pub fn local_presence_hue() -> ui::tokens::PresenceHue {
     read_local_presence_hue()
 }
 
-static LOCAL_PRESENCE_HUE: std::sync::Mutex<Option<(std::time::Instant, ui::tokens::PresenceHue)>> =
-    std::sync::Mutex::new(None);
+static LOCAL_PRESENCE_HUE: std::sync::Mutex<
+    Option<(std::time::Instant, collab_types::presence::PresenceHue)>,
+> = std::sync::Mutex::new(None);
 
 /// [`local_presence_hue`] read from the settings document and identity
 /// now, for a caller that knows the settings just changed.
-pub fn read_local_presence_hue() -> ui::tokens::PresenceHue {
-    let hue =
-        ui::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
-            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(&local_user_id()));
+pub fn read_local_presence_hue() -> collab_types::presence::PresenceHue {
+    let hue = collab_types::presence::PresenceHue::chosen_in(&serde_json::Value::Object(
+        settings_store::load(),
+    ))
+    .unwrap_or_else(|| collab_types::presence::PresenceHue::of_identity(&local_user_id()));
     if let Ok(mut known) = LOCAL_PRESENCE_HUE.lock() {
         *known = Some((std::time::Instant::now(), hue));
     }
@@ -6090,7 +6092,7 @@ mod bootstrap_tests {
                 let local = local_user_id();
                 let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
                 ids.push(local.as_str());
-                let cursors = ui::presence::assign_peer_colors(&ids, &[]);
+                let cursors = collab_types::presence::assign_peer_colors(&ids, &[]);
 
                 for c in &roster {
                     assert_eq!(
