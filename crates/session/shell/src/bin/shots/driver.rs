@@ -665,6 +665,11 @@ impl ShellDriver {
             );
         }
         let mut scene = self.fb.paint();
+        // As the compositor does after every paint (`compositor::native`):
+        // motion that steps once per presented frame (a window group's
+        // width spring) is told the frame turned, or it stops after its
+        // first step and a film shows it frozen.
+        self.fb.frame_presented();
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
