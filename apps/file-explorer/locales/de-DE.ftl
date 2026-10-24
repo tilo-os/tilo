@@ -657,6 +657,8 @@ file-explorer-import-mounted = Unabhängige bearbeitbare Kopien in { $folder } e
 ## Hinweise
 files-notice-undo = Rückgängig
 files-notice-open-with = Öffnen mit …
+files-notice-try-again = Erneut versuchen
+files-notice-open-history = Versionsverlauf öffnen
 files-menu-undo = Rückgängig
 files-open-failed = „{ $name }“ konnte nicht geöffnet werden
 files-open-unavailable = Dateien kann in diesem Fenster keine Dokumente öffnen.

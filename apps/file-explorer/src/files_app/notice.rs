@@ -31,6 +31,11 @@ pub(crate) enum NoticeAction {
     OpenWith(PathBuf),
     /// Stop the copy or move under way.
     CancelTransfer,
+    /// Hand the received-file service the shared-file link `0` again.
+    ReceiveAgain(String),
+    /// Open the version history of `path`, where a change to it that
+    /// failed can be made again.
+    OpenHistory(PathBuf),
 }
 
 impl NoticeAction {
@@ -39,6 +44,8 @@ impl NoticeAction {
             Self::Undo => crate::i18n::t("files-notice-undo"),
             Self::OpenWith(_) => crate::i18n::t("files-notice-open-with"),
             Self::CancelTransfer => crate::i18n::t("files-notice-cancel"),
+            Self::ReceiveAgain(_) => crate::i18n::t("files-notice-try-again"),
+            Self::OpenHistory(_) => crate::i18n::t("files-notice-open-history"),
         }
     }
 
@@ -47,6 +54,8 @@ impl NoticeAction {
             Self::Undo => "undo-2",
             Self::OpenWith(_) => "app-window",
             Self::CancelTransfer => "x",
+            Self::ReceiveAgain(_) => "rotate-cw",
+            Self::OpenHistory(_) => "history",
         }
     }
 }
