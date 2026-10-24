@@ -334,6 +334,8 @@ pub struct Persistence {
     normal_sequence: Arc<AtomicU64>,
     admission: Arc<tokio::sync::Mutex<()>>,
     budgets: AdmissionBudgets,
+    /// Closes when the owner task has ended ([`Persistence::close`]).
+    ended: tokio::sync::watch::Receiver<()>,
     #[cfg(test)]
     admission_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
@@ -459,12 +461,18 @@ impl State {
     }
 }
 
-// A registry entry owns one runtime for its lifetime: startup bindings are
-// installed before serving, and workspace_io::get_or_initialize uses entry-or-
-// insert under its reservation. There is no live registry eviction/reopen path.
-// Replacing a runtime over an active store is not a supported restart protocol.
+// A registry entry owns one runtime for its lifetime: workspace_io::
+// get_or_initialize uses entry-or-insert under its reservation. Replacing a
+// runtime over an active store is not a supported restart protocol: a room
+// leaves the registry only through workspace_io::evict, which waits for its
+// owner to end before the room can open again.
 pub async fn handle(workspace: &SharedWorkspace) -> Persistence {
     let mut runtime = workspace.lock().await;
+    if runtime.evicted {
+        // The room left the registry: whatever still holds its runtime is
+        // refused, and no second owner writes its files.
+        return Persistence::closed(initial_budgets(&runtime));
+    }
     runtime.persistence.clone().unwrap_or_else(|| {
         let budgets = initial_budgets(&runtime);
         start(&mut runtime, budgets)
@@ -486,10 +494,6 @@ fn initial_budgets(runtime: &crate::workspace::WorkspaceRuntime) -> AdmissionBud
     AdmissionBudgets::global()
 }
 
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the owner state is shared with the spawned owner task; the local Arc clone holds no lock"
-)]
 fn start(
     runtime: &mut crate::workspace::WorkspaceRuntime,
     budgets: AdmissionBudgets,
@@ -512,7 +516,11 @@ fn start(
         retaining_only: false,
         group: Group::default(),
     }));
-    tokio::spawn(run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state));
+    let (owner_running, ended) = tokio::sync::watch::channel(());
+    tokio::spawn(async move {
+        run_owner_lanes(Lanes::new(rx, host_rx), replay_rx, state).await;
+        drop(owner_running);
+    });
     let handle = Persistence {
         tx,
         host_tx,
@@ -520,6 +528,7 @@ fn start(
         normal_sequence,
         admission,
         budgets,
+        ended,
         #[cfg(test)]
         admission_hook: None,
         #[cfg(test)]
@@ -1058,6 +1067,35 @@ async fn run_owner_lanes(
 }
 
 impl Persistence {
+    /// A handle whose owner has ended: every job is refused.
+    fn closed(budgets: AdmissionBudgets) -> Self {
+        let (tx, _) = mpsc::channel(1);
+        let (host_tx, _) = mpsc::channel(1);
+        let (replay_tx, _) = mpsc::channel(1);
+        let (_, ended) = tokio::sync::watch::channel(());
+        Self {
+            tx,
+            host_tx,
+            replay_tx,
+            normal_sequence: Arc::new(AtomicU64::new(0)),
+            admission: Arc::new(tokio::sync::Mutex::new(())),
+            budgets,
+            ended,
+            #[cfg(test)]
+            admission_hook: None,
+            #[cfg(test)]
+            replay_admission_hook: None,
+        }
+    }
+
+    /// Let go of this handle and wait until the owner has ended: it does
+    /// once every handle is gone and the jobs queued before are done.
+    pub(crate) async fn close(self) {
+        let mut ended = self.ended.clone();
+        drop(self);
+        while ended.changed().await.is_ok() {}
+    }
+
     pub(crate) fn workers(&self) -> Arc<Semaphore> {
         self.budgets.workers.clone()
     }
@@ -1659,6 +1697,7 @@ mod tests {
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets,
+            ended: tokio::sync::watch::channel(()).1,
             admission_hook: None,
             replay_admission_hook: None,
         };
@@ -1840,6 +1879,7 @@ mod tests {
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets,
+            ended: tokio::sync::watch::channel(()).1,
             admission_hook: None,
             replay_admission_hook: None,
         };
@@ -2243,6 +2283,7 @@ mod tests {
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets,
+            ended: tokio::sync::watch::channel(()).1,
             admission_hook: None,
             replay_admission_hook: None,
         };
@@ -2389,6 +2430,7 @@ mod tests {
             normal_sequence: Arc::new(AtomicU64::new(0)),
             admission: Arc::new(tokio::sync::Mutex::new(())),
             budgets: AdmissionBudgets::global(),
+            ended: tokio::sync::watch::channel(()).1,
             admission_hook: Some(hook),
             replay_admission_hook: Some({
                 let admitted = admitted.clone();
