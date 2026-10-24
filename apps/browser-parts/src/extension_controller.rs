@@ -33,9 +33,12 @@ use crate::CATALOG;
 use crate::capabilities::ExtensionQuestion;
 use crate::effects::ExtensionRequest;
 use crate::extension_host::{ExtensionHost, Wanted};
+use crate::extension_omnibox::ExtensionOmnibox;
 use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
 use crate::web_store;
+
+mod omnibox;
 
 /// An extension popup's size before its page says how big it is, in
 /// logical pixels: as wide as a panel, and short, because a page reports at
@@ -73,6 +76,8 @@ enum Command {
     OpenAction(String),
     /// Show an extension's settings page.
     OpenSettings(String),
+    /// Words for an extension's keyword in the address, as Enter sends them.
+    Send(String, String),
     ClosePanel,
     /// Choose an item of an extension's button menu: (extension, key).
     ChooseMenuItem(String, String),
@@ -325,6 +330,8 @@ pub struct ExtensionController {
     /// Pages extensions sign in on out of sight, until the engine closes
     /// each as its sign-in ends.
     quiet_sign_ins: Vec<SharedEngine>,
+    /// The extension typed to after its keyword in the address, if any.
+    omnibox: ExtensionOmnibox,
 }
 
 /// The switches `installed` asks for that this session has not made yet,
@@ -360,6 +367,10 @@ fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
     )
 }
 
+/// The longest words an extension's keyword takes, as the engine carries
+/// them.
+const MAX_KEYWORD_TEXT_BYTES: usize = 2048;
+
 /// How long a manager page may take before it is let go.
 const SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -392,6 +403,7 @@ impl ExtensionController {
             menus: HashMap::new(),
             questions: Vec::new(),
             quiet_sign_ins: Vec::new(),
+            omnibox: ExtensionOmnibox::default(),
         }
     }
 
@@ -603,6 +615,8 @@ impl ExtensionController {
                 }
                 false
             }
+            event @ (WebViewEvent::ExtensionOmniboxSuggestions { .. }
+            | WebViewEvent::ExtensionOmniboxDefault { .. }) => self.omnibox.on_engine_event(&event),
             _ => false,
         }
     }
@@ -1189,6 +1203,10 @@ impl ExtensionController {
                     engine.send(WebViewCommand::ExtensionMenuChoice { id, key });
                 }
             }
+            Command::Send(id, text) => engine.send(WebViewCommand::ExtensionOmnibox {
+                id,
+                input: ui::webview::OmniboxInput::Entered { text },
+            }),
             // Busy: ignore a second fetch until the first settles.
             Command::Fetch(_) | Command::StageFile(_) => {}
         }
@@ -1761,6 +1779,15 @@ impl ExtensionController {
                     resource =
                         resource.with_action(E::OpenExtensionSettings { id: id.clone() }.bound());
                 }
+                if extension.enabled && extension.keyword.is_some() {
+                    resource = resource.with_action(
+                        E::SendToExtension {
+                            id: id.clone(),
+                            text: String::new(),
+                        }
+                        .bound_asking(&["text"]),
+                    );
+                }
                 if extension.enabled && extension.action.is_some() {
                     resource = resource.with_action(if extension.pinned {
                         E::UnpinExtension { id: id.clone() }.bound()
@@ -1789,6 +1816,7 @@ impl ExtensionController {
             | ExtensionRequest::Pin(id, _)
             | ExtensionRequest::OpenSettings(id)
             | ExtensionRequest::Use(id)
+            | ExtensionRequest::Send(id, _)
             | ExtensionRequest::Remove(id) => id.clone(),
         };
         let (info, extension) = self
@@ -1816,6 +1844,15 @@ impl ExtensionController {
             }
             ExtensionRequest::OpenSettings(_) => Command::OpenSettings(id),
             ExtensionRequest::Use(_) => Command::OpenAction(id),
+            ExtensionRequest::Send(..) if !extension.enabled || extension.keyword.is_none() => {
+                return Err("This extension is off or has no keyword".into());
+            }
+            ExtensionRequest::Send(_, text) if text.len() > MAX_KEYWORD_TEXT_BYTES => {
+                return Err(format!(
+                    "The words must be at most {MAX_KEYWORD_TEXT_BYTES} bytes"
+                ));
+            }
+            ExtensionRequest::Send(_, text) => Command::Send(id, text.clone()),
             ExtensionRequest::Remove(_) => Command::Remove(id),
         };
         (self.queue(command))();
@@ -1957,6 +1994,7 @@ fn read_package_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    mod omnibox;
     mod sign_in;
 
     const STORE_ITEM: &str = "https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh";
@@ -2052,6 +2090,7 @@ mod tests {
             }),
             options: None,
             access,
+            keyword: None,
         }
     }
 
@@ -2867,6 +2906,7 @@ mod tests {
             action: action.then(crate::extension_toolbar::ActionManifest::default),
             options: None,
             access: crate::extension_toolbar::Access::default(),
+            keyword: None,
         };
         let installed = [
             extension("pinned", true, true),
@@ -2888,6 +2928,7 @@ mod tests {
             action: None,
             options: None,
             access: crate::extension_toolbar::Access::default(),
+            keyword: None,
         };
         let mut switched = HashMap::new();
         // At start each is put in the state the person chose, once.

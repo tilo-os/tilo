@@ -151,6 +151,17 @@ pub enum BrowserEffect {
         #[param("The extension's id")]
         id: String,
     },
+    /// Send words to extension
+    ///
+    /// What Enter does after its keyword in the address: the extension acts
+    /// on the words, often by opening a page in this window.
+    #[effect(row, returns)]
+    SendToExtension {
+        #[param("The extension's id")]
+        id: String,
+        #[param("The words, as typed after its keyword")]
+        text: String,
+    },
     /// Add extension from the Web Store
     ///
     /// On an extension's Chrome Web Store page: shows what it may do, and
@@ -495,6 +506,9 @@ impl BrowserEffect {
                 BrowserOperation::Extension(ExtensionRequest::Pin(id, false))
             }
             Self::UseExtension { id } => BrowserOperation::Extension(ExtensionRequest::Use(id)),
+            Self::SendToExtension { id, text } => {
+                BrowserOperation::Extension(ExtensionRequest::Send(id, text))
+            }
             Self::AddExtension => BrowserOperation::AddExtension,
             Self::ZoomIn => BrowserOperation::Zoom { step: 1 },
             Self::ZoomOut => BrowserOperation::Zoom { step: -1 },
@@ -594,6 +608,8 @@ pub enum ExtensionRequest {
     OpenSettings(String),
     /// What its toolbar button does: open its popup, or tell it of the click.
     Use(String),
+    /// Words for its keyword in the address, as Enter sends them.
+    Send(String, String),
     Remove(String),
 }
 

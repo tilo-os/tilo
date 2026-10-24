@@ -630,6 +630,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionClick { .. }
             | WebViewCommand::ExtensionMenuChoice { .. }
             | WebViewCommand::ExtensionNotificationChosen { .. }
+            | WebViewCommand::ExtensionOmnibox { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
