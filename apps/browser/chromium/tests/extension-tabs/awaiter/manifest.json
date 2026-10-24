@@ -2,4 +2,5 @@
  "permissions": ["scripting"],
  "host_permissions": ["http://127.0.0.1/*"],
  "background": {"service_worker": "worker.js"},
- "content_scripts": [{"matches": ["http://127.0.0.1/*"], "js": ["content.js"], "run_at": "document_idle"}]}
+ "content_scripts": [{"matches": ["http://127.0.0.1/*"], "exclude_matches": ["http://127.0.0.1/unscripted*"],
+                      "js": ["content.js"], "run_at": "document_idle"}]}

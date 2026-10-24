@@ -2438,7 +2438,10 @@ class ExtensionTabs {
   // Chromium makes the world as their first script runs, at the earliest as
   // the document starts: AdGuard runs one on `tabs.onUpdated` as the page
   // starts loading, before then, and it needs their `chrome`
-  // (`runtime.connect`), which the world the host makes has not.
+  // (`runtime.connect`), which the world the host makes has not. A page
+  // that finished loading without that world gets none from them (it was
+  // there before the extension, or their `exclude_matches` leave it out):
+  // the script looks once and does not wait.
   static constexpr int kDeclaredWorldWaitMs = 1500;
   static constexpr int kDeclaredWorldLookMs = 100;
   // Whether the extension's manifest declares content scripts for `url`.
@@ -2555,9 +2558,11 @@ class ExtensionTabs {
       };
       // The extension's content scripts are declared for the page but
       // have not run yet: their world, with Chromium's `chrome`, is about
-      // to be made, and the script runs there once it is.
+      // to be made while the page loads, and the script runs there once it
+      // is.
       if (frame.id != 0 || !frame.session.empty() || !DeclaresScripts(job->extension, job->tab.url)) { made(); return; }
-      DeclaredWorld(job->extension, job->tab, std::chrono::steady_clock::now() + std::chrono::milliseconds(kDeclaredWorldWaitMs),
+      const auto wait = std::chrono::milliseconds(job->tab.loading ? kDeclaredWorldWaitMs : 0);
+      DeclaredWorld(job->extension, job->tab, std::chrono::steady_clock::now() + wait,
                     [this, job, ran, made](int world) {
         if (world) RunSources(job->inspector, "", world, job->sources, ran); else made();
       });
