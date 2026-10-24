@@ -30,7 +30,7 @@ const BOTTOM_MARGIN: f64 = 12.0;
 /// The step between the top bar and the windows' tab rows.
 const TOP_MARGIN: f64 = 4.0;
 
-fn tree() -> WorkspaceTree {
+fn tree(width: WindowWidth) -> WorkspaceTree {
     let ws_id = WorkspaceId(7);
     let mut ws = Workspace::in_room(ws_id, RoomId::parse(ROOM).expect("room id"), "Desk");
     let tab = GROUP.saturating_add(5000);
@@ -49,7 +49,7 @@ fn tree() -> WorkspaceTree {
                 app_title: None,
             }],
             active_tab: tab,
-            width: WindowWidth::Normal,
+            width,
             maximized: false,
             focus_history: Vec::new(),
         }],
@@ -70,8 +70,13 @@ struct Panel {
 
 impl Panel {
     fn new() -> Self {
+        Self::with_width(WindowWidth::Normal)
+    }
+
+    /// The panel with its one window `width` wide.
+    fn with_width(width: WindowWidth) -> Self {
         let outputs = parse_output_spec("2944x1840@2").expect("the panel spec parses");
-        let mut fb = FrameBuilder::with_tree(tree(), combined_geometry(&outputs));
+        let mut fb = FrameBuilder::with_tree(tree(width), combined_geometry(&outputs));
         fb.set_output_geometry(output_geometry(&outputs));
         let mut panel = Self {
             fb,
@@ -436,4 +441,69 @@ fn with_the_bar_hidden_a_maximized_window_keeps_its_own_bar() {
         stack.group,
         at_rest.group
     );
+}
+
+/// An incoming call while a window fills the panel's width, docked under
+/// the bar and maximized: the call's card stands where it covers none of
+/// the window's bar, so History, maximize or restore and close stay visible,
+/// and a click on each reaches the window rather than the card.
+#[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+fn an_incoming_call_never_covers_the_window_bar() {
+    use shell::shell::input_policy::chrome_captures_pointer;
+    use tilo_desktop::notifications::{Addressed, Notification};
+
+    for maximized in [false, true] {
+        let mut panel = Panel::with_width(WindowWidth::Wide);
+        if maximized {
+            panel.toggle_maximized();
+            panel.settle_motion();
+        }
+        panel.fb.with_chrome(|chrome| {
+            let mut call = Notification::new("Jonas is calling", "Video call")
+                .with_addressed(Addressed::IncomingCall);
+            call.actions = vec![
+                ("answer".into(), "Answer".into()),
+                ("decline".into(), "Decline".into()),
+            ];
+            chrome.push_notification_full(call);
+        });
+        panel.settle();
+        let banner = panel.fb.host().notification_banners_rect();
+        let (window, _) = panel.group();
+        assert!(banner.area() > 0.0, "the call is shown: {banner:?}");
+        assert!(
+            banner.x0 < window.tab_bar.x1 && banner.x1 > window.tab_bar.x0,
+            "maximized {maximized}: the card {banner:?} stands over the window's column \
+             {:?}, so the check means something",
+            window.tab_bar
+        );
+        assert!(
+            banner.intersect(window.tab_bar).area() <= 0.0,
+            "maximized {maximized}: the card {banner:?} covers the window's bar {:?}",
+            window.tab_bar
+        );
+        let toggle = if maximized {
+            window
+                .restore
+                .expect("a maximized window's bar offers Restore")
+        } else {
+            window.maximize.expect("the window's bar offers maximize")
+        };
+        let close = window.close.expect("the window's bar offers close");
+        for control in [toggle, close] {
+            assert!(
+                banner.intersect(control).area() <= 0.0,
+                "maximized {maximized}: the card {banner:?} covers {control:?}"
+            );
+            panel.fb.host_mut().note_pointer(control.center());
+            assert!(
+                !chrome_captures_pointer(&panel.fb),
+                "maximized {maximized}: a click on {control:?} reaches the window"
+            );
+        }
+    }
 }
