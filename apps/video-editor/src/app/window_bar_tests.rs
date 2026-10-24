@@ -308,3 +308,39 @@ fn the_location_says_when_the_project_has_unsaved_edits() {
         "a screen reader hears the difference"
     );
 }
+
+/// A failed save's Try again stands in the window's bar right after the
+/// failure, wide and compact: it names itself where the row has room and
+/// never goes into the overflow menu, and the failure is cut short only
+/// where nothing that yields to it stands beside it.
+#[test]
+fn a_failed_saves_try_again_stays_in_the_window_bar_wide_and_compact() {
+    let mut app = opened();
+    app.harness().present_in_window_bar();
+    {
+        let editor = app.surface_mut::<VideoEditorApp>();
+        editor.project_path = Some(PathBuf::from("/definitely/not/a/directory/x.qvp"));
+        editor.queue_save_project();
+    }
+    app.settle();
+    let held = ui::window_toolbar::notice().expect("the failure is in the bar");
+    assert_eq!(
+        held.action.as_ref().map(|action| action.id.as_str()),
+        Some(crate::app::notices::SAVE_RETRY_ACTION),
+        "with Try again beside it: {held:?}"
+    );
+    for width in [1280.0, 420.0] {
+        let shown = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the failure is up in the bar");
+        let button = shown.button.as_ref().expect("Try again stands in the row");
+        assert_eq!(button.name, "Try again");
+        assert!(
+            button.bounds.x0 > shown.text_bounds.x1,
+            "{width} px: {shown:?}"
+        );
+        assert!(shown.whole || shown.beside == 0, "{width} px: {shown:?}");
+        assert!(button.labelled || width < 1280.0, "{width} px: {shown:?}");
+    }
+}

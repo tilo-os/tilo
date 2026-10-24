@@ -3,8 +3,8 @@
 
 use super::{
     ACTION_TARGET_PREFIX, BACK_TARGET, CHOICE_TARGET_PREFIX, FORWARD_TARGET, LEADING_TARGET_PREFIX,
-    LOCATION_TARGET, MenuEntry, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX, SIDEBAR_TARGET,
-    SUGGESTION_TARGET_PREFIX, Slot, ToolbarEvent, ToolbarRow, VIEW_TARGET_PREFIX,
+    LOCATION_TARGET, MenuEntry, NOTICE_TARGET, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX,
+    SIDEBAR_TARGET, SUGGESTION_TARGET_PREFIX, Slot, ToolbarEvent, ToolbarRow, VIEW_TARGET_PREFIX,
     VIEWS_MENU_TARGET, Widget, edited_word, sidebar_key,
 };
 
@@ -148,6 +148,20 @@ impl ToolbarRow {
                     true,
                 ));
             }
+        }
+        // The notice's button, right after its text.
+        if let Some(action) = toolbar
+            .notice
+            .as_ref()
+            .and_then(|notice| notice.action.as_ref())
+            .filter(|_| self.slots.notice.area() > 0.0)
+        {
+            nodes.push(button(
+                action.name.clone(),
+                NOTICE_TARGET.into(),
+                self.slots.notice,
+                action.enabled,
+            ));
         }
         // The views the row shows as tabs, the chosen one selected; without room
         // they are the overflow menu's.
@@ -441,6 +455,7 @@ impl ToolbarRow {
             BACK_TARGET => Slot::Back,
             FORWARD_TARGET => Slot::Forward,
             LOCATION_TARGET => Slot::Location,
+            NOTICE_TARGET => Slot::Notice,
             OVERFLOW_TARGET => Slot::Overflow,
             VIEWS_MENU_TARGET => Slot::ViewsMenu,
             _ => {

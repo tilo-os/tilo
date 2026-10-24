@@ -85,6 +85,7 @@ pub const CHOICE_TARGET_PREFIX: &str = "window-toolbar-choice:";
 pub const LEADING_TARGET_PREFIX: &str = "window-toolbar-leading:";
 pub const VIEW_TARGET_PREFIX: &str = "window-toolbar-view:";
 pub const VIEWS_MENU_TARGET: &str = "window-toolbar-views";
+pub const NOTICE_TARGET: &str = "window-toolbar-notice";
 
 /// The size of the view switcher's segments: a strip no taller than the
 /// bar's buttons.
@@ -413,6 +414,12 @@ impl ToolbarRow {
             icon: location.is_some_and(|location| {
                 location.icon.as_deref().and_then(Icon::from_name).is_some()
             }),
+            notice: self
+                .toolbar()
+                .and_then(|toolbar| toolbar.notice.as_ref())
+                .and_then(|notice| notice.action.as_ref())
+                .map(|action| action.name.clone())
+                .unwrap_or_default(),
             text_scale: theme.text_scale.to_bits(),
         };
         if key.labels.is_empty() && key.forms.is_empty() && key.leading.iter().all(String::is_empty)
@@ -433,11 +440,18 @@ impl ToolbarRow {
         let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
+            // The notice's button as a text button, its label in it.
+            let action = if key.notice.is_empty() {
+                0.0
+            } else {
+                labelled_face(Rect::ZERO, &key.notice).intrinsic_width(text, theme)
+            };
             let style = theme.text(TextRole::Body);
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
                 chrome: location_chrome((key.editable, key.picker, key.icon), theme),
+                action,
             };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
             let views = (!labels.is_empty()).then_some(ViewsMeasure {
@@ -630,6 +644,15 @@ impl ToolbarRow {
         &self.slots
     }
 
+    /// Whether the notice up stands whole in the location, as measured
+    /// (none: no notice is up, or it is not measured yet).
+    pub(crate) fn notice_whole(&self) -> Option<bool> {
+        self.toolbar()?.notice.as_ref()?;
+        let forms = &self.views_size.as_ref()?.forms;
+        let whole = forms.text.first()? + forms.chrome;
+        Some(self.slots.location.width() + 0.5 >= whole)
+    }
+
     pub(crate) fn row(&self) -> Rect {
         self.row
     }
@@ -808,6 +831,7 @@ impl ToolbarRow {
                 .is_some_and(|views| *i < views.choices.len()),
             Slot::ViewsMenu => self.slots.views_menu.area() > 0.0,
             Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
+            Slot::Notice => self.notice_action().is_some_and(|a| a.enabled),
             Slot::Overflow => self.slots.overflow.area() > 0.0,
         }
     }
@@ -980,6 +1004,11 @@ impl ToolbarRow {
         true
     }
 
+    /// The notice's button, while a notice with one is up.
+    fn notice_action(&self) -> Option<&crate::window_toolbar::ToolbarAction> {
+        self.toolbar()?.notice.as_ref()?.action.as_ref()
+    }
+
     /// Run leading action `index`.
     fn run_leading(&mut self, index: usize) -> bool {
         let Some(action) = self
@@ -1042,6 +1071,12 @@ impl ToolbarRow {
                 return self.open_action_menu(*i);
             }
             Slot::Action(i) => return self.run_action(*i),
+            Slot::Notice => {
+                let Some(id) = self.notice_action().map(|action| action.id.clone()) else {
+                    return false;
+                };
+                self.push(ToolbarEvent::Action { id });
+            }
             Slot::Overflow => return self.open_overflow(),
             Slot::ViewsMenu => return self.open_views_menu(),
         }
@@ -1088,6 +1123,7 @@ impl ToolbarRow {
                 let action = toolbar.actions.get(i)?;
                 Some((*self.slots.actions.get(i)?, action.name.clone()))
             }
+            Slot::Notice => Some((self.slots.notice, self.notice_action()?.name.clone())),
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
             // A segment, the views menu and the location say what they are.
             Slot::View(_) | Slot::ViewsMenu | Slot::Location => None,
@@ -1303,7 +1339,7 @@ impl ToolbarRow {
     /// location field and the bar's menus take the keyboard themselves.
     pub(crate) fn pressing_app_slot(&self) -> bool {
         match &self.pressed {
-            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_)) => true,
+            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_) | Slot::Notice) => true,
             Some(Slot::Action(i)) => self
                 .toolbar()
                 .and_then(|toolbar| toolbar.actions.get(*i))
