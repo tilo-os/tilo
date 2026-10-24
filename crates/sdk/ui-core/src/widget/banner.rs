@@ -670,6 +670,15 @@ pub struct Banner {
     rect: Rect,
     layout_dirty: bool,
     dirty: bool,
+    /// How much of the banner is drawn while it arrives or leaves
+    /// (`motion::Disclosure`): it is laid out at once and its box opens or
+    /// closes from the top, what follows moving with its edge.
+    disclosure: crate::motion::Disclosure,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
+    /// Where the banner was last laid out shown: where a leaving banner is
+    /// drawn closing.
+    laid_rect: Rect,
 }
 
 impl Banner {
@@ -721,6 +730,14 @@ impl Banner {
             rect: Rect::ZERO,
             layout_dirty: true,
             dirty: true,
+            // First paint shows the banner at rest; only a change moves it.
+            disclosure: if shown {
+                crate::motion::Disclosure::opened()
+            } else {
+                crate::motion::Disclosure::closed()
+            },
+            motion: crate::tokens::EffectiveMotion::default(),
+            laid_rect: Rect::ZERO,
         }
     }
 
@@ -862,6 +879,14 @@ impl Banner {
         self.dirty = true;
         self.body.layout_dirty = true;
         self.body.dirty = true;
+        // Arriving and leaving disclose, also when the person did nothing
+        // (the window went offline); a key's result lands.
+        self.disclosure.show_change(self.visible(), self.motion);
+    }
+
+    /// Whether the banner is drawn on its way in or out.
+    fn in_motion(&self) -> bool {
+        self.disclosure.is_moving()
     }
 
     fn dismiss_now(&mut self) {
@@ -958,6 +983,23 @@ impl Banner {
         place(&mut self.action, g.action);
         place(&mut self.dismiss, g.dismiss);
     }
+
+    /// The body and the buttons, where they were laid out.
+    fn draw_contents(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.place_buttons(text, theme);
+        self.body.draw(scene, transform, text, theme, presence);
+        let on_well = theme.on_ground(well(theme));
+        for button in self.buttons_mut() {
+            button.draw(scene, transform, text, &on_well, presence);
+        }
+    }
 }
 
 /// A button's width as it measures itself.
@@ -1009,6 +1051,7 @@ impl Widget for Banner {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let mut nodes = vec![self.body.build_layout(taffy, theme, node_map)];
         let mut buttons = Vec::new();
         for button in self.buttons_mut() {
@@ -1066,6 +1109,13 @@ impl Widget for Banner {
             self.dirty = true;
         }
         self.layout_dirty = false;
+        if self.visible() {
+            self.laid_rect = self.rect;
+        } else if self.disclosure.is_drawn() {
+            // Leaving: its contents stay where they were laid out while
+            // its box closes over them.
+            return;
+        }
         let origin = self.rect.origin();
         if let Some(&body) = self.nodes.first() {
             self.body.apply_layout(taffy, body, origin);
@@ -1080,15 +1130,57 @@ impl Widget for Banner {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        if !self.visible() || self.rect.width() <= 0.0 {
+        self.motion = theme.motion();
+        if !self.in_motion() {
+            if !self.visible() || self.rect.width() <= 0.0 {
+                return;
+            }
+            self.draw_contents(scene, transform, text, theme, presence);
             return;
         }
-        self.place_buttons(text, theme);
-        self.body.draw(scene, transform, text, theme, presence);
-        let on_well = theme.on_ground(well(theme));
-        for button in self.buttons_mut() {
-            button.draw(scene, transform, text, &on_well, presence);
+        // On its way: the box opens or closes from the top over contents
+        // laid out once, which fade in over the second half.
+        let band = self.laid_rect;
+        let reveal = self.disclosure.reveal(band.height());
+        if band.width() <= 0.0 || reveal.height <= 0.0 || reveal.opacity <= 0.0 {
+            return;
         }
+        scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            reveal.opacity,
+            transform,
+            &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
+        );
+        self.draw_contents(scene, transform, text, theme, presence);
+        scene.pop_layer();
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.in_motion()
+            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    /// While it closes it has no box of its own, but is still drawn where
+    /// it was.
+    fn paint_bounds(&self) -> Rect {
+        if self.in_motion() {
+            self.laid_rect
+        } else {
+            self.rect
+        }
+    }
+
+    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+        if !self.in_motion() {
+            return None;
+        }
+        let extent = self.laid_rect.height();
+        Some(crate::widget::Disclosing {
+            extent,
+            drawn: self.disclosure.reveal(extent).height,
+            laid: self.rect.height() > 0.0,
+        })
     }
 
     fn handle_event(
@@ -1136,6 +1228,7 @@ impl Widget for Banner {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || self.in_motion()
             || self.body.needs_redraw()
             || [&self.secondary, &self.action, &self.dismiss]
                 .into_iter()

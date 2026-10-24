@@ -4441,4 +4441,56 @@ mod tests {
             &serde_json::json!({"confirm":true})
         );
     }
+
+    /// The palette arrives from its centre (`motion::Appear`) when a click
+    /// opens it and is there at once for a key; its results change in place
+    /// as the person types, starting no motion; reduced motion only fades
+    /// it; at rest it asks for nothing.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_palette_appears_for_a_click_lands_for_a_key_and_its_results_stay_instant() {
+        use crate::tokens::{EffectiveMotion, Motion, MotionSource};
+        let motion = EffectiveMotion::new(Motion::default(), false);
+        let card = Rect::new(400.0, 96.0, 1000.0, 500.0);
+        // The frame's instant is held, so the test reads the motion where
+        // it starts.
+        let _frame = crate::motion::pin_frame();
+
+        crate::motion::note_source(MotionSource::Pointer);
+        let mut clicked = ActionPalette::new();
+        clicked.open();
+        clicked.follow_presence(motion);
+        assert!(clicked.is_moving(), "a click opens it with Appear");
+        assert!(
+            !clicked.appear.pose(card, card.center()).is_visible(),
+            "from nothing, not a pop"
+        );
+
+        crate::motion::note_source(MotionSource::Keyboard);
+        let mut keyed = ActionPalette::new();
+        keyed.open();
+        keyed.follow_presence(motion);
+        assert!(!keyed.is_moving(), "a key opens it at once");
+        assert!(keyed.appear.pose(card, card.center()).is_rest());
+        // Typing re-ranks the results in place: no motion starts.
+        crate::motion::note_source(MotionSource::Pointer);
+        keyed.rebuild("no");
+        keyed.follow_presence(motion);
+        assert!(!keyed.is_moving(), "results stay instant");
+        crate::motion::note_source(MotionSource::Keyboard);
+        keyed.close();
+        keyed.follow_presence(motion);
+        assert!(!keyed.is_moving(), "Escape closes it at once");
+
+        crate::motion::note_source(MotionSource::Pointer);
+        let mut reduced = ActionPalette::new();
+        reduced.open();
+        reduced.follow_presence(EffectiveMotion::new(Motion::default(), true));
+        let pose = reduced.appear.pose(card, card.center());
+        assert_eq!(pose.transform, Affine::IDENTITY, "reduced: nothing scales");
+        assert!(pose.opacity < 1.0, "it only fades in");
+
+        let _settled = crate::motion::testing::settled();
+        assert!(!clicked.is_moving(), "at rest it asks for no frames");
+    }
 }

@@ -206,6 +206,10 @@ impl Widget for Column {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.flow.build_children(taffy, theme, node_map);
+        // A band disclosing in the column moves the widgets after it, its
+        // gap included.
+        self.flow.vertical = true;
+        self.flow.laid_gap = f64::from(self.flow.gap(theme));
 
         let style = Style {
             // Intrinsic-height columns use a one-column implicit Grid.
@@ -294,6 +298,11 @@ impl Widget for Column {
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
+        // A band disclosing moves every widget after it.
+        if self.flow.follower_shifts().is_some() {
+            regions.push(self.flow.rect);
+            return;
+        }
         for child in &self.flow.children {
             child.collect_damage(regions);
         }

@@ -267,42 +267,6 @@ impl RowSelection {
     }
 }
 
-/// A row on its way after a change the person made (`motion::ListChange`):
-/// moving from where it stood to its new place, or fading in where it
-/// arrived. Rows the change did not move have none.
-#[derive(Clone, Copy, Debug)]
-struct RowMotion {
-    /// How far below its laid-out place it is drawn (negative: above).
-    offset: crate::motion::MotionValue<f64>,
-    /// Its opacity.
-    fade: crate::motion::MotionValue<f64>,
-}
-
-impl RowMotion {
-    fn rest() -> Self {
-        Self {
-            offset: crate::motion::MotionValue::new(0.0).with_tolerance(0.25),
-            fade: crate::motion::MotionValue::new(1.0),
-        }
-    }
-
-    fn is_moving(&self, now: Instant) -> bool {
-        self.offset.is_moving(now) || self.fade.is_moving(now)
-    }
-
-    fn settles_at(&self) -> Option<Instant> {
-        self.offset.settles_at().max(self.fade.settles_at())
-    }
-}
-
-/// Where the mounted rows stood just before a structural change the person
-/// made, by key, for the next frame to move them from.
-struct PendingListChange<K> {
-    before: Vec<(K, f64)>,
-    inserts: bool,
-    source: crate::tokens::MotionSource,
-}
-
 struct MountedRow<K> {
     key: K,
     index: usize,
@@ -401,10 +365,9 @@ pub struct VirtualList<M: ListModel> {
     /// is offered to the host as a copy ([`crate::scroll_copy::offer`]).
     shown_drawing: Option<ListShown>,
     shown_presented: Option<ListShown>,
-    /// Rows moving or fading after a change the person made.
-    row_motion: HashMap<M::Key, RowMotion>,
-    /// A structural change waiting for the next frame to start its motion.
-    pending_change: Option<PendingListChange<M::Key>>,
+    /// Rows moving or fading after a change the person made, and a
+    /// structural change waiting for the next frame to start their motion.
+    row_motion: crate::collection_transition::RowMotions<M::Key>,
 }
 
 /// Where a frame shows the rows: the offset, the list's box, the transform
@@ -524,8 +487,7 @@ impl<M: ListModel> VirtualList<M> {
             remount: false,
             shown_drawing: None,
             shown_presented: None,
-            row_motion: HashMap::new(),
-            pending_change: None,
+            row_motion: crate::collection_transition::RowMotions::default(),
         };
         list.refresh_anchor();
         list
@@ -720,83 +682,30 @@ impl<M: ListModel> VirtualList<M> {
         let resets = changes
             .iter()
             .any(|change| matches!(change, ListModelChange::Reset));
-        let source = crate::motion::recent_input(crate::time::now())
-            .filter(|source| !source.lands_at_once());
-        let (Some(source), true, false, false) = (source, structural, resets, self.reduce_motion)
-        else {
-            self.pending_change = None;
-            return;
-        };
+        let source = crate::collection_transition::RowMotions::<M::Key>::caused_by_hand(
+            crate::time::now(),
+            self.reduce_motion,
+        )
+        .filter(|_| structural && !resets);
         let inserts = changes
             .iter()
             .any(|change| matches!(change, ListModelChange::RowsInserted { .. }));
-        if let Some(pending) = self.pending_change.as_mut() {
-            // Two changes before a frame: the rows move from where the
-            // first found them.
-            pending.inserts |= inserts;
-            return;
-        }
         let before = self
             .mounted
             .iter()
-            .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)))
-            .collect();
-        self.pending_change = Some(PendingListChange {
-            before,
-            inserts,
-            source,
-        });
+            .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)));
+        self.row_motion.capture(before, inserts, source);
     }
 
     /// Start the motion of a change noted before this frame, and forget
     /// rows that have arrived. A row already moving continues from where it
     /// is drawn.
     fn start_row_motion(&mut self, motion: crate::tokens::EffectiveMotion) {
-        use crate::motion::{Direction, ListChange};
-        let now = crate::time::now();
-        if let Some(change) = self.pending_change.take() {
-            let shift = ListChange::MOVE.timing(Direction::Enter, motion, change.source);
-            let fade = ListChange::FADE.timing(Direction::Enter, motion, change.source);
-            for row in &self.mounted {
-                let Some(top) = self.viewport.item_view_top(row.index) else {
-                    continue;
-                };
-                let was = change
-                    .before
-                    .iter()
-                    .find(|(key, _)| *key == row.key)
-                    .map(|(_, was)| *was);
-                match was {
-                    Some(was) if (was - top).abs() > 0.5 => {
-                        let entry = self
-                            .row_motion
-                            .entry(row.key.clone())
-                            .or_insert_with(RowMotion::rest);
-                        let drawn = entry.offset.get(now);
-                        entry.offset.snap(drawn + (was - top));
-                        entry.offset.set(0.0, shift, now);
-                    }
-                    None if change.inserts => {
-                        let entry = self
-                            .row_motion
-                            .entry(row.key.clone())
-                            .or_insert_with(RowMotion::rest);
-                        entry.fade.snap(0.0);
-                        entry.fade.set(1.0, fade, now);
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(until) = self
-                .row_motion
-                .values()
-                .filter_map(RowMotion::settles_at)
-                .max()
-            {
-                crate::motion::want_frames_until(until);
-            }
-        }
-        self.row_motion.retain(|_, row| row.is_moving(now));
+        let shown = self
+            .mounted
+            .iter()
+            .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)));
+        self.row_motion.start(shown, motion, crate::time::now());
     }
 
     fn apply_model_changes(&mut self, changes: &[ListModelChange<M::Key>]) {
@@ -1711,14 +1620,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         let poses: Vec<(f64, f32)> = self
             .mounted
             .iter()
-            .map(|row| {
-                self.row_motion.get(&row.key).map_or((0.0, 1.0), |motion| {
-                    (
-                        motion.offset.get(now),
-                        crate::motion::unit_opacity(motion.fade.get(now)),
-                    )
-                })
-            })
+            .map(|row| self.row_motion.pose(&row.key, now))
             .collect();
         for (((row, row_rect), selection), (dy, alpha)) in self
             .mounted
@@ -2009,7 +1911,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
     fn needs_animation_frame(&self) -> bool {
         let now = crate::time::now();
         self.momentum.is_active()
-            || self.row_motion.values().any(|row| row.is_moving(now))
+            || self.row_motion.is_moving(now)
             || self.reorder.is_active()
             || self.model.needs_poll()
             || self
@@ -3347,15 +3249,12 @@ mod tests {
         let now = crate::time::now();
         let first = list.row_motion.get(&1).expect("row 1 moved down");
         assert!(
-            first.offset.get(now) < 0.0,
+            first.offset(now) < 0.0,
             "drawn where it stood, above its new place"
         );
         assert!(list.needs_animation_frame());
         let later = now + Duration::from_millis(600);
-        assert!(
-            !list.row_motion.values().any(|row| row.is_moving(later)),
-            "and lands"
-        );
+        assert!(!list.row_motion.is_moving(later), "and lands");
 
         // A key moves it back: it lands at once.
         crate::motion::note_source(MotionSource::Keyboard);
@@ -3367,7 +3266,7 @@ mod tests {
             }],
             |model| assert!(model.move_item(0, 3)),
         );
-        assert!(list.pending_change.is_none(), "a shortcut's result lands");
+        assert!(!list.row_motion.has_pending(), "a shortcut's result lands");
     }
 }
 
