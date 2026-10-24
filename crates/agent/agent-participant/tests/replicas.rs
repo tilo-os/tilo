@@ -333,6 +333,43 @@ fn an_agents_presence_is_where_its_last_operation_left_it() {
     assert_eq!((start, end), (5, 5), "a caret after its five characters");
 }
 
+/// An agent has nobody beside it to confirm a removal: one Undo takes back
+/// runs at once, so it can take back a clip it placed by mistake.
+#[test]
+fn an_agent_removes_a_clip_it_placed_without_being_asked() {
+    let mut agent = Replica::open(
+        &catalogue(),
+        "so.tilo.video-editor",
+        ROOM,
+        "editor",
+        tilo_agent_participant::ReplicaActor::Agent,
+        Seed::New,
+    )
+    .unwrap();
+    let mut run = |action: &str, arguments: serde_json::Value| {
+        let address = agent
+            .survey()
+            .into_iter()
+            .find(|operation| operation.address.action == action)
+            .unwrap_or_else(|| panic!("the project publishes {action}"))
+            .address;
+        let arguments = arguments.as_object().cloned().unwrap();
+        agent
+            .invoke(&address, &arguments, false)
+            .unwrap_or_else(|error| panic!("{action}: {error}"))
+            .value
+            .unwrap_or_default()
+    };
+    let media = run("add-title", serde_json::json!({ "text": "HARBOUR DAYS" }));
+    let clip = run(
+        "add-clip",
+        serde_json::json!({ "media": media["media"], "track": "V1", "at": 0, "in": 0, "out": 2 }),
+    );
+    let clip = clip["clip"].as_str().unwrap().to_owned();
+    run("remove-clip", serde_json::json!({ "clip": clip }));
+    assert!(!body(&agent).contains(&clip), "the clip is gone");
+}
+
 fn bot_standing(kinds: ui::permissions::policy::KindSet) -> ui::permissions::policy::Standing {
     use ui::permissions::policy::{Answer, Grant, RoomPolicy, Standing, Subject, TreePath};
     let bot = Subject::bot("b1");
