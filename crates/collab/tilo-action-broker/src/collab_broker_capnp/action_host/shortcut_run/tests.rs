@@ -15,8 +15,8 @@ impl ShortcutLibraryServices for Library {
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
         settings_store::hardware::ShortcutConfig::default()
     }
-    fn store(&self, _: &ShortcutLibraryRequest<'_>) -> Result<(), String> {
-        Err("not a library editing test".into())
+    fn store(&self, _: ShortcutLibraryRequest) -> crate::services::ShortcutStore {
+        Box::pin(async { Err("not a library editing test".into()) })
     }
     fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
         Ok(self.0.clone())
@@ -143,6 +143,16 @@ impl Fixture {
                 )];
             }
             workspace.shortcuts.push(shortcut);
+        }
+        // Saved by the person, proven by this device.
+        for shortcut in &mut workspace.shortcuts {
+            tilo_peer_state::room::sign_saved_shortcut(
+                &room,
+                shortcut,
+                &certificate,
+                owner.signing_key(),
+            )
+            .unwrap();
         }
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
