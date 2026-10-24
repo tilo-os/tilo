@@ -784,13 +784,20 @@ impl Core {
 
     /// Start a refresh of every subscription. Only enqueues on the worker:
     /// no network I/O on the UI thread. Results drain every frame.
+    /// While one runs this does nothing: it is already fetching every
+    /// subscription, and asking again would fetch each twice and restart
+    /// its count.
     pub(crate) fn refresh_all(&mut self) {
+        if self.refresh.in_progress() {
+            return;
+        }
         let ids: Vec<Id> = self.store.feeds.ids().cloned().collect();
         self.refresh_feeds(&ids);
         self.toast = Some(ToastChange::Dismiss);
     }
 
-    /// Enqueue a background refresh of `ids`.
+    /// Enqueue a background refresh of `ids`. While a refresh runs they
+    /// join it, so its progress and its answer wait for them too.
     pub(crate) fn refresh_feeds(&mut self, ids: &[Id]) {
         let reqs: Vec<FetchRequest> = ids
             .iter()
@@ -811,10 +818,14 @@ impl Core {
         for r in reqs {
             w.send(r);
         }
-        self.refresh = RefreshState {
-            total: n,
-            ..Default::default()
-        };
+        if self.refresh.in_progress() {
+            self.refresh.total += n;
+        } else {
+            self.refresh = RefreshState {
+                total: n,
+                ..Default::default()
+            };
+        }
     }
 
     /// Add a subscription through the library's verb, in the folder the

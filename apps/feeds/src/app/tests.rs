@@ -609,6 +609,59 @@ fn refresh_runs_off_thread_and_lands_through_the_store() {
     }
 }
 
+/// A refresh asked for while one runs fetches nothing twice and keeps its
+/// count, and a subscription added meanwhile joins it: the batch ends, and
+/// an agent's refresh is answered, only once every feed in flight is back.
+#[test]
+fn a_running_refresh_waits_for_every_feed_it_fetches() {
+    let mut a = app();
+    let mut doc = synced(&mut a);
+    let (worker, tx) = FetchWorker::for_test();
+    a.core_mut().worker = Some(worker);
+    let pending = |a: &FeedsApp| a.core().worker.as_ref().map_or(0, FetchWorker::pending);
+    let feeds: Vec<Id> = a.core().store.feeds.ids().cloned().collect();
+
+    assert!(dispatch(&mut a, &mut doc, &char_key("r")));
+    assert!(a.core().refresh.in_progress());
+    assert_eq!(pending(&a), feeds.len());
+    assert!(dispatch(&mut a, &mut doc, &char_key("r")));
+    assert_eq!(
+        pending(&a),
+        feeds.len(),
+        "no feed in flight is fetched again"
+    );
+    assert_eq!(a.core().refresh.total, feeds.len());
+
+    let url = "https://example.invalid/added-meanwhile.xml";
+    a.core_mut()
+        .subscribe(url, &mut ui::widget::Edits::lend(&mut doc));
+    present(&a, &doc);
+    let added = a.core().store.feed_at(url).expect("subscribed").id.clone();
+    assert_eq!(pending(&a), feeds.len() + 1, "the new feed is fetched");
+    assert_eq!(a.core().refresh.total, feeds.len() + 1);
+
+    let answered = |feed: &Id| FetchResult::Articles {
+        feed_id: feed.clone(),
+        title: None,
+        articles: vec![],
+        certificate_pin: None,
+    };
+    tx.send(answered(&added)).unwrap();
+    a.core_mut().drain_fetches_live();
+    assert!(
+        a.core().refresh.in_progress(),
+        "{}",
+        a.core().refresh.status()
+    );
+    for feed in &feeds {
+        tx.send(answered(feed)).unwrap();
+    }
+    a.core_mut().drain_fetches_live();
+    assert!(!a.core().refresh.in_progress());
+    assert_eq!(a.core().refresh.done, feeds.len() + 1);
+    assert_eq!(pending(&a), 0);
+}
+
 /// Reading settings, read and star state and places persist through the
 /// document.
 #[test]
