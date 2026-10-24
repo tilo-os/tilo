@@ -337,20 +337,18 @@ fn a_full_presenter_does_not_finish_the_transition() {
         "the open stays pending until a frame is presented"
     );
 
-    host.start_workspace_switch_frames(ui::tokens::MotionSource::Pointer);
-    // The run has already ended; crediting the presenter's wait brings it back.
-    let now = std::time::Instant::now();
-    host.workspace_switch_until = now.checked_sub(std::time::Duration::from_millis(1));
-    assert!(
-        !host.workspace_switch_holding_at(now),
-        "a finished switch is not a frame run"
-    );
+    host.start_workspace_switch(ui::tokens::MotionSource::Pointer);
     host.defer_running_transitions(std::time::Duration::from_millis(
         u64::from(ui::tokens::Durations::default().slow_ms) + 50,
     ));
     assert!(
-        host.workspace_switch_holding_at(now),
-        "a workspace switch stays pending while the presenter is full"
+        host.transition_present_pending(),
+        "a workspace switch stays pending until its frame is presented"
+    );
+    host.frame_presented();
+    assert!(
+        !host.workspace_switch_owed(),
+        "a presented frame pays what the switch owed"
     );
 }
 
