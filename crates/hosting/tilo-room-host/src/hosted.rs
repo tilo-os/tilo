@@ -428,8 +428,9 @@ async fn stop_following(services: &RoomServices, workspace_id: u64) {
     }
 }
 
-/// Admit nobody to `workspace_id` any more, and stop handing its changes to
-/// a follower.
+/// Admit nobody to `workspace_id` any more, stop handing its changes to a
+/// follower, and take it out of this host's registry. Its files stay: a
+/// later request to serve it starts from them.
 async fn stop_serving(services: &RoomServices, workspace_id: u64) -> Result<(), String> {
     stop_following(services, workspace_id).await;
     services
@@ -443,7 +444,9 @@ async fn stop_serving(services: &RoomServices, workspace_id: u64) -> Result<(), 
             },
         )
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    crate::workspace_io::evict(&services.workspaces, workspace_id).await;
+    Ok(())
 }
 
 /// Follows one served room's governance.

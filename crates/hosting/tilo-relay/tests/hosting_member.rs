@@ -242,3 +242,87 @@ async fn a_device_serves_no_room_another_device_governs() {
     other.stop().await;
     governor.stop().await;
 }
+
+/// A host the room's owner detaches lets the room go: it no longer holds it
+/// open, though its files stay. Attached again, it serves the room from
+/// those files and catches up on what the room published meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes each host after the assertions; the suggested earlier drop would use a moved value"
+)]
+async fn a_detached_host_lets_the_room_go_and_serves_it_again_from_its_files() {
+    let alice = TestUser::fresh("Alice");
+    let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
+    let phone = alice.enrol("phone", DeviceCapabilities::primary());
+    let tablet = alice.enrol("tablet", DeviceCapabilities::primary());
+    let nas = alice.enrol("nas", DeviceCapabilities::host());
+    let governor = host_on(&alice, &laptop, HostMode::Device).await;
+    let member = host_on(&alice, &nas, HostMode::CertifiedHost).await;
+    let rooms = governor.host.rooms();
+    let room = rooms.create("Notes").await.unwrap();
+    let records = member.host.room_records();
+    let retained = || async { records.retained(room.workspace_id).await.ok() };
+
+    rooms
+        .attach_host(
+            &room.room,
+            &laptop.cert,
+            nas.device_pubkey(),
+            member.host.node_addr(),
+        )
+        .await
+        .unwrap();
+    rooms.enter(&room.room, &phone.cert).await.unwrap();
+    let kept = tilo_test_env::within("the host to keep the room's changes", async {
+        loop {
+            if let Some(bodies) = retained().await.filter(|bodies| !bodies.is_empty()) {
+                break bodies.len();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    assert!(
+        rooms
+            .detach_host(&room.room, &laptop.cert, nas.device_pubkey(), None)
+            .await
+            .unwrap()
+    );
+    assert!(retained().await.is_none(), "the host let the room go");
+
+    // The room moves on while the host is away.
+    rooms.enter(&room.room, &tablet.cert).await.unwrap();
+
+    rooms
+        .attach_host(
+            &room.room,
+            &laptop.cert,
+            nas.device_pubkey(),
+            member.host.node_addr(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        retained().await.is_some_and(|bodies| bodies.len() >= kept),
+        "served again from what it kept"
+    );
+    tilo_test_env::within("the host to catch up", async {
+        while retained().await.is_none_or(|bodies| bodies.len() <= kept) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let on_member = session_to(&alice, &tablet, &member).await;
+    tilo_test_env::within("the host to admit the device entered meanwhile", async {
+        while !admitted(&on_member, room.workspace_id).await {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+
+    drop(on_member);
+    member.stop().await;
+    governor.stop().await;
+}

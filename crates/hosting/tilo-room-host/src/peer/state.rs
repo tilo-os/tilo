@@ -542,9 +542,17 @@ pub(super) async fn handle_delta(
         tracing::warn!(%reason, device = %hex::encode(peer.device_public_key), "refused a document change");
         return Ok(None);
     }
-    if desktop_refusal(&ws, peer.device_public_key, &env)
-        .await
-        .is_some()
+    if desktop_refusal(
+        &ws,
+        deciding_author(
+            peer,
+            session.own_device_public_key,
+            author_device_public_key,
+        ),
+        &env,
+    )
+    .await
+    .is_some()
     {
         // Neither kept nor forwarded, as above.
         return Ok(None);
@@ -593,6 +601,25 @@ pub(crate) async fn tell_governor(
 ) {
     if tap.send((author, body)).await.is_err() {
         tracing::debug!("the room's governor no longer follows it");
+    }
+}
+
+/// Whose standing decides `claimed`'s change that came over `peer`'s
+/// session. A device's session writes only its own (checked before). A
+/// peer relay carries its members' changes under their own keys, so each is
+/// decided as that member's, never as the relay's that carried it; one
+/// claiming this host's own device is decided as the carrying relay's: what
+/// this host's device writes, the room's governor's own, never reaches it
+/// from another host to be taken in.
+pub(super) fn deciding_author(
+    peer: &AuthenticatedPeer,
+    own_device: &[u8; 32],
+    claimed: &[u8; 32],
+) -> [u8; 32] {
+    if peer.role == crate::auth::PeerRole::Device || claimed == own_device {
+        peer.device_public_key
+    } else {
+        *claimed
     }
 }
 
@@ -696,7 +723,19 @@ pub(super) async fn handle_delta_prefix(
         trace_native_publication("server_authorized", envelope, None);
     }
     for envelope in &envelopes {
-        if desktop_refusal(&workspace, peer.device_public_key, envelope)
+        let Envelope::Delta {
+            author_device_public_key,
+            ..
+        } = envelope
+        else {
+            continue;
+        };
+        let author = deciding_author(
+            peer,
+            session.own_device_public_key,
+            author_device_public_key,
+        );
+        if desktop_refusal(&workspace, author, envelope)
             .await
             .is_some()
         {

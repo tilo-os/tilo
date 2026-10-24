@@ -96,6 +96,9 @@ pub struct WorkspaceRuntime {
     /// state operation; live anti-entropy accesses that owner, never this field.
     pub doc: Option<AutoCommit>,
     pub(crate) persistence: Option<crate::persistence::Persistence>,
+    /// The room left the host's registry ([`crate::workspace_io::evict`]):
+    /// its files stay, and this runtime writes them no more.
+    pub(crate) evicted: bool,
     /// Which of the user's devices are workspace members. Used to
     /// gate subscribes AND to decide who gets store-and-forward
     /// on delta receive.
@@ -386,6 +389,7 @@ impl WorkspaceRuntime {
             store,
             doc,
             persistence: None,
+            evicted: false,
             membership,
             authorization: Arc::new(AsyncMutex::new(())),
             membership_ceiling: None,
