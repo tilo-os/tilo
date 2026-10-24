@@ -146,6 +146,9 @@ pub enum RoomRefusal {
     Durability(String),
     /// The media policy is malformed or its transition is not permitted.
     Media(media::MediaPolicyError),
+    /// The batch adds or changes the shortcut `0` naming who saved it
+    /// without that person's device's proof ([`super::saved_shortcut`]).
+    ShortcutAuthorship(String),
 }
 
 impl std::fmt::Display for RoomRefusal {
@@ -169,6 +172,10 @@ impl std::fmt::Display for RoomRefusal {
             ),
             Self::ReceiptImmutable => f.write_str("effect receipt is immutable"),
             Self::Media(error) => write!(f, "{error}"),
+            Self::ShortcutAuthorship(shortcut) => write!(
+                f,
+                "the shortcut `{shortcut}` names who saved it without their device's proof"
+            ),
         }
     }
 }
@@ -259,7 +266,7 @@ fn checked(
         source,
         authority,
         contents,
-        caps_now: _,
+        caps_now,
     } = *input;
     let governs = authority.admits(&source);
     let declared = uuid::Uuid::parse_str(room).map_err(|_| RoomRefusal::DeclaredRoomMismatch)?;
@@ -272,6 +279,9 @@ fn checked(
     if !governs {
         personal_layout_kept(before, candidate)?;
     }
+    // Every writer, the governor included: it relays and merges what members
+    // write, so who sent a batch says nothing about who saved a shortcut.
+    saved_shortcuts_proven(before, candidate, room, caps_now)?;
     match contents {
         ContentOwnership::Registry => {
             let AuthorityPin::Device(pinned) = authority else {
@@ -319,6 +329,43 @@ fn personal_layout_kept(
         && crate::topology::adds_to(before, candidate).map_err(RoomRefusal::Topology)?
     {
         return Err(RoomRefusal::PersonalLayout);
+    }
+    Ok(())
+}
+
+/// A shortcut a batch adds or changes names, as who saved it, no one or the
+/// person whose device signed it in this room, by a proof that holds now
+/// ([`super::saved_shortcut::proven_saver`]). A shortcut the room already
+/// holds, unchanged, is not written, so one saved before proofs existed stays
+/// as it is: it runs by hand and never arms. A document received with nothing
+/// held before it is not a change to judge; what it names is judged where it
+/// counts, each time a trigger arms.
+fn saved_shortcuts_proven(
+    before: Option<&AutoCommit>,
+    candidate: &AutoCommit,
+    room: &str,
+    caps_now: u64,
+) -> Result<(), RoomRefusal> {
+    use tilo_desktop_model::projection::workspace_shortcuts_of;
+    let Some(before) = before else {
+        return Ok(());
+    };
+    let held = workspace_shortcuts_of(before);
+    let mut written = workspace_shortcuts_of(candidate)
+        .into_iter()
+        .filter(|shortcut| shortcut.saved_by.is_some() && !held.contains(shortcut))
+        .peekable();
+    if written.peek().is_none() {
+        return Ok(());
+    }
+    let revocations = super::saved_shortcut::room_revocations(candidate);
+    let now_ns = super::saved_shortcut::ns_at(caps_now);
+    for shortcut in written {
+        if super::saved_shortcut::proven_saver(room, &shortcut, &revocations, now_ns)
+            != shortcut.saved_by
+        {
+            return Err(RoomRefusal::ShortcutAuthorship(shortcut.id));
+        }
     }
     Ok(())
 }

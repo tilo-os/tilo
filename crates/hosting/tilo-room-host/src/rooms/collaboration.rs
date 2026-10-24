@@ -62,17 +62,22 @@ impl tilo_peer_state::join_ledger::GovernanceMessages for RoomRecord {
 impl GovernedRoom {
     /// The room as its join ledger reads it: committed now.
     pub(super) fn governed(&self) -> Governed<'_> {
-        governed(&self.record, self.peer())
+        governed(&self.record, self.peer(), &self.hosts)
     }
 }
 
 /// `record` and `peer`, a room's committed state, as its join ledger reads it.
-fn governed<'a>(record: &'a RoomRecord, peer: &'a tilo_peer_state::StatePeer) -> Governed<'a> {
+fn governed<'a>(
+    record: &'a RoomRecord,
+    peer: &'a tilo_peer_state::StatePeer,
+    hosts: &'a [tilo_peer_state::join::TransportHint],
+) -> Governed<'a> {
     Governed {
         peer,
         workspace_id: record.workspace_id,
         generation: record.generation,
         governance_messages: record,
+        hosts,
     }
 }
 
@@ -913,6 +918,46 @@ impl Rooms {
         Ok(GovernanceCompletion { generation })
     }
 
+    /// Save or remove one shortcut of `room` for the member whose device
+    /// `caller` asked: the governor's own write of the room, under the rule
+    /// admission holds every writer to ([`tilo_peer_state::room::proven_saver`]).
+    ///
+    /// # Errors
+    /// An invalid or revoked caller, a room not governed here, or the room's
+    /// refusal of the change.
+    pub async fn save_member_shortcut(
+        &self,
+        room: &str,
+        caller: &DeviceCert,
+        change: &tilo_automation::ShortcutChange,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        let now = tilo_clock::unix_now_ns();
+        tilo_user_identity::verify_device_cert_at(caller, now)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        if self.revocations().is_revoked(&caller.device_public_key) {
+            return Err(CollaborationError::new("device revoked"));
+        }
+        let room = self.room(room).await?;
+        let mut room = room.lock().await;
+        let mut candidate = room.peer().clone();
+        let changed = candidate.workspace_mut().apply_shortcut_change(
+            caller,
+            change,
+            &self.inner.host.key,
+            system_time(now),
+        )?;
+        let collaboration = room.collaboration().clone();
+        let generation = if changed {
+            room.commit(candidate, &self.inner.host.key, system_time(now), |_, _| {
+                Ok(collaboration)
+            })?
+        } else {
+            room.record.generation
+        };
+        self.settle(&mut room).await?;
+        Ok(GovernanceCompletion { generation })
+    }
+
     pub(super) async fn administer(
         &self,
         room: &mut GovernedRoom,
@@ -1081,9 +1126,10 @@ impl RoomTxn for HeldRoom<'_> {
         now: u64,
         ledger: &mut dyn FnMut(&Governed<'_>) -> Result<CollaborationState, CollaborationError>,
     ) -> Result<(), CollaborationError> {
+        let hosts = self.room.hosts.clone();
         self.room
             .commit(peer, self.key, system_time(now), |record, peer| {
-                ledger(&governed(record, peer)).map_err(|error| error.to_string())
+                ledger(&governed(record, peer, &hosts)).map_err(|error| error.to_string())
             })?;
         // The commit wrote the whole record, the ledger staged before
         // included.
