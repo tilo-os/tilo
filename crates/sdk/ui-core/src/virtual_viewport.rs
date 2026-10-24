@@ -188,11 +188,28 @@ impl ScrollMomentum {
             .last_step
             .replace(now)
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
+        self.advance_by(elapsed)
+    }
+
+    /// Advance the glide by `elapsed` and return the logical-pixel
+    /// displacement, in whole device pixels like [`Self::advance`]: for a
+    /// driver that keeps its own frame clock.
+    pub fn advance_by(&mut self, elapsed: Duration) -> f64 {
+        if !self.is_active() {
+            self.carry = 0.0;
+            return 0.0;
+        }
         let exact = self.tick(elapsed) + self.carry;
         let scale = self.device_per_unit;
         let whole = (exact * scale).round() / scale;
         self.carry = if self.is_active() { exact - whole } else { 0.0 };
         whole
+    }
+
+    /// The glide's speed, in logical pixels per second; 0 at rest.
+    #[must_use]
+    pub fn velocity(&self) -> f64 {
+        if self.is_active() { self.velocity } else { 0.0 }
     }
 
     /// Advance the curve by `elapsed` and return the logical-pixel
@@ -213,8 +230,10 @@ impl ScrollMomentum {
     }
 
     /// Classify one vertical wheel event. Line (detented) wheels accelerate
-    /// through [`Self::push`]; pixel (touchpad, touchscreen) deltas track
-    /// the finger exactly and, when the gesture's `Ended` phase arrives
+    /// through [`Self::push`]; pixel (touchpad, touchscreen) deltas, in the
+    /// display's pixels, track the finger exactly in logical pixels (set the
+    /// display's scale first, [`Self::set_device_scale`]) and, when the
+    /// gesture's `Ended` phase arrives
     /// while still moving, continue as a fling. `reduce_motion` keeps every
     /// movement 1:1 with the input.
     pub fn wheel(
@@ -254,7 +273,10 @@ impl ScrollMomentum {
                     }
                     // Fingers back on the surface catch a glide in progress.
                     self.stop();
-                    let delta = -finite_or_zero(position.y);
+                    // A pixel delta is in the display's pixels; the content
+                    // moves in logical ones, 1:1 with the fingers at any
+                    // scale ([`Self::set_device_scale`]).
+                    let delta = -finite_or_zero(position.y) / self.device_per_unit;
                     if delta == 0.0 {
                         return WheelStep::Ignored;
                     }
@@ -281,6 +303,68 @@ impl ScrollMomentum {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.velocity.abs() >= GLIDE_REST_SPEED
+    }
+}
+
+/// The glide of a scroll view that pans both ways (a document, a canvas, a
+/// wide table): one [`ScrollMomentum`] per axis, so it decays as every list
+/// glides ([`glide_step`]) and steps in whole device pixels, which a host
+/// that copies what a scroll keeps on screen copies.
+#[derive(Clone, Debug, Default)]
+pub struct ScrollGlide {
+    x: ScrollMomentum,
+    y: ScrollMomentum,
+}
+
+impl ScrollGlide {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Glide on from a release `velocity` (logical pixels per second, in
+    /// content space). A zero velocity stops it.
+    pub fn fling(&mut self, vx: f64, vy: f64) {
+        for (axis, velocity) in [(&mut self.x, vx), (&mut self.y, vy)] {
+            if velocity == 0.0 {
+                axis.stop();
+            } else {
+                axis.fling(velocity);
+            }
+        }
+    }
+
+    pub fn stop(&mut self) {
+        self.x.stop();
+        self.y.stop();
+    }
+
+    /// How many device pixels one logical pixel is on the display drawn to.
+    pub fn set_device_scale(&mut self, device_per_unit: f64) {
+        self.x.set_device_scale(device_per_unit);
+        self.y.set_device_scale(device_per_unit);
+    }
+
+    /// Advance to `now` (the frame's time): the displacement since the last
+    /// step, in whole device pixels per axis.
+    pub fn advance(&mut self, now: Instant) -> (f64, f64) {
+        (self.x.advance(now), self.y.advance(now))
+    }
+
+    /// Advance by `elapsed`, for a driver with its own frame clock.
+    pub fn advance_by(&mut self, elapsed: Duration) -> (f64, f64) {
+        (self.x.advance_by(elapsed), self.y.advance_by(elapsed))
+    }
+
+    /// The glide's velocity per axis, logical pixels per second.
+    #[must_use]
+    pub fn velocity(&self) -> (f64, f64) {
+        (self.x.velocity(), self.y.velocity())
+    }
+
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.x.is_active() || self.y.is_active()
     }
 }
 
@@ -1075,6 +1159,13 @@ where
         self.clamp_offset();
     }
 
+    /// Whether `key` has a measured height: a row that has been laid out,
+    /// as against one that stands at the estimate.
+    #[must_use]
+    pub fn is_measured(&self, key: &K) -> bool {
+        self.measurements.contains_key(key)
+    }
+
     /// Store a measured height for the stable key currently at `index`.
     pub fn measure(&mut self, index: usize, key: K, height: f64) -> bool {
         if index >= self.count {
@@ -1385,6 +1476,21 @@ mod tests {
             momentum.wheel_applied(20.0, false);
             let end = momentum.wheel(&pixel(0.0), TouchPhase::Ended, false);
             assert_eq!(end, WheelStep::Ignored);
+        }
+
+        {
+            // On a display of two device pixels per logical pixel, fingers
+            // that moved 40 device pixels move the content 20 logical ones.
+            use winit::dpi::PhysicalPosition;
+            use winit::event::{MouseScrollDelta, TouchPhase};
+            let mut momentum = ScrollMomentum::new();
+            momentum.set_device_scale(2.0);
+            let step = momentum.wheel(
+                &MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -40.0)),
+                TouchPhase::Moved,
+                false,
+            );
+            assert_eq!(step, WheelStep::Scroll(20.0));
         }
 
         {

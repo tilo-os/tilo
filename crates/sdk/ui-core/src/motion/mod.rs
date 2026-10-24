@@ -12,6 +12,7 @@
 //! | [`CrossFade`] | swapping content in place |
 //! | [`ListChange`] | rows arriving, leaving and changing places |
 //! | [`Snap`] | carousels and paged strips settling on a detent |
+//! | [`ScrollTo`] | a scroll view going to what it was asked to show (find next, a revealed row) |
 //! | [`Zoom`] | one thing becoming another (window and overview card) |
 //! | [`WindowMotion`] | windows opening, closing and moving on the strip |
 //! | [`Ambient`] | chrome that comes back on its own (desk widgets) |
@@ -51,6 +52,7 @@ mod kept;
 mod named;
 mod pose;
 mod presence;
+mod scroll_to;
 mod source;
 mod spec;
 mod spring;
@@ -63,8 +65,8 @@ pub use appearing::Appearing;
 pub(crate) use clock::pin_frame;
 pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
 pub use disclosure::Disclosure;
+pub use kept::{HandOn, keep, take_kept, take_kept_at, take_kept_where, window_has_shown};
 pub(crate) use kept::{frame_ended, laying_out_window};
-pub use kept::{keep, take_kept, take_kept_at, window_has_shown};
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,
     DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap,
@@ -72,6 +74,7 @@ pub use named::{
 };
 pub use pose::Pose;
 pub use presence::Presence;
+pub use scroll_to::{ScrollJump, ScrollTo};
 pub use source::{input_source, note_input, note_source, recent_input, source_of};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 pub use spring::SpringSpec;

@@ -513,6 +513,15 @@ impl RoomRecords {
         }
     }
 
+    /// Whether [`Self::replicate_with`] has anything to do with `tree`: an
+    /// index changed since it last published, or a peer referenced records.
+    /// Read through a shared reference, so the pump that finds nothing takes
+    /// no write to the tree and announces none.
+    pub fn replication_due(&self, tree: &crate::shell::state::WorkspaceTree) -> bool {
+        self.replicated_generation != Some(self.generation)
+            || !tree.desktop.room_records_inbound.is_empty()
+    }
+
     /// Exchange this machine's room indexes with the peer-replication
     /// path, returning whether anything arrived from a peer.
     ///

@@ -114,7 +114,7 @@ impl DataTableCore {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-    ) {
+    ) -> Vec<crate::widget::paint_damage::PaintPart> {
         // A sort or change the person made since the last frame starts its
         // motion from where the rows were drawn to where they are now.
         let now = crate::motion::frame_now();
@@ -123,7 +123,16 @@ impl DataTableCore {
             .rows
             .start(shown.iter().copied(), theme.motion(), now);
         self.moving.drawn = shown;
-        self.draw_rows(scene, transform, text_renderer, theme);
+        let offset = self.viewport.offset();
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
+        )]
+        let scrolled = transform * Affine::translate((0.0, -offset)) * transform.inverse();
+        let parts = self.draw_rows(transform, text_renderer, theme);
+        for part in &parts {
+            scene.append(part.scene(), Some(scrolled));
+        }
         for cell in &mut self.mounted_cells {
             // A cell control travels and fades with its row.
             let (dy, alpha) = self.moving.rows.pose(&cell.row_key, now);
@@ -144,6 +153,7 @@ impl DataTableCore {
                 scene.pop_layer();
             }
         }
+        parts
     }
 }
 

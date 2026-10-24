@@ -497,6 +497,7 @@ decorator_trait! {
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
         fn disclosing() -> Option<crate::widget::Disclosing>;
+        fn is_band() -> bool;
         fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
@@ -524,6 +525,7 @@ decorator_trait! {
     mut {
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
+        fn note_placement(placement: crate::widget::Placement);
         #[doc(hidden)]
         #[allow(
             private_interfaces,

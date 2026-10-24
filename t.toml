@@ -979,14 +979,25 @@ inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".config/hakari.toml", "c
 # Cargo.lock holds what the manifests require. Every cargo check builds `--locked` and fails on
 # a stale lock too, but only once it gets to compile. The fix relocks without update flags, so it
 # adds and drops what the manifests now need and moves no locked version (AGENTS.md, "Cargo.lock
-# is committed").
+# is committed"). The standalone workspaces' locks count too: they reach workspace crates by
+# path, so a dependency added there leaves them stale, and only the heavy checks build them.
+# Not vendor/ (the locks upstream published, which no build reads) nor fuzz/ (cargo fuzz
+# builds unlocked).
 [[check]]
 name = "lockfile"
 requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
-run = "cargo metadata --locked --format-version 1 >/dev/null"
-fix = "cargo metadata --format-version 1 >/dev/null"
-inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", ".cargo/config.toml", "rust-toolchain.toml"]
+run = """
+find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do
+  cargo metadata --locked --format-version 1 --manifest-path "${lock%.lock}.toml" >/dev/null || exit 1
+done
+"""
+fix = """
+find . \\( -name target -o -path ./vendor -o -path ./fuzz \\) -prune -o -name Cargo.lock -print | sort | while read -r lock; do
+  cargo metadata --format-version 1 --manifest-path "${lock%.lock}.toml" >/dev/null || exit 1
+done
+"""
+inputs = ["Cargo.toml", "**/Cargo.toml", "Cargo.lock", "**/Cargo.lock", ".cargo/config.toml", "**/.cargo/config.toml", "rust-toolchain.toml"]
 
 [[check]]
 name = "deny"

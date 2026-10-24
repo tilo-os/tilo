@@ -69,6 +69,12 @@ impl BoundNodeMap {
             .filter(|node| !node.inactive)
             .and_then(|node| node.binding.clone())
     }
+    /// Whether `node` was admitted inside a bound component or a legacy tile.
+    pub(crate) fn has_owner(&self, node: NodeId) -> bool {
+        self.nodes
+            .get(&node)
+            .is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
+    }
     pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
         self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
     }

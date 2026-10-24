@@ -37,6 +37,17 @@ pub struct Toggle {
     /// paints: the switch needs a redraw only when they differ.
     painted: Option<Painted>,
     drawing: Option<Painted>,
+    /// A view that builds the switch anew on each change: the one built in
+    /// its place goes on from its knob (`motion::keep`).
+    hand_on: crate::motion::HandOn<KeptSwitch>,
+}
+
+/// What a switch leaves for the one a rebuild puts in its place: its knob,
+/// and the value it held, so a successor showing another switch's value
+/// (another page, a row that moved) does not slide.
+struct KeptSwitch {
+    switch: SwitchMotion,
+    on: bool,
 }
 
 /// What a switch's paint depends on besides its place and the theme:
@@ -57,8 +68,6 @@ struct KnobHold {
     /// The knob's drawn position when the hold started.
     from: f64,
     dragged: bool,
-    /// What the press flipped the control to.
-    asked: bool,
     /// The last two knob positions the hand set, for its velocity.
     last: Option<(crate::time::Instant, f64)>,
     previous: Option<(crate::time::Instant, f64)>,
@@ -69,12 +78,11 @@ struct KnobHold {
 const STILL_AFTER: crate::time::Duration = crate::time::Duration::from_millis(80);
 
 impl KnobHold {
-    fn new(x: f64, from: f64, asked: bool) -> Self {
+    fn new(x: f64, from: f64) -> Self {
         Self {
             start_x: x,
             from,
             dragged: false,
-            asked,
             last: None,
             previous: None,
         }
@@ -110,6 +118,26 @@ impl Toggle {
             motion: None,
             painted: None,
             drawing: None,
+            hand_on: crate::motion::HandOn::default(),
+        }
+    }
+
+    /// What names the switch across rebuilds: an id it was given, else
+    /// nothing (it is known by its place).
+    fn identity(&self) -> Option<&str> {
+        self.control
+            .id_override
+            .as_deref()
+            .or((self.semantic_id != "toggle").then_some(self.semantic_id.as_str()))
+    }
+
+    /// Go on from the switch a rebuild dropped: its knob, on its way or at
+    /// rest. Showing what it showed, a change since moves from there, as
+    /// the input that made it asks; showing something else, it rests.
+    fn take_up(&mut self, kept: KeptSwitch) {
+        self.switch = kept.switch;
+        if kept.on != self.control.is_checked {
+            self.switch.snap(self.control.is_checked);
         }
     }
 
@@ -172,24 +200,30 @@ impl Toggle {
         self.switch.hold(position);
     }
 
-    /// The hand lets go. A drag settles on the side its release heads for,
-    /// with its velocity, and asks for that side if the press asked for the
-    /// other.
+    /// The hand lets go, and the value changes now, once, if at all. A
+    /// press that did not drag is a click: it flips the switch when let go
+    /// over it. A drag settles on the side its release heads for, with its
+    /// velocity, and asks for that side only if it is not the value: a
+    /// drag back to where it began changes nothing.
     fn let_go(&mut self) {
         let Some(hold) = self.hold.take() else {
             return;
         };
-        let motion = self.effective_motion();
-        if hold.dragged {
-            let now = crate::motion::frame_now();
-            let velocity = hold.velocity(crate::time::now());
-            let position = self.switch.knob(now);
-            let side = crate::motion::Snap::rest_for(position, velocity, motion) >= 0.5;
-            if side != hold.asked {
-                self.control.choose(side);
+        if !hold.dragged {
+            if self.control.is_hovered {
+                self.control.flip();
             }
-            self.switch.release(side, velocity, motion, now);
+            return;
         }
+        let motion = self.effective_motion();
+        let now = crate::motion::frame_now();
+        let velocity = hold.velocity(crate::time::now());
+        let position = self.switch.knob(now);
+        let side = crate::motion::Snap::rest_for(position, velocity, motion) >= 0.5;
+        if side != self.control.is_checked {
+            self.control.choose(side);
+        }
+        self.switch.release(side, velocity, motion, now);
     }
 
     /// Create a true two-way binding to typed process-local boolean state.
@@ -199,10 +233,10 @@ impl Toggle {
     /// synchronization pass. Use [`Self::on_change`] only to observe user
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
-        Self {
-            control: BoolControl::local(state, Some(crate::widget::humanize_control_id("toggle"))),
-            ..Self::new("toggle", "")
-        }
+        let mut toggle = Self::new("toggle", "");
+        toggle.control =
+            BoolControl::local(state, Some(crate::widget::humanize_control_id("toggle")));
+        toggle
     }
 
     bool_control_api!();
@@ -729,11 +763,18 @@ impl Widget for Toggle {
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let identity = self.identity().map(str::to_owned);
+        if let Some(kept) = self.hand_on.build(identity.as_deref()) {
+            self.take_up(kept);
+        }
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        if let Some(kept) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept);
+        }
     }
 
     fn draw(
@@ -822,12 +863,13 @@ impl Widget for Toggle {
                 button: MouseButton::Left,
                 ..
             } if self.control.is_hovered => {
-                // The press flips at once, as ever; holding on, the hand
-                // may then take the knob.
-                let asked = !self.control.is_checked;
+                // The press takes hold and changes nothing yet: let go, it
+                // is a click; moved, the hand takes the knob.
+                *ctx.handled = true;
+                self.control.pressed_into_focus |= !self.control.is_focused;
+                *ctx.focus_target = Some(ctx.node_id);
                 let drawn = self.switch.knob(crate::motion::frame_now());
-                self.control.handle_event(event, ctx);
-                self.hold = Some(KnobHold::new(self.pointer_x, drawn, asked));
+                self.hold = Some(KnobHold::new(self.pointer_x, drawn));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -879,6 +921,15 @@ impl Widget for Toggle {
 }
 
 bool_control_capabilities!(Toggle, "toggle");
+
+/// A switch a rebuild drops leaves its knob for the one put in its place.
+impl Drop for Toggle {
+    fn drop(&mut self) {
+        let switch = std::mem::take(&mut self.switch);
+        let on = self.control.is_checked;
+        self.hand_on.leave(KeptSwitch { switch, on });
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1447,7 +1498,7 @@ mod tests {
             dispatch(&mut t, &cursor_moved(30.0, 16.0));
             dispatch(&mut t, &mouse_press());
             dispatch(&mut t, &mouse_release());
-            assert!(state.get(), "the value changes on the press, at once");
+            assert!(state.get(), "the value changes once the click lets go");
             present(&mut t, &theme);
             assert!(t.needs_animation_frame(), "the knob slides");
         });
@@ -1521,7 +1572,7 @@ mod tests {
 
     #[test]
     fn reduced_motion_lands_the_knob_and_cross_fades_the_tint() {
-        use crate::synthetic_input::{cursor_moved, mouse_press};
+        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
         use crate::testing::dispatch;
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark().with_reduce_motion(true);
@@ -1534,6 +1585,7 @@ mod tests {
             crate::motion::note_source(crate::tokens::MotionSource::Pointer);
             dispatch(&mut t, &cursor_moved(30.0, 16.0));
             dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
             present(&mut t, &theme);
         });
         let pose = t.switch.pose(theme.motion(), ms(t0, 40));
@@ -1545,6 +1597,15 @@ mod tests {
         assert!(!t.switch.is_moving(ms(t0, 400)));
     }
 
+    /// A switch counting the changes it makes, bound to `state`.
+    fn counted(state: &crate::LocalState<bool>) -> (Toggle, std::rc::Rc<std::cell::Cell<u32>>) {
+        let changes = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = std::rc::Rc::clone(&changes);
+        let mut t = Toggle::from_state(state).on_change(move |_| count.set(count.get() + 1));
+        switch_at_origin(&mut t);
+        (t, changes)
+    }
+
     #[test]
     fn a_dragged_knob_follows_the_hand_one_to_one_and_settles_on_the_nearer_side() {
         use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
@@ -1552,8 +1613,7 @@ mod tests {
         use crate::time::testing::with_monotonic_time;
         let theme = Theme::dark();
         let state = crate::LocalState::new(false);
-        let mut t = Toggle::from_state(&state);
-        switch_at_origin(&mut t);
+        let (mut t, changes) = counted(&state);
         let t0 = crate::time::now();
         with_monotonic_time(t0, || {
             present(&mut t, &theme);
@@ -1561,7 +1621,7 @@ mod tests {
             dispatch(&mut t, &cursor_moved(12.0, 16.0));
             dispatch(&mut t, &mouse_press());
         });
-        assert!(state.get(), "the press flips at once, as a click");
+        assert!(!state.get(), "a press changes nothing yet");
         assert!(Widget::wants_pointer_capture(&t), "the hand holds the knob");
         // Within the slop it is still a click; past it the knob is the
         // hand's, 1:1 over its 20 px of travel from where the hand took
@@ -1585,18 +1645,19 @@ mod tests {
             );
             assert!(!t.switch.is_moving(at), "nothing runs under the hand");
         }
-        // Let go heading left, near the left: it settles off, and the value
-        // the press asked for is taken back once.
+        assert_eq!(changes.get(), 0, "the knob moves; the value does not");
+        // Let go heading left, near the left: it settles off, where it
+        // began, and nothing changed.
         with_monotonic_time(ms(t0, 60), || dispatch(&mut t, &mouse_release()));
         assert!(!state.get(), "left on the off side");
+        assert_eq!(changes.get(), 0, "a drag back to the start changes nothing");
         assert!(!Widget::wants_pointer_capture(&t));
         let rest = t.switch.knob.settles_at().map_or(ms(t0, 60), |at| at);
         assert_eq!(t.switch.knob(rest), 0.0);
 
-        // Dragged past the middle and held still, it settles on.
+        // Dragged past the middle and held still, it settles on: one change.
         let state = crate::LocalState::new(false);
-        let mut t = Toggle::from_state(&state);
-        switch_at_origin(&mut t);
+        let (mut t, changes) = counted(&state);
         with_monotonic_time(t0, || {
             present(&mut t, &theme);
             dispatch(&mut t, &cursor_moved(12.0, 16.0));
@@ -1604,9 +1665,21 @@ mod tests {
             dispatch(&mut t, &cursor_moved(16.0, 16.0));
         });
         with_monotonic_time(ms(t0, 10), || dispatch(&mut t, &cursor_moved(30.0, 16.0)));
+        assert_eq!(changes.get(), 0);
         with_monotonic_time(ms(t0, 300), || dispatch(&mut t, &mouse_release()));
-        assert!(state.get(), "left on the on side, as the press asked");
+        assert!(state.get(), "left on the on side");
+        assert_eq!(changes.get(), 1, "a drag across changes the value once");
         assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
+
+        // A press let go off the switch, without a drag, is no click.
+        with_monotonic_time(ms(t0, 3_000), || {
+            dispatch(&mut t, &cursor_moved(30.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &cursor_moved(31.0, 90.0));
+            dispatch(&mut t, &mouse_release());
+        });
+        assert!(state.get());
+        assert_eq!(changes.get(), 1);
     }
 
     /// Touch on a page of switches: a finger on a knob drags it once it

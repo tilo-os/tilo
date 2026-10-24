@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 12
+version = 13
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -743,6 +743,7 @@ Value = "serde_json::Value: any JSON value, carried as its text"
 "RevocationReason::Stolen" = "#1 unit"
 "Showing" = "struct"
 "Showing.camera" = "#0 bool"
+"Showing.muted" = "#2 bool"
 "Showing.screen" = "#1 bool"
 "Signature" = "tuple([u8; 64]) transparent"
 "SignedDirectedAction" = "struct try_from=SignedWire into=SignedWire"

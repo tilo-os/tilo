@@ -1090,7 +1090,9 @@ async fn approve_admitted(
                 }
                 Some(Ok(OperatorCommand::Shutdown {})) | None => return Ok(()),
                 Some(Ok(
-                    command @ (OperatorCommand::PreAdmit { .. } | OperatorCommand::Spectate { .. }),
+                    command @ (OperatorCommand::PreAdmit { .. }
+                    | OperatorCommand::Spectate { .. }
+                    | OperatorCommand::WaitList { .. }),
                 )) => {
                     anyhow::bail!("a short-lived room takes no {command:?}");
                 }

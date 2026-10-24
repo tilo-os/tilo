@@ -861,6 +861,20 @@ impl NotificationCenter {
             .is_some_and(|reader| reader.event(event, ctx))
     }
 
+    /// Whether the reading page needs frames: its bar fading, a glide.
+    pub fn reading_needs_frame(&self) -> bool {
+        self.reader
+            .as_ref()
+            .is_some_and(NotificationReader::needs_animation_frame)
+    }
+
+    /// Step the reading page's glide; returns whether it moved.
+    pub fn advance_reading(&mut self) -> bool {
+        self.reader
+            .as_mut()
+            .is_some_and(NotificationReader::advance)
+    }
+
     pub fn reading_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
         self.reader.as_ref()?.scroll()
     }

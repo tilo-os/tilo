@@ -523,6 +523,15 @@ impl PublishedDerived {
         self.offered.get(id).is_some_and(|&taken| taken < params)
     }
 
+    /// Copies of the published resources, in order.
+    #[must_use]
+    pub fn to_resources(&self) -> Vec<tilo_actions::Resource> {
+        self.resources
+            .iter()
+            .map(|resource| (**resource).clone())
+            .collect()
+    }
+
     /// The published resource `id` among them and their children.
     #[must_use]
     pub fn find(&self, id: &str) -> Option<tilo_actions::Resource> {
@@ -590,6 +599,33 @@ pub fn published<R: Resource>(derived: impl Into<Rc<[Derived<R>]>>) -> Rc<Publis
         crate::vocabulary::<R>(),
         Rc::new(derived),
     )
+}
+
+/// [`published`] of a record that derives no resources: its nested ones.
+#[must_use]
+pub fn published_nested<R: Resource>() -> Rc<PublishedDerived> {
+    published_places(
+        TypeId::of::<R>(),
+        crate::vocabulary::<R>(),
+        Rc::new(NoPlaces),
+    )
+}
+
+/// The derived resources of a record that derives none.
+struct NoPlaces;
+
+impl Places for NoPlaces {
+    fn len(&self) -> usize {
+        0
+    }
+
+    fn place(&self, _index: usize) -> Option<&Place> {
+        None
+    }
+
+    fn address(&self) -> *const () {
+        std::ptr::null()
+    }
 }
 
 /// [`published`] for the record type `of`, whose vocabulary is `vocabulary`.

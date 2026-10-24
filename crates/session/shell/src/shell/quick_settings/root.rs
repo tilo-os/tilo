@@ -569,11 +569,16 @@ impl QuickSettingsRoot {
         self.scroll
             .handle_window_event(event, scale_factor, modifiers, handled, theme)
     }
+    /// Step a glide after a flick to the frame's time; returns whether the
+    /// page moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        self.scroll.advance()
+    }
     /// Whether the page's scrollbar is being dragged.
     pub fn scroll_dragging(&self) -> bool {
         self.scroll.is_dragging()
     }
-    /// The scrollbar's fade, for the host's frame clock.
+    /// The scrollbar's fade and a glide, for the host's frame clock.
     pub fn scroll_needs_frame(&self, theme: &Theme) -> bool {
         self.scrolls() && self.scroll.needs_animation_frame(theme)
     }

@@ -22,6 +22,9 @@ const PUBLISHER_ID = /^[0-9a-f]{64}$/;
 // [20 ms, 160 ms] -- low mouth-to-ear delay on good links, fewer late-frame
 // gaps on jittery ones (see voice-audio-worklet.mjs).
 const PLAYOUT_JITTER = Object.freeze({adaptive: true, initial: 1_920, min: 960, max: 7_680});
+/** A microphone that ends again this soon after it was picked up again is
+ * lost, not picked up once more. */
+const RECOVERY_SPACING_MS = 2_000;
 
 const encoderConfig = Object.freeze({
   codec: CODEC,
@@ -193,7 +196,12 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
 
   return {
     capabilities,
-    async start({inputId, muted = true, onFrame, onLevels = () => {}, onError = () => {}, signal} = {}) {
+    /**
+     * `onCaptureLost(error)`: the microphone went away and no other could
+     * take its place; capture is off, playback goes on. `onInputChanged(id)`:
+     * capture moved to another microphone (`undefined`: the default).
+     */
+    async start({inputId, muted = true, onFrame, onLevels = () => {}, onError = () => {}, onCaptureLost = () => {}, onInputChanged = () => {}, signal} = {}) {
       if (typeof onFrame !== 'function') throw new TypeError('onFrame must be a function');
       if (signal?.aborted) throw abortError(signal);
       if (['AudioEncoder', 'AudioDecoder', 'AudioData', 'EncodedAudioChunk'].some(name => typeof environment[name] !== 'function')) {
@@ -410,11 +418,13 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         const handleTrackEnded = () => {
           if (stopped || currentStream !== stream) return;
           selectionGeneration++;
+          const wasCapturing = !captureMuted;
           captureMuted = true;
           captureGeneration++;
           postCaptureState('muted', true);
           detachInput();
-          report({type: 'error', stage: 'capture-track-ended', error: 'Audio input track ended'});
+          report({type: 'capture-lost', stage: 'capture-track-ended', error: 'Audio input track ended'});
+          if (wasCapturing) void recoverInput();
         };
         const handleTrackMute = () => {
           if (stopped || currentStream !== stream) return;
@@ -466,6 +476,31 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
           if (unmuteOperation === operation) unmuteOperation = undefined;
         }).catch(() => {});
         return operation;
+      };
+      /** The microphone that was capturing went away (unplugged, taken by
+       * the system): capture goes on from the browser's default microphone,
+       * the one left. Without one, or again within moments, the microphone
+       * is lost (`onCaptureLost`) and capture stays off; the call does not
+       * end over it. */
+      let recoveredAt = -Infinity;
+      const recoverInput = async () => {
+        const at = performance.now();
+        const again = at - recoveredAt < RECOVERY_SPACING_MS;
+        recoveredAt = at;
+        try {
+          if (again) throw new DOMException('Audio input keeps ending', 'NotFoundError');
+          if (selectedInputId !== undefined) {
+            selectedInputId = undefined;
+            try { onInputChanged(undefined); } catch {}
+          }
+          await beginUnmute();
+        } catch (error) {
+          if (stopped) return;
+          report({type: 'capture-lost', stage: 'capture-recovery', error: error?.message ?? String(error)});
+          try { onCaptureLost(error); } catch {}
+          return;
+        }
+        if (!stopped && !captureMuted) report({type: 'capture-recovered', stage: 'capture-input'});
       };
 
       abortListener = () => {

@@ -245,6 +245,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+use palette_search::LaunchpadMark;
 mod peer_sync;
 mod portal_prompts;
 mod projection;
@@ -563,6 +564,9 @@ pub struct ShellOverlayHost {
     /// A launchpad app card awaiting the Applications index; see
     /// [`Self::retry_pending_launchpad_app`].
     pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Where the widget document stood when the launchpad harvest last found
+    /// no request in it; see [`Self::settle_launchpad`].
+    launchpad_quiet_at: Option<LaunchpadMark>,
     /// Launchpad cards' app actions awaiting admission; see
     /// [`Self::poll_pending_launchpad_actions`].
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,
@@ -963,6 +967,12 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Who is here arriving from the bar and leaving (`motion::Appear`).
+    collaborators_appearing: ui::motion::Appearing,
+    /// The roster as it was last painted at rest, and its panel: what is
+    /// drawn arriving, and leaving once it is closed.
+    collaborators_painted: Scene,
+    collaborators_painted_panel: Rect,
     /// Roster id whose recent summary People shows. Local view state: the
     /// same person stays expanded as the roster reorders.
     expanded_collaborator: Option<String>,
@@ -1014,6 +1024,9 @@ pub struct ShellOverlayHost {
     /// The question about one of the person's apps on screen, "Uninstall
     /// <name>?" or "Add <name> to apps?" ([`app_sheets`]).
     app_sheet: Option<app_sheets::AppSheet>,
+    /// The question just answered, drawn leaving until it has gone; it
+    /// takes no input.
+    app_sheet_leaving: Option<app_sheets::AppSheet>,
     /// The sheet's window node and its own, while it is laid out.
     app_sheet_nodes: Option<(NodeId, NodeId)>,
     /// The sheet opened or closed since the tree was last built.
@@ -1824,6 +1837,12 @@ mod parked_workspaces_tests;
 #[cfg(test)]
 #[path = "capture_tool_tests.rs"]
 mod capture_tool_tests;
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_motion_tests;
 
 #[cfg(test)]
 #[allow(
