@@ -122,6 +122,41 @@ pub fn validate_receipt(
     }
 }
 
+#[cfg(feature = "client")]
+impl crate::ChannelHandle {
+    /// Complete an exact moderation operation under its admitted invocation.
+    /// No signature or key material is returned to the caller.
+    /// # Errors
+    /// Refuses invalid custody, oversized envelopes or invalid case receipts.
+    pub async fn external_moderation(
+        &self,
+        command: &Request,
+        parent: [u8; 16],
+    ) -> Result<registry_types::ModerationCase, runtime_portal::NotAvailable> {
+        let failed =
+            |message: String| runtime_portal::NotAvailable::Capnp(capnp::Error::failed(message));
+        command.validate().map_err(failed)?;
+        if parent == [0; 16] || uuid::Uuid::from_bytes(parent).to_string() != command.invocation {
+            return Err(failed("external moderation invocation differs".into()));
+        }
+        let bytes = serde_json::to_vec(command).map_err(|e| failed(e.to_string()))?;
+        if bytes.len() > MAX_WIRE_BYTES {
+            return Err(failed("external moderation request exceeds bound".into()));
+        }
+        let mut request = self.inner.local_file_clipboard_request();
+        request.get().set_command_json(&bytes);
+        request.get().set_on_behalf_of(&parent);
+        let response = request.send().promise.await?;
+        let bytes = response.get()?.get_reply_json()?;
+        if bytes.len() > MAX_WIRE_BYTES {
+            return Err(failed("external moderation response exceeds bound".into()));
+        }
+        let case = serde_json::from_slice(bytes).map_err(|e| failed(e.to_string()))?;
+        validate_receipt(command, &case).map_err(failed)?;
+        Ok(case)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Your devices as a VPN: the root helper that owns TUN devices, routes, DNS, forwarding and nftables for a tunnel, its typed protocol, and the tunnel itself as QUIC datagrams between a person's devices"
+description = "Your devices as a VPN: the root helper that owns TUN devices, routes, DNS, forwarding and nftables for a tunnel and for the kill switch of the person's VPN profiles, its typed protocol, and the tunnel itself as QUIC datagrams between a person's devices"
 
 [lib]
 name = "device_vpn"
@@ -21,6 +21,13 @@ required-features = ["service"]
 name = "netns_tunnel"
 path = "tests/netns_tunnel.rs"
 required-features = ["service", "test-support"]
+
+# The kill switch of the person's VPN profiles in a network namespace: the
+# same needs and the same micro-VM check as netns_tunnel.
+[[test]]
+name = "netns_profile_block"
+path = "tests/netns_profile_block.rs"
+required-features = ["service"]
 
 [features]
 default = ["service"]

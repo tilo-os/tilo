@@ -9967,6 +9967,21 @@ impl channel_handle::Server for CapnpChannelHandle {
         }
         if request
             .get_command_json()
+            .is_ok_and(runtime_collab::write_attribution::is_envelope)
+        {
+            let answer = request.get_command_json().and_then(|bytes| {
+                self.write_attribution_dispatch(bytes, request.get_on_behalf_of()?)
+            });
+            return match answer {
+                Ok(reply) => {
+                    results.get().set_reply_json(&reply);
+                    Promise::ok(())
+                }
+                Err(error) => Promise::err(error),
+            };
+        }
+        if request
+            .get_command_json()
             .is_ok_and(external_moderation::is_envelope)
         {
             let receive = match request.get_command_json().and_then(|bytes| {

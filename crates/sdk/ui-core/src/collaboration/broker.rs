@@ -5226,6 +5226,7 @@ struct SdkJoinContext<'a> {
 struct SdkRoute {
     _checks: Option<super::approved_checks::Registration>,
     _moderation: Option<super::external_moderation::Registration>,
+    _attribution: Option<super::write_attribution_lane::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -5413,6 +5414,12 @@ async fn ensure_sdk_route(
             error
         })
         .ok();
+    let attribution = super::write_attribution_lane::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: write attribution lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -5427,6 +5434,7 @@ async fn ensure_sdk_route(
         SdkRoute {
             _checks: checks,
             _moderation: moderation,
+            _attribution: attribution,
             spec: spec.clone(),
             channel,
             presence,

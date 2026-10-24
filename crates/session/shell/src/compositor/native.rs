@@ -9443,6 +9443,8 @@ pub fn run() {
     crate::shell::continuity_policy::follow(&live_settings);
     #[cfg(target_os = "linux")]
     crate::shell::device_vpn::follow(&live_settings);
+    #[cfg(target_os = "linux")]
+    crate::shell::device_vpn::profile_block::start(&live_settings);
     spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.

@@ -1,10 +1,10 @@
 //! The helper itself: who may ask ([`peer`]), what it does ([`plan`]), the
 //! socket loop ([`server`]) and the machine it does it on (`linux`).
 //!
-//! The service keeps one client tunnel and one exit per machine, each owned
-//! by the person whose shell opened it, and remembers both in a record that
-//! outlives the process, so a restarted helper still undoes what an earlier
-//! one set up.
+//! The service keeps one client tunnel, one exit and one block of the
+//! person's VPN profiles per machine, each owned by the person whose shell
+//! asked for it, and remembers them in a record that outlives the process,
+//! so a restarted helper still undoes what an earlier one set up.
 
 pub mod peer;
 pub mod plan;
@@ -17,9 +17,11 @@ pub mod linux;
 use std::os::fd::OwnedFd;
 
 use crate::net::{CLIENT_INTERFACE, EXIT_INTERFACE, MAX_MTU};
-use crate::protocol::{ClientLink, ClientState, ExitLink, ExitState, Request, Response};
+use crate::protocol::{
+    ClientLink, ClientState, ExitLink, ExitState, ProfileBlock, Request, Response,
+};
 use plan::Command;
-use record::{ClientRecord, ExitRecord, Record};
+use record::{ClientRecord, ExitRecord, ProfileBlockRecord, Record};
 
 /// A caller the service answers: the compositor of the person at the seat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +67,9 @@ impl<B: Backend> Service<B> {
 
     /// Whether nothing is open, so the process may exit.
     pub fn is_idle(&self) -> bool {
-        self.record.client.is_none() && self.record.exit.is_none()
+        self.record.client.is_none()
+            && self.record.exit.is_none()
+            && self.record.profile_block.is_none()
     }
 
     /// Answer `request` from `caller`, with the TUN descriptor of a tunnel
@@ -95,6 +99,8 @@ impl<B: Backend> Service<B> {
                 Err(response) => (response, None),
             },
             Request::CloseExit => (self.close_exit(caller), None),
+            Request::HoldProfileBlock { block } => (self.hold_profile_block(caller, block), None),
+            Request::ReleaseProfileBlock => (self.release_profile_block(caller), None),
         }
     }
 
@@ -108,6 +114,11 @@ impl<B: Backend> Service<B> {
                 link: exit.link.clone(),
                 interface_up: self.backend.interface_exists(EXIT_INTERFACE),
             }),
+            profile_block: self
+                .record
+                .profile_block
+                .as_ref()
+                .map(|held| held.block.clone()),
         }
     }
 
@@ -278,9 +289,58 @@ impl<B: Backend> Service<B> {
         self.save();
     }
 
-    /// Undo what lost its reason: a tunnel whose owner's session ended, an
-    /// exit whose TUN is gone, a client whose TUN is gone and that has no
-    /// kill switch to keep.
+    /// Put up the block of the person's VPN profiles, or replace the one
+    /// that holds. A block that fails part way is lifted again.
+    fn hold_profile_block(&mut self, caller: Caller, block: ProfileBlock) -> Response {
+        if let Some(refused) = self.owned_by_another(
+            self.record.profile_block.as_ref().map(|held| held.owner),
+            caller,
+        ) {
+            return refused;
+        }
+        if let Err(reason) = block.check() {
+            return Response::Refused { reason };
+        }
+        let commands = plan::hold_profile_block(&block);
+        // Recorded before it is put up, so a helper that dies part way still
+        // knows to lift it.
+        self.record.profile_block = Some(ProfileBlockRecord {
+            owner: caller.uid,
+            block,
+        });
+        self.save();
+        if let Err(message) = self.run_all(&commands) {
+            self.undo_profile_block();
+            return Response::Failed { message };
+        }
+        Response::Done
+    }
+
+    fn release_profile_block(&mut self, caller: Caller) -> Response {
+        if let Some(refused) = self.owned_by_another(
+            self.record.profile_block.as_ref().map(|held| held.owner),
+            caller,
+        ) {
+            return refused;
+        }
+        self.undo_profile_block();
+        Response::Done
+    }
+
+    fn undo_profile_block(&mut self) {
+        if self.record.profile_block.is_none() {
+            return;
+        }
+        for command in plan::release_profile_block() {
+            let _ = self.backend.run(&command);
+        }
+        self.record.profile_block = None;
+        self.save();
+    }
+
+    /// Undo what lost its reason: a tunnel or block whose owner's session
+    /// ended, an exit whose TUN is gone, a client whose TUN is gone and that
+    /// has no kill switch to keep.
     pub fn housekeeping(&mut self) {
         if let Some(client) = &self.record.client {
             let owner_gone = !self.backend.has_session(client.owner);
@@ -295,12 +355,19 @@ impl<B: Backend> Service<B> {
         {
             self.undo_exit();
         }
+        if let Some(held) = &self.record.profile_block
+            && !self.backend.has_session(held.owner)
+        {
+            self.undo_profile_block();
+        }
     }
 
-    /// Undo everything, as at boot, when no tunnel can have survived.
+    /// Undo everything, as at boot or after the helper died, when nobody is
+    /// left to want what it set up.
     pub fn reset(&mut self) {
         self.undo_client();
         self.undo_exit();
+        self.undo_profile_block();
     }
 }
 

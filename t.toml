@@ -2097,7 +2097,8 @@ default = false
 
 # Your devices as a VPN between two network namespaces: real TUN devices the root helper's Linux
 # backend sets up with `ip` and `nft`, and a loopback iroh pair carrying the packets
-# (crates/system/device-vpn/tests/netns_tunnel.rs). The job sandbox refuses nftables netlink even
+# (crates/system/device-vpn/tests/netns_tunnel.rs); and the kill switch of the person's VPN profiles,
+# its nftables block following the profile's state (tests/netns_profile_block.rs). The job sandbox refuses nftables netlink even
 # to checks with nested sandboxes, so the test binary is built here and run in a micro-VM, whose
 # kernel has TUN and nftables; TILO_REQUIRE_TUN fails a test that would skip there.
 [[check]]
@@ -2109,11 +2110,17 @@ set -eu
 mkdir -p "$CARGO_TARGET_DIR/vm"
 # Read every message before selecting: closing cargo's pipe early makes it
 # fail with a broken pipe while it is still writing build messages.
-test=$(cargo test --locked -p tilo-device-vpn --features test-support --test netns_tunnel --no-run --message-format json \
-  | python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == "netns_tunnel"))')
-cp "$test" "$CARGO_TARGET_DIR/vm/device-vpn-netns-tunnel"
+cargo test --locked -p tilo-device-vpn --features test-support --test netns_tunnel --test netns_profile_block --no-run --message-format json \
+  | python3 -c '
+import json, os, shutil, sys
+messages = list(map(json.loads, sys.stdin))
+built = {m["target"]["name"]: m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable")}
+target = os.environ["CARGO_TARGET_DIR"]
+shutil.copy(built["netns_tunnel"], target + "/vm/device-vpn-netns-tunnel")
+shutil.copy(built["netns_profile_block"], target + "/vm/device-vpn-netns-profile-block")
+'
 """
-outputs = ["/target/vm/device-vpn-netns-tunnel"]
+outputs = ["/target/vm/device-vpn-netns-tunnel", "/target/vm/device-vpn-netns-profile-block"]
 cargo_packages = ["tilo-device-vpn"]
 on = ["stable", "dispatch"]
 default = false
@@ -2129,6 +2136,7 @@ run = """
 set -eu
 dnf install -y --setopt=install_weak_deps=False iproute nftables util-linux-core >/dev/null
 /target/vm/device-vpn-netns-tunnel --exact packets_cross_two_network_namespaces --nocapture --test-threads=1
+/target/vm/device-vpn-netns-profile-block --nocapture --test-threads=1
 """
 inputs = []
 cost = "minutes"

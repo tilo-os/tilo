@@ -924,6 +924,7 @@ impl QuickFS {
             .advance(request.intent_id, Phase::BroadcastCommitted, Some(delta))
             .map_err(|_| pending())?;
         drop(journal);
+        self.attribute_version(&proposed, Some(&path));
         Ok(Step::Settled(Outcome::Applied {
             receipt: result_receipt,
         }))

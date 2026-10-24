@@ -75,6 +75,7 @@ pub mod collab_capnp {
 
 pub mod approved_checks;
 pub mod external_moderation;
+pub mod write_attribution;
 /// The host distinguishes local UI intent from continuation of a published action.
 /// A published id is resolved only against broker-retained original custody.
 #[derive(Clone, Copy, Debug)]
@@ -1242,37 +1243,6 @@ impl ChannelHandle {
             );
         }
         Ok(value)
-    }
-
-    /// Complete an exact moderation operation under its admitted invocation.
-    /// No signature or key material is returned to the caller.
-    /// # Errors
-    /// Refuses invalid custody, oversized envelopes or invalid case receipts.
-    pub async fn external_moderation(
-        &self,
-        command: &external_moderation::Request,
-        parent: [u8; 16],
-    ) -> Result<registry_types::ModerationCase, NotAvailable> {
-        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
-        command.validate().map_err(failed)?;
-        if parent == [0; 16] || uuid::Uuid::from_bytes(parent).to_string() != command.invocation {
-            return Err(failed("external moderation invocation differs".into()));
-        }
-        let bytes = serde_json::to_vec(command).map_err(|e| failed(e.to_string()))?;
-        if bytes.len() > external_moderation::MAX_WIRE_BYTES {
-            return Err(failed("external moderation request exceeds bound".into()));
-        }
-        let mut request = self.inner.local_file_clipboard_request();
-        request.get().set_command_json(&bytes);
-        request.get().set_on_behalf_of(&parent);
-        let response = request.send().promise.await?;
-        let bytes = response.get()?.get_reply_json()?;
-        if bytes.len() > external_moderation::MAX_WIRE_BYTES {
-            return Err(failed("external moderation response exceeds bound".into()));
-        }
-        let case = serde_json::from_slice(bytes).map_err(|e| failed(e.to_string()))?;
-        external_moderation::validate_receipt(command, &case).map_err(failed)?;
-        Ok(case)
     }
 
     /// Open with explicit access through original semantic action custody.

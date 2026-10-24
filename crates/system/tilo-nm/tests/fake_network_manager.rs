@@ -10,7 +10,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tilo_nm::{LinkKind, NetworkState, NmClient, NmConnectivity, NmState, PrimaryLink};
+use tilo_nm::{
+    ActiveState, ActiveVpn, LinkKind, NetworkState, NmClient, NmConnectivity, NmState, PrimaryLink,
+};
 use zbus::connection::Builder;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -18,6 +20,7 @@ use zbus::{Connection, Guid};
 
 const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/7";
 const DEVICE: &str = "/org/freedesktop/NetworkManager/Devices/3";
+const VPN: &str = "/org/freedesktop/NetworkManager/ActiveConnection/9";
 
 struct FakeNm {
     state: u32,
@@ -28,6 +31,7 @@ struct FakeNm {
     check_uri: String,
     checks: Arc<AtomicUsize>,
     devices: Vec<OwnedObjectPath>,
+    active: Vec<OwnedObjectPath>,
 }
 
 #[zbus::interface(name = "org.freedesktop.NetworkManager")]
@@ -67,6 +71,11 @@ impl FakeNm {
         self.devices.clone()
     }
 
+    #[zbus(property)]
+    fn active_connections(&self) -> Vec<OwnedObjectPath> {
+        self.active.clone()
+    }
+
     fn check_connectivity(&mut self) -> u32 {
         self.checks.fetch_add(1, Ordering::SeqCst);
         self.connectivity = 2;
@@ -77,6 +86,9 @@ impl FakeNm {
 struct FakeActive {
     id: String,
     devices: Vec<OwnedObjectPath>,
+    kind: String,
+    uuid: String,
+    state: u32,
 }
 
 #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
@@ -90,6 +102,25 @@ impl FakeActive {
     fn devices(&self) -> Vec<OwnedObjectPath> {
         self.devices.clone()
     }
+
+    #[zbus(property, name = "Type")]
+    fn kind(&self) -> String {
+        self.kind.clone()
+    }
+
+    #[zbus(property)]
+    fn uuid(&self) -> String {
+        self.uuid.clone()
+    }
+
+    #[zbus(property)]
+    fn state(&self) -> u32 {
+        self.state
+    }
+
+    #[zbus(signal, name = "StateChanged")]
+    async fn state_signal(emitter: &SignalEmitter<'_>, state: u32, reason: u32)
+    -> zbus::Result<()>;
 }
 
 struct FakeDevice {
@@ -146,6 +177,7 @@ fn wifi_nm(metered: u32, checks: Arc<AtomicUsize>) -> FakeNm {
         check_uri: "http://check.example/".into(),
         checks,
         devices: vec![path(DEVICE)],
+        active: vec![path(ACTIVE)],
     }
 }
 
@@ -175,6 +207,9 @@ async fn serve_with_wifi(nm: FakeNm, wireless: FakeWireless) -> (Connection, Con
             FakeActive {
                 id: "Home".into(),
                 devices: vec![path(DEVICE)],
+                kind: "802-11-wireless".into(),
+                uuid: "home-uuid".into(),
+                state: 2,
             },
         )
         .unwrap()
@@ -370,4 +405,138 @@ async fn a_refused_or_impossible_wifi_scan_says_why() {
         NmClient::new(client).scan_wifi().await,
         Err(tilo_nm::NmError::NoWifiDevice)
     ));
+}
+
+/// Wi-Fi up and the "Work" VPN in `state`, both active connections.
+async fn serve_vpn(state: u32) -> (Connection, Connection) {
+    let mut nm = wifi_nm(2, Arc::default());
+    nm.active.push(path(VPN));
+    let (server, client) = tokio::net::UnixStream::pair().unwrap();
+    let server = Builder::unix_stream(server)
+        .server(Guid::generate())
+        .unwrap()
+        .p2p()
+        .serve_at(tilo_nm::ROOT_PATH, nm)
+        .unwrap()
+        .serve_at(
+            ACTIVE,
+            FakeActive {
+                id: "Home".into(),
+                devices: vec![path(DEVICE)],
+                kind: "802-11-wireless".into(),
+                uuid: "home-uuid".into(),
+                state: 2,
+            },
+        )
+        .unwrap()
+        .serve_at(
+            VPN,
+            FakeActive {
+                id: "Work".into(),
+                devices: Vec::new(),
+                kind: "vpn".into(),
+                uuid: "work-uuid".into(),
+                state,
+            },
+        )
+        .unwrap()
+        .build();
+    let client = Builder::unix_stream(client).p2p().build();
+    let (server, client) = tokio::join!(server, client);
+    (server.unwrap(), client.unwrap())
+}
+
+/// The VPN goes to `state` for `reason`, signalled as `NetworkManager` does.
+async fn vpn_goes(server: &Connection, state: u32, reason: u32) {
+    let iface = server
+        .object_server()
+        .interface::<_, FakeActive>(VPN)
+        .await
+        .unwrap();
+    iface.get_mut().await.state = state;
+    let emitter = iface.signal_emitter();
+    FakeActive::state_signal(emitter, state, reason)
+        .await
+        .unwrap();
+    iface.get().await.state_changed(emitter).await.unwrap();
+}
+
+/// The VPN's active connection goes away, as `NetworkManager` drops it.
+async fn vpn_gone(server: &Connection) {
+    let iface = server
+        .object_server()
+        .interface::<_, FakeNm>(tilo_nm::ROOT_PATH)
+        .await
+        .unwrap();
+    iface
+        .get_mut()
+        .await
+        .active
+        .retain(|active| active.as_str() != VPN);
+    iface
+        .get()
+        .await
+        .active_connections_changed(iface.signal_emitter())
+        .await
+        .unwrap();
+}
+
+fn work(state: ActiveState) -> Vec<ActiveVpn> {
+    vec![ActiveVpn {
+        uuid: "work-uuid".into(),
+        state,
+    }]
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_vpn_watch_follows_active_vpns_and_counts_turning_off_on_purpose() {
+    let (server, client) = serve_vpn(1).await;
+    let mut watch = NmClient::new(client).watch_vpns().await.unwrap();
+    let first = watch.current();
+    assert!(first.known);
+    assert_eq!(first.active, work(ActiveState::Activating), "only the VPN");
+
+    vpn_goes(&server, 2, 1).await;
+    let mut reading = tilo_test_env::within("the VPN connected", watch.changed())
+        .await
+        .unwrap();
+    while reading.active != work(ActiveState::Activated) {
+        reading = tilo_test_env::within("the VPN connected", watch.changed())
+            .await
+            .unwrap();
+    }
+    assert!(reading.ended_on_purpose.is_empty());
+
+    // Turned off: deactivating, deactivated, gone; counted once.
+    vpn_goes(&server, 3, 2).await;
+    vpn_goes(&server, 4, 2).await;
+    vpn_gone(&server).await;
+    loop {
+        let reading = tilo_test_env::within("the VPN went away", watch.changed())
+            .await
+            .unwrap();
+        if reading.active.is_empty() {
+            assert_eq!(reading.ended_on_purpose.get("work-uuid"), Some(&1));
+            break;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_vpn_that_drops_is_not_counted_as_turned_off() {
+    let (server, client) = serve_vpn(2).await;
+    let mut watch = NmClient::new(client).watch_vpns().await.unwrap();
+    assert_eq!(watch.current().active, work(ActiveState::Activated));
+    // The service stopped (4): not the person's doing.
+    vpn_goes(&server, 4, 4).await;
+    vpn_gone(&server).await;
+    loop {
+        let reading = tilo_test_env::within("the VPN went away", watch.changed())
+            .await
+            .unwrap();
+        if reading.active.is_empty() {
+            assert!(reading.ended_on_purpose.is_empty());
+            break;
+        }
+    }
 }

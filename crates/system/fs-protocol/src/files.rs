@@ -1103,6 +1103,69 @@ impl FileVersionV1 {
     }
 }
 
+/// Most bytes an attribution's actor or label carries.
+pub const MAX_ATTRIBUTION_TEXT_BYTES: usize = 128;
+
+/// Who caused a version when it was not the signing person themselves: a
+/// delegated agent that acted for that person through their session. The
+/// person it acted for is always the version's own `actor.person`, so an
+/// attribution can never name anybody else. The signing device's session
+/// took the agent from its authenticated action context, never from an app,
+/// and the device signature covers it ([`FileVersionAttributionV1`]).
+/// Presentation only: it grants nothing.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileAttributionV1 {
+    /// The acting agent's principal, `agent:<id>`.
+    pub actor: String,
+    /// How the agent is shown.
+    pub label: String,
+    /// The agent's presence colour, sRGB.
+    pub color: [u8; 3],
+}
+
+impl FileAttributionV1 {
+    /// The agent's id: its principal without the `agent:` namespace.
+    #[must_use]
+    pub fn agent_id(&self) -> Option<&str> {
+        self.actor.strip_prefix("agent:")
+    }
+
+    /// Validate a bounded, presentable agent attribution.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileRecordError::InvalidAttribution`] unless the actor is an
+    /// `agent:<id>` principal and both it and the label are non-empty,
+    /// bounded and free of control characters.
+    pub fn validate(&self) -> Result<(), FileRecordError> {
+        let presentable = |text: &str| {
+            !text.trim().is_empty()
+                && text.len() <= MAX_ATTRIBUTION_TEXT_BYTES
+                && !text.chars().any(char::is_control)
+        };
+        if self
+            .agent_id()
+            .is_some_and(|id| presentable(id) && id.trim() == id)
+            && presentable(&self.actor)
+            && presentable(&self.label)
+        {
+            Ok(())
+        } else {
+            Err(FileRecordError::InvalidAttribution)
+        }
+    }
+}
+
+/// The attribution of one version of a record, as the version's own signing
+/// device recorded it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileVersionAttributionV1 {
+    pub version_id: FileVersionId,
+    pub attribution: FileAttributionV1,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum ConflictStatus {
@@ -1333,6 +1396,8 @@ pub enum FileRecordError {
     OpenConflictHasResolution,
     #[error("a resolved conflict requires a resolution")]
     ResolvedConflictNeedsResolution,
+    #[error("a version attribution must name a presentable agent")]
+    InvalidAttribution,
 }
 
 #[cfg(test)]

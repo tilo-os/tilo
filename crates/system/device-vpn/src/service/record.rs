@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{ClientLink, ExitLink};
+use crate::protocol::{ClientLink, ExitLink, ProfileBlock};
 
 /// A client tunnel the helper set up.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -23,11 +23,21 @@ pub struct ExitRecord {
     pub enabled_forwarding: bool,
 }
 
+/// The block of the person's VPN profiles the helper holds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileBlockRecord {
+    /// The person whose shell asked for it.
+    pub owner: u32,
+    pub block: ProfileBlock,
+}
+
 /// Everything the helper has set up.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     pub client: Option<ClientRecord>,
     pub exit: Option<ExitRecord>,
+    #[serde(default)]
+    pub profile_block: Option<ProfileBlockRecord>,
 }
 
 impl Record {

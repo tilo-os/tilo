@@ -43,7 +43,8 @@ account of the caller. Only the compositor of the person at the seat may ask
 sandboxed app does). Every other caller is refused before its request is read.
 
 The protocol is typed and closed: `status`, `open_client`, `close_client`,
-`open_exit`, `close_exit`. A request names addresses, prefixes, ports and
+`open_exit`, `close_exit`, and for the person's VPN profiles
+`hold_profile_block`, `release_profile_block` (see "Profile kill switch"). A request names addresses, prefixes, ports and
 switches, never an interface name, command, path or rule; every value is
 range-checked before use, and the helper builds each `ip`/`nft` invocation
 itself from the checked values. An opened tunnel's TUN descriptor travels back
@@ -160,6 +161,52 @@ follows them and makes the tunnel match.
   `exit_available`), with `exit_users` listed under it, each with Stop, which
   writes `STOP` (`StopRequest::after(previous, device)`).
 
+## Profile kill switch
+
+The person's own `NetworkManager` VPN profiles (WireGuard, OpenVPN, the
+plugin types) each have a kill switch on their page in Settings → Network →
+VPN, off until turned on, with "Allow local network" under it. While a
+profile with the switch on is set to connect and is not connected, nothing
+leaves the computer but through a tunnel, to the profile's servers, and for
+address configuration; the profile's state reads "Blocking traffic".
+
+A profile is set to connect from when `NetworkManager` starts bringing it up
+until the person turns it off on purpose: `NetworkManager` reports it went
+down because the person asked (reason `USER_DISCONNECTED`, from Settings,
+quick settings or `nmcli`) or the profile was removed, or Settings asks to
+lift a profile that is not up (`PROFILE_RELEASE`, its switch turned off while
+blocking). A tunnel that drops, or never comes up, keeps blocking.
+
+The same root helper holds the block, rather than a sibling, so one root
+service owns what the person's session adds to the firewall, behind the one
+seat-peer check, record, housekeeping and reset:
+
+- `hold_profile_block { servers, allow_local }` names at most 16 server
+  addresses (no loopback, multicast or unspecified ones) and one switch; the
+  helper writes an `inet` table `tilo_device_vpn_profile` in one `nft` script
+  that replaces the previous one atomically. Its output and forward hooks
+  accept loopback, interfaces of kind `tun`, `wireguard` or `ppp`, IPsec
+  traffic, DHCP and DHCPv6, ICMPv6 neighbour discovery and MLD, and the
+  servers; with `allow_local` also the private and link-local ranges and
+  local multicast and broadcast. Everything else is rejected
+  (administratively prohibited), so a program fails at once rather than
+  waiting. The block is machine-wide: a VPN profile is the machine's.
+- `release_profile_block` deletes the table. Another account cannot lift or
+  replace a block while its owner is logged in; the block goes when the
+  owner's session ends, and `reset` (at boot and after a crash) lifts one an
+  earlier helper left. The unit restarts on failure.
+
+In the session (`shell/device_vpn/profile_block.rs`) a controller follows
+the choices (`PROFILE_KILL_SWITCHES`, `PROFILE_RELEASE`) and, once any switch
+is on, `NetworkManager`'s active VPNs and their `StateChanged` reasons
+(`tilo_nm::NmClient::watch_vpns`). `device_vpn::profile::Intent` decides
+what blocks; the servers of a profile are read from its settings (WireGuard
+peers' endpoints, a plugin's `remote`/`gateway`) and resolved when it starts
+connecting, while traffic still flows. A block the helper refused is asked
+for again with backoff, and `DeviceVpnStatus.profile_block` tells Settings
+what blocks and whether blocking failed. A new shell lifts a block the last
+one left unless its profile is up again.
+
 ## Tests
 
 - The helper's decisions against a fake backend (`service/tests.rs`): another
@@ -176,6 +223,16 @@ follows them and makes the tunnel match.
   `ip`, `nft` and user namespaces unless `TILO_REQUIRE_TUN=1`; t's
   `device-vpn-namespaces` check provides them.
 - The controller's kill switch and refusal handling (`controller.rs`).
+- The profile kill switch: the decisions (`profile.rs`), the nftables script
+  (`service/plan.rs`), and the helper holding, replacing, lifting and
+  refusing blocks (`service/tests.rs`); in a user and network namespace on
+  the Linux backend (`tests/netns_profile_block.rs`, in
+  `device-vpn-namespaces`), the block coming and going with the profile's
+  state as checked by real sends, a caller other than the seat's shell
+  refused through the real socket server, and a block left by a helper that
+  aborted lifted by the next one's reset and by housekeeping. Settings tests
+  cover the switch, the `set-kill-switch` action, the blocking state and
+  the release (`apps/settings/.../tests/vpn_kill_switch.rs`).
 
 ## Limits
 
@@ -185,6 +242,13 @@ follows them and makes the tunnel match.
 - The carrier exemption names the relays' addresses at connect time. If a
   relay moves to another address mid-session, the relay path stops until the
   next reconnect (the direct path is unaffected).
+- A profile kill switch lets through the servers' addresses as resolved
+  when the profile started connecting. While it blocks, DNS goes nowhere
+  unless the resolver is on an allowed local network, so a server that moves
+  to another address is reached only after the person turns the profile off
+  and on.
+- A profile that blocks while it is down has nothing for `nmcli` to take
+  down: only turning it off in Settings (or its kill switch) lifts the block.
 - Traffic of other accounts on the client, and of system services, does not
   go through the tunnel; DNS through the exit applies to the whole machine,
   since NetworkManager's resolver is shared.
