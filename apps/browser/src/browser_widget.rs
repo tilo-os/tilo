@@ -2363,7 +2363,7 @@ impl BrowserWidget {
 
         let candidate =
             if !input.chars().any(char::is_whitespace) && looks_like_bare_web_host(input) {
-                format!("https://{input}")
+                omnibox::address_target(input)
             } else {
                 search_url(&self.settings.search_engine, input)
             };
@@ -8943,9 +8943,10 @@ mod tests {
         {
             let mut w = BrowserWidget::with_engine(TestEngine::new(), true);
             for (input, expected) in [
-                ("localhost:3000", "https://localhost:3000"),
-                ("127.0.0.1:8080", "https://127.0.0.1:8080"),
-                ("[::1]:8443", "https://[::1]:8443"),
+                ("localhost:3000", "http://localhost:3000"),
+                ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+                ("[::1]:8443", "http://[::1]:8443"),
+                ("example.com", "https://example.com"),
             ] {
                 assert_eq!(w.navigation_target(input).unwrap(), expected);
             }
