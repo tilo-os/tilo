@@ -250,7 +250,7 @@ pub enum LayerPolicy {
     /// Every frame the layers can express.
     #[default]
     Always,
-    /// Only while a strip pans, and [`PAN_LINGER_FRAMES`] frames after it
+    /// Only while a strip pans, and `PAN_LINGER_FRAMES` frames after it
     /// stops. A frame at rest keeps its screen-space damage, so typing or a
     /// hover repaints what it changed, not a layer.
     WhilePanning,
@@ -4220,7 +4220,7 @@ impl FrameBuilder {
     }
 
     /// Where the room of the workspace holding `app_id`'s window stands
-    /// with its host ([`crate::shell::room_sync`]); `None` for a workspace
+    /// with its host (`crate::shell::room_sync`); `None` for a workspace
     /// that syncs with no host.
     #[must_use]
     pub fn room_sync_for_app(&self, app_id: &str) -> Option<ui::room_sync::RoomSync> {

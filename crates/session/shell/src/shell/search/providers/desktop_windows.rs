@@ -393,7 +393,7 @@ impl SearchProvider for DesktopWindowsProvider {
     }
 
     /// An address is looked up in the whole topology. The empty query's
-    /// first page holds [`ui::search::SearchBudget::PALETTE`] rows, fewer
+    /// first page holds [`ui::search::system::SearchBudget::PALETTE`] rows, fewer
     /// than a long session has window actions, so resolving through it left
     /// `group.close` for the focused window `unknown_action` (A07).
     fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {

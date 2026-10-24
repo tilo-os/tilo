@@ -1807,7 +1807,7 @@ fn fabric_output_pending() -> bool {
 }
 
 /// Stateful, low-frequency fabric pump; the native compositor runs it on a
-/// thread of its own ([`spawn_worker`]).
+/// thread of its own (`spawn_worker`).
 pub struct DeviceFabricRuntime {
     counter: u64,
     last_sample: Option<Instant>,

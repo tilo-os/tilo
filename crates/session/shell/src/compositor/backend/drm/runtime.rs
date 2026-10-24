@@ -263,9 +263,9 @@ pub struct DrmDispatchState {
     connector_prober: Option<ConnectorProbeWorker>,
     /// Set by whoever owns the scanouts while an output's link is still
     /// changing (a nonblocking modeset or its vblank proof in flight,
-    /// [`super::output_link`]). Its completion arrives as a page-flip event
+    /// `super::output_link`). Its completion arrives as a page-flip event
     /// that only a presented frame reads, so while this is set each event
-    /// on a card asks the compositor for a frame ([`Self::watch_card`]).
+    /// on a card asks the compositor for a frame (`Self::watch_card`).
     pub kms_link_busy: Arc<std::sync::atomic::AtomicBool>,
     /// Connected outputs that could not be lit, and why. They stay dark,
     /// committed no more, until the connector reports another sink (or
@@ -377,7 +377,7 @@ pub struct DrmDispatchState {
     /// Receiving end of the presenter's signalling reports.
     pub signal_reports: Option<Receiver<SignalReport>>,
     /// What each output's primary plane offers fullscreen clients, as the
-    /// presenter last learned it ([`super::client_scanout::ClientPlanes`]).
+    /// presenter last learned it (`super::client_scanout::ClientPlanes`).
     pub client_planes: super::client_scanout::ClientPlanes,
 }
 

@@ -1951,7 +1951,7 @@ impl ChromeState {
     /// Never wait on the disk to open or create a tab's record: this runs on
     /// the compositor's loop, where a `mkdir` stuck behind the journal froze
     /// the desktop. The store's own thread opens the document; a tab asks
-    /// again once `wake` reports it done (see [`Self::retry_new_tab_records`]).
+    /// again once `wake` reports it done (see `Self::retry_new_tab_records`).
     pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
         self.records_wake = Some(RecordsWake(wake));
         self.install_records_wake();
@@ -3630,7 +3630,7 @@ impl ChromeState {
         true
     }
 
-    /// Enforces the [`MAX_NOTIFICATIONS`] cap. While
+    /// Enforces the [`tilo_desktop::notifications::MAX_NOTIFICATIONS`] cap. While
     /// [`Self::notifications_quiet`], goes straight to history instead of a
     /// banner, unless it carries [`Notification::bypass_dnd`] (shell-only;
     /// D-Bus can't set it).

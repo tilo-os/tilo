@@ -62,7 +62,7 @@ impl BarStanding {
     }
 }
 
-/// The desktop's bar: every bar control is [`BAR_CONTROL_PX`] (24) with an
+/// The desktop's bar: every bar control is `BAR_CONTROL_PX` (24) with an
 /// `s1` of air above and below, so the bar is 32 logical pixels (64 at scale
 /// 2). At 24 it read cramped and out of balance with the windows' bars
 /// below it. The controls are the design system's bar control
@@ -673,7 +673,7 @@ pub struct TopBarChrome {
     people_left_x: f64,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
-    /// "Continue <app> from <device>": the offer, and its dismiss chip.
+    /// "Continue \<app\> from \<device\>": the offer, and its dismiss chip.
     continuity_rect: Rect,
     continuity_dismiss_rect: Rect,
     /// The ask open beside the own avatar: its pill and its two choices.

@@ -866,7 +866,7 @@ pub struct WorkspaceTree {
     /// re-projected from the cache after a restart.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
-    /// Each room's documents that a base replaced ([`room_bases`]).
+    /// Each room's documents that a base replaced (`room_bases`).
     #[serde(skip, default)]
     pub room_archives: HashMap<RoomId, Vec<Vec<u8>>>,
     /// Who may write each room's governance — see [`RoomAuthority`]. A
@@ -956,7 +956,7 @@ pub struct WorkspaceTree {
     /// workspace made for the join: from the moment the join starts until
     /// the room's replica installs here. Such a workspace says Joining… and
     /// nothing is written into it; it is routed to the native owner
-    /// ([`Self::requires_native_owner`]), never governed here meanwhile. A
+    /// (`Self::requires_native_owner`), never governed here meanwhile. A
     /// join that failed stays, for the person to try again.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub joining_rooms: BTreeSet<RoomId>,
@@ -1535,7 +1535,7 @@ impl WorkspaceTree {
 
     /// Who may write `room`'s governance. No recorded authority means
     /// this machine minted the room and governs it; joining another's
-    /// room ([`Self::set_room`]) records [`RoomAuthority::Unpinned`],
+    /// room ([`Self::join_room`]) records [`RoomAuthority::Unpinned`],
     /// pinned to the named owner on invite accept
     /// ([`Self::pin_room_authority`]). Until then the room refuses every
     /// governance change.
@@ -2822,7 +2822,7 @@ impl WorkspaceTree {
     /// receipts are immutable, coverage and durable receipts never rewind and
     /// the media policy is consistent. This function adds only what is this
     /// machine's own storage: binding a media policy to the pinned device
-    /// ([`Self::media_authority_admitted`]), the receipts already projected
+    /// (`Self::media_authority_admitted`), the receipts already projected
     /// into the workspace, and the projection itself.
     ///
     /// Refusal is of the **whole batch**: a partial merge would advance
@@ -4830,7 +4830,7 @@ impl WorkspaceTree {
     ///
     /// A workspace the native owner holds or is joining is not deleted here:
     /// its room goes with it through the owner
-    /// ([`super::native_workspace_owner::release_workspace_room`]), so a
+    /// (`super::native_workspace_owner::release_workspace_room`), so a
     /// workspace and its room never part.
     pub fn delete_workspace(&mut self, id: WorkspaceId) -> Option<(usize, Workspace)> {
         if self.desktop.workspaces.len() < 2 {

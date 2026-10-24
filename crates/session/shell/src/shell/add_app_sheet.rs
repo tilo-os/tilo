@@ -1,4 +1,4 @@
-//! "Add <name> to apps?": asked once, the first time a downloaded program
+//! "Add \<name\> to apps?": asked once, the first time a downloaded program
 //! runs ([`crate::shell::downloaded_apps`]). The program has already
 //! started; the question only decides whether it gets an entry in the
 //! person's apps.

@@ -97,7 +97,7 @@ fn child(doc: &AutoCommit, parent: &ObjId, key: &str) -> Option<ObjId> {
     doc.get(parent, key).ok().flatten().map(|(_, id)| id)
 }
 
-/// An application a desktop can open, as launchers and "Open <App>" actions
+/// An application a desktop can open, as launchers and "Open \<App\>" actions
 /// name it: its durable app id and display title.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpenableApp {

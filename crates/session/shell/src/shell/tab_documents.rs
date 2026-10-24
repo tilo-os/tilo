@@ -6,7 +6,7 @@
 //!
 //! The unit is the **record** ([`ui::record`]): a type, a stable identity
 //! and a home room, with one Automerge document each. A tab showing a file
-//! is that file's record, via [`ui::widget::Widget::record_intent`]. A
+//! is that file's record, via [`ui::record::capability::RecordScoped::record_intent`]. A
 //! scratch tab has no file to be named by, so it is named by the tab that
 //! holds it — the tab id, minted once, salted per peer, and persisted with
 //! the workspace tree.

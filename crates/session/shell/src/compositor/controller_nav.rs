@@ -48,7 +48,7 @@ const TRIGGER_PRESS: i16 = 16_000;
 const TRIGGER_RELEASE: i16 = 8_000;
 /// A held direction waits this long before repeating…
 pub const REPEAT_DELAY: Duration = Duration::from_millis(380);
-/// …then repeats at this interval, shortening by [`REPEAT_ACCELERATION`]
+/// …then repeats at this interval, shortening by `REPEAT_ACCELERATION`
 /// per step down to [`REPEAT_FASTEST`], so long lists stay reachable.
 pub const REPEAT_FIRST: Duration = Duration::from_millis(160);
 pub const REPEAT_FASTEST: Duration = Duration::from_millis(45);

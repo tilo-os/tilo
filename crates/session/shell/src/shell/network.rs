@@ -2805,7 +2805,7 @@ impl ShellNetwork {
     /// Send one window's stream traffic on `workspace_topic` to exactly
     /// `viewers` (peer handles) over the direct media route, and to nobody
     /// else in the room; a room's window carrier among them carries it,
-    /// sealed, through the room's relay ([`room_window_carriers`]).
+    /// sealed, through the room's relay (`room_window_carriers`).
     pub fn publish_legacy_to(
         &self,
         workspace_topic: u64,
@@ -3542,7 +3542,7 @@ impl ShellNetwork {
     /// where browsers and agents draw it: the pointer and caret in the
     /// record, under this person's name. It is presence inside a shared
     /// resource, so "That I'm here" lets it out as it does over the room's
-    /// presence channel ([`visibility_allows`]).
+    /// presence channel (`visibility_allows`).
     pub fn publish_live_presence(
         &self,
         app_id: &str,
@@ -4584,7 +4584,7 @@ impl ShellNetwork {
 
     /// Reload newly approved same-identity home peers, reading the files here
     /// and waiting for the disk. The compositor's loop does not call this: its
-    /// refresh reads them on a worker ([`Self::refresh_home_peer_hosts_periodically`]).
+    /// refresh reads them on a worker (`Self::refresh_home_peer_hosts_periodically`).
     pub fn refresh_home_peer_hosts(&self) -> bool {
         self.apply_home_peer_inputs(&HomePeerInputs::read())
     }
@@ -7024,7 +7024,7 @@ impl ShellNetwork {
 
     /// [`Self::tick`] for the compositor's frame loop, which must never wait
     /// for the state file: signed relay input is admitted on a worker
-    /// ([`native_admission`]), and no later event is handled until that
+    /// (`native_admission`), and no later event is handled until that
     /// admission's remainder ran here.
     pub fn frame_tick(&self) {
         self.tick_with(Admission::OffLoop, &mut TurnSteps::default());

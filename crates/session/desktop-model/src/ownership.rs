@@ -18,7 +18,7 @@
 //!
 //! [`foreign_acts`] names what one desktop value did to another's strips
 //! and windows that its writer did not make. A relay decides every write of
-//! a shared desktop with it, and a desktop asks [`may_rearrange`] before it
+//! a shared desktop with it, and a desktop asks [`crate::commands::policy::may_rearrange_window`] before it
 //! offers to close or move a window, so the offer and the decision agree.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};

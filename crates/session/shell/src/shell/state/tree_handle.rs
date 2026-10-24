@@ -197,7 +197,7 @@ impl WorkspaceTreeHandle {
         }))
     }
 
-    /// Shared read access. A wait of [`SLOW_TREE_WAIT`] or more is reported
+    /// Shared read access. A wait of `SLOW_TREE_WAIT` or more is reported
     /// with the writer that held the tree.
     ///
     /// Reads are recursive: a thread already reading the tree reads it again

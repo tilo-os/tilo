@@ -320,7 +320,7 @@ pub enum NetCmd {
     },
     /// A neighbour on `ws` sent something this device cannot place without
     /// the neighbour's identity: announce this device's own, which the
-    /// neighbour answers with its ([`IDENTITY_ANSWER_INTERVAL`]).
+    /// neighbour answers with its (`IDENTITY_ANSWER_INTERVAL`).
     AnnounceIdentity {
         ws: WorkspaceId,
     },
@@ -1134,7 +1134,7 @@ impl Actor {
     /// [`Self::spawn_reporting_addrs`] for an endpoint whose relays wait in
     /// `reachability` until something needs this device reachable: the
     /// actor wakes them when it dials a remote party or one reaches it
-    /// ([`remote_party_command`], [`remote_party_event`]).
+    /// (`remote_party_command`, `remote_party_event`).
     pub fn spawn_deferring_relays(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -4469,7 +4469,7 @@ fn broadcast_config() -> iroh_gossip::proto::PlumtreeConfig {
 }
 
 /// The QUIC transport collaboration endpoints use: iroh's, with the
-/// connection ending after [`PEER_TIMEOUT`] without a packet from the peer
+/// connection ending after `PEER_TIMEOUT` without a packet from the peer
 /// rather than iroh's 30 s. iroh's keep-alives (one after 5 s of silence)
 /// keep a live peer's connection from ever idling; a peer that vanished
 /// misses three and its links go down. This is the liveness check the

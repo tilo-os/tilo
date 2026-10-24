@@ -1,7 +1,7 @@
 //! The questions about the person's apps as the shell hosts them, one at a
 //! time, modal above the desktop, their answers carried out on a worker:
-//! "Uninstall <name>?" ([`crate::shell::uninstall_sheet`]), asked for
-//! through [`crate::shell::app_list::ask`], and "Add <name> to apps?"
+//! "Uninstall \<name\>?" ([`crate::shell::uninstall_sheet`]), asked for
+//! through [`crate::shell::app_list::ask`], and "Add \<name\> to apps?"
 //! ([`crate::shell::add_app_sheet`]), asked the first time a downloaded
 //! program runs ([`crate::shell::downloaded_apps::take_ask`]).
 
@@ -38,7 +38,7 @@ impl AppSheet {
 }
 
 impl ShellOverlayHost {
-    /// Whether "Uninstall <name>?" is up.
+    /// Whether "Uninstall \<name\>?" is up.
     pub fn uninstall_sheet_open(&self) -> bool {
         matches!(self.app_sheet, Some(AppSheet::Uninstall(_)))
     }
@@ -51,7 +51,7 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The "Add <name> to apps?" sheet on screen, for tests and captures.
+    /// The "Add \<name\> to apps?" sheet on screen, for tests and captures.
     pub fn add_app_sheet(&self) -> Option<&add_app_sheet::Asking> {
         match &self.app_sheet {
             Some(AppSheet::Add(asking)) => Some(asking),

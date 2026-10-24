@@ -232,7 +232,7 @@ pub fn follow_moves() {
 /// a caller that must see its own change.
 ///
 /// Every window reaches this worker through the X11 tracer's queue
-/// ([`crate::compositor::x11_windows`]), so the wait goes through that
+/// (`crate::compositor::x11_windows`), so the wait goes through that
 /// queue first: a window that named itself before this call has been
 /// looked at when it returns.
 pub fn settle(wait: Duration) -> bool {

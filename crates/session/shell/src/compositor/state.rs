@@ -6102,7 +6102,7 @@ impl State {
     /// while the window it serves is protected.
     ///
     /// Re-derived only when something it depends on changed since the last
-    /// pass (see [`CaptureProtectionInputs`]); otherwise a wakeup takes
+    /// pass (see `CaptureProtectionInputs`); otherwise a wakeup takes
     /// neither the tree lock nor the store's protection lock.
     pub fn sync_capture_protection(&mut self) {
         let secret_field = self.active_field_content_type().is_sensitive();
@@ -6283,7 +6283,7 @@ impl State {
             .collect()
     }
 
-    /// [`Self::input_method_popup_surfaces`] for integration tests.
+    /// `Self::input_method_popup_surfaces` for integration tests.
     pub fn input_method_popup_surfaces_for_tests(&self) -> Vec<(SurfaceId, Rect)> {
         self.input_method_popup_surfaces()
     }

@@ -1008,7 +1008,7 @@ pub struct ShellOverlayHost {
     /// The invite, join and pairing sheet's node while it is up.
     peer_sync_node: Option<NodeId>,
     /// The question about one of the person's apps on screen, "Uninstall
-    /// <name>?" or "Add <name> to apps?" ([`app_sheets`]).
+    /// \<name\>?" or "Add \<name\> to apps?" ([`app_sheets`]).
     app_sheet: Option<app_sheets::AppSheet>,
     /// The sheet's window node and its own, while it is laid out.
     app_sheet_nodes: Option<(NodeId, NodeId)>,

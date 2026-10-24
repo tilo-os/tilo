@@ -8,7 +8,7 @@ use super::*;
 
 impl ShellOverlayHost {
     /// Override where the band under the top bar begins
-    /// ([`CHROME_TOP_OFFSET_PX`] by default).
+    /// (`CHROME_TOP_OFFSET_PX` by default).
     #[must_use]
     pub fn with_chrome_top(mut self, y: f32) -> Self {
         self.chrome_top_y = y;

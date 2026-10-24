@@ -202,7 +202,7 @@ impl NotificationStack {
     }
 
     /// Whether the person holds the banners: keyboard focus is in the
-    /// stack, or the pointer reaches for it ([`Self::pointer_holds`]).
+    /// stack, or the pointer reaches for it (`Self::pointer_holds`).
     /// Held banners do not age.
     pub fn held(&self) -> bool {
         self.held_at(ui::time::now())
