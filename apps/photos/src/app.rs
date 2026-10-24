@@ -1184,6 +1184,11 @@ impl PhotosApp {
         let Some(scenario) = self.staged.take() else {
             return;
         };
+        // A capture is of the content, on a window that shows one column
+        // at a time too.
+        if let Some(bar) = &self.chrome.bar {
+            bar.stage_pane(ui::widget::NavPane::Content);
+        }
         self.open_photo = crate::sample::opened(&scenario);
         // A scenario that names a photograph shows it; the library views
         // below switch back to the library themselves.
