@@ -118,7 +118,7 @@ cmd_seal() {
   boot() {
     install_disk localhost/tilo:release || { echo 'FAIL  the image does not install onto a disk'; return 1; }
     export TILO_DISK=$scratch/boot-output/qcow2/disk.qcow2 TILO_RUN=$scratch/boot-run TILO_VM_ARCH=$arch \
-      TILO_MEM=6144 TILO_SMP=4 TILO_BOOT_WAIT_ATTEMPTS=150 TILO_DISTROBOX=
+      TILO_MEM=6144 TILO_SMP=4 TILO_BOOT_WAIT_SECS=420 TILO_DISTROBOX=
     bash os/dev/vm.sh boot --2d || { echo 'FAIL  the VM does not start'; return 1; }
     local booted=0
     bash os/dev/vm.sh wait && booted=1

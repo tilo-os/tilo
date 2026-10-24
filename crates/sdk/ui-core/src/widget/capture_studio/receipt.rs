@@ -75,7 +75,7 @@ impl ReceiptAction {
             .collect()
     }
 
-    fn label(self) -> String {
+    pub(super) fn label(self) -> String {
         studio_text(match self {
             Self::Copy => "widget-screenshot-copy",
             Self::Edit => "widget-screenshot-edit",
