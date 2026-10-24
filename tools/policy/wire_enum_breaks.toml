@@ -8,3 +8,7 @@
 # enum = "Name"
 # reason = "why no stored or sent bytes depend on its variant positions"
 
+[[break]]
+file = "crates/collab/tilo-peer-state/src/workspace_membership.rs"
+enum = "WorkspaceMembershipCommand"
+reason = "puts the retired task grant commands back at their places: rooms and relays hold these commands, and the digests of their administration requests, in the encoding from before their removal"
