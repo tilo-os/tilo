@@ -12,6 +12,7 @@
 //! | [`CrossFade`] | swapping content in place |
 //! | [`ListChange`] | rows arriving, leaving and changing places |
 //! | [`Snap`] | carousels and paged strips settling on a detent |
+//! | [`ScrollTo`] | a scroll view going to what it was asked to show (find next, a revealed row) |
 //! | [`Zoom`] | one thing becoming another (window and overview card) |
 //! | [`WindowMotion`] | windows opening, closing and moving on the strip |
 //! | [`Ambient`] | chrome that comes back on its own (desk widgets) |
@@ -51,6 +52,7 @@ mod kept;
 mod named;
 mod pose;
 mod presence;
+mod scroll_to;
 mod source;
 mod spec;
 mod spring;
@@ -72,6 +74,7 @@ pub use named::{
 };
 pub use pose::Pose;
 pub use presence::Presence;
+pub use scroll_to::{ScrollJump, ScrollTo};
 pub use source::{input_source, note_input, note_source, recent_input, source_of};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
 pub use spring::SpringSpec;
