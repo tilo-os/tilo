@@ -21,8 +21,9 @@ enforces the budgets in these places:
   runtime (docs/measurements/runtime-size.md). The push gate runs the aarch64 one of each app whose
   files a commit changes, when t has the commit's shared runtime built; main keeps it built for
   its newest head (`thin-runtime-<arch>` runs `idle`). A commit that changes what the runtime is
-  built from skips it, says so and records the skip; run the ones you need before you push. `tools/ci/t_toml.py` generates one per app of the default
-  collection, so a new app has its own.
+  built from, or more than three apps, skips it and says so; run the ones you need before you
+  push. `tools/ci/t_toml.py` generates one per app of the default collection, so a new app has
+  its own.
 - **The whole collection** (`app-sizes-x86_64`, `app-sizes-aarch64` in t) compiles the
   default collection as a release does, packages it with throwaway keys
   (`tools/apps/t-release.sh sizes`) and holds every tapp and the runtime to its budget. It runs

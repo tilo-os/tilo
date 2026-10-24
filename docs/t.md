@@ -42,9 +42,9 @@ python3 tools/dev/install-git-hooks.py
   - clippy of the packages whose files it changes, not of their dependents;
   - the aarch64 size check of each app whose files it changes (`app-size/<app>-aarch64`), about a
     minute, when t has the commit's shared runtime built (main keeps it built, `idle`). A commit
-    that changes what the runtime is built from (the toolkit, the SDK) skips it, says so and
-    records the skip in `.git/t-gate-size-skips`; main's whole-collection size gate holds it to
-    the budgets.
+    that changes what the runtime is built from (the toolkit, the SDK) or more than three apps
+    skips it and says so; main's whole-collection size gate holds it to the budgets. Each
+    push's decision, checked or skipped, is recorded in `.git/t-gate-sizes`.
 
   No tests, VM checks, images, suites or dependents: `main` runs those on every commit, or on
   its newest head (below), and tells the commit that broke one. The hook also prints the
