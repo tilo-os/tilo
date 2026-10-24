@@ -1123,8 +1123,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       visible_=d->GetBool("visible");
       credential_document_.SetVisible(visible_);
       if(!visible_) CancelCredentialRequests();
+      // Its open page menu is answered before it hides: Chromium hiding a
+      // page whose menu is answered afterwards takes the host down.
+      if(!visible_) CancelMenu();
       host->WasHidden(!visible_);host->SetFocus(visible_);page_focused_=visible_;
-      if(!visible_ && context_callback_) context_callback_->Cancel();
       if(visible_) {
         host->Invalidate(PET_VIEW);
         // A background load may have completed without an eligible handshake.
@@ -1532,8 +1534,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // cannot displace accepted work even while earlier owners await destruction.
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
+    CancelMenu();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
-    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
+    capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
   }
  private:
   struct CredentialPending {
