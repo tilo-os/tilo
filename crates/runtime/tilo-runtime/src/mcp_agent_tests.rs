@@ -46,6 +46,9 @@ struct Notes {
     /// Whether Sheets runs too, its directory never answering: the answers
     /// it was asked for are held here, unanswered.
     silent: Arc<Mutex<Option<Vec<Unanswered>>>>,
+    /// Lines in each of the two pages the Todo note reads in, when it is a
+    /// long one: the notebook's read then takes a cursor.
+    long: Arc<Mutex<Option<usize>>>,
 }
 
 /// A directory answer that is never given.
@@ -61,6 +64,7 @@ impl Notes {
             search_page: Arc::default(),
             asked: Arc::default(),
             silent: Arc::default(),
+            long: Arc::default(),
         }
     }
 
@@ -194,6 +198,7 @@ impl Notes {
                 ActionParam::optional(name, ParamType::Text, "Text")
             }
         };
+        let long = self.long.lock().unwrap().is_some();
         let mut rows = vec![
             self.row("", NOTEBOOK, "notes.notebook", "Notebook", None, true),
             self.row("", TODO_BODY, "tilo.rich-text", "Todo", None, false),
@@ -211,7 +216,16 @@ impl Notes {
                 NOTEBOOK,
                 "notes.notebook",
                 "Notebook",
-                Some(("read", "Read", vec![text("item", false)], View)),
+                Some((
+                    "read",
+                    "Read",
+                    if long {
+                        vec![text("item", false), text("cursor", false)]
+                    } else {
+                        vec![text("item", false)]
+                    },
+                    View,
+                )),
                 false,
             ),
             self.row(NOTEBOOK, TODO, "notes.page", "Todo", None, true),
@@ -480,6 +494,7 @@ impl ActionHost for Notes {
                 ..tilo_actions::ActionOutput::default()
             },
         };
+        let long = *self.long.lock().unwrap();
         let update = match action.as_str() {
             "slow" => InvocationUpdate::Accepted { invocation: *id },
             "rename" if !arguments.contains_key("title") => {
@@ -494,7 +509,13 @@ impl ActionHost for Notes {
                     ],
                     "tags": [],
                 }))),
-                Some(TODO) => succeeded(Some(todo_page())),
+                Some(TODO) => match long {
+                    Some(lines) => {
+                        let cursor = arguments.get("cursor").and_then(Value::as_str);
+                        succeeded(Some(long_page(lines, cursor)))
+                    }
+                    None => succeeded(Some(todo_page())),
+                },
                 Some(other) => failed("not_found", &format!("no note `{other}`")),
             },
             "append-paragraph" => succeeded(Some(json!({"block": "b9", "note": null}))),
@@ -529,6 +550,23 @@ fn todo_page() -> Value {
             {"id": "b4", "kind": {"heading": 2}, "text": "Later"},
         ],
     })
+}
+
+/// A page of a long Todo note, as Notes answers it: `lines` lines of the
+/// first half, with the cursor to the second, or of the second half when
+/// `cursor` asks for it.
+fn long_page(lines: usize, cursor: Option<&str>) -> Value {
+    let half = usize::from(cursor == Some("second"));
+    let markdown = (0..lines)
+        .map(|line| format!("- [ ] item {half}-{line:03} ^h{half}l{line:03}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut page =
+        json!({"kind": "notes.page", "item": TODO, "title": "Todo", "markdown": markdown});
+    if half == 0 {
+        page["nextCursor"] = json!("second");
+    }
+    page
 }
 
 fn run<F: std::future::Future>(future: F) -> F::Output {
@@ -1036,6 +1074,32 @@ fn a_search_ranks_apps_then_resources_then_actions_and_lists_ready_paths() {
     });
 }
 
+/// A search narrows to an app by the name `tilo_ls` lists or by its whole
+/// id, and an app that is not there is an error naming the ones that are,
+/// never an empty search.
+#[test]
+fn a_search_narrows_to_an_app_by_name_or_id_and_names_the_apps_when_none_is() {
+    let host = Notes::new(true);
+    run(async {
+        let query = |app: &str| json!({"query": "append paragraph", "app": app});
+        let (by_name, failed) = tool(&agent(&host), "tilo_find", query("notes")).await;
+        assert!(!failed, "{by_name}");
+        assert!(
+            by_name
+                .lines()
+                .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+            "{by_name}"
+        );
+        for app in [APP, "SO.TILO.NOTES", " Notes "] {
+            let (text, failed) = tool(&agent(&host), "tilo_find", query(app)).await;
+            assert_eq!((text.as_str(), failed), (by_name.as_str(), false), "{app}");
+        }
+        let (text, failed) = tool(&agent(&host), "tilo_find", query("so.tilo.nope")).await;
+        assert!(failed, "{text}");
+        assert_eq!(text, "no app so.tilo.nope; the apps: notes, sheets");
+    });
+}
+
 /// A name searched whole is found even where its longest word fills more
 /// pages than a search reads: "paragraph" names both bodies' append and
 /// insert, and the second page is gone by the time it is asked for.
@@ -1085,6 +1149,96 @@ fn a_read_is_cut_at_a_line_and_says_how_much_is_left() {
     assert!(text.lines().all(|line| line.starts_with("line ")));
     let mut short = "a\nb".to_owned();
     assert_eq!(cut_at_line(&mut short, 200), None);
+}
+
+/// A read cut at `max_chars` ends in a cursor, and following the cursors
+/// answers the rest of the note once and in order, across the page the app
+/// itself paged to.
+#[test]
+fn a_cut_read_continues_from_its_cursor_through_the_apps_own_pages() {
+    let host = Notes::new(true);
+    *host.long.lock().unwrap() = Some(40);
+    run(async {
+        let mut cursor: Option<String> = None;
+        let mut read: Vec<String> = Vec::new();
+        let mut cursors: Vec<String> = Vec::new();
+        for _ in 0..40 {
+            let mut args = json!({"path": "notes/Todo", "max_chars": 200});
+            if let Some(cursor) = &cursor {
+                args["cursor"] = json!(cursor);
+            }
+            let (text, failed) = tool(&agent(&host), "tilo_read", args).await;
+            assert!(!failed, "{text}");
+            let (body, last) = text.rsplit_once('\n').unwrap_or((text.as_str(), ""));
+            cursor = last
+                .split_once("cursor \"")
+                .and_then(|(_, rest)| rest.strip_suffix('"'))
+                .map(str::to_owned);
+            let body = if cursor.is_some() {
+                body
+            } else {
+                text.as_str()
+            };
+            assert!(body.chars().count() <= 200, "{text}");
+            read.extend(
+                body.lines()
+                    .filter(|line| line.starts_with("- [ ]"))
+                    .map(str::to_owned),
+            );
+            match &cursor {
+                Some(next) => cursors.push(next.clone()),
+                None => break,
+            }
+        }
+        assert!(
+            cursor.is_none(),
+            "still a cursor after 40 reads: {cursors:?}"
+        );
+        let expected: Vec<String> = (0..2)
+            .flat_map(|half| {
+                (0..40).map(move |line| format!("- [ ] item {half}-{line:03} ^h{half}l{line:03}"))
+            })
+            .collect();
+        assert_eq!(read, expected, "cursors: {cursors:?}");
+        assert!(
+            cursors.iter().any(|cursor| cursor == "second"),
+            "{cursors:?}"
+        );
+        assert!(
+            cursors
+                .iter()
+                .any(|cursor| cursor.starts_with("read+") && cursor.ends_with("+second")),
+            "a cut of the app's second page keeps its cursor: {cursors:?}"
+        );
+        // The app is asked for its second page by its own cursor, never by one
+        // of the door's.
+        for (_, action, arguments) in host.invoked() {
+            if action == "read" {
+                let asked = arguments.get("cursor").and_then(Value::as_str);
+                assert!(asked.is_none_or(|asked| asked == "second"), "{arguments}");
+            }
+        }
+    });
+}
+
+#[test]
+fn a_read_cursor_names_what_was_answered_and_the_apps_cursor() {
+    assert_eq!(
+        parse_read_cursor(&read_cursor(120, None)),
+        Some((120, None))
+    );
+    assert_eq!(
+        parse_read_cursor(&read_cursor(7, Some("a+b"))),
+        Some((7, Some("a+b".to_owned())))
+    );
+    assert_eq!(parse_read_cursor("second"), None);
+    assert_eq!(parse_read_cursor("read+x"), None);
+    let mut text = "one\ntwo\nthree".to_owned();
+    assert_eq!(skip_answered(&mut text, 3), 4, "the line break goes too");
+    assert_eq!(text, "two\nthree");
+    let mut short = "ab".to_owned();
+    assert_eq!(skip_answered(&mut short, 10), 2);
+    assert_eq!(short, "");
 }
 
 #[test]
@@ -1141,14 +1295,55 @@ fn a_level_read_across_a_moving_directory_starts_again_at_the_new_revision() {
 }
 
 /// A directory that never holds still for one read is reported, once the
-/// time an action is waited for has passed.
+/// time an action is waited for has passed, and is read again with a pause
+/// that grows rather than as fast as it answers.
 #[test]
 fn a_directory_that_never_holds_still_is_reported() {
     let moving = Notes::new(true);
     *moving.moves.lock().unwrap() = u32::MAX;
-    let (text, failed) = run(tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})));
+    let (text, failed, waited) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(async {
+            let started = tokio::time::Instant::now();
+            let (text, failed) = tool(&agent(&moving), "tilo_ls", json!({"path": "notes"})).await;
+            (text, failed, started.elapsed())
+        });
     assert!(failed, "{text}");
     assert!(text.contains("kept changing"), "{text}");
+    assert!(
+        waited >= std::time::Duration::from_millis(DEFAULT_WAIT_MS),
+        "gave up after {waited:?}"
+    );
+    let reads = u32::MAX.saturating_sub(*moving.moves.lock().unwrap());
+    assert!(
+        (20..=50).contains(&reads),
+        "read {reads} times in {waited:?}"
+    );
+}
+
+#[test]
+fn a_changing_directory_is_read_again_at_once_then_after_a_growing_pause() {
+    let ms = std::time::Duration::from_millis;
+    let pauses: Vec<_> = (0..10).map(restart_pause).collect();
+    assert_eq!(
+        pauses,
+        [
+            ms(0),
+            ms(0),
+            ms(5),
+            ms(10),
+            ms(20),
+            ms(40),
+            ms(80),
+            ms(160),
+            ms(200),
+            ms(200)
+        ]
+    );
+    assert_eq!(restart_pause(u32::MAX), RESTART_PAUSE_MAX);
 }
 
 /// One call asks the app's directory for each level once and asks which apps
