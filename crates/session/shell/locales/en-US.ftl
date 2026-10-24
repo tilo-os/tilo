@@ -560,7 +560,6 @@ topbar-clocks-notification-body = Time is up
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
 host-activity-workspace-not-shown = Switch to this workspace to change its history.
-host-activity-personal-only = Only the person at this device can do this.
 host-activity-action-feed = Read history
 host-activity-action-summary = Read what's new
 host-activity-action-replay = Replay layout

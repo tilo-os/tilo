@@ -559,7 +559,6 @@ topbar-clocks-notification-body = Die Zeit ist abgelaufen
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
 host-activity-workspace-not-shown = Wechsle zu diesem Arbeitsbereich, um seinen Verlauf zu ändern.
-host-activity-personal-only = Das kann nur die Person an diesem Gerät.
 host-activity-action-feed = Verlauf lesen
 host-activity-action-summary = Neues lesen
 host-activity-action-replay = Layout abspielen

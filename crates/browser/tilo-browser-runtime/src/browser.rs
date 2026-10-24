@@ -483,9 +483,9 @@ struct Desktop {
     /// last seen, by user root: their windows still name them once they
     /// left.
     people: Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
-    /// The session the desktop serves its windows, handed to the frame once
-    /// it exists: where a window's "open another app" goes.
-    session: Option<std::sync::Arc<tilo_desktop_surface::session::DesktopSession>>,
+    /// The session the desktop serves its windows: where a window's "open
+    /// another app" goes, and what it reads of the workspace's activity.
+    session: std::sync::Arc<tilo_desktop_surface::session::DesktopSession>,
     /// The desktop's end of that session.
     openings: tilo_desktop_surface::session::Openings,
     /// What this person may do here, which decides what the session opens
@@ -496,6 +496,18 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// Who the windows ask the session as: the person at this page, a
+    /// member of its workspace.
+    fn caller(&self) -> tilo_actions::remote::Caller {
+        tilo_actions::remote::Caller::local_person(self.author.clone()).in_room(self.room.clone())
+    }
+
+    /// Serve every action client a window makes on this thread from the
+    /// desktop's session, while the guard lives.
+    fn serve_windows(&self) -> ui::RemoteActionsGuard {
+        ui::RemoteActions::enter(self.session.clone(), self.caller())
+    }
+
     /// Open the apps the windows asked for since the last frame. Whether
     /// any were asked.
     fn open_requested_apps(&self) -> bool {
@@ -791,7 +803,11 @@ fn with_mount_quietly<R>(
             let mut lease = crate::mount_service_custody::Lease::take(mounts, servicing, id)
                 .map_err(|_| error("the runtime is busy (an owned mount callback)"))?
                 .ok_or_else(|| error("closed mount"))?;
-            run(lease.mount().map_err(|_| error("closed mount"))?)
+            let mount = lease.mount().map_err(|_| error("closed mount"))?;
+            // A window reads and acts through its desktop, whatever it does
+            // in this call: an app's own door is made on first use.
+            let _served = mount.desktop.as_ref().map(Desktop::serve_windows);
+            run(mount)
         })
     })
 }
@@ -1373,6 +1389,9 @@ fn present_desktop(
         Rc::clone(&persistence.history),
         history_person_of(&here, &people),
     )));
+    let (session, openings) =
+        tilo_desktop_surface::session::serve(config.room.clone(), Arc::clone(&shared.woken));
+    surface.serve_activity(openings.activity());
     surface.set_notifications(persistence.notifications.clone());
     if let Some(inbox) = crate::host_services::notification_inbox() {
         surface.set_app_notifications(inbox);
@@ -1406,8 +1425,6 @@ fn present_desktop(
             }),
         },
     );
-    let (session, openings) =
-        tilo_desktop_surface::session::serve(config.room.clone(), Arc::clone(&shared.woken));
     Ok(Presentation {
         root: Root::Desktop(Box::new(shell)),
         stores: Rc::clone(&shared.stores),
@@ -1423,7 +1440,7 @@ fn present_desktop(
             here,
             author: config.author(),
             people,
-            session: Some(session),
+            session,
             openings,
             permissions: opening_permissions,
             room: config.room.clone(),
@@ -1679,16 +1696,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             .map_err(|e| error(format!("{e:?}")))?;
         // A window opens another app by asking the session, as on a native
         // desktop; this page's desktop is that session.
-        if let Some(session) = desktop.session.take() {
-            frame.set_session_door(
-                ui::RemoteActions::with_host(
-                    session,
-                    tilo_actions::remote::Caller::local_person(desktop.author.clone())
-                        .in_room(desktop.room.clone()),
-                ),
-                Some(desktop.room.clone()),
-            );
-        }
+        frame.set_session_door(
+            ui::RemoteActions::with_host(desktop.session.clone(), desktop.caller()),
+            Some(desktop.room.clone()),
+        );
     }
     frame.set_input_scale(dpr).map_err(error)?;
     // Where each frame's parts are, so it repaints only where it changed.

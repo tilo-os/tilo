@@ -2,6 +2,13 @@
   "schema": 1,
   "applications": [
     {
+      "id": "so.tilo.activity",
+      "name": "Activity",
+      "category": "Office",
+      "version": "0.1.0",
+      "module": "activity"
+    },
+    {
       "id": "so.tilo.api-tester",
       "name": "API Tester",
       "category": "Development",
@@ -262,14 +269,6 @@
     }
   ],
   "unavailable": [
-    {
-      "id": "so.tilo.activity",
-      "name": "Activity",
-      "category": "Office",
-      "platforms": [
-        "tilo-os"
-      ]
-    },
     {
       "id": "so.tilo.backups",
       "name": "Backups",

@@ -31,7 +31,7 @@ mod replay;
 mod sample;
 mod whats_new;
 
-use std::time::{Duration, SystemTime};
+use ui::time::{Duration, SystemTime};
 
 use ui::framework::RecordEnv;
 use ui::i18n::I18nManager;
@@ -187,7 +187,7 @@ pub(crate) fn ago(at_ms: i64) -> String {
                 .checked_add(Duration::from_millis(ms))
                 .unwrap_or(SystemTime::UNIX_EPOCH)
         });
-    ui::format_relative_time(at, SystemTime::now())
+    ui::format_relative_time(at, ui::time::wall())
 }
 
 /// A page of the window: its content in a readable column that scrolls.

@@ -5,8 +5,8 @@ category = "Office"
 version = "0.1.0"
 kind = "app"
 runtime = "tilo-runtime/2026.07"
-platforms = ["tilo-os"]
-platform-reason = "Reads the history the Tilo desktop session keeps of each workspace."
+platforms = ["tilo-os", "web"]
+platform-reason = "Reads the history a Tilo desktop keeps of each workspace, on Tilo OS or on the web."
 
 [package.names]
 de = "Aktivität"
