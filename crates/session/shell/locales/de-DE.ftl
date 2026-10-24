@@ -2101,7 +2101,6 @@ peer-sync-role-expires = { $role }, { $unit ->
        *[other] { $count } Tagen
     } ab
 }
-}
 peer-sync-role-viewer = Betrachter
 peer-sync-role-commenter = Kommentator
 peer-sync-role-editor = Bearbeiter
