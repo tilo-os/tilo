@@ -1165,6 +1165,11 @@ mod component_adapter {
                 .unwrap_or(true)
         }
 
+        fn ime_refuses_ordinary_commits(&self) -> bool {
+            self.in_root(|root| root.ime_refuses_ordinary_commits())
+                .unwrap_or(true)
+        }
+
         fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
             self.in_root_mut(|root| root.start_deferred_text())
                 .flatten()
