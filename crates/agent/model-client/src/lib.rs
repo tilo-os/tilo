@@ -448,6 +448,15 @@ pub fn available() -> bool {
 /// frames, and [`ClientError::Rejected`] when the gateway refuses the request.
 #[cfg(unix)]
 pub fn request(request: Request) -> Result<Response, ClientError> {
+    let turn = ChannelTurn::take()?;
+    let response = exchange(request);
+    drop(turn);
+    response
+}
+
+/// [`request`], on this thread's turn of the channel.
+#[cfg(unix)]
+fn exchange(request: Request) -> Result<Response, ClientError> {
     let mut stream = service_stream()?;
     write_frame(
         &mut stream,
@@ -458,6 +467,63 @@ pub fn request(request: Request) -> Result<Response, ClientError> {
     )?;
     let response: Response = read_frame(&mut stream)?;
     response.into_result()
+}
+
+/// The process's one exchange on the launcher channel.
+///
+/// Every RPC duplicates the same connected socket, so the duplicates share
+/// one byte stream, and the gateway answers a connection's requests in the
+/// order they came. Two threads talking at once (the agent's transforms
+/// beside its planning turn, two agents of one host) would read each
+/// other's frames: one caller handed another's answer, or a frame split
+/// between two readers. The gateway serves one request at a time anyway,
+/// so taking turns costs no throughput.
+#[cfg(unix)]
+static CHANNEL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+thread_local! {
+    /// Whether this thread is in an exchange: a call from inside a stream's
+    /// event callback would otherwise wait on itself forever.
+    static IN_EXCHANGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// This thread's turn on the launcher channel, until dropped.
+#[cfg(unix)]
+struct ChannelTurn {
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(unix)]
+impl ChannelTurn {
+    /// Wait for the channel.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientError::Protocol`] when this thread is already in an exchange
+    /// (a call from a stream's event callback): its frames would be read as
+    /// the stream's.
+    fn take() -> Result<Self, ClientError> {
+        if IN_EXCHANGE.get() {
+            return Err(ClientError::Protocol(
+                "a gateway call was made while this thread's call was in progress".into(),
+            ));
+        }
+        // The guard protects no data: a panic mid-exchange leaves nothing
+        // to repair, so a poisoned lock is taken as it is.
+        let held = CHANNEL
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        IN_EXCHANGE.set(true);
+        Ok(Self { _held: held })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChannelTurn {
+    fn drop(&mut self) {
+        IN_EXCHANGE.set(false);
+    }
 }
 
 /// Duplicate the launcher-issued service descriptor for one RPC.
@@ -567,6 +633,19 @@ fn streaming_request(
 
 #[cfg(unix)]
 fn streaming_request(
+    request: Request,
+    deltas: bool,
+    on_event: &mut dyn FnMut(&str, &str),
+) -> Result<String, ClientError> {
+    let turn = ChannelTurn::take()?;
+    let output = streaming_exchange(request, deltas, on_event);
+    drop(turn);
+    output
+}
+
+/// [`streaming_request`], on this thread's turn of the channel.
+#[cfg(unix)]
+fn streaming_exchange(
     request: Request,
     deltas: bool,
     on_event: &mut dyn FnMut(&str, &str),
@@ -884,6 +963,130 @@ mod wire_tests {
         gateway.write_all(br#"{"ok":false}"#).unwrap();
         let response: Response = read_frame(&mut client).unwrap();
         assert!(!response.ok);
+    }
+
+    fn answer(output: &str, event: Option<&str>) -> Response {
+        Response {
+            ok: true,
+            output: Some(output.into()),
+            configured: None,
+            error: None,
+            model_error: None,
+            event: event.map(Into::into),
+        }
+    }
+
+    /// The agent's transforms run beside its streamed planning turn, over
+    /// the one launcher channel. A transform asked while the turn's caller
+    /// is still busy with one of its events used to read the turn's next
+    /// frame as its own answer, and the turn then read the transform's: it
+    /// now waits its turn, and each caller gets its own answer.
+    #[test]
+    fn a_call_beside_a_stream_on_the_shared_channel_gets_its_own_answer() {
+        use std::os::fd::AsRawFd as _;
+        let (app, mut gateway) = UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+        let (asked_by, asked) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            // The stream: one event, then its answer, written at once, as a
+            // gateway writes them whenever the provider has them.
+            let frame: Frame<Request> = read_frame(&mut gateway).unwrap();
+            assert!(matches!(frame.value, Request::Plan { .. }));
+            write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+            write_frame(&mut gateway, &answer("the plan", None)).unwrap();
+            // Then each transform, answered with its own input.
+            while let Ok(frame) = read_frame::<Frame<Request>>(&mut gateway) {
+                let Request::Transform { input, .. } = frame.value else {
+                    panic!("only a transform follows the stream");
+                };
+                let _ = asked_by.send(());
+                write_frame(&mut gateway, &answer(&input, None)).unwrap();
+            }
+        });
+        let (in_event, event_seen) = std::sync::mpsc::channel();
+        let (go_on, go) = std::sync::mpsc::channel::<()>();
+        let stream = std::thread::spawn(move || {
+            streaming_request(
+                Request::Plan {
+                    profile_id: "hosted".into(),
+                    model_id: "model".into(),
+                    body: serde_json::Value::Null,
+                    timeout_ms: 1000,
+                    stream: true,
+                    deltas: false,
+                    trace: None,
+                },
+                false,
+                &mut |kind, _| {
+                    assert_eq!(kind, EVENT_TOOL_CALL);
+                    // The turn's caller is busy with the event (running the
+                    // call) while the transform is asked.
+                    in_event.send(()).unwrap();
+                    let _ = go.recv_timeout(tilo_test_env::hang_bound());
+                },
+            )
+        });
+        tilo_test_env::recv("the stream's event", &event_seen);
+        let transform = std::thread::spawn(|| {
+            transform(
+                "hosted",
+                "model",
+                "Shorten",
+                "the document",
+                64,
+                Duration::from_secs(1),
+            )
+        });
+        // Long enough for a transform on the channel to have read a frame.
+        let _ = asked.recv_timeout(Duration::from_millis(300));
+        std::thread::sleep(Duration::from_millis(100));
+        go_on.send(()).unwrap();
+        assert_eq!(stream.join().unwrap().unwrap(), "the plan");
+        assert_eq!(transform.join().unwrap().unwrap(), "the document");
+        drop(env);
+        drop(app);
+        server.join().unwrap();
+    }
+
+    /// A call from inside a stream's event callback, on the stream's own
+    /// thread, would read the stream's frames as its answer, and waiting
+    /// for the channel would wait on itself: it is refused instead.
+    #[test]
+    fn a_call_from_inside_a_stream_is_refused_rather_than_waiting_on_itself() {
+        use std::os::fd::AsRawFd as _;
+        let (app, mut gateway) = UnixStream::pair().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(SERVICE_FD_ENV, app.as_raw_fd().to_string());
+        let server = std::thread::spawn(move || {
+            let _: Frame<Request> = read_frame(&mut gateway).unwrap();
+            write_frame(&mut gateway, &answer("{}", Some(EVENT_TOOL_CALL))).unwrap();
+            write_frame(&mut gateway, &answer("the plan", None)).unwrap();
+        });
+        let mut nested = None;
+        let plan = streaming_request(
+            Request::Plan {
+                profile_id: "hosted".into(),
+                model_id: "model".into(),
+                body: serde_json::Value::Null,
+                timeout_ms: 1000,
+                stream: true,
+                deltas: false,
+                trace: None,
+            },
+            false,
+            &mut |_, _| {
+                nested = Some(request(Request::Trace {
+                    trace: PlanTrace { id: 1, turn: 0 },
+                    event: TraceEvent::ActionSubmitted,
+                    at_unix_ms: None,
+                }));
+            },
+        );
+        assert_eq!(plan.unwrap(), "the plan");
+        assert!(matches!(nested, Some(Err(ClientError::Protocol(_)))));
+        server.join().unwrap();
+        drop(env);
     }
 }
 
