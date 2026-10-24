@@ -79,6 +79,11 @@ impl ShellOverlayHost {
 
     /// The laid-out window group showing `tab` in front.
     pub(super) fn asking_window(&self, tab: crate::shell::state::TabId) -> Option<AskingWindow> {
+        // Whether its window has the keyboard: the focused tab, where keys
+        // go. Not the group's accent, which a lone window never shows.
+        let focused = self.chrome.as_ref().is_some_and(|chrome| {
+            crate::shell::window_actions::active_tab_id(&chrome.borrow()) == Some(tab)
+        });
         self.group_row_ptrs.iter().find_map(|(&strip, &ptr)| {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &GroupRow = unsafe { &*ptr };
@@ -93,7 +98,7 @@ impl ShellOverlayHost {
                 group: group.id,
                 window,
                 content,
-                focused: group.focused,
+                focused,
             })
         })
     }
