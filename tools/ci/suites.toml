@@ -460,8 +460,8 @@ suites = [
 [[group]]
 name = "kernel-signer"
 requirement = { cores = 1, memory = "1GiB" }
-# Projects tilo-crypto's manifest against the workspace for the kernel build.
-inputs = ["os/", "Cargo.toml", "crates/system/tilo-crypto/"]
+# Projects tilo-crypto's manifest and lock against the workspace for the kernel build.
+inputs = ["os/", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/"]
 suites = ["os/tests/test_project_kernel_crate.py"]
 
 [[group]]
@@ -597,6 +597,7 @@ suites = [
   "scripts/perf/file_explorer_effects_test.py",
   "scripts/perf/input_latency_test.py",
   "scripts/perf/latency_bench_test.py",
+  "scripts/perf/lock_screen_bench_test.py",
   "scripts/perf/physical_notes_latency_test.py",
   "scripts/perf/physical_notes_stages_test.py",
   "scripts/perf/agent_rtt_test.py",
