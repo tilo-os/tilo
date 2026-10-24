@@ -162,11 +162,15 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         delta: retained_delta(b"removed-live-writer"),
         signature: [0; 64],
     });
-    assert!(matches!(
-    tilo_test_env::within("a message on alice_client", alice_client.recv()).await,
-    Some(Envelope::NotAuthorised { workspace_id: 701, reason })
-            if reason == "workspace membership changed"
-    ));
+    let told = tilo_test_env::within("a message on alice_client", alice_client.recv()).await;
+    assert!(
+        matches!(
+            &told,
+            Some(Envelope::NotAuthorised { workspace_id: 701, reason })
+                if reason == "workspace membership changed"
+        ),
+        "{told:?}"
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(400), bob_client.recv())
             .await
@@ -271,6 +275,26 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
     )
     .await
     .unwrap();
+    // A relay holds no list of rooms of its own: on start, each room's
+    // governance restates who it admits, as the governor and a hosting
+    // member do when they resume.
+    for (room, devices, roots) in [
+        (701, vec![bob_key], vec![bob.user_pk]),
+        (702, vec![alice_a_key], vec![alice.user_pk]),
+    ] {
+        restarted
+            .replace_governed_workspace_access(
+                room,
+                true,
+                GovernedAccess {
+                    member_devices: devices,
+                    member_user_roots: roots,
+                },
+                state.path().to_path_buf(),
+            )
+            .await
+            .unwrap();
+    }
     let bob_after_restart = RelayClient::connect_to_pinned_host(
         client_endpoint().await,
         restarted.node_addr(),
@@ -289,7 +313,7 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         alice.enrol("alice-after-restart", DeviceCapabilities::primary()),
     )
     .await
-    .expect("room 702 keeps Alice's root in the durable handshake union");
+    .expect("room 702 keeps Alice's root in the handshake union");
     assert!(matches!(
         subscribe(&alice_after_restart, 701).await,
         Some(Envelope::NotAuthorised { .. })

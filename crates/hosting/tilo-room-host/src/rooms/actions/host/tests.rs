@@ -12,8 +12,9 @@ use tilo_actions::remote::{
 };
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay_session::rooms::{
-    CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
-    HOST_ROOMS_RESOURCE, LIST_ROOMS, RoomListing,
+    ATTACH_HOST, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
+    GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE, LIST_ROOMS,
+    RoomListing, UNHOST_ROOM,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
@@ -94,7 +95,17 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
 
     assert_eq!(
         offered(&host, &laptop, &caller(&laptop)).await,
-        [CREATE_ROOM, LIST_ROOMS, ENTER_ROOM, GRANT_APP_AUTHORSHIP].map(str::to_owned)
+        [
+            CREATE_ROOM,
+            LIST_ROOMS,
+            ENTER_ROOM,
+            GRANT_APP_AUTHORSHIP,
+            ATTACH_HOST,
+            DETACH_HOST,
+            HOST_ROOM,
+            UNHOST_ROOM
+        ]
+        .map(str::to_owned)
     );
 
     // Creating the room issues the invitation the share is for, with

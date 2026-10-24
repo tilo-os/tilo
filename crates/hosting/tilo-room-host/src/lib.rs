@@ -19,11 +19,13 @@ pub mod app_serving;
 pub mod authority_epoch;
 pub mod compaction;
 mod desktop_guard;
+pub mod federation;
 #[doc(hidden)]
 pub mod handshake;
 pub mod host;
 #[doc(hidden)]
 pub mod host_authority;
+mod hosted;
 pub mod member_limits;
 #[doc(hidden)]
 pub mod membership_watch;
