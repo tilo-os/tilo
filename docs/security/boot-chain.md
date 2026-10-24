@@ -566,7 +566,10 @@ volume, so the key file the hook writes is:
 header carries `tilo-signin` tokens asks first for a person's own PIN or password
 instead ([sign-in.md](sign-in.md) §3.2): `tilo-boot-signin` takes it, and `tilo-auth
 boot-unlock` writes the same key file from that person's keyslot and leaves the
-one-time handoff to their session. "Can't sign in" (Enter on an empty field) ends
+one-time handoff to their session. The greeter asks `tilo-authd` for that person
+when it starts and starts their session without a screen of its own; `pam_tilo`
+accepts the handoff once, and if PAM asks anything instead the greeter cancels
+and shows its ordinary screen. "Can't sign in" (Enter on an empty field) ends
 it, and everything below runs as on any other root. The key file is removed once
 the volume is attached, because `/run` is carried into the booted system. The
 `tilo-rollback` dracut module installs the binary, its TPM tools and public policy
