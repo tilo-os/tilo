@@ -174,6 +174,7 @@ members = [
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-rich-text",
     "crates/sdk/tilo-page-raster",
+    "crates/sdk/ui-paint",
     "crates/sdk/winit-x11",
     "crates/sdk/search",
 

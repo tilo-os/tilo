@@ -20125,6 +20125,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-tts",
  "tilo-ui-graph",
+ "tilo-ui-paint",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
@@ -20166,6 +20167,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-paint"
+version = "0.1.0"
+dependencies = [
+ "tilo-vello",
  "workspace-hack",
 ]
 
