@@ -6450,6 +6450,10 @@ impl FrameHarness {
             }
             self.modifiers = *modifiers;
         }
+        // Ctrl+C copies whichever source is typing: name the chord by its
+        // Latin key before any handler matches it.
+        let renamed = crate::latin_chord::renamed(event, self.modifiers.state());
+        let event = renamed.as_ref().unwrap_or(event);
         // An open search is modal above both live History chrome and the
         // document. Update modifiers first, then capture before History can
         // observe or claim the event.
@@ -11245,6 +11249,53 @@ mod tests {
                 .inspection_json()
                 .unwrap()
                 .contains("action-palette-results")
+        );
+    }
+
+    #[test]
+    fn select_all_on_a_russian_source_selects_the_field() {
+        let input = crate::widget::TextInput::local()
+            .with_id("name")
+            .with_initial_value("hello");
+        let mut frame = FrameHarness::new_with_controlled_inputs(
+            State::new(),
+            Box::new(input),
+            (320, 180),
+            Theme::dark(),
+            crate::font_catalog::fixture_renderer(),
+            crate::permissions::UserId("fixture".into()),
+        );
+        frame.set_platform_conventions(crate::platform::PlatformConventions::new(
+            crate::platform::Platform::Linux,
+        ));
+        frame
+            .perform_named("name", &crate::a11y::Action::Focus)
+            .unwrap();
+        frame.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
+        ));
+        // Ctrl and the key a US keyboard labels A, with the Russian source
+        // active: the platform reports the letter that source puts there.
+        let mut select_all = crate::synthetic_input::key_event(
+            Key::Character("ф".into()),
+            Some("ф".into()),
+            ElementState::Pressed,
+        );
+        select_all.physical_key =
+            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
+        frame.send_host_event(&crate::synthetic_input::keyboard_input(select_all));
+        frame.send_host_event(&WindowEvent::ModifiersChanged(
+            winit::event::Modifiers::default(),
+        ));
+        frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("я".into())));
+        assert_eq!(
+            frame
+                .access_node_named("name", None)
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("я"),
+            "Ctrl+A selected the field, so the next letter replaced it"
         );
     }
 

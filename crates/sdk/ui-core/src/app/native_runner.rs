@@ -3638,6 +3638,10 @@ impl AppHandler {
     /// already summed, [`wheel_batch`]).
     fn platform_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
         let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // Ctrl+C copies whichever source is typing: name the chord by its
+        // Latin key before any handler matches it.
+        let event =
+            crate::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
         // What this event opens or closes follows it (a key lands it at
         // once, a click moves it): `motion::input_source`.
         crate::motion::note_input(&event);
