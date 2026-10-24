@@ -252,6 +252,10 @@ impl Widget for ShellOverlayHost {
             }
         } else {
             self.search_indexes_settling = false;
+            if let Some(chrome) = self.chrome.as_ref() {
+                self.search_registry
+                    .maintain_launcher_indexes(&chrome.borrow(), doc, path);
+            }
         }
         steps.mark("search-index");
         self.poll_pending_launchpad_actions();
