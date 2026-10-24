@@ -73,7 +73,10 @@ impl Workspace {
     }
 
     /// Remove saved connection
-    #[action(destructive, item = connections)]
+    ///
+    /// The window forgets the connection's password on this device too,
+    /// which Undo cannot bring back, so the removal is asked first.
+    #[action(destructive, irreversible, item = connections)]
     pub fn remove_connection(&mut self, connection: &Id) -> Result<(), Refusal> {
         self.connections
             .remove(connection)
