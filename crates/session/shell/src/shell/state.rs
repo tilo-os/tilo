@@ -1812,7 +1812,7 @@ impl WorkspaceTree {
     /// [`Self::trusted_identity_projection`] marks as agents for Files, so
     /// the workspace's Activity, an app's own history and Files name an
     /// agent alike. Presentation only: nothing is admitted by it.
-    pub fn verified_agents(&self, room: RoomId) -> Vec<ui::history_source::RosterAgent> {
+    pub fn verified_agents(&self, room: RoomId) -> Vec<collab_types::history::RosterAgent> {
         self.trusted_identity_projection(room)
             .humans
             .into_iter()
@@ -1821,7 +1821,7 @@ impl WorkspaceTree {
                 let person_name = human.display_name;
                 human.devices.into_iter().filter_map(move |device| {
                     let agent = device.agent?;
-                    Some(ui::history_source::RosterAgent {
+                    Some(collab_types::history::RosterAgent {
                         device: device.certificate.device_public_key,
                         person,
                         person_name: person_name.clone(),
@@ -8360,7 +8360,7 @@ mod automerge_foundation_tests {
         assert_eq!(author.attribution, None);
 
         let (host, room, scribe) = room_with_ada_and_scribe(&ada);
-        let verified = ui::history_source::RosterAgent {
+        let verified = collab_types::history::RosterAgent {
             device: scribe,
             person: ada.verifying_key().to_bytes(),
             person_name: "Ada Lovelace".into(),
