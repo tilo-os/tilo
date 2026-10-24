@@ -19,19 +19,23 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
+
+#include "match_host.h"
 
 namespace tilo {
 
-// A match pattern's parts (`*://*.example.com/*`), or `<all_urls>`.
+// A match pattern's parts (`*://*.example.com/*`), or `<all_urls>`. The
+// port is empty where the pattern names none, which is every port.
 struct PatternParts {
   bool all = false;
-  std::string scheme, host, path;
+  std::string scheme, host, port, path;
 };
 
 // The parts of a match pattern Chrome accepts for a site, or none.
 inline std::optional<PatternParts> ParsePermissionPattern(const std::string& pattern) {
-  if (pattern == "<all_urls>") return PatternParts{true, {}, {}, {}};
+  if (pattern == "<all_urls>") return PatternParts{true, {}, {}, {}, {}};
   const auto separator = pattern.find("://");
   if (separator == std::string::npos) return std::nullopt;
   PatternParts parts;
@@ -40,7 +44,8 @@ inline std::optional<PatternParts> ParsePermissionPattern(const std::string& pat
   if (!schemes.count(parts.scheme)) return std::nullopt;
   const auto slash = pattern.find('/', separator + 3);
   if (slash == std::string::npos) return std::nullopt;
-  parts.host = pattern.substr(separator + 3, slash - separator - 3);
+  std::tie(parts.host, parts.port) = SplitPatternHost(pattern.substr(separator + 3, slash - separator - 3));
+  if (!ValidPatternPort(parts.port)) return std::nullopt;
   parts.path = pattern.substr(slash);
   if (parts.host.empty() && parts.scheme != "file") return std::nullopt;
   // A wildcard only as the whole host or its first label.
@@ -72,6 +77,8 @@ inline bool PatternCovers(const std::string& outer, const std::string& inner) {
   if (a->all) return true;
   if (b->all) return false;
   if (a->scheme == "*" ? !(b->scheme == "*" || b->scheme == "http" || b->scheme == "https") : a->scheme != b->scheme) return false;
+  // A pattern naming a port covers only patterns on that port.
+  if (!a->port.empty() && a->port != b->port) return false;
   if (a->host != "*") {
     if (a->host.rfind("*.", 0) == 0) {
       const std::string base = a->host.substr(2);
