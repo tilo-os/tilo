@@ -437,13 +437,23 @@ fn pending_proof(state: &serde_json::Value, room: &str) -> Vec<u8> {
 
 /// The proof the enrolled `room` in `state` was enrolled with.
 fn enrolled_proof(state: &serde_json::Value, room: &str) -> Vec<u8> {
-    base64::Engine::decode(
-        &base64::engine::general_purpose::STANDARD,
-        state["native_authority"]["rooms"][room]["enrollment"]["enrollment_intent"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap()
+    let enrollment = &state["native_authority"]["rooms"][room]["enrollment"];
+    match &enrollment["enrollment_intent"] {
+        serde_json::Value::String(text) => {
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text).unwrap()
+        }
+        serde_json::Value::Array(_) => {
+            serde_json::from_value(enrollment["enrollment_intent"].clone()).unwrap()
+        }
+        _ => panic!(
+            "the enrolled room keeps no enrollment proof: {}",
+            serde_json::to_string(&state["native_authority"]["rooms"][room])
+                .unwrap()
+                .chars()
+                .take(2000)
+                .collect::<String>()
+        ),
+    }
 }
 
 /// Start the computer from the state a join `left` behind, custody holding
