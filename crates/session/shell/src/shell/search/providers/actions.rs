@@ -26,6 +26,7 @@ mod enrollment_tokens;
 mod identity_admin;
 mod native_identity;
 mod quick_settings;
+mod shortcuts;
 mod strips;
 mod tabs;
 pub(crate) use quick_settings::{
@@ -33,6 +34,8 @@ pub(crate) use quick_settings::{
     QS_WIFI_ID, SharedQsActions, SharedQsDispatcher, ValidatedQsActions,
 };
 use quick_settings::{apply_quick_settings_effect, quick_settings_params, validated_percent};
+use shortcuts::ACTION_SHORTCUTS;
+pub(crate) use shortcuts::action_shortcut;
 
 use strips::{
     STRIP_CREATE_PARAMS, STRIP_MOVE_PARAMS, STRIP_REMOVE_PARAMS, STRIP_RENAME_PARAMS, create_strip,
@@ -1615,6 +1618,17 @@ impl Action {
             "search-action-emoji-picker",
             "search-action-emoji-picker-subtitle",
             |st, _| request_window_shortcut(st, ShortcutAction::EmojiPicker),
+        ),
+        // The same switch Super+Alt+Space makes, on the keyboard last typed on.
+        chrome(
+            "input.source.next",
+            "shortcut-name-next-input-source",
+            "search-action-next-input-source-subtitle",
+            |st, _| {
+                st.switch_to_next_input_source()
+                    .map(drop)
+                    .ok_or_else(|| ActionError::Explained(t("input-source-next-none")))
+            },
         ),
         chrome(
             "navigation.axis.enable",
@@ -5223,87 +5237,6 @@ pub(crate) fn toggles_in_place(id: &str) -> bool {
         || id == QS_MUTE_ID
 }
 
-/// The shortcut that does what an action does, as the active keyboard
-/// layout spells it, when the desktop has one: the catalogue id in
-/// [`settings_store::keyboard_shortcuts`] and the action it matches.
-const ACTION_SHORTCUTS: &[(&str, &str)] = &[
-    ("overview.toggle", "workspace-overview"),
-    ("quick-settings.open", "quick-settings"),
-    ("quick-settings.clipboard", "clipboard-history"),
-    ("shortcut-help.toggle", "shortcut-help"),
-    ("window.focus-previous", "focus-previous-window"),
-    ("window.focus-next", "focus-next-window"),
-    ("tab.previous", "previous-tab"),
-    ("tab.next", "next-tab"),
-    ("tab.menu", "tab-menu"),
-    ("tab.reopen", "reopen-closed-tab"),
-    ("strip.focus-previous", "previous-strip"),
-    ("strip.focus-next", "next-strip"),
-    ("workspace.previous", "previous-workspace"),
-    ("workspace.next", "next-workspace"),
-    ("group.move-left", "move-group-left"),
-    ("group.move-right", "move-group-right"),
-    (
-        "group.move-to-strip-previous",
-        "move-group-to-previous-strip",
-    ),
-    ("group.move-to-strip-next", "move-group-to-next-strip"),
-    (
-        "group.move-to-display-previous",
-        "move-group-to-previous-display",
-    ),
-    ("group.move-to-display-next", "move-group-to-next-display"),
-    ("group.maximize", "toggle-maximize"),
-    ("group.restore", "restore-window"),
-    ("group.fullscreen", "toggle-fullscreen"),
-    ("group.narrower", "resize-narrower"),
-    ("group.wider", "resize-wider"),
-    ("window.new.terminal", "open-terminal"),
-    ("dictation.toggle", "dictation-toggle"),
-    ("dictation.finish", "dictation-finish"),
-    ("dictation.cancel", "dictation-cancel"),
-    ("capture.open", "fixed-capture-screenshot"),
-    ("room.activity.open", "fixed-workspace-history"),
-    ("lock", "lock"),
-    ("emoji.picker", "emoji-picker"),
-];
-
-/// `shortcut_id`'s current chord as the active layout's keycaps spell it,
-/// from `config`.
-pub(crate) fn shortcut_text(
-    config: &settings_store::hardware::ShortcutConfig,
-    shortcut_id: &str,
-) -> Option<String> {
-    // `entry` constructs every shortcut and its defaults before selecting one.
-    // A palette row needs only its current chord, not that entire catalogue.
-    if let Some(action) = ShortcutAction::ALL
-        .into_iter()
-        .find(|action| action.id() == shortcut_id)
-    {
-        return config
-            .bindings
-            .get(&action)
-            .map(crate::shell::keyboard_shortcuts::chord_text);
-    }
-    settings_store::keyboard_shortcuts::FIXED_SHORTCUTS
-        .iter()
-        .find(|shortcut| shortcut.id == shortcut_id)?
-        .chords()
-        .first()
-        .map(crate::shell::keyboard_shortcuts::chord_text)
-}
-
-/// The shortcut shown beside the action `id`, if it has one.
-pub(crate) fn action_shortcut(
-    config: &settings_store::hardware::ShortcutConfig,
-    id: &str,
-) -> Option<String> {
-    ACTION_SHORTCUTS
-        .iter()
-        .find(|(action, _)| *action == id)
-        .and_then(|(_, shortcut)| shortcut_text(config, shortcut))
-}
-
 /// A Quick Settings radio offered as a one-step toggle: the set-enabled
 /// action it drives, its own id, and the catalogue keys of its row's title
 /// and subtitle.
@@ -6913,28 +6846,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn shortcut_text_matches_rebound_fixed_and_unassigned_chords() {
-        let mut config = settings_store::hardware::ShortcutConfig::default();
-        config.bindings.insert(
-            ShortcutAction::NextWorkspace,
-            settings_store::hardware::KeyChord::parse("Super+Alt+n").expect("valid test chord"),
-        );
-        config.bindings.remove(&ShortcutAction::PreviousWorkspace);
-        for entry in settings_store::keyboard_shortcuts::catalogue(&config) {
-            assert_eq!(
-                shortcut_text(&config, entry.id),
-                entry
-                    .chords
-                    .first()
-                    .map(crate::shell::keyboard_shortcuts::chord_text),
-                "{} keeps its configured, fixed or unassigned chord",
-                entry.id,
-            );
-        }
-        assert_eq!(shortcut_text(&config, "no.such.shortcut"), None);
     }
 
     #[test]

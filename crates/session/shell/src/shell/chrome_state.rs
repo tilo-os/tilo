@@ -1122,6 +1122,8 @@ pub struct ChromeState {
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
     input_source_request: Option<usize>,
+    /// The keyboard whose sources the next-source chord and action cycle.
+    pub(crate) keyboard_scope: String,
     /// The strip switcher is open: its card, the workspace's strips and
     /// its workspaces, beside the strip ribbon. The overlay host opens it on
     /// pointer intent or Super+S and mirrors it here, so a state dump and
@@ -1339,6 +1341,7 @@ impl ChromeState {
             axis_gather_requested: false,
             feedback_pointing: false,
             input_source_request: None,
+            keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:

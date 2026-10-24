@@ -1380,6 +1380,8 @@ search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen
 search-action-emoji-picker = Emoji auswählen
 search-action-emoji-picker-subtitle = Dort einfügen, wo du schreibst
+search-action-next-input-source-subtitle = Mit dem nächsten Layout deiner Liste schreiben
+input-source-next-none = Füge in den Einstellungen ein weiteres Tastaturlayout hinzu, um zwischen ihnen zu wechseln
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
 

@@ -518,7 +518,6 @@ pub struct ShellOverlayHost {
     /// before layout. Empty in a bare `ui::App` host, where
     /// [`Self::strip_output_spans`] treats the window as the one display.
     outputs: Vec<OutputGeometry>,
-    keyboard_scope: String,
     palette: CommandPalette,
     palette_visible: bool,
     /// Search providers the palette fans out to. Built once at
@@ -1337,59 +1336,6 @@ const PAIRING_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_sec
 /// to prepend to every subtitle.
 /// The file manager Super+E opens.
 const FILES_PACKAGE: (&str, &str) = ("so.tilo.file-explorer", "Files");
-
-/// Make the next keyboard input source the active one in the session's
-/// settings, so it survives a settings reload and the next session, and
-/// return the keyboard group to select and the source's name. `None` with a
-/// single source.
-fn select_next_input_source(scope: &str) -> Option<(usize, String)> {
-    use crate::compositor::backend::drm::input_config::{KeyboardSettings, SECTION};
-    let section = settings_store::load_section(SECTION);
-    let mut base = settings_store::hardware::RichInputConfig::from_section(&section);
-    let mut config = settings_store::keyboard_sources::effective(&base, scope);
-    config.select_next_source()?;
-    let mut values = serde_json::Map::new();
-    if scope == settings_store::keyboard_sources::ALL {
-        values.insert(
-            "keyboard_layout".into(),
-            serde_json::Value::String(config.keyboard_layout.clone()),
-        );
-    } else {
-        let mut inherited = settings_store::keyboard_sources::KeyboardProfile::from_input(&base);
-        if let Some(defaults) = base
-            .keyboard_assignments
-            .get(settings_store::keyboard_sources::ALL)
-        {
-            inherited.options.clone_from(&defaults.options);
-        }
-        let mut assignments = base.keyboard_assignments.clone();
-        let profile = assignments.entry(scope.into()).or_insert(inherited);
-        profile.active.clone_from(&config.keyboard_layout);
-        values.insert(
-            "keyboard_assignments".into(),
-            serde_json::to_value(&assignments).ok()?,
-        );
-        base.keyboard_assignments = assignments;
-    }
-    if scope == settings_store::keyboard_sources::ALL {
-        base.keyboard_layout.clone_from(&config.keyboard_layout);
-    }
-    config = settings_store::keyboard_sources::effective(&base, scope);
-    if let Err(error) = settings_store::update_section(SECTION, values) {
-        tracing::warn!(%error, "input source choice could not be saved");
-        return None;
-    }
-    // The keyboard switches to an XKB group: the active layout, or the
-    // primary layout an input-method engine types on. The input-method
-    // arbiter picks the engine up from the saved choice.
-    let keyboard = KeyboardSettings::from_config(&config);
-    let group = keyboard.active_index;
-    let name = config.active_input_method().map_or_else(
-        || keyboard.source_label(group),
-        |engine| engine.label().to_string(),
-    );
-    Some((group, name))
-}
 
 // -- Lossy numeric casts, named and scoped one lint at a time --------
 //
