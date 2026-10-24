@@ -1100,6 +1100,11 @@ fn run_tabs_first(path: &Path, module: bool) -> Option<()> {
         return Some(());
     }
     let mut text = std::fs::read(path).ok()?;
+    // A start too long for the head (a licence header before its
+    // directives) is told from the whole worker.
+    if runs_first(&text, &statement) {
+        return Some(());
+    }
     let at = prologue_end(&text);
     text.splice(at..at, statement.bytes());
     let partial = path.with_file_name(format!(".{TABS_FILE}.partial"));
@@ -1144,14 +1149,29 @@ fn prologue_end(text: &[u8]) -> usize {
             }
         }
         i += 1;
-        while matches!(text.get(i), Some(b' ' | b'\t')) {
-            i += 1;
+        loop {
+            match (text.get(i), text.get(i + 1)) {
+                (Some(b' ' | b'\t'), _) => i += 1,
+                (Some(b'/'), Some(b'*')) => {
+                    let rest = text.get(i + 2..).unwrap_or_default();
+                    let Some(close) = rest.windows(2).position(|pair| pair == b"*/") else {
+                        return end;
+                    };
+                    // A comment over lines ends the directive's line.
+                    if rest.iter().take(close).any(|b| matches!(b, b'\n' | b'\r')) {
+                        break;
+                    }
+                    i += close + 4;
+                }
+                _ => break,
+            }
         }
-        // A directive is a string alone, up to a semicolon or its line's end.
-        end = match text.get(i) {
-            Some(b';') => i + 1,
-            None | Some(b'\n' | b'\r') => i,
-            Some(_) => return end,
+        // A directive is a string alone, up to a semicolon or its line's end,
+        // which a comment after it on the line may reach.
+        end = match (text.get(i), text.get(i + 1)) {
+            (Some(b';'), _) => i + 1,
+            (None | Some(b'\n' | b'\r'), _) | (Some(b'/'), Some(b'/' | b'*')) => i,
+            _ => return end,
         };
     }
 }
@@ -1659,6 +1679,22 @@ mod tabs_tests {
                 format!("\"use strict\"{RUNS_TABS}\nx();"),
             ),
             (
+                "'use strict' // strict\nx();",
+                format!("'use strict' {RUNS_TABS}// strict\nx();"),
+            ),
+            (
+                "'use strict' /* a\nb */ x();",
+                format!("'use strict' {RUNS_TABS}/* a\nb */ x();"),
+            ),
+            (
+                "'use strict' /* c */; x();",
+                format!("'use strict' /* c */;{RUNS_TABS} x();"),
+            ),
+            (
+                "'use strict' /* c */ + x();",
+                format!("{RUNS_TABS}'use strict' /* c */ + x();"),
+            ),
+            (
                 "// header\n'not'.split(''); \"use strict\";",
                 format!("{RUNS_TABS}// header\n'not'.split(''); \"use strict\";"),
             ),
@@ -1671,6 +1707,22 @@ mod tabs_tests {
             assert_eq!(read(&root, "w.js"), prepared, "{own:?}");
             assert!(prepare_tabs(root.path()).is_some());
             assert_eq!(read(&root, "w.js"), prepared, "again: {own:?}");
+        }
+    }
+
+    #[test]
+    fn a_strict_worker_under_a_long_header_runs_the_tab_script_once() {
+        // Licences gathered into one comment, longer than the head read to
+        // tell the worker runs the script already.
+        let header = format!("/*{}*/\n", "x".repeat(WORKER_HEAD_BYTES as usize));
+        let root = extension(
+            r#"{"background":{"service_worker":"w.js"}}"#,
+            &[("w.js", &format!("{header}'use strict';x();"))],
+        );
+        let prepared = format!("{header}'use strict';{RUNS_TABS}x();");
+        for start in ["first", "next", "after that"] {
+            assert!(prepare_tabs(root.path()).is_some());
+            assert!(read(&root, "w.js") == prepared, "{start} start");
         }
     }
 
