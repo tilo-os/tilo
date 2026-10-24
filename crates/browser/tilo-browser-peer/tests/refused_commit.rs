@@ -118,8 +118,8 @@ fn withdrawn_as_refused(
     assert_eq!(reason, tilo_relay_protocol::refusal::TOO_MANY_CHANGES);
     assert!(!changes.is_empty(), "the refusal names the change it was");
     assert_eq!(
-        app.state().notes.len(),
-        pinned + 1,
+        app.state().notes.len().checked_sub(1),
+        Some(pinned),
         "applied before it was sent"
     );
     let withdrawn_text = format!("note {pinned}");
