@@ -727,6 +727,72 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
+    /// A compact (420 px) window with a long title and no location: the
+    /// title takes the room the row leaves it, with no slots and beside one
+    /// trailing action alike, and is cut short only where none is left.
+    #[test]
+    fn a_compact_windows_long_title_takes_the_room_the_row_leaves_it() {
+        use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+        const TITLE: &str = "Video Player Library";
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            NamedApp,
+            (420, 800),
+            crate::theme::Theme::dark(),
+        );
+        // The location names it in the body style.
+        let style = harness.theme.text(crate::tokens::TextRole::Body);
+        let title_w = f64::from(harness.text.measure_style(TITLE, None, &style).0);
+        let one_action = WindowToolbar {
+            actions: vec![ToolbarAction::new("open", "folder-open", "Open")],
+            ..WindowToolbar::default()
+        };
+        for toolbar in [None, Some(one_action)] {
+            let mut tab = TabDescriptor::new(TAB, TITLE);
+            tab.app_kind = Some(crate::widget::AppKind::Files);
+            let mut bar = TabBar::new("headless-window", vec![tab], TAB);
+            bar.set_window_controls(true);
+            bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
+            let slots = toolbar.is_some();
+            bar.set_toolbar(TAB, toolbar);
+            // Painting measures the title; the layout after it sizes it.
+            for _ in 0..2 {
+                lay_out_bar(&mut bar, 420.0, &harness.theme);
+                bar.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut harness.text,
+                    &harness.theme,
+                    &harness.presence,
+                );
+            }
+            if slots {
+                let row = bar.toolbar_row();
+                let location = row.slots().location;
+                assert_eq!(
+                    row.toolbar()
+                        .and_then(|toolbar| toolbar.location.as_ref())
+                        .map(|location| location.label.as_str()),
+                    Some(TITLE),
+                    "the title stands in the location's place"
+                );
+                assert!(
+                    location.width() >= title_w,
+                    "beside one action the title stands whole: {location:?}, {title_w} px"
+                );
+                assert_eq!(row.slots().actions.len(), 1, "and the action beside it");
+            } else {
+                assert_eq!(
+                    bar.visible_title(0, &mut harness.text, &harness.theme)
+                        .as_deref(),
+                    Some(TITLE),
+                    "with no slots the title stands whole"
+                );
+            }
+        }
+    }
+
     /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to
     /// Sun, Jul 5, 2026.
     fn week_across_a_month() -> crate::format::Period {
