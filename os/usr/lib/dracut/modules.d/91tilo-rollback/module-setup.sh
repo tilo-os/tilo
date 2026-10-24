@@ -29,7 +29,10 @@ install() {
     # key. Without tilo-auth the screen finds nobody to sign in, and the root
     # unlocks with the prompts below as on any other machine.
     inst_simple /usr/libexec/tilo/tilo-boot-signin
-    [ -x /usr/libexec/tilo/tilo-auth ] && inst_simple /usr/libexec/tilo/tilo-auth /usr/bin/tilo-auth
+    # dracut resolves sources under dracutsysrootdir when it builds for another root.
+    if [ -x "${dracutsysrootdir-}/usr/libexec/tilo/tilo-auth" ]; then
+        inst_simple /usr/libexec/tilo/tilo-auth /usr/bin/tilo-auth
+    fi
     inst_simple /usr/libexec/tilo-rollback-initrd-unlock
     inst_simple /usr/libexec/tilo-root-discover
     inst_simple /usr/lib/systemd/system-generators/tilo-root-generator

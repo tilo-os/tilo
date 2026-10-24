@@ -40,8 +40,9 @@ cmp "$work/expected-hook" "$module/parse-tilo-root.sh"
 
 # Run module installation against recording dracut primitives. This verifies
 # the installed hook and the complete executable closure used directly by the
-# root resolver, its generated mount unit, and the recovery-unlock helper.
-: >"$work/events"
+# root resolver, its boot sign-in screen, its generated mount unit, and the
+# recovery-unlock helper. tilo-auth joins the closure exactly when the root the
+# initramfs is built from has it.
 inst_multiple() { printf 'multiple:%s\n' "$*" >>"$work/events"; }
 inst_hook() { printf 'hook:%s:%s:%s\n' "$1" "$2" "$3" >>"$work/events"; }
 inst_simple() { printf 'simple:%s:%s\n' "$1" "${2:-}" >>"$work/events"; }
@@ -49,17 +50,38 @@ inst_simple() { printf 'simple:%s:%s\n' "$1" "${2:-}" >>"$work/events"; }
 moddir="$module"
 # shellcheck source=/dev/null
 . "$module/module-setup.sh"
-install
 
-cat >"$work/expected-events" <<EOF
+expected_events() {
+    cat <<EOF
 multiple:awk bash cat chmod cryptsetup dd find grep install ln lsblk readlink rm seq sleep systemd-ask-password systemd-cryptsetup systemd-escape tr udevadm tpm2_createprimary tpm2_flushcontext tpm2_getpolicydigest tpm2_load tpm2_loadexternal tpm2_nvread tpm2_nvreadpublic tpm2_policyauthorize tpm2_policyauthvalue tpm2_policynv tpm2_policypcr tpm2_policyor tpm2_readpublic tpm2_startauthsession tpm2_unseal tpm2_verifysignature
 hook:cmdline:90:$module/parse-tilo-root.sh
 simple:/usr/libexec/tilo/tilo-rollback:/usr/bin/tilo-rollback
+simple:/usr/libexec/tilo/tilo-boot-signin:
+EOF
+    if [ "$1" = with-auth ]; then
+        printf 'simple:/usr/libexec/tilo/tilo-auth:/usr/bin/tilo-auth\n'
+    fi
+    cat <<EOF
 simple:/usr/libexec/tilo-rollback-initrd-unlock:
 simple:/usr/libexec/tilo-root-discover:
 simple:/usr/lib/systemd/system-generators/tilo-root-generator:
 simple:/usr/share/tilo/tpm2-pcr-signing.public.pem:
 EOF
-cmp "$work/expected-events" "$work/events"
+}
 
-printf 'ok: dracut accepts only root=tilo-auto and installs its complete command closure\n'
+# shellcheck disable=SC2034 # the sourced module consumes dracutsysrootdir
+dracutsysrootdir="$work/sysroot"
+for variant in without-auth with-auth; do
+    if [ "$variant" = with-auth ]; then
+        # The module defines install(), so build the root's tilo-auth by hand.
+        mkdir -p "$dracutsysrootdir/usr/libexec/tilo"
+        : >"$dracutsysrootdir/usr/libexec/tilo/tilo-auth"
+        chmod 0755 "$dracutsysrootdir/usr/libexec/tilo/tilo-auth"
+    fi
+    : >"$work/events"
+    install
+    expected_events "$variant" >"$work/expected-events"
+    cmp "$work/expected-events" "$work/events"
+done
+
+printf 'ok: dracut accepts only root=tilo-auto and installs its complete command closure, with tilo-auth when the root has it\n'
