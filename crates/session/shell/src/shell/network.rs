@@ -646,8 +646,6 @@ fn needs_reachability(
         // A room hosted on this device keeps it reachable only while
         // another device is a member (`ShellNetwork::hosts_other_members`).
         Some("a room hosted elsewhere")
-    } else if !tree.continuation_rooms.is_empty() {
-        Some("a room continued from another device")
     } else if open_invitations {
         Some("an open invitation")
     } else if other_devices {
@@ -828,8 +826,6 @@ fn home_peers_from_registrations(
 
 /// What the periodic home-peer refresh reads from disk.
 struct HomePeerInputs {
-    /// Rooms an enrollment delivered (`personal-rooms.json`).
-    enrolled_rooms: Vec<RoomId>,
     registrations: Result<Vec<tilo_relay_protocol::HomePeerRegistration>, String>,
 }
 
@@ -837,18 +833,9 @@ impl HomePeerInputs {
     /// Read the files. Waits for the disk: the compositor's loop never calls
     /// this, its reader thread does.
     fn read() -> Self {
-        let peers = personal_device_peer_path();
         Self {
-            enrolled_rooms: personal_room_ids(&peers.with_file_name("personal-rooms.json")),
             registrations: read_home_peer_registry(),
         }
-    }
-
-    /// [`Self::read`] after the state writer has written what this process
-    /// queued, so the refresh sees the rooms export it just made.
-    fn read_after_pending_writes() -> Self {
-        crate::shell::durable_writer::global().flush();
-        Self::read()
     }
 }
 
@@ -2259,9 +2246,7 @@ impl ShellNetwork {
             host_room_members: Mutex::new(std::collections::HashSet::new()),
             registered_home_device_ids: Mutex::new(home_device_ids),
             personal_device_peers,
-            home_peer_reader: home_peer_reader::HomePeerReader::spawn(
-                HomePeerInputs::read_after_pending_writes,
-            ),
+            home_peer_reader: home_peer_reader::HomePeerReader::spawn(HomePeerInputs::read),
             own_device_fleet,
             lan_discovery,
             last_home_peer_refresh: Mutex::new(None),
@@ -4438,10 +4423,6 @@ impl ShellNetwork {
     /// the compatibility/control topic. Rooms accepted later are joined by
     /// `Self::publish_message`.
     pub fn join_default_workspace(&self) -> bool {
-        // Startup, once: the first refresh may not have been read yet.
-        self.adopt_enrolled_rooms(&personal_room_ids(
-            &personal_device_peer_path().with_file_name("personal-rooms.json"),
-        ));
         self.export_personal_rooms();
         let mut topics = vec![DEFAULT_WS_TOPIC];
         {
@@ -4458,17 +4439,6 @@ impl ShellNetwork {
         topics.into_iter().all(|topic| self.join_topic(topic)) && {
             self.publish_sync_requests();
             true
-        }
-    }
-
-    /// Join the rooms an enrollment delivered to this device's tree.
-    fn adopt_enrolled_rooms(&self, rooms: &[RoomId]) {
-        if rooms.is_empty() {
-            return;
-        }
-        let mut tree = self.tree.write();
-        for room in rooms {
-            tree.join_enrolled_room(*room);
         }
     }
 
@@ -4546,10 +4516,6 @@ impl ShellNetwork {
     }
 
     fn apply_home_peer_inputs(&self, inputs: &HomePeerInputs) -> bool {
-        // An enrollment can deliver rooms after this session started. Adopt
-        // them and join their topics, or a request sent to this device on
-        // such a room never arrives.
-        self.adopt_enrolled_rooms(&inputs.enrolled_rooms);
         let mut changed = self.join_room_topics();
         // Direct peers are how the person's devices reach each other, with
         // or without a relay. A missing or malformed relay registry must not
@@ -5143,12 +5109,11 @@ impl ShellNetwork {
         // every reader that watches its generation.
         let staged = {
             let tree = self.tree.read();
-            !tree.continuation_tabs.is_empty() || !tree.continuation_rooms.is_empty()
+            !tree.continuation_tabs.is_empty()
         };
         if staged {
             let mut tree = self.tree.write();
             tree.reconcile_continuation_tabs(&std::collections::BTreeSet::new());
-            tree.reconcile_continuation_rooms(&std::collections::BTreeSet::new());
         }
         false
     }
@@ -7665,12 +7630,82 @@ impl ShellNetwork {
             })
     }
 
+    /// Show the newest app state the person's devices continue, in the
+    /// rooms this device has workspaces for. Which rooms are the person's,
+    /// and where they are hosted, is their workspace list's to say
+    /// ([`crate::shell::personal_workspaces::PersonalWorkspaces`]): state
+    /// for a room not here yet stays in the merged set, and shows once the
+    /// list has entered the room. Answers whether the tree changed.
+    fn materialize_continuations(
+        &self,
+        merged: &crate::shell::personal_continuity::PersonalContinuity,
+    ) -> bool {
+        if !self.enforce_app_continuations_policy() {
+            return false;
+        }
+        // From the accepted merged set, not from a wire payload: a
+        // checkpoint can carry stale entries beside one newer entry, and
+        // arrival order must never choose an app state.
+        let mut candidate_apps = std::collections::BTreeSet::new();
+        for snapshot in merged.snapshots().values() {
+            for workspace in &snapshot.workspaces {
+                for app in &workspace.apps {
+                    candidate_apps.insert((workspace.room, app.id));
+                }
+            }
+        }
+        let mut winners_by_room = std::collections::BTreeMap::<_, Vec<_>>::new();
+        for (room, app_id) in candidate_apps {
+            if let Some(app) = merged.newest_app_state_in_room(room, app_id) {
+                winners_by_room.entry(room).or_default().push(app.clone());
+            }
+        }
+        let desired_tabs = winners_by_room
+            .values()
+            .flat_map(|apps| apps.iter().map(|app| app.id.0))
+            .collect::<std::collections::BTreeSet<_>>();
+        // All tab changes share one write of the tree, so they reconcile
+        // against one snapshot. The frame loop opens materialized tabs
+        // locally without changing the active workspace or focus.
+        let mut tree = self.tree.write();
+        let mut materialized = false;
+        for (room, apps) in winners_by_room {
+            // A room the person's list has not brought yet waits for it.
+            if !tree.has_workspace(room) {
+                continue;
+            }
+            let source = apps
+                .first()
+                .map(|app| app.stamp.device.as_str().to_string())
+                .unwrap_or_default();
+            let workspace = crate::shell::personal_continuity::WorkspaceContinuation { room, apps };
+            materialized |= tree.materialize_continuation_workspace(&source, &workspace);
+        }
+        let reconciled = tree.reconcile_continuation_tabs(&desired_tabs);
+        drop(tree);
+        materialized || reconciled
+    }
+
+    /// [`Self::materialize_continuations`] from the merged set this device
+    /// keeps: a room the person's list brought has its workspace now.
+    pub(super) fn materialize_kept_continuations(&self) -> bool {
+        let Some(merged) = self
+            .personal_continuity
+            .lock()
+            .ok()
+            .map(|continuity| continuity.clone())
+        else {
+            return false;
+        };
+        self.materialize_continuations(&merged)
+    }
+
     /// Handle the private same-person lane before room authorization. Returns
     /// `true` for both accepted and rejected personal messages so neither can
     /// fall through into the collaboration-room replica.
     #[allow(
         clippy::too_many_lines,
-        reason = "personal-continuity dispatch validates the private lane and applies its room projection as one authorization decision"
+        reason = "personal-continuity dispatch validates the private lane and applies what it accepted as one authorization decision"
     )]
     fn dispatch_personal_continuity(
         &self,
@@ -7768,77 +7803,7 @@ impl ShellNetwork {
             let Some(merged) = merged else {
                 return true;
             };
-            // Reconcile from the accepted merged set, not from the wire
-            // payload. A checkpoint can contain stale entries alongside one
-            // newer entry; arrival order must never choose an app state.
-            let mut candidate_apps = std::collections::BTreeSet::new();
-            let mut rooms = std::collections::BTreeMap::new();
-            for snapshot in merged.snapshots().values() {
-                for workspace in &snapshot.workspaces {
-                    rooms
-                        .entry(workspace.room)
-                        .or_insert_with(|| snapshot.device.as_str().to_string());
-                    for app in &workspace.apps {
-                        candidate_apps.insert((workspace.room, app.id));
-                    }
-                }
-            }
-            let mut winners_by_room = std::collections::BTreeMap::<_, Vec<_>>::new();
-            for (room, app_id) in candidate_apps {
-                if let Some(app) = merged.newest_app_state_in_room(room, app_id) {
-                    winners_by_room.entry(room).or_default().push(app.clone());
-                }
-            }
-            let materializations: Vec<_> = winners_by_room
-                .into_iter()
-                .map(|(room, apps)| {
-                    let source = apps
-                        .first()
-                        .map(|app| app.stamp.device.as_str().to_string())
-                        .unwrap_or_default();
-                    (
-                        source,
-                        crate::shell::personal_continuity::WorkspaceContinuation { room, apps },
-                    )
-                })
-                .collect();
-            let desired_tabs = materializations
-                .iter()
-                .flat_map(|(_, workspace)| workspace.apps.iter().map(|app| app.id.0))
-                .collect::<std::collections::BTreeSet<_>>();
-            // All continuation room and tab changes share one write of the
-            // tree, so they reconcile against one snapshot.
-            let adopted = self.enforce_app_continuations_policy() && {
-                let mut tree = self.tree.write();
-                let desired_rooms = rooms
-                    .keys()
-                    .copied()
-                    .collect::<std::collections::BTreeSet<_>>();
-                let adopted_rooms =
-                    rooms
-                        .into_iter()
-                        .fold(false, |changed, (room, source_device)| {
-                            tree.adopt_continuation_room(room, &source_device) || changed
-                        });
-                // Materialized tabs are idempotent by durable AppInstanceId.
-                // The frame loop opens them locally without changing the
-                // active workspace or focus.
-                let materialized =
-                    materializations
-                        .into_iter()
-                        .fold(false, |changed, (source, workspace)| {
-                            tree.materialize_continuation_workspace(&source, &workspace) || changed
-                        });
-                let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
-                let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
-                drop(tree);
-                reconciled_tabs || reconciled_rooms || adopted_rooms || materialized
-            };
-            if adopted {
-                // Joining the room topics is demand-driven by these requests;
-                // the active workspace remains untouched.
-                self.publish_sync_requests();
-            }
+            self.materialize_continuations(&merged);
         }
         true
     }
@@ -8258,9 +8223,7 @@ pub(crate) fn shell_network_for_test(
         lan_discovery: None,
         last_home_peer_refresh: Mutex::new(None),
         session_reach_checked: Mutex::new(None),
-        home_peer_reader: home_peer_reader::HomePeerReader::spawn(
-            HomePeerInputs::read_after_pending_writes,
-        ),
+        home_peer_reader: home_peer_reader::HomePeerReader::spawn(HomePeerInputs::read),
         last_sync_kick: Mutex::new(None),
         next_sync_pull: Mutex::new(None),
         peers_joined: std::sync::atomic::AtomicU64::new(0),
@@ -8873,35 +8836,25 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn a_room_enrolled_after_startup_is_joined() {
+    fn a_room_an_enrollment_names_is_no_workspace_until_it_is_joined() {
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"[]").unwrap();
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &peers);
-        env.set("XDG_STATE_HOME", dir.path().join("state"));
-        let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
-        assert!(net.join_default_workspace());
-        while commands.try_recv().is_ok() {}
-        let room = "22222222-2222-4222-8222-222222222222";
+        let room = RoomId::parse("22222222-2222-4222-8222-222222222222").expect("room");
         std::fs::write(
             dir.path().join("personal-rooms.json"),
             format!("[\"{room}\"]"),
         )
         .unwrap();
-        assert!(net.refresh_home_peer_hosts());
-        let topic = room_topic_id(RoomId::parse(room).expect("room"));
-        assert!(
-            std::iter::from_fn(|| commands.try_recv().ok())
-                .any(|command| matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
-            "a room that appears after startup must be joined"
-        );
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_HOME_PEERS_PATH", &peers);
+        env.set("XDG_STATE_HOME", dir.path().join("state"));
+        let (net, _commands) = personal_continuity_network_for_test([0x44; 32]);
+        assert!(net.join_default_workspace());
         let _ = net.refresh_home_peer_hosts();
-        assert!(
-            std::iter::from_fn(|| commands.try_recv().ok())
-                .all(|command| !matches!(command, NetCmd::JoinWorkspace { ws, .. } if ws == topic)),
-            "a joined room is not joined again"
-        );
+        let tree = net.tree.read();
+        assert!(!tree.has_workspace(room), "no workspace is made for it");
+        assert!(!tree.is_joining(room), "nothing is entering it");
     }
 
     #[cfg(unix)]
@@ -8977,6 +8930,12 @@ mod tests {
         env.set("TILO_HOME_PEERS_PATH", &peers);
         env.set("XDG_STATE_HOME", dir.path().join("state"));
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        for room in [absent, present] {
+            net.tree
+                .write()
+                .join_room("Shared", RoomId::parse(room).expect("room"))
+                .expect("a workspace of the room");
+        }
         assert!(net.join_default_workspace());
         while commands.try_recv().is_ok() {}
         let endpoint = iroh::EndpointId::from_bytes(&device).expect("endpoint");
@@ -9032,6 +8991,10 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (net, mut commands) = personal_continuity_network_for_test([0x44; 32]);
+        net.tree
+            .write()
+            .join_room("Shared", RoomId::parse(room).expect("room"))
+            .expect("a workspace of the room");
         assert!(net.join_default_workspace());
         while commands.try_recv().is_ok() {}
         let address = tilo_actions::ActionAddress::new("app.files", "open");
@@ -9275,11 +9238,11 @@ mod tests {
 
     #[test]
     #[serial_test::serial(process_env)]
-    fn enrolled_rooms_stay_after_startup_when_continuations_are_off() {
+    fn a_workspace_of_an_enrolled_room_stays_after_startup_when_continuations_are_off() {
         let dir = tempfile::tempdir().expect("temp");
         let peers = dir.path().join("home-peers.json");
         std::fs::write(&peers, b"[]").unwrap();
-        let room = "11111111-1111-4111-8111-111111111111";
+        let room = RoomId::parse("11111111-1111-4111-8111-111111111111").expect("room");
         std::fs::write(
             dir.path().join("personal-rooms.json"),
             format!("[\"{room}\"]"),
@@ -9289,23 +9252,20 @@ mod tests {
         env.set("TILO_HOME_PEERS_PATH", &peers);
         let (mut net, _commands) = personal_continuity_network_for_test([0x44; 32]);
         net.continuity_policy_override = Some(test_continuity_policy(false, false, false));
-        assert!(net.join_default_workspace());
-        let rooms = net.tree.read().rooms();
-        assert!(
-            rooms.iter().any(|candidate| candidate.to_string() == room),
-            "startup must keep the enrolled room"
-        );
-        let owner = net
+        let workspace = net
             .tree
-            .read()
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room().to_string() == room)
-            .and_then(|workspace| workspace.owner().cloned());
-        assert_eq!(
-            owner.as_deref(),
-            Some(crate::shell::state::local_user_id().as_str())
+            .write()
+            .join_room("Plans", room)
+            .expect("a workspace of the room");
+        assert!(net.join_default_workspace());
+        let tree = net.tree.read();
+        assert!(tree.rooms().contains(&room), "startup keeps the room");
+        assert!(
+            tree.desktop
+                .workspaces
+                .iter()
+                .any(|candidate| candidate.id == workspace && candidate.room() == room),
+            "and its workspace"
         );
     }
 
@@ -10401,9 +10361,7 @@ mod tests {
             let user = [0xA5; 32];
             let (mut net, _commands) = personal_continuity_network_for_test(user);
             let room = RoomId::new();
-            net.tree
-                .write()
-                .adopt_continuation_room(room, "remote-device");
+            net.tree.write().join_room("Plans", room);
             let remote = test_device(0xA6);
             let snapshot = crate::shell::personal_continuity::DeviceContinuationSnapshot::new(
                 remote,
@@ -10453,7 +10411,6 @@ mod tests {
             );
             assert!(!path.exists());
             assert!(!personal_continuity_backup_path(&path).exists());
-            assert!(net.tree.read().continuation_rooms.is_empty());
             assert_eq!(
                 crate::shell::personal_continuity_registry::global_registry()
                     .lock()
@@ -11849,6 +11806,87 @@ mod tests {
         personal_continuity_topic_is_stable_and_root_bound();
     }
 
+    /// What another device continues in a room the person's list has not
+    /// brought here yet makes no workspace and marks nothing joined: the
+    /// list says which rooms are the person's and where they are hosted.
+    /// The app state is kept, and shows once the room is entered.
+    #[test]
+    #[serial_test::serial]
+    fn continued_app_state_waits_for_the_list_to_bring_its_room() {
+        use crate::shell::personal_continuity::{
+            AppInstanceId, AppInstanceState, ContinuityStamp, DeviceContinuationSnapshot, DeviceId,
+            LaunchIntent, PersonalContinuity, TabPlacement, WorkspaceContinuation,
+        };
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xE5; 32]);
+        let user_public_key = root.verifying_key().to_bytes();
+        let source_endpoint = iroh::SecretKey::from_bytes(&[0xE6; 32]);
+        let source_device = DeviceId::new(hex::encode(source_endpoint.public().as_bytes()))
+            .expect("endpoint ids are portable device ids");
+        let room = RoomId::new();
+        let tab = 0xC011_0101;
+        let app = AppInstanceState::new(
+            AppInstanceId(tab),
+            TabPlacement {
+                strip: 0,
+                group: 0,
+                tab: 0,
+            },
+            LaunchIntent::app("so.tilo.browser").expect("known app id"),
+            None,
+            ContinuityStamp {
+                counter: 1,
+                device: source_device.clone(),
+            },
+        );
+        let snapshot = DeviceContinuationSnapshot::new(
+            source_device,
+            1,
+            None,
+            vec![WorkspaceContinuation {
+                room,
+                apps: vec![app],
+            }],
+        )
+        .expect("valid snapshot");
+        let mut continuity = PersonalContinuity::default();
+        continuity.upsert(snapshot).expect("snapshot merges");
+        let checkpoint = postcard::to_allocvec(&continuity).expect("checkpoint encodes");
+
+        let (target, _commands) = personal_continuity_network_for_test(user_public_key);
+        authenticated_personal_peer(&target, &root, &source_endpoint);
+        target.dispatch_neighbour_msg(
+            personal_continuity_topic_id(&user_public_key),
+            source_endpoint.public(),
+            None,
+            false,
+            NeighbourMsg::PersonalContinuityCheckpoint {
+                user_public_key,
+                publisher: crate::network::behaviour::peer_liveness_handle(
+                    &source_endpoint.public(),
+                ),
+                snapshot: checkpoint,
+            },
+        );
+        {
+            let tree = target.tree.read();
+            assert!(!tree.has_workspace(room), "continuity made a workspace");
+            assert!(
+                !tree.joining_rooms.contains(&room),
+                "continuity marked it joined"
+            );
+            assert!(!tree.continuation_tabs.contains(&tab));
+        }
+
+        // The list brings the room: entering it makes its workspace.
+        target.tree.write().join_native_room("Plans", room);
+        assert!(target.materialize_kept_continuations());
+        assert!(
+            target.tree.read().continuation_tabs.contains(&tab),
+            "the kept app state shows in the entered room"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
     /// Exercises the shipped continuation boundaries as one lifecycle: an
     /// app report becomes a private Postcard checkpoint, a second shell
     /// turns it into dormant cards, the normal launcher handoff receives the
@@ -12023,6 +12061,9 @@ mod tests {
 
         let (target, _target_commands) = personal_continuity_network_for_test(user_public_key);
         authenticated_personal_peer(&target, &root, &source_endpoint);
+        // The person's list brought the room here; continuity shows what is
+        // open in it.
+        target.tree.write().join_room("Plans", room);
         target.dispatch_neighbour_msg(
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
@@ -12314,15 +12355,9 @@ mod tests {
                 active_before,
                 "receiving a continuation must not move focus"
             );
-            let adopted = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.room() == room)
-                .expect("continuation room is available for later user-directed restore");
             assert!(
-                adopted.strips.is_empty(),
-                "receiving a continuation must not recreate applications"
+                !tree.has_workspace(room) && !tree.is_joining(room),
+                "a continuation alone brings no workspace and no join: the person's list does"
             );
         }
 
@@ -13697,15 +13732,14 @@ mod tests {
             !tree.stand_in_room(local, person_room),
             "an invite cannot name it"
         );
-        assert!(!tree.join_enrolled_room(person_room), "nor an enrollment");
         assert!(
-            !tree.adopt_continuation_room(person_room, "Laptop"),
-            "nor a continuation"
+            tree.join_native_room("Mine", person_room).is_none(),
+            "nor a join"
         );
         assert!(!tree.rooms().contains(&person_room));
         let other = RoomId::new();
         assert!(
-            tree.join_enrolled_room(other),
+            tree.join_native_room("Other", other).is_some(),
             "an ordinary room still joins"
         );
     }

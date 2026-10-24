@@ -649,6 +649,14 @@ async fn paired_continuity_catchup_preserves_browser_checkpoint_and_launcher_ide
         .lock()
         .unwrap()
         .forget_local_tab(AppInstanceId(tab));
+    // The person's list brings the room to the right device; continuity
+    // carries only what runs in it.
+    right
+        .network
+        .tree
+        .write()
+        .join_room("Shared", room)
+        .expect("the room's workspace");
     right.network.dispatch_net_event(arrived);
     assert!(right.network.tree.read().continuation_tabs.contains(&tab));
     let tree_handle = right.network.tree.clone();

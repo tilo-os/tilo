@@ -131,7 +131,7 @@ impl DeviceMeshModel {
                 self.cx
                     .row(workspace.name.clone())
                     .described(t_args("mesh-home-relay-also", &[("relay", relay.into())]))
-                    .id(&format!("device_mesh.home_relay.{}", workspace.room))
+                    .id(format!("device_mesh.home_relay.{}", workspace.room))
                     .toggle_effect(
                         &ui::LocalState::new(workspace.on_relay),
                         effect(DeviceMeshEffect::SET_HOME_RELAY_HOSTING)
