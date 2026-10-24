@@ -14,7 +14,7 @@ use ui::secrets::SecretStore;
 use ui::tilo_actions::ResourcePresentation;
 use ui::tilo_resource::{self, Effect, Id, Invoke, Refusal, SearchEntry, resource};
 use ui::tokens::SpacingStep;
-use ui::widget::{ButtonRole, Element, NavShell, Spacer};
+use ui::widget::{ButtonRole, Element, EmptyState, NavShell, Spacer, Stack, When};
 
 use crate::app::{AuthenticatorApp, Notice};
 pub use crate::model::Totp;
@@ -208,6 +208,21 @@ impl ResourceApp for TotpShell {
                 .with_count_signal(count.clone())
                 .with_notice_signal(notice.clone()),
         );
+        // With no accounts the list is empty and the empty state over it
+        // asks for the first one; the surface stays mounted under it, since
+        // it hosts the add sheet.
+        let empty = EmptyState::new("No accounts yet")
+            .with_icon(Icon::Shield)
+            .with_message("Scan a QR code or paste a setup link to see its one-time codes here.")
+            .with_action("Add account")
+            .with_action_id("totp-empty-add");
+        let empty = match cx.actions().effect(&TotpEffect::AddAccount) {
+            Some(binding) => empty.on_action(binding),
+            None => empty,
+        };
+        let content: Element = Box::new(Stack::new().push(content).push(Box::new(
+            When::from_state(&has_accounts, |has| !*has, Box::new(empty)),
+        )));
         let add = cx.switch(&has_accounts, |cx, has_accounts| -> Element {
             if *has_accounts {
                 // The vault's own "Add account" effect, the one the palette
@@ -809,7 +824,7 @@ mod tests {
     #[test]
     fn the_empty_vaults_add_account_is_described_and_opens_the_sheet() {
         fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
-            if node.action_target.as_deref() == Some("totp.add") {
+            if node.action_target.as_deref() == Some("totp-empty-add") {
                 return Some(node);
             }
             node.children.iter().find_map(find)
