@@ -92,6 +92,13 @@ if tests app-cli app-host; then
     cargo build --locked -p install --bin tilo-install
 fi
 
+# pam_tilo's tests load the module as libpam does: the cdylib, which no test
+# binary links and an archive of test binaries does not carry.
+if tests pam-tilo; then
+    cargo build --locked -p pam-tilo --lib
+    export TILO_PAM_TILO_MODULE="${CARGO_TARGET_DIR:-$root/target}/debug/libpam_tilo.so"
+fi
+
 if (( nextest && ! explicit )); then
     # shellcheck disable=SC1090
     source <(python3 - "$root/tools/ci" <<'PY'
