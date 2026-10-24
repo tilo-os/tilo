@@ -612,6 +612,7 @@ impl ShellOverlayHost {
             person_quick_composer_node: None,
             peer_sync_node: None,
             app_sheet: None,
+            app_sheet_leaving: None,
             app_sheet_nodes: None,
             app_sheet_changed: false,
             agent_actions: HashMap::new(),
