@@ -166,18 +166,16 @@ mod tests {
         }
     }
 
-    /// Invoke the library's action `id` with the argument `name` set to
-    /// `value` by its address, as a headless drive's `invoke` step does: no
-    /// coordinates, no click.
+    /// Invoke `effect` on the library by its address, as a headless
+    /// drive's `invoke` step does: no coordinates, no click.
     fn drive_invoke(
         app: &mut TestApp<VideoPlayerShell>,
-        id: &str,
-        (name, value): (&str, serde_json::Value),
+        effect: &VideoEffect,
     ) -> Result<(), ui::tilo_actions::DoorError> {
-        let arguments = serde_json::Map::from_iter([(name.to_owned(), value)]);
-        let address = ui::tilo_actions::ActionAddress::new("video-player.library", id);
+        use ui::tilo_resource::{Effect as _, Resource as _};
+        let address = effect.address_on(Library::KIND);
         app.harness()
-            .invoke_action(&address, &arguments, false, None)
+            .invoke_action(&address, &effect.arguments(), false, None)
             .map(drop)
     }
 
@@ -197,8 +195,13 @@ mod tests {
     #[test]
     fn a_drive_of_a_scenario_shows_the_library_and_seeks_by_address() {
         let mut app = TestApp::<VideoPlayerShell>::drive("playing").unwrap();
-        drive_invoke(&mut app, "show-library", ("tab", "shared".into()))
-            .expect("the drive shows the library, as the L key does");
+        drive_invoke(
+            &mut app,
+            &VideoEffect::ShowLibrary {
+                tab: "shared".into(),
+            },
+        )
+        .expect("the drive shows the library, as the L key does");
         app.settle();
         assert!(surface(&mut app, |player| player.library_visible()));
         assert_eq!(
@@ -207,7 +210,7 @@ mod tests {
         );
         // Seek reaches the player: it moves the open clip, or, on a machine
         // without the system decoder, says a video must be open first.
-        if let Err(error) = drive_invoke(&mut app, "seek", ("seconds", 2.0.into())) {
+        if let Err(error) = drive_invoke(&mut app, &VideoEffect::Seek { seconds: 2.0 }) {
             assert_eq!(error.code(), "action_unavailable", "{error}");
         }
     }
