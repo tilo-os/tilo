@@ -5,7 +5,9 @@
 //! A relay runs one as a certified host ([`HostMode::CertifiedHost`]); a
 //! person's device runs the same one for the rooms placed on it
 //! ([`HostMode::Device`]). [`RoomHost::open`] spawns nothing periodic: with
-//! no peers connected the host wakes only on I/O. Its embedder registers
+//! no peers connected the host wakes only on I/O, and a connected peer's
+//! session is audited when its rooms' membership files change, which the
+//! host watches. Its embedder registers
 //! [`RoomHost::protocols`] on its own router, or, when the router is built
 //! before any room is placed here, [`deferred_protocols`], which refuse
 //! connections until [`HostSlot::install`] gives them a host.
@@ -154,6 +156,10 @@ pub struct HostSessions {
     pub handler: RelayProtocol,
     /// Ends the in-process sessions when the host shuts down.
     closing: Arc<tokio::sync::watch::Sender<bool>>,
+    /// The watch that lets its rooms' membership be read from memory until
+    /// a file changes, so a live session is audited when something changed
+    /// rather than every second.
+    membership_watch: Arc<crate::membership_watch::WatchTask>,
 }
 
 /// A host's rooms, when it governs them: the governance and the plane
@@ -248,6 +254,7 @@ impl HostSessions {
             shell_payloads: cfg.shell_payloads.clone(),
             handler,
             closing: Arc::new(tokio::sync::watch::channel(false).0),
+            membership_watch: Arc::new(crate::membership_watch::WatchTask::spawn(&cfg.state_root)),
         };
         let (Some(governance), Some(actions)) = (governance, own_plane) else {
             return Ok((sessions, None));
@@ -386,6 +393,7 @@ impl HostSessions {
     /// End every in-process session and stop compacting.
     pub async fn shutdown(&self) {
         self.closing.send_replace(true);
+        self.membership_watch.stop();
         self.handler.compactor.stop().await;
     }
 }
