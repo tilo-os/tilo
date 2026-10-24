@@ -1025,6 +1025,72 @@ fn members_join_a_call_through_its_actions_without_being_asked() {
     }
 }
 
+/// The name of the slot `target` in the window's row of slots, as a reader
+/// and an agent find it (none: not in the row).
+fn window_slot_name(frame: &ui::headless::FrameHarness, target: &str) -> Option<String> {
+    fn find(node: &ui::a11y::AccessNode, target: &str) -> Option<String> {
+        if node.action_target.as_deref() == Some(target) {
+            return node.name.clone();
+        }
+        node.children.iter().find_map(|child| find(child, target))
+    }
+    let inspection = frame.inspection();
+    let row = inspection
+        .root
+        .children
+        .iter()
+        .find(|node| node.path == ui::headless::WINDOW_SLOTS)?;
+    find(row.semantics.as_ref()?, target)
+}
+
+// Mounted alone, as a browser page mounts it, Chat's call controls are its
+// window's slots: the page's row shows the microphone and Leave, a reader or
+// an agent activates them there, and leaving takes them away.
+#[test]
+fn a_chat_mounted_alone_shows_its_call_in_the_windows_row_of_slots() {
+    const MUTE: &str = "window-toolbar-action:call-mute";
+    const LEAVE: &str = "window-toolbar-action:call-leave";
+    let cache = ui::portable_storage::PortableStorage::new("call-window-slots", "device").unwrap();
+    let (mut frame, _, _) = component_mount_as(
+        &cache,
+        "author",
+        1,
+        "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71",
+        ui::permissions::Role::Editor,
+    );
+    frame.host_window_slots();
+    let join = ui::bound_dispatch::BoundActionAddress {
+        instance_id: 1,
+        address: crate::effects::ChatEffect::JOIN_CALL.on(crate::testing::call_row("c_voice")),
+    };
+    frame
+        .invoke_bound_action(&join, &serde_json::Map::new())
+        .expect("the call is joined");
+    frame.relayout();
+    assert_eq!(
+        window_slot_name(&frame, MUTE).as_deref(),
+        Some("Unmute"),
+        "joined muted, the microphone says what a press does"
+    );
+    assert_eq!(
+        window_slot_name(&frame, LEAVE).as_deref(),
+        Some("Leave call")
+    );
+    frame
+        .perform_semantic_named(
+            ui::headless::WINDOW_SLOTS,
+            Some(LEAVE),
+            &ui::a11y::Action::Activate,
+        )
+        .expect("Leave runs from the row");
+    assert_eq!(
+        window_slot_name(&frame, LEAVE),
+        None,
+        "left, the call's controls go"
+    );
+    assert_eq!(window_slot_name(&frame, MUTE), None);
+}
+
 #[test]
 fn browser_media_lane_routes_shared_chat_actions_and_retires_closed_owners() {
     use ui::headless::host_media::MediaLane;

@@ -1604,7 +1604,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let mut frame = match root {
         Root::Component(component) => {
             let wake = proxy()?;
-            FrameHarness::from_component_with_wake_notifier(
+            let mut frame = FrameHarness::from_component_with_wake_notifier(
                 *component,
                 viewport.logical_size(),
                 ComponentRunnerInputs {
@@ -1615,7 +1615,12 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
                     let _ = wake.send_event(id);
                 },
             )
-            .map_err(error)?
+            .map_err(error)?;
+            // The page is the app's window, outside any Tilo session: it
+            // hosts the app's window-bar slots, search and History in a
+            // row of its own, as a native window of its own does.
+            frame.host_window_slots();
+            frame
         }
         Root::Desktop(surface) => {
             if let Some(desktop) = &desktop {
