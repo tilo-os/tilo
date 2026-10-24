@@ -1664,20 +1664,38 @@ impl MusicApp {
                 self.dirty = true;
                 self.start_or_apply_playback(invocation, next)
             }
-            transport => {
-                let next = crate::actions::next_playback(&transport, &self.pb, &|id| {
-                    self.playback_track(id).is_some()
-                })
-                .ok_or_else(|| {
-                    format!(
-                        "`{}` is not a playback effect",
-                        ui::tilo_resource::Effect::id(&transport)
-                    )
-                })??;
-                self.dirty = true;
-                self.start_or_apply_playback(invocation, next)
-            }
+            transport => self.begin_transport_effect(invocation, &transport),
         }
+    }
+
+    /// A transport or queue effect that only changes this device's playback.
+    fn begin_transport_effect(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        transport: &crate::actions::MusicEffect,
+    ) -> Result<ui::framework::Effected, String> {
+        let next = crate::actions::next_playback(transport, &self.pb, &|id| {
+            self.playback_track(id).is_some()
+        })
+        .ok_or_else(|| {
+            format!(
+                "`{}` is not a playback effect",
+                ui::tilo_resource::Effect::id(transport)
+            )
+        })??;
+        self.dirty = true;
+        let next_index = matches!(transport, crate::actions::MusicEffect::PlayNext { .. })
+            .then_some(next.queue_index + 1);
+        if next_index.is_some() && self.pb.shuffle {
+            self.ensure_shuffle_order();
+        }
+        let effected = self.start_or_apply_playback(invocation, next)?;
+        // A song put next is heard next under shuffle too, as the person's
+        // own Play next does.
+        if let Some(index) = next_index {
+            self.shuffle_next(index);
+        }
+        Ok(effected)
     }
 
     /// Move to `next`: only starting a source waits for the audio it starts.
