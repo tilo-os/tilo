@@ -338,10 +338,31 @@ pub(crate) struct Unopened {
     /// ([`Self::open_text`]), as this holds what the participant reads of
     /// its records.
     texts: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
+    /// The messages of each message record news and waits read
+    /// ([`crate::message_lines::message_text`]), kept as [`Self::texts`].
+    messages: HashMap<DocumentRoute, (Stamp, Arc<str>)>,
     /// How many changes each record held when last asked
     /// ([`Self::changes`]), and when it had last changed then.
     counts: HashMap<DocumentRoute, (u64, u64)>,
     changes_seen: u64,
+}
+
+/// How a record's text is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// Its words, as search reads them ([`crate::search::plain_text`]).
+    Plain,
+    /// Its messages ([`crate::message_lines::message_text`]).
+    Messages,
+}
+
+impl Reading {
+    fn read(self, doc: &AutoCommit) -> Arc<str> {
+        match self {
+            Self::Plain => crate::search::plain_text(doc).into(),
+            Self::Messages => crate::message_lines::message_text(doc).into(),
+        }
+    }
 }
 
 /// When a record's text was read: at a change count of an unopened record,
@@ -361,6 +382,7 @@ impl Unopened {
             arrived: HashMap::new(),
             titles: HashMap::new(),
             texts: HashMap::new(),
+            messages: HashMap::new(),
             counts: HashMap::new(),
             changes_seen: 0,
         }
@@ -466,59 +488,79 @@ impl Unopened {
         title
     }
 
-    /// The plain text of the unopened record at `route`
-    /// ([`crate::search::plain_text`]), read once per change of it. `None`
-    /// for the shared desktop, a record the room does not have, or one
-    /// whose changes wait for the isolate.
-    pub(super) fn text(&mut self, route: &DocumentRoute) -> Option<Arc<str>> {
+    fn read_texts(&mut self, reading: Reading) -> &mut HashMap<DocumentRoute, (Stamp, Arc<str>)> {
+        match reading {
+            Reading::Plain => &mut self.texts,
+            Reading::Messages => &mut self.messages,
+        }
+    }
+
+    /// The text of the unopened record at `route`, read as `reading` says,
+    /// once per change of it. `None` for the shared desktop, a record the
+    /// room does not have, or one whose changes wait for the isolate.
+    pub(super) fn text(&mut self, route: &DocumentRoute, reading: Reading) -> Option<Arc<str>> {
         let stamp = Stamp::Unopened(self.arrived.get(route).copied().unwrap_or(0));
-        if let Some((at, text)) = self.texts.get(route)
+        if let Some((at, text)) = self.read_texts(reading).get(route)
             && *at == stamp
         {
             return Some(Arc::clone(text));
         }
-        let doc = match self.held.get_mut(route)?.document() {
-            Ok(doc) => doc,
-            Err(reason) => {
-                tracing::warn!(%reason, "agent: a record's text waits for the isolate");
-                return None;
-            }
-        };
-        let text: Arc<str> = crate::search::plain_text(&doc).into();
-        self.texts.insert(route.clone(), (stamp, Arc::clone(&text)));
+        let text = self.read(route, |doc| reading.read(doc))?;
+        self.read_texts(reading)
+            .insert(route.clone(), (stamp, Arc::clone(&text)));
         Some(text)
     }
 
-    /// The plain text of `replica`, the open record at `route`, read again
-    /// only once it changed.
+    /// `read` of the document of the unopened record at `route`. `None`
+    /// for the shared desktop, a record the room does not have, or one
+    /// whose changes wait for the isolate.
+    pub(super) fn read<T>(
+        &mut self,
+        route: &DocumentRoute,
+        read: impl FnOnce(&AutoCommit) -> T,
+    ) -> Option<T> {
+        match self.held.get_mut(route)?.document() {
+            Ok(doc) => Some(read(&doc)),
+            Err(reason) => {
+                tracing::warn!(%reason, "agent: a record's text waits for the isolate");
+                None
+            }
+        }
+    }
+
+    /// The text of `replica`, the open record at `route`, read as
+    /// `reading` says, again only once it changed.
     pub(super) fn open_text(
         &mut self,
         route: &DocumentRoute,
         replica: &crate::worker::ConfinedReplica,
+        reading: Reading,
     ) -> Option<Arc<str>> {
-        replica.read(|doc| self.held_text(route, doc))
+        replica.read(|doc| self.held_text(route, doc, reading))
     }
 
-    /// The plain text of the part at `route`, held beside its open record
-    /// in `holder` ([`super::parts`]), read again only once it changed.
-    /// `None` when `holder` does not hold it.
+    /// The text of the part at `route`, held beside its open record in
+    /// `holder` ([`super::parts`]), read as `reading` says, again only once
+    /// it changed. `None` when `holder` does not hold it.
     pub(super) fn part_text(
         &mut self,
         route: &DocumentRoute,
         holder: &crate::worker::ConfinedReplica,
+        reading: Reading,
     ) -> Option<Arc<str>> {
         let record = ui::record::RecordId::parse(&route.record)?;
-        holder.read_record(&record, |doc| self.held_text(route, doc))
+        holder.read_record(&record, |doc| self.held_text(route, doc, reading))
     }
 
-    fn held_text(&mut self, route: &DocumentRoute, doc: &AutoCommit) -> Arc<str> {
+    fn held_text(&mut self, route: &DocumentRoute, doc: &AutoCommit, reading: Reading) -> Arc<str> {
         let stats = doc.stats();
         let stamp = Stamp::Open(stats.num_changes, stats.num_ops);
-        match self.texts.get(route) {
+        let texts = self.read_texts(reading);
+        match texts.get(route) {
             Some((at, text)) if *at == stamp => Arc::clone(text),
             _ => {
-                let text: Arc<str> = crate::search::plain_text(doc).into();
-                self.texts.insert(route.clone(), (stamp, Arc::clone(&text)));
+                let text = reading.read(doc);
+                texts.insert(route.clone(), (stamp, Arc::clone(&text)));
                 text
             }
         }
@@ -833,11 +875,18 @@ mod tests {
         let second = doc.save_incremental();
         let brief = route("so.tilo.word-processor", "rec-brief");
         let mut unopened = Unopened::new("room");
-        assert_eq!(unopened.text(&brief), None, "no such record yet");
+        assert_eq!(
+            unopened.text(&brief, Reading::Plain),
+            None,
+            "no such record yet"
+        );
         unopened.receive(brief.clone(), first);
-        let read = unopened.text(&brief).unwrap();
+        let read = unopened.text(&brief, Reading::Plain).unwrap();
         assert_eq!(&*read, "Q2 partner review");
-        assert!(Arc::ptr_eq(&read, &unopened.text(&brief).unwrap()), "kept");
+        assert!(
+            Arc::ptr_eq(&read, &unopened.text(&brief, Reading::Plain).unwrap()),
+            "kept"
+        );
         unopened.receive(brief.clone(), second);
         assert_eq!(
             unopened
@@ -847,7 +896,10 @@ mod tests {
         );
         let (at, text) = unopened.texts.get(&brief).cloned().unwrap();
         assert_eq!((at, &*text), (Stamp::Unopened(2), "Q3 partner review"));
-        assert!(Arc::ptr_eq(&text, &unopened.text(&brief).unwrap()));
+        assert!(Arc::ptr_eq(
+            &text,
+            &unopened.text(&brief, Reading::Plain).unwrap()
+        ));
         unopened.keep_texts(|_| false);
         assert!(unopened.texts.is_empty());
     }

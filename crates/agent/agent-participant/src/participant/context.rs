@@ -9,6 +9,7 @@ use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
 use tilo_browser_peer::DocumentRoute;
 
+use super::unopened::Reading;
 use super::{
     AgentParticipant, MOST_OPENED_BY_TITLE, MOST_REFERENCED_APPS, MOST_SNAPSHOT_CHARS,
     MOST_SNAPSHOT_READS, MOST_SNAPSHOTS, MOST_SNAPSHOTS_CHARS, SNAPSHOT_READS, actions,
@@ -180,7 +181,7 @@ impl AgentParticipant {
             if !apps.contains(&route.app_id) {
                 continue;
             }
-            if let Some(text) = self.unopened.open_text(route, replica) {
+            if let Some(text) = self.unopened.open_text(route, replica, Reading::Plain) {
                 docs.push(crate::search::SearchDoc {
                     route: route.clone(),
                     title: None,
@@ -201,7 +202,7 @@ impl AgentParticipant {
             let title = self
                 .unopened
                 .title(&route, |doc| titles.title(&route.app_id, doc));
-            let Some(text) = self.unopened.text(&route) else {
+            let Some(text) = self.unopened.text(&route, Reading::Plain) else {
                 continue;
             };
             let changed = self.unopened.changed(&route);
