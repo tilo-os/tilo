@@ -37,6 +37,25 @@ interface CollabService {
   # the app's first write creates it in this kind, if the app declares it.
   joinChannel @0 (channelId :Text, identity :Data, participantHandle :Text,
                   participantKind :Text, recordKind :Text) -> (handle :ChannelHandle);
+
+  # Whether an app can open documents in the room `channelId` names, on
+  # this device, now. `joinChannel` holds a join while the room is waiting,
+  # so a client asks first only to say why it waits.
+  roomStatus @1 (channelId :Text) -> (status :RoomStatus);
+
+  # The room's status once it is no longer `seen`: ready, refused, or
+  # waiting for another reason.
+  awaitRoom @2 (channelId :Text, seen :RoomStatus) -> (status :RoomStatus);
+}
+
+# Where a room stands for the apps on this device. All empty: ready.
+struct RoomStatus {
+  # Not ready yet, and why, in the person's words.
+  waiting @0 :Text;
+  # What last held a waiting room up, when something did.
+  detail @1 :Text;
+  # It will not be ready on this device, and why, in the person's words.
+  refusal @2 :Text;
 }
 
 interface ChannelHandle {
