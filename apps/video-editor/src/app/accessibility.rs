@@ -408,6 +408,16 @@ impl VideoEditorApp {
                     .with_state(AccessState::new().focusable(can).disabled(!can)),
             );
         }
+        // The preview hint's Go to clip, where it is drawn.
+        if let Some(rect) = self.go_to_clip_button(&self.regions()) {
+            buttons.push(
+                AccessNode::new(Role::Button)
+                    .with_name(super::go_to_clip::GO_TO_CLIP_LABEL)
+                    .with_bounds(rect)
+                    .with_key(ui::a11y::hash_key(&super::go_to_clip::GO_TO_CLIP_KEY))
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
         // The playhead is a live readout: it changes without focus moving, so
         // it rides on the pane as a value the reader can re-read on demand.
@@ -1620,6 +1630,13 @@ impl VideoEditorApp {
         let Some(&key) = rest.first() else {
             return false;
         };
+        if key == hash_key(&super::go_to_clip::GO_TO_CLIP_KEY) {
+            return match action {
+                Action::Focus => true,
+                Action::Activate => self.go_to_clip(),
+                _ => false,
+            };
+        }
         // History first: its keys are hashed from the verb, so they cannot
         // collide with the transport's positional ones.
         for which in [ui::UndoRequest::Undo, ui::UndoRequest::Redo] {

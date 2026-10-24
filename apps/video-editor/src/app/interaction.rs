@@ -513,6 +513,13 @@ impl VideoEditorApp {
             }
             return;
         }
+        // The preview hint's Go to clip.
+        if let Some(button) = self.go_to_clip_button(r)
+            && button.contains(p)
+        {
+            self.go_to_clip();
+            return;
+        }
         // Empty-bin "Import media" affordance.
         if let Some(btn) = self.empty_bin_import_rect(r)
             && btn.contains(p)
