@@ -32,11 +32,9 @@ impl MapsApp {
                 self.set_traffic(!self.map_controls.traffic_enabled());
             }
             MapsEffect::OpenPlace { place } => self.open_place(&place)?,
-            MapsEffect::Directions { place } if self.model.place(&place).is_none() => {
-                return Err("Map place is no longer available".into());
-            }
+            // A place the geocoder found is taken in as opening it would.
             MapsEffect::Directions { place } => {
-                self.select_place(&place);
+                self.open_place(&place)?;
                 self.enter_directions();
             }
             MapsEffect::OpenPoi { poi } | MapsEffect::PoiDirections { poi }
