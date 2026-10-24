@@ -8815,7 +8815,7 @@ fn selected_device_cert(
     Ok(cert)
 }
 
-fn host_identity_for_key(
+pub(crate) fn host_identity_for_key(
     keypair: &iroh::SecretKey,
     keypair_path: &std::path::Path,
 ) -> Option<HostIdentity> {
