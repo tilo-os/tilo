@@ -12,6 +12,7 @@
     reason = "test support: failing to set up the fixture is the test's answer"
 )]
 
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
 fn have(tool: &str) -> bool {
@@ -66,12 +67,24 @@ pub struct Swtpm {
     _state: tempfile::TempDir,
     port: u16,
     child: Child,
+    /// swtpm's log of every command and response, when it keeps one.
+    wire: Option<PathBuf>,
 }
 
 impl Swtpm {
     /// A fresh emulated TPM on its own port pair. `Err` names the tools this
     /// host lacks; a TPM that will not start once they are there panics.
     pub fn start() -> Result<Self, String> {
+        Self::start_with(false)
+    }
+
+    /// Like [`Swtpm::start`], and the TPM keeps every command and response it
+    /// exchanges, for tests of what crosses the bus: [`Swtpm::wire`].
+    pub fn start_recording() -> Result<Self, String> {
+        Self::start_with(true)
+    }
+
+    fn start_with(record: bool) -> Result<Self, String> {
         let missing = missing_tools();
         if !missing.is_empty() {
             return Err(format!(
@@ -81,7 +94,7 @@ impl Swtpm {
         // Retry on a fresh port pair: a lost race shows up as swtpm exiting immediately.
         let mut last = String::new();
         for _ in 0..8 {
-            match Self::try_start() {
+            match Self::try_start(record) {
                 Ok(tpm) => return Ok(tpm),
                 Err(why) => last = why,
             }
@@ -89,7 +102,7 @@ impl Swtpm {
         panic!("could not start swtpm after 8 attempts; last failure: {last}");
     }
 
-    fn try_start() -> Result<Self, String> {
+    fn try_start(record: bool) -> Result<Self, String> {
         let state = tempfile::tempdir().expect("tempdir");
         // tpm2-tools' `swtpm:` TCTI assumes the control channel is at `port + 1`; two unrelated
         // free ports produce a data channel that answers and a control channel that looks broken.
@@ -111,8 +124,14 @@ impl Swtpm {
             ))
             .status();
         let log = state.path().join("swtpm.log");
-        let child = Command::new("swtpm")
-            .arg("socket")
+        let wire = record.then(|| state.path().join("wire.log"));
+        let mut swtpm = Command::new("swtpm");
+        swtpm.arg("socket");
+        if let Some(wire) = &wire {
+            // Level 20 logs each command and response in full, as hex.
+            swtpm.arg(format!("--log=file={},level=20", wire.display()));
+        }
+        let child = swtpm
             .arg("--tpm2")
             .arg(format!("--tpmstate=dir={}", state.path().display()))
             .arg(format!("--server=type=tcp,port={port}"))
@@ -132,6 +151,7 @@ impl Swtpm {
             _state: state,
             port,
             child,
+            wire,
         };
         let mut last = String::new();
         // Readiness usually takes a few probes; the bound only catches a hang.
@@ -163,11 +183,59 @@ impl Swtpm {
         ))
     }
 
+    /// Every command and response this TPM exchanged so far, in order, as
+    /// one byte string. Only a TPM from [`Swtpm::start_recording`] keeps them.
+    #[must_use]
+    pub fn wire(&self) -> Vec<u8> {
+        let path = self
+            .wire
+            .as_deref()
+            .expect("only a TPM from Swtpm::start_recording records its traffic");
+        parse_wire(&std::fs::read_to_string(path).expect("swtpm's wire log"))
+    }
+
     /// The `TPM2TOOLS_TCTI` value that reaches this TPM.
     #[must_use]
     pub fn tcti(&self) -> String {
         format!("swtpm:host=127.0.0.1,port={}", self.port)
     }
+}
+
+/// The bytes of swtpm's `SWTPM_IO_Read` and `SWTPM_IO_Write` entries: a line
+/// `SWTPM_IO_Read: length N`, then N bytes as hex, sixteen to a line.
+fn parse_wire(log: &str) -> Vec<u8> {
+    let mut wire = Vec::new();
+    let mut left = 0_usize;
+    for line in log.lines().map(str::trim) {
+        let length = line
+            .strip_prefix("SWTPM_IO_Read: length ")
+            .or_else(|| line.strip_prefix("SWTPM_IO_Write: length "));
+        if let Some(length) = length {
+            left = length.parse().unwrap_or(0);
+            continue;
+        }
+        if left == 0 {
+            continue;
+        }
+        let bytes: Option<Vec<u8>> = line
+            .split_whitespace()
+            .map(|b| u8::from_str_radix(b, 16).ok())
+            .collect();
+        match bytes {
+            Some(bytes) if !bytes.is_empty() => {
+                left = left.saturating_sub(bytes.len());
+                wire.extend(bytes);
+            }
+            _ => left = 0,
+        }
+    }
+    wire
+}
+
+/// Whether `needle` occurs in `haystack`.
+#[must_use]
+pub fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 impl Drop for Swtpm {

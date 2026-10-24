@@ -8,6 +8,11 @@
 //! The template has `noda`, as the standard one does: only the person's own
 //! object counts tries, so a locked-out TPM still loads it and can say so, and
 //! a new secret can be sealed while the lockout lasts.
+//!
+//! Sealing and unsealing run in an HMAC session salted to that primary with
+//! parameter encryption both ways, so neither the authorisation value nor the
+//! user key crosses the bus to a discrete TPM in the clear: the value only
+//! keys the session's HMAC, and the key and sealed data travel encrypted.
 
 use crate::userkey::UserKey;
 use anyhow::{Context as _, Result, bail};
@@ -73,8 +78,49 @@ pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf
     Ok(ctx)
 }
 
+/// Flush the transient objects the tools leave loaded, but not the session:
+/// a TPM without a resource manager has three object slots.
+fn flush_objects(runner: &dyn Runner) {
+    let _ = runner.run("tpm2_flushcontext", &argv!["-t"], None);
+}
+
+/// An HMAC session salted to and bound to `parent`, encrypting the first
+/// parameter of the command and of the response.
+fn encrypted_session(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    parent: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let session = ws.path("signin-session.ctx");
+    require(
+        runner,
+        "tpm2_startauthsession",
+        &argv![
+            "--hmac-session",
+            "-c",
+            parent.as_os_str(),
+            "-S",
+            session.as_os_str()
+        ],
+        "starting an encrypted TPM session",
+    )?;
+    // Starting it loads the parent once more; the command that follows loads
+    // it again from its context.
+    flush_objects(runner);
+    Ok(session)
+}
+
 pub fn seal(runner: &dyn Runner, ws: &Workspace, key: &UserKey, auth: &[u8; 32]) -> Result<Sealed> {
     let parent = primary(runner, ws)?;
+    flush_objects(runner);
+    let session = match encrypted_session(runner, ws, &parent) {
+        Ok(session) => session,
+        Err(e) => {
+            flush(runner);
+            return Err(e);
+        }
+    };
+    let parent_auth = format!("session:{}", session.display());
     let secret = ws.put("userkey.secret", key.expose())?;
     let auth_path = auth_file(ws, "userkey.auth", auth)?;
     let auth_spec = format!("file:{}", auth_path.display());
@@ -86,6 +132,8 @@ pub fn seal(runner: &dyn Runner, ws: &Workspace, key: &UserKey, auth: &[u8; 32])
         &argv![
             "-C",
             parent.as_os_str(),
+            "-P",
+            &parent_auth,
             "-g",
             "sha256",
             "-u",
@@ -148,8 +196,15 @@ pub fn unseal(
             loaded.last_error_line()
         );
     }
+    let session = match encrypted_session(runner, ws, &parent) {
+        Ok(session) => session,
+        Err(e) => {
+            flush(runner);
+            return Err(e);
+        }
+    };
     let auth_path = auth_file(ws, "unseal.auth", auth)?;
-    let auth_spec = format!("file:{}", auth_path.display());
+    let auth_spec = format!("session:{}+file:{}", session.display(), auth_path.display());
     let output = ws.path("unseal.out");
     let result = runner.run(
         "tpm2_unseal",
