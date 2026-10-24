@@ -392,6 +392,10 @@ pub struct Roster {
     /// Those of `people` who share a screen, sorted and distinct.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screens: Vec<String>,
+    /// Those of `people` whose microphone is off, sorted and distinct;
+    /// someone who may not speak in the call counts as muted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub muted: Vec<String>,
 }
 
 impl Roster {
@@ -407,6 +411,7 @@ impl Roster {
             && people_valid(&self.people)
             && among(&self.cameras)
             && among(&self.screens)
+            && among(&self.muted)
     }
 }
 

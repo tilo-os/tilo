@@ -25,11 +25,11 @@
 //! session) learns its calls with
 //! [`Envelope::VoiceCalls`](crate::Envelope::VoiceCalls).
 //!
-//! What a participant shows besides its voice (its camera, a shared screen)
-//! is [`Showing`], set with
+//! What a participant shows besides its voice (its camera, a shared screen,
+//! whether its microphone is off) is [`Showing`], set with
 //! [`Envelope::VoiceShow`](crate::Envelope::VoiceShow) and carried on its
 //! [`VoiceParticipant`] in every grant and call list, so everyone sees who
-//! has a camera on or shares a screen before any picture arrives.
+//! has a camera on, shares a screen or is muted before any picture arrives.
 //!
 //! Browser and native devices use the same envelopes: a browser session is
 //! one more peer of the relay.
@@ -178,6 +178,9 @@ pub struct Showing {
     pub camera: bool,
     /// It shares a screen.
     pub screen: bool,
+    /// Its microphone is off: everyone sees it muted. A participant that may
+    /// not publish counts as muted.
+    pub muted: bool,
 }
 
 /// The call that is room `room`'s window carrier: every member device of a
