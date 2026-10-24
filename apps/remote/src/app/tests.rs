@@ -947,6 +947,39 @@ fn keys_map_to_the_remote_machine() {
     );
 }
 
+/// The wheel scrolls a VNC desktop: a wheel click up is a click of button 4,
+/// down of button 5, sideways 6 and 7; a trackpad's pixels add up to whole
+/// clicks, and a fling sends a bounded burst.
+#[test]
+fn the_wheel_scrolls_a_vnc_desktop() {
+    let mut pending = (0.0, 0.0);
+    let line = |x, y| MouseScrollDelta::LineDelta(x, y);
+    let pixels = |x, y| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(x, y));
+    assert_eq!(vnc_wheel_clicks(&mut pending, &line(0.0, 1.0), 1.0), [0x08]);
+    assert_eq!(
+        vnc_wheel_clicks(&mut pending, &line(0.0, -2.0), 1.0),
+        [0x10, 0x10]
+    );
+    assert_eq!(vnc_wheel_clicks(&mut pending, &line(1.0, 0.0), 1.0), [0x20]);
+    assert_eq!(
+        vnc_wheel_clicks(&mut pending, &line(-1.0, 0.0), 1.0),
+        [0x40]
+    );
+    assert!(
+        vnc_wheel_clicks(&mut pending, &pixels(0.0, -50.0), 2.0).is_empty(),
+        "under a click at this scale"
+    );
+    assert_eq!(
+        vnc_wheel_clicks(&mut pending, &pixels(0.0, -50.0), 2.0),
+        [0x10],
+        "the two together make one"
+    );
+    assert_eq!(
+        vnc_wheel_clicks(&mut pending, &line(0.0, 500.0), 1.0).len(),
+        VNC_WHEEL_BURST
+    );
+}
+
 #[test]
 fn the_window_bar_names_the_screen_and_holds_its_actions() {
     use super::window_bar::{LEAVE_FORM, NEW_CONNECTION, SAVE};
