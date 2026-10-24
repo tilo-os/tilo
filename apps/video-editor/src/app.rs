@@ -289,6 +289,8 @@ impl ImportReport {
 struct Notice {
     level: NoticeLevel,
     text: String,
+    /// What the person can do about it, when it asks them to act.
+    action: Option<notices::NoticeAction>,
 }
 
 impl Notice {
@@ -296,6 +298,7 @@ impl Notice {
         Self {
             level: NoticeLevel::Ok,
             text: text.into(),
+            action: None,
         }
     }
 
@@ -303,6 +306,7 @@ impl Notice {
         Self {
             level: NoticeLevel::Warning,
             text: text.into(),
+            action: None,
         }
     }
 
@@ -310,7 +314,14 @@ impl Notice {
         Self {
             level: NoticeLevel::Failed,
             text: text.into(),
+            action: None,
         }
+    }
+
+    /// The notice with `action` beside it in the bar.
+    fn with_action(mut self, action: notices::NoticeAction) -> Self {
+        self.action = Some(action);
+        self
     }
 
     #[cfg(test)]
@@ -6185,7 +6196,7 @@ impl Widget for VideoEditorApp {
     )]
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document_ref(state, path);
-        self.take_save_retry();
+        self.take_notice_actions();
         if std::mem::take(&mut self.project_sync.save_requested) {
             self.save_project(state);
         }
@@ -6331,7 +6342,7 @@ impl Widget for VideoEditorApp {
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         // A notice's time runs out, and Try again is pressed, between
         // events; the bar shows the change without a frame of the editor's.
-        let retry = self.take_save_retry();
+        let retry = self.take_notice_actions();
         self.publish_notices();
         retry
     }

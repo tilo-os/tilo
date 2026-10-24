@@ -272,6 +272,7 @@ impl VideoEditorApp {
         let mut notice = Self::opened_notice(&path, &project);
         if replaced {
             notice.text.push_str(". Undo to go back");
+            notice.action = Some(super::notices::NoticeAction::Undo);
         }
         self.project_notice.show(notice);
         // A failed save of the project this replaces is about it, not this one.
