@@ -300,7 +300,10 @@ containerfile="$repo/os/Containerfile"
 # resolver timeout) is one payload row.
 # tilo-deployment-status.socket and its service answer `tilo status` for the
 # device admin: two payload rows.
-expected_contract=bab5775a1478b43f8b687522de11d4fcb695eca70bfbb3e21c370b54dea369fc
+# tilo-clock-floor, its service, timer and shutdown service keep the clock
+# floor PID 1 starts from at chrony's authenticated time: four payload rows
+# riding existing COPY instructions.
+expected_contract=918897fceb88645bf39bec64dd0be8da30091de8d631db66dfcc6265ce4f27fc
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
