@@ -1790,6 +1790,9 @@ struct Trailing {
     fill: Option<f32>,
     /// The control's own minimum width, restored when it stops filling.
     own_min: taffy::Dimension,
+    /// Centred on the column a disclosure chevron stands in
+    /// ([`ListRow::trailing_disclosure`]).
+    on_disclosure_column: bool,
 }
 
 /// One of a row's own pressable controls.
@@ -2286,8 +2289,24 @@ impl ListRow {
             natural: 0.0,
             fill: None,
             own_min: taffy::Dimension::auto(),
+            on_disclosure_column: false,
         });
         self
+    }
+
+    /// [`Self::trailing`] for an icon button that opens what the row is
+    /// about while the row itself does something else (a network row that
+    /// connects, its chevron opening the network's page). The button is
+    /// centred on the column a [`Self::disclosure`] chevron stands in, so it
+    /// lines up with the chevrons of the rows around it; its target keeps
+    /// its own size, reaching into the row's bleed.
+    #[must_use]
+    pub fn trailing_disclosure(self, button: Element) -> Self {
+        let mut row = self.trailing(button);
+        if let Some(trailing) = &mut row.trailing {
+            trailing.on_disclosure_column = true;
+        }
+        row
     }
 
     /// The row's marks after its title (a status, a role), in order.
@@ -3078,6 +3097,13 @@ impl Widget for ListRow {
                 - f64::from(child_layout.location.x)
                 - f64::from(child_layout.size.width);
             child_origin.x += shift.min(room);
+        } else if trailing.on_disclosure_column
+            && let Some(metrics) = &self.metrics
+        {
+            // The chevron's column ends on the layout box's edge; the
+            // button's centre moves onto it, never past the bleed.
+            let width = f64::from(child_layout.size.width);
+            child_origin.x += ((width - metrics.icon) / 2.0).clamp(0.0, metrics.bleed);
         }
         if let Some(trailing) = &mut self.trailing {
             trailing.element.apply_layout(taffy, child, child_origin);
