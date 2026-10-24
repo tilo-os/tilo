@@ -6866,6 +6866,11 @@ impl ShellNetwork {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
                 }
+                // A host's session is up: what the outbox holds for a host
+                // out of reach may reach it now.
+                if let Ok(mut waiting) = self.outbox_waiting.lock() {
+                    *waiting = None;
+                }
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws);
                 self.room_relay_ready();
