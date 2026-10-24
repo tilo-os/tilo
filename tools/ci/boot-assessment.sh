@@ -59,8 +59,12 @@ disk=$work/disk.qcow2
 mv "$work/install/qcow2/disk.qcow2" "$disk"
 
 # The update: the same image and one more layer, a different deployment.
+# From a Containerfile in the context: podman resolves `-f -` through /dev/stdin,
+# which t's micro-VMs do not have.
+mkdir -p "$work/update"
 printf 'FROM localhost/tilo-vm:ci\nRUN echo %s > /usr/lib/tilo/boot-assessment-update\n' "$target" \
-  | podman build -q -t localhost/tilo-boot-assessment:update -f - "$work" >/dev/null
+  > "$work/update/Containerfile"
+podman build -q -t localhost/tilo-boot-assessment:update -f "$work/update/Containerfile" "$work/update" >/dev/null
 podman save --format oci-archive -o "$work/update.tar" localhost/tilo-boot-assessment:update
 podman rmi -f localhost/tilo-boot-assessment:update localhost/tilo-vm:ci "$image" >/dev/null 2>&1 || true
 
