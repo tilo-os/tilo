@@ -1502,6 +1502,68 @@ mod tests {
     /// session's broker as launched apps do: an agent finds a Notes tab's
     /// note by a word of its body and invokes the notebook's actions there,
     /// and a Terminal tab is reachable the same way.
+    /// A session with no workspace host configured hosts its workspace on
+    /// this device's own room host, as the desktop does, and an app it runs
+    /// creates its record in that room.
+    #[test]
+    fn a_session_without_a_collab_host_hosts_its_workspace_and_its_apps_create_records() {
+        const TEST: &str = "shell::in_process::tests::a_session_without_a_collab_host_hosts_its_workspace_and_its_apps_create_records";
+        let Some(profile) = isolated_session_root(TEST) else {
+            return;
+        };
+        assert!(
+            !crate::shell::network::collab_host_configured(),
+            "no workspace host is configured"
+        );
+        std::fs::create_dir_all(&profile).unwrap();
+        let session = crate::runtime_host::Session::start(&profile).unwrap();
+        let room = crate::shell::state::RoomId::parse(&session.room).unwrap();
+        let network = session.network();
+        assert!(
+            network.serves_here(room),
+            "the session's workspace is hosted on this device's own host"
+        );
+        assert!(
+            !session
+                .workspace_tree()
+                .read()
+                .pending_placements
+                .contains(&room),
+            "nothing waits to be placed"
+        );
+        let collab = session.broker.capnp_socket().to_path_buf();
+        let identity = session.identity_socket().to_path_buf();
+        let mut apps = InProcessApps::at(
+            &profile.join("apps"),
+            &profile.join("apps").join("person"),
+            &session.actor,
+        )
+        .unwrap()
+        .reaching_broker(Rc::new(move |app, room| {
+            session_connector(collab.clone(), identity.clone(), app, room)
+        }));
+        let mut notes = Shown::mount(&mut apps, notes::definition(), &session.room, 93, |_| {});
+        let owner = network.native_owner().unwrap();
+        let record = RecordId::for_tab(93).to_string();
+        until(
+            &mut [&mut notes],
+            "the Notes tab's record exists in the room",
+            || {
+                owner
+                    .with_current(room, |view| {
+                        Ok(view
+                            .peer()
+                            .document(notes::definition().app_id, &record)
+                            .is_some())
+                    })
+                    .unwrap_or(false)
+            },
+        );
+        drop(notes);
+        drop(apps);
+        drop(session);
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
