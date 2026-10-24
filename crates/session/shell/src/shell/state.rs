@@ -3082,6 +3082,33 @@ impl WorkspaceTree {
         std::mem::take(&mut self.governance_refusals)
     }
 
+    /// Whether a room waits to be placed that no workspace is any longer:
+    /// placing it would make a room nothing shows. Such an entry is
+    /// bookkeeping, never what the person made.
+    pub fn has_orphaned_placements(&self) -> bool {
+        self.pending_placements
+            .iter()
+            .any(|room| !self.has_workspace(*room))
+    }
+
+    /// Stop waiting to place each room no workspace is any longer
+    /// ([`Self::has_orphaned_placements`]). Answers the rooms dropped.
+    pub fn drop_orphaned_placements(&mut self) -> Vec<RoomId> {
+        let orphaned: Vec<RoomId> = self
+            .pending_placements
+            .iter()
+            .filter(|room| !self.has_workspace(**room))
+            .copied()
+            .collect();
+        for room in &orphaned {
+            self.pending_placements.remove(room);
+        }
+        if !orphaned.is_empty() {
+            self.queue_save();
+        }
+        orphaned
+    }
+
     /// The rooms of workspaces made here that wait to be created on a host,
     /// taken: the network places each and enrolls this device in it. Saved,
     /// so a placement taken is not taken again after a restart.
@@ -3227,6 +3254,7 @@ impl WorkspaceTree {
             self.room_docs.remove(&room);
             self.continuation_rooms.remove(&room);
             self.joining_rooms.remove(&room);
+            self.pending_placements.remove(&room);
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
             self.queue_save();
             drop(removed);
@@ -3262,6 +3290,7 @@ impl WorkspaceTree {
         self.room_docs.remove(&room);
         self.continuation_rooms.remove(&room);
         self.joining_rooms.remove(&room);
+        self.pending_placements.remove(&room);
         self.seed_doc_from_cache();
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         self.queue_save();

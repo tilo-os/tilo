@@ -406,6 +406,19 @@ impl ShellNetwork {
         if !self.places_workspaces() {
             return;
         }
+        // A room waiting with no workspace has nothing to place; left
+        // waiting, it would ask for a pass on every frame.
+        let orphaned = if self.tree.read().has_orphaned_placements() {
+            self.tree.write().drop_orphaned_placements()
+        } else {
+            Vec::new()
+        };
+        if !orphaned.is_empty() {
+            tracing::info!(
+                ?orphaned,
+                "rooms waiting to be placed with no workspace are placed no more"
+            );
+        }
         let (waiting, before) = {
             let tree = self.tree.read();
             let before = self.placing_now(&tree);
