@@ -227,7 +227,7 @@ fn books_join_and_leave_the_shelf_under_their_content_ids() {
     let remove = Ebook::REMOVE_FROM_LIBRARY.with(books::RemoveFromLibrary { book: BOOK.into() });
     assert!(
         library.apply(remove.clone()).is_err(),
-        "removing a book asks for confirmation"
+        "removing a book asks first: Undo cannot give back this device's access to its file"
     );
     library.apply_confirmed(remove).unwrap();
     let after = state(&library);

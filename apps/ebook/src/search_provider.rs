@@ -1415,6 +1415,9 @@ mod tests {
             assert_eq!(remove.contract.risk, RiskLevel::Destructive);
             assert_eq!(remove.contract.confirmation, ConfirmationPolicy::Confirm);
             assert!(remove.contract.reversible);
+            // Undo puts the row back but not this device's access to the
+            // book's file, so removing asks first through every door.
+            assert!(!remove.contract.can_be_undone());
 
             let highlight_resource = provider
                 .books
