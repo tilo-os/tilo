@@ -597,6 +597,11 @@ a private JSON object on standard input, rather than placing a credential
 in the command line. An accepted invocation means the attempt started;
 `state-dump` reports authentication progress and the mapped result.
 
+The sign-in screen's own controls are actions too, available even while an
+attempt runs: `suspend@greeter`, `reboot@greeter` and `power-off@greeter`,
+and `larger-text@greeter`, `high-contrast@greeter` and
+`screen-reader@greeter`, each with a required boolean `enabled`.
+
 For a bounded timing measurement, `configure-session-diagnostics@greeter`
 configures this greeter's next ordinary sign-in with four required booleans:
 `presentation`, `gpu_stages`, `gpu_timestamps`, `gpu_dispatch_timestamps`.
