@@ -438,7 +438,23 @@ content scripts (with `sender.tab`) work without help.
   no tab API counts the second: as in Chrome, content scripts on every page
   let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
-  `tabs.getZoom` the page's zoom.
+  `tabs.getZoom` the page's zoom. `tabs.onZoomChange` fires when a tab's
+  zoom changes from its first page on: the Browser zoomed it or another
+  page of its site, or it went to a site zoomed otherwise.
+- Tab events: `onCreated`, `onUpdated`, `onRemoved`, and on focus
+  `onActivated` with `onHighlighted` (the tab alone, being its window's only
+  one) and `windows.onFocusChanged`. A tab never moves to another window and
+  is never replaced, so `onAttached`, `onDetached`, `onMoved` and
+  `onReplaced` never fire.
+- `webNavigation` is Chromium's own: its events, `getFrame` and
+  `getAllFrames` know each tab by the id the tab APIs give it. Chromium does
+  not see a page open a tab here (the Browser opens it), so the host tells
+  of it: when the tab the page asked for (a link to a new tab,
+  `window.open`) shows its address, it is given the page's tab as
+  `openerTabId`, and `webNavigation.onCreatedNavigationTarget` fires to
+  extensions with `webNavigation`, after the new tab's first navigation
+  events rather than before them. The tab script reads the opening frame's
+  id and process from the page's frames, by the frame's address.
 - The toolbar button's look for every tab is Chromium's, and so are its
   getters; the script tells the host of each change Chromium accepted. For
   one tab (an ad blocker's count for the page) Chromium finds no tab and
@@ -462,6 +478,18 @@ content scripts (with `sender.tab`) work without help.
   answers when the worker does not. A port's messages go to the host in
   order, batched while a request is under way, and on from the host to the
   worker or page the same way, so a burst wakes the worker once.
+- An offscreen document (`chrome.offscreen`, which MV3 extensions make to
+  parse HTML, copy to the clipboard or play sound) is Chromium's own: made,
+  found (`hasDocument`, `runtime.getContexts`) and closed as in Chrome, it
+  has Chrome's one API there, `runtime`, and asks its worker for whatever
+  needs a tab. A message from a script the host runs in a page reaches it
+  as well: Chromium keeps the document with no tab, so for an extension
+  with the `offscreen` permission the host finds it among the pipe's
+  targets and delivers the message there, attached for as long as that
+  takes. A port such a script opens does not reach it. Its sound plays
+  through Chromium's own output, not the audio bridge, which CEF feeds only
+  with its browsers' sound: a governed Browser, which has no audio device,
+  plays none of it.
 - `scripting.executeScript` reaches the frames an extension names
   (`frameIds`, `documentIds`, `allFrames`) and `tabs.sendMessage` one frame
   (`frameId`, `documentId`), as Bitwarden injects its form filler into each

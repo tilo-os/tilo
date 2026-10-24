@@ -28,8 +28,8 @@
 //! replaced `libavcodec` under an already-loaded libav plugin, or new VA-API
 //! entry points (H.264/HEVC from the freeworld Mesa driver) of an
 //! already-loaded `va` plugin, apply to processes started afterwards. New
-//! plugins (OpenH264, the freeworld/ugly sets) and plugins this process never
-//! loaded are usable at once.
+//! plugins (`OpenH264`, the freeworld/ugly sets) and plugins this process
+//! never loaded are usable at once.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
