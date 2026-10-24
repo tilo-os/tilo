@@ -223,6 +223,18 @@ fn exported(
     }
 }
 
+/// A connection to the collaboration service at `path` from `app_id`,
+/// launched into the room as the launcher launches every app: the room's
+/// records are its committed documents, which only a launched app reads.
+fn launched(path: &Path, app_id: &str) -> UnixStream {
+    let room = ROOM.to_string();
+    crate::shell::launcher::register_in_process_launch(app_id, &room);
+    let mut stream = UnixStream::connect(path).expect("connect to the collaboration service");
+    launcher::services::write_collab_handoff(&mut stream, app_id, &room)
+        .expect("hand the connection over as the launcher does");
+    stream
+}
+
 /// An application with two document actions: `draft` writes a draft and
 /// returns its id, `publish` publishes a draft by id.
 struct FixtureApp {
@@ -234,7 +246,7 @@ struct FixtureApp {
 
 impl FixtureApp {
     fn connect(path: &Path) -> Self {
-        let stream = UnixStream::connect(path).expect("connect to the collaboration service");
+        let stream = launched(path, FIXTURE);
         let mut manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
             FIXTURE,
@@ -1352,7 +1364,7 @@ struct AppConnection {
 
 impl AppConnection {
     fn connect(socket: &Path, app_id: &str, device: &str) -> Self {
-        let stream = UnixStream::connect(socket).expect("connect to the collaboration service");
+        let stream = launched(socket, app_id);
         let manager = CollaborationManager::for_route_fd_with_identity(
             stream.into_raw_fd(),
             app_id,
@@ -2316,4 +2328,51 @@ fn cancelling_the_sheet_stops_the_run_with_nothing_applied() {
     drop(host);
     assert!(nothing_applied, "nothing was applied");
     assert!(sheet_gone);
+}
+
+/// A workspace from before rooms had hosts is on this device only: an app
+/// launched there is told so as it joins, plainly, and nothing else.
+#[test]
+fn an_app_in_a_workspace_on_this_device_only_is_told_so() {
+    let dir = tempfile::tempdir().expect("socket directory");
+    std::fs::set_permissions(
+        dir.path(),
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .expect("owner-only socket directory");
+    let mut host_identity = tilo_test_env::ScopedEnv::new();
+    host_identity
+        .set("XDG_CONFIG_HOME", dir.path().join("config"))
+        .set("TILO_IDENTITY_ROOT", dir.path().join("system"))
+        .set(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1");
+    crate::firstboot::ensure_throwaway_test_identity(
+        &runtime_identity::identity_dir_from_env().expect("the identity directory"),
+        &crate::firstboot::collaboration_identity_paths(),
+    )
+    .expect("the host's own identity");
+    let socket = dir.path().join("collab.sock");
+    // The broker's room is no host's: it is on this device only.
+    let (_broker, membership) = spawn_broker(&socket);
+    let room = crate::shell::state::RoomId::parse(&ROOM.to_string()).expect("room id");
+    assert!(membership.read().on_this_device_only(room));
+
+    let refused = CollaborationManager::for_route_fd_with_identity(
+        launched(&socket, FIXTURE).into_raw_fd(),
+        FIXTURE,
+        ROOM,
+        Some(RECORD.to_string()),
+        Some(FIXTURE_HANDLE.to_string()),
+        endpoint_identity(FIXTURE_HANDLE),
+    )
+    .err()
+    .expect("an app opens no document in a room on this device only");
+    let reason = crate::shell::i18n::t("workspace-on-this-device-only-no-documents");
+    assert!(
+        format!("{refused:?}").contains(&reason),
+        "the app hears why: {refused:?}"
+    );
+    assert!(
+        membership.read().pending_placements.is_empty(),
+        "and nothing is queued to try again"
+    );
 }
