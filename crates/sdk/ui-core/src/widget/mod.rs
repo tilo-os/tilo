@@ -3400,6 +3400,8 @@ pub use toggle_group::{
 };
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
+pub mod quick_tile;
+pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 
 // EmptyState / Banner / StatTile also expose an immediate-mode `paint(...)`
 // entry point for apps that render straight to a `Scene` rather than a
