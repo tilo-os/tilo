@@ -2298,7 +2298,7 @@ mod tests {
             "room_authority": { room.clone(): "Unpinned" },
             "room_peer_names": { room.clone(): { "iroh:ab": "Ada" } },
             "room_peer_identities": { room.clone(): {} },
-            "room_share_floor": { room.clone(): 41 },
+            "room_share_floor": { room: 41 },
         });
         for (key, value) in old.as_object().expect("object") {
             file[key] = value.clone();

@@ -1589,7 +1589,7 @@ fn an_inviter_without_the_grant_is_refused_by_composer_and_issuer_alike() {
     chrome.borrow_mut().peer_sync_enabled = true;
     let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
         .with_chrome(chrome.clone());
-    let (net, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 0x354);
+    let (net, _commands) = crate::shell::network::shell_network_for_test(handle, 0x354);
     let route = || active_invite_route(&chrome.borrow()).expect("active workspace");
     let issue = || {
         net.issue_invite_named_with_role(

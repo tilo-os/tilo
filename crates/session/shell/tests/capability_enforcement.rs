@@ -97,7 +97,7 @@ fn only_the_owner_administers_a_room() {
             "an unowned room must have no administrators, not only administrators"
         );
 
-        let adopted = tree.own_workspaces_for_test(|_| ALICE.to_string().clone());
+        let adopted = tree.own_workspaces_for_test(|_| ALICE.to_string());
         assert_eq!(adopted, vec![id]);
         assert!(ws_of(&tree, id).may_administer(&ALICE.to_string()));
         assert!(

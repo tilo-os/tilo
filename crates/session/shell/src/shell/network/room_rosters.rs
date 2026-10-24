@@ -39,6 +39,7 @@ impl ShellNetwork {
                     (room_topic_id(*room), devices)
                 })
                 .collect();
+            drop(tree);
             (epoch, rosters)
         };
         let gone = sent

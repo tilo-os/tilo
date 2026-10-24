@@ -55,15 +55,11 @@ impl NativeOwnerStatus {
 }
 
 impl ShellNetwork {
-    fn native_tree(&self) -> Result<WorkspaceTreeHandle, String> {
-        Ok(self.tree.clone())
-    }
-
     /// The native owner, opened here if it is not yet: binding its writer
     /// and publishing its reopened generation, which can wait for the disk.
     /// The frame loop asks [`Self::native_owner_status`] instead.
     pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
-        let tree = self.native_tree()?;
+        let tree = self.tree.clone();
         let retained = self
             .native_enrollment
             .owner
@@ -102,9 +98,7 @@ impl ShellNetwork {
     /// ends, and this answers [`NativeOwnerStatus::Opening`].
     pub(crate) fn native_owner_status(&self) -> NativeOwnerStatus {
         // The tree before the owner, in the order `native_owner` takes them.
-        let Ok(tree) = self.native_tree() else {
-            return NativeOwnerStatus::Unavailable;
-        };
+        let tree = self.tree.clone();
         // Held only by a caller opening the owner itself.
         let retained = match self.native_enrollment.owner.try_lock() {
             Ok(retained) => retained,

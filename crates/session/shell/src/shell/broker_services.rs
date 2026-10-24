@@ -905,7 +905,7 @@ impl LauncherServices for NativeLauncher {
                     &record.uri(),
                 )
             }
-            None => super::launcher::launch_in_workspace(app, &workspace),
+            None => super::launcher::launch_in_workspace(app, workspace),
         };
         launched.map(|_| ()).map_err(|e| e.to_string())
     }
@@ -951,7 +951,7 @@ impl LauncherServices for NativeLauncher {
             "the exact selected application package is no longer installed".to_string()
         })?;
         super::launch_readiness::observe(|| {
-            super::launcher::launch_resolved_in_workspace(selected, &workspace)
+            super::launcher::launch_resolved_in_workspace(selected, workspace)
                 .map_err(|error| error.to_string())
         })
     }

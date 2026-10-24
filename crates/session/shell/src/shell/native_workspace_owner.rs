@@ -322,9 +322,11 @@ pub(crate) fn release_workspace_room(
     room: RoomId,
 ) -> Result<(), String> {
     let last = {
-        let tree = tree.read();
-        let workspaces = &tree.desktop.workspaces;
-        workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room)
+        let held = tree.read();
+        let workspaces = &held.desktop.workspaces;
+        let last = workspaces.len() < 2 && workspaces.iter().any(|w| w.room() == room);
+        drop(held);
+        last
     };
     if last {
         return Err("the last workspace stays".into());

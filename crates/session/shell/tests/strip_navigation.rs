@@ -384,7 +384,7 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
     });
     tree.desktop.active_group.insert(lower, resident);
     // The local person owns the desk, so rearranging it is theirs to do.
-    tree.own_workspaces_for_test(|_| shell::shell::state::local_user_id().clone());
+    tree.own_workspaces_for_test(|_| shell::shell::state::local_user_id());
     tree.seed_doc_from_cache();
     let h = Harness::with_tree(&tree, upper, groups.clone(), tabs);
     (h, upper, lower, resident, groups)
@@ -2036,7 +2036,7 @@ fn the_first_frame_after_a_chord_shows_the_final_layout() {
     let fast = Theme::dark().tokens.motion.durations.fast();
     let (mut tree, strip, groups, tabs) = strip_tree();
     // The local person owns the desk, so the action door may rearrange it.
-    tree.own_workspaces_for_test(|_| shell::shell::state::local_user_id().clone());
+    tree.own_workspaces_for_test(|_| shell::shell::state::local_user_id());
     tree.seed_doc_from_cache();
     let mut h = Harness::with_tree(&tree, strip, groups, tabs);
     // After at most `fast`, nothing in the strip is moving and the pan is

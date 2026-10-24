@@ -4960,7 +4960,7 @@ mod active_tab_tests {
             let mut tree = tree_with(100);
             let room = tree.desktop.workspaces[0].room();
             tree.persist_path = Some(path.clone());
-            tree.own_workspaces_for_test(|_| "shell-fixture".to_string().clone());
+            tree.own_workspaces_for_test(|_| "shell-fixture".to_string());
             tree.queue_save();
 
             let chrome = ChromeState::new_with_fixture_handle(

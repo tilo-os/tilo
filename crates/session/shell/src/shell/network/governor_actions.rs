@@ -458,7 +458,7 @@ impl ShellNetwork {
 pub(super) fn wait_for_governor(
     answer: Pending<Result<serde_json::Value, String>>,
 ) -> Result<(), String> {
-    match answer.wait_timeout(governor_timeout() + STATUS_INTERVAL) {
+    match answer.wait_timeout(governor_timeout().saturating_add(STATUS_INTERVAL)) {
         Ok(Some(result)) => result.map(drop),
         Ok(None) => Err("the workspace host stopped before applying the change".into()),
         Err(_) => Err("the workspace host did not apply the change in time".into()),

@@ -3273,7 +3273,7 @@ fn covering_workspace_settings_keeps_pointer_priority_over_palette_rows() {
 fn workspace_name_owner_harness(width: f64, height: f64) -> (AbsorbHarness, tempfile::TempDir) {
     let profile = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree::bootstrap_demo();
-    tree.own_workspaces_for_test(|_| "shell-fixture".to_string().clone());
+    tree.own_workspaces_for_test(|_| "shell-fixture".to_string());
     let inputs = crate::shell::hosted_inputs::HostedTileInputs::fixture_in(profile.path()).unwrap();
     let chrome = ChromeState::new_with_fixture_handle(tree.shared(), inputs);
     assert!(is_active_workspace_owner(&chrome.borrow()));
