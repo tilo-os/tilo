@@ -294,7 +294,7 @@ impl NetworkModel {
     }
 
     /// Merge `value` into the choice `name` of this device's VPN section.
-    fn write_device_vpn(
+    pub(super) fn write_device_vpn(
         &self,
         name: &str,
         value: Result<serde_json::Value, serde_json::Error>,
