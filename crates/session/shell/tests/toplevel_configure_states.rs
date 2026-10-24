@@ -1053,6 +1053,18 @@ impl Harness {
 /// back to the window, drawn over everything and scanned out again.
 #[test]
 fn search_shows_over_a_full_screen_window_and_esc_gives_it_the_keyboard_back() {
+    search_over_a_full_screen_window(false);
+}
+
+/// The same with the window also put full screen by the person (Super+F)
+/// before the app inside it went full screen, as a video page does: search
+/// still shows over it rather than opening unseen beneath the window.
+#[test]
+fn search_shows_over_a_full_screen_page_in_a_super_f_window() {
+    search_over_a_full_screen_window(true);
+}
+
+fn search_over_a_full_screen_window(super_f: bool) {
     const FULLSCREEN: u32 = 2;
     const SIZE: (u32, u32) = (1600, 900);
     let output = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
@@ -1078,6 +1090,18 @@ fn search_shows_over_a_full_screen_window_and_esc_gives_it_the_keyboard_back() {
     let pixels = [10, 20, 30, 255].repeat(SIZE.0.saturating_mul(SIZE.1) as usize);
     store.publish_rgba(id, &pixels, SIZE.0, SIZE.1);
     h.focus(id);
+    if super_f {
+        // Super+F parks the focused group.
+        let group = {
+            let tree = h.state.workspace_tree.read();
+            let desktop = &tree.desktop;
+            let strip = *desktop.active_strip.get(&desktop.active).expect("a strip");
+            desktop.active_group_for(strip)
+        };
+        assert!(group.is_some(), "fixture: the window's group is focused");
+        h.frame
+            .with_chrome(|chrome| chrome.set_user_fullscreen_group(group));
+    }
     toplevel.set_fullscreen(None);
     h.pump();
     // The extent `reconcile_fullscreen_overlay` gives the full-screen client.
