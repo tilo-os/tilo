@@ -701,133 +701,143 @@ fn the_lockout_authorisation_moves_under_the_keys_and_recovery_ends_a_lockout() 
     assert_eq!(verify(&daemon, ADA, "ada", "2468"), Reply::success());
 }
 
-fn keyring() -> Result<(), String> {
-    let probe = format!("tilo-authd-probe-{}", std::process::id());
-    handoff::add(
-        &Handoff {
-            uid: 1,
-            key: UserKey::from_bytes([0; 32]),
-        },
-        &probe,
-    )
-    .map_err(|e| e.to_string())?;
-    handoff::take(&probe).map_err(|e| e.to_string())?;
-    Ok(())
-}
+/// The tests that need the kernel keyring, which t's job sandbox refuses: there
+/// they skip, and the `tilo-auth-keyring` check runs every test under
+/// `keyring::` in a micro-VM, where the keyring is required.
+mod keyring {
+    use super::*;
 
-fn volume_key_linked(description: &str) -> bool {
-    tilo_auth::keyring::read_one(description, 128)
-        .unwrap()
-        .is_some()
-}
+    /// Where a skipped test runs after all.
+    const COVERED: &str = "the tilo-auth-keyring check runs it in a micro-VM";
 
-/// cryptsetup links the volume key readable by its possessor only, as the
-/// daemon's unit makes it (`KeyringMode=shared`).
-fn linked_volume_key(m: &Machine) -> Result<(), String> {
-    let probe = format!("tilo-authd-vk-probe-{}", std::process::id());
-    if !m.link_volume_key(&probe) {
-        return Err("cryptsetup could not link the volume key".into());
+    fn keyring_usable() -> Result<(), String> {
+        let probe = format!("tilo-authd-probe-{}", std::process::id());
+        handoff::add(
+            &Handoff {
+                uid: 1,
+                key: UserKey::from_bytes([0; 32]),
+            },
+            &probe,
+        )
+        .map_err(|e| e.to_string())?;
+        handoff::take(&probe).map_err(|e| e.to_string())?;
+        Ok(())
     }
-    let read = tilo_auth::keyring::read_one(&probe, 128);
-    tilo_auth::keyring::forget(&probe).map_err(|e| e.to_string())?;
-    match read {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => Err("the linked volume key is not there".into()),
-        Err(e) => Err(e.to_string()),
+
+    fn volume_key_linked(description: &str) -> bool {
+        tilo_auth::keyring::read_one(description, 128)
+            .unwrap()
+            .is_some()
     }
-}
 
-#[test]
-fn the_linked_volume_key_adds_the_first_keyslot_once() {
-    let m = machine!(true, &[("ada", "123456"), ("bob", "654321")]);
-    require_capability!(
-        KernelKeyring,
-        linked_volume_key(&m),
-        "the linked volume key cannot be read back"
-    );
-    let description = format!("tilo-auth-test-volume-key-{}", std::process::id());
-    let config = || Config {
-        volume_key: Some(description.clone()),
-        ..m.config()
-    };
+    /// cryptsetup links the volume key readable by its possessor only, as the
+    /// daemon's unit makes it (`KeyringMode=shared`).
+    fn linked_volume_key(m: &Machine) -> Result<(), String> {
+        let probe = format!("tilo-authd-vk-probe-{}", std::process::id());
+        if !m.link_volume_key(&probe) {
+            return Err("cryptsetup could not link the volume key".into());
+        }
+        let read = tilo_auth::keyring::read_one(&probe, 128);
+        tilo_auth::keyring::forget(&probe).map_err(|e| e.to_string())?;
+        match read {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => Err("the linked volume key is not there".into()),
+            Err(e) => Err(e.to_string()),
+        }
+    }
 
-    // Whatever the first sign-in attempt of the boot answers, it is the last
-    // that may use the key.
-    assert!(m.link_volume_key(&description));
-    let daemon = m.daemon_with(config());
-    daemon.settle_volume_key();
-    assert!(
-        volume_key_linked(&description),
-        "the volume has no sign-in yet"
-    );
-    assert_eq!(
-        verify(&daemon, ADA, "ada", "wrong"),
-        refused(Refusal::Wrong)
-    );
-    assert!(!volume_key_linked(&description));
+    #[test]
+    fn the_linked_volume_key_adds_the_first_keyslot_once() {
+        let m = machine!(true, &[("ada", "123456"), ("bob", "654321")]);
+        require_capability!(
+            KernelKeyring,
+            linked_volume_key(&m),
+            "the linked volume key cannot be read back; {COVERED}"
+        );
+        let description = format!("tilo-auth-test-volume-key-{}", std::process::id());
+        let config = || Config {
+            volume_key: Some(description.clone()),
+            ..m.config()
+        };
 
-    // The admin's first sign-in adds their keyslot with it, though neither
-    // their password nor anything else this boot holds opens the volume.
-    assert!(m.link_volume_key(&description));
-    let daemon = m.daemon_with(config());
-    daemon.settle_volume_key();
-    assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
-    assert!(!volume_key_linked(&description));
-    let record = m.record(ADA.uid).unwrap();
-    assert!(record.system_keyslot.is_some());
-    assert_eq!(record.attention, None);
-    assert_eq!(m.slots().len(), 3);
+        // Whatever the first sign-in attempt of the boot answers, it is the last
+        // that may use the key.
+        assert!(m.link_volume_key(&description));
+        let daemon = m.daemon_with(config());
+        daemon.settle_volume_key();
+        assert!(
+            volume_key_linked(&description),
+            "the volume has no sign-in yet"
+        );
+        assert_eq!(
+            verify(&daemon, ADA, "ada", "wrong"),
+            refused(Refusal::Wrong)
+        );
+        assert!(!volume_key_linked(&description));
 
-    // A volume that has a sign-in never keeps it.
-    assert!(m.link_volume_key(&description));
-    m.daemon_with(config()).settle_volume_key();
-    assert!(!volume_key_linked(&description));
-}
+        // The admin's first sign-in adds their keyslot with it, though neither
+        // their password nor anything else this boot holds opens the volume.
+        assert!(m.link_volume_key(&description));
+        let daemon = m.daemon_with(config());
+        daemon.settle_volume_key();
+        assert_eq!(verify(&daemon, ADA, "ada", "123456"), Reply::success());
+        assert!(!volume_key_linked(&description));
+        let record = m.record(ADA.uid).unwrap();
+        assert!(record.system_keyslot.is_some());
+        assert_eq!(record.attention, None);
+        assert_eq!(m.slots().len(), 3);
 
-#[test]
-fn a_boot_sign_in_starts_one_session_for_its_person() {
-    require_capability!(
-        KernelKeyring,
-        keyring(),
-        "the kernel keyring refused add_key"
-    );
-    let m = machine!(true, &[("ada", "123456")]);
-    m.leave_proof();
-    assert_eq!(verify(&m.daemon(), ADA, "ada", "123456"), Reply::success());
-    let key = m.user_key(ADA.uid, "123456");
+        // A volume that has a sign-in never keeps it.
+        assert!(m.link_volume_key(&description));
+        m.daemon_with(config()).settle_volume_key();
+        assert!(!volume_key_linked(&description));
+    }
 
-    let description = format!("tilo-signin-test-{}", std::process::id());
-    let config = || Config {
-        handoff: Some(description.clone()),
-        ..m.config()
-    };
+    #[test]
+    fn a_boot_sign_in_starts_one_session_for_its_person() {
+        require_capability!(
+            KernelKeyring,
+            keyring_usable(),
+            "the kernel keyring refused add_key; {COVERED}"
+        );
+        let m = machine!(true, &[("ada", "123456")]);
+        m.leave_proof();
+        assert_eq!(verify(&m.daemon(), ADA, "ada", "123456"), Reply::success());
+        let key = m.user_key(ADA.uid, "123456");
 
-    // A handoff whose key opens no keyslot is dropped.
-    handoff::add(
-        &Handoff {
-            uid: ADA.uid,
-            key: UserKey::from_bytes([1; 32]),
-        },
-        &description,
-    )
-    .unwrap();
-    let daemon = m.daemon_with(config());
-    daemon.take_boot_handoff();
-    assert_eq!(pending(&daemon, GREETER), None);
+        let description = format!("tilo-signin-test-{}", std::process::id());
+        let config = || Config {
+            handoff: Some(description.clone()),
+            ..m.config()
+        };
 
-    handoff::add(&Handoff { uid: ADA.uid, key }, &description).unwrap();
-    let daemon = m.daemon_with(config());
-    daemon.take_boot_handoff();
-    assert!(handoff::take(&description).unwrap().is_none(), "read once");
+        // A handoff whose key opens no keyslot is dropped.
+        handoff::add(
+            &Handoff {
+                uid: ADA.uid,
+                key: UserKey::from_bytes([1; 32]),
+            },
+            &description,
+        )
+        .unwrap();
+        let daemon = m.daemon_with(config());
+        daemon.take_boot_handoff();
+        assert_eq!(pending(&daemon, GREETER), None);
 
-    assert_eq!(pending(&daemon, BOB), None);
-    assert_eq!(pending(&daemon, GREETER).as_deref(), Some("ada"));
-    let claim =
-        |user: &str| reply(daemon.handle(ROOT, Request::ClaimBootSignIn { user: user.into() }));
-    assert_eq!(claim("bob"), refused(Refusal::NoBootSignIn));
-    assert_eq!(claim("ada"), Reply::success());
-    assert_eq!(claim("ada"), refused(Refusal::NoBootSignIn));
-    assert_eq!(pending(&daemon, GREETER), None);
+        handoff::add(&Handoff { uid: ADA.uid, key }, &description).unwrap();
+        let daemon = m.daemon_with(config());
+        daemon.take_boot_handoff();
+        assert!(handoff::take(&description).unwrap().is_none(), "read once");
+
+        assert_eq!(pending(&daemon, BOB), None);
+        assert_eq!(pending(&daemon, GREETER).as_deref(), Some("ada"));
+        let claim =
+            |user: &str| reply(daemon.handle(ROOT, Request::ClaimBootSignIn { user: user.into() }));
+        assert_eq!(claim("bob"), refused(Refusal::NoBootSignIn));
+        assert_eq!(claim("ada"), Reply::success());
+        assert_eq!(claim("ada"), refused(Refusal::NoBootSignIn));
+        assert_eq!(pending(&daemon, GREETER), None);
+    }
 }
 
 #[test]
