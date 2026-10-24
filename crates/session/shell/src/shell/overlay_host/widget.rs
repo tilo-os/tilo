@@ -154,6 +154,9 @@ impl Widget for ShellOverlayHost {
             .agent_markers
             .retain(|source| source.is_fresh(Instant::now()));
         crate::shell::settings_records::pump();
+        // Who is here is looked at before Activity reads what changed, so an
+        // arrival said on this frame is part of what Activity saw.
+        let arrival_dirty = self.refresh_presence_notices();
         // Records Activity reads from disk are read off the loop; one that
         // came in refreshes the glance and what the Activity app reads on this frame.
         let activity_records_dirty = self.room_activity.take_persisted_reads();
@@ -335,7 +338,7 @@ impl Widget for ShellOverlayHost {
         self.sync_status_from_bridge();
         let presence_dirty = self.pump_presence_requests();
         let presence_dirty = self.sync_self_presence() | presence_dirty;
-        let presence_dirty = self.refresh_presence_notices() | presence_dirty;
+        let presence_dirty = arrival_dirty | presence_dirty;
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
