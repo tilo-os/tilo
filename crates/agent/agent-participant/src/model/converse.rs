@@ -723,7 +723,12 @@ pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document
     compute one as {{= expr }} (+ - * / %, sum, avg, min, max, round, abs, and dates: \
     workday(date, n) for n business days, add_days, days_between), with references such as \
     Sheet1!B2 as operands and an optional format after | ($, %, 0.00, long): the host fills it \
-    in when the step runs. Never work numbers or dates out yourself. In a collection, address \
+    in when the step runs. Never work numbers or dates out yourself. To quote one item of a \
+    list, say which in [ ] after the pointer and the host picks it: \
+    {{mail/read#/messages[from~Ada, after 2026-10-14T09:15Z, newest]/subject}}, \
+    {{Sheet1!A1:H9[Invoice=INV-7]/Status}} (field=value, field~text, !=, after/before \
+    <time>, newest, oldest, first, last, nth N, all); |match:<regex> takes a part out of a \
+    value (its first group, else the whole match), as |match:INV-\\d+. In a collection, address \
     an item by its fields (field-edit upsert-item {match: {field: value}, value}), never by \
     position.";
 
