@@ -10,6 +10,7 @@ fn tab(id: TabId, app_id: &str, surface_id: u64) -> Tab {
             app_id: app_id.into(),
             surface_id,
         },
+        app_title: None,
     }
 }
 

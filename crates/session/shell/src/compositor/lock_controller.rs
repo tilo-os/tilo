@@ -205,6 +205,9 @@ impl LockController {
                 let _ = tx.send(result);
             }) {
             Ok(_handle) => {
+                // The flight record says an attempt was made and how it
+                // ended, never what was typed.
+                eprintln!("tilo compositor: lock: unlock attempt started");
                 self.error = None;
                 self.pending = Some(PendingVerify { rx });
             }
@@ -231,10 +234,12 @@ impl LockController {
         let pending = self.pending.as_ref()?;
         match pending.rx.try_recv() {
             Ok(Ok(())) => {
+                eprintln!("tilo compositor: lock: unlock attempt verified");
                 self.reset();
                 Some(UnlockOutcome::Unlocked)
             }
             Ok(Err(message)) => {
+                eprintln!("tilo compositor: lock: unlock attempt refused");
                 self.pending = None;
                 self.error = Some(message);
                 self.buffer.zeroize();
@@ -244,6 +249,7 @@ impl LockController {
             Err(TryRecvError::Disconnected) => {
                 // The worker dropped its sender without a result — treat as a
                 // failed check, never as an unlock.
+                eprintln!("tilo compositor: lock: unlock attempt lost its verifier");
                 self.pending = None;
                 self.error = Some(WORKER_LOST_MSG.to_string());
                 self.buffer.zeroize();

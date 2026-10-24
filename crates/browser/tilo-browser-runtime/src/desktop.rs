@@ -788,14 +788,20 @@ fn linked_accounts(
 
 impl tilo_app::linked_accounts::RoomRecordActions for PageRoomActions {
     fn apps(&self) -> Vec<String> {
-        self.peer
+        let room_apps = self
+            .peer
             .map(crate::replication::records)
             .unwrap_or_default()
             .into_iter()
             .filter(|(_, record)| record.is_empty())
             .map(|(app, _)| app)
-            .filter(|app| app != crate::replication::DESKTOP_APP)
-            .collect()
+            .filter(|app| app != crate::replication::DESKTOP_APP);
+        // An app this page can open runs here, not on the room's host: no
+        // connector, so its record is not asked for a reading.
+        let here = known_applications();
+        tilo_app::linked_accounts::connector_apps(room_apps, |app| {
+            here.iter().any(|(id, _)| *id == app)
+        })
     }
 
     fn invoke(
@@ -1168,6 +1174,7 @@ impl TileSource for Tiles {
                     note: String::new(),
                     missing: None,
                 },
+                app_title: None,
             };
             self.shared.peer_windows.borrow_mut().insert(id, window);
             return Some(tab);
@@ -1210,6 +1217,7 @@ fn app_tab(id: TabId, app: &str, title: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 

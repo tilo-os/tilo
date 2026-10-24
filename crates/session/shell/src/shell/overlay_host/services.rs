@@ -363,19 +363,29 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut st = chrome.borrow_mut();
-        if st.status != next {
-            // The bridge is the shell's one volume: a level that changed
-            // there — a media key, the poller, the panel's own read — moves
-            // the panel's slider too, so the two never show different values.
-            if st.status.volume != next.volume
-                && let Some(volume) = next.volume
-            {
-                st.quick_settings.volume = volume.level;
-            }
-            st.quick_settings.link.clone_from(&next.link);
-            st.status = next;
-            st.bump();
+        let mut copied = self.status_copied.borrow_mut();
+        if *copied == next {
+            return;
         }
+        // Each fact the bridge changed — a media key, a followed reading, the
+        // panel's own read — reaches the one status the bar and the panel
+        // both draw, in the same frame.
+        let mut st = chrome.borrow_mut();
+        let status = &mut st.quick_settings.status;
+        if copied.battery != next.battery || copied.battery_time != next.battery_time {
+            status.battery = next.battery;
+            status.battery_time = next.battery_time;
+        }
+        if copied.link != next.link {
+            status.link.clone_from(&next.link);
+        }
+        if copied.volume != next.volume {
+            status.volume = next.volume;
+        }
+        if copied.media != next.media {
+            status.media.clone_from(&next.media);
+        }
+        *copied = next;
+        st.bump();
     }
 }

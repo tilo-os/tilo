@@ -505,11 +505,6 @@ pub trait SearchProvider {
     fn launcher_rows(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         launcher::every_page(self, ctx)
     }
-    /// The categories an app row of this provider declares (freedesktop
-    /// main categories, `;`-separated), which the launcher groups apps by.
-    fn app_category(&self, _result: &SearchResult) -> Option<String> {
-        None
-    }
     /// Run the search. `wanted` is the set of kinds currently asked for
     /// (filter chips + scope); a remote-backed provider should dispatch
     /// ONE query and split the response into the wanted kinds.
@@ -782,12 +777,18 @@ pub(crate) fn match_reason_in(
 ) -> Option<String> {
     use ui::search::FieldWeight;
     let words: Vec<&str> = needle.split_whitespace().collect();
-    let shows = |text: &str| {
+    let shows = |text: &str, weight: FieldWeight| {
         words
             .iter()
-            .any(|word| tilo_search::locate(word, text).is_some())
+            .any(|word| tilo_search::locate(word, text, weight).is_some())
     };
-    if words.is_empty() || shows(&result.title) || result.subtitle.as_deref().is_some_and(shows) {
+    if words.is_empty()
+        || shows(&result.title, FieldWeight::TITLE)
+        || result
+            .subtitle
+            .as_deref()
+            .is_some_and(|subtitle| shows(subtitle, FieldWeight::SUBTITLE))
+    {
         return None;
     }
     fields
@@ -801,11 +802,13 @@ pub(crate) fn match_reason_in(
             ]
             .contains(weight)
         })
-        .map(|(text, _)| text.trim())
+        .map(|(text, weight)| (text.trim(), *weight))
         // An address ("quick-settings.volume.set") is no reason a person reads.
-        .filter(|text| !text.contains(['.', ':', '/']))
-        .find(|text| text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text))
-        .map(str::to_owned)
+        .filter(|(text, _)| !text.contains(['.', ':', '/']))
+        .find(|(text, weight)| {
+            text.chars().count() <= MATCH_REASON_MAX_SCALARS && shows(text, *weight)
+        })
+        .map(|(text, _)| text.to_owned())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -3683,6 +3686,7 @@ mod tests {
                     app_id: "Alacritty".into(),
                     surface_id: id,
                 },
+                app_title: None,
             }],
             active_tab: id,
             width: WindowWidth::Normal,

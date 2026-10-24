@@ -144,7 +144,13 @@ async fn private_settings_display_rpc_requires_exact_registration_and_live_certi
                 let _ = foreign_client.await;
             }
             assert_eq!(delegate.calls.lock().unwrap().len(), 1);
-            let identity = state.host_workers.lock().unwrap()[&401].clone();
+            let identity = state
+                .host_workers
+                .lock()
+                .unwrap()
+                .only(401)
+                .unwrap()
+                .clone();
             let retained = private_display_control(&state, &env.route, &identity).unwrap();
             let mut agent = identity.clone();
             agent.agent_id = Some("foreign-agent".into());

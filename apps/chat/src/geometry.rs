@@ -22,8 +22,6 @@ pub(crate) struct Chrome {
     /// The window's one header row (sidebar, conversation and inspector
     /// headers share it).
     pub header_h: f64,
-    /// Leftward travel past which a row swipe commits its action.
-    pub swipe_commit: f64,
     /// Leading/trailing inset of the conversation column.
     pub gutter: f64,
     /// Side of a message author's avatar.
@@ -64,7 +62,6 @@ impl Chrome {
             (control + 2.0 * f64::from(sp.s1)).max(body_line + 2.0 * f64::from(sp.s3));
         Self {
             header_h: ui::chrome::HeaderRowFace::height(theme),
-            swipe_commit: f64::from(metrics.swipe_commit),
             gutter: f64::from(sp.s6),
             avatar: AvatarSize::Regular.side(theme),
             avatar_gap: f64::from(sp.s3),

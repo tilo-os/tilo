@@ -277,6 +277,7 @@ const SCENARIOS: &[&str] = &[
 impl ResourceApp for FirewallShell {
     type Resource = Firewall;
     const ID: &'static str = "so.tilo.firewall";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Network];
     const TITLE: &'static str = "Firewall";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

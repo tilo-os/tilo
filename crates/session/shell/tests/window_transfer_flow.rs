@@ -136,6 +136,7 @@ impl Fixture {
                     app_id: APP.into(),
                     surface_id: SURFACE,
                 },
+                app_title: None,
             }],
             width: WindowWidth::Normal,
             maximized: false,
@@ -864,6 +865,7 @@ fn a_second_window_on_the_same_document_blocks_move_but_not_copy() {
                     app_id: APP.into(),
                     surface_id: 9_909,
                 },
+                app_title: None,
             });
     }
     // The second window runs another instance showing the same notebook.

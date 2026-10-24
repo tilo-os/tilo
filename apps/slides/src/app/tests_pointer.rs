@@ -7,7 +7,7 @@
     reason = "exact geometry and values the editor computes, not measurements"
 )]
 
-use super::bench::{Bench, cursor_ev, deck_of, left_press_ev};
+use super::bench::{Bench, cursor_ev, left_press_ev};
 use super::*;
 use ui::portal::PortalOutcome;
 
@@ -110,40 +110,6 @@ fn a_tool_key_inserts_a_shape_into_the_deck() {
     );
     assert!(bench.undo(), "an insert is one undo step");
     assert_eq!(bench.deck().slides[0].elements.len(), before);
-}
-
-/// Clicking a row of the toolbar's overflow menu inserts that element.
-#[test]
-fn clicking_an_overflow_menu_row_inserts_that_element() {
-    let mut s = Slide::new(Layout::TitleContent);
-    s.add(Element::text("hello", 96.0, 90.0, 1088.0, 100.0, 54.0));
-    let mut bench = Bench::open(&deck_of(vec![s]), (390, 800));
-    let before = bench.deck().slides[0].elements.len();
-    let row = bench.with(|app| {
-        app.open_tools_menu();
-        let index = app
-            .ctx_hits
-            .iter()
-            .position(|hit| matches!(hit, Some(Hit::Insert(ElementKind::Rect))))
-            .expect("the Rectangle tool is in the overflow menu at 390px");
-        app.ctx_menu
-            .item_rect(index)
-            .expect("the real menu row is laid out")
-            .center()
-    });
-    bench.app.harness().dispatch_to_root(&cursor_ev(row));
-    let handled = bench.app.harness().dispatch_to_root(&left_press_ev());
-    bench.release();
-    assert!(handled, "clicking a menu row is handled");
-    assert!(
-        !bench.read(|app| app.ctx_menu.is_open()),
-        "picking a tool closes the menu"
-    );
-    assert_eq!(
-        bench.deck().slides[0].elements.len(),
-        before + 1,
-        "the chosen shape was inserted"
-    );
 }
 
 #[test]

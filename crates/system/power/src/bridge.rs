@@ -84,12 +84,28 @@ struct BridgeInner {
     on_battery: Option<bool>,
 }
 
+/// How the compositor loop is woken when a signal arrives for it.
+pub type SignalWake = Arc<dyn Fn() + Send + Sync>;
+
 /// The shared power mailbox. Clone to hand a handle to each side.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PowerBridge {
     inner: Arc<Mutex<BridgeInner>>,
     /// Woken on every command, so the service sleeps until there is one.
     command_wake: Arc<Notify>,
+    /// Wakes the compositor loop on every signal. The loop parks until its
+    /// next deadline or event: a locked, blanked session parks for up to a
+    /// minute, and a signal only queued waited for whatever woke it next (a
+    /// resume applied 16 s late, a sleep delay held to logind's timeout).
+    signal_wake: Arc<Mutex<Option<SignalWake>>>,
+}
+
+impl std::fmt::Debug for PowerBridge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PowerBridge")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for PowerBridge {
@@ -103,14 +119,24 @@ impl PowerBridge {
         Self {
             inner: Arc::new(Mutex::new(BridgeInner::default())),
             command_wake: Arc::new(Notify::new()),
+            signal_wake: Arc::new(Mutex::new(None)),
         }
+    }
+
+    /// Wake the compositor loop with `wake` whenever a signal is pushed.
+    pub fn set_signal_wake(&self, wake: SignalWake) {
+        *self.signal_wake.lock_recover() = Some(wake);
     }
 
     // ---- service → compositor ---------------------------------------
 
-    /// Push a signal for the compositor loop to apply on its next frame.
+    /// Push a signal for the compositor loop and wake it to apply it.
     pub fn push_signal(&self, signal: PowerSignal) {
         self.lock().signals.push(signal);
+        let wake = self.signal_wake.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
     }
 
     /// Drain every pending signal (called once per compositor frame).
@@ -251,6 +277,31 @@ mod tests {
                 vec![PowerCommand::UpdatePolicy(policy)]
             );
         }
+    }
+
+    #[test]
+    fn every_signal_wakes_the_compositor_loop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let bridge = PowerBridge::new();
+        // Before a wake is set a signal still queues.
+        bridge.push_signal(PowerSignal::Lock);
+        let woken = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&woken);
+        bridge.set_signal_wake(Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        let service = bridge.clone();
+        service.push_signal(PowerSignal::ResumedFromSleep);
+        service.push_signal(PowerSignal::PreparingForSleep);
+        assert_eq!(woken.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            bridge.drain_signals(),
+            vec![
+                PowerSignal::Lock,
+                PowerSignal::ResumedFromSleep,
+                PowerSignal::PreparingForSleep
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]

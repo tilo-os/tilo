@@ -306,6 +306,7 @@ mod tests {
                 label: title.into(),
                 note: String::new(),
             },
+            app_title: None,
         }
     }
 

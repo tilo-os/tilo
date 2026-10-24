@@ -68,6 +68,8 @@ pub struct ExtensionHost {
     /// What the last `reconcile` asked for, so an unchanged call sends nothing.
     asked: BTreeMap<String, bool>,
     state: HashMap<String, toolbar::ActionState>,
+    /// What each extension set for its button on this window's page alone.
+    page: HashMap<String, toolbar::PageValues>,
     /// Running extensions the current probe was started for.
     candidates: Vec<String>,
     /// (extension, service-worker target) pairs the probe still has to read.
@@ -86,9 +88,38 @@ impl ExtensionHost {
         self.loaded.contains(id)
     }
 
-    /// The live action state of a running extension.
+    /// The live action state of a running extension on this window's page.
     pub fn action_state(&self, id: &str) -> Option<toolbar::ActionState> {
-        self.state.get(id).cloned()
+        let state = self.state.get(id).cloned();
+        match self.page.get(id) {
+            Some(page) => Some(state.unwrap_or_default().under(page)),
+            None => state,
+        }
+    }
+
+    /// The extension changed its button, for every tab (`global`) or for this
+    /// window's page alone. Returns whether what the button shows changed.
+    pub fn action_changed(
+        &mut self,
+        id: &str,
+        global: bool,
+        change: &ui::webview::ExtensionActionChange,
+    ) -> bool {
+        let before = self.action_state(id);
+        if global {
+            self.state.entry(id.to_owned()).or_default().apply(change);
+        } else {
+            self.page.entry(id.to_owned()).or_default().apply(change);
+        }
+        self.action_state(id) != before
+    }
+
+    /// A new document in this window: what extensions set for the page
+    /// before is gone. Returns whether there was any.
+    pub fn page_changed(&mut self) -> bool {
+        let had = !self.page.is_empty();
+        self.page.clear();
+        had
     }
 
     fn request(&mut self, step: Step, now: ui::time::Instant) -> u32 {
@@ -158,6 +189,7 @@ impl ExtensionHost {
         self.asked.remove(id);
         self.loaded.remove(id);
         self.state.remove(id);
+        self.page.remove(id);
     }
 
     /// Start a toolbar refresh for `extensions` when one is due.
@@ -216,6 +248,7 @@ impl ExtensionHost {
                 // that was never running; either way it is not running now.
                 update.changed = self.loaded.remove(&id);
                 self.state.remove(&id);
+                self.page.remove(&id);
             }
             Step::Targets => {
                 if ok {
@@ -356,6 +389,33 @@ mod tests {
 
         // phase: unknown_replies_are_ignored
         assert_eq!(host.on_result(999, true, "{}", now), Update::default());
+    }
+
+    #[test]
+    fn a_page_shows_its_own_badge_until_its_next_document() {
+        use ui::webview::ExtensionActionChange as Change;
+        let mut host = ExtensionHost::new();
+        let a = id('a');
+        let badge = |text: &str| Change {
+            badge: Some(Some(text.into())),
+            ..Change::default()
+        };
+        assert!(host.action_changed(&a, true, &badge("on")));
+        assert!(host.action_changed(&a, false, &badge("7")));
+        assert_eq!(host.action_state(&a).unwrap().badge, "7");
+        assert!(
+            !host.action_changed(&a, false, &badge("7")),
+            "the same again"
+        );
+        // Every page's badge changes under the page's own.
+        assert!(!host.action_changed(&a, true, &badge("off")));
+        assert!(host.page_changed());
+        assert_eq!(host.action_state(&a).unwrap().badge, "off");
+        assert!(!host.page_changed(), "nothing left to take back");
+        // Turned off, it shows nothing of what it set.
+        host.action_changed(&a, false, &badge("9"));
+        host.forget(&a);
+        assert_eq!(host.action_state(&a), None);
     }
 
     #[test]

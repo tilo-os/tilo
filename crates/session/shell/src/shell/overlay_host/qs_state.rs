@@ -148,8 +148,13 @@ impl ShellOverlayHost {
         if let Some(profile) = power {
             st.quick_settings.power_profile = ui_power_profile(profile);
         }
-        st.quick_settings.battery = battery;
-        st.quick_settings.battery_time = battery_time;
+        // The bar's battery is the panel's: a reading taken on open goes to
+        // the one status both draw.
+        if let Some(bridge) = self.status_bridge.as_ref() {
+            bridge.set_battery(battery, battery_time);
+        }
+        st.quick_settings.status.battery = Some(battery);
+        st.quick_settings.status.battery_time = battery_time;
         st.quick_settings.privacy = privacy;
     }
 
@@ -245,10 +250,10 @@ impl ShellOverlayHost {
         }
     }
 
-    /// The tray's [`crate::shell::status::StatusBridge`] is the shell's one
-    /// volume: a reading goes there first, and the panel's slider mirrors it
-    /// (see [`Self::sync_status_from_bridge`]). Without a bridge — shots,
-    /// unit tests — the slider takes the reading directly.
+    /// The [`crate::shell::status::StatusBridge`] is the shell's one
+    /// volume: a reading goes there and to the status the bar and the panel
+    /// draw (see [`Self::sync_status_from_bridge`]). Without a bridge — shots,
+    /// unit tests — only the latter.
     pub(super) fn apply_qs_volume(
         &self,
         st: &mut crate::shell::chrome_state::ChromeState,
@@ -259,9 +264,8 @@ impl ShellOverlayHost {
         };
         if let Some(bridge) = self.status_bridge.as_ref() {
             bridge.set_volume(volume);
-            st.status.volume = Some(volume);
         }
-        st.quick_settings.volume = volume.level;
+        st.quick_settings.status.volume = Some(volume);
     }
 
     pub(super) fn apply_qs_wifi_networks(

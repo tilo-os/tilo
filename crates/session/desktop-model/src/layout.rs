@@ -108,8 +108,64 @@ impl TileContent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Tab {
     pub id: TabId,
+    /// What the tab shows: the name a person gave it, else its window's
+    /// own title.
     pub title: String,
     pub tile: TileContent,
+    /// The window's own latest title while a person's name stands in
+    /// `title`; `None` when the tab has no such name. Written only by
+    /// [`Tab::set_window_title`] and [`Tab::rename`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_title: Option<String>,
+}
+
+impl Tab {
+    /// The window announced `title`. While a person's name stands, it is
+    /// kept as the window's title for when the name is cleared, and the tab
+    /// goes on showing the name. Returns whether anything changed: a window
+    /// sending the same title again (terminals do, continuously) is no
+    /// change.
+    pub fn set_window_title(&mut self, title: &str) -> bool {
+        let shown = self.app_title.as_mut().unwrap_or(&mut self.title);
+        if shown == title {
+            return false;
+        }
+        title.clone_into(shown);
+        true
+    }
+
+    /// A person names the tab `name`. A blank name clears their name, and
+    /// the tab shows its window's latest title again. Returns whether
+    /// anything changed.
+    pub fn rename(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        if name.is_empty() {
+            return match self.app_title.take() {
+                Some(window_title) => {
+                    self.title = window_title;
+                    true
+                }
+                None => false,
+            };
+        }
+        match &self.app_title {
+            Some(_) if self.title == name => false,
+            Some(_) => {
+                name.clone_into(&mut self.title);
+                true
+            }
+            None => {
+                self.app_title = Some(std::mem::replace(&mut self.title, name.to_owned()));
+                true
+            }
+        }
+    }
+
+    /// Whether a person's name stands in place of the window's own title.
+    #[must_use]
+    pub fn is_named(&self) -> bool {
+        self.app_title.is_some()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -180,5 +236,87 @@ impl Strip {
             name: name.into(),
             window_groups: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tab_name_tests {
+    use super::*;
+
+    fn terminal(title: &str) -> Tab {
+        Tab {
+            id: 7,
+            title: title.into(),
+            tile: TileContent::Foreign {
+                app_id: "Alacritty".into(),
+                surface_id: 3,
+            },
+            app_title: None,
+        }
+    }
+
+    #[test]
+    fn a_name_replaces_the_shown_title_and_keeps_the_windows_own() {
+        let mut tab = terminal("~/src");
+        assert!(tab.rename("  Build  "));
+        assert_eq!(tab.title, "Build");
+        assert_eq!(tab.app_title.as_deref(), Some("~/src"));
+        assert!(tab.is_named());
+        assert!(tab.rename("Deploy"));
+        assert_eq!(tab.title, "Deploy");
+        assert_eq!(tab.app_title.as_deref(), Some("~/src"));
+        assert!(!tab.rename("Deploy"), "the same name again is no change");
+    }
+
+    #[test]
+    fn a_window_title_while_named_updates_only_the_windows_own() {
+        let mut tab = terminal("~/src");
+        tab.rename("Build");
+        assert!(tab.set_window_title("cargo build"));
+        assert_eq!(tab.title, "Build");
+        assert_eq!(tab.app_title.as_deref(), Some("cargo build"));
+    }
+
+    #[test]
+    fn clearing_the_name_shows_the_latest_window_title() {
+        let mut tab = terminal("~/src");
+        tab.rename("Build");
+        tab.set_window_title("cargo test");
+        assert!(tab.rename("   "));
+        assert_eq!(tab.title, "cargo test");
+        assert_eq!(tab.app_title, None);
+        assert!(!tab.is_named());
+        assert!(!tab.rename(""), "a tab with no name has none to clear");
+        assert!(tab.set_window_title("~"));
+        assert_eq!(tab.title, "~");
+    }
+
+    #[test]
+    fn the_same_window_title_again_is_no_change() {
+        let mut tab = terminal("~/src");
+        assert!(!tab.set_window_title("~/src"));
+        tab.rename("Build");
+        tab.set_window_title("vim");
+        assert!(!tab.set_window_title("vim"));
+        assert_eq!(tab.title, "Build");
+    }
+
+    #[test]
+    fn a_tab_without_a_name_is_stored_as_before() {
+        let json = serde_json::to_value(terminal("~/src")).expect("serialises");
+        assert!(json.get("app_title").is_none());
+        let old: Tab = serde_json::from_value(serde_json::json!({
+            "id": 7,
+            "title": "~/src",
+            "tile": { "Foreign": { "app_id": "Alacritty", "surface_id": 3 } },
+        }))
+        .expect("a tab stored before names reads back");
+        assert_eq!(old.app_title, None);
+        let mut named = terminal("~/src");
+        named.rename("Build");
+        let back: Tab = serde_json::from_value(serde_json::to_value(&named).expect("serialises"))
+            .expect("reads back");
+        assert_eq!(back.title, "Build");
+        assert_eq!(back.app_title.as_deref(), Some("~/src"));
     }
 }

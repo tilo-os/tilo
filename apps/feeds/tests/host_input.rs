@@ -3,6 +3,7 @@
 
 use ui::framework::testing::TestApp;
 use ui::headless::FrameHarness;
+use ui::window_toolbar::ToolbarEvent;
 
 fn value_of(harness: &FrameHarness, name: &str) -> Option<String> {
     harness
@@ -16,15 +17,12 @@ fn value_of(harness: &FrameHarness, name: &str) -> Option<String> {
 fn the_add_feed_field_takes_typed_text() {
     let mut app = TestApp::<feeds::FeedsShell>::new().unwrap();
     let harness = app.harness();
+    harness.present_in_window_bar();
     harness.relayout();
-    let add = harness
-        .controls()
-        .into_iter()
-        .find(|control| control.name.as_deref() == Some("Add subscription"))
-        .and_then(|control| control.bounds)
-        .expect("the Add subscription button is placed")
-        .center();
-    harness.click_at(add.x, add.y);
+    // Add subscription is the window bar's.
+    harness.press_window_slot(ToolbarEvent::Action {
+        id: "feeds.add".into(),
+    });
     harness.relayout();
     assert!(
         value_of(harness, "Feed URL").is_some(),
@@ -45,7 +43,7 @@ fn the_add_feed_field_takes_typed_text() {
     );
 }
 
-/// A guest's New folder opens its dialog at once: the button opens
+/// A guest's New folder in the sidebar opens its dialog at once: it opens
 /// something here and reaches nothing outside, so the workspace asks
 /// nothing first.
 #[test]
@@ -53,7 +51,18 @@ fn a_guests_new_folder_opens_its_dialog_unasked() {
     let mut app = TestApp::<feeds::FeedsShell>::new().unwrap();
     app.harness().relayout();
     app.set_role(ui::permissions::Role::Editor);
-    app.harness().click_named("feeds.new-folder").unwrap();
+    app.harness().present_in_window_bar();
+    app.harness().relayout();
+    let new_folder = app
+        .harness()
+        .controls()
+        .into_iter()
+        .find(|control| control.name.as_deref() == Some("New folder Feeds"))
+        .expect("the sidebar's Feeds heading holds New folder")
+        .id;
+    app.harness()
+        .operate_control(&new_folder, &ui::headless::ControlInput::Press)
+        .expect("New folder takes a press");
     app.settle();
     app.harness().relayout();
     assert!(

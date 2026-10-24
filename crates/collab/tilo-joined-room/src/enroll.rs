@@ -228,8 +228,14 @@ pub async fn prepare_and_complete(
         // since, so it no longer replays its answer: this device is a
         // member, and takes the room's current state through the membership
         // exchange. Resending the proof would be refused forever, keeping
-        // the slot from the room it joined.
-        JoinTransportResponse::Error { code, message } if completed(code, &message) => {
+        // the slot from the room it joined. A host from before it said so
+        // for a certificate that ran out since refuses that certificate
+        // instead; custody has renewed it, and the exchange presents the
+        // renewal.
+        JoinTransportResponse::Error { code, message }
+            if completed(code, &message)
+                || (expired(code, &message) && intent.local_device() != &device) =>
+        {
             let grant = intent.verified_join().grant();
             let bootstrap = prove_membership(
                 &client,
@@ -295,6 +301,15 @@ fn completed(code: u16, message: &str) -> bool {
         || (code == 403
             && message
                 == "join request ID already completed; refresh membership for the current workspace")
+}
+
+/// Whether a host refused a Complete for the certificate its proof carries
+/// having run out. A host that admitted the proof before answers so where a
+/// newer one answers [`join::JOIN_COMPLETED_REFRESH`]; one that never did
+/// lets the proof's challenge lapse, and answers
+/// [`join::JOIN_PROOF_LAPSED`] once it has.
+fn expired(code: u16, message: &str) -> bool {
+    code == 403 && message == tilo_user_identity::DeviceCertError::Expired.to_string()
 }
 
 /// The room's current state for a device that is a member: the membership
@@ -433,5 +448,18 @@ mod tests {
         );
         assert!(!completed(403, "invitation was cancelled"));
         assert!(!lapsed(join::JOIN_COMPLETED_REFRESH, "anything"));
+    }
+
+    /// A host from before it answered a lapsed certificate with
+    /// [`join::JOIN_COMPLETED_REFRESH`] refuses it in words; the retained
+    /// proof then goes through the membership exchange with the renewal
+    /// instead of being resent every retry (the Lounge, 2026-10-23).
+    #[test]
+    fn a_host_that_refuses_the_proofs_expired_certificate_is_told_apart() {
+        assert!(expired(403, "device cert has expired"));
+        assert!(!expired(503, "device cert has expired"));
+        assert!(!expired(403, "device cert is not yet valid"));
+        assert!(!lapsed(403, "device cert has expired"));
+        assert!(!completed(403, "device cert has expired"));
     }
 }

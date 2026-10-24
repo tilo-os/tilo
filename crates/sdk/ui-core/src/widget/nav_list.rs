@@ -57,6 +57,10 @@ pub struct NavSection {
     pub pending: u8,
     /// The window's filter narrows this section's items.
     pub filterable: bool,
+    /// The title can be renamed in place ([`NavList::on_rename`]).
+    pub editable_title: bool,
+    /// The header has a menu ([`NavList::on_context_menu`]).
+    pub menu: bool,
     pub items: Vec<NavItem>,
 }
 
@@ -72,6 +76,8 @@ impl NavSection {
             empty_caption: None,
             pending: 0,
             filterable: false,
+            editable_title: false,
+            menu: false,
             items,
         }
     }
@@ -129,6 +135,23 @@ impl NavSection {
     #[must_use]
     pub fn filterable(mut self) -> Self {
         self.filterable = true;
+        self
+    }
+
+    /// The person can rename the section in place: F2 on its header, or
+    /// [`NavFeed::begin_rename`] from its menu.
+    #[must_use]
+    pub fn editable_title(mut self) -> Self {
+        self.editable_title = true;
+        self
+    }
+
+    /// The header asks for its menu as an item's row does: a right click, a
+    /// long press, the Menu key ([`NavList::on_context_menu`], with the
+    /// section's id).
+    #[must_use]
+    pub fn with_menu(mut self) -> Self {
+        self.menu = true;
         self
     }
 }
@@ -258,6 +281,10 @@ pub struct NavItem {
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
+    /// The person the row stands for, as their avatar in the icon's place.
+    pub person: Option<NavPerson>,
+    /// Something new waits behind the row (an unread conversation).
+    pub unread: bool,
     /// The key assistive technology and tests address the row by; the
     /// default is `nav:item:{id}`.
     pub semantic_key: Option<String>,
@@ -274,6 +301,17 @@ pub struct NavArt {
     /// What the picture is of; its initials stand in while there is none.
     pub name: String,
     pub image: Option<vello::peniko::ImageData>,
+}
+
+/// The person a row stands for ([`NavItem::person`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavPerson {
+    /// Who they are; their initials stand in for a picture.
+    pub identity: String,
+    /// Their colour in the room, ringing the avatar.
+    pub colour: Color,
+    /// They are speaking now.
+    pub speaking: bool,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -309,6 +347,8 @@ impl NavItem {
             badge: None,
             swatch: None,
             art: None,
+            person: None,
+            unread: false,
             checked: None,
             level: None,
             presence: Vec::new(),
@@ -470,6 +510,25 @@ impl NavItem {
         self
     }
 
+    /// The row stands for a person (someone in a call): their avatar, in
+    /// `colour`, in the icon's place, ringed while `speaking`.
+    #[must_use]
+    pub fn person(mut self, identity: impl Into<String>, colour: Color, speaking: bool) -> Self {
+        self.person = Some(NavPerson {
+            identity: identity.into(),
+            colour,
+            speaking,
+        });
+        self
+    }
+
+    /// Something new waits behind the row: its label stands out at rest.
+    #[must_use]
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread = unread;
+        self
+    }
+
     /// The key assistive technology, agents and tests address the row by.
     #[must_use]
     pub fn semantic_key(mut self, key: impl Into<String>) -> Self {
@@ -496,6 +555,8 @@ enum NavNodeKind {
         collapsible: bool,
         action: Option<(Icon, String)>,
         first: bool,
+        editable: bool,
+        menu: bool,
     },
     Item {
         spec: Box<NavItemSpec>,
@@ -659,6 +720,8 @@ impl NavModel {
                                 .as_ref()
                                 .map(|action| (action.icon, action.label.clone())),
                             first: first_row,
+                            editable: section.editable_title,
+                            menu: section.menu,
                         },
                         parent: Some(ROOT),
                         children: Vec::new(),
@@ -752,6 +815,8 @@ impl NavModel {
             checked: item.checked,
             level: item.level,
             presence: item.presence.clone(),
+            person: item.person.clone(),
+            unread: item.unread,
         };
         self.attach(
             parent,
@@ -838,12 +903,15 @@ impl NavModel {
                 collapsible,
                 action,
                 first,
+                menu,
+                ..
             } => Some(NavRowSpec::Section {
                 title: node.label.clone(),
                 collapsible: *collapsible,
                 action: action.as_ref().map(|(icon, _)| *icon),
                 action_label: action.as_ref().map(|(_, label)| label.clone()),
                 first: *first,
+                menu: *menu,
             }),
             NavNodeKind::Item { spec, .. } => Some(NavRowSpec::Item(spec.clone())),
             NavNodeKind::Caption => Some(NavRowSpec::Caption),
@@ -935,9 +1003,13 @@ impl TreeModel for NavModel {
     }
 
     fn is_renamable(&self, id: NodeId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|node| matches!(node.kind, NavNodeKind::Item { editable: true, .. }))
+        self.nodes.get(&id).is_some_and(|node| {
+            matches!(
+                node.kind,
+                NavNodeKind::Item { editable: true, .. }
+                    | NavNodeKind::Section { editable: true, .. }
+            )
+        })
     }
 
     fn shows_row_actions(&self, id: NodeId) -> bool {
@@ -1507,6 +1579,31 @@ impl NavList {
         self.select_quietly(selected.as_deref());
     }
 
+    /// Do what the app asked through its feed: open or fold rows
+    /// ([`NavFeed::set_open`]) and open a rename field
+    /// ([`NavFeed::begin_rename`]). Whether anything changed.
+    fn take_asks(&mut self) -> bool {
+        let Some(feed) = self.feed.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        for (key, open) in feed.take_openings() {
+            if self.is_expanded(&key) != open {
+                self.set_expanded(&key, open);
+                changed = true;
+            }
+        }
+        let Some(key) = feed.take_rename_request() else {
+            return changed;
+        };
+        let model = self.tree.model();
+        let Some(node) = model.item_id(&key).or_else(|| model.section_id(&key)) else {
+            return changed;
+        };
+        self.tree.reveal(node);
+        self.tree.begin_rename(node) || changed
+    }
+
     fn keys_seen(&self, id: NodeId) -> bool {
         self.shared.borrow().keys.contains_key(&id)
     }
@@ -1567,11 +1664,12 @@ impl NavList {
             .is_some_and(|node| self.tree.is_expanded(node))
     }
 
-    /// The painted rect of item `id`'s row, edge to edge of the list, when
-    /// it is in view.
+    /// The painted rect of item or section `id`'s row, edge to edge of the
+    /// list, when it is in view.
     #[must_use]
     pub fn row_rect(&self, id: &str) -> Option<Rect> {
-        let node = self.tree.model().item_id(id)?;
+        let model = self.tree.model();
+        let node = model.item_id(id).or_else(|| model.section_id(id))?;
         self.tree.row_rect(node)
     }
 
@@ -1884,6 +1982,36 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
     found
 }
 
+/// Whether `node` is a destination's row whose selection action is
+/// unavailable.
+fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
+    node.action_target
+        .as_deref()
+        .and_then(|target| target.strip_prefix("node:"))
+        .and_then(|id| id.parse::<NodeId>().ok())
+        .and_then(|id| shared.keys.get(&id))
+        .and_then(|key| shared.selection_actions.get(key))
+        .is_some_and(|action| !action.is_available())
+}
+
+/// Publish every row under `node` whose selection action is unavailable as
+/// disabled.
+fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
+    node.state.disabled |= unavailable(node, shared);
+    for child in &mut node.children {
+        disable_unavailable(child, shared);
+    }
+}
+
+/// Whether [`disable_unavailable`] would change anything under `node`.
+fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
+    (!node.state.disabled && unavailable(node, shared))
+        || node
+            .children
+            .iter()
+            .any(|child| has_unavailable(child, shared))
+}
+
 // Not the blanket `Decorator`: apps box a navigation list, and its Widget
 // methods (with the tree view they forward to) are compiled once, here
 // (`concrete_decorator_widget!` in decorator.rs).
@@ -1946,6 +2074,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         // The published owner is NavList, so host lookup and synthetic
         // accessibility routing must identify this same retained wrapper.
         node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        if let Some(feed) = &self.feed {
+            feed.publish_node(node);
+        }
         node
     }
 
@@ -1960,32 +2091,42 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             self.set_selected(next.as_deref());
         }
         self.pull();
+        self.take_asks();
         crate::widget::Widget::sync(&mut self.tree, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let pulled = self.pull();
+        let pulled = self.pull() | self.take_asks();
         crate::widget::Widget::update(&mut self.tree, state, path) || pulled
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        fn refresh(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
-            if let Some(id) = node
-                .action_target
-                .as_deref()
-                .and_then(|target| target.strip_prefix("node:"))
-                .and_then(|id| id.parse::<NodeId>().ok())
-                && let Some(key) = shared.keys.get(&id)
-                && let Some(action) = shared.selection_actions.get(key)
-            {
-                node.state.disabled |= !action.is_available();
-            }
-            for child in &mut node.children {
-                refresh(child, shared);
+        crate::widget::decorator::concrete::Decorator::accessibility_shared(self)
+            .map(crate::a11y::SharedAccessNode::into_owned)
+    }
+
+    /// The tree's rows as it keeps them between walks
+    /// ([`TreeView::access_rows`]), each the very node of the last walk
+    /// while nothing it is built from changed: a keystroke in the pane
+    /// beside the list builds none of them. A row whose destination's
+    /// selection action is unavailable is published disabled, as a copy of
+    /// the tree's row; availability changes without the tree changing, so
+    /// those few are copied on every walk.
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        let mut access = crate::widget::Widget::accessibility_shared(&self.tree)?;
+        let shared = self.shared.borrow();
+        if shared
+            .selection_actions
+            .values()
+            .any(|action| !action.is_available())
+        {
+            disable_unavailable(&mut access.node, &shared);
+            for row in &mut access.children {
+                if has_unavailable(row, &shared) {
+                    disable_unavailable(std::sync::Arc::make_mut(row), &shared);
+                }
             }
         }
-        let mut access = crate::widget::Widget::accessibility(&self.tree)?;
-        refresh(&mut access, &self.shared.borrow());
         Some(access)
     }
 
@@ -2010,8 +2151,20 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
                     Some((key.to_owned(), rect))
                 })
                 .collect();
-            feed.publish_rows(rows);
+            feed.publish_rows(crate::widget::Widget::get_rect(&self.tree), rows);
         }
+    }
+
+    /// Never hidden: answered without building the rows.
+    fn accessibility_hidden(&self) -> bool {
+        crate::widget::Widget::accessibility_hidden(&self.tree)
+    }
+
+    /// The tree's own node, without building its rows.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        let mut root = crate::widget::Widget::accessibility_root(&self.tree)?;
+        disable_unavailable(&mut root, &self.shared.borrow());
+        Some(root)
     }
 
     fn name(&self) -> &'static str {
@@ -2066,6 +2219,22 @@ impl crate::widget::controls::ActionControls for NavList {
             }
         }
         bindings
+    }
+
+    /// Whether [`Self::control_action_bindings`] holds an action, answered
+    /// without building the rows' semantics it also lists: the host asks it
+    /// on every frame. The actions are the visible destinations' selection
+    /// actions and whatever the tree's own children bind.
+    fn has_action_control_bindings(&self) -> bool {
+        let shared = self.shared.borrow();
+        let selection = !shared.selection_actions.is_empty()
+            && self
+                .tree
+                .visible_row_range()
+                .filter_map(|index| self.tree.visible_row(index))
+                .filter_map(|(node, _, _)| shared.keys.get(&node))
+                .any(|key| shared.selection_actions.contains_key(key));
+        selection || crate::widget::controls::has_action_control_bindings(&self.tree)
     }
 
     fn refresh_control_action_availability(

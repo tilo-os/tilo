@@ -631,7 +631,7 @@ fn dock_tabs(
             ui::widget::toggle_group::Segment::new(ui::i18n::I18nManager::lookup_plain(id)),
         )
     };
-    let tabs = ui::widget::ToggleGroup::from_state(
+    let tabs = ui::widget::ViewTabs::from_state(
         vec![
             tab(Dock::Layers, "canvas-layers"),
             tab(Dock::Objects, "canvas-objects"),
@@ -639,7 +639,6 @@ fn dock_tabs(
         ],
         dock,
     )
-    .with_style(ui::widget::SegmentedStyle::Tabs)
     .fill()
     .with_id("canvas-dock");
     let tools = tools.clone();

@@ -308,8 +308,11 @@ export function createVoiceCall({
     try { current?.close(); } catch {}
   }
 
-  /** The grant a carrier is opened for: same token, same publication. */
-  const keyOf = value => `${value.participation}:${value.token}:${value.directions.publish}:${value.directions.subscribe}`;
+  /** What a carrier is opened for: its participation and directions. The
+   * token only admits new carrier sessions; an admitted one keeps the
+   * participation's authority, so a renewed token (every half minute) keeps
+   * the carrier and is used when one is opened next. */
+  const keyOf = value => `${value.participation}:${value.directions.publish}:${value.directions.subscribe}`;
 
   function connect() {
     if (!grant || state.phase === 'idle' || state.phase === 'ended') return;

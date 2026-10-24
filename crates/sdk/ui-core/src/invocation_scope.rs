@@ -135,8 +135,11 @@ impl PublishedInvocationRequest {
 }
 
 thread_local! {
-    static CURRENT_INVOKERS: std::cell::RefCell<Vec<tilo_actions::ActionInvoker>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    /// Each scope's invoker, with the broker invocation it was delivered
+    /// under when it was one.
+    static CURRENT_INVOKERS: std::cell::RefCell<
+        Vec<(tilo_actions::ActionInvoker, Option<tilo_actions::InvocationId>)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The invoker whose resource tree a delivered invocation resolves against,
@@ -151,7 +154,18 @@ thread_local! {
 pub struct InvokerScope(());
 impl InvokerScope {
     pub fn enter(invoker: tilo_actions::ActionInvoker) -> Self {
-        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push(invoker));
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, None)));
+        Self(())
+    }
+
+    /// Enter the invoker of `invocation`, which the broker delivered: a
+    /// request the app makes for it meanwhile names it
+    /// ([`delivered_invocation`]).
+    pub fn delivered(
+        invoker: tilo_actions::ActionInvoker,
+        invocation: tilo_actions::InvocationId,
+    ) -> Self {
+        CURRENT_INVOKERS.with_borrow_mut(|invokers| invokers.push((invoker, Some(invocation))));
         Self(())
     }
 }
@@ -304,7 +318,15 @@ pub(crate) fn check_continuation(
 /// The invoker of the delivered invocation being resolved on this thread.
 /// `None` outside any delivered invocation (the local person acting).
 pub fn current_invoker() -> Option<tilo_actions::ActionInvoker> {
-    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().cloned())
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().map(|(invoker, _)| invoker.clone()))
+}
+
+/// The broker invocation being dispatched on this thread, when the broker
+/// delivered it: what a request the app makes to the shell for it (opening
+/// another app) names, so the shell admits it as that invocation's caller.
+/// `None` for the local person acting, whose own press is the proof.
+pub fn delivered_invocation() -> Option<tilo_actions::InvocationId> {
+    CURRENT_INVOKERS.with_borrow(|invokers| invokers.last().and_then(|(_, invocation)| *invocation))
 }
 
 /// The participant whose view the current resolution builds, if any.
@@ -312,7 +334,7 @@ pub fn current_participant() -> Option<tilo_actions::ParticipantId> {
     CURRENT_INVOKERS.with_borrow(|invokers| {
         invokers
             .last()
-            .and_then(|invoker| invoker.participant.clone())
+            .and_then(|(invoker, _)| invoker.participant.clone())
     })
 }
 

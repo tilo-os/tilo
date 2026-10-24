@@ -213,6 +213,33 @@ pub struct Popup {
     pub height: u32,
 }
 
+/// What an extension changed of its toolbar button (`chrome.action`). Each
+/// field is `None` when it did not change; `Some(None)` takes back what it
+/// set for one tab, so that tab shows what every tab shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionActionChange {
+    pub badge: Option<Option<String>>,
+    pub title: Option<Option<String>>,
+    /// The popup's address as Chromium resolved it; empty for none, when a
+    /// click goes to the extension instead.
+    pub popup: Option<Option<String>>,
+    pub enabled: Option<Option<bool>>,
+    pub icon: Option<Option<ExtensionActionIcon>>,
+}
+
+/// An icon an extension gave its toolbar button.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionActionIcon {
+    /// A file among its own, from the extension's root (`/icons/on.png`).
+    Path(String),
+    /// Pixels it drew: RGBA rows, `width * height * 4` bytes.
+    Pixels {
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -397,6 +424,37 @@ pub enum WebViewCommand {
     PermissionDismissed {
         id: u32,
     },
+    /// What an installed extension may do with the Browser's tabs: its API
+    /// permissions and the sites it may read and script. The engine answers
+    /// the extension's tab APIs within them.
+    ExtensionAccess {
+        id: String,
+        permissions: Vec<String>,
+        hosts: Vec<String>,
+        /// What its service worker shows the engine to be known as its.
+        token: Option<String>,
+    },
+    /// An extension that left the profile: it is told nothing more.
+    ExtensionForget {
+        id: String,
+    },
+    /// The Browser's own extension, which tells the engine which tab a page
+    /// is among the ids extensions know tabs by.
+    ExtensionIdentity {
+        id: String,
+    },
+    /// This tab shows an extension's popup or settings page over the page
+    /// used last: to extensions it is no tab, and that page is its window.
+    /// `action` names the extension whose toolbar button opened it, which
+    /// may then script that page, as in Chrome.
+    ExtensionPanel {
+        action: Option<String>,
+    },
+    /// The person clicked an extension's toolbar button over this page: the
+    /// extension hears of it (`action.onClicked`) and may script the page.
+    ExtensionClick {
+        id: String,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -439,6 +497,22 @@ pub enum WebViewEvent {
     },
     CredentialResult(CredentialReply),
     ServiceSessionResult(ServiceSessionReply),
+    /// An extension changed its toolbar button, for this tab alone or for
+    /// every tab (`global`).
+    ExtensionAction {
+        id: String,
+        global: bool,
+        change: ExtensionActionChange,
+    },
+    /// A new document in this tab: what extensions set for their buttons on
+    /// this tab alone is gone.
+    ExtensionActionReset,
+    /// An extension asked to open its popup (`action.openPopup`) over this
+    /// tab's page: `url` is among its own pages.
+    ExtensionOpenPopup {
+        id: String,
+        url: String,
+    },
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,

@@ -6,8 +6,8 @@
 //! as quiet. Any edit of a field the record publishes as guarded asks: one
 //! whose change can weaken the person's security or expose them. A field
 //! that weakens only one way ([`Weaker`]) asks only for a change that way.
-//! Otherwise setting, splicing, adding, moving and an outbox's `settle` and
-//! `forget` ask nothing.
+//! Otherwise setting, splicing, adding, upserting an item by its key, moving
+//! and an outbox's `settle` and `forget` ask nothing.
 
 /// The tag a published field edit carries.
 pub const FIELD_EDIT_TAG: &str = "confirmation:field-edit";
@@ -227,6 +227,7 @@ mod tests {
             "set",
             "splice",
             "insert-item",
+            "upsert-item",
             "move-to",
             "settle",
             "forget",

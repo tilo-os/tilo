@@ -742,6 +742,9 @@ pub struct CommandPalette {
     rect: Rect,
     text_scale: f64,
     ui_scale: f64,
+    /// The theme's gap between two sections, set above every section or
+    /// group header that follows a row.
+    section_gap: f64,
     is_focused: bool,
     search_filter: SearchFilter,
     mode: PaletteMode,
@@ -829,6 +832,8 @@ enum VisualRow {
         label: String,
         total: usize,
         level: HeaderLevel,
+        /// Whether a row comes before it, so the section gap sits above.
+        spaced: bool,
     },
     /// Index into `self.visible`.
     Entry(usize),
@@ -867,6 +872,7 @@ impl CommandPalette {
             rect: Rect::ZERO,
             text_scale: 1.0,
             ui_scale: 1.0,
+            section_gap: f64::from(crate::tokens::RhythmScale::BASE.section),
             is_focused: false,
             search_filter: SearchFilter::default(),
             mode: PaletteMode::Search,
@@ -1224,23 +1230,32 @@ impl CommandPalette {
     }
 
     /// The whole rows from the top that fit under the cap: a cap that cut
-    /// a row in half would leave a sliver nothing paints.
+    /// a row in half would leave a sliver nothing paints, and a header
+    /// with no row under it is not painted ([`Self::painted_window`]).
     fn fitted_list_height(&self) -> f64 {
         let cap = self.max_list_height().max(self.row_height());
         let mut used = 0.0;
+        let mut trailing_header = 0.0;
         for row in &self.rows {
             let h = self.visual_row_height(row);
             if used + h > cap + 0.01 {
                 break;
             }
             used += h;
+            trailing_header = if matches!(row, VisualRow::Header { .. }) {
+                trailing_header + h
+            } else {
+                0.0
+            };
         }
-        used.max(self.row_height())
+        (used - trailing_header).max(self.row_height())
     }
 
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
         match row {
-            VisualRow::Header { .. } => HEADER_HEIGHT * self.layout_scale(),
+            VisualRow::Header { spaced, .. } => {
+                HEADER_HEIGHT * self.layout_scale() + if *spaced { self.section_gap } else { 0.0 }
+            }
             VisualRow::Entry(entry_i) => self.entry_row_height(*entry_i),
         }
     }
@@ -2234,7 +2249,11 @@ impl CommandPalette {
                     label,
                     total,
                     level,
+                    spaced,
                 } => {
+                    if *spaced {
+                        y += self.section_gap;
+                    }
                     // A section's header in the text's own ink; a group
                     // within it a caption under it.
                     let (style, ink) = match level {
@@ -2541,13 +2560,18 @@ impl CommandPalette {
             .or_else(|| entry.alternates.first())
     }
 
-    /// Where `text` shows the query's words, merged and in order: the
+    /// Where `text`, a row's line searched as a field of `weight`, shows
+    /// the query's words as search matched them, merged and in order: the
     /// part of a row a person reads to see why it matched.
-    fn match_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+    fn match_ranges(
+        &self,
+        text: &str,
+        weight: tilo_search::FieldWeight,
+    ) -> Vec<std::ops::Range<usize>> {
         let mut ranges: Vec<std::ops::Range<usize>> = self
             .query
             .split_whitespace()
-            .filter_map(|word| tilo_search::locate(word, text))
+            .filter_map(|word| tilo_search::locate(word, text, weight))
             .collect();
         ranges.compact_sort_by_key(|range| range.start);
         let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
@@ -2670,7 +2694,7 @@ impl CommandPalette {
 
         let label =
             text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
-        let label_marks = self.match_ranges(&label);
+        let label_marks = self.match_ranges(&label, tilo_search::FieldWeight::TITLE);
         if let Some(desc) = &entry.description {
             // A path keeps both ends; prose keeps its beginning, where the
             // meaning is.
@@ -2687,7 +2711,7 @@ impl CommandPalette {
             // Only one line is set off: the title when it shows the query,
             // else the subtitle, so a row never shouts twice.
             let desc_marks = if label_marks.is_empty() {
-                self.match_ranges(&sub)
+                self.match_ranges(&sub, tilo_search::FieldWeight::SUBTITLE)
             } else {
                 Vec::new()
             };
@@ -2717,7 +2741,7 @@ impl CommandPalette {
                         .elide_to_width_style(fact, f32_of_f64(room), &desc_style);
                     let (w, _) = ctx.text.measure_style(&shown, None, &desc_style);
                     let marks = if label_marks.is_empty() {
-                        self.match_ranges(&shown)
+                        self.match_ranges(&shown, tilo_search::FieldWeight::SUBTITLE)
                     } else {
                         Vec::new()
                     };
@@ -3001,10 +3025,12 @@ impl CommandPalette {
                 if section != Some(name) {
                     section = Some(name);
                     current = Some(name);
+                    let spaced = !self.rows.is_empty();
                     self.rows.push(VisualRow::Header {
                         label: name.to_string(),
                         total: 0,
                         level: HeaderLevel::Section,
+                        spaced,
                     });
                 }
                 if let Some(group) = entry.group.as_deref()
@@ -3015,6 +3041,7 @@ impl CommandPalette {
                         label: group.to_string(),
                         total: 0,
                         level: HeaderLevel::Subgroup,
+                        spaced: false,
                     });
                 }
                 self.rows.push(VisualRow::Entry(entry_i));
@@ -3038,10 +3065,12 @@ impl CommandPalette {
                             .count()
                     })
                 });
+                let spaced = !self.rows.is_empty();
                 self.rows.push(VisualRow::Header {
                     label: group.to_string(),
                     total,
                     level: HeaderLevel::Group,
+                    spaced,
                 });
             }
             self.rows.push(VisualRow::Entry(entry_i));
@@ -3107,6 +3136,7 @@ impl Widget for CommandPalette {
     ) -> NodeId {
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
         let generation = crate::search::engine_generation();
         if self.ranked_generation != generation {
             self.ranked_generation = generation;
@@ -3146,6 +3176,7 @@ impl Widget for CommandPalette {
         text_renderer.set_text_scale(1.0);
         self.text_scale = f64::from(theme.text_scale);
         self.ui_scale = f64::from(theme.ui_scale);
+        self.section_gap = f64::from(theme.tokens.spacing.rhythm.section);
         let colors = &theme.tokens.colors;
         // The one floating card (HIG §9.1): the opaque panel ground and its
         // edges. Opaque, as the card is rows of small text: a tinted
@@ -4247,12 +4278,23 @@ mod keyboard_flow_tests {
     fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {
         let mut p = grouped(&[("Files", 1)]);
         p.query = "dark the".into();
+        let title = tilo_search::FieldWeight::TITLE;
         assert_eq!(
-            p.match_ranges("Use the dark theme"),
+            p.match_ranges("Use the dark theme", title),
             vec![4..7, 8..12],
             "each query word, merged and in order"
         );
-        assert!(p.match_ranges("Brightness").is_empty());
+        assert!(p.match_ranges("Brightness", title).is_empty());
+        p.query = "pi".into();
+        assert!(
+            p.match_ranges(
+                "Insert it where you're typing",
+                tilo_search::FieldWeight::SUBTITLE
+            )
+            .is_empty(),
+            "two letters inside a word of a description are no match"
+        );
+        assert_eq!(p.match_ranges("Pixel Editor", title), vec![0..2]);
 
         let theme = Theme::dark();
         let style = theme.text(TextRole::Caption);
@@ -4334,6 +4376,45 @@ mod keyboard_flow_tests {
         dispatch(&mut p, &crate::synthetic_input::mouse_press());
         assert!(p.take_scope_token_removed(), "a press widens");
         assert!(p.scope_token.is_none());
+    }
+
+    #[test]
+    fn a_list_cut_under_a_header_ends_on_the_row_above_it() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("a", "Pitch deck").in_section("Continue"),
+            CommandEntry::new("b", "Notes").in_section("Apps"),
+        ]);
+        let gap = f64::from(crate::tokens::RhythmScale::BASE.section);
+        p.set_max_list_height(HEADER_HEIGHT * 2.0 + gap + p.row_height());
+        assert_eq!(
+            p.fitted_list_height(),
+            HEADER_HEIGHT + p.row_height(),
+            "the Apps header has no row under it, so the list ends on Pitch deck"
+        );
+    }
+
+    #[test]
+    fn a_section_after_rows_stands_the_themes_section_gap_below_them() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("bo", "Bo").in_section("Waiting on you"),
+            CommandEntry::new("doc", "Plan").in_section("Continue"),
+        ]);
+        let heights: Vec<f64> = p
+            .rows
+            .iter()
+            .filter(|row| matches!(row, VisualRow::Header { .. }))
+            .map(|row| p.visual_row_height(row))
+            .collect();
+        let gap = f64::from(crate::tokens::RhythmScale::BASE.section);
+        assert_eq!(
+            heights,
+            [HEADER_HEIGHT, HEADER_HEIGHT + gap],
+            "the first header opens the list; the next stands a section gap below the row above it"
+        );
     }
 
     #[test]

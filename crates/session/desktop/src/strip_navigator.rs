@@ -738,6 +738,7 @@ mod tests {
                     kind: tilo_desktop_model::AppKind::Other("so.tilo.notes".into()),
                     label: "Notes".into(),
                 },
+                app_title: None,
             }],
         }
     }

@@ -646,6 +646,35 @@ save time against the same descriptors this API enumerates and run through
 the same `ActionHost` door as the invoking person, inside the shortcut's own
 grant.
 
+## Values the host fills in, and items addressed by key
+
+A room's agents (`crates/agent/agent-participant`) take figures and positions
+off the model, for every app and with no app code:
+
+- **Quoted and computed values.** Any argument of a planned step may quote a
+  value as `{{<app>:<record>/<read>#/json/pointer}}` (any read or view the
+  agent may run, the record picked as for a step naming none when `:<record>`
+  is left out), `{{Sheet1!B2}}` or `{{'Q3 Budget'!C7:C9}}` (a workbook's
+  `read` of those cells, the one alias), or compute one as `{{= expr }}`:
+  arithmetic, `sum`, `avg`, `min`, `max`, `round`, `abs`, `%`, and dates
+  (`workday(date, n)`, `add_days`, `days_between`, `networkdays`), with
+  references as operands. `|$`, `|%`, `|0.00` and `|long` format. The host
+  fills them in just before the step runs (`src/values.rs`): one that is a
+  whole argument keeps its type, one inside text is written out, and one that
+  names nothing or cannot be computed fails the step with the reference
+  named, which the task's repair plans around. The action log records the
+  values; the plan log keeps what the model wrote.
+- **Keyed collection edits.** Every `#[resource]` collection's field edit
+  takes `upsert-item {match: {field: value}, value}`: it updates the one item
+  whose fields hold `match` (text compared ignoring case and spacing, numbers
+  by value), else appends one, refuses when two items match, and resolves
+  against the merged document when it applies, so an agent never writes "the
+  third row" that someone else's insert has moved. `insert-item` and
+  `move-to` place by `at: "end" | {"after": id} | {"before": id}` as well as
+  by position. A sheet's rows are cells rather than items, so Sheets answers
+  the same `upsert-item {match, value}` on each sheet by its header row; it is
+  the one adapter, kept in the app.
+
 ## AI transforms
 
 The workspace agent (`so.tilo.agent`, running with `--task-runs`) publishes

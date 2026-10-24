@@ -115,24 +115,3 @@ pub(crate) fn hotspot_switch(cx: &PaneCx, on: bool) -> Item {
         NetworkEffect::SET_HOTSPOT,
     )
 }
-
-/// Mobile broadband, a switch where there is a modem.
-pub(crate) fn mobile(app: &SettingsApp, _: &Follows) -> Read {
-    read(app, |model| {
-        model
-            .radios
-            .wwan_available
-            .then_some(model.radios.wwan_enabled)
-    })
-    .map_or(Read::Value(None), Read::Switch)
-}
-
-pub(crate) fn mobile_switch(cx: &PaneCx, on: bool) -> Item {
-    switch(
-        cx,
-        "net-mobile",
-        "network.mobile",
-        on,
-        NetworkEffect::SET_MOBILE_BROADBAND,
-    )
-}

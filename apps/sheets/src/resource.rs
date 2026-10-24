@@ -519,6 +519,54 @@ impl Workbook {
         write_into(self.sheet_mut(sheet)?, &writes)
     }
 
+    /// Update or add a row by its key.
+    ///
+    /// The sheet's rows are a collection keyed by the headers in row 1: this
+    /// is the `upsert-item` every collection offers, so a caller addresses a
+    /// row by what it holds rather than by a row number that moves when
+    /// someone else adds or sorts rows.
+    #[action(answers, item = sheets, audience = "agents")]
+    pub fn upsert_item(
+        &mut self,
+        cx: &mut ActionCx,
+        sheet: &Id,
+        #[param(
+            "The header values that identify the row, e.g. {\"Name\": \"Ana\"}: matched ignoring case and spacing, numbers by value. The one row that holds them is updated; with none, a row is appended; more than one is refused",
+            name = "match"
+        )]
+        matching: std::collections::BTreeMap<String, serde_json::Value>,
+        #[param(
+            "The row's cells by header, e.g. {\"Total\": \"=[Price]*[Qty]\"}; a header left out keeps its cell. In a formula [Header] is that column's cell in the same row"
+        )]
+        value: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> Result<(), Refusal> {
+        let sheet = &self.sheet_key(sheet)?;
+        let snap = self
+            .snapshot_of(sheet)
+            .ok_or_else(|| Refusal::new("no such sheet"))?;
+        let shown = crate::cell_actions::shown_cells(&snap);
+        let (writes, appended) = crate::records::upsert_writes(
+            &snap,
+            &shown,
+            &matching.into_iter().collect(),
+            &value.into_iter().collect(),
+        )?;
+        if writes.is_empty() {
+            return Err(Refusal::new("the row holds no values to write"));
+        }
+        let target = self.sheet_mut(sheet)?;
+        // A new row under an id of its own: rows reached by position are
+        // named by it (`r7`), so two agents appending at once would write
+        // into one row; inserted afresh, each keeps its own.
+        if let Some(row) = appended
+            && let Ok(at) = usize::try_from(row)
+            && at <= target.cells.rows().len()
+        {
+            target.cells.insert_row(at, cx.id());
+        }
+        write_into(target, &writes)
+    }
+
     /// Duplicate a sheet.
     #[action(item = sheets)]
     pub fn duplicate_sheet(&mut self, cx: &mut ActionCx, sheet: &Id) -> Result<(), Refusal> {

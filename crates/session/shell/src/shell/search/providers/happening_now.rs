@@ -6,9 +6,9 @@
 //! in progress (Enter joins it). It reads the presence the strip, the window
 //! bar and the overview read: each workspace's collaborators as their
 //! presence last said, through [`tilo_desktop::collaborators`]'s roster rows,
-//! and for the workspace in front the calls the people panel offers to join
-//! ([`ChromeState::calls_here`], set by the overlay host from the same
-//! presence). Scoped to
+//! and in each the calls the people panel offers to join, as that
+//! workspace's people say there ([`ChromeState::live_calls`], set by the
+//! overlay host from the same presence). Scoped to
 //! the current workspace, it lists that one; widened, every workspace.
 
 use std::rc::Rc;
@@ -27,10 +27,11 @@ const WORKSPACE_PREFIX: &str = "workspace:";
 const WINDOW_PREFIX: &str = "window:";
 const CALL_PREFIX: &str = "call:";
 
-/// A call in progress in the workspace in front, that this device is not
-/// in: its channel, its name and who is in it.
+/// A call in progress in a workspace, that this device is not in: the
+/// workspace, its channel, its name and who is in it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LiveCall {
+    pub workspace: WorkspaceId,
     pub channel: VoiceChannel,
     pub name: String,
     pub people: Vec<RosterRow>,
@@ -167,15 +168,14 @@ pub fn rows(state: &ChromeState, scope: SearchScope, calls: &[LiveCall]) -> Vec<
     let mut out = Vec::new();
     for workspace in workspaces {
         let people = present(desktop, workspace, &local_user, &own_id);
-        let calls: &[LiveCall] = if workspace.id == desktop.active {
-            calls
-        } else {
-            &[]
-        };
+        let calls: Vec<&LiveCall> = calls
+            .iter()
+            .filter(|call| call.workspace == workspace.id)
+            .collect();
         if people.is_empty() && calls.is_empty() {
             continue;
         }
-        out.extend(workspace_rows(desktop, workspace, &people, calls));
+        out.extend(workspace_rows(desktop, workspace, &people, &calls));
     }
     drop(tree);
     out
@@ -185,7 +185,7 @@ fn workspace_rows(
     desktop: &DesktopTree,
     workspace: &Workspace,
     people: &[RosterRow],
-    calls: &[LiveCall],
+    calls: &[&LiveCall],
 ) -> Vec<FacedRow> {
     let ws = workspace.id;
     let mut out = Vec::new();

@@ -811,6 +811,7 @@ impl BrightnessService {
             };
             writer.send(entry.monitor.target.clone(), pct, entry.maximum);
             drop(writers);
+            notify(&self.generation, &self.on_change);
         }
         if self.memory_path.is_some()
             && let Some(tx) = &self.tx
@@ -884,6 +885,82 @@ impl BrightnessService {
         if let Err(error) = spawned {
             tracing::warn!(target: "tilo::display", %error, "brightness memory follower did not start");
         }
+    }
+
+    /// Take what the kernel holds for every backlit panel whose writer is
+    /// idle: another program, a firmware hotkey or a light sensor moved it.
+    /// A level set here while the panel was being read wins. Returns whether
+    /// a level changed.
+    pub fn reload_backlights(&self) -> bool {
+        let backlights: Vec<(String, BrightnessTarget, f32)> = self
+            .lock()
+            .monitors
+            .iter()
+            .filter(|entry| matches!(entry.monitor.target, BrightnessTarget::Backlight(_)))
+            .map(|entry| {
+                (
+                    entry.monitor.connector.clone(),
+                    entry.monitor.target.clone(),
+                    entry.level,
+                )
+            })
+            .collect();
+        let mut changed = false;
+        for (connector, target, before) in backlights {
+            if !self.writer_idle(&connector) {
+                continue;
+            }
+            let Ok(reading) = (self.read)(&target) else {
+                continue;
+            };
+            let mut shared = self.lock();
+            if let Some(entry) = shared
+                .monitors
+                .iter_mut()
+                .find(|entry| entry.monitor.connector == connector)
+                && entry.level.to_bits() == before.to_bits()
+                && (reading.level - before).abs() > f32::EPSILON
+            {
+                entry.level = reading.level;
+                changed = true;
+            }
+        }
+        if changed {
+            notify(&self.generation, &self.on_change);
+        }
+        changed
+    }
+
+    /// Follow the kernel's backlight events on a thread that sleeps on the
+    /// uevent socket: a level change is read back, a backlight that comes or
+    /// goes rescans. The compositor calls this once.
+    pub fn follow_backlight(&'static self) {
+        let spawned = std::thread::Builder::new()
+            .name("tilo-backlight-events".into())
+            .spawn(move || {
+                let followed = crate::backlight_events::follow(|event| match event {
+                    crate::backlight_events::BacklightEvent::Level => {
+                        self.reload_backlights();
+                    }
+                    crate::backlight_events::BacklightEvent::Devices => self.rescan(),
+                });
+                if let Err(error) = followed {
+                    tracing::warn!(target: "tilo::display", %error, "backlight changes not followed");
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(target: "tilo::display", %error, "backlight follower did not start");
+        }
+    }
+
+    fn writer_idle(&self, connector: &str) -> bool {
+        self.writers
+            .lock_recover()
+            .get(connector)
+            .is_none_or(|writer| {
+                let state = writer.state.0.lock_recover();
+                state.pending.is_none() && !state.busy
+            })
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Shared> {
@@ -1336,6 +1413,58 @@ mod tests {
             let _ = done.send(());
         }));
         tilo_test_env::recv("the brightness service to go idle", &told);
+    }
+
+    #[test]
+    fn a_backlight_moved_elsewhere_is_read_back_and_announced() {
+        let panel = MonitorBrightness {
+            connector: "eDP-1".into(),
+            target: BrightnessTarget::Backlight(PathBuf::from("/sys/class/backlight/panel")),
+            edid: None,
+        };
+        let kernel = Arc::new(Mutex::new(0.5_f32));
+        let (read_from, written_to) = (Arc::clone(&kernel), Arc::clone(&kernel));
+        let service = BrightnessService::spawn(
+            Arc::new(move || vec![panel.clone()]),
+            Arc::new(move |_: &BrightnessTarget| -> Result<Reading, String> {
+                Ok(Reading {
+                    level: *read_from.lock().unwrap(),
+                    maximum: None,
+                })
+            }),
+            Arc::new(
+                move |_: &BrightnessTarget, pct: f32, _: Option<u16>| -> Result<(), String> {
+                    *written_to.lock().unwrap() = pct / 100.0;
+                    Ok(())
+                },
+            ),
+            |_| {},
+            None,
+        );
+        service.rescan_blocking();
+        let told = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&told);
+        service.on_change(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        let level = |service: &BrightnessService| service.levels()[0].level;
+
+        assert!(!service.reload_backlights(), "nothing moved");
+        assert_eq!(told.load(Ordering::SeqCst), 0);
+
+        // A firmware hotkey or another program sets the panel.
+        *kernel.lock().unwrap() = 0.8;
+        assert!(service.reload_backlights());
+        assert_eq!(level(&service), 0.8);
+        assert_eq!(told.load(Ordering::SeqCst), 1);
+
+        // A level set here is announced too, and its own event reads back
+        // what was written.
+        assert!(service.set("eDP-1", 30.0));
+        assert_eq!(told.load(Ordering::SeqCst), 2);
+        idle(&service);
+        assert!(!service.reload_backlights());
+        assert_eq!(level(&service), 0.3);
     }
 
     #[test]

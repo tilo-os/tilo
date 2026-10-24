@@ -1,0 +1,5 @@
+#pragma once
+namespace tilo {
+inline constexpr char kExtensionTabs[] = R"TILO_TABS(@TILO_EXTENSION_TABS@)TILO_TABS";
+inline constexpr char kExtensionContent[] = R"TILO_TABS(@TILO_EXTENSION_CONTENT@)TILO_TABS";
+}
