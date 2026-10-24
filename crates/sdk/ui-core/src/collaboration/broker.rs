@@ -2030,6 +2030,10 @@ struct BridgeState {
     /// publishable and waited again.
     #[cfg(test)]
     publication_gate_waits: Arc<std::sync::atomic::AtomicUsize>,
+    /// A test's bound on this session's admission answers, in
+    /// milliseconds; `0` keeps the production bound.
+    #[cfg(test)]
+    admission_timeout_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Progress of the shovel's connection setup.
@@ -2190,6 +2194,8 @@ impl BridgeState {
             connect: Arc::new(std::sync::Mutex::new(ConnectPhase::Connecting)),
             #[cfg(test)]
             publication_gate_waits: Arc::default(),
+            #[cfg(test)]
+            admission_timeout_ms: Arc::default(),
         }
     }
 
@@ -7651,6 +7657,7 @@ async fn dispatch_sdk_request(
         } => {
             let result = directory_client::invoke(
                 route,
+                directory_client::admission_timeout(&inbound_tx.state),
                 peer_id,
                 &revision,
                 &resource,
