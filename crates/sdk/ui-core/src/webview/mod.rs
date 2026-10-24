@@ -355,6 +355,9 @@ pub struct ExtensionNotice {
     pub buttons: Vec<String>,
     /// How far along a progress notification is, from 0 to 100.
     pub progress: Option<u8>,
+    /// Shown without a sound: the extension asked so, or this changes one
+    /// already shown (`notifications.update`, as a download's progress does).
+    pub silent: bool,
 }
 
 /// What the person did in the Browser's address after an extension's

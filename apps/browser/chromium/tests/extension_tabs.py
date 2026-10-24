@@ -1350,6 +1350,8 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual({key: shown.get(key) for key in ('tab', 'id', 'title', 'message', 'progress', 'buttons', 'items')},
                          {'tab': 1, 'id': notifier, 'title': 'Copying', 'message': 'Two files', 'progress': 40,
                           'buttons': ['Pause', 'Stop'], 'items': []})
+        # Shown anew it may sound; changed, as a progress is, it does not.
+        self.assertIs(shown.get('silent'), False)
 
         # Without an id, with a callback: one is made up. A missing property
         # sets runtime.lastError, as in Chrome.
@@ -1366,7 +1368,7 @@ class ExtensionTabs(unittest.TestCase):
         mark = len(host.seen)
         self.assertIs(self.in_worker(host, notifier, "chrome.notifications.update('copy', {progress: 80})"), True)
         updated = told(mark, 'copy')
-        self.assertEqual((updated['title'], updated['progress']), ('Copying', 80))
+        self.assertEqual((updated['title'], updated['progress'], updated['silent']), ('Copying', 80, True))
         self.assertIs(self.in_worker(host, notifier, "chrome.notifications.update('none', {progress: 1})"), False)
         self.assertEqual(self.in_worker(host, notifier, 'chrome.notifications.getAll()'), {'copy': True, made: True})
 
