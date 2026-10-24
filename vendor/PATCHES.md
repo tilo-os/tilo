@@ -41,6 +41,16 @@ Both directories contain `PROVENANCE.md`, licences and focused regression
 tests. No insecure verifier, alternative trust loader or policy exception is
 introduced.
 
+## DAVE for Discord voice
+
+`davey` 0.1.5 is the checksum-verified MIT registry release, moved from
+openmls 0.8 to the openmls 0.9 generation the workspace builds (the two pin
+incompatible `hax-lib` versions). openmls 0.9 surfaces one's own commit as
+`OwnPendingCommit` instead of failing with `OwnCommit`; davey merges its
+pending commit on that variant. The Node and Python bindings are left out.
+See `vendor/davey/PROVENANCE.md` and `TILO-PATCH.md`; the Discord worker's
+voice tests run the full handshake against it.
+
 ## iroh idle timers
 
 `iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
