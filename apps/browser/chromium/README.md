@@ -797,7 +797,9 @@ content scripts (with `sender.tab`) work without help.
   (`revoke-extension-access`): the Browser sends `extension_grants` without
   it, which holds at once, and the extension hears of what it lost
   (`onRemoved`). A question whose tab closes unanswered, its popup or the
-  window's page, is answered no, so the extension may ask again.
+  window's page, is answered no, so the extension may ask again, and the
+  windows' pages hear `extension_permission_closed` with its `request`, so
+  a window still showing it takes it away.
 - `downloads.download` goes through the Browser's own downloads
   (`src/capabilities.h`): Chromium cancels a download an extension starts
   on none of its windows' tabs, so the host starts it on the page the call

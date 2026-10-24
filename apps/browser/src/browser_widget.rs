@@ -3009,6 +3009,7 @@ impl BrowserWidget {
                 }
                 event @ (WebViewEvent::PermissionRequested { .. }
                 | WebViewEvent::PermissionClosed { .. }
+                | WebViewEvent::ExtensionPermissionClosed { .. }
                 | WebViewEvent::NativeDownloadRequested { .. }
                 | WebViewEvent::DownloadUpdated { .. }
                 | WebViewEvent::DownloadRuntime { .. }

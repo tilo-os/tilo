@@ -504,6 +504,19 @@ fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_
             granted: set(&[], &[]),
         })
     );
+    // The page that asked closed before the person answered.
+    assert_eq!(
+        event(json!({"event":"extension_permission_closed","tab":2,"request":4})),
+        Some(WebViewEvent::ExtensionPermissionClosed { request: 4 })
+    );
+    for bad in [
+        json!({"event":"extension_permission_closed","tab":2}),
+        json!({"event":"extension_permission_closed","tab":2,"request":0}),
+        json!({"event":"extension_permission_closed","tab":2,"request":"4"}),
+        json!({"event":"extension_permission_closed","tab":2,"request":4_294_967_296_u64}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
     // A request for nothing, without its number, from no extension, or of
     // another shape: refused.
     for bad in [
