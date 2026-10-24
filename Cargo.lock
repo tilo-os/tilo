@@ -16669,6 +16669,7 @@ dependencies = [
  "photos",
  "poker",
  "postcard",
+ "regex",
  "rustls",
  "scratchpad",
  "seccompiler",

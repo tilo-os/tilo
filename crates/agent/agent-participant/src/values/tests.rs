@@ -29,6 +29,22 @@ impl Reads for Room {
             ("notes", "read") if view.record.as_deref() == Some("uuid:7") => {
                 Ok(json!({"title": "Claim", "fields": {"payout": "$4,250.00", "excess": 500}}))
             }
+            ("messages", "read") => Ok(json!({"id": "inbox", "messages": [
+                {"from": "Parcelly", "body": "Parcelly login code: 330817.",
+                 "date": "2026-10-13T17:42:10Z"},
+                {"from": "Northwind Bank", "body": "Your sign-in code is 615204.",
+                 "date": "2026-10-14T08:31:05Z"},
+                {"from": "Parcelly", "body": "Parcelly login code: 552398.",
+                 "date": "2026-10-14T09:15:41Z"},
+                {"from": "Parcelly", "body": "Parcelly: your new login code: 771046.",
+                 "date": "2026-10-14T09:16:20Z"},
+                {"from": "PARCELLY ", "body": "Your parcel HM-48231 is on its way",
+                 "date": "2026-10-12T10:00:00Z", "labels": ["Shipping", "Info"]},
+            ]})),
+            ("mail", "read") => Ok(json!({
+                "folders": [{"name": "Inbox"}],
+                "messages": [{"from": "Lena <l@x.example>", "ts": "1791964800", "subject": "ID"}],
+            })),
             _ => Err(format!("no read `{}` of {}", view.operation, view.app)),
         }
     }
@@ -42,6 +58,26 @@ fn room() -> Room {
         ("Q3 Budget!C7", json!([["$2,000.00"]])),
         ("Sheet1!C1", json!([["2026-10-23"]])),
         ("Sheet1!D9", json!([[null]])),
+        (
+            "Sheet1!A1:D5",
+            json!([
+                ["Request", "Requested at", "Amount", "Status"],
+                ["LR-2039", "2026-10-14 08:31:00 UTC", "1,200", "Expired"],
+                [
+                    "LR-2041",
+                    "2026-10-14 09:14:00 UTC",
+                    300,
+                    "Waiting for code"
+                ],
+                [
+                    "LR-2042",
+                    "2026-10-14 09:15:30 UTC",
+                    450.5,
+                    "Waiting  for code"
+                ],
+                [null, null, null, null],
+            ]),
+        ),
     ] {
         room.cells.insert(item.to_owned(), json!({ "rows": rows }));
     }
@@ -323,6 +359,238 @@ fn references_parse_strictly() {
         "a/b",
         "x:y/z",
         "Sheet1!ABCD1",
+    ] {
+        assert_eq!(parse_reference(text), None, "{text}");
+    }
+}
+
+#[test]
+fn a_rule_picks_an_item_by_what_it_holds_and_a_pointer_reads_it() {
+    let read = "messages/read#/messages";
+    let out = bound(
+        json!({
+            "newest": format!("{{{{{read}[from=Parcelly, after 2026-10-14T09:15Z, newest]/body}}}}"),
+            "oldest": format!("{{{{{read}[from=parcelly, oldest]/date}}}}"),
+            "first": format!("{{{{{read}[from = Parcelly, first]/body}}}}"),
+            "last": format!("{{{{{read}[last]/from}}}}"),
+            "second": format!("{{{{{read}[nth 2]/from}}}}"),
+            "from_end": format!("{{{{{read}[nth -2]/body}}}}"),
+            "second_newest": format!("{{{{{read}[from=Parcelly, newest, nth 2]/body}}}}"),
+            "whole": "{{messages/read#[from~north]/body}}",
+            "in_text": format!("Code from {{{{{read}[from=Northwind Bank]/from}}}}."),
+        }),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(out["newest"], "Parcelly: your new login code: 771046.");
+    assert_eq!(out["oldest"], "2026-10-12T10:00:00Z", "folded `PARCELLY `");
+    assert_eq!(out["first"], "Parcelly login code: 330817.");
+    assert_eq!(out["last"], "PARCELLY ");
+    assert_eq!(out["second"], "Northwind Bank");
+    assert_eq!(out["from_end"], "Parcelly: your new login code: 771046.");
+    assert_eq!(out["second_newest"], "Parcelly login code: 552398.");
+    assert_eq!(out["whole"], "Your sign-in code is 615204.");
+    assert_eq!(out["in_text"], "Code from Northwind Bank.");
+}
+
+#[test]
+fn filters_fold_case_and_spaces_negate_and_compare_numbers_as_numbers() {
+    let read = "messages/read#/messages";
+    let out = bound(
+        json!({
+            "contains": format!("{{{{{read}[body~\"LOGIN   code: 55\"]/date}}}}"),
+            "negated": format!("{{{{{read}[from!=parcelly]/body}}}}"),
+            "not_containing": format!("{{{{{read}[body!~code]/body}}}}"),
+            "listed": format!("{{{{{read}[labels=shipping]/body}}}}"),
+            "number": "{{Sheet1!A1:D5[Amount=1200]/Request}}",
+            "spaced": "{{Sheet1!A1:D5[status=waiting for code, Request=LR-2042]/Amount}}",
+        }),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(out["contains"], "2026-10-14T09:15:41Z");
+    assert_eq!(out["negated"], "Your sign-in code is 615204.");
+    assert_eq!(out["not_containing"], "Your parcel HM-48231 is on its way");
+    assert_eq!(out["listed"], "Your parcel HM-48231 is on its way");
+    assert_eq!(out["number"], "LR-2039");
+    assert_eq!(out["spaced"], json!(450.5));
+}
+
+#[test]
+fn time_bounds_read_iso_written_and_epoch_times_in_any_time_field() {
+    let read = "messages/read#/messages";
+    let out = bound(
+        json!({
+            "before": format!("{{{{{read}[before 2026-10-13, newest]/body}}}}"),
+            "on": format!("{{{{{read}[on \"October 14, 2026\", from=Parcelly, oldest]/body}}}}"),
+            "zoned": format!("{{{{{read}[after 2026-10-14T11:16:00+02:00]/body}}}}"),
+            "named": format!("{{{{{read}[date before 2026-10-14T08:31:06Z, newest by date]/from}}}}"),
+            "header": "{{Sheet1!A1:D5[Requested at after 2026-10-14 09:00 UTC, oldest]/Request}}",
+            "inferred": "{{Sheet1!A1:D5[newest]/request}}",
+            "epoch": "{{mail/read#/messages[after 2026-10-01, newest]/subject}}",
+        }),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(out["before"], "Your parcel HM-48231 is on its way");
+    assert_eq!(out["on"], "Parcelly login code: 552398.");
+    assert_eq!(out["zoned"], "Parcelly: your new login code: 771046.");
+    assert_eq!(out["named"], "Northwind Bank");
+    assert_eq!(out["header"], "LR-2041");
+    assert_eq!(out["inferred"], "LR-2042");
+    assert_eq!(out["epoch"], "ID");
+}
+
+#[test]
+fn all_keeps_every_item_left_and_takes_the_pointer_from_each() {
+    let out = bound(
+        json!({
+            "amounts": "{{Sheet1!A1:D5[Status~waiting, all]/Amount}}",
+            "sum": "{{= sum({Sheet1!A1:D5[Status~waiting, all]/Amount}) }}",
+            "requests": "{{Sheet1!A1:D5[all]/Request}}",
+        }),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(out["amounts"], json!([300, 450.5]));
+    assert_eq!(out["sum"], json!(750.5));
+    assert_eq!(out["requests"], json!(["LR-2039", "LR-2041", "LR-2042"]));
+}
+
+#[test]
+fn a_pattern_takes_its_first_group_or_its_whole_match_out_of_a_value() {
+    let read = "messages/read#/messages";
+    let out = bound(
+        json!({
+            "group": format!("{{{{{read}[from=Parcelly, newest]/body|match:code: (\\d{{6}})}}}}"),
+            "whole": format!("{{{{{read}[labels~info]/body|match:HM-\\d+}}}}"),
+            "alternation": format!("{{{{{read}[from~north]/body|match:(?:code|PIN) is (\\d+)}}}}"),
+            "count": "{{Sheet1!A1:D5[Request=LR-2039]/Amount|match:[\\d,]+}}",
+        }),
+        &[ActionParam::required("count", ParamType::Number, "a count")],
+    )
+    .unwrap();
+    assert_eq!(out["group"], "771046");
+    assert_eq!(out["whole"], "HM-48231");
+    assert_eq!(out["alternation"], "615204");
+    assert_eq!(out["count"], json!(1200));
+}
+
+#[test]
+fn a_rule_that_cannot_pick_says_why_and_what_the_list_held() {
+    let read = "messages/read#/messages";
+    let error =
+        |rule: &str| bound(json!({ "a": format!("{{{{{read}{rule}}}}}") }), &[]).unwrap_err();
+    let nothing = error("[from=Parcely, newest]/body");
+    assert!(
+        nothing.contains("nothing matches [from=Parcely, newest]")
+            && nothing.contains("5 items")
+            && nothing.contains("from: Parcelly, Northwind Bank, PARCELLY")
+            && nothing.contains("date 2026-10-12T10:00:00Z to 2026-10-14T09:16:20Z"),
+        "{nothing}"
+    );
+    let several = error("[from=Parcelly]/body");
+    assert!(
+        several.contains("4 items match [from=Parcelly]") && several.contains("newest"),
+        "{several}"
+    );
+    let unknown = error("[sender=Parcelly, newest]/body");
+    assert!(
+        unknown.contains("no field `sender`") && unknown.contains("from, body, date, labels"),
+        "{unknown}"
+    );
+    let past = error("[from=Northwind Bank, nth 2]/body");
+    assert!(
+        past.contains("only 1 items match") && past.contains("nth 2"),
+        "{past}"
+    );
+    let clause = error("[latest]/body");
+    assert!(clause.contains("`latest` is not a clause"), "{clause}");
+    let time = error("[after yesterday]/body");
+    assert!(time.contains("`yesterday` is not a time"), "{time}");
+    let pointer = error("[newest]/bdy");
+    assert!(
+        pointer.contains("nothing at /bdy") && pointer.contains("it has from, body, date"),
+        "{pointer}"
+    );
+    let orders = error("[newest, oldest]/body");
+    assert!(orders.contains("at most one order"), "{orders}");
+    let lists = bound(json!({"a": "{{mail/read#[newest]/subject}}"}), &[]).unwrap_err();
+    assert!(
+        lists.contains("several lists")
+            && lists.contains("#/folders")
+            && lists.contains("#/messages"),
+        "{lists}"
+    );
+    let regex = error("[newest]/body|match:(\\d+");
+    assert!(
+        regex.contains("`(\\d+` is not a pattern") && regex.contains("unclosed group"),
+        "{regex}"
+    );
+    let unmatched = error("[newest]/body|match:HM-\\d+");
+    assert!(
+        unmatched.contains("matches nothing in \"Parcelly: your new login code: 771046.\""),
+        "{unmatched}"
+    );
+    let untimed = bound(json!({"a": "{{notes:uuid:7/read#/fields[newest]}}"}), &[]).unwrap_err();
+    assert!(untimed.contains("not a list"), "{untimed}");
+}
+
+#[test]
+fn moments_read_as_apps_write_them() {
+    let at = |text: &str| dates::instant(text).unwrap();
+    let base = at("2026-10-14T09:15:00Z");
+    assert_eq!(at("2026-10-14T09:15Z"), base);
+    assert_eq!(at("2026-10-14 09:15:00 UTC"), base);
+    assert_eq!(at("2026-10-14T11:15:00+02:00"), base);
+    assert_eq!(at("2026-10-14T04:15-0500"), base);
+    assert_eq!(
+        at("2026-10-14T09:15:00.250Z"),
+        base.checked_add(250).unwrap()
+    );
+    assert_eq!(at("2026-10-14"), at("October 14, 2026"));
+    assert_eq!(at("14 Oct 2026"), at("2026-10-14T00:00Z"));
+    assert_eq!(at("1791964800"), 1_791_964_800_000);
+    assert_eq!(at("1791964800000"), 1_791_964_800_000);
+    for text in [
+        "yesterday",
+        "2026-10-14T9:15Z",
+        "2026-10-14T09:15 CEST",
+        "Smarch 3, 2026",
+    ] {
+        assert_eq!(dates::instant(text), None, "{text}");
+    }
+}
+
+#[test]
+fn selections_parse_only_where_a_list_can_be() {
+    let picked =
+        parse_reference("messages/read?item=a#b#/messages[from=\"A, [B]\", newest]/body[first]")
+            .unwrap();
+    assert_eq!(picked.view.operation, "read");
+    assert_eq!(picked.view.arguments["item"], "a#b");
+    assert_eq!(picked.pointer, "/messages");
+    assert_eq!(
+        picked.selections,
+        [
+            Selection {
+                rule: "from=\"A, [B]\", newest".into(),
+                pointer: "/body".into()
+            },
+            Selection {
+                rule: "first".into(),
+                pointer: String::new()
+            },
+        ]
+    );
+    let rows = parse_reference("Sheet1!A1:D5[Status!=Done]/Amount").unwrap();
+    assert_eq!(rows.pointer, "/rows");
+    assert_eq!(rows.selections.len(), 1);
+    for text in [
+        "Sheet1!B2[newest]",
+        "messages/read#/messages[newest",
+        "messages/read#/messages[newest]body",
+        "messages/read#[newest]x[last]",
     ] {
         assert_eq!(parse_reference(text), None, "{text}");
     }
