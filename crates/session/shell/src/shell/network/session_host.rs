@@ -11,6 +11,9 @@ pub(crate) enum Placement {
     Held,
     /// The room waits to be placed on this device's host.
     Placing,
+    /// The last pass did not place the room, and none is due until
+    /// something placement depends on changes: why.
+    NotPlaced(String),
     /// The host made the room and this device's enrollment into it runs.
     Enrolling,
     /// The enrollment ended but the native owner does not hold the room's
@@ -23,7 +26,7 @@ impl Placement {
     pub(crate) fn step(&self) -> &'static str {
         match self {
             Self::Held => "nothing",
-            Self::Placing => "the room being placed on this device's host",
+            Self::Placing | Self::NotPlaced(_) => "the room being placed on this device's host",
             Self::Enrolling => "this device's enrollment into the room",
             Self::NotInstalled(_) => "the room's replica being installed",
         }
@@ -39,10 +42,12 @@ impl ShellNetwork {
         };
         if owner.rooms().contains(&room) {
             Placement::Held
-        } else if self.waits_for_placement(room) {
-            Placement::Placing
         } else if self.enrolling_into(room).is_some() {
             Placement::Enrolling
+        } else if let Some(error) = self.placement_failure(room) {
+            Placement::NotPlaced(error)
+        } else if self.waits_for_placement(room) {
+            Placement::Placing
         } else {
             Placement::NotInstalled("the enrollment ended without the room".into())
         }
