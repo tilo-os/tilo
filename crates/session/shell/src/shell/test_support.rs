@@ -302,6 +302,47 @@ impl Drop for InstalledSettings {
     }
 }
 
+/// The active workspace's room as a session leaves it once the room is
+/// placed on this device: its own host governs it, the native owner entered
+/// it, and the person governing it is the one returned. What every app
+/// launch and invitation in one-host needs, which a room no host holds
+/// (one on this device only) does not offer. The room stays held while the
+/// returned guard lives.
+#[cfg(test)]
+pub(crate) struct OwnHostedRoom {
+    pub(crate) person: crate::shell::state::UserId,
+    _owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
+    _directory: tempfile::TempDir,
+}
+
+#[cfg(test)]
+pub(crate) fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
+    let directory = tempfile::tempdir().expect("a directory for the state file");
+    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");
+    {
+        let mut tree = tree.write();
+        let active = tree.desktop.active;
+        assert!(
+            tree.stand_in_room(active, room),
+            "the active workspace takes the room"
+        );
+        tree.persist_path = Some(directory.path().join("state.json"));
+    }
+    let owner = crate::shell::native_workspace_owner::open(tree.clone()).expect("the owner opens");
+    let person_root = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
+    let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
+    let certificate = tilo_joined_room::testing::certificate(&person_root, &key, "This device");
+    tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
+        .expect("this device's host lets its owner in");
+    assert!(tree.read().holds_room(room));
+    OwnHostedRoom {
+        person: crate::shell::state::person_id_of(person_root.verifying_key().to_bytes())
+            .expect("a person"),
+        _owner: owner,
+        _directory: directory,
+    }
+}
+
 /// Forbids production service starts (workers, process-global handles,
 /// ambient identity and file lookups) for the lifetime of a guard.
 ///
@@ -368,48 +409,5 @@ mod ambient {
         let own_start = std::panic::catch_unwind(|| ambient_start("own production path"));
         assert!(own_start.is_err());
         assert_eq!(guard.attempts(), 1);
-    }
-}
-
-/// The active workspace's room as a session leaves it once the room is
-/// placed on this device: its own host governs it, the native owner entered
-/// it, and the person governing it is the one returned. What every app
-/// launch and invitation in one-host needs, which a room no host holds
-/// (one on this device only) does not offer. The room stays held while the
-/// returned guard lives.
-#[cfg(test)]
-pub(crate) struct OwnHostedRoom {
-    pub(crate) room: crate::shell::state::RoomId,
-    pub(crate) person: crate::shell::state::UserId,
-    _owner: crate::shell::native_workspace_owner::NativeWorkspaceOwner,
-    _directory: tempfile::TempDir,
-}
-
-#[cfg(test)]
-pub(crate) fn host_active_room(tree: &crate::shell::state::WorkspaceTreeHandle) -> OwnHostedRoom {
-    let directory = tempfile::tempdir().expect("a directory for the state file");
-    let room = crate::shell::state::RoomId::parse(tilo_joined_room::testing::ROOM).expect("room");
-    {
-        let mut tree = tree.write();
-        let active = tree.desktop.active;
-        assert!(
-            tree.stand_in_room(active, room),
-            "the active workspace takes the room"
-        );
-        tree.persist_path = Some(directory.path().join("state.json"));
-    }
-    let owner = crate::shell::native_workspace_owner::open(tree.clone()).expect("the owner opens");
-    let root = ed25519_dalek::SigningKey::from_bytes(&[62; 32]);
-    let key = ed25519_dalek::SigningKey::from_bytes(&[61; 32]);
-    let certificate = tilo_joined_room::testing::certificate(&root, &key, "This device");
-    tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate)
-        .expect("this device's host lets its owner in");
-    assert!(tree.read().holds_room(room));
-    OwnHostedRoom {
-        room,
-        person: crate::shell::state::person_id_of(root.verifying_key().to_bytes())
-            .expect("a person"),
-        _owner: owner,
-        _directory: directory,
     }
 }
