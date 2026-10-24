@@ -677,27 +677,43 @@ impl DiffMergeApp {
         match self.mode {
             Mode::Diff => {
                 let m = self.diff.model();
-                let active = self
-                    .diff
-                    .active_block()
-                    .map(|b| format!(" Change {}/{}.", b + 1, m.blocks.len().max(1)))
-                    .unwrap_or_default();
-                format!(
-                    "{} additions, {} deletions and {} modifications in {} change block(s).{}",
-                    m.added,
-                    m.removed,
-                    m.modified,
-                    m.blocks.len(),
-                    active
-                )
+                if m.rows.is_empty() {
+                    return t("diff-status-empty");
+                }
+                if m.is_identical() {
+                    return t("diff-status-identical");
+                }
+                let (added, removed, modified) = (
+                    ("added", count(m.added)),
+                    ("removed", count(m.removed)),
+                    ("modified", count(m.modified)),
+                );
+                match self.diff.active_block() {
+                    Some(block) => t_args(
+                        "diff-status-summary-at",
+                        &[
+                            added,
+                            removed,
+                            modified,
+                            ("current", count(block + 1)),
+                            ("total", count(m.blocks.len())),
+                        ],
+                    ),
+                    None => t_args(
+                        "diff-status-summary",
+                        &[added, removed, modified, ("blocks", count(m.blocks.len()))],
+                    ),
+                }
             }
             Mode::Merge => {
                 let m = self.merge.model();
-                format!(
-                    "{} change hunk(s)   {} resolved   {} conflict(s) remaining",
-                    m.change_count(),
-                    m.resolved_count(),
-                    m.conflict_count(),
+                t_args(
+                    "merge-status-summary",
+                    &[
+                        ("count", count(m.change_count())),
+                        ("resolved", count(m.resolved_count())),
+                        ("conflicts", count(m.conflict_count())),
+                    ],
                 )
             }
         }
@@ -1370,6 +1386,41 @@ mod tests {
             ),
             ("c.txt", "d.txt")
         );
+    }
+
+    /// The status read to assistive technology counts in words, from the
+    /// catalogue: whole plurals, no "(s)", one sentence per fact group.
+    #[test]
+    fn the_status_counts_changes_and_conflicts_in_words() {
+        let mut app = TestApp::<DiffmergeShell>::new().unwrap();
+        let status = |app: &mut TestApp<DiffmergeShell>| {
+            app.with_surface::<DiffMergeApp, _>(|view| view.status_text())
+                .unwrap()
+        };
+        assert_eq!(status(&mut app), "No files open");
+        app.call(
+            "open-merge",
+            serde_json::json!({
+                "base_label": "base", "base": "a\nb\nc\nd\ne\n",
+                "ours_label": "ours", "ours": "a\nB1\nc\nD1\ne\n",
+                "theirs_label": "theirs", "theirs": "a\nB2\nc\nd\ne\n",
+            }),
+        )
+        .unwrap();
+        app.call("show-merge", serde_json::json!({})).unwrap();
+        app.settle();
+        assert_eq!(status(&mut app), "2 changes, 1 resolved, 1 conflict left");
+        app.call(
+            "open-merge",
+            serde_json::json!({
+                "base_label": "base", "base": "a\n",
+                "ours_label": "ours", "ours": "b\n",
+                "theirs_label": "theirs", "theirs": "a\n",
+            }),
+        )
+        .unwrap();
+        app.settle();
+        assert_eq!(status(&mut app), "1 change, 1 resolved, 0 conflicts left");
     }
 
     /// The empty merge asks for what a merge is made of, not the
