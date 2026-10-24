@@ -158,6 +158,8 @@ pub struct Installed {
     /// `options_page`): where an ad blocker keeps its lists and allowed sites.
     pub options: Option<String>,
     pub access: Access,
+    /// Its commands, with the shortcut each suggests on this platform.
+    pub commands: Vec<crate::extension_commands::Command>,
 }
 
 impl Installed {
@@ -166,16 +168,26 @@ impl Installed {
         let manifest = std::fs::read_to_string(info.path.join("manifest.json")).ok()?;
         let manifest: Value = serde_json::from_str(&manifest).ok()?;
         let mut action = action_manifest(&manifest);
-        // A title is named as the extension is: in its default locale.
-        if let Some(title) = action.as_mut().and_then(|action| action.title.as_mut())
-            && title.contains("__MSG_")
-        {
-            let messages = crate::extensions::messages_file(&manifest)
-                .and_then(|file| crate::extensions::read_bounded(&info.path.join(file)))
-                .map(|text| crate::extensions::messages(&text))
-                .unwrap_or_default();
-            *title = crate::extensions::localize(title, &messages);
+        // A title and a command are named as the extension is: in its
+        // default locale, read when one asks for it.
+        let messages = std::cell::OnceCell::new();
+        let localize = |text: &str| {
+            if !text.contains("__MSG_") {
+                return text.to_owned();
+            }
+            let messages = messages.get_or_init(|| {
+                crate::extensions::messages_file(&manifest)
+                    .and_then(|file| crate::extensions::read_bounded(&info.path.join(file)))
+                    .map(|text| crate::extensions::messages(&text))
+                    .unwrap_or_default()
+            });
+            crate::extensions::localize(text, messages)
+        };
+        if let Some(title) = action.as_mut().and_then(|action| action.title.as_mut()) {
+            *title = localize(title);
         }
+        let mac = ui::platform::Platform::current() == ui::platform::Platform::MacOs;
+        let commands = crate::extension_commands::commands(&manifest, mac, localize);
         let options = options_page(&manifest);
         let access = Access {
             token: crate::extensions::tabs_token_of(&info.path),
@@ -190,6 +202,7 @@ impl Installed {
             action,
             options,
             access,
+            commands,
         })
     }
 
@@ -401,6 +414,7 @@ mod tests {
             action: action_manifest(&serde_json::from_str(manifest).unwrap()),
             options: options_page(&serde_json::from_str(manifest).unwrap()),
             access: access(&serde_json::from_str(manifest).unwrap()),
+            commands: Vec::new(),
         }
     }
 

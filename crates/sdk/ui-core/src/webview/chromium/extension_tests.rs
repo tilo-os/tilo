@@ -55,3 +55,58 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         assert!(!command_within_limits(&bad), "{bad:?}");
     }
 }
+
+#[test]
+fn the_engine_is_told_each_extensions_commands_and_which_one_to_run() {
+    use crate::webview::ExtensionCommandInfo;
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let command = |name: &str, shortcut: &str| ExtensionCommandInfo {
+        name: name.into(),
+        description: "Mark the page".into(),
+        shortcut: shortcut.into(),
+    };
+    let commands = WebViewCommand::ExtensionCommands {
+        id: id.into(),
+        commands: vec![
+            command("mark", "Ctrl+Shift+Y"),
+            command("_execute_action", ""),
+        ],
+    };
+    assert!(command_within_limits(&commands));
+    assert_eq!(
+        encode_command(commands),
+        Some(json!({"op":"extension_commands","id":id,"commands":[
+            {"name":"mark","description":"Mark the page","shortcut":"Ctrl+Shift+Y"},
+            {"name":"_execute_action","description":"Mark the page","shortcut":""},
+        ]}))
+    );
+    let run = WebViewCommand::ExtensionCommand {
+        id: id.into(),
+        name: "mark".into(),
+    };
+    assert!(command_within_limits(&run));
+    assert_eq!(
+        encode_command(run),
+        Some(json!({"op":"extension_command","id":id,"name":"mark"}))
+    );
+    for bad in [
+        WebViewCommand::ExtensionCommand {
+            id: id.into(),
+            name: String::new(),
+        },
+        WebViewCommand::ExtensionCommand {
+            id: "short".into(),
+            name: "mark".into(),
+        },
+        WebViewCommand::ExtensionCommands {
+            id: id.into(),
+            commands: vec![command("mark", ""); 65],
+        },
+        WebViewCommand::ExtensionCommands {
+            id: id.into(),
+            commands: vec![command(&"m".repeat(129), "")],
+        },
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+}

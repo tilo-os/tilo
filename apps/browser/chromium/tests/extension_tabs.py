@@ -40,6 +40,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   toolbar shows and the next page does not keep.
 - A worker that runs the tab script keeps its address, which extensions read
   and load their helpers against, and its strictness.
+- A command's shortcut, pressed over a page, reaches the extension
+  (commands.onCommand) with the page, which it may then script; it hears of
+  no command it does not have, and commands.getAll answers with the
+  shortcuts the Browser gave.
 """
 import base64
 import hashlib
@@ -566,6 +570,24 @@ class ExtensionTabs(unittest.TestCase):
         host.settle(1.0)
         host.navigate(self.url + '/watched')
         self.assertRegex(self.title(host, 1, 'watched:'), r'^watched:\d+$')
+
+    def test_a_commands_shortcut_reaches_the_extension_with_the_page(self):
+        host, ids = self.start('commander', access={'commander': (['activeTab', 'scripting'], [])})
+        commands = [
+            {'name': 'mark', 'description': 'Mark the page', 'shortcut': 'Ctrl+Shift+Y'},
+            {'name': '_execute_action', 'description': '', 'shortcut': 'Alt+Shift+K'},
+        ]
+        host.send(op='extension_commands', id=ids['commander'], commands=commands)
+        page = self.url + '/commanded'
+        host.navigate(page)
+        host.settle(1.0)
+        # Neither a command it does not have nor its button's (a click,
+        # which the Browser makes of it) reaches it as a command.
+        host.send(op='extension_command', id=ids['commander'], name='unknown')
+        host.send(op='extension_command', id=ids['commander'], name='_execute_action')
+        host.send(op='extension_command', id=ids['commander'], name='mark')
+        heard = json.loads(self.title(host, 1, 'command:')[len('command:'):])
+        self.assertEqual(heard, {'heard': ['mark'], 'url': True, 'all': commands})
 
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):
         host, ids = self.start('clicker', access={'clicker': (['activeTab', 'scripting'], [])})

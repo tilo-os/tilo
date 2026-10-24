@@ -929,6 +929,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     // A click on an extension's toolbar button over this page.
     else if(op=="extension_click") {if(extension_tabs)extension_tabs->Clicked(d->GetString("id"),id_);}
+    // The shortcut of an extension's command, pressed over this page.
+    else if(op=="extension_command") {if(extension_tabs)extension_tabs->Command(d->GetString("id"),d->GetString("name"),id_);}
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -1431,6 +1433,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
     return;
   }
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
+  // An extension's commands and the shortcut each was given (chrome.commands.getAll).
+  if(op=="extension_commands") {if(extension_tabs)extension_tabs->SetCommands(d->GetString("id"),d->GetList("commands")->Copy());return;}
   // The Browser's own extension, which tells which tab a page is.
   if(op=="extension_identity") {if(extension_tabs)extension_tabs->SetIdentity(d->GetString("id"));return;}
   if(op=="download_start") {
@@ -1741,6 +1745,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
   }
   if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
+  if(op=="extension_command") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="name")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("name",VTYPE_STRING) && tilo::CommandName(d->GetString("name"));
+  }
+  if(op=="extension_commands") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("commands",VTYPE_LIST) && tilo::CommandList(d->GetList("commands"));
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;

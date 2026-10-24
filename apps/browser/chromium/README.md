@@ -461,15 +461,26 @@ content scripts (with `sender.tab`) work without help.
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
   this site" and uBlock Origin Lite's element zapper do) closes once its
   calls are answered, or after two seconds.
-- A click or a tab event reaches a worker through the DevTools pipe, which
-  wakes it if it sleeps; the host attaches only while it delivers, so an idle
-  worker still sleeps. `tests/extension_tabs.py` covers each of these.
+- Keyboard shortcuts (`commands`): Chromium has no window here to take
+  accelerators from, so the Browser matches the suggested keys itself
+  (`apps/browser-parts/src/extension_commands.rs`), after its own shortcuts
+  and before the page. A shortcut the Browser answers, or one an extension
+  listed earlier has, goes to no one. `_execute_action` does what a click on
+  the button does; any other command reaches the host as `extension_command`
+  on the page's tab and the extension as `commands.onCommand` with that tab,
+  which it may then script (`activeTab`). `commands.getAll` answers with the
+  shortcuts the Browser told the host (`extension_commands`).
+- A click, a command or a tab event reaches a worker through the DevTools
+  pipe, which wakes it if it sleeps; the host attaches only while it
+  delivers, so an idle worker still sleeps. `tests/extension_tabs.py` covers
+  each of these.
 
 ## Remaining integration work
 
-- Extensions' keyboard shortcuts (`commands`) and side panels are not
-  offered. Their context menu items show no checkmark and no submenu, and
-  appear only in a page's menu, not the toolbar button's.
+- Extensions' side panels and global (system-wide) command shortcuts are
+  not offered, nor is a place to change a command's shortcut. Their context
+  menu items show no checkmark and no submenu, and appear only in a page's
+  menu, not the toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.

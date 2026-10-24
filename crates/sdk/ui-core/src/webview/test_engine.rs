@@ -614,6 +614,8 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionIdentity { .. }
             | WebViewCommand::ExtensionPanel { .. }
             | WebViewCommand::ExtensionClick { .. }
+            | WebViewCommand::ExtensionCommands { .. }
+            | WebViewCommand::ExtensionCommand { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }

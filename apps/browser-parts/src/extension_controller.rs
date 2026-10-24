@@ -28,6 +28,7 @@ use ui::tilo_actions::{Resource, ResourcePresentation};
 
 use crate::CATALOG;
 use crate::effects::ExtensionRequest;
+use crate::extension_commands::{self as commands, Assigned};
 use crate::extension_host::{ExtensionHost, Wanted};
 use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
@@ -216,6 +217,10 @@ pub struct ExtensionController {
     /// tabs, and which extension is the Browser's own.
     access_told: HashMap<String, toolbar::Access>,
     identity_told: Option<String>,
+    /// The shortcuts the enabled extensions were given, and what the engine
+    /// was told of each extension's commands.
+    shortcuts: Vec<Assigned>,
+    commands_told: HashMap<String, Vec<ui::webview::ExtensionCommandInfo>>,
     /// The manager pages at work, and when each was opened.
     switching: Vec<(SharedEngine, ui::time::Instant)>,
     /// When the store was last asked for updates.
@@ -257,6 +262,11 @@ fn manager_url(manager: &str, switches: &[(String, bool)]) -> String {
     )
 }
 
+/// Whether shortcuts are written and pressed as on macOS.
+fn mac() -> bool {
+    ui::platform::Platform::current() == ui::platform::Platform::MacOs
+}
+
 /// How long a manager page may take before it is let go.
 const SWITCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
@@ -281,6 +291,8 @@ impl ExtensionController {
             switched: HashMap::new(),
             access_told: HashMap::new(),
             identity_told: None,
+            shortcuts: Vec::new(),
+            commands_told: HashMap::new(),
             switching: Vec::new(),
             updated_at: None,
             awaiting: Vec::new(),
@@ -505,6 +517,90 @@ impl ExtensionController {
         self.icons.extend(profile.icons);
         self.installed = profile.installed;
         self.infos = profile.infos;
+        self.assign_shortcuts();
+    }
+
+    /// Give the enabled extensions their shortcuts, in the order the
+    /// profile lists them (by name), so each keeps its own across runs.
+    fn assign_shortcuts(&mut self) {
+        self.shortcuts = commands::assign(
+            self.installed
+                .iter()
+                .filter(|extension| extension.enabled)
+                .map(|extension| (extension.id.as_str(), extension.commands.as_slice())),
+            mac(),
+        );
+    }
+
+    /// A key the Browser did not take for itself: when it is the shortcut of
+    /// an extension's command, run the command over the page and return
+    /// `true`, so the page does not get the key. `_execute_action` does what
+    /// a click on the extension's button does.
+    pub fn shortcut(
+        &mut self,
+        logical: &ui::winit::keyboard::Key,
+        physical: ui::winit::keyboard::PhysicalKey,
+        modifiers: ui::winit::keyboard::ModifiersState,
+        engine: &SharedEngine,
+    ) -> bool {
+        if !self.active {
+            return false;
+        }
+        let mac = mac();
+        let Some(assigned) = self
+            .shortcuts
+            .iter()
+            .find(|assigned| assigned.shortcut.matches(logical, physical, modifiers, mac))
+        else {
+            return false;
+        };
+        let (id, name) = (assigned.extension.clone(), assigned.command.clone());
+        let executes_action = self
+            .installed
+            .iter()
+            .find(|extension| extension.id == id)
+            .and_then(|extension| {
+                extension
+                    .commands
+                    .iter()
+                    .find(|command| command.name == name)
+            })
+            .is_some_and(commands::Command::executes_action);
+        if executes_action {
+            self.open_action(&id, engine);
+        } else {
+            engine.send(WebViewCommand::ExtensionCommand { id, name });
+        }
+        true
+    }
+
+    /// Each installed extension's commands as `chrome.commands.getAll`
+    /// tells them, with the shortcut each was given.
+    fn command_lists(&self) -> HashMap<String, Vec<ui::webview::ExtensionCommandInfo>> {
+        let mac = mac();
+        self.installed
+            .iter()
+            .map(|extension| {
+                let list = extension
+                    .commands
+                    .iter()
+                    .map(|command| ui::webview::ExtensionCommandInfo {
+                        name: command.name.clone(),
+                        description: command.description.clone(),
+                        shortcut: self
+                            .shortcuts
+                            .iter()
+                            .find(|assigned| {
+                                assigned.extension == extension.id
+                                    && assigned.command == command.name
+                            })
+                            .map(|assigned| assigned.shortcut.label(mac))
+                            .unwrap_or_default(),
+                    })
+                    .collect();
+                (extension.id.clone(), list)
+            })
+            .collect()
     }
 
     /// An extension the daily check brought up to date: the engine runs the
@@ -592,6 +688,19 @@ impl ExtensionController {
             }
         }
         self.access_told = current;
+        // Told after its access, which an extension that left again clears.
+        let lists = self.command_lists();
+        for (id, list) in &lists {
+            // An extension that never had commands is told of none.
+            let told = self.commands_told.get(id);
+            if told.map_or(!list.is_empty(), |told| told != list) {
+                engine.send(WebViewCommand::ExtensionCommands {
+                    id: id.clone(),
+                    commands: list.clone(),
+                });
+            }
+        }
+        self.commands_told = lists;
     }
 
     /// Open one manager page for the switches asked for, and let go of the
@@ -1341,6 +1450,7 @@ mod tests {
             }),
             options: None,
             access,
+            commands: Vec::new(),
         }
     }
 
@@ -1650,6 +1760,152 @@ mod tests {
     }
 
     #[test]
+    fn an_extensions_shortcut_runs_its_command_over_the_page() {
+        use ui::winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
+        let mac = super::mac();
+        let manifest = serde_json::json!({"commands": {
+            "_execute_action": {"suggested_key": "Ctrl+Shift+E"},
+            "mark": {"suggested_key": "Alt+Shift+M", "description": "Mark the page"},
+            "find": {"suggested_key": "Ctrl+F"},
+        }});
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let mut clicker = installed("clicker", None, toolbar::Access::default());
+        clicker.commands = commands::commands(&manifest, mac, str::to_owned);
+        let mut asker = installed("asker", Some("popup.html"), toolbar::Access::default());
+        asker.commands = clicker.commands.clone();
+        controller.installed = vec![clicker, asker];
+        controller.assign_shortcuts();
+        let primary = if mac {
+            ModifiersState::SUPER
+        } else {
+            ModifiersState::CONTROL
+        };
+        let press = |controller: &mut ExtensionController, letter: &str, code, held| {
+            controller.shortcut(
+                &Key::Character(letter.into()),
+                PhysicalKey::Code(code),
+                held,
+                &shared,
+            )
+        };
+        assert!(press(
+            &mut controller,
+            "m",
+            KeyCode::KeyM,
+            ModifiersState::ALT | ModifiersState::SHIFT
+        ));
+        assert!(
+            window
+                .commands()
+                .contains(&WebViewCommand::ExtensionCommand {
+                    id: "clicker".into(),
+                    name: "mark".into(),
+                })
+        );
+        // _execute_action is a click on the button: this one has no popup.
+        assert!(press(
+            &mut controller,
+            "E",
+            KeyCode::KeyE,
+            primary | ModifiersState::SHIFT
+        ));
+        assert!(window.commands().contains(&WebViewCommand::ExtensionClick {
+            id: "clicker".into()
+        }));
+        // The Browser keeps Find; a key no command has reaches the page.
+        assert!(!press(&mut controller, "f", KeyCode::KeyF, primary));
+        assert!(!press(&mut controller, "q", KeyCode::KeyQ, primary));
+        // The second extension suggests the same keys: the first has them.
+        assert!(window.created_tabs().is_empty());
+        assert!(
+            controller
+                .shortcuts
+                .iter()
+                .all(|assigned| assigned.extension == "clicker"),
+            "{:?}",
+            controller.shortcuts
+        );
+        controller.tell_access(&shared);
+        let told: Vec<_> = window
+            .commands()
+            .into_iter()
+            .filter_map(|command| match command {
+                WebViewCommand::ExtensionCommands { id, commands } => Some((id, commands)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(told.len(), 2, "{told:?}");
+        let clicker = &told.iter().find(|(id, _)| id == "clicker").unwrap().1;
+        let mark = clicker
+            .iter()
+            .find(|command| command.name == "mark")
+            .unwrap();
+        assert_eq!(mark.description, "Mark the page");
+        assert_eq!(
+            mark.shortcut,
+            if mac {
+                "\u{2325}\u{21e7}M"
+            } else {
+                "Alt+Shift+M"
+            }
+        );
+        let find = clicker
+            .iter()
+            .find(|command| command.name == "find")
+            .unwrap();
+        assert_eq!(
+            find.shortcut, "",
+            "a shortcut the Browser keeps is no one's"
+        );
+        let asker = &told.iter().find(|(id, _)| id == "asker").unwrap().1;
+        assert!(asker.iter().all(|command| command.shortcut.is_empty()));
+        controller.tell_access(&shared);
+        assert_eq!(
+            window
+                .commands()
+                .iter()
+                .filter(|command| matches!(command, WebViewCommand::ExtensionCommands { .. }))
+                .count(),
+            2,
+            "told once while they stay the same"
+        );
+    }
+
+    #[test]
+    fn a_shortcut_for_the_button_of_an_extension_with_a_popup_opens_it() {
+        use ui::winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey};
+        let mac = super::mac();
+        let manifest = serde_json::json!({"commands": {
+            "_execute_action": {"suggested_key": "Alt+Shift+P"},
+        }});
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let mut asker = installed("asker", Some("popup.html"), toolbar::Access::default());
+        asker.commands = commands::commands(&manifest, mac, str::to_owned);
+        controller.installed = vec![asker];
+        controller.assign_shortcuts();
+        assert!(controller.shortcut(
+            &Key::Character("P".into()),
+            PhysicalKey::Code(KeyCode::KeyP),
+            ModifiersState::ALT | ModifiersState::SHIFT,
+            &shared,
+        ));
+        let created = window.created_tabs();
+        assert_eq!(created.len(), 1, "the popup's page");
+        assert!(
+            created[0]
+                .commands()
+                .contains(&WebViewCommand::ExtensionPanel {
+                    action: Some("asker".into())
+                })
+        );
+        assert!(matches!(&controller.panel, Some(Panel::Popup { id, .. }) if id == "asker"));
+    }
+
+    #[test]
     fn a_tilo_windows_bar_shows_every_extensions_badge() {
         let extension = |id: &str, pinned: bool, action: bool| Installed {
             id: id.into(),
@@ -1660,6 +1916,7 @@ mod tests {
             action: action.then(crate::extension_toolbar::ActionManifest::default),
             options: None,
             access: crate::extension_toolbar::Access::default(),
+            commands: Vec::new(),
         };
         let installed = [
             extension("pinned", true, true),
@@ -1681,6 +1938,7 @@ mod tests {
             action: None,
             options: None,
             access: crate::extension_toolbar::Access::default(),
+            commands: Vec::new(),
         };
         let mut switched = HashMap::new();
         // At start each is put in the state the person chose, once.

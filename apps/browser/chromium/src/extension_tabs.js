@@ -2,11 +2,11 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click, a tab's capture, context menu items and scripts on a tab from the
-// host's tabs instead, over a request the host answers itself. A page of the
-// extension is known by its address; its worker, which has none, by a token
-// the Browser wrote with this script into the worker it runs first
-// (extensions.rs).
+// click, a tab's capture, context menu items, the commands' shortcuts and
+// scripts on a tab from the host's tabs instead, over a request the host
+// answers itself. A page of the extension is known by its address; its
+// worker, which has none, by a token the Browser wrote with this script into
+// the worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -218,7 +218,7 @@
     }),
   });
 
-  const {tabs, windows, scripting, action} = chrome;
+  const {tabs, windows, scripting, action, commands} = chrome;
   const relative = (url) => (typeof url === 'string' ? new URL(url, location.href).href : url);
   replace(tabs, 'query', (query) => call('tabs.query', query || {}));
   replace(tabs, 'get', (tabId) => call('tabs.get', {tabId}));
@@ -261,6 +261,10 @@
   event(tabs, 'onRemoved', 'tabs.onRemoved');
   event(windows, 'onFocusChanged', 'windows.onFocusChanged');
   event(action, 'onClicked', 'action.onClicked');
+  // The shortcuts the Browser gave the extension's commands, which it
+  // presses for them (extension_commands.rs).
+  replace(commands, 'getAll', () => call('commands.getAll'));
+  event(commands, 'onCommand', 'commands.onCommand');
 
   // Context menu items: the host keeps them and shows them in the page's
   // menu (extension_menus.h); a choice comes back as onClicked.

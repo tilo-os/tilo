@@ -213,6 +213,15 @@ pub struct Popup {
     pub height: u32,
 }
 
+/// One of an extension's commands, as `chrome.commands.getAll` tells it:
+/// `shortcut` is empty when it has none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionCommandInfo {
+    pub name: String,
+    pub description: String,
+    pub shortcut: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -427,6 +436,19 @@ pub enum WebViewCommand {
     /// extension hears of it (`action.onClicked`) and may script the page.
     ExtensionClick {
         id: String,
+    },
+    /// An extension's commands and the shortcut each was given, which
+    /// `chrome.commands.getAll` answers with.
+    ExtensionCommands {
+        id: String,
+        commands: Vec<ExtensionCommandInfo>,
+    },
+    /// The person pressed the shortcut of an extension's command over this
+    /// page: the extension hears of it (`commands.onCommand`, with the
+    /// page's tab) and may script the page, as after a click.
+    ExtensionCommand {
+        id: String,
+        name: String,
     },
     DownloadDecision {
         id: u32,

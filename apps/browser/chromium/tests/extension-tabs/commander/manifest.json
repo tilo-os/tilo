@@ -1,0 +1,8 @@
+{"manifest_version": 3, "name": "Commander", "version": "1.0",
+ "action": {"default_title": "Mark this page"},
+ "permissions": ["activeTab", "scripting"],
+ "commands": {
+   "mark": {"suggested_key": {"default": "Ctrl+Shift+Y"}, "description": "Mark the page"},
+   "_execute_action": {"suggested_key": {"default": "Alt+Shift+K"}}
+ },
+ "background": {"service_worker": "worker.js"}}

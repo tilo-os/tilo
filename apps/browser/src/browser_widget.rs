@@ -58,6 +58,8 @@ use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
 mod continuity;
+#[cfg(test)]
+mod extension_shortcut_tests;
 mod library;
 pub(crate) mod personal;
 #[cfg(test)]
@@ -4141,6 +4143,33 @@ impl BrowserWidget {
         false
     }
 
+    /// Run the extension command whose shortcut `event` presses
+    /// (`chrome.commands`): the page never gets the key.
+    fn handle_extension_shortcut(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ElementState::Pressed
+            || key.repeat
+            || self.show_settings
+            || self.show_library
+            || !self.extensions.shortcut(
+                &key.logical_key,
+                key.physical_key,
+                modifiers.state(),
+                &self.engine,
+            )
+        {
+            return false;
+        }
+        self.structure_dirty = true;
+        true
+    }
+
     /// Browser-standard Ctrl/Cmd+L. Focus is kept inside the chrome, so a
     /// page cannot intercept the shortcut and leave keyboard users hunting
     /// for the address field.
@@ -5067,6 +5096,12 @@ impl Widget for BrowserWidget {
         // the same canonical action the toolbar exposes to history, agents,
         // and collaboration.
         if self.handle_browser_shortcut(event, *ctx.modifiers) {
+            *ctx.handled = true;
+            return;
+        }
+        // An extension's shortcut, after the Browser's own and before the
+        // page, wherever the focus is.
+        if self.handle_extension_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
         }

@@ -71,6 +71,8 @@ pub mod effects;
 #[cfg(not(test))]
 pub mod engine_setup;
 #[cfg(not(test))]
+pub mod extension_commands;
+#[cfg(not(test))]
 pub mod extension_controller;
 #[cfg(not(test))]
 pub mod extension_host;

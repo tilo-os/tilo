@@ -2263,6 +2263,18 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id } => extension_id(id),
         WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
+        WebViewCommand::ExtensionCommands { id, commands } => {
+            extension_id(id)
+                && commands.len() <= 64
+                && commands.iter().all(|command| {
+                    (1..=128).contains(&command.name.len())
+                        && command.description.len() <= 512
+                        && command.shortcut.len() <= 64
+                })
+        }
+        WebViewCommand::ExtensionCommand { id, name } => {
+            extension_id(id) && (1..=128).contains(&name.len())
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2691,6 +2703,18 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             None => json!({"op":"extension_panel"}),
         },
         WebViewCommand::ExtensionClick { id } => json!({"op":"extension_click","id":id}),
+        WebViewCommand::ExtensionCommands { id, commands } => {
+            let commands: Vec<Value> = commands
+                .into_iter()
+                .map(|command| {
+                    json!({"name":command.name,"description":command.description,"shortcut":command.shortcut})
+                })
+                .collect();
+            json!({"op":"extension_commands","id":id,"commands":commands})
+        }
+        WebViewCommand::ExtensionCommand { id, name } => {
+            json!({"op":"extension_command","id":id,"name":name})
+        }
         WebViewCommand::DevTools {
             request_id,
             method,
