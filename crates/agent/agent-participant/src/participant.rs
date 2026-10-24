@@ -275,6 +275,9 @@ pub struct AgentParticipant {
     /// The records the current task's plans read while they were made: a
     /// follow-up plan is offered them, as it is the records it touched.
     task_read: Vec<DocumentRoute>,
+    /// The current task's budget for asking a model call lost to the
+    /// network again, shared by all of its plans.
+    task_retries: crate::planner::TurnRetries,
     /// When others' changes last merged into an open record.
     last_merge: Option<Instant>,
     /// Message records ([`MESSAGE_APPS`]) others changed since the running
@@ -408,6 +411,7 @@ impl AgentParticipant {
             task_touched: Vec::new(),
             previous_touched: Vec::new(),
             task_read: Vec::new(),
+            task_retries: crate::planner::TurnRetries::default(),
             last_merge: None,
             news: Vec::new(),
             news_from: BTreeMap::new(),
@@ -863,6 +867,7 @@ impl AgentParticipant {
         self.previous_touched = std::mem::take(&mut self.task_touched);
         self.task_read.clear();
         self.task_made.clear();
+        self.task_retries = crate::planner::TurnRetries::default();
         // What arrived before the task began is in the room it is planned on.
         self.news.clear();
         self.news_from.clear();
