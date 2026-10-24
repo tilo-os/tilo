@@ -32,6 +32,7 @@ doc = false
 "activity" = { path = "../../../apps/activity", default-features = false, features = [] }
 "adblock-0_12_1" = { package = "adblock", version = "^0.12.1", default-features = false, features = ["addr", "content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
 "addr-0_15_6" = { package = "addr", version = "^0.15.6", default-features = false, features = ["psl"] }
+"addr2line-0_25_1" = { package = "addr2line", version = "^0.25.1", default-features = false, features = [] }
 "adler2-2_0_1" = { package = "adler2", version = "^2.0.1", default-features = false, features = [] }
 "aead-0_5_2" = { package = "aead", version = "^0.5.2", default-features = false, features = ["alloc", "getrandom", "rand_core"] }
 "aead-0_6_1" = { package = "aead", version = "^0.6.1", default-features = false, features = ["alloc", "rand_core"] }
@@ -86,6 +87,7 @@ doc = false
 "automerge-0_12_0" = { package = "automerge", version = "^0.12.0", default-features = false, features = [] }
 "az-1_3_0" = { package = "az", version = "^1.3.0", default-features = false, features = [] }
 "backon-1_6_0" = { package = "backon", version = "^1.6.0", default-features = false, features = ["default", "gloo-timers-sleep", "std", "std-blocking-sleep", "tokio", "tokio-sleep"] }
+"backtrace-0_3_76" = { package = "backtrace", version = "^0.3.76", default-features = false, features = ["default", "std"] }
 "backups" = { path = "../../../apps/backups", default-features = false, features = [] }
 "bao-tree-0_16_0" = { package = "bao-tree", version = "^0.16.0", default-features = false, features = ["experimental-mixed", "fs", "serde", "tokio_fsm", "validate"] }
 "base16ct-0_2_0" = { package = "base16ct", version = "^0.2.0", default-features = false, features = ["alloc"] }
@@ -384,6 +386,7 @@ doc = false
 "ghash-0_5_1" = { package = "ghash", version = "^0.5.1", default-features = false, features = [] }
 "ghash-0_6_0" = { package = "ghash", version = "^0.6.0", default-features = false, features = ["zeroize"] }
 "gif-0_14_2" = { package = "gif", version = "^0.14.2", default-features = false, features = ["color_quant", "default", "raii_no_panic", "std"] }
+"gimli-0_32_3" = { package = "gimli", version = "^0.32.3", default-features = false, features = ["read", "read-core"] }
 "gio-sys-0_21_5" = { package = "gio-sys", version = "^0.21.5", default-features = false, features = [] }
 "git-client" = { path = "../../../apps/git-client", default-features = false, features = [] }
 "git2-0_21_0" = { package = "git2", version = "^0.21.0", default-features = false, features = ["cred", "vendored-libgit2"] }
@@ -680,6 +683,7 @@ doc = false
 "num_enum-0_7_5" = { package = "num_enum", version = "^0.7.5", default-features = false, features = ["default", "std"] }
 "num_threads-0_1_7" = { package = "num_threads", version = "^0.1.7", default-features = false, features = [] }
 "oauth2-5_0_0" = { package = "oauth2", version = "^5.0.0", default-features = false, features = ["reqwest", "reqwest-blocking", "rustls-tls"] }
+"object-0_37_3" = { package = "object", version = "^0.37.3", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read_core", "unaligned", "xcoff"] }
 "object-0_39_1" = { package = "object", version = "^0.39.1", default-features = false, features = ["archive", "coff", "elf", "macho", "pe", "read", "read_core", "std", "unaligned", "xcoff"] }
 "oid-registry-0_8_1" = { package = "oid-registry", version = "^0.8.1", default-features = false, features = ["crypto", "default", "kdf", "nist_algs", "pkcs1", "pkcs12", "pkcs7", "pkcs9", "registry", "x509", "x962"] }
 "once_cell-1_21_4" = { package = "once_cell", version = "^1.21.4", default-features = false, features = ["alloc", "critical-section", "default", "portable-atomic", "race", "std"] }
@@ -885,6 +889,7 @@ doc = false
 "russh-util-0_52_0" = { package = "russh-util", version = "^0.52.0", default-features = false, features = [] }
 "rust-stemmers-1_2_0" = { package = "rust-stemmers", version = "^1.2.0", default-features = false, features = [] }
 "rust_decimal-1_42_1" = { package = "rust_decimal", version = "^1.42.1", default-features = false, features = ["maths"] }
+"rustc-demangle-0_1_28" = { package = "rustc-demangle", version = "^0.1.28", default-features = false, features = [] }
 "rustc-hash-1_1_0" = { package = "rustc-hash", version = "^1.1.0", default-features = false, features = ["default", "std"] }
 "rustc-hash-2_1_3" = { package = "rustc-hash", version = "^2.1.3", default-features = false, features = ["default", "std"] }
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }

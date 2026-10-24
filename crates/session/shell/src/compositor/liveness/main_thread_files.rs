@@ -198,7 +198,7 @@ struct Recorded {
     syscall: &'static str,
     path: String,
     count: u64,
-    backtrace: Option<Backtrace>,
+    backtrace: Option<String>,
 }
 
 /// Whether the audit is armed, or why it could not be.
@@ -277,10 +277,9 @@ pub(super) fn report() -> Result<Vec<FileWalk>, String> {
             syscall: walk.syscall.to_owned(),
             path: walk.path.clone(),
             count: walk.count,
-            backtrace: walk.backtrace.as_ref().map_or_else(
-                || "no backtrace: the main thread did not answer the capture signal".into(),
-                super::frames_of,
-            ),
+            backtrace: walk.backtrace.clone().unwrap_or_else(|| {
+                "no backtrace: the main thread did not answer the capture signal".into()
+            }),
         })
         .collect())
 }
@@ -306,7 +305,7 @@ pub(super) fn record_storage_wait(what: &str) {
         syscall: STORAGE_WAIT,
         path: what.to_owned(),
         count: 1,
-        backtrace: Some(backtrace),
+        backtrace: Some(backtrace.to_string()),
     });
 }
 

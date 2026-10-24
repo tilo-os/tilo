@@ -770,6 +770,10 @@ rustix = "1.1.4"
 # ---------------------------------------------------------------------------
 # Diagnostics and utilities
 # ---------------------------------------------------------------------------
+# Another thread's stack, recorded by its own signal handler as bare return
+# addresses (nothing a handler may not do) and symbolized afterwards; std
+# symbolizes only the backtraces it captured itself.
+backtrace = "0.3.76"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 anyhow = "1.0.102"
