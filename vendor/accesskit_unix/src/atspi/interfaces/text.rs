@@ -51,6 +51,7 @@ impl TextInterface {
     }
 
     fn set_caret_offset(&self, offset: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node.set_caret_offset(offset).map_err(self.map_error())
     }
 
@@ -94,12 +95,14 @@ impl TextInterface {
     }
 
     fn add_selection(&self, start_offset: i32, end_offset: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node
             .add_selection(start_offset, end_offset)
             .map_err(self.map_error())
     }
 
     fn remove_selection(&self, selection_num: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node
             .remove_selection(selection_num)
             .map_err(self.map_error())
@@ -111,6 +114,7 @@ impl TextInterface {
         start_offset: i32,
         end_offset: i32,
     ) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node
             .set_selection(selection_num, start_offset, end_offset)
             .map_err(self.map_error())

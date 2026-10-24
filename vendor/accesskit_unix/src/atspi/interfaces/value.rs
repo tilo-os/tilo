@@ -44,6 +44,7 @@ impl ValueInterface {
 
     #[zbus(property)]
     fn set_current_value(&mut self, value: f64) -> fdo::Result<()> {
+        crate::read_only::admit()?;
         self.node.set_current_value(value).map_err(self.map_error())
     }
 }

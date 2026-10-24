@@ -210,7 +210,8 @@ one, as it always has, and its process is restarted.
 
 ## Accessibility and YouTube manifests
 
-Four crates differ from their crates.io release only in `Cargo.toml`. Each
+Four crates differ from their crates.io release in `Cargo.toml`, and
+`accesskit_unix` also in its source (the read-only tree below). Each
 directory's `PROVENANCE.md` has the exact edit. They used to be git forks on
 code.tilo.so, which made every Cargo command in the workspace fail whenever
 that host was down. Now they are path crates here:
@@ -226,6 +227,20 @@ crates.io releases. `vendor/miracast` is Tilo's own Miracast crate at a pinned
 revision of its repository, vendored for the same reason until it is
 published. Remove a row and its `[patch.crates-io]` entry once upstream
 releases the change.
+
+`accesskit_unix` also carries a read-only tree: when `TILO_ATSPI_READ_ONLY`
+is `1` in the process's environment, every AT-SPI method that acts on the tree
+(`Action.DoAction`, `EditableText`, setting `Value.CurrentValue`, selecting,
+`Component.GrabFocus`, moving the caret or a text selection) answers
+`org.freedesktop.DBus.Error.AccessDenied` before it reaches the app's action
+handler, while everything a screen reader reads stays served. A method call on
+the bus carries no proof that a person asked for it, so the launcher sets the
+variable for every sandboxed graphical app except on the dev image
+(`launcher::dbus_proxy::atspi_read_only`): apps act through the action broker
+and through the person's own input, which the compositor sees. The public API
+is the release's, so the published SDK still builds on crates.io's
+`accesskit_unix`. It is Tilo policy rather than a fix, so it has no upstream
+contribution.
 
 ## Vello changes
 
