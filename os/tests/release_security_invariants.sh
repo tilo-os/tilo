@@ -68,6 +68,20 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+# The generator dates the invocation by its own checkout's HEAD commit, and the
+# check runs on a tree with no repository: the generator and the profiles it
+# hashes run from a fixture checkout committed at a known time.
+checkout="$tmp/checkout"
+mkdir -p "$checkout/os/dev" "$checkout/os/hardware"
+cp "$provenance" "$checkout/os/dev/release-provenance.sh"
+cp -R "$repo/os/hardware/profiles" "$checkout/os/hardware/profiles"
+invocation_time=1700000000
+git -C "$checkout" init -q
+git -C "$checkout" add -A
+GIT_AUTHOR_DATE="@$invocation_time +0000" GIT_COMMITTER_DATE="@$invocation_time +0000" \
+  git -C "$checkout" -c user.name=fixture -c user.email=fixture@invalid \
+  -c commit.gpgsign=false commit -q -m fixture
+provenance="$checkout/os/dev/release-provenance.sh"
 hex="$(printf 'a%.0s' {1..64})"
 if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
@@ -79,9 +93,10 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-app-collection:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.resolvedDependencies[] | select(.uri == "tilo-desktop-payload:sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null \
    && jq -e '.buildDefinition.internalParameters.expectedReleaseDigest == "sha256:'"$hex"'"' "$tmp/provenance.json" >/dev/null \
+   && jq -e '.runDetails.metadata.invocationId == "'"$invocation_time"'"' "$tmp/provenance.json" >/dev/null \
    && jq -e '.runDetails.byproducts[0].uri == "urn:tilo:verification:manifest-digest-equal"' "$tmp/provenance.json" >/dev/null \
    && jq -e '.runDetails.byproducts[] | select(.name == "spdx-sbom" and .uri == "sha256:'"$hex"'")' "$tmp/provenance.json" >/dev/null; then
-  ok 'SLSA provenance binds generation, source inputs, app collection, image and SBOM digests'
+  ok 'SLSA provenance binds generation, commit time, source inputs, app collection, image and SBOM digests'
 else
   bad 'release provenance generator did not produce a bound predicate'
 fi
