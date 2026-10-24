@@ -191,6 +191,10 @@ fn receipts_by(tree: &WorkspaceTreeHandle, room: RoomId, person: &str) -> usize 
 /// room's document into the workspace again keeps it.
 #[test]
 #[serial_test::serial]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_grant_given_where_its_room_is_hosted_is_in_force_before_the_call() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -257,6 +261,10 @@ fn a_grant_given_where_its_room_is_hosted_is_in_force_before_the_call() {
 /// said as any refused change is, and nothing is granted.
 #[test]
 #[serial_test::serial]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
 fn a_grant_given_on_another_device_waits_until_the_room_brings_it_there() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
