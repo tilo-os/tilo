@@ -66,6 +66,7 @@ pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
 mod review_hooks;
+mod side_panel;
 mod toolbar;
 mod window_bar;
 
@@ -321,6 +322,8 @@ struct CompositionKey {
     hosted: bool,
     compact: bool,
     immersive: bool,
+    /// The extension whose side panel shows, and whether it docks.
+    side_panel: Option<(String, bool)>,
 }
 
 /// Root widget for the browser app. See module docs.
@@ -2568,6 +2571,7 @@ impl BrowserWidget {
             hosted: ui::window_toolbar::is_hosted(),
             compact: self.compact_chrome,
             immersive: self.content_fullscreen && self.window_fullscreen_active,
+            side_panel: self.side_panel_key(theme),
         };
         if !self.composition_dirty
             && !self.structure_dirty
@@ -2706,12 +2710,7 @@ impl BrowserWidget {
             } else {
                 self.title.clone()
             };
-            Box::new(
-                WebView::new(self.engine.clone())
-                    .with_scale_factor(self.window_scale)
-                    .with_accessible_name(page_name)
-                    .with_test_id("browser.surface"),
-            )
+            self.page_beside_side_panel(page_name, theme)
         };
         // Loading is drawn on the toolbar's bottom edge (`draw`), not as a
         // band of its own: a band pushed the page down when a load began
@@ -2878,7 +2877,8 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionNotification { .. }
                 | WebViewEvent::ExtensionPermissionRequest { .. }
                 | WebViewEvent::ExtensionPermissions { .. }
-                | WebViewEvent::ExtensionSignIn { .. }) => {
+                | WebViewEvent::ExtensionSignIn { .. }
+                | WebViewEvent::ExtensionSidePanel { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 // What an extension suggests for its keyword in the address.

@@ -166,6 +166,8 @@ impl BrowserWidget {
         let mut actions = Vec::new();
         // On a Web Store item: the reason to be on the page, first in the row.
         actions.extend(self.extensions.bar_offer());
+        // An extension's side panel beside the page closes from the row.
+        actions.extend(self.extensions.bar_side_panel());
         actions.extend([
             ToolbarAction::new(
                 if loading { STOP } else { RELOAD },

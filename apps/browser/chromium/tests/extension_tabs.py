@@ -114,6 +114,13 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   (chrome.offscreen) parses for its worker, which answers it for the tabs it
   has no API for, and a script the extension injected into the page reaches
   it, as in Chrome.
+- An extension's side panel opens beside the page on a click on its button
+  when it asked for that (openPanelOnActionClick), and the extension hears of
+  no click; from its keyboard shortcut's listener (sidePanel.open), never
+  outside a gesture; and from the Browser. It shows the page its options name
+  for the tab, follows them where it shows, closes when asked or turned off
+  for the tab, and its page is no tab and finds the page beside it as its
+  window.
 """
 import base64
 import hashlib
@@ -1877,6 +1884,95 @@ class ExtensionTabs(unittest.TestCase):
             'parsed': {'title': 'page /parsed', 'apis': ['runtime'], 'front': front},
             'direct': {'title': 'from the page', 'apis': ['runtime'], 'front': front},
             'closed': False})
+
+    def side_panel_event(self, host, mark, mode):
+        """The first `extension_side_panel` event of `mode` after `mark`."""
+        match = lambda e: e['event'] == 'extension_side_panel' and e['mode'] == mode
+        seen = next((e for e in host.seen[mark:] if match(e)), None)
+        return seen or host.until(match)
+
+    def worker_saw(self, host, extension, entry):
+        """Wait until the fixture's worker noted `entry` in its `seen`."""
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            seen = json.loads(self.in_worker(host, extension, 'JSON.stringify(globalThis.seen || [])') or '[]')
+            if entry in seen:
+                return seen
+            self.assertGreater(deadline - time.monotonic(), 0, f'the worker never saw {entry}: {seen}')
+            host.settle(0.2)
+
+    def test_a_side_panel_opens_on_a_click_beside_the_page_and_follows_its_options(self):
+        host, ids = self.start('paneler', access={'paneler': (['sidePanel', 'tabs'], [])})
+        page = self.url + '/notes'
+        host.navigate(page)
+        host.settle(1.0)
+        paneler = ids['paneler']
+        own = lambda path: f'chrome-extension://{paneler}/{path}'
+        # Asked outside a gesture, it is refused, as in Chrome.
+        self.worker_saw(host, paneler, 'refused:`sidePanel.open()` may only be called in response to a user gesture.')
+        tab = self.in_worker(host, paneler, 'chrome.tabs.query({}).then((tabs) => tabs[0].id)')
+
+        # It asked for its panel to open on a click: a click on its button
+        # opens it beside the page, and the extension hears of no click.
+        mark = len(host.seen)
+        host.send(op='extension_click', id=paneler)
+        opened = self.side_panel_event(host, mark, 'toggle')
+        self.assertEqual((opened.get('tab'), opened['id'], opened['url']), (1, paneler, own('panel.html')))
+        # Its page, in a tab of its own as the Browser shows it, is no tab
+        # to the extension, and the page beside it is its window.
+        self.panel(host, 2, own('panel.html'))
+        shown = json.loads(self.title(host, 2, 'panel:')[len('panel:'):])
+        self.assertEqual(shown, {'tab': True, 'window': page})
+
+        # Its options for this tab name another page: where it shows, it
+        # shows that one; turned off for the tab, it closes.
+        mark = len(host.seen)
+        self.in_worker(host, paneler, f'chrome.sidePanel.setOptions({{tabId: {tab}, path: "other.html"}}).then(() => true)')
+        self.assertEqual(self.side_panel_event(host, mark, 'options')['url'], own('other.html'))
+        mark = len(host.seen)
+        self.in_worker(host, paneler, f'chrome.sidePanel.setOptions({{tabId: {tab}, enabled: false}}).then(() => true)')
+        self.assertIsNone(self.side_panel_event(host, mark, 'options')['url'])
+        self.assertEqual(self.in_worker(host, paneler, f'chrome.sidePanel.getOptions({{tabId: {tab}}}).then((o) => o.enabled)'),
+                         False, 'Chromium keeps the options and answers for them')
+        mark = len(host.seen)
+        self.in_worker(host, paneler, f'chrome.sidePanel.close({{tabId: {tab}}}).then(() => true)')
+        self.assertIsNone(self.side_panel_event(host, mark, 'close')['url'])
+        # A tab with no side panel of its own has none to close.
+        self.assertIn('No tab with id', self.in_worker(
+            host, paneler, 'chrome.sidePanel.close({tabId: 987654}).then(() => "", (error) => error.message)'))
+
+        # Without openPanelOnActionClick a click reaches the extension, as
+        # without a side panel.
+        self.in_worker(host, paneler, 'chrome.sidePanel.setPanelBehavior({openPanelOnActionClick: false}).then(() => true)')
+        mark = len(host.seen)
+        host.send(op='extension_click', id=paneler)
+        seen = self.worker_saw(host, paneler, f'clicked:{tab}')
+        self.assertEqual(seen.count(f'clicked:{tab}'), 1)
+        self.assertFalse([e for e in host.seen[mark:] if e['event'] == 'extension_side_panel' and e['mode'] == 'toggle'])
+
+    def test_a_shortcut_or_the_browser_opens_the_side_panel_the_tab_has(self):
+        host, ids = self.start('paneler', access={'paneler': (['sidePanel', 'tabs'], [])})
+        host.navigate(self.url + '/notes')
+        host.settle(1.0)
+        paneler = ids['paneler']
+        tab = self.in_worker(host, paneler, 'chrome.tabs.query({}).then((tabs) => tabs[0].id)')
+        self.in_worker(host, paneler, f'chrome.sidePanel.setOptions({{tabId: {tab}, path: "tab.html"}}).then(() => true)')
+
+        # Its keyboard shortcut is the person's gesture: its listener opens
+        # the panel the tab has.
+        mark = len(host.seen)
+        alt = {'ctrl': False, 'meta': False, 'alt': True, 'shift': True}
+        host.send(op='key', key='P', down=True, **alt)
+        host.send(op='key', key='P', down=False, **alt)
+        opened = self.side_panel_event(host, mark, 'open')
+        self.assertEqual((opened.get('tab'), opened['url']), (1, f'chrome-extension://{paneler}/tab.html'))
+        self.worker_saw(host, paneler, 'opened')
+
+        # The person opens it from the Browser: the same page, for this tab.
+        mark = len(host.seen)
+        host.send(op='extension_side_panel', id=paneler)
+        opened = self.side_panel_event(host, mark, 'open')
+        self.assertEqual((opened.get('tab'), opened['url']), (1, f'chrome-extension://{paneler}/tab.html'))
 
 
 def walk(items):

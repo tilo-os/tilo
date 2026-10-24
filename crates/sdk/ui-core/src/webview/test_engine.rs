@@ -631,6 +631,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionMenuChoice { .. }
             | WebViewCommand::ExtensionNotificationChosen { .. }
             | WebViewCommand::ExtensionOmnibox { .. }
+            | WebViewCommand::ExtensionOpenSidePanel { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }

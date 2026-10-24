@@ -527,6 +527,16 @@ class ExtensionTabs {
       SignIn(extension, tabs, args, reply);
     } else if (method == "identity.wait") {
       WaitForSignIn(extension, IntOf(args, "flow").value_or(0), reply);
+    } else if (method == "sidePanel.show") {
+      SidePanel(extension, caller, tabs, args, reply);
+    } else if (method == "sidePanel.shown") {
+      // The tabs its pages show beside or over, whose side panel may be one.
+      auto list = CefListValue::Create();
+      for (const auto& tab : tabs) {
+        if (!tab.panel || tab.url.rfind("chrome-extension://" + extension + "/", 0) != 0) continue;
+        if (const auto* opener = Find(tabs, tab.opener); opener && !opener->panel) list->SetInt(list->GetSize(), opener->id);
+      }
+      Succeed(reply, Wrap(list));
     } else if (method == "windows.update") {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "windowId"));
       if (!tab) { Fail(reply, "No window with id: " + std::to_string(IntOf(args, "windowId").value_or(-1)) + "."); return; }
@@ -645,6 +655,45 @@ class ExtensionTabs {
     }
   }
 
+  // The extension's side panel beside the page of the tab `args.tabId`:
+  // shown at `url` (`open`), shown or closed as a click on its button does
+  // (`toggle`), following its options where it shows (`options`: `url`, or
+  // closed for none), or closed (`close`). The Browser shows it; Chromium
+  // finds no window to. Opening needs a gesture, as in Chrome: the person's
+  // activation of the extension's page that asks, or their use of its
+  // button, menu item or shortcut a moment ago, during whose listeners the
+  // script checks it.
+  void SidePanel(const std::string& extension, int caller, const std::vector<ExtensionTab>& tabs, CefRefPtr<CefDictionaryValue> args,
+                 const Reply& reply) {
+    if (!Has(extension, "sidePanel")) { Fail(reply, "The extension may not show a side panel"); return; }
+    const auto mode = StringOf(args, "mode");
+    if (mode != "open" && mode != "toggle" && mode != "options" && mode != "close") { Fail(reply, "Malformed request"); return; }
+    const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
+    if (!tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(args, "tabId").value_or(0)) + "."); return; }
+    const auto url = StringOf(args, "url");
+    const bool own = url.size() <= 2048 && url.rfind("chrome-extension://" + extension + "/", 0) == 0;
+    if ((mode == "open" || mode == "toggle") && !own) { Fail(reply, "No active side panel for tabId: " + std::to_string(tab->id)); return; }
+    if (mode == "options" && !url.empty() && !own) { Fail(reply, "Malformed request"); return; }
+    const auto* from = Find(tabs, caller);
+    if ((mode == "open" || mode == "toggle") && !(from ? hooks_.activated && hooks_.activated(from->tab) : Gestured(extension))) {
+      Fail(reply, "`sidePanel.open()` may only be called in response to a user gesture.");
+      return;
+    }
+    // Options and closing matter only where its pages show.
+    if (mode == "options" || mode == "close") {
+      bool shown = false;
+      for (const auto& other : tabs)
+        if (other.panel && other.opener == tab->tab && other.url.rfind("chrome-extension://" + extension + "/", 0) == 0) shown = true;
+      if (!shown) { Succeed(reply, nullptr); return; }
+    }
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetString("mode", mode);
+    if (own && mode != "close") fields->SetString("url", url); else fields->SetNull("url");
+    if (hooks_.event) hooks_.event(tab->tab, "extension_side_panel", fields);
+    Succeed(reply, nullptr);
+  }
+
   // The extensions' items for the menu the person opened on a page. A web
   // page shows every extension's; an extension's own page only its
   // own; the Browser's pages none.
@@ -719,7 +768,26 @@ class ExtensionTabs {
     gestures_[extension] = std::chrono::steady_clock::now();
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
-    Push(extension, "action.onClicked", args, true);
+    if (!Has(extension, "sidePanel")) { Push(extension, "action.onClicked", args, true); return; }
+    // Its side panel may open on the click instead (extension_tabs.js).
+    InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.clicked(" + ToJson(Wrap(TabObject(extension, *found))) + ") : -1", true,
+             [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+  }
+
+  // The person asked the Browser to open the extension's side panel beside
+  // the page of `tab`: its page for that tab opens, as from Chrome's side
+  // panel menu. Its worker knows which page that is, and wakes for it.
+  void OpenSidePanel(const std::string& extension, int tab) {
+    Ensure([this, extension, tab] {
+      const auto tabs = Tabs();
+      const auto* found = Find(tabs, tab);
+      if (!found || found->panel || !access_.count(extension) || !Has(extension, "sidePanel")) return;
+      gestures_[extension] = std::chrono::steady_clock::now();
+      auto id = CefValue::Create();
+      id->SetInt(found->id);
+      InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.showPanel(" + ToJson(id) + ") : false", true,
+               [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+    });
   }
 
   // The person chose an extension's notification: its body, or the button

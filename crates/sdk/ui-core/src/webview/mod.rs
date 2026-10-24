@@ -272,6 +272,23 @@ pub struct ExtensionActionChange {
     pub icon: Option<Option<ExtensionActionIcon>>,
 }
 
+/// What an extension asks of its side panel beside a tab's page; each
+/// address is among the extension's own pages.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionSidePanelChange {
+    /// Show this page (`sidePanel.open`, or the person opening it).
+    Open(String),
+    /// A click on its toolbar button, when it asked for its panel to open
+    /// on one (`openPanelOnActionClick`): show this page, or close the
+    /// panel where it shows.
+    Toggle(String),
+    /// Its options changed: where it shows, show this page now, or close
+    /// for `None` (turned off for the tab).
+    Options(Option<String>),
+    /// `sidePanel.close`.
+    Close,
+}
+
 /// An icon an extension gave its toolbar button.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtensionActionIcon {
@@ -615,7 +632,8 @@ pub enum WebViewCommand {
         flow: u32,
     },
     /// The person clicked an extension's toolbar button over this page: the
-    /// extension hears of it (`action.onClicked`) and may script the page.
+    /// extension hears of it (`action.onClicked`) and may script the page,
+    /// or its side panel opens or closes when it asked for that.
     ExtensionClick {
         id: String,
     },
@@ -640,6 +658,12 @@ pub enum WebViewCommand {
     ExtensionOmnibox {
         id: String,
         input: OmniboxInput,
+    },
+    /// The person opened an extension's side panel beside this page: the
+    /// engine answers with [`WebViewEvent::ExtensionSidePanel`] once the
+    /// extension says which of its pages it shows here, if any.
+    ExtensionOpenSidePanel {
+        id: String,
     },
     DownloadDecision {
         id: u32,
@@ -767,6 +791,12 @@ pub enum WebViewEvent {
     ExtensionOmniboxDefault {
         id: String,
         description: Option<String>,
+    },
+    /// What an extension asks of its side panel beside this tab's page
+    /// (`chrome.sidePanel`).
+    ExtensionSidePanel {
+        id: String,
+        change: ExtensionSidePanelChange,
     },
     SiteStatus(SiteStatus),
     SiteResult {

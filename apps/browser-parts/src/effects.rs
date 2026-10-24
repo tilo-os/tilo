@@ -174,6 +174,21 @@ pub enum BrowserEffect {
         #[param("The extension's id")]
         id: String,
     },
+    /// Open side panel
+    ///
+    /// Shows the extension's side panel beside this page, where it has one
+    /// for the page.
+    #[effect(row, returns)]
+    OpenExtensionSidePanel {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Close side panel
+    #[effect(row, returns)]
+    CloseExtensionSidePanel {
+        #[param("The extension's id")]
+        id: String,
+    },
     /// Remove extension
     ///
     /// Removes it from this device with everything it stored.
@@ -516,6 +531,12 @@ impl BrowserEffect {
             Self::OpenExtensionSettings { id } => {
                 BrowserOperation::Extension(ExtensionRequest::OpenSettings(id))
             }
+            Self::OpenExtensionSidePanel { id } => {
+                BrowserOperation::Extension(ExtensionRequest::OpenSidePanel(id))
+            }
+            Self::CloseExtensionSidePanel { id } => {
+                BrowserOperation::Extension(ExtensionRequest::CloseSidePanel(id))
+            }
             Self::RemoveExtension { id } => {
                 BrowserOperation::Extension(ExtensionRequest::Remove(id))
             }
@@ -610,6 +631,9 @@ pub enum ExtensionRequest {
     Use(String),
     /// Words for its keyword in the address, as Enter sends them.
     Send(String, String),
+    /// Show its side panel beside the page, or close it.
+    OpenSidePanel(String),
+    CloseSidePanel(String),
     Remove(String),
 }
 
