@@ -71,8 +71,15 @@ impl<S: BuildHasher> Engine<'_, S> {
     /// to a multiple of `significance` (1 when it is left out), as Excel and
     /// Calc do: `FLOOR(7, 5)` is 5, `CEILING(2.3, 0.5)` is 2.5, a negative
     /// number goes the way `round` goes on the number line, and a positive
-    /// number with a negative significance is `#NUM!`.
-    pub(super) fn round_to_multiple(&mut self, args: &[Expr], round: fn(f64) -> f64) -> CellValue {
+    /// number with a negative significance is `#NUM!`. A nonzero number with
+    /// a significance of 0 is `by_zero`: Excel's `CEILING` gives 0 there and
+    /// its `FLOOR` gives `#DIV/0!`, as Calc's does an error.
+    pub(super) fn round_to_multiple(
+        &mut self,
+        args: &[Expr],
+        round: fn(f64) -> f64,
+        by_zero: CellValue,
+    ) -> CellValue {
         let (Some(number), significance) = (args.first(), args.get(1)) else {
             return CellValue::Error(FormulaError::Error);
         };
@@ -95,8 +102,11 @@ impl<S: BuildHasher> Engine<'_, S> {
             [n, step] => (*n, *step),
             _ => return CellValue::Error(FormulaError::Error),
         };
-        if step == 0.0 {
+        if n == 0.0 {
             return CellValue::Number(0.0);
+        }
+        if step == 0.0 {
+            return by_zero;
         }
         if n > 0.0 && step < 0.0 {
             return CellValue::Error(FormulaError::Num);
@@ -144,6 +154,11 @@ mod tests {
             assert_eq!(value(formula), CellValue::Number(expected), "{formula}");
         }
         assert_eq!(value("=FLOOR(2.5,-2)"), CellValue::Error(FormulaError::Num));
+        // Excel has no multiple of 0 for FLOOR to fall to, and Calc agrees.
+        assert_eq!(value("=FLOOR(5,0)"), CellValue::Error(FormulaError::Div0));
+        assert_eq!(value("=FLOOR(-5,0)"), CellValue::Error(FormulaError::Div0));
+        assert_eq!(value("=FLOOR(0,0)"), CellValue::Number(0.0));
+        assert_eq!(value("=CEILING(0,0)"), CellValue::Number(0.0));
         assert_eq!(
             value("=CEILING(\"x\",2)"),
             CellValue::Error(FormulaError::Value)

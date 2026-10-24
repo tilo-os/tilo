@@ -1511,7 +1511,9 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
             "ABS" => self.unary_num(args, f64::abs),
             "SQRT" => self.unary_num(args, f64::sqrt),
             "INT" => self.unary_num(args, f64::floor),
-            "FLOOR" => self.round_to_multiple(args, f64::floor),
+            "FLOOR" => {
+                self.round_to_multiple(args, f64::floor, CellValue::Error(FormulaError::Div0))
+            }
             "SIGN" => self.unary_num(args, f64::signum),
             "EXP" => self.unary_num(args, f64::exp),
             "LN" => self.unary_num(args, f64::ln),
@@ -1542,7 +1544,7 @@ impl<'a, S: BuildHasher> Engine<'a, S> {
                 }
             }),
             "POWER" => self.binary_num(args, |a, b| Some(a.powf(b))),
-            "CEILING" => self.round_to_multiple(args, f64::ceil),
+            "CEILING" => self.round_to_multiple(args, f64::ceil, CellValue::Number(0.0)),
             _ => return None,
         };
         Some(value)
