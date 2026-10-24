@@ -174,7 +174,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app",
- "tilo-test-env",
  "workspace-hack",
 ]
 
@@ -20006,7 +20005,6 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
- "libc",
  "postcard",
  "serde",
  "serde_json",
