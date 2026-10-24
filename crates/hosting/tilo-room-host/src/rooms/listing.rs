@@ -287,7 +287,14 @@ impl Rooms {
             let Ok(governed) = self.room(&room).await else {
                 continue;
             };
-            let summary = governed.lock().await.summary();
+            let summary = {
+                let governed = governed.lock().await;
+                // Handed to its new owner's device: people join it there.
+                if governed.moved() {
+                    continue;
+                }
+                governed.summary()
+            };
             let (here, here_count) = faces(&summary.members, online);
             let members = summary
                 .members

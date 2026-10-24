@@ -42,6 +42,8 @@ pub use member_records::PreparedRecord;
 mod layout_scope;
 mod owner_commands;
 pub use owner_commands::{AppAction, OwnerCommand, app_action_lifetime};
+mod ownership;
+pub use ownership::OwnershipError;
 mod pages;
 mod peer_parts;
 mod private;
@@ -420,6 +422,13 @@ impl GovernedRoom {
         &self.peer
     }
 
+    /// Whether this host handed the room to another device, which governs
+    /// it now: its log says so ([`tilo_peer_state::handoff`]), so a restart
+    /// reads it back with no file of its own.
+    fn moved(&self) -> bool {
+        self.peer.governance().handed_on().is_some()
+    }
+
     /// The governance this room published that the relay has not retained,
     /// in order, each with its place reserved in `records`; `published`
     /// moves past them. Stops before a change that does not read, with why.
@@ -538,6 +547,11 @@ impl GovernedRoom {
         let committing = crate::timing::start();
         if candidate.room() != self.peer.room() || candidate.authority() != self.peer.authority() {
             return Err("a room change cannot replace the room".into());
+        }
+        // The room was handed to its new owner's device: this host keeps
+        // serving what it committed, and changes nothing more.
+        if self.moved() {
+            return Err(tilo_peer_state::handoff::HandoffError::Moved.to_string());
         }
         // A member admitted from now on is given the room as it stands, not
         // what was withdrawn before they joined.
@@ -1376,6 +1390,11 @@ impl Rooms {
             room: room.room().to_owned(),
             governor: host.cert.device_public_key,
         });
+        // A room this host handed on stays served, read-only, for members
+        // that have yet to catch up with the handoff.
+        if std::mem::replace(&mut runtime.moved, room.moved()) != room.moved() {
+            crate::authority_epoch::bump();
+        }
         // The relay stewards the room's channels: what only a steward reads
         // is neither delivered to members nor replayed to them.
         runtime.store.replay_without_steward_only();
@@ -2070,6 +2089,17 @@ impl Rooms {
         &self,
         room: &GovernedRoom,
     ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        self.hint_for(room.room(), room.workspace_id(), room.peer().authority())
+    }
+
+    /// The signed Iroh address of this host serving `room`, carried by
+    /// workspace `workspace_id` and governed by `governing_authority`.
+    fn hint_for(
+        &self,
+        room: &str,
+        workspace_id: u64,
+        governing_authority: &DeviceCert,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
         let host = &self.inner.host;
         let endpoint_addr = host.endpoint.addr();
         let packet_relay_url = endpoint_addr
@@ -2079,9 +2109,9 @@ impl Rooms {
         tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
             version: 1,
             mode: host.mode,
-            room: room.room().to_owned(),
-            workspace_id: room.workspace_id(),
-            governing_authority: room.peer().authority().clone(),
+            room: room.to_owned(),
+            workspace_id,
+            governing_authority: governing_authority.clone(),
             endpoint_addr,
             host_user_public_key: host.cert.user_public_key,
             host_device_certificate: host.cert.clone(),

@@ -434,7 +434,7 @@ impl Rooms {
     /// The asker's standing in `room`: a person's current device, not one
     /// of this host's agents, admitted to the room under the person its
     /// certificate names.
-    fn standing(
+    pub(super) fn standing(
         &self,
         room: &GovernedRoom,
         device: &DeviceCert,

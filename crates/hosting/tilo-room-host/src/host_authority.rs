@@ -31,6 +31,10 @@ pub enum HostOperation {
     AuthorApplications,
     /// Drive the host's personal compute over its control stream.
     ComputeControl,
+    /// Offer one of the host's rooms to another person, or take the offer
+    /// back: the room's owner is the host's person, and a new owner means
+    /// a new governor ([`tilo_peer_state::handoff`]).
+    TransferOwnership,
 }
 
 impl HostOperation {
@@ -47,6 +51,7 @@ impl HostOperation {
             Self::GovernBot => "bot.govern",
             Self::AuthorApplications => "application.author",
             Self::ComputeControl => "compute.control",
+            Self::TransferOwnership => "room.ownership.transfer",
         }
     }
 
@@ -65,7 +70,8 @@ impl HostOperation {
             | Self::GrantAppAuthorship
             | Self::GovernBot
             | Self::AuthorApplications
-            | Self::ComputeControl => host == caller,
+            | Self::ComputeControl
+            | Self::TransferOwnership => host == caller,
         }
     }
 }
@@ -74,7 +80,7 @@ impl HostOperation {
 mod tests {
     use super::HostOperation;
 
-    const ALL: [HostOperation; 10] = [
+    const ALL: [HostOperation; 11] = [
         HostOperation::CreateRoom,
         HostOperation::ListRooms,
         HostOperation::EnterRoom,
@@ -85,6 +91,7 @@ mod tests {
         HostOperation::GovernBot,
         HostOperation::AuthorApplications,
         HostOperation::ComputeControl,
+        HostOperation::TransferOwnership,
     ];
 
     #[test]

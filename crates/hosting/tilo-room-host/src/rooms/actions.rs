@@ -69,6 +69,7 @@ use tokio::sync::Mutex as AsyncMutex;
 mod host;
 mod member;
 mod owner;
+mod ownership;
 
 use super::authority::RoomOp;
 use super::{
@@ -875,7 +876,8 @@ impl Rooms {
         {
             let room = governed.lock().await;
             offer.generation = room.record.generation;
-            if wants(ROOM_GOVERNANCE_PROVIDER) {
+            // A room handed on is administered where it moved.
+            if wants(ROOM_GOVERNANCE_PROVIDER) && !room.moved() {
                 let now = tilo_clock::unix_now_ns();
                 let resource = room_governance_resource(room.room());
                 let owner = device.user_public_key == self.inner.host.cert.user_public_key;
@@ -889,6 +891,7 @@ impl Rooms {
                     .map(|verb| verb.row(GOVERNANCE, &resource, &room.record.name))
                     .collect();
                 rows.extend(self.owner_rows(&room, &device, &resource, now));
+                rows.extend(self.ownership_rows(&room, &device, &resource));
                 offer.add(GOVERNANCE, room.room(), rows);
             }
             if wants(MEMBER_ACTIONS_PROVIDER) {
@@ -915,6 +918,9 @@ impl Rooms {
         match request.target.provider.as_str() {
             ROOM_GOVERNANCE_PROVIDER if owner::serves(&request.target.address.action) => {
                 self.owner_invoke(workspace_id, caller, request).await
+            }
+            ROOM_GOVERNANCE_PROVIDER if ownership::serves(&request.target.address.action) => {
+                self.ownership_invoke(workspace_id, caller, request).await
             }
             ROOM_GOVERNANCE_PROVIDER => self.governance_invoke(workspace_id, caller, request).await,
             MEMBER_ACTIONS_PROVIDER => self.member_invoke(workspace_id, caller, request).await,
@@ -1524,4 +1530,4 @@ impl AppServingPlane for GovernedPlane {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

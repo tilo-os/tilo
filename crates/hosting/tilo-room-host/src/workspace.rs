@@ -90,6 +90,10 @@ pub struct WorkspaceRuntime {
     /// `None` until a governor projects one; the relay then decides changes
     /// against their app surface alone.
     pub(crate) standings: Option<Arc<Standings>>,
+    /// The room's governor here handed it to another device: this host
+    /// still serves what it holds to members catching up, and takes in
+    /// nothing more. Read only through [`crate::room_access::decide`].
+    pub(crate) moved: bool,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -404,6 +408,7 @@ impl WorkspaceRuntime {
             governor_tap: None,
             room_authority: None,
             standings: None,
+            moved: false,
             live_members: HashMap::new(),
             last_seq: 0,
             commits,

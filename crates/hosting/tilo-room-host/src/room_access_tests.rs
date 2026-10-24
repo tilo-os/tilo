@@ -50,6 +50,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
         Decision::Deny(DenyReason::WatchOnly) => 'W',
         Decision::Deny(DenyReason::SpectatorsFull) => 'S',
+        Decision::Deny(DenyReason::Moved) => 'M',
         Decision::Deny(DenyReason::SealedFromSpectators) => 'P',
         Decision::Deny(DenyReason::OverTheChannel) => 'O',
     }
@@ -316,6 +317,17 @@ fn decide_matrix() {
             expected: ["NNNNNNNNsdNNO", "ENNAAEANsdNAO", "NNNNNNNNAdNNO"],
         },
         Case {
+            // Members still pinned here catch up with the handoff and move
+            // on; nothing they send is taken in.
+            name: "member device of a room this relay handed to another device",
+            peer: peer(bob, [23; 32], false, None),
+            setup: Box::new(|runtime, _| {
+                runtime.membership.devices.push([23; 32]);
+                runtime.moved = true;
+            }),
+            expected: ["AAAMMMMMsdMAO", "AAAMMMMMsdMAO", "AAAMMMMMsdMAO"],
+        },
+        Case {
             name: "another listed device of the owner, while this relay governs",
             peer: peer(owner, [71; 32], false, None),
             setup: Box::new(|runtime, _| {
@@ -457,6 +469,7 @@ fn decide_matrix() {
             runtime.room_authority = None;
             runtime.spectators = None;
             runtime.state_sessions.clear();
+            runtime.moved = false;
             runtime.admission = *mode;
             (case.setup)(&mut runtime, &relay);
             let actual: String = OPS

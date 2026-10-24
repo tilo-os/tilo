@@ -37,7 +37,22 @@ pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
 
 /// A new person admitted to `room` as an Editor, through the owner's
 /// pre-admission: their device's certificate.
-pub(super) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u8) -> DeviceCert {
+pub(crate) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u8) -> DeviceCert {
+    let (key, cert) = guest_device();
+    admit_device(rooms, room, owner, seed, (&key, &cert)).await;
+    cert
+}
+
+/// The device `cert`, whose key `key` is, admitted to `room` as an
+/// Editor through the owner's pre-admission: a person's own host device,
+/// say, which a test runs a host on too.
+pub(crate) async fn admit_device(
+    rooms: &Rooms,
+    room: &str,
+    owner: &DeviceCert,
+    seed: u8,
+    (key, cert): (&ed25519_dalek::SigningKey, &DeviceCert),
+) {
     let token = [seed; 8];
     let issued = rooms
         .pre_admit(
@@ -51,7 +66,6 @@ pub(super) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u
         )
         .await
         .unwrap();
-    let (key, cert) = guest_device();
     let JoinReply::Challenge { challenge } = rooms
         .page_join(JoinStep::Ask {
             invitation: issued.signed_invitation,
@@ -72,7 +86,6 @@ pub(super) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u
         })
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-    cert
 }
 
 async fn grant(rooms: &Rooms, room: &str, owner: &DeviceCert, person: &DeviceCert, action: &str) {

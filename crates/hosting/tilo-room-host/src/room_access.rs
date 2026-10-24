@@ -243,6 +243,9 @@ pub enum DenyReason {
     WatchOnly,
     /// A spectator subscribing while every spectator seat is taken.
     SpectatorsFull,
+    /// Writing or acting in a room its host handed to another device: the
+    /// host only serves what it holds, so members catch up and move on.
+    Moved,
     /// Channel keys asked for by a spectator of a room that is not public,
     /// or of one it holds no seat in.
     #[cfg(any(test, feature = "web"))]
@@ -276,6 +279,7 @@ impl DenyReason {
             Self::NotAMember => "device not in workspace membership",
             Self::WatchOnly => "a spectator only watches this room",
             Self::SpectatorsFull => "too many people are watching this room",
+            Self::Moved => "the room moved to its new owner's device",
             #[cfg(any(test, feature = "web"))]
             Self::SealedFromSpectators => {
                 "this room keeps what its members write from those who only watch"
@@ -619,6 +623,10 @@ pub(crate) fn decide_in(
             }
             Some(_) => Decision::Deny(DenyReason::SealedFromSpectators),
         };
+    }
+    if room.runtime.moved && !op.reads() {
+        // Whoever asks: the room is governed elsewhere now.
+        return Decision::Deny(DenyReason::Moved);
     }
     if watches_only(room.runtime, peer) {
         // Before membership: the device the spectator person joined with

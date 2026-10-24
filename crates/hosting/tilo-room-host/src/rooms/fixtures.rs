@@ -93,13 +93,31 @@ impl TestHost {
 ///
 /// The endpoint cannot bind or the host cannot open.
 pub async fn test_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
+    host_in(state_root, (key, cert), HostMode::CertifiedHost).await
+}
+
+/// A person's own device `cert` hosting the rooms placed on it, keeping its
+/// state under `state_root`: no host capability needed.
+///
+/// # Panics
+///
+/// The endpoint cannot bind or the host cannot open.
+pub async fn device_host(state_root: &Path, key: &SigningKey, cert: &DeviceCert) -> TestHost {
+    host_in(state_root, (key, cert), HostMode::Device).await
+}
+
+async fn host_in(
+    state_root: &Path,
+    (key, cert): (&SigningKey, &DeviceCert),
+    mode: HostMode,
+) -> TestHost {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .bind()
         .await
         .expect("a loopback endpoint binds");
     let host = RoomHost::open(
-        HostConfig::new(state_root.to_owned(), HostMode::CertifiedHost),
+        HostConfig::new(state_root.to_owned(), mode),
         HostIdentity {
             user_public_key: cert.user_public_key,
             device_signing_key: key.clone(),

@@ -131,6 +131,12 @@ impl Rooms {
         }
         tilo_user_identity::verify_device_cert_at(device, now)
             .map_err(|error| CollaborationError::new(error.to_string()))?;
+        // Handed to its new owner's device, which administers it now.
+        if room.is_some_and(GovernedRoom::moved) {
+            return Err(CollaborationError::new(
+                tilo_peer_state::handoff::HandoffError::Moved.to_string(),
+            ));
+        }
         if let RoomOp::Host(operation) = op {
             return if operation.permits(&host, &device.user_public_key) {
                 Ok(hex::encode(host))
