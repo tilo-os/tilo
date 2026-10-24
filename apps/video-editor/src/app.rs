@@ -67,6 +67,7 @@ mod project_workflow;
 mod render_action;
 mod scenario;
 mod selection;
+mod strip_menu;
 mod timeline_paint;
 mod window_bar;
 use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
@@ -1141,6 +1142,8 @@ pub struct VideoEditorApp {
     /// Delete). Owned as a field and driven directly (`open_at` / `item_at` /
     /// `take_selection`) because the editor is a canvas, not a taffy tree.
     bin_menu: ContextMenu,
+    /// The segmented strips painted folded, and the one whose menu is open.
+    strips: strip_menu::Strips,
     /// What the open context menu (or a pending menu action) targets — a bin
     /// media item or a timeline track header.
     menu_target: Option<MenuTarget>,
@@ -1367,6 +1370,8 @@ enum MenuTarget {
     AddEffect,
     /// A key control's menu: what to do with `param`'s curve at the playhead.
     Keyframe(Param),
+    /// A folded segmented strip's menu of segments ([`strip_menu`]).
+    Strip,
 }
 
 impl Default for VideoEditorApp {
@@ -1457,6 +1462,7 @@ impl VideoEditorApp {
             bin_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             bin_menu: ContextMenu::new(),
+            strips: strip_menu::Strips::default(),
             menu_target: None,
             // PROJECT starts folded — the one section that does. A folded
             // header still states what is inside it, and what is inside this
@@ -4788,6 +4794,7 @@ impl VideoEditorApp {
     /// builders for the current [`MenuTarget`]).
     fn bin_menu_choose(&mut self, idx: usize) {
         match self.menu_target {
+            Some(MenuTarget::Strip) => self.choose_strip_row(idx),
             Some(MenuTarget::Media(mid)) => match idx {
                 0 => {
                     self.add_media_to_timeline(mid);
@@ -6398,6 +6405,7 @@ impl Widget for VideoEditorApp {
         presence: &PresenceCtx,
     ) {
         let r = self.prepare_draw_frame(theme);
+        self.strips.begin_frame();
         // A key (B, Ctrl+I, S) or a render's progress changes what the bar
         // shows without a sync.
         ui::window_toolbar::declare(Some(self.window_toolbar()));
@@ -8493,7 +8501,6 @@ impl VideoEditorApp {
             text(scene, tr, tf, &words, &ty.xs, tint, x0, top);
         }
 
-        let cursor = self.last_mouse;
         let seg_group = |scene: &mut Scene,
                          tr: &mut TextRenderer,
                          caption: &str,
@@ -8511,7 +8518,13 @@ impl VideoEditorApp {
                 .iter()
                 .position(|(_, _, on)| *on)
                 .unwrap_or(usize::MAX);
-            draw_segmented(scene, tf, tr, theme, &rects, &labels, selected, cursor);
+            self.draw_strip(
+                scene,
+                tf,
+                (tr, theme),
+                (strip_menu::StripHost::Export, &rects),
+                (&labels, selected),
+            );
         };
         let res: Vec<_> = l
             .resolution
