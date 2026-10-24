@@ -139,8 +139,9 @@ enum Readable {
 
 impl Rooms {
     /// Decide `author`'s write `body` (a retained document message) to
-    /// `room`'s shared desktop. Anything else, and the relay's own writes,
-    /// pass untouched.
+    /// `room`'s shared desktop, with `author`'s own standing in the room.
+    /// Anything else passes untouched. Only members' writes come here (see
+    /// [`Self::decide_layout_write`]), the relay's own device's included.
     ///
     /// # Errors
     /// Why the room refuses it: it closes, moves or renames something its
@@ -155,9 +156,6 @@ impl Rooms {
         author: [u8; 32],
         body: &[u8],
     ) -> Result<(), String> {
-        if author == self.inner.host.cert.device_public_key {
-            return Ok(());
-        }
         let Ok(neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
             record_id,

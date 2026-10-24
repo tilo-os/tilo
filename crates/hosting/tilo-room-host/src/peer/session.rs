@@ -196,25 +196,28 @@ where
     let (reply_tx, mut reply_rx) = mpsc::channel::<ReplayWrite>(8);
     let pending_replays = std::sync::atomic::AtomicUsize::new(0);
     let replay_written = tokio::sync::Notify::new();
-    let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written);
-    let reading = SessionReaderLoop::new(
-        &mut reader,
-        &mut subscribed,
-        &mut access_audit,
-        &mut authority,
-        ReaderQueues::new(&tx, &state_tx, &reply_tx),
-    )
-    .run(cx);
-    let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx, &mut private_rx);
-    let writing = SessionWriter::new(queues, &mut write, &presence).run(cx);
-    let outcome = tokio::select! {
-        _ = &mut closed => Ok(()),
-        _ = disconnect_rx.recv() => {
-            metrics.inc_subscriber_dropped_backpressure();
-            Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()))
-        }
-        result = reading => result,
-        result = writing => result,
+    let outcome = {
+        let cx = SessionLoop::new(&peer, &session, &pending_replays, &replay_written);
+        let reading = SessionReaderLoop::new(
+            &mut reader,
+            &mut subscribed,
+            &mut access_audit,
+            &mut authority,
+            ReaderQueues::new(&tx, &state_tx, &reply_tx),
+        )
+        .run(cx);
+        let queues = WriterQueues::new(&mut rx, &mut state_rx, &mut reply_rx, &mut private_rx);
+        let (end_writer, ending) = tokio::sync::watch::channel(false);
+        let writing = SessionWriter::new(queues, &mut write, &presence).run(cx, ending);
+        until_ended(
+            reading,
+            writing,
+            end_writer,
+            &mut closed,
+            &mut disconnect_rx,
+            &metrics,
+        )
+        .await
     };
 
     connection_live
@@ -230,6 +233,39 @@ where
     )
     .await;
     outcome
+}
+
+/// Run a session's `reading` and `writing` until the session ends: the
+/// connection closes, the peer overflows its queue, or either half ends.
+/// When the reader ends it (the peer closed, or lost its access), the
+/// writer is told through `end_writer` and writes what was queued for the
+/// peer then, a refusal among it, before the close; unless the connection
+/// is gone first.
+async fn until_ended<C: std::future::Future>(
+    reading: impl std::future::Future<Output = Result<(), PeerError>>,
+    writing: impl std::future::Future<Output = Result<(), PeerError>>,
+    end_writer: tokio::sync::watch::Sender<bool>,
+    closed: &mut std::pin::Pin<&mut C>,
+    disconnect: &mut mpsc::Receiver<()>,
+    metrics: &crate::metrics::Metrics,
+) -> Result<(), PeerError> {
+    tokio::pin!(reading, writing);
+    tokio::select! {
+        _ = closed.as_mut() => Ok(()),
+        _ = disconnect.recv() => {
+            metrics.inc_subscriber_dropped_backpressure();
+            Err(PeerError::Protocol("subscriber exceeded outbound backpressure limit".into()))
+        }
+        result = &mut reading => {
+            let _ = end_writer.send(true);
+            tokio::select! {
+                _ = closed.as_mut() => {}
+                _ = &mut writing => {}
+            }
+            result
+        }
+        result = &mut writing => result,
+    }
 }
 
 /// Log what the ended session wrote and, with correlated diagnostics on, how
