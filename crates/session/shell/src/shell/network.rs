@@ -8473,107 +8473,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_local_tab_is_pushed_on_the_next_tick_and_an_idle_tick_sends_nothing() {
-        const SALT: u16 = 0xCAFE;
-        let tree = WorkspaceTree::bootstrap_demo().shared();
-        tree.write().set_salt_override(SALT);
-        let room = tree.read().rooms()[0];
-        let topic = room_topic_id(room);
-        let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0xCAFE);
-        let drain_pushes = |cmd_rx: &mut mpsc::Receiver<NetCmd>| {
-            let mut pushes = Vec::new();
-            while let Ok(cmd) = cmd_rx.try_recv() {
-                if let NetCmd::Publish {
-                    ws,
-                    msg: NeighbourMsg::SyncResp { room, changes },
-                } = cmd
-                {
-                    pushes.push((ws, room, changes));
-                }
-            }
-            pushes
-        };
-        // The first tick learns where every room stands and announces none
-        // of its history; a peer that lacks it pulls it.
-        net.tick();
-        assert!(drain_pushes(&mut cmd_rx).is_empty());
-        net.tick();
-        assert!(
-            drain_pushes(&mut cmd_rx).is_empty(),
-            "an idle tick sends nothing"
-        );
-        let before = tree
-            .read()
-            .room_docs
-            .get(&room)
-            .cloned()
-            .expect("room document");
-
-        let tab = tilo_desktop_model::compose_id(SALT, 77);
-        {
-            let mut tree = tree.write();
-            let workspace = tree
-                .desktop
-                .workspaces
-                .iter_mut()
-                .find(|workspace| workspace.room() == room)
-                .expect("room workspace");
-            let group = workspace
-                .strips
-                .iter_mut()
-                .flat_map(|strip| strip.window_groups.iter_mut())
-                .next()
-                .expect("a window group");
-            group.tabs.push(crate::shell::state::Tab {
-                id: tab,
-                title: "Pushed".into(),
-                tile: crate::shell::state::TileContent::Stub {
-                    kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
-                    label: "Notes".into(),
-                },
-                app_title: None,
-            });
-            tree.seed_doc_from_cache();
-        }
-        net.tick();
-        let pushes = drain_pushes(&mut cmd_rx);
-        let [(ws, pushed_room, changes)] = pushes.as_slice() else {
-            panic!("one push for the changed room, got {pushes:?}");
-        };
-        assert_eq!(
-            (*ws, pushed_room.as_str()),
-            (topic, room.to_string().as_str())
-        );
-
-        let mut peer = before;
-        for change in changes {
-            tilo_automerge::ApplyIncoming::apply_incoming(
-                &mut peer,
-                [automerge::Change::from_bytes(change.clone()).expect("change")],
-            )
-            .expect("push applies on top of what was announced");
-        }
-        assert!(
-            tilo_desktop_model::projection::contents_of(&peer)
-                .iter()
-                .flat_map(|strip| &strip.groups)
-                .flat_map(|group| &group.tabs)
-                .any(|candidate| candidate.id == tab),
-            "the pushed change carries the new tab"
-        );
-        assert_eq!(changes.len(), 1, "one incremental change, not a checkpoint");
-        eprintln!(
-            "room-push-work mutation-ticks=1 batches=1 changes={}",
-            changes.len()
-        );
-
-        net.tick();
-        assert!(
-            drain_pushes(&mut cmd_rx).is_empty(),
-            "nothing new, nothing sent"
-        );
-    }
     use crate::shell::state::FreshId as _;
 
     #[test]
@@ -10076,69 +9975,52 @@ mod tests {
         std::iter::from_fn(|| commands.try_recv().ok()).collect()
     }
 
-    fn personal_workspaces_sent(commands: &[NetCmd]) -> Vec<NeighbourMsg> {
-        commands
-            .iter()
-            .filter_map(|command| match command {
-                NetCmd::PublishCheckpoint {
-                    msg: msg @ NeighbourMsg::PersonalWorkspaces { .. },
-                    ..
-                } => Some(msg.clone()),
-                _ => None,
-            })
-            .collect()
-    }
-
     #[test]
+    #[serial_test::serial]
     #[allow(
         clippy::too_many_lines,
         reason = "two devices, their exchange in both directions and a stranger's refusal form one scenario"
     )]
     fn a_persons_devices_share_their_workspace_list_and_join_its_rooms() {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[0x3C; 32]);
-        let laptop_device = iroh::SecretKey::from_bytes(&[0x3D; 32]);
-        let board_device = iroh::SecretKey::from_bytes(&[0x3E; 32]);
-        let collab_types::caps::Principal::Person(person) =
-            collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
-            )
-        else {
-            panic!("a root names a person");
+        use crate::shell::network::one_host_tests::{
+            Device, Person, Wakes, hosted_workspace, scratch, until,
         };
-        let (laptop_tree, research) = tree_with_own_workspace(&person, "Research");
-        let (board_tree, board_home) = tree_with_own_workspace(&person, "Board home");
-        let (laptop, mut laptop_commands) =
-            personal_workspaces_network_for_test(&root, &laptop_device, laptop_tree);
-        let (board, mut board_commands) =
-            personal_workspaces_network_for_test(&root, &board_device, board_tree);
-        let topic = personal_continuity_topic_id(&root.verifying_key().to_bytes());
+        use tilo_user_identity::DeviceCapabilities;
 
-        // The laptop lists its workspace on its first tick.
-        laptop.reconcile_personal_workspaces();
-        let sent = personal_workspaces_sent(&drain(&mut laptop_commands));
-        assert_eq!(sent.len(), 1, "one signed list per change");
-        laptop.reconcile_personal_workspaces();
-        assert!(
-            personal_workspaces_sent(&drain(&mut laptop_commands)).is_empty(),
-            "an unchanged list is not resent every frame"
+        let mut home = tilo_test_env::TestHome::new().unwrap();
+        let dir = scratch();
+        let wakes = Arc::new(Wakes::default());
+        let person = Person::new(0x3C);
+        home.env().set("TILO_USER_ID", person.id());
+        let laptop = Device::start(
+            &person,
+            "Laptop",
+            &dir.path().join("laptop"),
+            0x3D,
+            DeviceCapabilities::primary(),
+            &wakes,
         );
-
-        // Before the laptop has introduced itself its list is not merged.
-        let list = sent.into_iter().next().expect("list");
-        board.dispatch_neighbour_msg(topic, laptop_device.public(), None, false, list.clone());
-        assert!(
-            !board
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == research)
+        let board = Device::start(
+            &person,
+            "Board",
+            &dir.path().join("board"),
+            0x3E,
+            DeviceCapabilities::primary(),
+            &wakes,
         );
+        // Each makes a workspace, hosted on it.
+        let (_, research) = hosted_workspace(&laptop, &[&board], "Research");
+        let (_, board_home) = hosted_workspace(&board, &[&laptop], "Board home");
 
-        authenticated_personal_peer(&board, &root, &laptop_device);
-        drain(&mut board_commands);
-        board.dispatch_neighbour_msg(topic, laptop_device.public(), None, false, list);
+        // The person's list brings each device the other's workspace, which
+        // it enters at the other device's host: nobody invites anybody.
+        board.reach(&laptop);
+        laptop.reach(&board);
+        until(
+            &[&laptop, &board],
+            "each device to hold the other's workspace",
+            || (board.holds(research) && laptop.holds(board_home)).then_some(()),
+        );
         {
             let tree = board.tree.read();
             let joined = tree
@@ -10148,54 +10030,31 @@ mod tests {
                 .find(|workspace| workspace.room() == research)
                 .expect("the laptop's workspace is on the board");
             assert_eq!(joined.name, "Research");
-            assert_eq!(joined.owner().map(String::as_str), Some(person.as_str()));
             assert_eq!(
-                tree.desktop.room_of(tree.desktop.active),
-                Some(board_home),
-                "the board keeps looking at its own workspace"
+                joined.owner().map(String::as_str),
+                Some(person.id().as_str())
+            );
+            // A device that so far has only rooms of its own shows the first
+            // room it holds through another device's host.
+            assert_eq!(
+                tree.desktop
+                    .active_workspace()
+                    .map(crate::shell::state::Workspace::room),
+                Some(research),
+                "the board shows the first room it holds through the laptop's host"
             );
         }
-        let answered = drain(&mut board_commands);
+        assert_eq!(board.workspaces_of(research), 1);
+        assert_eq!(laptop.workspaces_of(board_home), 1);
         assert!(
-            answered.iter().any(|command| matches!(
-                command,
-                NetCmd::Publish { ws, msg: NeighbourMsg::SyncReq { room, .. } }
-                    if *ws == room_topic_id(research) && *room == research.to_string()
-            )),
-            "the board asks the new workspace's room for its content at once"
-        );
-        let reply = personal_workspaces_sent(&answered);
-        assert_eq!(
-            reply.len(),
-            1,
-            "the board answers with what the laptop lacks"
+            laptop.net().pending_invitations(research).is_empty()
+                && board.net().pending_invitations(board_home).is_empty(),
+            "nobody was invited"
         );
 
-        authenticated_personal_peer(&laptop, &root, &board_device);
-        drain(&mut laptop_commands);
-        laptop.dispatch_neighbour_msg(
-            topic,
-            board_device.public(),
-            None,
-            false,
-            reply.into_iter().next().expect("reply"),
-        );
-        assert!(
-            laptop
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == board_home),
-            "the board's workspace reaches the laptop"
-        );
-        assert!(
-            personal_workspaces_sent(&drain(&mut laptop_commands)).is_empty(),
-            "two devices that agree fall quiet"
-        );
-
-        // Another person's device cannot add workspaces to this list.
+        // Another person's device cannot add workspaces to this list, before
+        // or after it says who it is: its signed list names its own room on
+        // its own host, and the board takes neither the room nor the device.
         let stranger_root = ed25519_dalek::SigningKey::from_bytes(&[0x4C; 32]);
         let stranger_device = iroh::SecretKey::from_bytes(&[0x4D; 32]);
         let collab_types::caps::Principal::Person(outsider) =
@@ -10208,42 +10067,65 @@ mod tests {
             panic!("a root names a person");
         };
         let (stranger_tree, theirs) = tree_with_own_workspace(&outsider, "Theirs");
-        let (stranger, mut stranger_commands) =
+        let (stranger, _stranger_commands) =
             personal_workspaces_network_for_test(&stranger_root, &stranger_device, stranger_tree);
-        stranger.reconcile_personal_workspaces();
-        let Some(NeighbourMsg::PersonalWorkspaces { update, .. }) =
-            personal_workspaces_sent(&drain(&mut stranger_commands))
-                .into_iter()
-                .next()
-        else {
-            panic!("the stranger lists their workspace");
+        let update = {
+            let mut list = stranger
+                .personal_workspaces
+                .as_ref()
+                .expect("the stranger keeps a list")
+                .lock()
+                .unwrap();
+            let held = crate::shell::personal_workspaces::HeldRooms::from([(
+                theirs,
+                *stranger_device.public().as_bytes(),
+            )]);
+            assert!(list.publish_local(&stranger.tree.read(), &held));
+            list.snapshot(
+                &ed25519_dalek::SigningKey::from_bytes(&stranger_device.to_bytes()),
+                tilo_clock::unix_now_ns(),
+            )
+            .expect("the stranger signs its list")
         };
+        let topic = personal_continuity_topic_id(&person.user());
+        let offer = || {
+            board.net().dispatch_neighbour_msg(
+                topic,
+                stranger_device.public(),
+                None,
+                false,
+                NeighbourMsg::PersonalWorkspaces {
+                    user_public_key: person.user(),
+                    update: Box::new(update.clone()),
+                },
+            );
+        };
+        offer();
         authenticated_personal_peer_on_topic(
-            &board,
+            board.net(),
             &stranger_root,
             &stranger_device,
             crate::network::actor::MembershipEpoch::for_test(1),
             topic,
         );
-        board.dispatch_neighbour_msg(
-            topic,
-            stranger_device.public(),
-            None,
-            false,
-            NeighbourMsg::PersonalWorkspaces {
-                user_public_key: root.verifying_key().to_bytes(),
-                update,
-            },
-        );
+        offer();
+        board.frame();
+        assert!(!board.tree.read().has_workspace(theirs));
+        let known = board
+            .net()
+            .personal_workspaces
+            .as_ref()
+            .expect("the board keeps the list")
+            .lock()
+            .unwrap()
+            .device_choices(board_home);
         assert!(
-            !board
-                .tree
-                .read()
-                .desktop
-                .workspaces
+            known
                 .iter()
-                .any(|workspace| workspace.room() == theirs)
+                .all(|choice| choice.device != *stranger_device.public().as_bytes()),
+            "the stranger's device is not one of the person's: {known:?}"
         );
+        drop((laptop, board));
     }
 
     fn test_continuity_policy(
@@ -13264,28 +13146,40 @@ mod tests {
             net.tick();
         }
         let inbound = net.inbound_documents_handle();
-        let queued = inbound.lock().unwrap();
+        // A workspace room's records arrive through its native session once
+        // this device holds it, never as raw room-topic traffic; the person
+        // room's never come from a room topic at all.
         assert!(
-            matches!(queued.as_slice(), [document] if document.cluster_id == shared_room.to_string()),
-            "only the shared room's document is accepted from a room topic"
+            inbound.lock().unwrap().is_empty(),
+            "no document is accepted from a room topic"
         );
-        drop(queued);
 
-        net.dispatch_personal_fabric(
-            personal_continuity_topic_id(&user),
-            collaborator.public(),
-            crate::network::actor::MembershipEpoch::for_test(1),
-            user,
-            PersonalFabricPayload::Document {
-                app_id: "so.tilo.tube".into(),
-                record_id: record.into(),
-                envelope: Box::new(person_document(&user, record, &collaborator_signing)),
-            },
+        let deliver = |from: &iroh::SecretKey, signing: &ed25519_dalek::SigningKey| {
+            net.dispatch_personal_fabric(
+                personal_continuity_topic_id(&user),
+                from.public(),
+                crate::network::actor::MembershipEpoch::for_test(1),
+                user,
+                PersonalFabricPayload::Document {
+                    app_id: "so.tilo.tube".into(),
+                    record_id: record.into(),
+                    envelope: Box::new(person_document(&user, record, signing)),
+                },
+            );
+        };
+        deliver(&collaborator, &collaborator_signing);
+        assert!(
+            inbound.lock().unwrap().is_empty(),
+            "another person's device is no route into the person room"
         );
+        // The person's own device is.
+        let own = iroh::SecretKey::from_bytes(&[0xE9; 32]);
+        authenticated_personal_peer(&net, &root, &own);
+        deliver(&own, &own_device);
         assert_eq!(
             inbound.lock().unwrap().len(),
             1,
-            "another person's device is no route into the person room"
+            "the person's own device reaches the person room"
         );
     }
 
@@ -13827,45 +13721,59 @@ mod tests {
         /// device. Check the exact bytes the actor would put on gossip and the
         /// host link, for a file record and a record derived from one.
         fn file_backed_records_never_put_a_path_on_the_wire() {
-            let tree = WorkspaceTree::bootstrap_demo().shared();
-            let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
-            // Same routing as `publish_document_emits_a_publish_command`.
-            let room = "cluster-7".to_string();
+            // A workspace room's records travel as the native owner's
+            // publication; the person room's still travel as the app's own
+            // envelopes, to the person's hosts and devices.
+            let root = ed25519_dalek::SigningKey::from_bytes(&[0xF1; 32]);
+            let user = root.verifying_key().to_bytes();
+            let (net, mut cmd_rx) = personal_continuity_network_for_test(user);
+            let phone = iroh::SecretKey::from_bytes(&[0xF2; 32]);
+            authenticated_personal_peer(&net, &root, &phone);
+            while cmd_rx.try_recv().is_ok() {}
+            let room = collab_types::person_room(&user).to_string();
+            let author = ed25519_dalek::SigningKey::from_bytes(&[0xF3; 32]);
             let secret = "/home/alice/Secret Plans/merger-2026.odt";
             for record_id in [
                 format!("file:{secret}"),
                 format!("derived:annotations@file:{secret}"),
             ] {
-                let envelope = collab_types::SignedOp::new_unsigned(
-                    collab_types::DocumentMutation::Incremental(vec![7; 32])
-                        .encode()
-                        .expect("typed mutation"),
-                    collab_types::document_artifact_id("so.tilo.writer", &room, &record_id),
-                    collab_types::Ed25519PublicKey::from_bytes([1; 32]),
-                    collab_types::document_attestation_id("so.tilo.writer", &room, &record_id),
-                    collab_types::OpKind::Change,
-                    std::time::SystemTime::UNIX_EPOCH,
-                    1,
+                net.publish_document(
+                    "so.tilo.tube".into(),
+                    room.clone(),
+                    &record_id,
+                    person_document(&user, &record_id, &author),
                 );
-                net.publish_document("so.tilo.writer".into(), room.clone(), &record_id, envelope);
-                let Ok(NetCmd::Publish { msg, .. }) = cmd_rx.try_recv() else {
-                    panic!("publish_document must enqueue a publish");
-                };
-                let NeighbourMsg::AppDocument {
-                    record_id: wire, ..
-                } = &msg
-                else {
-                    panic!("expected AppDocument, got {msg:?}");
-                };
-                assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
-                let encoded = postcard::to_allocvec(&msg).expect("wire encoding");
-                for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
-                    assert!(
-                        !encoded.windows(needle.len()).any(|window| window == needle),
-                        "{:?} leaked onto the wire for {record_id}",
-                        String::from_utf8_lossy(needle)
-                    );
+                let mut carried = 0;
+                for command in std::iter::from_fn(|| cmd_rx.try_recv().ok()) {
+                    let encoded = match &command {
+                        NetCmd::PublishToHosts { msg, .. } => {
+                            let NeighbourMsg::AppDocument {
+                                record_id: wire, ..
+                            } = msg
+                            else {
+                                panic!("expected AppDocument, got {msg:?}");
+                            };
+                            assert!(crate::network::wire_record::is_sealed(wire), "{wire}");
+                            postcard::to_allocvec(msg).expect("wire encoding")
+                        }
+                        NetCmd::PublishPersonalFabricTarget { payload, .. } => {
+                            postcard::to_allocvec(payload).expect("wire encoding")
+                        }
+                        _ => continue,
+                    };
+                    carried += 1;
+                    for needle in [secret.as_bytes(), b"/home/alice", b"file:", b"Secret"] {
+                        assert!(
+                            !encoded.windows(needle.len()).any(|window| window == needle),
+                            "{:?} leaked onto the wire for {record_id}",
+                            String::from_utf8_lossy(needle)
+                        );
+                    }
                 }
+                assert_eq!(
+                    carried, 2,
+                    "the record goes to the person's hosts and to their other device"
+                );
             }
         }
 
@@ -14082,41 +13990,33 @@ mod tests {
     )]
     fn documents_and_scrollback_publish_to_the_active_topic_and_buffer_for_drain() {
         fn publish_document_emits_a_publish_command() {
+            // An app's document in its workspace's room is the native
+            // owner's to publish: the network asks for its publication on
+            // the room's topic and never puts the app's envelope on gossip.
             let tree = WorkspaceTree::bootstrap_demo().shared();
+            let room = tree
+                .read()
+                .desktop
+                .active_workspace()
+                .expect("an active workspace")
+                .room();
             let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
             let expected_topic = net.active_ws_for_publish();
-            let envelope = make_envelope(7);
+            assert_eq!(expected_topic, room_topic_id(room));
             net.publish_document(
                 "notes".to_string(),
-                "cluster-7".to_string(),
+                room.to_string(),
                 "uuid:9f",
-                envelope.clone(),
+                make_envelope(7),
             );
-            let cmd = cmd_rx
-                .try_recv()
-                .expect("publish_document must enqueue a NetCmd");
-            match cmd {
-                NetCmd::Publish { ws, msg } => {
-                    assert_eq!(ws, expected_topic);
-                    match msg {
-                        NeighbourMsg::AppDocument {
-                            peer,
-                            app_id,
-                            cluster_id,
-                            record_id,
-                            envelope: got,
-                        } => {
-                            assert_eq!(peer, 0xFEED_u64);
-                            assert_eq!(app_id, "notes");
-                            assert_eq!(cluster_id, "cluster-7");
-                            assert_eq!(record_id, "uuid:9f");
-                            assert_eq!(*got, envelope);
-                        }
-                        other => panic!("expected AppDocument, got {other:?}"),
-                    }
-                }
-                other => panic!("expected NetCmd::Publish, got {other:?}"),
-            }
+            let commands: Vec<_> = std::iter::from_fn(|| cmd_rx.try_recv().ok()).collect();
+            assert!(
+                matches!(
+                    commands.as_slice(),
+                    [NetCmd::NativePublish { ws }] if *ws == expected_topic
+                ),
+                "publish_document must ask for the room's native publication: {commands:?}"
+            );
         }
 
         fn handle_document_message_buffers_for_drain() {
