@@ -517,6 +517,9 @@ impl SheetsApp {
             ChartKind::Line => (min, max),
         };
         let mut ticks = ui::charts::nice_ticks(lo, hi, 3);
+        // A series of one value has one tick: its range has no width, and a
+        // step of none has no precision to label it at.
+        ticks.dedup();
         let tick_step = match ticks.as_slice() {
             [first, second, ..] => second - first,
             _ => 1.0,
