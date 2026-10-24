@@ -77,7 +77,7 @@ struct Reported {
     #[serde(default)]
     tries_left: Option<u32>,
     #[serde(default)]
-    wait_seconds: Option<u64>,
+    retry_in_s: Option<u64>,
 }
 
 /// The one JSON line `boot-unlock` prints after a refused secret.
@@ -89,7 +89,7 @@ fn limit(line: &str) -> Option<Limit> {
     let reported: Reported = serde_json::from_str(line).ok()?;
     Some(Limit {
         tries_left: reported.tries_left,
-        wait_seconds: reported.wait_seconds,
+        wait_seconds: reported.retry_in_s,
     })
 }
 
@@ -162,7 +162,7 @@ case "$1" in
     case "$(cat "$file")" in
       123456) exit 0 ;;
       no-tpm) echo 'no TPM here' >&2; exit 2 ;;
-      *) echo 'checking'; echo 'the TPM refused the entry' >&2; echo '{"tries_left":7}' >&2; exit 1 ;;
+      *) echo 'checking'; echo 'the TPM refused the entry' >&2; echo '{"error":"wrong","tries_left":7,"retry_in_s":0}' >&2; exit 1 ;;
     esac
     ;;
 esac
@@ -249,7 +249,7 @@ esac
                 limit,
                 Limit {
                     tries_left: Some(7),
-                    wait_seconds: None
+                    wait_seconds: Some(0)
                 }
             ),
             _ => panic!("a wrong PIN must read as wrong"),
@@ -264,9 +264,9 @@ esac
     #[test]
     fn limits_parse_from_the_reported_line() {
         assert_eq!(
-            limit(r#"{"tries_left":3,"wait_seconds":120}"#),
+            limit(r#"{"error":"locked-out","tries_left":0,"retry_in_s":120}"#),
             Some(Limit {
-                tries_left: Some(3),
+                tries_left: Some(0),
                 wait_seconds: Some(120)
             })
         );
