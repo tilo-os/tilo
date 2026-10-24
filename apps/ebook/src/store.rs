@@ -123,6 +123,12 @@ pub(crate) fn fetch(url: &str, query: &[(&str, &str)], limit: usize) -> Result<V
         .map_err(|error| error.to_string())?
 }
 
+/// Why a book did not arrive from the store: it could not be reached, so
+/// trying again once online is the way on.
+pub(crate) fn unreachable_message() -> String {
+    format!("Couldn\u{2019}t get the book from {STORE_LABEL}. Try again when you\u{2019}re online.")
+}
+
 /// Fetch catalogue book `url` into `path`, unless an earlier fetch left it
 /// there. Runs on the import worker.
 ///
@@ -135,9 +141,7 @@ pub(crate) fn download(url: &str, path: &Path) -> Result<(), String> {
     }
     let bytes = fetch(url, &[], MAX_BOOK_BYTES).map_err(|error| {
         tracing::debug!(%error, "books: the store's book did not arrive");
-        format!(
-            "Couldn\u{2019}t get the book from {STORE_LABEL}. Try again when you\u{2019}re online."
-        )
+        unreachable_message()
     })?;
     let keep = |error: tilo_files::FsError| {
         tracing::debug!(%error, "books: the store's book could not be kept");
