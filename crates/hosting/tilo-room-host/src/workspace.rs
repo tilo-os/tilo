@@ -135,6 +135,10 @@ pub struct WorkspaceRuntime {
     /// store-and-forward path as offline devices — reuses
     /// `store.enqueue_pending` verbatim; no new persistence code.
     pub known_peer_relays: HashSet<[u8; 32]>,
+    /// The session each federated host that dialed here last opened, by its
+    /// device: what ends it, so an answer to it ends with it
+    /// ([`crate::federation::PeerRelayDialer::answer`]).
+    pub(crate) peer_relay_sessions: HashMap<[u8; 32], mpsc::Sender<()>>,
     /// What services beside the session stack keep for this workspace (a
     /// relay's compute routing), one value per type.
     pub extensions: Extensions,
@@ -393,6 +397,7 @@ impl WorkspaceRuntime {
             spectators: None,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
+            peer_relay_sessions: HashMap::new(),
             extensions: Extensions::default(),
             action_targets: HashMap::new(),
             state_sessions: HashMap::new(),
@@ -579,6 +584,14 @@ impl WorkspaceRuntime {
     /// queued via the existing per-peer pending path.
     pub fn record_peer_relay(&mut self, device: [u8; 32]) {
         self.known_peer_relays.insert(device);
+    }
+
+    /// Whether the subscriber `device` is a host this workspace federates
+    /// with: a peer relay, or the device governing a room this host serves,
+    /// whose session here answers this host's own. What one such host sent
+    /// is not carried on to another.
+    pub(crate) fn federated(&self, device: &[u8; 32], subscriber: &Subscriber) -> bool {
+        subscriber.role == PeerRole::PeerRelay || self.known_peer_relays.contains(device)
     }
 
     /// Register a subscription. Replaces any prior subscription
@@ -845,7 +858,7 @@ impl WorkspaceRuntime {
             }
             // Federation echo-suppression: a message originating on a
             // peer relay must not bounce onto other peer relays.
-            if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+            if from_role == PeerRole::PeerRelay && self.federated(peer, sub) {
                 continue;
             }
             let gated_checkpoint = checkpoint_channel.is_some() && sub.role == PeerRole::Device;
@@ -1021,7 +1034,7 @@ impl WorkspaceRuntime {
             if peer == author {
                 continue;
             }
-            if from_role == PeerRole::PeerRelay && sub.role == PeerRole::PeerRelay {
+            if from_role == PeerRole::PeerRelay && self.federated(peer, sub) {
                 continue;
             }
             if let (
