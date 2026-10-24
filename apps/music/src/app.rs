@@ -2688,6 +2688,11 @@ impl MusicApp {
         self.persist_playback(state);
     }
 
+    /// The song that plays on this device now, if any.
+    pub(crate) fn playing_track(&self) -> Option<String> {
+        self.pb.current.clone()
+    }
+
     /// The volume a mute toggle leaves: zero, keeping the level to come
     /// back to, or that level again (a sensible one if there is none).
     fn toggled_mute(&mut self) -> u8 {

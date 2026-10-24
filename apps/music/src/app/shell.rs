@@ -124,10 +124,9 @@ impl MusicApp {
     }
 
     /// The transport's controls, each bound to the playback effect an agent
-    /// invokes: play and pause, previous and next, shuffle, repeat and mute
-    /// on the player row, the scrubber's position and the volume on the
-    /// library. Liking a song is that song's own row action, so the
-    /// transport leaves it to the song.
+    /// invokes: play and pause, previous and next, shuffle, repeat, mute and
+    /// liking what plays on the player row, the scrubber's position and the
+    /// volume on the library.
     pub(crate) fn transport_actions(
         &self,
         actions: &ui::framework::Actions<Library>,
@@ -170,7 +169,7 @@ impl MusicApp {
             next: on_player(&MusicEffect::Next),
             shuffle: on_player(&MusicEffect::ToggleShuffle),
             repeat: on_player(&MusicEffect::CycleRepeat),
-            like: None,
+            like: on_player(&MusicEffect::ToggleLikePlaying),
             mute: on_player(&MusicEffect::ToggleMute),
             seek: actions.effect_binding(seek),
             volume: actions.effect_binding(volume),

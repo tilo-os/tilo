@@ -1664,6 +1664,24 @@ fn the_transport_steers_the_player_through_its_effects() {
     assert_eq!(player.repeat, RepeatMode::All, "and repeat");
     let shown = app.surface_mut::<MusicApp>().transport.shown();
     assert_eq!(shown.shuffle, Some(true), "the transport shows it");
+
+    // The heart likes the song that plays when it is pressed.
+    app.surface_mut::<MusicApp>().pb.current = Some(track.into());
+    app.surface_mut::<MusicApp>().dirty = true;
+    app.settle();
+    for _ in 0..3 {
+        app.harness()
+            .relayout_at((1600, 900))
+            .expect("the window lays out");
+    }
+    let heart = widget_rect(app.harness().root_widget(), "transport.like")
+        .expect("the heart is in the band while a song plays");
+    app.harness().click_at(heart.center().x, heart.center().y);
+    app.settle();
+    assert!(
+        app.surface_mut::<MusicApp>().lib.is_liked(track),
+        "the playing song is liked"
+    );
 }
 
 // ---- text truncation --------------------------------------------------

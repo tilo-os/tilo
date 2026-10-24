@@ -371,6 +371,12 @@ pub enum MusicEffect {
     /// It changes only the library, through its edits.
     #[effect(row, edit)]
     ToggleLike { track: String },
+    /// Like the song that plays
+    ///
+    /// Likes or unlikes whatever plays on this device when it runs, as
+    /// liking that song's own row does.
+    #[effect(row, edit)]
+    ToggleLikePlaying,
     /// Add to queue
     #[effect(row)]
     AddToQueue { track: String },
@@ -747,6 +753,12 @@ fn with_transport(mut root: Resource, playback: &crate::model::Playback) -> Reso
             },
         ))
         .with_action(MusicEffect::CycleRepeat.bound());
+    let like = MusicEffect::ToggleLikePlaying.bound();
+    root = root.with_action(if playback.current.is_some() {
+        like
+    } else {
+        like.unavailable("nothing_playing", "Choose a track to like")
+    });
     let unavailable = if playback.current.is_none() {
         Some((
             "nothing_playing",
