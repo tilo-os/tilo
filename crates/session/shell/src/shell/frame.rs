@@ -3337,8 +3337,10 @@ impl FrameBuilder {
                 .flatten();
             let compared = match &normalized {
                 Some((scene, image_damage)) => {
+                    // A buffer's damage where no display shows it (the part
+                    // of a window past the screen's edge) repairs nothing.
                     for &bounds in image_damage {
-                        regions.push(self.native_damage_rect(Some(bounds))?);
+                        regions.extend(self.native_damage_rect(Some(bounds)));
                     }
                     scene
                 }
