@@ -27,8 +27,9 @@ install() {
     # The sign-in screen tilo-root-discover shows for a root people sign in
     # to, and tilo-auth, which checks their secret and derives the volume's
     # key. tilo-auth reads the sign-in tokens with cryptsetup and opens a
-    # person's sealed key with tpm2_createprimary, tpm2_load, tpm2_unseal
-    # and tpm2_flushcontext; tpm2_getcap reports the tries left. All are in
+    # person's sealed key with tpm2_createprimary, tpm2_load,
+    # tpm2_startauthsession (the encrypted session), tpm2_unseal and
+    # tpm2_flushcontext; tpm2_getcap reports the tries left. All are in
     # the list above. check() deliberately does not require either program:
     # a root nobody signs in to still needs this module, and the screen
     # steps aside whenever it finds nobody to sign in.
