@@ -4,22 +4,11 @@
 //! admitted document, as every other member does.
 use super::ShellNetwork;
 use crate::shell::state::{GovernanceRequest, RoomId};
-use tilo_action_policy::{Change, roles::governance};
+use tilo_action_policy::Change;
+use tilo_action_policy::roles::{governance, owner_commands as verbs};
 
 /// Why a change has no route to its governor.
 const NO_GOVERNOR_ACTION: &str = "the workspace host has no action for this change";
-
-/// The room governance verbs of the host's `Rooms` that this device asks
-/// for, besides those [`governance`] names.
-mod verbs {
-    pub(super) const RENAME_WORKSPACE: &str = "workspace.rename";
-    pub(super) const SAVE_PRESET: &str = "preset.save";
-    pub(super) const ASSIGN_PRESET: &str = "preset.assign";
-    pub(super) const GRANT_APP_ACTION: &str = "app-action.grant";
-    pub(super) const REVOKE_APP_ACTION: &str = "app-action.revoke";
-    pub(super) const GRANT_SANDBOX: &str = "sandbox.grant";
-    pub(super) const REVOKE_SANDBOX: &str = "sandbox.revoke";
-}
 
 /// What a request asks of the room's host: one of its room governance
 /// verbs (provider `tilo.workspace`), with its arguments. The host decides
@@ -320,7 +309,8 @@ mod tests {
     use super::{GovernanceRoute, route};
     use crate::shell::state::GovernanceRequest;
     use serde_json::json;
-    use tilo_action_policy::{Change, Role, roles::governance};
+    use tilo_action_policy::roles::{governance, owner_commands};
+    use tilo_action_policy::{Change, Role};
     use tilo_desktop_model::commands::DesktopCommand;
 
     const PERSON: &str = "ab";
@@ -417,11 +407,17 @@ mod tests {
         .with_id("cap-1");
         assert_eq!(
             asked(GovernanceRequest::GrantSandbox(capability.clone())),
-            ("sandbox.grant", json!({ "capability": capability }))
+            (
+                owner_commands::GRANT_SANDBOX,
+                json!({ "capability": capability })
+            )
         );
         assert_eq!(
             asked(GovernanceRequest::RevokeSandbox("cap-1".into())),
-            ("sandbox.revoke", json!({ "capability": "cap-1" }))
+            (
+                owner_commands::REVOKE_SANDBOX,
+                json!({ "capability": "cap-1" })
+            )
         );
         assert_eq!(
             asked(GovernanceRequest::Command(
@@ -429,13 +425,16 @@ mod tests {
                     name: "Design".into(),
                 }
             )),
-            ("workspace.rename", json!({ "name": "Design" }))
+            (
+                owner_commands::RENAME_WORKSPACE,
+                json!({ "name": "Design" })
+            )
         );
         assert_eq!(
             asked(GovernanceRequest::Command(DesktopCommand::SavePreset {
                 preset_json: "{}".into(),
             })),
-            ("preset.save", json!({ "preset": "{}" }))
+            (owner_commands::SAVE_PRESET, json!({ "preset": "{}" }))
         );
         assert_eq!(
             asked(GovernanceRequest::Command(DesktopCommand::AssignPreset {
@@ -445,7 +444,7 @@ mod tests {
                 expires_unix: 0,
             })),
             (
-                "preset.assign",
+                owner_commands::ASSIGN_PRESET,
                 json!({ "preset": "Reviewers", "subject_kind": "person", "subject": person() })
             ),
             "no expiry is sent as none"
@@ -465,7 +464,7 @@ mod tests {
                     action: "read".into(),
                 }
             )),
-            ("app-action.revoke", action.clone())
+            (owner_commands::REVOKE_APP_ACTION, action.clone())
         );
         let mut granted = action;
         granted["lifetime"] = "always".into();
@@ -477,7 +476,7 @@ mod tests {
                 action: "read".into(),
                 lifetime: "always".into(),
             })),
-            ("app-action.grant", granted)
+            (owner_commands::GRANT_APP_ACTION, granted)
         );
     }
 
@@ -527,7 +526,7 @@ mod tests {
                 .arguments
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .filter(|_| route.action == "workspace.rename")
+                .filter(|_| route.action == owner_commands::RENAME_WORKSPACE)
             else {
                 return Err("this host only renames".into());
             };
@@ -684,7 +683,7 @@ mod tests {
             let room = tree.desktop.active_workspace().expect("a workspace").room();
             tree.request_governance(
                 room,
-                GovernanceRequest::Policy(Change::SetRole {
+                GovernanceRequest::Policy(Change::AddMember {
                     person: member.clone(),
                     role: Role::Editor,
                 }),

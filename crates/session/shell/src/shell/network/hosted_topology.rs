@@ -146,7 +146,7 @@ impl ShellNetwork {
                 Ok(view.peer().governance().room_layout().is_personal())
             })
             .unwrap_or(false);
-        if !self.governed_elsewhere_by(&owner, room) {
+        if !Self::governed_elsewhere_by(&owner, room) {
             return;
         }
         // A room whose layout is personal takes no member's windows: none is

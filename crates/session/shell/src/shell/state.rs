@@ -1121,6 +1121,22 @@ impl WorkspaceTree {
         Some(id)
     }
 
+    /// Whether `room` is on this device only: a room of a workspace here that
+    /// no host holds, none is joining and none waits to create. A room from
+    /// before rooms had hosts: its windows and layout are here, and nothing
+    /// else is, so no app opens a document in it.
+    pub fn on_this_device_only(&self, room: RoomId) -> bool {
+        !room.is_nil()
+            && !self.native_authority.holds(room)
+            && !self.is_joining(room)
+            && !self.pending_placements.contains(&room)
+            && self
+                .desktop
+                .workspaces
+                .iter()
+                .any(|workspace| workspace.room() == room)
+    }
+
     /// Whether `room`'s workspace is waiting for its replica: a join through
     /// a host started, under way or failed, and not installed yet.
     pub fn is_joining(&self, room: RoomId) -> bool {
@@ -2627,6 +2643,42 @@ impl WorkspaceTree {
         self.pending_placements.insert(room);
         self.joining_rooms.insert(room);
         (self.append_workspace_for_room(name, room), room)
+    }
+
+    /// Claim this device's own rooms that no host holds yet: workspaces
+    /// made here, or before rooms had hosts, that were not joined from
+    /// elsewhere and that no enrollment holds. Each is its creator's, the
+    /// person this device acts as in it (`identity_for_room(room)`), who is
+    /// the one its host records as owner when it creates the room
+    /// ([`Self::pending_placements`]), whose admitted document then says
+    /// who owns it. Until then the desktop works in it as its owner, with
+    /// no host and no network. Places nothing: a workspace waits for a host
+    /// only when it was made to ([`Self::create_hosted_workspace`]). Asked
+    /// again when the person this device acts as changes (first-login
+    /// setup), so a room claimed under the account's name belongs to the
+    /// new identity. Changes no id, removes nothing and writes nothing.
+    /// Answers the workspaces given an owner.
+    pub fn claim_own_unhosted_rooms(
+        &mut self,
+        identity_for_room: impl Fn(&RoomId) -> UserId,
+    ) -> Vec<WorkspaceId> {
+        let mut owned = Vec::new();
+        for workspace in &mut self.desktop.workspaces {
+            let room = workspace.room();
+            let joined_from_elsewhere =
+                self.joining_rooms.contains(&room) && !self.pending_placements.contains(&room);
+            if self.native_authority.requires(room) || joined_from_elsewhere {
+                continue;
+            }
+            let creator = identity_for_room(&room);
+            if workspace.owner() != Some(&creator) {
+                workspace.set_owner(creator);
+                owned.push(workspace.id);
+            }
+        }
+        // The owner is what this device acts as, not something it learned:
+        // it is claimed again on every start, and nothing is written for it.
+        owned
     }
 
     /// Give every ownerless workspace to `identity_for_room(room)`, as the
@@ -4150,6 +4202,10 @@ pub(crate) fn active_workspace_peer_count(tree: &WorkspaceTree) -> usize {
         workspace.collaborators.iter().filter(present).count()
     })
 }
+
+#[cfg(test)]
+#[path = "state/own_room_tests.rs"]
+mod own_room_tests;
 
 #[cfg(test)]
 mod bootstrap_tests {
