@@ -34,6 +34,7 @@ mod committed_document;
 #[cfg(test)]
 mod directory_disclosure_tests;
 mod directory_pagination;
+mod drive_changes;
 mod durable_local_invocation;
 mod staged_admission;
 pub use staged_admission::StagedJob;
@@ -7531,6 +7532,7 @@ impl CapnpBrokerState {
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
+            | CollabEvent::DrivesChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -9214,6 +9216,35 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         match nearby_transfer_change(&self.state.services, &context, after) {
+            Ok(change) => Promise::from_future(async move {
+                results.get().set_change(change.await);
+                Ok(())
+            }),
+            Err(error) => Promise::err(error),
+        }
+    }
+
+    /// Resolves once the drive list Files is shown may have changed since
+    /// `after`. Only the certified Files route may wait, and it learns
+    /// nothing but that something changed: it asks the tools service for
+    /// the list again.
+    fn drives_changed(
+        self: Rc<Self>,
+        params: channel_handle::DrivesChangedParams,
+        mut results: channel_handle::DrivesChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        match drive_changes::drive_change(&self.state.services, &route.app_id, after) {
             Ok(change) => Promise::from_future(async move {
                 results.get().set_change(change.await);
                 Ok(())

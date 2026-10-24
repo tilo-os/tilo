@@ -1969,6 +1969,8 @@ pub fn native_services(
             Arc::new(NativeSpeakers(network))
                 as Arc<dyn tilo_action_broker::services::SpeakerServices>
         }),
+        #[cfg(target_os = "linux")]
+        drives: Some(Arc::new(NativeDrives)),
         wifi_continuity: network.clone().map(|network| {
             Arc::new(NativeWifiContinuity(network))
                 as Arc<dyn tilo_action_broker::services::WifiContinuityServices>
@@ -2071,6 +2073,17 @@ impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
         Some(Box::pin(crate::shell::speaker_settings::changed(
             &self.0, after,
         )))
+    }
+}
+/// The session's NTFS drives, which tell the certified Files route when
+/// the list it is given changes.
+#[cfg(target_os = "linux")]
+pub struct NativeDrives;
+
+#[cfg(target_os = "linux")]
+impl tilo_action_broker::services::DriveServices for NativeDrives {
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::DriveChange> {
+        Some(Box::pin(crate::shell::drives::changed(after)))
     }
 }
 /// Wi-Fi credentials carried between the person's certified devices.

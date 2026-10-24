@@ -295,6 +295,7 @@ capnp = [
 "capnp:collab.capnp:ChannelHandle.committedDocument" = "@47 (request:Data)->(reply:Data)"
 "capnp:collab.capnp:ChannelHandle.completeInvocation" = "@15 (id:UInt64,code:Text,message:Text)->()"
 "capnp:collab.capnp:ChannelHandle.composeRemark" = "@16 (reference:Text,x:Float32,y:Float32,w:Float32,h:Float32)->()"
+"capnp:collab.capnp:ChannelHandle.drivesChanged" = "@69 (after:UInt64)->(change:UInt64)"
 "capnp:collab.capnp:ChannelHandle.fetchScrollbackFor" = "@7 (artifactId:Data,beforeSeq:UInt64,max:UInt32)->(batch:ScrollbackBatch)"
 "capnp:collab.capnp:ChannelHandle.handoff" = "@53 (appId:Text,message:Data)->()"
 "capnp:collab.capnp:ChannelHandle.invocationCancellation" = "@18 (id:UInt64)->(cancelled:Bool)"

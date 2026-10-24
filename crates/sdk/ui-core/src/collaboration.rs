@@ -922,6 +922,12 @@ pub enum CollabEvent {
     /// so it also starts the view. Only the certified Settings route
     /// receives these.
     SpeakersChanged,
+    /// The drives the shell lists may have changed: one was plugged in,
+    /// taken out, opened or closed. It names nothing; Files asks the tools
+    /// service for the list again instead of asking on a timer. The first
+    /// arrives once the route joins, so it also fetches the first list. Only
+    /// the certified Files route receives these.
+    DrivesChanged,
     Realtime(crate::realtime_continuity::RealtimeEvent),
 }
 

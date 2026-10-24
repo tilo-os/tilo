@@ -34,7 +34,7 @@ fn settle(files: &mut FileExplorerWidget, done: impl Fn(&FileExplorerWidget) -> 
             std::time::Instant::now() < deadline,
             "the request never answered"
         );
-        files.poll_drives(ui::time::now());
+        files.poll_drives();
         std::thread::yield_now();
     }
 }
@@ -181,6 +181,70 @@ fn drives_are_published() {
 fn the_window_starts_with_no_drives_and_tests_never_ask_a_shell() {
     let mut files = FileExplorerWidget::new();
     assert!(files.drives.shown.is_empty());
-    assert!(!files.poll_drives(ui::time::now()));
+    assert!(!files.poll_drives());
     assert!(files.drives.next_wake().is_none());
+}
+
+/// How often the lister below was asked, and whether it may answer yet.
+static LISTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static ANSWER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Answers once the test lets it, as a shell busy elsewhere would; a
+/// test that never lets it gets an error, which shows no drives.
+fn held_lister() -> Result<Vec<DriveEntry>, String> {
+    use std::sync::atomic::Ordering;
+    LISTED.fetch_add(1, Ordering::SeqCst);
+    let deadline = tilo_test_env::hang_deadline();
+    while !ANSWER.load(Ordering::SeqCst) {
+        if std::time::Instant::now() >= deadline {
+            return Err("the test never let the lister answer".into());
+        }
+        std::thread::yield_now();
+    }
+    Ok(vec![entry("sdb1:7", "Stick", false, None)])
+}
+
+#[test]
+fn an_idle_window_never_asks_for_drives_and_each_announced_change_asks_once() {
+    use std::sync::atomic::Ordering;
+    let mut files = FileExplorerWidget::new();
+    files.set_drive_lister(held_lister);
+    for _ in 0..3 {
+        assert!(!files.poll_drives());
+    }
+    assert_eq!(files.drives.next_wake(), None, "no deadline while idle");
+    assert_eq!(LISTED.load(Ordering::SeqCst), 0, "nothing asked while idle");
+
+    // The shell says the drives changed (the first answer of the wait does
+    // too): the window wakes at once and asks once.
+    let changed = ui::collaboration::CollabEvent::DrivesChanged;
+    ui::widget::Collaborative::handle_collab_event(&mut files, &changed);
+    assert!(
+        files
+            .drives
+            .next_wake()
+            .is_some_and(|due| due <= Instant::now())
+    );
+    files.poll_drives();
+    assert_eq!(files.drives.next_wake(), None, "waits for the answer");
+    // Two more changes while that ask is unanswered become one more ask.
+    ui::widget::Collaborative::handle_collab_event(&mut files, &changed);
+    ui::widget::Collaborative::handle_collab_event(&mut files, &changed);
+    files.poll_drives();
+    ANSWER.store(true, Ordering::SeqCst);
+    settle(&mut files, |files| !files.drives.shown.is_empty());
+    assert_eq!(files.drives.shown[0].id, "sdb1:7");
+    settle(&mut files, |_| LISTED.load(Ordering::SeqCst) == 2);
+    settle(&mut files, |files| {
+        !files.drives.listing && files.drives.next_wake().is_none()
+    });
+    for _ in 0..3 {
+        files.poll_drives();
+    }
+    assert_eq!(
+        LISTED.load(Ordering::SeqCst),
+        2,
+        "one ask for the first change, one for those during it"
+    );
+    assert_eq!(files.drives.next_wake(), None, "idle again");
 }
