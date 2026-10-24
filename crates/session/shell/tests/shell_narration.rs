@@ -54,6 +54,11 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
         let mut state = chrome.borrow_mut();
         state.overlays.quick_settings = true;
         state.quick_settings.brightness_available = true;
+        // A volume slider shows only once the sound output has been read.
+        state.quick_settings.status.volume = Some(os_actions::VolumeState {
+            level: 0.4,
+            muted: false,
+        });
         state.bump();
     }
     host.force_quick_settings_settled();
