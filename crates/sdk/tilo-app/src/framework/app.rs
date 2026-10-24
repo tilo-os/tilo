@@ -7,8 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
-    AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
-    RestoreInput,
+    AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, HostContext,
+    LaunchTarget, RestoreInput,
 };
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
@@ -381,17 +381,25 @@ pub(crate) fn leaked<T: Send + Sync + 'static>(
     key: TypeId,
     make: impl FnOnce() -> T,
 ) -> &'static T {
-    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
-    let table = TABLE.get_or_init(Mutex::default);
-    let mut table = table.lock_recover();
-    let entry = *table
-        .entry(key)
-        .or_insert_with(|| Box::leak(Box::new(make())) as Leaked);
-    drop(table);
+    let mut make = Some(make);
+    let entry = leaked_entry(key, &mut || match make.take() {
+        Some(make) => Box::leak(Box::new(make())) as Leaked,
+        None => unreachable_definition(),
+    });
     // One value per (type, T) key is ever inserted, so the downcast holds.
     entry
         .downcast_ref::<T>()
         .unwrap_or_else(|| unreachable_definition())
+}
+
+/// The value kept under `key`, made by `make` the first time. Not generic,
+/// so the table is compiled once rather than for every app and key.
+#[inline(never)]
+fn leaked_entry(key: TypeId, make: &mut dyn FnMut() -> Leaked) -> Leaked {
+    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
+    let table = TABLE.get_or_init(Mutex::default);
+    let mut table = table.lock_recover();
+    *table.entry(key).or_insert_with(make)
 }
 
 #[allow(
@@ -414,21 +422,33 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
 }
 
 fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
+    // An app's library and settings are one record per workspace: every
+    // window of it there opens the same data, across closing, reopening and
+    // restarts, and keeps only its view of it (scroll, selection). An app
+    // whose windows each show a resource of their own (a document, a
+    // session) keeps that per window.
+    application_definition(hooks::<A>(), A::OPENS, !A::WINDOW_RESOURCE, create::<A>)
+}
+
+/// The toolkit definition of the app `app` describes. Not generic, so it is
+/// compiled once rather than for every app.
+#[inline(never)]
+fn application_definition(
+    app: &AppHooks,
+    opens: &'static [&'static str],
+    room_record: bool,
+    create: ComponentFactory,
+) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: A::ID,
-        title: A::TITLE,
-        icon: icon(hooks::<A>()),
-        record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
+        app_id: app.id,
+        title: app.title,
+        icon: icon(app),
+        record_kind: RecordKind::new(app.kind),
         required: vec![],
         optional: vec![],
-        opens: A::OPENS,
-        // An app's library and settings are one record per workspace: every
-        // window of it there opens the same data, across closing, reopening
-        // and restarts, and keeps only its view of it (scroll, selection).
-        // An app whose windows each show a resource of their own (a
-        // document, a session) keeps that per window.
-        room_record: !A::WINDOW_RESOURCE,
-        create: create::<A>,
+        opens,
+        room_record,
+        create,
     }
 }
 
