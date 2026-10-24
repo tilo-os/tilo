@@ -883,7 +883,6 @@ impl Rooms {
             name: name.to_owned(),
             role: room_role(redemption.join().grant().role),
             requested_at_ns: now,
-            contact: None,
         };
         tracing::info!(
             room = %room_id,

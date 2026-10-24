@@ -46,6 +46,8 @@ const member = value => ({
   owner: value.owner,
   removed: value.removed,
 });
+/** Whether `key` (32 bytes) is all zero: no person or device yet. */
+const unknown = key => key?.length === 32 && Array.from(key).every(byte => byte === 0);
 const waiting = value => ({
   requestId: hex(value.request_id),
   userPublicKey: hex(value.user_public_key),
@@ -54,8 +56,9 @@ const waiting = value => ({
   role: pageRole(value.role),
   requestedAtMs: Math.floor(value.requested_at_ns / 1e6),
   // A request left at the door without an invitation (the room's wait
-  // list): the address to invite, answered with an invitation, not `admit`.
-  contact: typeof value.contact === 'string' && value.contact ? value.contact : null,
+  // list): no person or device yet, named by the address to invite, which
+  // is answered with an invitation, not `admit`.
+  contact: unknown(value.user_public_key) && unknown(value.device_public_key) && value.name ? value.name : null,
 });
 const invitation = value => ({
   inviteId: hex(value.invite_id),
