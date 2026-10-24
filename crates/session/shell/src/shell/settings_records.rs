@@ -43,6 +43,13 @@ type HeldFor = (PathBuf, String);
 
 const UNAVAILABLE: &str = "the person's records are unavailable";
 
+/// The surface Settings' package ships: the session keeps Settings'
+/// records in its own process, so it runs them with Settings' surface, as
+/// a host runs a built-in app's. Its person records (the sections, the
+/// accounts, the contacts) are what Settings' routes to the person's room
+/// may carry, read from the surface the session runs Settings with.
+const SETTINGS_SURFACE: &[u8] = include_bytes!("../../../../../apps/settings/surface.toml");
+
 /// The person's records the session keeps — Settings' sections, their
 /// accounts and contacts — held on the thread that shows the session's
 /// apps, which open them there: one copy in the process. The records are
@@ -345,6 +352,9 @@ fn hold((dir, person): HeldFor, former: &Path) -> Result<Holder, String> {
         pending: AtomicBool::new(false),
         actions: Mutex::default(),
     });
+    // Before any route of Settings' joins the person's room, unless the
+    // Settings package named the surface it ships.
+    ui::app_surface::register_built_in(settings_sections::APP_ID, SETTINGS_SURFACE);
     // Without a root identity there is no person room: the records are
     // this device's alone.
     let room = collab_types::person_room_of(&person);
@@ -811,6 +821,26 @@ mod tests {
             "nothing weakened"
         );
         drop(settings);
+    }
+
+    /// The session keeps Settings' records as Settings: their routes to the
+    /// person's room carry the records Settings declares there, its
+    /// accounts among them, whether or not Settings was ever opened.
+    #[test]
+    fn the_session_holds_settings_records_with_the_surface_settings_ships() {
+        use tilo_resource::Resource as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let person = hex::encode([9_u8; 32]);
+        let _held = super::Holder::held(
+            (root.path().join("person"), person),
+            &root.path().join("apps"),
+        )
+        .unwrap();
+        assert!(ui::app_surface::keeps_person_record(
+            settings_sections::APP_ID,
+            accounts::person::PersonAccounts::KIND
+        ));
     }
 
     /// The accounts the session kept in its own records are taken into the
