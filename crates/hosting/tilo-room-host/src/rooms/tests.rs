@@ -9,9 +9,17 @@ pub(crate) fn signed_pre_admission(
     room: &str,
     token: &[u8],
 ) -> tilo_relay_protocol::rooms::PreAdmission {
+    signed_pre_admission_by(&SigningKey::from_bytes(&[1; 32]), room, token)
+}
+
+/// The pre-admission of the person whose root key is `owner`.
+pub(crate) fn signed_pre_admission_by(
+    owner: &SigningKey,
+    room: &str,
+    token: &[u8],
+) -> tilo_relay_protocol::rooms::PreAdmission {
     use ed25519_dalek::Signer as _;
     use sha2::Digest as _;
-    let owner = SigningKey::from_bytes(&[1; 32]);
     let mut grant = tilo_relay_protocol::rooms::PreAdmission {
         room: room.to_owned(),
         role: tilo_relay_protocol::rooms::RoomRole::Editor,

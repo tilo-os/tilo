@@ -10,14 +10,16 @@ use collab_types::{ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey, En
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
-use crate::rooms::actions::tests::admit_device;
+use crate::rooms::actions::tests::admit_granted;
 use crate::rooms::fixtures::{TestHost, device_host};
 use crate::rooms::ownership::tests::{deliver, replica};
+use crate::rooms::tests::signed_pre_admission_by;
 use crate::rooms::{HeldChannels, Rooms};
 
 /// A person's own device, certified by their root, that hosts the rooms
 /// placed on it and keeps its channels as a member under `dir`.
 struct Device {
+    root: SigningKey,
     key: SigningKey,
     cert: DeviceCert,
     dir: tempfile::TempDir,
@@ -38,6 +40,7 @@ impl Device {
         };
         sign_device_cert(&mut cert, &root).unwrap();
         Self {
+            root,
             key,
             cert,
             dir: tempfile::tempdir().unwrap(),
@@ -54,6 +57,20 @@ impl Device {
 
     async fn host(&self) -> TestHost {
         device_host(&self.dir.path().join("host"), &self.key, &self.cert).await
+    }
+
+    /// Admit `device` to `room`, which `rooms` hosts for this device's
+    /// person, through their pre-admission.
+    async fn admits(&self, rooms: &Rooms, room: &str, seed: u8, device: &Self) {
+        let token = [seed; 8];
+        admit_granted(
+            rooms,
+            &self.cert,
+            signed_pre_admission_by(&self.root, room, &token),
+            token,
+            (&device.key, &device.cert),
+        )
+        .await;
     }
 
     /// This device's member state of `channel`, its frames from `steward`.
@@ -176,22 +193,8 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
     // recipient's desk and the writer read it.
     let old = owner.host().await;
     let room = old.rooms().create("Studio").await.unwrap().room;
-    admit_device(
-        old.rooms(),
-        &room,
-        &owner.cert,
-        1,
-        (&recipient.key, &recipient.cert),
-    )
-    .await;
-    admit_device(
-        old.rooms(),
-        &room,
-        &owner.cert,
-        2,
-        (&writer.key, &writer.cert),
-    )
-    .await;
+    owner.admits(old.rooms(), &room, 1, &recipient).await;
+    owner.admits(old.rooms(), &room, 2, &writer).await;
     let mut held = recipient.member(channel, &owner);
     let mut writing = writer.member(channel, &owner);
     recipient.ask(old.rooms(), &room, &mut held).await;
@@ -245,14 +248,7 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
     // The writer follows the new governor; a device joining after the move
     // is admitted by it with the whole history.
     assert!(writing.follow_steward(recipient.public()).unwrap());
-    admit_device(
-        new.rooms(),
-        &room,
-        &recipient.cert,
-        3,
-        (&later.key, &later.cert),
-    )
-    .await;
+    recipient.admits(new.rooms(), &room, 3, &later).await;
     let mut joining = later.member(channel, &recipient);
     later.ask(new.rooms(), &room, &mut joining).await;
     assert!(
@@ -262,12 +258,12 @@ async fn the_new_owners_host_stewards_the_channels_from_the_group_its_device_hel
             .iter()
             .any(|event| matches!(event, MemberEvent::Joined { .. }))
     );
+    let events = writer.receive(new.rooms(), &room, &mut writing).await;
     assert!(
-        writer
-            .receive(new.rooms(), &room, &mut writing)
-            .await
+        events
             .iter()
-            .all(|event| matches!(event, MemberEvent::Advanced { .. }))
+            .all(|event| matches!(event, MemberEvent::Advanced { .. })),
+        "{events:?}"
     );
     let after = seal(
         &writing.content_keys().unwrap(),

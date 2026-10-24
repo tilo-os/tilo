@@ -51,15 +51,35 @@ pub(crate) async fn admit_device(
     room: &str,
     owner: &DeviceCert,
     seed: u8,
-    (key, cert): (&ed25519_dalek::SigningKey, &DeviceCert),
+    device: (&ed25519_dalek::SigningKey, &DeviceCert),
 ) {
     let token = [seed; 8];
+    admit_granted(
+        rooms,
+        owner,
+        signed_pre_admission(room, &token),
+        token,
+        device,
+    )
+    .await;
+}
+
+/// The device `cert` admitted through `grant`, the pre-admission whose
+/// one-time token is `token`.
+pub(crate) async fn admit_granted(
+    rooms: &Rooms,
+    owner: &DeviceCert,
+    grant: tilo_relay_protocol::rooms::PreAdmission,
+    token: [u8; 8],
+    (key, cert): (&ed25519_dalek::SigningKey, &DeviceCert),
+) {
+    let seed = token[0];
     let issued = rooms
         .pre_admit(
             owner,
             PreAdmitRequest {
                 request_id: [seed; 32],
-                grant: signed_pre_admission(room, &token),
+                grant,
                 recipient_user_public_key: None,
                 inviter_name: None,
             },
