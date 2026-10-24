@@ -263,18 +263,19 @@ pub(super) fn gated_checkpoint_channel(
     if outer_trailing.is_empty()
         && let Some(checkpoint) = payloads.checkpoint(&channel, &body)
     {
-        // Channel governance is a sequence of steps that each replace the
+        // Latest-wins state is a sequence of values that each replace the
         // last on one route, not a baseline of content a live device already
-        // holds: every one must reach it.
-        let governance = checkpoint.kind == crate::payloads::CheckpointKind::Governance;
-        let continuity = source.is_some_and(|source| {
-            matches!(
-                checkpoint.kind,
-                crate::payloads::CheckpointKind::Continuity { user }
-                    if user == source.peer.user_public_key
-            )
-        });
-        if governance || continuity {
+        // holds: every one must reach it. A person's own state counts only
+        // from a device of that person.
+        let own = |user: [u8; 32]| source.is_some_and(|source| user == source.peer.user_public_key);
+        let latest_wins = match checkpoint.kind {
+            crate::payloads::CheckpointKind::Governance
+            | crate::payloads::CheckpointKind::Identity => true,
+            crate::payloads::CheckpointKind::Continuity { user }
+            | crate::payloads::CheckpointKind::Directory { user } => own(user),
+            crate::payloads::CheckpointKind::Other => false,
+        };
+        if latest_wins {
             return None;
         }
     }

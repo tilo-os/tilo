@@ -208,7 +208,6 @@ impl WorkspaceTree {
         // more: its workspace is the joined room's now.
         self.pending_placements.remove(&room);
         self.room_docs.remove(&room);
-        self.continuation_rooms.remove(&room);
         self.desktop.room_records_held.remove(&room);
     }
 

@@ -477,6 +477,15 @@ fn a_pending_join_resumes_on_start(left: Left, cert: Cert) {
         tree.read().is_joining(lounge),
         "the workspace comes back joining"
     );
+    let marked: Vec<String> = serde_json::from_value(before["joining_rooms"].clone()).unwrap();
+    assert!(!marked.is_empty());
+    for room in marked {
+        let room = RoomId::parse(&room).unwrap();
+        assert!(
+            tree.read().is_joining(room),
+            "a room being joined is still marked so: the start repairs nothing"
+        );
+    }
     assert_eq!(workspace_of(&tree, lounge), shape.lounge_workspace);
 
     // Nobody asks: the session follows its community, as it does on start.
