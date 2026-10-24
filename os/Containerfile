@@ -2197,8 +2197,7 @@ COPY os/usr/lib/tmpfiles.d/tilo-ntfs-mount.conf /usr/lib/tmpfiles.d/tilo-ntfs-mo
 # devices' traffic out while this device is their exit, and NetworkManager
 # leaving the tunnel interfaces to the helper.
 COPY os/usr/lib/tmpfiles.d/tilo-device-vpn.conf /usr/lib/tmpfiles.d/tilo-device-vpn.conf
-COPY os/usr/lib/firewalld/zones/tilo-device-vpn.xml /usr/lib/firewalld/zones/tilo-device-vpn.xml
-COPY os/usr/lib/firewalld/policies/tilo-device-vpn.xml /usr/lib/firewalld/policies/tilo-device-vpn.xml
+COPY os/usr/lib/firewalld/ /usr/lib/firewalld/
 COPY os/usr/lib/NetworkManager/conf.d/30-tilo-device-vpn.conf \
     /usr/lib/NetworkManager/conf.d/30-tilo-device-vpn.conf
 COPY os/etc/polkit-1/rules.d/49-tilo-ntfs.rules /etc/polkit-1/rules.d/49-tilo-ntfs.rules
