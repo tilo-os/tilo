@@ -152,6 +152,7 @@ fn actual_redemption_at(
         records: peer.rows(),
         governance_messages: vec![postcard::to_stdvec(&peer.room_message()).unwrap()],
         generation: 1,
+        hosts: Vec::new(),
     };
     (
         join,

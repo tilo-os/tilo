@@ -350,6 +350,8 @@ pub(crate) struct DurableRest {
     pending_placements: std::collections::BTreeSet<RoomId>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     governance_requests: Vec<(RoomId, crate::shell::state::GovernanceRequest)>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unrecorded_receipts: Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>,
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     strips_to_retain: std::collections::BTreeSet<crate::shell::state::StripId>,
     continuation_tabs: std::collections::BTreeSet<TabId>,
@@ -429,6 +431,7 @@ impl DurableTree {
                 archived_workspaces: archived.workspaces,
                 pending_placements: tree.pending_placements.clone(),
                 governance_requests: tree.governance_requests.clone(),
+                unrecorded_receipts: tree.unrecorded_receipts.clone(),
                 retired_fields: tree.retired_fields.clone(),
             },
         }

@@ -43,6 +43,7 @@ impl HeldRoom {
             workspace_id: join::room_workspace_id(ROOM).unwrap(),
             generation: self.generation,
             governance_messages: &self.peer,
+            hosts: &[],
         }
     }
 }
