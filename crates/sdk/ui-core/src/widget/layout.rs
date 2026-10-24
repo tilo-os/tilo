@@ -206,6 +206,42 @@ pub enum WidgetLayoutError {
     DuplicateManualPlacement(usize),
 }
 
+/// The frames a host skipped because their layout failed, and when it last
+/// said so. Every host (native, headless, the browser) skips such a frame
+/// and keeps showing the last one, so input still lands and the next frame
+/// lays out again. A layout that keeps failing would fail on every frame,
+/// so the first failure is reported in full and later ones at most once a
+/// minute, with how many frames were skipped since.
+#[derive(Debug, Default)]
+pub struct SkippedFrames {
+    reported: Option<crate::time::Instant>,
+    unreported: u64,
+}
+
+impl SkippedFrames {
+    const QUIET: crate::time::Duration = crate::time::Duration::from_secs(60);
+
+    /// Note a frame skipped for `error` at `now`; the line to log, when one
+    /// is due.
+    pub fn skip(&mut self, error: &WidgetLayoutError, now: crate::time::Instant) -> Option<String> {
+        self.unreported = self.unreported.saturating_add(1);
+        if self
+            .reported
+            .is_some_and(|reported| now.saturating_duration_since(reported) < Self::QUIET)
+        {
+            return None;
+        }
+        let line = match std::mem::take(&mut self.unreported) {
+            1 => format!("widget layout failed; skipping the frame: {error}"),
+            skipped => format!(
+                "widget layout failed; skipped {skipped} frames since the last report: {error}"
+            ),
+        };
+        self.reported = Some(now);
+        Some(line)
+    }
+}
+
 /// Measure the host tree and settle allocation-dependent styles before calling
 /// [`Widget::apply_layout`]. App and the headless runner use this same solver.
 /// Manual hosts may use it with the maps from their current `build_layout`.

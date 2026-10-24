@@ -760,7 +760,9 @@ fn run_layout_pass(
         Ok((Some(geometry), dirty))
     });
     if let Err(error) = result {
-        tracing::error!(?error, "widget layout did not settle; skipping frame");
+        if let Some(line) = app.layout.skipped_frames.skip(&error, crate::time::now()) {
+            tracing::error!("{line}");
+        }
         app.layout.layout_dirty = true;
         app.layout.last_layout_logical = None;
         return None;

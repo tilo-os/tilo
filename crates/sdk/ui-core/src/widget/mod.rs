@@ -2885,8 +2885,8 @@ pub(crate) mod layout;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
-    AuthoredExtent, ExtentSizing, WidgetLayoutError, compute_widget_layout, insets, insets_all,
-    insets_xy, layout_clip, text_control_height, with_layout_clip,
+    AuthoredExtent, ExtentSizing, SkippedFrames, WidgetLayoutError, compute_widget_layout, insets,
+    insets_all, insets_xy, layout_clip, text_control_height, with_layout_clip,
 };
 
 mod button;

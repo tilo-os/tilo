@@ -313,87 +313,9 @@ struct Gpu {
     retained: Retained,
 }
 
-struct Retained {
-    raster: ui::retained_raster::RetainedRaster,
-    frames: ui::retained_raster::RetainedFrames,
-    /// Changed whenever the target's pixels may not be the last frame's.
-    generation: u64,
-    /// Debug builds compare a frame repainted in part with a full render.
-    #[cfg(debug_assertions)]
-    check: Option<ui::retained_raster::RasterCheck>,
-}
-
-impl Retained {
-    fn new() -> Self {
-        Self {
-            raster: ui::retained_raster::RetainedRaster::new(false),
-            frames: ui::retained_raster::RetainedFrames::default(),
-            generation: 0,
-            #[cfg(debug_assertions)]
-            check: None,
-        }
-    }
-
-    /// The target no longer shows the last presented frame: repaint all of
-    /// the next one.
-    fn forget(&mut self) {
-        self.generation = self.generation.wrapping_add(1);
-        self.frames.forget();
-        self.raster.invalidate();
-        #[cfg(debug_assertions)]
-        {
-            self.check = None;
-        }
-    }
-}
-
 impl Gpu {
     fn failure(&self) -> Option<String> {
         self.shared.try_borrow().ok().and_then(|s| s.failure())
-    }
-}
-
-/// Compare the last frame repainted in part, once read back, with a full
-/// render of it, and start the check of this one if it was repainted in
-/// part: a stale pixel is reported, never silently presented again.
-#[cfg(debug_assertions)]
-fn check_retained(
-    retained: &mut Retained,
-    surface: &vello::util::RenderSurface<'static>,
-    renderer: &mut vello::Renderer,
-    handle: &ui::gpu::DeviceHandle,
-    physical: &vello::Scene,
-    key: ui::retained_raster::TargetKey,
-    full_redraw: bool,
-) {
-    if let Some(check) = &retained.check {
-        let Some(differing) = check.differing() else {
-            return;
-        };
-        if differing != 0 {
-            web_sys::console::error_1(&JsValue::from_str(&format!(
-                "retained frame differs from a full render in {differing} pixels"
-            )));
-        }
-        retained.check = None;
-    }
-    if full_redraw {
-        return;
-    }
-    let target = ui::retained_raster::RetainedTarget {
-        texture: &surface.target_texture,
-        view: &surface.target_view,
-    };
-    match ui::retained_raster::RasterCheck::start(
-        (&handle.device, &handle.queue),
-        renderer,
-        target,
-        physical,
-        (key.width, key.height),
-        key.base_color,
-    ) {
-        Ok(check) => retained.check = Some(check),
-        Err(error) => web_sys::console::error_1(&JsValue::from_str(&error)),
     }
 }
 
@@ -489,6 +411,9 @@ struct Mount {
     error: Option<String>,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
+    /// The last frame's layout failed and was skipped
+    /// ([`ui::headless::FrameHarness::skip_frame`]).
+    skipped_frame: bool,
     /// The peer this mount replicates through, and whether a peer's change
     /// reached it since the last frame.
     peer: Option<u32>,
@@ -1800,6 +1725,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         image_tickets: RefCell::default(),
         error: None,
         oversized_scene: false,
+        skipped_frame: false,
         peer: config.peer,
         replica_changed,
         focus_presence: RefCell::new(None),
@@ -2401,13 +2327,15 @@ impl Mount {
         drop(shared_guard);
         let passes_before = self.frame.relayout_frames();
         let frame = &mut self.frame;
+        // A layout that fails skips this frame's drawing, as every host
+        // does: the last frame stays on screen and input keeps landing.
+        let mut unsettled = None;
         let Some(output) = self
             .viewport
             .apply_for_acquired_texture(output, |viewport| {
                 frame.set_input_scale(viewport.dpr)?;
-                frame
-                    .resize(viewport.logical_size())
-                    .map_err(|e| format!("{e:?}"))
+                unsettled = frame.resize(viewport.logical_size()).err();
+                Ok::<_, String>(())
             })?
         else {
             // Keep the old geometry and pending work on a skipped acquisition;
@@ -2459,7 +2387,13 @@ impl Mount {
         let passes_resized = self.frame.relayout_frames();
         let stage = self.metric_start();
         let tooltip_before = self.frame.drawn_tooltip().map(|(text, _)| text.to_owned());
-        let polled = self.frame.poll_frame().map_err(|e| format!("{e:?}"))?;
+        let polled = match self.frame.poll_frame() {
+            Ok(polled) => polled,
+            Err(error) => {
+                unsettled = Some(error);
+                false
+            }
+        };
         let stats = self.frame.last_relayout();
         // A tooltip that came or went is in the tree a reader is told.
         let tooltip_changed =
@@ -2490,11 +2424,9 @@ impl Mount {
         } else {
             FrameChange::Other
         };
-        if host_changed && !polled {
+        if host_changed && !polled && unsettled.is_none() {
             let stage = self.metric_start();
-            self.frame
-                .relayout_at(viewport.logical_size())
-                .map_err(|e| format!("{e:?}"))?;
+            unsettled = self.frame.relayout_at(viewport.logical_size()).err();
             self.metric_end("wake_relayout", stage);
         }
         let stage = self.metric_start();
@@ -2505,6 +2437,17 @@ impl Mount {
             crate::replication::publish(peer);
             self.metric_end("replicate", stage);
         }
+        if let Some(error) = unsettled {
+            if let Some(line) = self.frame.skip_frame(&error) {
+                web_sys::console::error_1(&JsValue::from_str(&line));
+            }
+            // The next frame lays out again at once; one that fails again
+            // waits for input or a wake instead of failing on every frame.
+            self.pending = !self.skipped_frame;
+            self.skipped_frame = true;
+            return self.keep_last_frame(output);
+        }
+        self.skipped_frame = false;
         let stage = self.metric_start();
         let frame = self.frame.frame_render_input();
         // Never hand the renderer a scene it cannot resolve: an oversized
@@ -2516,7 +2459,7 @@ impl Mount {
                 web_sys::console::error_1(&JsValue::from_str(&reason));
             }
             self.pending = false;
-            return Ok(());
+            return self.keep_last_frame(output);
         }
         self.oversized_scene = false;
         let mut physical = vello::Scene::new();
@@ -2617,16 +2560,12 @@ impl Mount {
             key,
             full_redraw,
         );
-        let mut encoder = handle
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-        ui::gpu::draw_target_to_surface(
+        ui::gpu::submit_target_to_surface(
             &handle.device,
-            &mut encoder,
+            &handle.queue,
             &gpu.surface,
             &output.texture,
         );
-        handle.queue.submit([encoder.finish()]);
         // The first frame is out: the pipelines it did not need compile now.
         shared
             .renderer
@@ -2646,6 +2585,33 @@ impl Mount {
         self.publish_frame(0, change);
         self.presentation.set(false);
         self.metric_end("publish", stage);
+        Ok(())
+    }
+
+    /// Present the frame the target already holds on `output`, drawing
+    /// nothing: a texture once acquired shows whatever it holds, so a frame
+    /// skipped after acquiring it would otherwise blank the canvas. A
+    /// target that no longer holds the last frame (a resize made it anew)
+    /// has nothing to show again.
+    fn keep_last_frame(&mut self, output: wgpu::SurfaceTexture) -> Result<(), String> {
+        let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
+        if gpu.retained.frames.shows_frame() {
+            let shared = gpu.shared.try_borrow().map_err(|_| "shared GPU busy")?;
+            let handle = shared
+                .cx
+                .devices
+                .get(gpu.surface.dev_id)
+                .ok_or("WebGPU device missing")?;
+            ui::gpu::submit_target_to_surface(
+                &handle.device,
+                &handle.queue,
+                &gpu.surface,
+                &output.texture,
+            );
+        }
+        output.present();
+        // The viewport this frame applied is what input maps onto now.
+        self.viewport.did_present();
         Ok(())
     }
 
@@ -3186,6 +3152,10 @@ pub fn request_semantics(id: u64) -> Result<(), JsValue> {
 
 mod desktop_exports;
 pub(crate) mod pointers;
+mod retained;
+use retained::Retained;
+#[cfg(debug_assertions)]
+use retained::check_retained;
 
 /// A room member's presence from the page's live layer: `publisher` (the
 /// member's device, hex) with its participant `label` and `kind` (`person`

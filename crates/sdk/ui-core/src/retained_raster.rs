@@ -627,6 +627,8 @@ pub enum Unknown {
 #[derive(Default)]
 pub struct RetainedFrames {
     last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
+    /// The target holds the frame last presented, parts or not.
+    shown: bool,
 }
 
 impl RetainedFrames {
@@ -677,11 +679,22 @@ impl RetainedFrames {
         key: TargetKey,
     ) {
         self.last = parts.map(|parts| (scene.clone(), parts.clone(), key));
+        self.shown = true;
     }
 
     /// The target no longer shows the last frame presented.
     pub fn forget(&mut self) {
         self.last = None;
+        self.shown = false;
+    }
+
+    /// Whether the target still holds the frame last presented: a host
+    /// that acquired a surface texture for a frame it then skipped puts
+    /// that on it again ([`crate::gpu::submit_target_to_surface`]) rather
+    /// than presenting a cleared one.
+    #[must_use]
+    pub const fn shows_frame(&self) -> bool {
+        self.shown
     }
 }
 
