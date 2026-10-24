@@ -116,6 +116,9 @@ pub(crate) struct DeskState {
     /// (`ui::motion::Ambient`).
     shown: BTreeMap<WidgetId, ui::motion::Presence>,
     opened: BTreeMap<WidgetId, ui::motion::Presence>,
+    /// Whether another surface owned the screen at the last update: the
+    /// widgets coming back when it goes follow what closed it.
+    covered: bool,
     super_surface: Option<SuperSurface>,
     system_activities: Vec<Rect>,
     music_card: NowPlayingCard,
@@ -141,6 +144,7 @@ impl Default for DeskState {
             edges: BTreeMap::new(),
             shown: BTreeMap::new(),
             opened: BTreeMap::new(),
+            covered: false,
             super_surface: None,
             system_activities: Vec::new(),
             music_card: NowPlayingCard::new(),
@@ -484,6 +488,21 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Whether another surface owns the screen now, and what the widgets
+    /// showing move as: coming back as a surface over them closes, as that
+    /// close did (a key lands them at once, a click fades them in);
+    /// otherwise on their own.
+    fn desk_cover(&mut self) -> (bool, ui::tokens::MotionSource) {
+        let covered = self.desk_covered();
+        let uncovered = std::mem::replace(&mut self.desk.covered, covered) && !covered;
+        let source = if uncovered {
+            self.input_source
+        } else {
+            ui::tokens::MotionSource::Pointer
+        };
+        (covered, source)
+    }
+
     /// Lay the widgets out and decide their forms at `now`. Returns whether
     /// anything on the desk changed.
     pub(crate) fn update_desk(&mut self, now: Instant) -> bool {
@@ -542,7 +561,7 @@ impl ShellOverlayHost {
             .as_ref()
             .and_then(|chrome| chrome.borrow().active_strip_id())
             .map(|strip| strip.0);
-        let covered = self.desk_covered();
+        let (covered, shown_source) = self.desk_cover();
         let ctx = Context {
             now,
             prefs: &self.desk.prefs,
@@ -569,7 +588,7 @@ impl ShellOverlayHost {
                 .shown
                 .entry(slot.id)
                 .or_insert_with(ui::motion::Presence::closed)
-                .show(shown, shown_spec(slot.id, asked), motion, source, now);
+                .show(shown, shown_spec(slot.id, asked), motion, shown_source, now);
             // A card only ever opens on purpose: asked for.
             self.desk
                 .opened
