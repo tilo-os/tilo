@@ -561,9 +561,17 @@ fn charts_page() -> Element {
 /// A named page and the function that builds it.
 type Page = (&'static str, fn() -> Element);
 
+#[allow(
+    clippy::exit,
+    reason = "a capture whose layout failed would write a blank page; the scenario must fail with a status instead"
+)]
 fn shoot(out: &Path, name: &str, build: fn() -> Element, theme: &Theme, viewport: (u32, u32)) {
-    let harness =
+    let mut harness =
         FrameHarness::new_with_theme(tilo_ui::State::new(), build(), viewport, theme.clone());
+    if let Some(report) = harness.take_skip_report() {
+        eprintln!("{name}: {report}");
+        std::process::exit(1);
+    }
     let path = out.join(format!("{name}.png"));
     harness.render_png(&path);
     if let Ok(json) = harness.inspection_json() {

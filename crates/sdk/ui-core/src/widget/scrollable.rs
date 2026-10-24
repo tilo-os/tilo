@@ -192,6 +192,11 @@ pub struct Scrollable {
     /// lane is reserved: vertical (trailing edge) and horizontal (bottom).
     /// Content that fits keeps the full width.
     reserve_vertical: bool,
+    /// The lanes (vertical, horizontal) this layout found the content
+    /// overflowing without: kept until the next layout is built, so content
+    /// that fits only beside its own bar does not drop the bar and overflow
+    /// again, pass after pass.
+    lanes_needed: (bool, bool),
     /// Keep the themed trailing lane even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
@@ -287,6 +292,7 @@ impl Scrollable {
             bar_margin: BAR_MARGIN,
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
+            lanes_needed: (false, false),
             stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
@@ -786,6 +792,16 @@ impl Scrollable {
             && self.show_scrollbar
             && viewport_w > 0.0
             && content_w > viewport_w + FIT_EPS;
+        // A lane the content overflowed without stays: content that fits
+        // only because the lane narrowed it would overflow again without it.
+        if vertical && !self.reserve_vertical {
+            self.lanes_needed.0 = true;
+        }
+        if horizontal && !self.reserve_horizontal {
+            self.lanes_needed.1 = true;
+        }
+        let vertical = vertical || (self.reserve_vertical && self.lanes_needed.0);
+        let horizontal = horizontal || (self.reserve_horizontal && self.lanes_needed.1);
         if vertical == self.reserve_vertical && horizontal == self.reserve_horizontal {
             return false;
         }
@@ -1521,6 +1537,7 @@ impl Widget for Scrollable {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.height_limit_dirty = false;
+        self.lanes_needed = (false, false);
         self.child_node = self
             .child
             .as_mut()
