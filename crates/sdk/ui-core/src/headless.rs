@@ -390,6 +390,8 @@ pub struct FrameHarness {
     replayed_draws: bool,
     /// Windows shown by replaying their drawing, since construction.
     replayed_window_draws: u64,
+    /// Frames whose layout failed, skipped ([`Self::skip_frame`]).
+    skipped_frames: crate::widget::SkippedFrames,
     /// The frame being run draws every window ([`Self::settle_replayed_draws`]).
     suppress_pan_replay: bool,
     /// The host lets pan frames replay windows ([`Self::set_pan_replay`]).
@@ -1634,6 +1636,7 @@ impl FrameHarness {
             settled_history_frames: 0,
             replayed_draws: false,
             replayed_window_draws: 0,
+            skipped_frames: crate::widget::SkippedFrames::default(),
             suppress_pan_replay: false,
             pan_replay_allowed: true,
             pan_frames: 0,
@@ -2261,12 +2264,22 @@ impl FrameHarness {
         self.suppress_pan_replay = true;
         let settled = self.try_relayout();
         self.suppress_pan_replay = false;
-        if let Err(error) = settled {
-            tracing::error!(
-                ?error,
-                "headless: widget layout did not settle; replayed windows not drawn again"
-            );
+        if let Err(error) = settled
+            && let Some(line) = self.skip_frame(&error)
+        {
+            tracing::error!("headless: replayed windows not drawn again: {line}");
         }
+    }
+
+    /// Skip a frame whose layout failed with `error`, as every host does:
+    /// the next frame lays the tree out again, and what was presented last
+    /// stays on screen until then, so input keeps landing. The scene this
+    /// frame left may be partial; a host presents its last frame again
+    /// instead of drawing it. Returns the line to log when one is due
+    /// ([`crate::widget::SkippedFrames`]).
+    pub fn skip_frame(&mut self, error: &crate::widget::WidgetLayoutError) -> Option<String> {
+        self.invalidate_local();
+        self.skipped_frames.skip(error, crate::time::now())
     }
 
     /// Let the frames that follow replay windows at rest when they only
@@ -3198,11 +3211,10 @@ impl FrameHarness {
     /// [`Self::relayout`], which a caller asks for after changing anything.
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
-        if let Err(error) = self.try_relayout_following_search() {
-            tracing::error!(
-                ?error,
-                "headless: widget layout did not settle; skipping frame"
-            );
+        if let Err(error) = self.try_relayout_following_search()
+            && let Some(line) = self.skip_frame(&error)
+        {
+            tracing::error!("headless: {line}");
         }
     }
 

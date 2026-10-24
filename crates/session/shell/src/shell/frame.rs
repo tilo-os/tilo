@@ -900,6 +900,8 @@ pub struct FrameBuilder {
     /// The session network, once peer sync is up, so a control invoke can
     /// address an enrolled device.
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    skipped_frames: ui::widget::SkippedFrames,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1225,6 +1227,7 @@ impl FrameBuilder {
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
+            skipped_frames: ui::widget::SkippedFrames::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1999,13 +2002,11 @@ impl FrameBuilder {
             )
         };
         if let Err(err) = layout_result {
-            // Same "should be structurally impossible" situation as
-            // `rebuild_layout_tree`'s node-creation call: log and skip this
-            // frame's apply_layout rather than aborting the session.
-            tracing::error!(
-                %err,
-                "frame-builder: widget layout did not settle; skipping apply_layout this frame"
-            );
+            // Skip this frame's apply_layout rather than aborting the
+            // session, as every host does with a layout that fails.
+            if let Some(line) = self.skipped_frames.skip(&err, ui::time::now()) {
+                tracing::error!("frame-builder: {line}");
+            }
             return;
         }
         let solved = std::time::Instant::now();
