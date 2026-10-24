@@ -323,9 +323,24 @@ impl RemoteActions {
         argument: InvokeArgument,
         confirmation: Option<Confirmation>,
     ) -> LocalState<InvocationCall> {
+        self.invoke_continuing(None, invocation, target, argument, confirmation)
+    }
+
+    /// [`Self::invoke_with_id`] for a request made while running
+    /// `on_behalf_of`, an invocation the host delivered here: the host
+    /// decides it as that invocation's caller.
+    #[must_use]
+    pub fn invoke_continuing(
+        &self,
+        on_behalf_of: Option<InvocationId>,
+        invocation: InvocationId,
+        target: RemoteActionTarget,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> LocalState<InvocationCall> {
         let answer = LocalState::new(RemoteCall::Pending);
         let request = InvokeRequest {
-            on_behalf_of: None,
+            on_behalf_of,
             invocation,
             target,
             argument,
