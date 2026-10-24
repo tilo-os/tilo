@@ -40,7 +40,13 @@ struct Notes {
     /// What the directory was asked, in order: `apps` for which apps run,
     /// else the provider and the parent a listing is under.
     asked: Arc<Mutex<Vec<String>>>,
+    /// Whether Sheets runs too, its directory never answering: the answers
+    /// it was asked for are held here, unanswered.
+    silent: Arc<Mutex<Option<Vec<Unanswered>>>>,
 }
+
+/// A directory answer that is never given.
+type Unanswered = tilo_actions::remote::Completer<Result<CataloguePage, ActionHostError>>;
 
 impl Notes {
     fn new(running: bool) -> Self {
@@ -50,6 +56,7 @@ impl Notes {
             invoked: Arc::default(),
             moves: Arc::default(),
             asked: Arc::default(),
+            silent: Arc::default(),
         }
     }
 
@@ -324,22 +331,32 @@ impl ActionHost for Notes {
                     },
                 ));
         }
+        let silent = self.silent.lock().unwrap().is_some();
         let Some(provider) = query.provider.clone() else {
+            let instance = |provider: &str, app_id: &str| CatalogueProvider {
+                provider: provider.into(),
+                app_id: app_id.into(),
+                room: "room".into(),
+                record_id: String::new(),
+                browsable: true,
+            };
             return Pending::ready(Ok(CataloguePage {
                 revision: "v1".into(),
                 providers: running
-                    .then(|| CatalogueProvider {
-                        provider: "1".into(),
-                        app_id: APP.into(),
-                        room: "room".into(),
-                        record_id: String::new(),
-                        browsable: true,
-                    })
+                    .then(|| instance("1", APP))
                     .into_iter()
+                    .chain(silent.then(|| instance("2", "so.tilo.sheets")))
                     .collect(),
                 ..CataloguePage::default()
             }));
         };
+        if provider == "2" {
+            let (unanswered, answer) = tilo_actions::remote::pending();
+            if let Some(held) = self.silent.lock().unwrap().as_mut() {
+                held.push(unanswered);
+            }
+            return answer;
+        }
         if provider != WORKSPACE && !running {
             return Pending::ready(Err(ActionHostError::UnknownAction));
         }
@@ -1116,4 +1133,34 @@ fn a_call_asks_for_each_directory_level_and_the_running_apps_once() {
             "{asked:#?}"
         );
     });
+}
+
+/// An app whose directory does not answer leaves a search with what the
+/// others hold, and says it was not searched: one silent app does not fail
+/// every search.
+#[test]
+fn a_search_answers_from_the_apps_that_answer_and_names_the_one_that_did_not() {
+    let host = Notes::new(true);
+    *host.silent.lock().unwrap() = Some(Vec::new());
+    let answered = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(tool(
+            &agent(&host),
+            "tilo_find",
+            json!({"query": "append paragraph"}),
+        ));
+    let (text, failed) = answered;
+    assert!(!failed, "{text}");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("notes/Todo/body#append-paragraph(text)")),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("\nnot searched, the app did not answer: sheets"),
+        "{text}"
+    );
 }
