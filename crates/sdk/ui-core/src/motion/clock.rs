@@ -28,7 +28,7 @@ thread_local! {
 }
 
 /// The instant a motion is read at: the frame's, while its layout is pinned
-/// ([`pin_frame`]), else now. A widget that sizes itself by a motion (a
+/// (`pin_frame`), else now. A widget that sizes itself by a motion (a
 /// disclosure opening) reads it here, so every layout pass of one frame sees
 /// the same pose and the frame's composition can settle; read at the clock,
 /// each pass saw the motion a little further on and the passes never agreed.

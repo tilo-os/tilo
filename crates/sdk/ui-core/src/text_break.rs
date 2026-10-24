@@ -76,7 +76,7 @@ pub fn discretionary_hyphen_breaks(text: &str, language: &str) -> Vec<usize> {
 /// but the last, by `lang`'s patterns.
 pub type Hyphenate = fn(word: &str, lang: hypher::Lang, out: &mut dyn FnMut(usize));
 
-/// Hands over the patterns' [`Hyphenate`], for [`install_hyphenation`].
+/// Hands over the patterns' [`Hyphenate`], for `install_hyphenation`.
 pub type MakeHyphenation = fn() -> Hyphenate;
 
 /// TeX/Liang hyphenation by the patterns hypher embeds.

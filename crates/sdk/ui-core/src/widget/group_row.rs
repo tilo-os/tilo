@@ -4310,7 +4310,7 @@ impl Widget for GroupRow {
 
     /// Each window's top layer, in [`Self::children_mut`]'s order as the
     /// default draws it, noting which windows put anything there
-    /// ([`Self::overlay_groups`]).
+    /// (`Self::overlay_groups`).
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

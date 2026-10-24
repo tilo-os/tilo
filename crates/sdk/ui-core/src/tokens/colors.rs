@@ -207,7 +207,7 @@ impl std::ops::Index<usize> for ColorRamp {
 }
 
 /// The neutral material's surfaces. Every one is opaque except
-/// [`Self::material`], and every one shares [`Colors::neutral_hue`].
+/// [`Self::material`], and every one shares the hue [`Colors::with_neutral_hue`] sets.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Surfaces {
     /// The desktop ground behind tiles.
