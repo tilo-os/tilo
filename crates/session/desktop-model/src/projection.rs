@@ -1411,11 +1411,19 @@ pub fn merge_room_contents(
             // Ours and simply not published: the document has no say over
             // it.
             None if is_local(sid) => kept.push((i, strip)),
-            // A foreign strip no longer being merged in — drop it.
-            None => {
-                changed = true;
-                vanished.push(StripId::from(sid));
-            }
+            // A foreign strip no longer being merged in goes, but for the
+            // windows of ours in it: they are ours to publish, and the
+            // document lost them only with the strip.
+            None => match keep_own_windows(strip, &is_local) {
+                Some((strip, dropped)) => {
+                    changed |= dropped;
+                    kept.push((i, strip));
+                }
+                None => {
+                    changed = true;
+                    vanished.push(StripId::from(sid));
+                }
+            },
             Some(rep) => {
                 let order = rep.order;
                 let merged = merge_strip(strip, rep, &is_local, &mut changed);
@@ -1464,6 +1472,34 @@ pub fn merge_room_contents(
         desktop.active_group.remove(&strip);
     }
     changed
+}
+
+/// `strip`, a peer's, cut down to the windows of ours it holds: the groups
+/// we own and our tabs in the others. `None` when it holds none; otherwise
+/// whether anything was cut.
+fn keep_own_windows(mut strip: Strip, is_local: &dyn Fn(u64) -> bool) -> Option<(Strip, bool)> {
+    let before: usize = strip
+        .window_groups
+        .iter()
+        .map(|group| group.tabs.len())
+        .sum();
+    strip.window_groups.retain_mut(|group| {
+        if !is_local(group.id) {
+            group.tabs.retain(|tab| is_local(tab.id));
+            if let Some(first) = group.tabs.first()
+                && !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+            {
+                group.active_tab = first.id;
+            }
+        }
+        !group.tabs.is_empty()
+    });
+    let after: usize = strip
+        .window_groups
+        .iter()
+        .map(|group| group.tabs.len())
+        .sum();
+    (after > 0).then_some((strip, after != before))
 }
 
 /// The room a candidate document says it describes, when it names a valid
@@ -2061,6 +2097,32 @@ mod tests {
             "nothing of A's comes back"
         );
         assert_eq!(a.workspaces[0].strips.len(), 1, "nor its strip");
+    }
+
+    #[test]
+    fn a_window_of_ours_in_a_peers_strip_stays_when_the_peer_takes_the_strip_away() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        strip.window_groups.push(canvas_group(A, 10, "Notes"));
+        strip.window_groups.push(canvas_group(B, 20, "Notes, B"));
+        let mut b = room_desktop(room, 2, vec![strip]);
+
+        // A's document no longer has the strip at all.
+        let doc = AutoCommit::new();
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        let strips = &b.workspaces[0].strips;
+        assert_eq!(strips.len(), 1, "the strip stays while it holds B's window");
+        assert_eq!(
+            strips[0]
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![compose_id(B, 20)],
+            "only B's own window stays in it"
+        );
     }
 
     /// A person's name for a host window travels with the window's own
