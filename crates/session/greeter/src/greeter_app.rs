@@ -787,9 +787,10 @@ impl GreeterApp {
         );
         app.users = users;
         app.device = DeviceStatus::read();
-        if let Some(name) =
-            crate::handoff::pending_sign_in(std::path::Path::new(crate::handoff::DEFAULT_SOCKET))
-        {
+        if let Some(name) = crate::handoff::pending_sign_in(
+            std::path::Path::new(crate::handoff::DEFAULT_SOCKET),
+            std::path::Path::new(crate::handoff::FIRST_BOOT_AUTOLOGIN),
+        ) {
             app.offer_boot_sign_in(&name);
         }
         app
