@@ -746,6 +746,13 @@ impl PaintedEmptyStates {
         if self.painted.is_empty() {
             return node;
         }
+        let mut node = node;
+        // A content that names a painted action's button without saying
+        // where it is gets the place it is drawn, so the button stands
+        // there in the tree and not over the whole content.
+        if let Some(node) = &mut node {
+            self.place_unplaced_buttons(node);
+        }
         let mut described = Vec::new();
         if let Some(node) = &node {
             buttons_in(node, &mut described);
@@ -791,6 +798,21 @@ impl PaintedEmptyStates {
         let mut node = node.unwrap_or_else(|| AccessNode::new(Role::Generic));
         node.children.extend(missing);
         Some(node)
+    }
+
+    /// Give each button in `node` that is named like a painted action and
+    /// has no bounds of its own the place that action is drawn.
+    fn place_unplaced_buttons(&self, node: &mut crate::a11y::AccessNode) {
+        if node.role == crate::a11y::Role::Button
+            && node.bounds.is_none()
+            && let Some(name) = &node.name
+            && let Some(action) = self.painted.iter().find(|action| action.label == *name)
+        {
+            node.bounds = Some(action.rect.into());
+        }
+        for child in &mut node.children {
+            self.place_unplaced_buttons(child);
+        }
     }
 
     /// Where the painted action at `path` beneath `described` (what
@@ -911,11 +933,17 @@ impl EmptyState {
     /// message and action label are resolved through the i18n layer, like
     /// [`Text`](crate::widget::Text).
     pub fn new(title: impl Into<String>) -> Self {
+        Self::new_owned(title.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(title: String) -> Self {
         let mut state = Self {
             icon: None,
             illustration: None,
             error: false,
-            title: title.into(),
+            title,
             message: None,
             action_label: None,
             action_id: None,
@@ -1299,6 +1327,25 @@ impl EmptyState {
     /// without forcing those shells to duplicate its paint and hit-testing.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         self.rect = rect;
+    }
+
+    /// Where [`Self::paint`] draws `content`'s action inside `rect`, for
+    /// hit-testing it between paints; `None` with no action or no room.
+    #[must_use]
+    pub fn action_rect_in(
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        content: &EmptyStateContent<'_>,
+    ) -> Option<Rect> {
+        if rect.width() <= 0.0
+            || rect.height() <= 0.0
+            || content.action_label.is_none()
+            || crate::room_sync::waiting().is_some()
+        {
+            return None;
+        }
+        place(text, theme, rect, content, false).action
     }
 
     /// Immediate-mode paint of an empty state centered inside `rect`, for the

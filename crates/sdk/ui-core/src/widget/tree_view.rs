@@ -47,6 +47,35 @@ use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 /// The shape of a tree row's placeholder: one line where its label goes.
 const ARRIVING_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 1 };
 
+/// Paint slot `slot`'s arrival over `face_rect` at `now`: its placeholder, or
+/// the step a node that landed in it fades out of. `None` when the
+/// placeholder is all the row shows, else the opacity the landed node draws
+/// at. Not generic over the tree, so the toolkit builds it once.
+fn paint_arriving_slot(
+    arrivals: &crate::widget::ArrivingRows<TreeSlot>,
+    slot: &TreeSlot,
+    ctx: &mut PaintCtx<'_>,
+    face_rect: Rect,
+    now: Instant,
+) -> Option<f32> {
+    if let Some(face) = arrivals.face(slot, ARRIVING_SHAPE, now) {
+        face.paint(ctx, face_rect);
+        return None;
+    }
+    if let Some((face, fading)) = arrivals.outgoing_face(slot, ARRIVING_SHAPE, now) {
+        ctx.scene.push_layer(
+            vello::peniko::Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            fading,
+            ctx.transform,
+            &face_rect,
+        );
+        face.paint(ctx, face_rect);
+        ctx.scene.pop_layer();
+    }
+    Some(arrivals.fade(slot, now).map_or(1.0, |fade| fade.incoming))
+}
+
 mod access_rows;
 mod affordances;
 mod editing;
@@ -944,12 +973,11 @@ pub struct TreeView<T, M = TreeNode<T>> {
     layout_theme: Option<Theme>,
     /// [`Self::paint_signature`] as of the last completed draw.
     drawn_signature: Option<u64>,
-    /// The last draw's rows, so a change damages the rows it touched.
-    paint_damage: crate::widget::paint_damage::PaintDamage,
+    /// The frame being drawn and the one on screen, row by row, so a
+    /// change damages the rows it touched and a scroll copies the rest.
+    shown: crate::scroll_copy::PaintedFrames,
     /// Where the rename field painted in the last draw.
     rename_paint: Option<Rect>,
-    /// [`Self::rename_paint`] as the last drawn frame painted it.
-    drawn_rename_paint: Option<Rect>,
     /// Set by `NavList`: rows paint as navigation rows.
     nav: Option<NavPresentation<M>>,
     /// Counts the changes to what a navigation row is read from beyond its
@@ -1176,9 +1204,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             faces: crate::widget::FaceMotions::default(),
             layout_theme: None,
             drawn_signature: None,
-            paint_damage: crate::widget::paint_damage::PaintDamage::default(),
+            shown: crate::scroll_copy::PaintedFrames::default(),
             rename_paint: None,
-            drawn_rename_paint: None,
             nav: None,
             nav_revision: 0,
             laid_out: false,
@@ -2517,9 +2544,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             WheelStep::Scroll(dy) => {
                 let before = self.viewport.offset();
                 self.set_scroll_offset(before + dy);
-                let moved = self.viewport.offset().to_bits() != before.to_bits();
-                self.momentum.wheel_applied(dy, moved);
-                moved
+                self.momentum
+                    .wheel_applied(dy, self.viewport.offset() - before)
             }
             WheelStep::Fling => true,
             WheelStep::Ignored => false,
@@ -2977,6 +3003,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.arrival_motion = Some(theme.motion());
         self.transition_motion = theme.motion();
         self.reduce_motion = theme.reduce_motion;
+        self.momentum.set_view(
+            self.viewport.viewport(),
+            self.viewport.max_offset() > 0.0,
+            theme.motion(),
+        );
         if self.reduce_motion {
             self.transitions.clear();
             self.momentum.stop();
@@ -3165,13 +3196,21 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             && !self.reorder.is_tracking()
             && !self.menu.is_open();
         let mut row_parts = tracks_rows.then(Vec::new);
+        let mut fixed = Vec::new();
         let mut unproven = false;
         // A tracked tree draws each row where it stands in the rows, as if
         // unscrolled, and lands it scrolled: a row a scroll only moved
         // encodes the same, and a host copies it
-        // (`PaintDamage::collect_scrolled`).
+        // ([`crate::scroll_copy::PaintedFrames`]).
         let shift = if tracks_rows {
             self.viewport.offset()
+        } else {
+            0.0
+        };
+        // Past an end, fingers pull the rows through the rubber band: they
+        // land that much further, drawn as they are.
+        let give = if tracks_rows {
+            self.momentum.give(crate::motion::frame_now())
         } else {
             0.0
         };
@@ -3179,7 +3218,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             clippy::arithmetic_side_effects,
             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
         )]
-        let scrolled = transform * Affine::translate((0.0, -shift)) * transform.inverse();
+        let scrolled = transform * Affine::translate((0.0, -shift - give)) * transform.inverse();
         // What the tree drew before its body; a tracked tree opens the body's
         // clip when it puts its parts together, so each scene it keeps opens
         // and closes its own layers.
@@ -3250,7 +3289,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 if y0 >= body_bottom {
                     break 'rows;
                 }
-                row_paint = Some(Rect::new(self.rect.x0, y0, self.rect.x1, y1));
+                row_paint = Some(Rect::new(self.rect.x0, y0 - give, self.rect.x1, y1 - give));
                 // Painted where the row stands in the rows, unscrolled; the
                 // body's clip trims a row the edge cuts.
                 let (y0, y1) = (y0 + shift, y1 + shift);
@@ -3268,30 +3307,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         + f64_of_usize(depth) * indent_px
                         + self.disclosure_w;
                     let face_rect = Rect::new(label_x0, y0, self.rect.x1 - self.row_inset, y1);
-                    if let Some(face) = self.arrivals.face(&slot, ARRIVING_SHAPE, now) {
-                        face.paint(
-                            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-                            face_rect,
-                        );
+                    let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+                    let Some(incoming) =
+                        paint_arriving_slot(&self.arrivals, &slot, &mut ctx, face_rect, now)
+                    else {
                         break 'row;
-                    }
-                    if let Some((face, fading)) =
-                        self.arrivals.outgoing_face(&slot, ARRIVING_SHAPE, now)
-                    {
-                        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-                        ctx.scene.push_layer(
-                            vello::peniko::Fill::NonZero,
-                            vello::peniko::BlendMode::default(),
-                            fading,
-                            transform,
-                            &face_rect,
-                        );
-                        face.paint(&mut ctx, face_rect);
-                        ctx.scene.pop_layer();
-                    }
-                    if let Some(fade) = self.arrivals.fade(&slot, now) {
-                        opacity *= fade.incoming;
-                    }
+                    };
+                    opacity *= incoming;
                 }
                 if let TreeRowKey::Node(id) = key
                     && self.is_nav()
@@ -3487,9 +3509,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                         field.input.set_text_role(LABEL_ROLE);
                         field.input.apply_layout_external(Rect::new(
                             label_x,
-                            y0 - shift,
+                            y0 - shift - give,
                             (self.rect.x1 - gap).max(label_x),
-                            y0 - shift + row_height,
+                            y0 - shift - give + row_height,
                         ));
                         break 'row;
                     }
@@ -3515,11 +3537,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 let drawn = std::mem::take(scene);
                 rows_scene.append(&drawn, Some(scrolled));
                 match row_paint {
-                    Some(rect) => parts.push(crate::widget::paint_damage::PaintPart::scrolling(
-                        i.to_string(),
+                    Some(rect) => parts.push(crate::scroll_copy::Piece {
+                        key: crate::scroll_copy::piece_key(i),
                         rect,
-                        drawn,
-                    )),
+                        paint: crate::scroll_copy::Painted(drawn),
+                    }),
                     // Paint with no row bounds: nothing proves where it changed.
                     None if drawn.encoding().is_empty() => {}
                     None => unproven = true,
@@ -3542,7 +3564,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 clippy::arithmetic_side_effects,
                 reason = "kurbo Affine composition is finite screen-space matrix math"
             )]
-            let row_transform = transform * Affine::translate((0.0, delta));
+            let row_transform = transform * Affine::translate((0.0, delta - give));
             scene.push_layer(
                 vello::peniko::Fill::NonZero,
                 vello::peniko::BlendMode::default(),
@@ -3635,20 +3657,16 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             let ring = rect.inflate(reach, reach);
             self.rename_paint = Some(field.input.overhang().map_or(ring, |chip| ring.union(chip)));
         }
-        if let (Some(outer), Some(parts)) = (outer, row_parts.as_mut()) {
-            // The field is a part whether or not it is open, so opening and
+        if let Some(outer) = outer {
+            // The field is a piece whether or not it is open, so opening and
             // closing it damage where it is and was, not the tree.
             let drawn = std::mem::replace(scene, outer);
             rows_scene.append(&drawn, None);
-            parts.push(crate::widget::paint_damage::PaintPart::new(
-                "rename".into(),
-                self.rect,
-                drawn,
-                [self.rename_paint, self.drawn_rename_paint]
-                    .into_iter()
-                    .flatten()
-                    .collect(),
-            ));
+            fixed.push(crate::scroll_copy::Piece {
+                key: crate::scroll_copy::piece_key("rename"),
+                rect: self.rename_paint.unwrap_or(Rect::ZERO),
+                paint: crate::scroll_copy::Painted(drawn),
+            });
         }
         if self.is_focused
             && self.affordance_focus_valid
@@ -3694,7 +3712,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         // the thumb, each a part of its own for a tracked tree, painted last
         // and kept out of what the tree compares as unchanged around them.
         let mut over_scene = Scene::new();
-        if let Some(parts) = row_parts.as_mut() {
+        if tracks_rows {
             let mut over = Vec::new();
             for (key, band, edge) in self.edge_fade_bands() {
                 let mut fade = Scene::new();
@@ -3708,12 +3726,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             }
             for (key, band, drawn) in over {
                 over_scene.append(&drawn, None);
-                parts.push(crate::widget::paint_damage::PaintPart::placed(
-                    key.to_owned(),
-                    band,
-                    drawn,
-                    vec![band],
-                ));
+                fixed.push(crate::scroll_copy::Piece {
+                    key: crate::scroll_copy::piece_key(key),
+                    rect: band,
+                    paint: crate::scroll_copy::Painted(drawn),
+                });
             }
         } else {
             self.paint_edge_fades(scene, transform, ground);
@@ -3735,28 +3752,28 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             complete.append(&outer, None);
             complete.append(&over_scene, None);
             *scene = complete;
-            let frame = row_parts.filter(|_| !unproven).map(|parts| {
+            let frame = row_parts.filter(|_| !unproven).and_then(|pieces| {
                 // Everything but the rows, for telling whether it changed.
                 let mut outside = prefix;
                 outside.append(&inner, None);
                 outside.append(&outer, None);
-                crate::widget::paint_damage::PaintFrame::new(
-                    vec![self.rect, body],
-                    transform,
-                    theme,
-                    outside,
-                    parts,
+                crate::scroll_copy::Showing::painted(
+                    vello::kurbo::Vec2::new(0.0, shift + give),
+                    body,
+                    crate::scroll_copy::on_screen(transform),
+                    crate::scroll_copy::Around {
+                        bounds: self.rect,
+                        outside: crate::scroll_copy::Painted(outside),
+                    },
+                    pieces,
+                    fixed,
                 )
-                .scrolling(crate::widget::paint_damage::ScrolledContent {
-                    viewport: body,
-                    offset: vello::kurbo::Vec2::new(0.0, shift),
-                    on_screen: crate::scroll_copy::on_screen(transform),
-                })
             });
-            self.paint_damage.record(self.rect, frame);
+            if let Some(frame) = frame {
+                self.shown.note(frame);
+            }
         } else {
             scene.append(&over_scene, None);
-            self.paint_damage.record(self.rect, None);
         }
         let own = std::mem::replace(scene, incoming);
         // After a long reveal the rows fade in where they landed.
@@ -3865,6 +3882,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             || self.drawn_signature != Some(self.paint_signature())
             || self.faces.needs_redraw(crate::motion::frame_now())
             || self.momentum.is_active()
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
             || self.fade_drawn < 1.0
             || self.fade_shown < 1.0
             || self.reorder.is_active()
@@ -3885,13 +3903,13 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             regions.push(self.rect);
             return;
         }
-        if self.needs_redraw() || self.paint_damage.is_recorded() {
-            self.paint_damage.collect_scrolled(self, self.rect, regions);
+        if self.needs_redraw() || self.shown.drawing().is_some() {
+            self.shown.damage_within(self, self.rect, regions);
         }
     }
 
     fn release_scene_cache(&mut self) {
-        self.paint_damage.release_scene_cache();
+        self.shown.forget();
         for row in &mut self.mounted_rows {
             row.widget.release_scene_cache();
         }
@@ -3901,10 +3919,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_dirty = false;
         self.fade_shown = self.fade_drawn;
         self.drawn_signature = Some(self.paint_signature());
-        if self.paint_damage.is_recorded() {
-            self.drawn_rename_paint = self.rename_paint;
-        }
-        self.paint_damage.mark_drawn();
+        self.shown.present();
         if let Some(field) = self.rename.as_mut() {
             field.input.mark_drawn();
         }
@@ -3923,6 +3938,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .get()
             .fading_at(crate::motion::frame_now(), self.bar_held.get())
             || self.momentum.is_active()
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
             || self.reveal_in_progress()
             || self.model.needs_poll()
             || self.reorder.is_active()

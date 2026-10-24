@@ -19,6 +19,13 @@
 //!
 //! Cost: one `open` and one `flock` per tree, with nothing to wait for
 //! unless a removal of that very tree is under way.
+//!
+//! Releasing the leases records a use of the payload tree
+//! ([`package_store::lease::record_use`]): the app is closing, so the size
+//! sweep orders it by when it was last open, not by when it was opened. An
+//! app still open is never evicted, so nothing records while it runs; a
+//! timer for that would start a thread before the GPU probe, which forks
+//! only while the launcher is single-threaded.
 
 use std::path::Path;
 
@@ -42,7 +49,19 @@ pub enum Stage {
 #[derive(Debug)]
 #[must_use = "a launch holds its trees until its sandbox exits"]
 pub struct LaunchLeases {
-    _held: Vec<FileLock>,
+    /// The payload tree's lease, when the tree is the user's store's.
+    payload: Option<FileLock>,
+    _runtimes: Vec<FileLock>,
+}
+
+impl Drop for LaunchLeases {
+    fn drop(&mut self) {
+        if let Some(lease) = &self.payload
+            && let Err(error) = package_store::lease::record_use(lease)
+        {
+            tracing::debug!(%error, "could not record the app's use at close");
+        }
+    }
 }
 
 impl LaunchLeases {
@@ -70,10 +89,8 @@ impl LaunchLeases {
         opts: &RunOptions,
         observe: &mut dyn FnMut(Stage),
     ) -> Result<Self, RunError> {
+        let payload = hold_payload(payload_root)?;
         let mut held = Vec::new();
-        if let Some(lease) = hold_payload(payload_root)? {
-            held.push(lease);
-        }
         if !payload_root.is_dir() {
             return Err(RunError::PackageChanged {
                 package: manifest.package_id.clone(),
@@ -94,7 +111,10 @@ impl LaunchLeases {
             }
         }
         observe(Stage::RuntimesHeld);
-        Ok(Self { _held: held })
+        Ok(Self {
+            payload,
+            _runtimes: held,
+        })
     }
 }
 
@@ -455,6 +475,45 @@ type = "gui"
                 .count();
             assert_eq!(trees, 2, "{at:?}: only v2's tree and record are left");
         }
+    }
+
+    /// An app opened weeks ago and closed now counts as used now: the size
+    /// sweep must not take it for one nobody opened since.
+    #[test]
+    fn closing_an_app_records_its_use() {
+        const OPENED: u64 = 1_000;
+        let fx = fixture();
+        let row = package_store::find_installed(APP).unwrap().unwrap();
+        let manifest = read_manifest(&row.manifest_path).unwrap();
+        let leases = LaunchLeases::take(&manifest, &row.payload_root, &fx.opts).unwrap();
+        let at_open = std::time::UNIX_EPOCH
+            .checked_add(std::time::Duration::from_secs(OPENED))
+            .unwrap();
+        leases
+            .payload
+            .as_ref()
+            .expect("a tree of the user's store is held")
+            .file()
+            .set_modified(at_open)
+            .unwrap();
+        fx.store
+            .update_row(APP, |row| row.last_used = OPENED)
+            .unwrap();
+        let last_used = || {
+            let registry = fx.store.registry().unwrap();
+            fx.store.last_used(registry.find(APP).unwrap())
+        };
+        assert_eq!(last_used(), OPENED, "open, its only use is the open");
+        let closing = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        drop(leases);
+        assert!(
+            last_used() >= closing,
+            "the close is a use: {} < {closing}",
+            last_used()
+        );
     }
 
     #[test]

@@ -726,6 +726,20 @@ impl TabBar {
         }
     }
 
+    /// How far back over the tabs the window's search, following them, may
+    /// start when a narrow window leaves its query too narrow to type in:
+    /// past the first tab's icon, which keeps naming the window.
+    #[must_use]
+    pub fn search_cramped_start(&self) -> f64 {
+        let first = self
+            .tab_rects
+            .first()
+            .copied()
+            .filter(|r| r.area() > 0.0)
+            .unwrap_or_else(|| self.pill_row());
+        first.x0 + PILL_PAD_X + ICON_W + TOOLBAR_LEAD_GAP
+    }
+
     /// The window is maximized, so its maximize control offers restore.
     pub fn set_maximized(&mut self, maximized: bool) {
         self.maximized = maximized;

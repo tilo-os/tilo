@@ -101,4 +101,14 @@ interface SessionBlobs {
   # Ask where each kept public copy came from whether it changed, and take a
   # newer one if so: the background refresh. Answers how many changed.
   refreshPublicContent @1 () -> (refreshed :UInt32);
+
+  # Name the agent that causes this device's next writes to `paths` (absolute
+  # paths under the workspace mount; a folder covers what is under it) for at
+  # most `ttlMs` milliseconds. The session took the agent from the
+  # authenticated context of the action it runs for, never from an app; each
+  # version the daemon then makes of those paths carries a signed record of
+  # the agent, acting for this device's person. `actor` is `agent:<id>`;
+  # `color` is packed 0x00RRGGBB. Grants nothing: it changes who a version is
+  # shown as, never what may be written.
+  attributeWrites @2 (paths :List(Text), actor :Text, label :Text, color :UInt32, ttlMs :UInt32) -> ();
 }

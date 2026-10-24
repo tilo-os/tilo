@@ -6,22 +6,40 @@
 //! file's availability record, where Files and the apps read it, and Files
 //! shows the file as unavailable until a device that keeps it is back. The
 //! fetch outlives the read, and the note is cleared as soon as bytes arrive.
+//!
+//! Bytes that arrive can also be the last ones the file was missing. Then
+//! the record says the file is stored here, as a pin's download does when
+//! it ends, so a file read whole is shown stored and its folder's watchers
+//! hear of it (`crate::change_signal`).
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use fs_protocol::{FileRecordId, NO_PEER_DELIVERED_ERROR, TransferPhase};
+use fs_protocol::{FileRecordId, FileVersionId, NO_PEER_DELIVERED_ERROR, Residency, TransferPhase};
+use iroh_blobs::Hash;
 use tilo_lock::MutexRecover as _;
 
 use crate::availability::{AvailabilityRegistry, RecordAvailability, RecordKind, TransferError};
+use crate::hydration::Hydrator;
 
 /// The record a blocked read notes its outcome on.
 #[derive(Clone)]
 pub(super) struct UnavailableNote {
     pub(super) registry: Arc<Mutex<AvailabilityRegistry>>,
     pub(super) record_id: FileRecordId,
+    /// What the read fetches, when it is the file's committed content.
+    pub(super) content: Option<NotedContent>,
+}
+
+/// The committed content a read fetches: the version the file had when the
+/// read began, and where its bytes are.
+#[derive(Clone)]
+pub(super) struct NotedContent {
+    pub(super) hydrator: Arc<Hydrator>,
+    pub(super) hash: Hash,
+    pub(super) version: FileVersionId,
 }
 
 impl UnavailableNote {
@@ -56,10 +74,30 @@ impl UnavailableNote {
     /// file would read as unavailable while it opens. A transfer still in
     /// charge (queued, or a pin's fetch waiting for its next attempt) reports
     /// its own outcome, and any other failure stays.
-    fn clear(&self) {
+    ///
+    /// When they were the last bytes the file was missing, the record says
+    /// it is stored here, unless the file has moved on to another version
+    /// meanwhile. A record already saying so is not written again, so only
+    /// the read that completes the file writes the registry.
+    pub(super) async fn arrived(&self) {
+        let stored = match &self.content {
+            Some(content) => content
+                .hydrator
+                .local_len(content.hash)
+                .await
+                .map(|bytes| (content.version, bytes)),
+            None => None,
+        };
         let mut registry = self.registry.lock_recover();
-        let Some(record) = registry.get(self.record_id) else {
-            return;
+        let current = registry.get(self.record_id);
+        let mut record = match (current, stored) {
+            (Some(record), _) => record.clone(),
+            (None, Some((version, _))) => {
+                let mut record = RecordAvailability::new(self.record_id, RecordKind::File);
+                record.current_version = Some(version);
+                record
+            }
+            (None, None) => return,
         };
         let noted = record.transfer.phase == TransferPhase::Idle
             && record.transfer.retry_at_ms.is_none()
@@ -68,16 +106,24 @@ impl UnavailableNote {
                 .last_error
                 .as_ref()
                 .is_some_and(|error| error.message == NO_PEER_DELIVERED_ERROR);
-        if !noted {
+        if noted {
+            record.transfer.last_error = None;
+            // Bytes arriving ends the run of failures a retry counted, so the
+            // next read no peer answers is noted again.
+            record.transfer.retry_count = 0;
+        }
+        if let Some((version, bytes)) = stored
+            && record.current_version == Some(version)
+            && record.residency != (Residency::Resident { bytes })
+        {
+            record.residency = Residency::Resident { bytes };
+            record.freshness.local_verified_at_ms = Some(crate::clock::unix_now_ms());
+        }
+        if registry.get(self.record_id) == Some(&record) {
             return;
         }
-        let mut record = record.clone();
-        record.transfer.last_error = None;
-        // Bytes arriving ends the run of failures a retry counted, so the
-        // next read no peer answers is noted again.
-        record.transfer.retry_count = 0;
         if let Err(error) = registry.put(record) {
-            eprintln!("could not note that a file is available again: {error}");
+            eprintln!("could not note that a file's bytes arrived: {error}");
         }
     }
 }
@@ -86,7 +132,7 @@ impl UnavailableNote {
 /// [`crate::hydration::bounded_read`], and notes on `note`'s record whether
 /// the bytes arrived: a failed read marks the file unavailable, bytes that
 /// arrive (in time, or later through the fetch that outlived the read)
-/// mark it available again.
+/// mark it available again, and stored once the file is whole.
 ///
 /// # Errors
 ///
@@ -110,7 +156,7 @@ where
                 // The fetch goes on; when it lands, the file is back.
                 tokio::spawn(async move {
                     if matches!(task.await, Ok(Ok(_))) {
-                        note.clear();
+                        note.arrived().await;
                     }
                 });
             }
@@ -119,7 +165,7 @@ where
     };
     if let Some(note) = note {
         match &outcome {
-            Ok(_) => note.clear(),
+            Ok(_) => note.arrived().await,
             Err(_) => note.mark(crate::clock::unix_now_ms()),
         }
     }
@@ -138,6 +184,7 @@ mod tests {
         let note = UnavailableNote {
             registry,
             record_id: FileRecordId::new(),
+            content: None,
         };
         (dir, note)
     }
@@ -239,6 +286,92 @@ mod tests {
             note.registry.lock_recover().get(note.record_id),
             Some(&retrying),
             "a pin's retry still to come is the pin's to report"
+        );
+    }
+
+    /// A read that brings the last bytes a file was missing leaves its
+    /// record saying it is stored here, written once; one that leaves bytes
+    /// missing, or reads a version the file has moved on from, does not.
+    #[tokio::test]
+    async fn the_read_that_completes_a_file_records_it_stored() {
+        use iroh::endpoint::{Endpoint, presets};
+
+        let (_dir, mut note) = note();
+        let store = Arc::new(crate::store::ContentStore::memory());
+        let data = crate::test_bytes::pseudo(3 * 1024 * 1024, 5);
+        let whole = store.write_content(&data).await.unwrap().unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            Endpoint::bind(presets::Minimal).await.unwrap(),
+            store,
+        ));
+        let version = FileVersionId::new();
+        let content = |hash| {
+            Some(NotedContent {
+                hydrator: Arc::clone(&hydrator),
+                hash,
+                version,
+            })
+        };
+        let bound = Duration::from_millis(500);
+
+        // Content with bytes still to come (here, all of them).
+        note.content = content(Hash::from([3; 32]));
+        noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            note.registry.lock_recover().get(note.record_id),
+            None,
+            "a file with bytes still missing is not recorded stored"
+        );
+
+        note.content = content(whole);
+        noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
+            .await
+            .unwrap();
+        let record = note
+            .registry
+            .lock_recover()
+            .get(note.record_id)
+            .cloned()
+            .expect("the read that completed the file wrote its record");
+        assert_eq!(
+            record.residency,
+            Residency::Resident {
+                bytes: data.len() as u64
+            }
+        );
+        assert_eq!(record.current_version, Some(version));
+        assert!(record.freshness.local_verified_at_ms.is_some());
+        assert_eq!(
+            projection(&note).residency,
+            Residency::Resident {
+                bytes: data.len() as u64
+            }
+        );
+
+        // Reads of a file already recorded stored write nothing.
+        let changes = note.registry.lock_recover().subscribe_changes();
+        noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
+            .await
+            .unwrap();
+        assert!(
+            !changes.has_changed().unwrap(),
+            "a stored file is written once"
+        );
+
+        // The file moved on to another version while the read ran.
+        let mut moved = record;
+        moved.current_version = Some(FileVersionId::new());
+        moved.residency = Residency::NotResident;
+        note.registry.lock_recover().put(moved.clone()).unwrap();
+        noted_bounded_read(bound, async { Ok(()) }, Some(note.clone()))
+            .await
+            .unwrap();
+        assert_eq!(
+            note.registry.lock_recover().get(note.record_id),
+            Some(&moved),
+            "bytes of an older version say nothing of the current one"
         );
     }
 

@@ -129,11 +129,7 @@ impl ShellOverlayHost {
                 }
             }
             A::NextInputSource => {
-                if let Some((index, name)) = select_next_input_source(&self.keyboard_scope) {
-                    let mut st = chrome.borrow_mut();
-                    st.request_input_source(index);
-                    st.show_osd(crate::shell::osd::Osd::input_source(&name));
-                }
+                let _ = chrome.borrow_mut().switch_to_next_input_source();
             }
             A::PowerMenu => {
                 self.layers.power_menu.open();
@@ -441,6 +437,10 @@ impl ShellOverlayHost {
         }
         if self.palette_visible {
             self.palette_escape();
+            *handled = true;
+            return true;
+        }
+        if self.dismiss_permission_prompt() {
             *handled = true;
             return true;
         }

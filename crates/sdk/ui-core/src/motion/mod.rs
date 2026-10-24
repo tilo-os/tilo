@@ -52,6 +52,7 @@ mod kept;
 mod named;
 mod pose;
 mod presence;
+mod rubber_band;
 mod scroll_to;
 mod source;
 mod spec;
@@ -77,6 +78,7 @@ pub use named::{
 };
 pub use pose::Pose;
 pub use presence::Presence;
+pub use rubber_band::RubberBand;
 pub use scroll_to::{ScrollJump, ScrollTo};
 pub use source::{input_source, note_input, note_source, recent_input, source_of};
 pub use spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};

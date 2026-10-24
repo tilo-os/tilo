@@ -5226,6 +5226,7 @@ struct SdkJoinContext<'a> {
 struct SdkRoute {
     _checks: Option<super::approved_checks::Registration>,
     _moderation: Option<super::external_moderation::Registration>,
+    _attribution: Option<super::write_attribution_lane::Registration>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,
@@ -5413,6 +5414,12 @@ async fn ensure_sdk_route(
             error
         })
         .ok();
+    let attribution = super::write_attribution_lane::register(channel_id.clone(), channel.clone())
+        .map_err(|error| {
+            tracing::warn!(%error, "collab: write attribution lane unavailable");
+            error
+        })
+        .ok();
     media_routes.insert(channel_id.clone(), channel.clone());
     if spec.record.is_none()
         && participant_kind == "person"
@@ -5427,6 +5434,7 @@ async fn ensure_sdk_route(
         SdkRoute {
             _checks: checks,
             _moderation: moderation,
+            _attribution: attribution,
             spec: spec.clone(),
             channel,
             presence,
@@ -5678,7 +5686,7 @@ async fn spawn_context_stream(
                     .map(|collaborator| Collaborator {
                         id: collaborator.user_id,
                         name: collaborator.display_name,
-                        colour: Collaborator::colour_from_packed(collaborator.color),
+                        colour: super::colour_from_packed(collaborator.color),
                         is_agent: collaborator.is_agent,
                         is_self: collaborator.is_self,
                         joined_at: Collaborator::joined_at_from_packed(collaborator.joined_at_ms),
@@ -12636,7 +12644,7 @@ mod tests {
             // The frame loop keeps calling these while connecting. With no
             // acknowledged route nothing is queued behind the connection.
             assert!(!mgr.send(CollabRequest::Presence {
-                key: PresenceKey::local_surface_pointer(),
+                key: crate::presence::local_surface_pointer(),
                 payload: PresencePayload::Arrived,
             }));
             assert!(mgr.poll().is_empty());

@@ -63,6 +63,9 @@ pub struct DBusBindPlan {
 pub struct AtspiBindPlan {
     pub host_socket: PathBuf,
     pub sandbox_path: PathBuf,
+    /// Whether the app serves its tree read-only to other clients
+    /// ([`crate::dbus_proxy::ATSPI_READ_ONLY_ENV`]).
+    pub read_only: bool,
 }
 
 /// Where a GUI app's Wayland socket appears inside the sandbox.
@@ -758,6 +761,11 @@ pub fn build_bwrap_argv_for_entry(
             argv.push("--setenv".to_string());
             argv.push("AT_SPI_BUS_ADDRESS".to_string());
             argv.push(format!("unix:path={}", atspi.sandbox_path.display()));
+            if atspi.read_only {
+                argv.push("--setenv".to_string());
+                argv.push(crate::dbus_proxy::ATSPI_READ_ONLY_ENV.to_string());
+                argv.push("1".to_string());
+            }
         }
     }
 
@@ -1861,8 +1869,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_graphical_app_finds_the_filtered_atspi_bus() {
+    fn atspi_argv(read_only: bool) -> Vec<String> {
         let m = mk_manifest("off");
         let plan = DBusBindPlan {
             host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999.sock"),
@@ -1870,9 +1877,10 @@ mod tests {
             atspi: Some(AtspiBindPlan {
                 host_socket: PathBuf::from("/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"),
                 sandbox_path: PathBuf::from("/run/user/1234/at-spi/bus"),
+                read_only,
             }),
         };
-        let argv = build_bwrap_argv(
+        build_bwrap_argv(
             &m,
             Path::new("/host/pkg"),
             None,
@@ -1880,7 +1888,30 @@ mod tests {
             Some(&plan),
             None,
             &CapabilityPlan::empty(),
+        )
+    }
+
+    #[test]
+    fn a_graphical_app_serves_its_accessible_tree_read_only() {
+        assert_eq!(
+            setenv_value(&atspi_argv(true), crate::dbus_proxy::ATSPI_READ_ONLY_ENV),
+            Some("1"),
+            "a release launch tells the app's bridge to refuse acting calls"
         );
+        assert_eq!(
+            setenv_value(&atspi_argv(false), crate::dbus_proxy::ATSPI_READ_ONLY_ENV),
+            None,
+            "only the dev image leaves the acting calls open"
+        );
+        assert!(crate::dbus_proxy::atspi_read_only_on(None));
+        assert!(crate::dbus_proxy::atspi_read_only_on(Some(b"release\n")));
+        assert!(crate::dbus_proxy::atspi_read_only_on(Some(b"developer\n")));
+        assert!(!crate::dbus_proxy::atspi_read_only_on(Some(b"dev\n")));
+    }
+
+    #[test]
+    fn a_graphical_app_finds_the_filtered_atspi_bus() {
+        let argv = atspi_argv(true);
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind"
                 && w[1] == "/run/user/1234/tilo/dbus-proxy/9999-atspi.sock"

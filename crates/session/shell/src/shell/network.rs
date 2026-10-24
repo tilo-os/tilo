@@ -47,6 +47,11 @@ mod own_devices_tests;
 mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
+mod personal_reconcile;
+#[cfg(test)]
+mod personal_reconcile_tests;
+#[cfg(test)]
+mod presence_identity_tests;
 mod private_chat;
 #[cfg(test)]
 mod surface_update_tests;
@@ -1534,6 +1539,9 @@ pub struct ShellNetwork {
     personal_workspaces: Option<Mutex<crate::shell::personal_workspaces::PersonalWorkspaces>>,
     /// When this device last sent its workspace list unprompted.
     last_personal_workspaces_snapshot: Mutex<Option<std::time::Instant>>,
+    /// Whether the workspace list is in step with the tree, and whether a
+    /// reconcile is queued off the loop.
+    personal_reconcile: personal_reconcile::State,
     /// When each of this person's other devices last moved focus, for the
     /// "continue from another device" offer.
     personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
@@ -1620,7 +1628,7 @@ pub struct ShellNetwork {
     /// The colour each peer session said its person wears, by handle: the
     /// latest any presence plane carried ([`neighbour_wire::PresenceColour`],
     /// a live frame's participant colour).
-    peer_colours: Mutex<std::collections::HashMap<u64, ui::tokens::PresenceHue>>,
+    peer_colours: Mutex<std::collections::HashMap<u64, collab_types::presence::PresenceHue>>,
     /// Advanced whenever [`Self::peer_colours`] changes, so the presence
     /// pump re-applies colours only after one did.
     peer_colours_epoch: std::sync::atomic::AtomicU64,
@@ -1720,7 +1728,7 @@ pub(crate) const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 /// where the person is outside the resources they share.
 fn in_shared_resource(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
     use collab_types::PeerPresencePayload as P;
-    use ui::presence::{PointerSpace, PresenceKey};
+    use collab_types::presence::{PointerSpace, PresenceKey};
     if app_id == DESKTOP_PRESENCE_APP
         || !matches!(
             presence.payload,
@@ -1765,8 +1773,8 @@ fn says_only_here(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
     use collab_types::PeerPresencePayload as P;
     app_id == DESKTOP_PRESENCE_APP
         && matches!(
-            postcard::from_bytes::<ui::presence::PresenceKey>(&presence.key),
-            Ok(ui::presence::PresenceKey::Workspace { .. })
+            postcard::from_bytes::<collab_types::presence::PresenceKey>(&presence.key),
+            Ok(collab_types::presence::PresenceKey::Workspace { .. })
         )
         && matches!(
             presence.payload,
@@ -1920,12 +1928,14 @@ pub struct InboundScrollbackResponse {
 
 /// One received cursor-presence update, merged by the shell's
 /// frame drainer into `PresenceCtx`.
+///
+/// It carries no name: who sent it is `peer`, bound to the authenticated
+/// transport before it is queued, and what that sender is called is the
+/// room's to say ([`ShellNetwork::peer_labels`]). The wire frame's own
+/// `user` field is a claim anybody can make, so it never gets this far.
 #[derive(Debug, Clone)]
 pub struct InboundPresence {
     pub peer: u64,
-    /// Who the publishing session says is sitting at it. Empty when it
-    /// did not say; the drainer falls back to the session handle.
-    pub user: String,
     /// Presence channel key (workspace, tab, widget path, …), JSON so
     /// the wire format stays opaque to the bridge.
     pub key: String,
@@ -2307,6 +2317,7 @@ impl ShellNetwork {
             personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
+            personal_reconcile: personal_reconcile::State::default(),
             #[cfg(test)]
             continuity_policy_override: None,
             device_fabric: Mutex::new(device_fabric),
@@ -2973,7 +2984,7 @@ impl ShellNetwork {
     /// Remember the colour peer session `peer` said its person wears. A
     /// name this build does not know, or none, leaves what was heard before.
     pub fn note_peer_colour(&self, peer: u64, colour: Option<&str>) {
-        let Some(hue) = colour.and_then(ui::tokens::PresenceHue::from_id) else {
+        let Some(hue) = colour.and_then(collab_types::presence::PresenceHue::from_id) else {
             return;
         };
         if peer == self.local_peer_hash {
@@ -3009,12 +3020,12 @@ impl ShellNetwork {
     }
 
     /// The colour peer session `peer` said its person wears, if it said.
-    pub fn peer_colour(&self, peer: u64) -> Option<ui::tokens::PresenceHue> {
+    pub fn peer_colour(&self, peer: u64) -> Option<collab_types::presence::PresenceHue> {
         self.peer_colours.lock().ok()?.get(&peer).copied()
     }
 
     /// Every colour a peer session said its person wears, by handle.
-    pub fn peer_colours(&self) -> Vec<(u64, ui::tokens::PresenceHue)> {
+    pub fn peer_colours(&self) -> Vec<(u64, collab_types::presence::PresenceHue)> {
         self.peer_colours
             .lock()
             .map(|colours| colours.iter().map(|(peer, hue)| (*peer, *hue)).collect())
@@ -3023,14 +3034,7 @@ impl ShellNetwork {
 
     /// Queue a received presence move; public so tests can inject one
     /// without going through gossip.
-    pub fn handle_presence_message(
-        &self,
-        peer: u64,
-        user: String,
-        key: String,
-        point: (f64, f64),
-        ts: u64,
-    ) {
+    pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
         // A session does not paint its own cursor from the network: the
         // pointer it would draw is the one already under the user's hand.
         if peer == self.local_peer_hash {
@@ -3039,7 +3043,6 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
-                user,
                 key,
                 point,
                 ts,
@@ -3057,7 +3060,6 @@ impl ShellNetwork {
         if let Ok(mut buf) = self.inbound_presence.lock() {
             buf.push(InboundPresence {
                 peer,
-                user: String::new(),
                 key,
                 point: (0.0, 0.0),
                 ts: tilo_clock::unix_now_ms(),
@@ -3676,7 +3678,7 @@ impl ShellNetwork {
     ) -> bool {
         let shared = RoomId::parse(cluster_id)
             .is_some_and(|room| !room.is_nil() && self.person_root_of_room(room).is_none());
-        let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+        let Ok(key) = postcard::to_stdvec(&collab_types::presence::PresenceKey::Workspace {
             id: cluster_id.to_owned(),
         }) else {
             return false;
@@ -3875,7 +3877,10 @@ impl ShellNetwork {
         }) {
             self.drain_wake.poke();
         }
-        self.note_peer_colour(peer, inbound.colour.map(ui::tokens::PresenceHue::id));
+        self.note_peer_colour(
+            peer,
+            inbound.colour.map(collab_types::presence::PresenceHue::id),
+        );
         tracing::debug!(
             room = %cluster_id,
             from = %hex::encode(&from[..4]),
@@ -6808,52 +6813,6 @@ impl ShellNetwork {
         }
     }
 
-    /// List this device's own workspaces for the person's other devices, and
-    /// send them the list when it changed (or, rarely, when it did not, to
-    /// repair a lost snapshot). Called every frame tick; when nothing
-    /// changed it is one walk over the tree's workspaces.
-    fn reconcile_personal_workspaces(&self) {
-        let (Some(workspaces), Some(person)) =
-            (self.personal_workspaces.as_ref(), self.personal_person())
-        else {
-            return;
-        };
-        let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return;
-        };
-        let (mut changed, settle) = {
-            let tree = tree.read();
-            let changed = workspaces
-                .lock()
-                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &person));
-            let settle = !tree.personal_device_requests.is_empty()
-                || (tree.personal_device_choices.is_empty() && !tree.desktop.workspaces.is_empty());
-            drop(tree);
-            (changed, settle)
-        };
-        if changed || settle {
-            let mut tree = tree.write();
-            if let Ok(mut workspaces) = workspaces.lock() {
-                for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests) {
-                    changed |= workspaces.set_shown(room, device, shown);
-                }
-                // Keeping a workspace off this device takes it off at once.
-                workspaces.adopt_into(&mut tree, &person);
-                refresh_device_choices(&mut tree, &workspaces);
-            }
-            drop(tree);
-        }
-        let due = self
-            .last_personal_workspaces_snapshot
-            .lock()
-            .is_ok_and(|last| {
-                last.is_none_or(|at| at.elapsed() >= PERSONAL_WORKSPACES_RESTATE_INTERVAL)
-            });
-        if changed || due {
-            self.publish_personal_workspaces();
-        }
-    }
-
     /// Send this device's whole workspace list, signed with its device key,
     /// on the person's own topic.
     fn publish_personal_workspaces(&self) {
@@ -7071,7 +7030,7 @@ impl ShellNetwork {
         steps.time("network/room-push", || self.push_room_changes());
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
-            self.reconcile_personal_workspaces();
+            self.reconcile_personal_workspaces_if_changed(matches!(admission, Admission::InPlace));
         });
         steps.time("network/home-peers", || {
             self.refresh_home_peer_hosts_periodically();
@@ -7636,10 +7595,10 @@ impl ShellNetwork {
         // state that existed before the host connected.
         let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
         for payload in [
-            ui::collaboration::PresencePayload::Arrived,
-            ui::collaboration::PresencePayload::Left,
+            collab_types::presence::PresencePayload::Arrived,
+            collab_types::presence::PresencePayload::Left,
         ] {
-            let key = ui::presence::PresenceKey::Workspace {
+            let key = collab_types::presence::PresenceKey::Workspace {
                 id: room.to_string(),
             };
             if let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) {
@@ -7925,14 +7884,17 @@ impl ShellNetwork {
             // Ephemeral overlay state, not CRDT state — skips the replica entirely.
             NeighbourMsg::PresenceMoved {
                 peer: peer_hash,
-                user,
+                // Who the sender says it is: older peers still send it, and
+                // nothing here reads it. A peer naming itself could name
+                // anybody; `peer_hash` is bound to the transport above.
+                user: _,
                 key,
                 point,
                 ts,
                 colour,
             } => {
                 self.note_peer_colour(peer_hash, colour.as_deref());
-                self.handle_presence_message(peer_hash, user, key, point, ts);
+                self.handle_presence_message(peer_hash, key, point, ts);
             }
             NeighbourMsg::PresenceCleared {
                 peer: peer_hash,
@@ -8996,6 +8958,7 @@ pub(crate) fn shell_network_for_test(
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
+        personal_reconcile: personal_reconcile::State::default(),
         personal_focus_recency: Mutex::default(),
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
@@ -15951,7 +15914,10 @@ mod tests {
         assert_eq!(net.peer_colour(7), None);
         let before = net.peer_colours_epoch();
         net.note_peer_colour(7, Some("violet"));
-        assert_eq!(net.peer_colour(7), Some(ui::tokens::PresenceHue::Violet));
+        assert_eq!(
+            net.peer_colour(7),
+            Some(collab_types::presence::PresenceHue::Violet)
+        );
         let heard = net.peer_colours_epoch();
         assert_ne!(heard, before, "a new colour is announced");
         net.note_peer_colour(7, Some("violet"));
@@ -15959,7 +15925,7 @@ mod tests {
         net.note_peer_colour(7, None);
         assert_eq!(
             net.peer_colour(7),
-            Some(ui::tokens::PresenceHue::Violet),
+            Some(collab_types::presence::PresenceHue::Violet),
             "an unknown or missing colour leaves what was heard"
         );
         assert_eq!(
@@ -15972,7 +15938,7 @@ mod tests {
         assert_eq!(net.peer_colours_epoch(), heard);
         assert_eq!(
             net.peer_colours(),
-            vec![(7, ui::tokens::PresenceHue::Violet)]
+            vec![(7, collab_types::presence::PresenceHue::Violet)]
         );
     }
 
@@ -16020,17 +15986,10 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_demo().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
             let buf_handle = net.inbound_presence_handle();
-            net.handle_presence_message(
-                7u64,
-                "bob".into(),
-                "ws/0".into(),
-                (10.0, 20.0),
-                1_700_000_000,
-            );
+            net.handle_presence_message(7u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
             let buf = buf_handle.lock().unwrap().clone();
             assert_eq!(buf.len(), 1);
             assert_eq!(buf[0].peer, 7u64);
-            assert_eq!(buf[0].user, "bob");
             assert_eq!(buf[0].key, "ws/0");
             assert_eq!(buf[0].point, (10.0, 20.0));
             assert_eq!(buf[0].ts, 1_700_000_000);
@@ -16042,24 +16001,12 @@ mod tests {
             let tree = WorkspaceTree::bootstrap_default().shared();
             let (net, _cmd_rx) = shell_network_for_test(tree, 99u64);
             let buf_handle = net.inbound_presence_handle();
-            net.handle_presence_message(
-                99u64,
-                "me".into(),
-                "ws/0".into(),
-                (10.0, 20.0),
-                1_700_000_000,
-            );
+            net.handle_presence_message(99u64, "ws/0".into(), (10.0, 20.0), 1_700_000_000);
             assert!(
                 buf_handle.lock().unwrap().is_empty(),
                 "a session's own presence must not be drained back into its overlay"
             );
-            net.handle_presence_message(
-                7u64,
-                "bob".into(),
-                "ws/0".into(),
-                (30.0, 40.0),
-                1_700_000_001,
-            );
+            net.handle_presence_message(7u64, "ws/0".into(), (30.0, 40.0), 1_700_000_001);
             assert_eq!(
                 buf_handle.lock().unwrap().len(),
                 1,

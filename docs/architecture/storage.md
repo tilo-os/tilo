@@ -1461,7 +1461,16 @@ bound sits well inside the kernel's two-minute hung-task report. On the
 native plane an access waiting for another reader's fill, or queued behind
 fills of other files, is held to the same bound, and an access to resident
 bytes is answered by the thread that reads the events, so it never queues
-behind a fill at all.
+behind a fill at all. Failing an access also frees the worker filling it:
+the transfer runs as a task of its own, and the worker waits for it only
+while the access does, so opening an unrelated file never queues behind a
+peer that went quiet for the transfer layer's 30 seconds per peer.
+
+**A file read whole is stored.** On the FUSE mount, the read that brings
+the last bytes a file was missing writes `Resident` on its availability
+record, as a pin's finished download does, so Files shows it stored and its
+folder's watchers hear of it like of any change there. Bytes of a version
+the file has moved on from say nothing of the current one.
 
 ### 12.4 Read-ahead and prediction
 

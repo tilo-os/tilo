@@ -325,6 +325,7 @@ impl RichTextLayout {
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
         })
     }
 
@@ -341,6 +342,8 @@ impl RichTextLayout {
         let Some(prepared) = self.prepared.take() else {
             return false;
         };
+        // The lines below are spliced and wrapped again in place.
+        self.row_tops = std::cell::OnceCell::new();
         let Some(old) = prepared.spans.first().map(|span| span.text.as_str()) else {
             self.prepared = Some(prepared);
             return false;
@@ -461,6 +464,7 @@ impl RichTextLayout {
             font_variations: self.font_variations.clone(),
             hanging_punctuation: self.hanging_punctuation,
             fragmentation: self.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
         }
     }
 

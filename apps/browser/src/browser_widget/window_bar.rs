@@ -81,6 +81,34 @@ pub(super) struct BarInputs {
 /// One omnibox row as the bar lists it: what it says, the line under it,
 /// what choosing it commits (where the row goes: an address, or the search
 /// engine's address for the words) and its kind's icon.
+/// The address field's mark for how the page arrived: a lock over
+/// `https://`, an open lock over `http://` from another machine, which
+/// anyone on the way can read or change. This machine's own pages are
+/// neither.
+fn connection_icon(uri: &str) -> Option<&'static str> {
+    let url = url::Url::parse(uri).ok()?;
+    match url.scheme() {
+        "https" => Some("lock"),
+        "http" if !this_machine(&url) => Some("lock-open"),
+        _ => None,
+    }
+}
+
+/// Whether `url` names this machine: `localhost`, a `.localhost` name or a
+/// loopback address.
+fn this_machine(url: &url::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.');
+            name.eq_ignore_ascii_case("localhost")
+                || name.to_ascii_lowercase().ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
 fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
     let icon = match row.kind {
         RowKind::Go => "globe",
@@ -271,10 +299,8 @@ impl BrowserWidget {
             // What marks a private window, now that it has no toolbar of
             // its own to tint.
             Some("eye-off".to_owned())
-        } else if self.current_uri.starts_with("https://") {
-            Some("lock".to_owned())
         } else {
-            None
+            connection_icon(&self.current_uri).map(str::to_owned)
         };
         WindowToolbar {
             sidebar: None,
@@ -392,6 +418,7 @@ impl BrowserWidget {
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => return,
         }
@@ -411,6 +438,26 @@ mod tests {
         );
         assert_eq!(site_label("http://127.0.0.1:42975/"), "127.0.0.1");
         assert_eq!(site_label(""), "");
+    }
+
+    #[test]
+    fn the_bar_marks_a_page_that_came_unencrypted() {
+        for (uri, icon) in [
+            ("https://example.com/", Some("lock")),
+            ("http://neverssl.com/", Some("lock-open")),
+            ("http://192.168.1.1/", Some("lock-open")),
+            ("http://localhost:3000/", None),
+            ("http://app.localhost/", None),
+            ("http://127.0.0.1:8080/", None),
+            ("http://[::1]:8443/", None),
+            ("chrome-extension://abc/options.html", None),
+            ("", None),
+        ] {
+            assert_eq!(connection_icon(uri), icon, "{uri}");
+            if let Some(icon) = icon {
+                assert!(ui::icons::Icon::from_name(icon).is_some(), "{icon}");
+            }
+        }
     }
 }
 

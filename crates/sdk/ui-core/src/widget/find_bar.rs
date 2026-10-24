@@ -158,6 +158,13 @@ pub trait Findable {
     /// that keeps its current match across [`Self::find`] needs nothing.
     fn mark_current(&mut self, _index: usize) {}
 
+    /// What of the view the window's search covers while its options stand
+    /// open over it, in the view's own coordinates (`None`: nothing). A
+    /// view that scrolls reveals its current match clear of it, scrolling
+    /// past its start where the match stands too near it; the search shows
+    /// the current match again whenever the cover changes.
+    fn set_find_cover(&mut self, _cover: Option<Rect>) {}
+
     /// The bar closed: stop painting matches.
     fn clear_find(&mut self) {
         let _ = self.find("", FindOptions::default());
@@ -477,6 +484,15 @@ impl FindSession {
         self.current =
             (self.matches > 0).then(|| keep.unwrap_or(0).min(self.matches.saturating_sub(1)));
         true
+    }
+
+    /// Show the current match again (what covers the view changed);
+    /// whether there was one to show.
+    pub fn reveal_current(&self, target: &mut dyn Findable) -> bool {
+        if let Some(current) = self.current {
+            target.reveal(current);
+        }
+        self.current.is_some()
     }
 
     /// Make the next (or previous) match current, wrapping, and show it.

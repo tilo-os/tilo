@@ -282,6 +282,8 @@ mod palette_window_tests;
 mod retained_layout;
 mod root_wake;
 mod search_open;
+mod slot_row;
+pub use slot_row::WINDOW_SLOTS;
 pub mod system_search;
 pub mod test_support;
 mod tooltip_layer;
@@ -366,6 +368,9 @@ pub struct FrameHarness {
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
     window_search: crate::widget::WindowSearch,
+    /// The app's window-bar slots in a row of the frame's own, as a window
+    /// of its own hosts them ([`Self::host_window_slots`]).
+    slot_row: Option<Box<slot_row::HostedSlots>>,
     /// The app a concrete root stands for ([`Self::for_app`]): its kind and
     /// title, which its window's bar wears as a desktop window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
@@ -1242,6 +1247,33 @@ impl FrameHarness {
     fn invalidate_layout_tree(&mut self) {
         self.layout_built = false;
     }
+
+    /// The style of the node the root is laid out in, across a window `w`
+    /// by `h`: the host's, its top below the row of window slots the frame
+    /// hosts ([`Self::host_window_slots`]).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        reason = "viewport sizes and the row's height are small logical pixel lengths"
+    )]
+    fn host_root_style(&self, w: u32, h: u32) -> Style {
+        let mut style = Style {
+            size: Size {
+                width: Dimension::length(w as f32),
+                height: if self.host.content_height {
+                    Dimension::auto()
+                } else {
+                    Dimension::length(h as f32)
+                },
+            },
+            ..self.host.style.clone()
+        };
+        let inset = self.slot_row_inset();
+        if inset > 0.0 {
+            style.padding.top = taffy::LengthPercentage::length(inset as f32);
+        }
+        style
+    }
     pub fn component_close_reports(&self) -> &[crate::application::ComponentCloseReport] {
         self.drain_component_wakes();
         &self.component_close_reports
@@ -1701,6 +1733,7 @@ impl FrameHarness {
             history_chrome_enabled: false,
             window_bar: false,
             window_search: crate::widget::WindowSearch::new(),
+            slot_row: None,
             window_app: None,
             bound_resources: crate::bound_dispatch::BoundResourceCache::default(),
             bound_resource_frames: 0,
@@ -2886,8 +2919,11 @@ impl FrameHarness {
                 .as_ref()
                 .is_some_and(crate::session_door::ClientDoor::is_busy)
             || self.wake_pending();
+        let (slots_declared, slots_moving) = self.slot_row_wants_frame();
+        let queued_work = queued_work || slots_declared;
         self.with_schedule_roots(|roots| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                || slots_moving
                 || self.settle_frame_owed
                 || self.tooltips.schedule().2
                 || crate::motion::frames_wanted(crate::time::now())
@@ -3367,6 +3403,8 @@ impl FrameHarness {
         // redraw runs in the App's: a read its layout starts wakes it.
         let _wake = self.enter_wake();
         self.activation_recomposed = false;
+        // The row's height is part of the app's frame: before it lays out.
+        self.refresh_slot_row();
         let mut result = self.try_relayout_once();
         for _ in 1..8 {
             if !matches!(
@@ -3376,6 +3414,11 @@ impl FrameHarness {
             {
                 break;
             }
+            result = self.try_relayout_once();
+        }
+        // The app declared other slots in this frame's sync (a press it
+        // took, a call it joined): the row shows them in the frame drawn.
+        if result.is_ok() && self.refresh_slot_row() {
             result = self.try_relayout_once();
         }
         if result.is_ok() {
@@ -3743,6 +3786,11 @@ impl FrameHarness {
                         .place_in_app_header(self.root.as_mut());
                     self.document_history.remove_fallback_bar();
                 }
+                // The header the rebuild builds hears whether the frame's row
+                // presents search, so it never shows a second search control.
+                if self.slot_row.is_some() {
+                    crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
+                }
                 self.child_node = if let Some(history) = &mut self.history {
                     history.build_composition(
                         self.root.as_mut(),
@@ -3819,20 +3867,9 @@ impl FrameHarness {
                     self.focused = unsafe { focus.restore(&self.node_map, &self.bindings, None) };
                 }
                 let (w, h) = self.viewport;
-                self.root_node = self.taffy.parent_node(
-                    Style {
-                        size: Size {
-                            width: Dimension::length(w as f32),
-                            height: if self.host.content_height {
-                                Dimension::auto()
-                            } else {
-                                Dimension::length(h as f32)
-                            },
-                        },
-                        ..self.host.style.clone()
-                    },
-                    &[presentation_node],
-                );
+                self.root_node = self
+                    .taffy
+                    .parent_node(self.host_root_style(w, h), &[presentation_node]);
                 self.layout_built = true;
             }
             // Sync and view restoration can revive an outgoing owner's local
@@ -3853,20 +3890,8 @@ impl FrameHarness {
                     // The retained root still carries the old window size in
                     // its style; a resize moves it in place.
                     let (w, h) = self.viewport;
-                    self.taffy.set_style(
-                        self.root_node,
-                        Style {
-                            size: Size {
-                                width: Dimension::length(w as f32),
-                                height: if self.host.content_height {
-                                    Dimension::auto()
-                                } else {
-                                    Dimension::length(h as f32)
-                                },
-                            },
-                            ..self.host.style.clone()
-                        },
-                    )?;
+                    self.taffy
+                        .set_style(self.root_node, self.host_root_style(w, h))?;
                 }
                 if !rebuilt_this_pass {
                     // Taffy caches every node's measurement; a retained tree
@@ -4241,6 +4266,9 @@ impl FrameHarness {
                 &self.presence,
             );
         }
+        // The window's row of slots over the app, as a window of its own
+        // paints it over everything the app draws.
+        self.draw_slot_row(transform);
         if let Some(palette) = self
             .action_palette
             .as_deref_mut()
@@ -5737,6 +5765,11 @@ impl FrameHarness {
                 Err("palette owns input".into())
             };
         }
+        // The window's row of slots, under no search or palette covering
+        // the window.
+        if name == WINDOW_SLOTS {
+            return self.perform_slot_row_semantic(semantic_target, action);
+        }
         self.try_presentation(|_, _| ())?;
         if semantic_target.is_none() && !self.named_target_nodes().contains_key(name) {
             // A control a widget paints and publishes as a semantic child
@@ -6183,6 +6216,11 @@ impl FrameHarness {
         } else {
             collect_inspection(self.root.as_ref(), "", &mut sibling_counts)
         };
+        // The window's row of slots, first in reading order, under nothing
+        // that covers the whole window.
+        if self.global_search_query().is_none() && self.caller_palette.palette.is_none() {
+            root.children.splice(0..0, self.slot_row_inspection());
+        }
         root.children.extend(self.tooltip_inspection());
         fn owner_path(
             node: &InspectionNode,
@@ -6459,6 +6497,11 @@ impl FrameHarness {
         // document. Update modifiers first, then capture before History can
         // observe or claim the event.
         if self.system_search_event(event) {
+            return;
+        }
+        // The window's row of slots takes what is its before the app, as a
+        // window of its own routes it.
+        if self.slot_row_event(event) {
             return;
         }
         // Framework presentations own captured keyboard input before global
@@ -15050,10 +15093,7 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            driver.send(&super::key_input(
-                &winit::keyboard::Key::Character("CONFIRM".into()),
-                winit::event::ElementState::Pressed,
-            ));
+            assert!(driver.asking().is_some(), "the host asks");
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();

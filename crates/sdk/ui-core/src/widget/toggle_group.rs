@@ -661,11 +661,17 @@ impl ToggleGroup {
     /// Panics only if the framework-generated integer action contract cannot
     /// encode its own generated payload.
     #[must_use]
+    pub fn on_view<F: FnMut(usize) + 'static>(self, id: &str, f: F) -> Self {
+        self.on_view_boxed(id, Box::new(f))
+    }
+
+    /// [`Self::on_view`] once the handler is boxed: the toolkit compiles
+    /// publishing the choice once, rather than every app once per closure.
     #[expect(
         clippy::expect_used,
         reason = "the generated integer schema and action are internally consistent"
     )]
-    pub fn on_view<F: FnMut(usize) + 'static>(mut self, id: &str, f: F) -> Self {
+    fn on_view_boxed(mut self, id: &str, f: Box<dyn FnMut(usize)>) -> Self {
         use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
             Resource,
@@ -704,7 +710,7 @@ impl ToggleGroup {
         .expect("segment index matches the generated integer parameter");
         self.action = Some(ActionEmitter::new(binding));
         self.native_resource = Some(resource);
-        self.on_change = Some(ChangeCallback::One(Box::new(f)));
+        self.on_change = Some(ChangeCallback::One(f));
         self
     }
 

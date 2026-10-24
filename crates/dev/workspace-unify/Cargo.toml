@@ -930,7 +930,7 @@ doc = false
 "serde-big-array-0_5_1" = { package = "serde-big-array", version = "^0.5.1", default-features = false, features = [] }
 "serde_bytes-0_11_19" = { package = "serde_bytes", version = "^0.11.19", default-features = false, features = ["default", "std"] }
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
-"serde_json-1_0_151" = { package = "serde_json", version = "^1.0.151", default-features = false, features = ["alloc", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std"] }
+"serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std"] }
 "serde_path_to_error-0_1_20" = { package = "serde_path_to_error", version = "^0.1.20", default-features = false, features = [] }
 "serde_plain-1_0_2" = { package = "serde_plain", version = "^1.0.2", default-features = false, features = [] }
 "serde_spanned-0_6_9" = { package = "serde_spanned", version = "^0.6.9", default-features = false, features = ["serde"] }
@@ -2083,7 +2083,7 @@ doc = false
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
 "serde_derive-1_0_228" = { package = "serde_derive", version = "^1.0.228", default-features = false, features = ["default"] }
 "serde_derive_internals-0_30_0" = { package = "serde_derive_internals", version = "^0.30.0", default-features = false, features = [] }
-"serde_json-1_0_151" = { package = "serde_json", version = "^1.0.151", default-features = false, features = ["alloc", "default", "indexmap", "preserve_order", "raw_value", "std"] }
+"serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "indexmap", "preserve_order", "raw_value", "std"] }
 "serde_repr-0_1_20" = { package = "serde_repr", version = "^0.1.20", default-features = false, features = [] }
 "serde_spanned-1_1_1" = { package = "serde_spanned", version = "^1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }
@@ -3256,7 +3256,7 @@ doc = false
 "serde-big-array-0_5_1" = { package = "serde-big-array", version = "^0.5.1", default-features = false, features = [] }
 "serde_bytes-0_11_19" = { package = "serde_bytes", version = "^0.11.19", default-features = false, features = ["default", "std"] }
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
-"serde_json-1_0_151" = { package = "serde_json", version = "^1.0.151", default-features = false, features = ["alloc", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std"] }
+"serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "float_roundtrip", "indexmap", "preserve_order", "raw_value", "std"] }
 "serde_path_to_error-0_1_20" = { package = "serde_path_to_error", version = "^0.1.20", default-features = false, features = [] }
 "serde_plain-1_0_2" = { package = "serde_plain", version = "^1.0.2", default-features = false, features = [] }
 "serde_spanned-0_6_9" = { package = "serde_spanned", version = "^0.6.9", default-features = false, features = ["serde"] }
@@ -4408,7 +4408,7 @@ doc = false
 "serde_core-1_0_228" = { package = "serde_core", version = "^1.0.228", default-features = false, features = ["alloc", "default", "rc", "result", "std"] }
 "serde_derive-1_0_228" = { package = "serde_derive", version = "^1.0.228", default-features = false, features = ["default"] }
 "serde_derive_internals-0_30_0" = { package = "serde_derive_internals", version = "^0.30.0", default-features = false, features = [] }
-"serde_json-1_0_151" = { package = "serde_json", version = "^1.0.151", default-features = false, features = ["alloc", "default", "indexmap", "preserve_order", "raw_value", "std"] }
+"serde_json-1_0_151" = { package = "serde_json", path = "../../../vendor/serde_json", default-features = false, features = ["alloc", "default", "indexmap", "preserve_order", "raw_value", "std"] }
 "serde_repr-0_1_20" = { package = "serde_repr", version = "^0.1.20", default-features = false, features = [] }
 "serde_spanned-1_1_1" = { package = "serde_spanned", version = "^1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
 "serde_urlencoded-0_7_1" = { package = "serde_urlencoded", version = "^0.7.1", default-features = false, features = [] }

@@ -189,6 +189,15 @@ pub enum BrowserEffect {
         #[param("The extension's id")]
         id: String,
     },
+    /// Revoke extension access
+    ///
+    /// Takes back the access you allowed it after it was added. What it
+    /// needed when you added it stays.
+    #[effect(row, returns)]
+    RevokeExtensionAccess {
+        #[param("The extension's id")]
+        id: String,
+    },
     /// Remove extension
     ///
     /// Removes it from this device with everything it stored.
@@ -537,6 +546,9 @@ impl BrowserEffect {
             Self::CloseExtensionSidePanel { id } => {
                 BrowserOperation::Extension(ExtensionRequest::CloseSidePanel(id))
             }
+            Self::RevokeExtensionAccess { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Revoke(id))
+            }
             Self::RemoveExtension { id } => {
                 BrowserOperation::Extension(ExtensionRequest::Remove(id))
             }
@@ -634,6 +646,8 @@ pub enum ExtensionRequest {
     /// Show its side panel beside the page, or close it.
     OpenSidePanel(String),
     CloseSidePanel(String),
+    /// Take back the access the person allowed it after it was added.
+    Revoke(String),
     Remove(String),
 }
 

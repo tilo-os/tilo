@@ -272,15 +272,27 @@ impl Button {
         self.on_native_scoped(kind, false, handler)
     }
 
+    fn on_native_scoped<F: FnMut() + 'static>(
+        self,
+        kind: tilo_actions::OperationKind,
+        own_device: bool,
+        handler: F,
+    ) -> Self {
+        self.on_native_boxed(kind, own_device, Box::new(handler))
+    }
+
+    /// [`Self::on_native_scoped`] once the handler is boxed: the toolkit
+    /// compiles publishing the press once, rather than every app once for
+    /// each closure it hands a button.
     #[expect(
         clippy::expect_used,
         reason = "String serialization and lookup of the just-created action are infallible"
     )]
-    fn on_native_scoped<F: FnMut() + 'static>(
+    fn on_native_boxed(
         mut self,
         kind: tilo_actions::OperationKind,
         own_device: bool,
-        handler: F,
+        handler: Box<dyn FnMut()>,
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
@@ -293,9 +305,13 @@ impl Button {
         } else {
             self.label.clone()
         };
+        // Pressing the button is the control's own verb: how agents and
+        // scripts press what a person presses directly, never a row of its
+        // own in people's lists, where it would repeat the app's actions.
         let mut spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
-                .expect("a control id is always JSON serializable");
+                .expect("a control id is always JSON serializable")
+                .for_audience(tilo_actions::Audience::Agents);
         if own_device {
             spec.contract
                 .tags
@@ -307,7 +323,7 @@ impl Button {
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
         self.native_resource = Some(resource);
-        self.native_handler = Some(Box::new(handler));
+        self.native_handler = Some(handler);
         self
     }
 

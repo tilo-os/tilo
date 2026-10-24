@@ -411,7 +411,7 @@ pub fn inbound(frame: &[u8]) -> Option<Inbound> {
             .map(|participant| participant.label.clone()),
         colour: presence.participant.as_ref().and_then(|participant| {
             let [r, g, b] = participant.color;
-            ui::tokens::PresenceHue::nearest(vello::peniko::Color::from_rgb8(r, g, b))
+            ui::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(r, g, b))
         }),
         chat: presence.chat.clone(),
         reaction: presence.reaction.clone(),

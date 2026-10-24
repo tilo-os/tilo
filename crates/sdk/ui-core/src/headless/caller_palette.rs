@@ -71,6 +71,17 @@ impl FrameHarness {
         self.relayout();
         Ok(())
     }
+    /// The caller palette's rows as a person reads them, label and the line
+    /// under it, in display order; empty while it is closed.
+    #[must_use]
+    pub fn caller_palette_rows(&self) -> Vec<(String, Option<String>)> {
+        self.caller_palette
+            .palette
+            .as_ref()
+            .map(ActionPalette::result_rows)
+            .unwrap_or_default()
+    }
+
     pub fn take_caller_operation(&mut self) -> Option<PendingOperation> {
         self.invalidate_local();
         self.caller_palette.pending.take()
@@ -383,9 +394,26 @@ mod tests {
         )));
         enter(&mut frame);
         assert!(frame.take_caller_operation().is_none());
+        // Cancel has the keyboard first; the name is typed in its field.
+        frame.send_host_event(&crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            winit::event::ElementState::Pressed,
+        ));
         frame.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit(
             "INSERT".into(),
         )));
+        // Return in the field stays the safe answer: the action's own button,
+        // past Cancel, goes ahead.
+        enter(&mut frame);
+        assert!(frame.take_caller_operation().is_none());
+        frame.send_host_event(&crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            winit::event::ElementState::Pressed,
+        ));
+        frame.send_host_event(&crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
+            winit::event::ElementState::Pressed,
+        ));
         enter(&mut frame);
         let intent = frame
             .take_caller_operation()
@@ -475,7 +503,9 @@ mod tests {
                 .as_ref()
                 .unwrap()
                 .result_labels(),
-            vec!["Writer — Insert table"]
+            // The row reads as the outcome alone: never the document's name
+            // joined on with a dash.
+            vec!["Insert table"]
         );
         frame.set_caller_actions(vec![]);
         assert!(

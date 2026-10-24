@@ -317,9 +317,14 @@ impl super::App {
         // The room's presence is state of the frame, lent under the window's
         // authority, as the draw sees it.
         let (root, state, presence) = (&mut self.root_widget, &self.state, &self.presence_ctx);
+        // What this update moved, not what a widget updated outside an app
+        // noted before it.
+        let _ = crate::widget::take_placement_moved();
         let updated = presence.with_permissions(self.permission_ctx.clone(), || {
             crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
         });
+        // A glide moved content its widgets lay out: they are placed again.
+        self.layout.layout_dirty |= crate::widget::take_placement_moved();
         if !updated {
             return false;
         }

@@ -1191,6 +1191,7 @@ fn spawn_document_media(
     socket: &Path,
     store: &Arc<ContentStore>,
     cache_dir: Option<&Path>,
+    attributions: (Arc<fs::write_attribution::WriteAttributions>, PathBuf),
 ) -> Option<std::thread::JoinHandle<()>> {
     // The device's one document-media service also keeps the device's copies
     // of public files, beside the content store whose budget evicts them.
@@ -1209,7 +1210,8 @@ fn spawn_document_media(
     let media = match public {
         Some(public) => fs::document_media::DocumentMedia::with_public(Arc::clone(store), public),
         None => fs::document_media::DocumentMedia::new(Arc::clone(store)),
-    };
+    }
+    .with_write_attributions(attributions);
     match fs::document_media::serve_socket(socket, media) {
         Ok(handle) => Some(handle),
         Err(error) => {
@@ -2144,9 +2146,17 @@ async fn serve(
                 .map(|authority| authority.handle())
         })
         .or_else(|| acl.as_ref().map(|(handle, _)| handle.clone()));
-    let _media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
+    // The session names the agent behind writes it runs for, over the same
+    // session-only socket; the mount attributes its versions accordingly.
+    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(
+            socket,
+            &store,
+            cache_dir.as_deref(),
+            (Arc::clone(&write_attributions), mount_point.clone()),
+        )
+    });
     let (workspace, ticket, joined_remote) = match (record_services, remote_ticket) {
         (Some(records), Some(ticket)) => (
             Workspace::join_with_records(
@@ -2342,6 +2352,7 @@ async fn serve(
             replacement_transactions,
             #[cfg(target_os = "linux")]
             external_history,
+            write_attributions: Some(write_attributions),
             rebind: managed_service.then_some(rebind_rx),
         },
     )
@@ -2508,9 +2519,17 @@ async fn mount(
         .as_ref()
         .map(|records| Arc::clone(&records.repository));
     let workspace_args = acl.as_ref().map(|(handle, _)| handle.clone());
-    let _media = blob_sock
-        .as_deref()
-        .and_then(|socket| spawn_document_media(socket, &store, cache_dir.as_deref()));
+    // The session names the agent behind writes it runs for, over the same
+    // session-only socket; the mount attributes its versions accordingly.
+    let write_attributions = Arc::new(fs::write_attribution::WriteAttributions::default());
+    let _media = blob_sock.as_deref().and_then(|socket| {
+        spawn_document_media(
+            socket,
+            &store,
+            cache_dir.as_deref(),
+            (Arc::clone(&write_attributions), mount_point.clone()),
+        )
+    });
     let workspace = match record_services {
         Some(records) => {
             Workspace::join_with_records(
@@ -2590,6 +2609,7 @@ async fn mount(
             replacement_transactions,
             #[cfg(target_os = "linux")]
             external_history: None,
+            write_attributions: Some(write_attributions),
             rebind: None,
         },
     )
@@ -2766,6 +2786,7 @@ async fn mount_share(
             replacement_transactions: None,
             #[cfg(target_os = "linux")]
             external_history: None,
+            write_attributions: None,
             rebind: None,
         },
     )
@@ -3687,6 +3708,8 @@ struct MountServices {
     replacement_transactions: Option<(Arc<Mutex<fs::RecordTransactionJournal>>, PathBuf)>,
     #[cfg(target_os = "linux")]
     external_history: Option<Arc<fs::external_history::ExternalHistoryFactory>>,
+    /// What the desktop session says caused writes to some paths.
+    write_attributions: Option<Arc<fs::write_attribution::WriteAttributions>>,
     rebind: Option<tokio::sync::mpsc::UnboundedReceiver<()>>,
 }
 
@@ -3722,6 +3745,7 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         replacement_transactions,
         #[cfg(target_os = "linux")]
         external_history,
+        write_attributions,
         mut rebind,
     } = services;
     // Before anything is served: from here on a stop signal ends the mount
@@ -3788,6 +3812,10 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     };
     let fs = match record_publisher {
         Some(publisher) => fs.with_record_publisher(publisher)?,
+        None => fs,
+    };
+    let fs = match write_attributions {
+        Some(attributions) => fs.with_write_attributions(attributions),
         None => fs,
     };
     let fs = match replacement_transactions {

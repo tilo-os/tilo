@@ -152,8 +152,8 @@ fn host_declarations_roles_and_replay_are_honoured() {
 }
 
 #[test]
-fn destructive_host_edits_wait_for_one_confirmation() {
-    // Case `deleting_a_clip_is_confirmed_and_trimming_one_is_not`.
+fn undoable_host_edits_apply_at_once_and_undo_takes_them_back() {
+    // Case `deleting_a_clip_and_trimming_one_both_apply_at_once`.
     {
         let mut app = with_sample();
         let clip = app.state().clips.first().cloned().unwrap();
@@ -177,35 +177,33 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         let stored = app.state().clip(clip.id).cloned().unwrap();
         assert!((stored.out_point - trimmed.out_point).abs() < 1e-9);
 
-        // Deleting it is destructive: refused until confirmed, like a declared
-        // destructive action.
+        // Deleting it is destructive but undoable: it applies at once, and
+        // Undo takes it back.
         let delete = Project::REMOVE_CLIP.with(clip_key);
-        assert!(matches!(
-            app.invoke(delete.clone()),
-            Err(tilo_actions::DoorError::ConfirmationRequired)
-        ));
-        assert_eq!(app.state().clips.len(), clips, "nothing was deleted");
         let partners = app.state().link_partners(clip.id).len();
-        app.invoke_confirmed(delete).unwrap();
+        app.invoke(delete).unwrap();
         assert_eq!(
             app.state().clips.len(),
             clips - 1 - partners,
             "the clip goes with the clips linked to it"
         );
+        assert!(app.undo(), "the delete is one undo step");
+        assert_eq!(app.state().clips.len(), clips);
     }
-    // Case `a_delete_key_on_the_surface_waits_for_confirmation`.
+    // Case `a_delete_key_on_the_surface_applies_at_once`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
         app.harness().click_named("video_editor_root").unwrap();
         app.harness().key("Delete");
-        assert_eq!(
-            app.state().clips.len(),
-            clips,
-            "the surface's delete is held for the host's confirmation"
+        assert!(
+            app.state().clips.len() < clips,
+            "the surface's delete applies at once"
         );
+        assert!(app.undo(), "the delete is one undo step");
+        assert_eq!(app.state().clips.len(), clips);
     }
-    // Case `a_destructive_gesture_asks_once_and_changes_nothing_until_confirmed`.
+    // Case `a_destructive_gesture_applies_as_one_and_undoes_as_one`.
     {
         let mut app = with_sample();
         let clips = app.state().clips.len();
@@ -213,9 +211,11 @@ fn destructive_host_edits_wait_for_one_confirmation() {
         app.harness().set_modifiers(&["ctrl".into()]);
         app.harness().key("a");
         app.harness().set_modifiers(&[]);
-        // One deletion per clip, submitted as one destructive group: nothing is
-        // deleted before the host's confirmation, not even the first clip.
+        // One deletion per clip, submitted as one group of undoable changes:
+        // it applies at once, and one Undo takes every deletion back.
         app.harness().key("Delete");
+        assert!(app.state().clips.len() < clips, "the group applies at once");
+        assert!(app.undo(), "the group is one undo step");
         assert_eq!(app.state().clips.len(), clips);
     }
 }

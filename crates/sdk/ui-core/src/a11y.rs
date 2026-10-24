@@ -383,8 +383,13 @@ impl AccessNode {
 
     /// Attach an opaque, widget-local target for actions on this synthetic
     /// node. Prefer stable model keys over visible indices.
-    pub fn with_action_target(mut self, target: impl Into<String>) -> Self {
-        let target = target.into();
+    pub fn with_action_target(self, target: impl Into<String>) -> Self {
+        self.with_owned_action_target(target.into())
+    }
+
+    /// [`Self::with_action_target`] once the target is owned: one copy in the
+    /// toolkit rather than one in every app that names a target.
+    fn with_owned_action_target(mut self, target: String) -> Self {
         // An actionable synthetic node necessarily needs stable identity for
         // agents and AT to hold across frames. Derive the existing compact key
         // from the same opaque target so authors cannot accidentally provide

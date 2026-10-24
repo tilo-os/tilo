@@ -198,6 +198,70 @@ mod tests {
         );
     }
 
+    /// The prompt holds the keyboard while it is up, so the window behind it
+    /// never sees Escape: the shell must answer the prompt with it, as Deny.
+    /// A Terminal asking for the device's own shell was left in front of a
+    /// prompt that no key could close, and its next session asked again.
+    #[test]
+    fn escape_answers_the_permission_prompt_as_its_deny_button() {
+        use winit::keyboard::{Key, NamedKey};
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.relayout();
+        let (reply, mut answer) = tokio::sync::oneshot::channel();
+        frame
+            .chrome_handle()
+            .borrow_mut()
+            .pending_grants
+            .push_back(PendingPrompt::with_reply(
+                "so.tilo.terminal".to_string(),
+                Capability::HostShell {
+                    scope: crate::shell::state::GRANT_ALWAYS,
+                },
+                reply,
+            ));
+        frame.host_mut().tick_permission_prompt_for_tests();
+        frame.relayout();
+        assert!(
+            frame
+                .widget_registry()
+                .contains_key(PERMISSION_PROMPT_TARGET),
+            "the prompt is on screen"
+        );
+        assert!(
+            crate::shell::input_policy::chrome_captures_input(&frame),
+            "the prompt holds the keyboard, so Escape comes to the shell"
+        );
+        let mut doc = automerge::AutoCommit::new();
+        let mut focus = None;
+        for pressed in [true, false] {
+            frame.dispatch_event(
+                &crate::shell::test_control::keyboard_input_event(
+                    &Key::Named(NamedKey::Escape),
+                    pressed,
+                ),
+                &winit::event::Modifiers::default(),
+                &mut ui::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+                &mut focus,
+            );
+        }
+        assert_eq!(
+            answer.try_recv().ok(),
+            Some(crate::portal::PromptOutcome::Deny),
+            "the app waiting on the prompt hears it was not allowed"
+        );
+        assert!(frame.chrome_handle().borrow().pending_grants.is_empty());
+        frame.host_mut().tick_permission_prompt_for_tests();
+        frame.relayout();
+        let prompt_shown = frame
+            .widget_registry()
+            .contains_key(PERMISSION_PROMPT_TARGET);
+        let keyboard_held = crate::shell::input_policy::chrome_captures_input(&frame);
+        drop(frame);
+        assert!(!prompt_shown, "the prompt is gone");
+        assert!(!keyboard_held, "and the keyboard goes back to the window");
+    }
+
     #[test]
     fn the_shell_registry_publishes_real_frames_only() {
         let mut frame = FrameBuilder::new((1280, 800));

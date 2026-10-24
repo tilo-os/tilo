@@ -25,28 +25,34 @@ impl EditableTextInterface {
 #[interface(name = "org.a11y.atspi.EditableText")]
 impl EditableTextInterface {
     fn set_text_contents(&self, new_contents: &str) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.0
             .set_text_contents(new_contents)
             .map_err(self.map_error())
     }
 
     fn insert_text(&self, _position: i32, _text: &str, _length: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         Err(unsupported())
     }
 
     fn copy_text(&self, _start_pos: i32, _end_pos: i32) -> fdo::Result<()> {
+        crate::read_only::admit()?;
         Err(unsupported())
     }
 
     fn cut_text(&self, _start_pos: i32, _end_pos: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         Err(unsupported())
     }
 
     fn delete_text(&self, _start_pos: i32, _end_pos: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         Err(unsupported())
     }
 
     fn paste_text(&self, _position: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         Err(unsupported())
     }
 }

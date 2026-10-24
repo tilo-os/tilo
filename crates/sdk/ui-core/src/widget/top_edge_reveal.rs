@@ -109,6 +109,11 @@ pub const PUSH_SPEED: f64 = crate::tokens::motion::PUSH_SPEED;
 /// How far a touch that starts in the band drags down to show the bar.
 pub const TOUCH_SWIPE_PX: f64 = crate::tokens::Spacing::BASE.s6 as f64;
 
+/// The band at a display's top edge a finger swipes down from: wider than
+/// the pointer's [`REVEAL_BAND_PX`], since a finger coming off the bezel
+/// lands a few pixels in.
+pub const TOUCH_EDGE_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
+
 /// Where the bar is, as laid out now.
 #[derive(Clone, Copy, Debug)]
 pub struct EdgeGeometry<'a> {
@@ -249,6 +254,16 @@ impl TopEdgeReveal {
     /// Keyboard use ended; the pointer decides again on its next sample.
     pub fn unpin(&mut self) {
         self.pinned = false;
+    }
+
+    /// A finger swiped down from the top edge, which the host read (a
+    /// display's edge, where the band is the bezel's): show the bar. It
+    /// stays until the pointer, or a tap, goes elsewhere. Returns whether
+    /// that changed anything.
+    pub fn reveal_by_touch(&mut self, now: Instant) -> bool {
+        self.pinned = false;
+        self.touch_from = None;
+        self.set_shown(true, now)
     }
 
     /// A pointer sample. Returns whether `shown` changed.

@@ -5,9 +5,10 @@
 //! service's `peer` module); anyone else is refused before the request is
 //! read. The vocabulary is closed: a request names addresses, prefixes, ports
 //! and switches, never an interface, a path, a command or a rule, and
-//! [`ClientLink::check`] and [`ExitLink::check`] bound every value before the
-//! helper acts on it. An opened tunnel's TUN descriptor comes back with the
-//! [`Response::Opened`] line as `SCM_RIGHTS` ancillary data.
+//! [`ClientLink::check`], [`ExitLink::check`] and [`ProfileBlock::check`]
+//! bound every value before the helper acts on it. An opened tunnel's TUN
+//! descriptor comes back with the [`Response::Opened`] line as `SCM_RIGHTS`
+//! ancillary data.
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr};
@@ -33,6 +34,8 @@ pub const MAX_NETWORKS: usize = 16;
 pub const MAX_CARRIER_PORTS: usize = 8;
 /// The most relay addresses the carrier is exempted towards.
 pub const MAX_RELAYS: usize = 16;
+/// The most server addresses a VPN profile's block lets through.
+pub const MAX_PROFILE_SERVERS: usize = 16;
 
 /// What a client sends through the tunnel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +122,41 @@ impl ExitLink {
     }
 }
 
+/// The block that holds while one of the person's `NetworkManager` VPN
+/// profiles is set to connect and is not connected: nothing leaves this
+/// computer but through a tunnel interface, to the profile's servers,
+/// address configuration (DHCP, neighbour discovery) and, when the person
+/// allows it, the local network.
+///
+/// It names the servers by address only. The tunnel is let through by the
+/// kind of its interface (TUN, `WireGuard`, PPP) or its `IPsec` policy, never
+/// by a name the caller gives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileBlock {
+    /// Where the profiles' servers are: their tunnels' own packets go there.
+    pub servers: Vec<IpAddr>,
+    /// Let the local network through: printers, file shares, the router.
+    pub allow_local: bool,
+}
+
+impl ProfileBlock {
+    /// Why the helper must not act on this block, if it must not.
+    ///
+    /// # Errors
+    ///
+    /// Names the first value out of bounds.
+    pub fn check(&self) -> Result<(), String> {
+        if self.servers.len() > MAX_PROFILE_SERVERS {
+            return Err("a block lets through at most sixteen servers".into());
+        }
+        if !self.servers.iter().copied().all(net::is_server_address) {
+            return Err("a server address cannot be let through".into());
+        }
+        Ok(())
+    }
+}
+
 fn check_mtu(mtu: u16) -> Result<(), String> {
     if (MIN_MTU..=MAX_MTU).contains(&mtu) {
         Ok(())
@@ -141,6 +179,10 @@ pub enum Request {
     OpenExit { link: ExitLink },
     /// Undo the exit: forwarding and masquerade.
     CloseExit,
+    /// Hold (or replace) the block of the person's VPN profiles.
+    HoldProfileBlock { block: ProfileBlock },
+    /// Lift the block of the person's VPN profiles.
+    ReleaseProfileBlock,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +212,9 @@ pub enum Response {
     Status {
         client: Option<ClientState>,
         exit: Option<ExitState>,
+        /// The block of the person's VPN profiles, while it holds.
+        #[serde(default)]
+        profile_block: Option<ProfileBlock>,
     },
     /// The tunnel is up; its TUN descriptor rides with this line.
     Opened {
@@ -331,5 +376,73 @@ pub(crate) mod tests {
         }
         assert!(ExitLink { mtu: 1280 }.check().is_ok());
         assert!(ExitLink { mtu: 100 }.check().is_err());
+    }
+
+    pub(crate) fn block() -> ProfileBlock {
+        ProfileBlock {
+            servers: vec![
+                "198.51.100.7".parse().unwrap(),
+                "2001:db8::7".parse().unwrap(),
+            ],
+            allow_local: false,
+        }
+    }
+
+    #[test]
+    fn a_profile_block_names_server_addresses_and_a_switch_only() {
+        let line = serde_json::to_string(&Envelope {
+            protocol: PROTOCOL_VERSION,
+            request: Request::HoldProfileBlock { block: block() },
+        })
+        .unwrap();
+        assert!(line.contains(r#""op":"hold_profile_block""#));
+        let back: Envelope = serde_json::from_str(&line).unwrap();
+        assert_eq!(back.request, Request::HoldProfileBlock { block: block() });
+        // An interface or a rule is not something a block can carry.
+        assert!(
+            serde_json::from_str::<Envelope>(
+                r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":[],"allow_local":false,"interface":"eth0"}}}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<Envelope>(
+                r#"{"protocol":1,"request":{"op":"hold_profile_block","block":{"servers":["eth0"],"allow_local":false}}}"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn every_profile_block_value_is_bounded() {
+        assert_eq!(block().check(), Ok(()));
+        // A profile whose servers could not be looked up still blocks.
+        let none = ProfileBlock {
+            servers: vec![],
+            allow_local: true,
+        };
+        assert_eq!(none.check(), Ok(()));
+        let bad = [
+            "127.0.0.1",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "::1",
+            "::",
+            "ff02::1",
+            "100.100.64.1",
+        ];
+        for server in bad {
+            let block = ProfileBlock {
+                servers: vec![server.parse().unwrap()],
+                allow_local: false,
+            };
+            assert!(block.check().is_err(), "{server}");
+        }
+        let many = ProfileBlock {
+            servers: vec!["198.51.100.7".parse().unwrap(); MAX_PROFILE_SERVERS + 1],
+            allow_local: false,
+        };
+        assert!(many.check().is_err());
     }
 }

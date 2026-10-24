@@ -72,6 +72,28 @@ fn the_sparse_policy_admits_a_window_and_merges_long_lists_instead_of_refusing_t
 }
 
 #[test]
+fn overlapping_damage_renders_sparsely_while_its_union_leaves_a_quarter_untouched() {
+    let size = (2944, 1840);
+    // Two half-output windows overlapping: their areas add up to the whole output, but together
+    // they cover 2172 of its 2944 columns, under three quarters.
+    let overlapping = [rect(0, 0, 1472, 1840), rect(700, 0, 1472, 1840)];
+    assert_eq!(
+        VelloDrmBridge::normalize_damage(&overlapping, size).as_deref(),
+        Some(&overlapping[..]),
+        "overlapping windows stay two exact rectangles and render sparsely"
+    );
+    // Covering three quarters of the columns is still a dense frame.
+    let wider = [rect(0, 0, 1472, 1840), rect(736, 0, 1472, 1840)];
+    assert!(VelloDrmBridge::normalize_damage(&wider, size).is_none());
+    // A buffer-age history repeating one window many times over is that window.
+    let repeated = vec![rect(100, 100, 1400, 1700); 40];
+    assert_eq!(
+        VelloDrmBridge::normalize_damage(&repeated, size).as_deref(),
+        Some(&[rect(100, 100, 1400, 1700)][..])
+    );
+}
+
+#[test]
 fn a_window_sized_typing_update_renders_sparsely_and_equals_a_full_repaint() {
     let mut bridge = required_bridge(200, 100);
     let mut fresh = required_bridge(200, 100);

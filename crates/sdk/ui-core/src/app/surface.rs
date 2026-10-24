@@ -4,9 +4,7 @@
 //! size, a redraw, the pointer's shape — comes from the surface.
 
 use super::*;
-use crate::damage::{
-    WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, moved_boxes, widget_boxes,
-};
+use crate::damage::{WidgetIdentity, boxes_covered_by_own_damage, changed_boxes, widget_boxes};
 use crate::profiling::InputPhase;
 
 /// What an [`App`] needs from the surface it is shown on.
@@ -1012,8 +1010,7 @@ impl App {
         #[cfg(test)]
         drop(boxes_probe);
         let moved = match &boxes_after {
-            Some(after) if described => Some(changed_boxes(&boxes_before, after)),
-            Some(after) => moved_boxes(&boxes_before, after),
+            Some(after) => Some(changed_boxes(&boxes_before, after)),
             None if recomposed => None,
             None => Some(Vec::new()),
         };
@@ -1081,10 +1078,8 @@ impl App {
                 let (before, after) = (uncovered(&boxes_before), uncovered(after));
                 if covered.is_empty() {
                     Some(moved)
-                } else if described {
-                    Some(changed_boxes(&before, &after))
                 } else {
-                    moved_boxes(&before, &after).or(Some(moved))
+                    Some(changed_boxes(&before, &after))
                 }
             }
             (moved, _) => moved,
@@ -1493,19 +1488,23 @@ mod tests {
         let label = KurboRect::new(0.0, 30.0, 50.0, 40.0);
         let grown = KurboRect::new(0.0, 0.0, 140.0, 20.0);
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
-            Some(vec![field, grown])
+            changed_boxes(&[(a, field), (b, label)], &[(a, grown), (b, label)]),
+            vec![field, grown]
         );
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
-            Some(Vec::new())
+            changed_boxes(&[(a, field), (b, label)], &[(a, field), (b, label)]),
+            Vec::<KurboRect>::new()
         );
-        // Other widgets, or more of them: which pixels moved is unknown.
+        // Two widgets that swapped places repaint where each was and is.
         assert_eq!(
-            moved_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
-            None
+            changed_boxes(&[(a, field), (b, label)], &[(b, field), (a, label)]),
+            vec![label, field, field, label]
         );
-        assert_eq!(moved_boxes(&[(a, field)], &[(a, field), (b, label)]), None);
+        // One that came into view repaints where it is.
+        assert_eq!(
+            changed_boxes(&[(a, field)], &[(a, field), (b, label)]),
+            vec![label]
+        );
     }
 
     #[test]

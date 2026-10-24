@@ -1380,6 +1380,8 @@ search-answer-bad-address = Diese Adresse lässt sich nicht öffnen.
 search-people-invited = Eingeladen
 search-action-emoji-picker = Emoji auswählen
 search-action-emoji-picker-subtitle = Dort einfügen, wo du schreibst
+search-action-next-input-source-subtitle = Mit dem nächsten Layout deiner Liste schreiben
+input-source-next-none = Füge in den Einstellungen ein weiteres Tastaturlayout hinzu, um zwischen ihnen zu wechseln
 search-provider-host-apps = Host-Apps
 search-provider-app-actions = Ressourcen und Aktionen von Anwendungen
 
@@ -1939,6 +1941,8 @@ onboarding-recovery-key-placeholder = wort1 wort2 wort3 …
 onboarding-recovery-key-progress = { $count } von { $total } Wörtern
 onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
 onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-typo = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-suggestion = Wort { $position }, „{ $word }“, ist kein Wort eines Wiederherstellungsschlüssels. Meintest du „{ $suggestion }“?
 onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
 onboarding-recovery-key-ready = Wiederherstellungsschlüssel für Identität { $fingerprint }
 onboarding-recovery-key-ready-detail = Wähle Identität wiederherstellen, um ihn auf diesem Computer zu verwenden.
@@ -1946,6 +1950,7 @@ onboarding-recovery-key-matches = Das ist die Identität dieses Computers. Wähl
 onboarding-recovery-key-different = Diese Wörter gehören zu einer anderen Identität
 onboarding-recovery-key-different-detail = Sie stellen { $found } wieder her, aber dieser Computer gehört zu { $expected }. Prüfe, ob du den Wiederherstellungsschlüssel der Identität dieses Computers verwendest.
 onboarding-recovery-key-restoring = Deine Identität wird wiederhergestellt …
+onboarding-recovery-key-failed = Wiederherstellung mit diesem Schlüssel fehlgeschlagen
 onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
 onboarding-restore-title = Aus einer Sicherung wiederherstellen
 onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
@@ -3163,6 +3168,13 @@ crash-notice-app-name = Desktop
 crash-notice-title = Der Desktop wurde neu gestartet
 crash-notice-froze-body = Er reagierte um { $time } nicht mehr. Ein Bericht darüber bleibt auf diesem Computer.
 crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-stopped-title = Der Computer wurde neu gestartet
+crash-notice-stopped-body = Er wurde vor diesem Start unerwartet angehalten. Ein Bericht darüber bleibt auf diesem Computer.
+host-crash-records-resource = Probleme
+host-crash-records-list = Probleme auflisten
+host-crash-records-list-detail = Wann der Desktop oder der Computer angehalten hat, das Neueste zuerst, ohne die Einzelheiten.
+host-crash-records-read = Einzelheiten eines Problems lesen
+host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthält. Er bleibt auf diesem Computer.
 
 ## Desk widgets
 
@@ -3290,20 +3302,16 @@ directory-reported = Arbeitsbereich gemeldet
 directory-reported-body = Die Betreibenden wurden benachrichtigt.
 directory-report-failed = Die Meldung ist nicht angekommen
 directory-moved = { $name } ist auf deinen Host umgezogen, damit alle ihn finden und beitreten können.
-arrival-others = { $count ->
-    [one] und 1 weitere Person
-   *[other] und { $count } weitere
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Sag etwas
 cursor-chat-you = Du
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = Andere hier sehen deinen Namen, deine Farbe und wo du in diesem Arbeitsbereich bist
-presence-arrival-intro-here = Andere hier sehen deinen Namen und deine Farbe, nie wo du bist
-presence-arrival-intro-nothing = Andere hier sehen dich nicht, und du siehst ihre Zeiger nicht
-presence-arrival-change = Ändern
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = Sie sehen, wo du bist
+presence-arrival-seen-here = Sie sehen, dass du da bist
+presence-arrival-seen-nothing = Sie sehen dich nicht
 profile-name-not-saved = Dein Name wurde nicht gespeichert
 profile-action-say-something = Hier etwas sagen
 cursor-chat-no-window = Zeig auf ein geteiltes Fenster, um etwas zu sagen

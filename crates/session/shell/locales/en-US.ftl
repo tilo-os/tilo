@@ -1400,6 +1400,8 @@ search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
 search-action-emoji-picker = Choose an emoji
 search-action-emoji-picker-subtitle = Insert it where you’re typing
+search-action-next-input-source-subtitle = Type with the next layout in your list
+input-source-next-none = Add another keyboard layout in Settings to switch between them
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
 
@@ -1959,6 +1961,8 @@ onboarding-recovery-key-placeholder = word1 word2 word3 …
 onboarding-recovery-key-progress = { $count } of { $total } words
 onboarding-recovery-key-count = A recovery key has 24 words; this has { $found }.
 onboarding-recovery-key-unknown-word = Word { $position } isn't a recovery-key word. Check its spelling.
+onboarding-recovery-key-typo = Word { $position }, “{ $word }”, isn't a recovery-key word. Check its spelling.
+onboarding-recovery-key-suggestion = Word { $position }, “{ $word }”, isn't a recovery-key word. Did you mean “{ $suggestion }”?
 onboarding-recovery-key-checksum = These words don't form a recovery key. One is probably mistyped or out of order.
 onboarding-recovery-key-ready = Recovery key for identity { $fingerprint }
 onboarding-recovery-key-ready-detail = Choose Restore identity to use it on this computer.
@@ -1966,6 +1970,7 @@ onboarding-recovery-key-matches = This is this computer's identity. Choose Resto
 onboarding-recovery-key-different = These words belong to a different identity
 onboarding-recovery-key-different-detail = They restore { $found }, but this computer belongs to { $expected }. Check that you're using the recovery key of this computer's identity.
 onboarding-recovery-key-restoring = Restoring your identity…
+onboarding-recovery-key-failed = Couldn't restore from this recovery key
 onboarding-choice-restore-detail = Open an encrypted identity backup file
 onboarding-restore-title = Restore from a backup
 onboarding-restore-body = Choose the encrypted backup you saved from Tilo and enter its passphrase.
@@ -3208,6 +3213,13 @@ crash-notice-app-name = Desktop
 crash-notice-title = The desktop restarted
 crash-notice-froze-body = It stopped responding at { $time }. A record of what happened stays on this computer.
 crash-notice-crashed-body = It stopped unexpectedly at { $time }. A record of what happened stays on this computer.
+crash-notice-stopped-title = The computer restarted
+crash-notice-stopped-body = It stopped unexpectedly before this start. A record of what happened stays on this computer.
+host-crash-records-resource = Problems
+host-crash-records-list = List problems
+host-crash-records-list-detail = When the desktop or the computer stopped, newest first, without the details.
+host-crash-records-read = Read a problem's details
+host-crash-records-read-detail = Everything the record of one problem holds. It stays on this computer.
 
 ## Desk widgets
 
@@ -3335,20 +3347,16 @@ directory-reported = Workspace reported
 directory-reported-body = The people who run it have been told.
 directory-report-failed = The report didn't go through
 directory-moved = { $name } moved to your host, so anyone can find and join it.
-arrival-others = { $count ->
-    [one] and 1 other
-   *[other] and { $count } others
-}
 
 # Cursor chat: a short message beside your pointer, shown to everyone in that window.
 cursor-chat-placeholder = Say something
 cursor-chat-you = You
 
-# The line under the top bar when you arrive where people are, or someone waves.
-presence-arrival-intro-where = People here see your name, your colour and where you are in this workspace
-presence-arrival-intro-here = People here see your name and your colour, never where you are
-presence-arrival-intro-nothing = People here don't see you, and you don't see their pointers
-presence-arrival-change = Change
+# The top bar's status when you arrive in a public workspace the first time:
+# what its people see of you, in a few words.
+presence-arrival-seen-where = They see where you are
+presence-arrival-seen-here = They see you're here
+presence-arrival-seen-nothing = They don't see you
 profile-name-not-saved = Your name wasn’t saved
 profile-action-say-something = Say something here
 cursor-chat-no-window = Point at a shared window to say something

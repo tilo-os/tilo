@@ -1005,3 +1005,115 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
     drop(rooms);
     relay.shutdown().await;
 }
+
+/// A note the room's governor (Ada) wrote before someone new was admitted
+/// reaches the newcomer. Grace is admitted through the room's door after
+/// Ada wrote the note twice; her device subscribes to the room as a device
+/// does, and the replay it is sent holds Ada's writes of the note, which
+/// open to the note with both versions in its history.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Relay::shutdown consumes the relay after the assertions"
+)]
+async fn a_newcomer_is_replayed_a_note_written_before_they_were_admitted() {
+    use super::super::tests::{door_join, guest_device};
+    const NOTE: &str = "tab:0000000000000001";
+    let dir = tempfile::tempdir().unwrap();
+    let (key, ada) = governor_with(tilo_user_identity::cloud_enrollment::host_capabilities());
+    let relay = view_read_relay(dir.path(), &key, &ada).await;
+    let rooms = relay.rooms().unwrap().clone();
+    let created = rooms.create("Lounge").await.unwrap();
+    let (room, workspace_id) = (created.room, created.workspace_id);
+    for version in ["first", "second"] {
+        rooms
+            .author_room_record(&room, &ada, (APP, NOTE), |doc| {
+                doc.put(ROOT, "title", version).map_err(|e| e.to_string())
+            })
+            .await
+            .unwrap();
+    }
+    assert!(
+        !retained_writes(&relay, workspace_id, NOTE).await.is_empty(),
+        "the relay retains Ada's note before Grace is admitted"
+    );
+
+    let (grace_key, grace) = guest_device();
+    door_join(&rooms, &ada, &room, (&grace_key, &grace), 21).await;
+
+    let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&grace_key.to_bytes()))
+        .relay_mode(iroh::RelayMode::Disabled)
+        .bind()
+        .await
+        .unwrap();
+    let client = crate::RelayClient::connect_to_pinned_host(
+        endpoint,
+        relay.node_addr(),
+        grace.clone(),
+        grace_key.clone(),
+        tilo_user_identity::RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    client
+        .send(crate::Envelope::Subscribe { workspace_id })
+        .unwrap();
+    let replayed = tilo_test_env::within("Grace's replay of the room", async {
+        let mut replayed = Vec::new();
+        loop {
+            match client.recv().await {
+                Some(crate::Envelope::Ready { .. }) => break replayed,
+                Some(crate::Envelope::Delta { delta, .. }) => replayed.push(delta),
+                Some(_) => {}
+                None => panic!("the relay closed Grace's subscription before Ready"),
+            }
+        }
+    })
+    .await;
+    let held: Vec<SignedOp> = replayed
+        .iter()
+        .filter_map(|delta| match crate::CoeditPayload::decode(delta)? {
+            crate::CoeditPayload::Checkpoint { body, .. }
+            | crate::CoeditPayload::RetainedDelta { body, .. } => {
+                match postcard::from_bytes::<NeighbourMsg>(&body).ok()? {
+                    NeighbourMsg::AppDocument {
+                        record_id,
+                        envelope,
+                        ..
+                    } if record_id == NOTE => Some(*envelope),
+                    _ => None,
+                }
+            }
+        })
+        .collect();
+    assert!(
+        !held.is_empty(),
+        "Grace's replay holds no write of the note Ada wrote before she was admitted \
+         ({} frames replayed)",
+        replayed.len()
+    );
+    assert!(
+        held.iter()
+            .all(|op| op.author.as_bytes() == &ada.device_public_key),
+        "every write of the note Grace is sent is Ada's"
+    );
+    let grace_member = SealingMember::join(&rooms, &room, (APP, NOTE), grace_key).await;
+    let mut read = automerge::AutoCommit::new();
+    for op in &held {
+        grace_member.open_into(op, &mut read);
+    }
+    assert_eq!(title(&read.save()).as_deref(), Some("second"));
+    let versions: std::collections::BTreeSet<String> = read
+        .get_changes(&[])
+        .iter()
+        .map(automerge::Change::hash)
+        .filter_map(|hash| title(&read.fork_at(&[hash]).ok()?.save()))
+        .collect();
+    assert!(
+        versions.contains("first") && versions.contains("second"),
+        "the note Grace reads keeps both of Ada's versions: {versions:?}"
+    );
+    drop(rooms);
+    relay.shutdown().await;
+}

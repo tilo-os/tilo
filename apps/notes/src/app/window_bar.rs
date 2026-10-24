@@ -117,42 +117,54 @@ mod tests {
         app
     }
 
-    /// The header row's height and the note title's top, as laid out.
-    fn top_of_note(app: &mut TestApp<crate::NotesShell>) -> (f64, f64) {
+    /// The page tree's header, the note's header and where the note's view
+    /// starts, as laid out.
+    fn tops(app: &mut TestApp<crate::NotesShell>) -> (f64, f64, f64) {
         app.with_surface::<NotesApp, _>(|notes| {
+            let g = notes.shell.geometry();
             (
-                notes.shell.geometry().header_height,
-                notes.main.title_rect_for_test().y0,
+                g.sidebar_header().height(),
+                g.content_header().height(),
+                g.content_body().y0,
             )
         })
         .expect("the notes surface")
     }
 
-    /// A compact window has nothing for a header row to hold: the page
-    /// tree's header is in its drawer, the note's in the window's bar. The
-    /// note starts right under the bar, or under its notice's strip, and a
-    /// wide window keeps the row the page tree's header stands in.
+    /// The note title's top, as laid out.
+    fn title_top(app: &mut TestApp<crate::NotesShell>) -> f64 {
+        app.with_surface::<NotesApp, _>(|notes| notes.main.title_rect_for_test().y0)
+            .expect("the notes surface")
+    }
+
+    /// The window bar holds the note's controls, so the note has no header
+    /// row of its own at any width: it starts right under the bar, or under
+    /// its notice's strip. Only a docked page tree keeps its header, which
+    /// holds its title and New note.
     #[test]
-    fn a_compact_note_starts_right_under_the_window_bar() {
+    fn a_note_starts_right_under_the_window_bar() {
         let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
-        for scenario in ["status", "import_success"] {
-            let mut compact = notes_at(scenario, (420, 800));
-            let (row, title) = top_of_note(&mut compact);
-            assert!(
-                row.abs() < 1e-9,
-                "{scenario}: no header row at 420 px, got {row}"
-            );
-            assert!(
-                (title - gutter).abs() < 0.5,
-                "{scenario}: the title stands one gutter under the bar, at {title}"
-            );
-            let mut wide = notes_at(scenario, (1280, 800));
-            let (row, title) = top_of_note(&mut wide);
-            assert!(
-                row > 0.0,
-                "{scenario}: the page tree's header row stays wide"
-            );
-            assert!((title - (row + gutter)).abs() < 0.5, "{scenario}: {title}");
+        for scenario in ["status", "import_success", "first_note"] {
+            for (width, docked) in [(420, false), (1280, true)] {
+                let mut notes = notes_at(scenario, (width, 800));
+                let (tree, note, body) = tops(&mut notes);
+                assert!(
+                    note.abs() < 1e-9 && body.abs() < 1e-9,
+                    "{scenario} at {width} px: the content starts at the top, its header {note} high, its view at {body}"
+                );
+                assert_eq!(
+                    tree > 0.0,
+                    docked,
+                    "{scenario} at {width} px: the page tree's header shows only docked"
+                );
+                if scenario != "first_note" {
+                    let title = title_top(&mut notes);
+                    assert!(
+                        (title - gutter).abs() < 0.5,
+                        "{scenario} at {width} px: the title stands one gutter under the bar, at {title}"
+                    );
+                }
+            }
         }
     }
 }

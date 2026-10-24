@@ -45,6 +45,23 @@ int main() {
   assert(ShortcutText(*ParseShortcut("Alt+Shift+Up", false), false) == "Alt+Shift+Up Arrow");
   assert(ShortcutText(*ParseShortcut("Ctrl+Shift+Y", true), true) == "⇧⌘Y");
 
+  // The Browser's own keys: each entry of the list parses, and they are the
+  // keys the Browser answers (its own test holds the list to that).
+  for (bool mac : {false, true}) {
+    const auto texts = tilo::BrowserKeptText(mac);
+    assert(texts.size() > 10);
+    for (const auto& text : texts) assert(ParseShortcut(text, mac) && tilo::BrowserKeeps(*ParseShortcut(text, mac), mac));
+  }
+  assert(tilo::BrowserKeeps(*ParseShortcut("Ctrl+F", false), false));
+  assert(tilo::BrowserKeeps(*ParseShortcut("Alt+Shift+Left", false), false));
+  // A password manager's key for filling a login is not the address's.
+  assert(!tilo::BrowserKeeps(*ParseShortcut("Ctrl+Shift+L", false), false));
+  assert(!tilo::BrowserKeeps(*ParseShortcut("Ctrl+Shift+0", false), false));
+  // On macOS the tab keys take Control as well as Command.
+  assert(tilo::BrowserKeeps(*ParseShortcut("MacCtrl+T", true), true));
+  assert(tilo::BrowserKeeps(*ParseShortcut("Ctrl+C", true), true));
+  assert(!tilo::BrowserKeeps(*ParseShortcut("MacCtrl+C", true), true));
+
   ExtensionCommands commands(false);
   commands.Set("first", {
     {"_execute_action", "", "Ctrl+Shift+Y"},

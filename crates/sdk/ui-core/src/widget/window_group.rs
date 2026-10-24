@@ -252,6 +252,8 @@ pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
     fullscreen_presentation: bool,
+    /// While fullscreen, the bar the person reached for (`fullscreen_bar`).
+    fullscreen_bar: fullscreen_bar::FullscreenBar,
     close_reports: Vec<crate::application::ComponentCloseReport>,
     pub id: u64,
     bar: TabBar,
@@ -560,6 +562,7 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
             grip_dirty: false,
@@ -624,13 +627,16 @@ impl WindowGroup {
     }
 
     fn navigation_bar_visible(&self) -> bool {
-        !self.external_navigation && !self.fullscreen_presentation
+        !self.external_navigation && (!self.fullscreen_presentation || self.fullscreen_bar_drawn())
     }
 
     pub(crate) fn set_fullscreen_presentation(&mut self, fullscreen: bool) {
         if self.fullscreen_presentation != fullscreen {
             self.fullscreen_presentation = fullscreen;
             self.style_dirty = true;
+            if !fullscreen {
+                self.fullscreen_bar = fullscreen_bar::FullscreenBar::default();
+            }
         }
     }
 
@@ -1600,166 +1606,6 @@ impl WindowGroup {
         self.search_tab = None;
     }
 
-    /// Carry the window's search to its tab's app ([`super::WindowSearch::drive`]).
-    fn drive_search(&mut self) {
-        if self.search.is_remote() {
-            // An app in a process of its own is told, and drives itself.
-            if let Some(tab) = self.search_tab {
-                let events = self.search.take_remote_events();
-                self.window_events
-                    .extend(events.into_iter().map(|event| (tab, event)));
-            }
-            return;
-        }
-        if !self.search.wants_drive() {
-            return;
-        }
-        let Some(tab) = self.search_tab else {
-            return;
-        };
-        let search = &mut self.search;
-        let driven = self
-            .hosts
-            .iter_mut()
-            .find(|(id, _)| *id == tab)
-            .and_then(|(_, host)| host.visit_search_root(&mut |root| search.drive(root)));
-        if driven.is_none() {
-            // The tab's app is gone: nothing is left to tell.
-            self.search.detach();
-        }
-    }
-
-    /// Carry out what the person asked of the window's search.
-    fn service_search(&mut self) -> bool {
-        let requests = self.search.take_requests();
-        let acted = !requests.is_empty();
-        for request in requests {
-            match request {
-                super::WindowSearchRequest::Open => {
-                    self.open_search(crate::tokens::MotionSource::Pointer);
-                }
-                super::WindowSearchRequest::Close => {
-                    self.close_search(crate::motion::input_source());
-                }
-                super::WindowSearchRequest::Widen(reach) => {
-                    // The platform search takes the query on from here.
-                    self.pending_search_open = Some(super::SearchHandoff {
-                        tab: self.bar.active_id(),
-                        reach,
-                        query: self.search.query().to_owned(),
-                    });
-                    self.close_search(crate::motion::input_source());
-                }
-            }
-        }
-        self.drive_search();
-        acted
-    }
-
-    /// The search follows the window's active tab: switching tabs ends it on
-    /// the tab it was on.
-    fn follow_search_tab(&mut self) {
-        if let Some(tab) = self.search_tab
-            && tab != self.bar.active_id()
-        {
-            self.close_search(crate::tokens::MotionSource::Pointer);
-        }
-    }
-
-    /// Whether `event` is Find (Ctrl+F, ⌘F), or Find and Replace (Ctrl+H,
-    /// ⌘⌥F), and this window can search in place (for replacing, a
-    /// document): the window opens its search, or gives the open one the
-    /// keyboard, instead of the app opening a find of its own.
-    fn takes_find(&mut self, event: &WindowEvent, modifiers: winit::event::Modifiers) -> bool {
-        let Some(opening) = super::window_search::search_chord(
-            event,
-            modifiers.state(),
-            crate::platform::PlatformConventions::default(),
-        ) else {
-            return false;
-        };
-        if !self.focused || !self.navigation_bar_visible() {
-            return false;
-        }
-        let replace = opening == crate::window_toolbar::SearchOpening::Replace;
-        if self.search.is_open() {
-            if self.search.has_keyboard() {
-                // Find again widens, and the replace chord goes to the
-                // replacement: the search's own key handling.
-                return false;
-            }
-            if replace {
-                self.search.focus_replacement();
-            } else {
-                self.search.take_keyboard();
-            }
-            return true;
-        }
-        let active = self.bar.active_id();
-        let in_place = match self.window_offer(active) {
-            Some(offer) => offer.search.into(),
-            None => self
-                .active_host_mut()
-                .map_or(super::InPlace::Nothing, TileHost::in_place_search),
-        };
-        if in_place == super::InPlace::Nothing || (replace && in_place != super::InPlace::Document)
-        {
-            return false;
-        }
-        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
-        true
-    }
-
-    /// Route a keyboard or input-method event to the window's search while
-    /// its field holds the keyboard, for a host whose own chords and focus
-    /// would otherwise see the key first. Whether the search took it; an
-    /// event it did not take is the host's to dispatch as usual.
-    pub fn route_search_input(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
-        if !self.search.has_keyboard()
-            || !matches!(
-                event,
-                WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-            )
-        {
-            return false;
-        }
-        let routed = self.search.route(event, ctx);
-        if routed {
-            self.service_search();
-            self.drive_search();
-        }
-        routed
-    }
-
-    /// Place the search control after the tabs, and let it reach up to the
-    /// window's own controls.
-    fn place_search(&mut self) {
-        if !self.navigation_bar_visible() {
-            self.search.place(Rect::ZERO, 0.0);
-            return;
-        }
-        let px = super::window_controls::CONTROL_PX;
-        if let Some((row, reach)) = self.bar.toolbar_search_slot() {
-            // The app put its slots in the bar: the control ends their row,
-            // and the open search grows back over the location.
-            let x0 = row.x1 + super::window_controls::CONTROL_GAP;
-            let y0 = row.center().y - px / 2.0;
-            self.search
-                .place_trailing(Rect::new(x0, y0, x0 + px, y0 + px), reach.min(x0));
-            return;
-        }
-        let row = self.bar.get_rect();
-        let x0 = self.bar.tabs_end() + super::window_controls::CONTROL_GAP;
-        let y0 = row.center().y - px / 2.0;
-        let limit = self.bar.window_controls().content_limit(row);
-        self.search
-            .place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
-    }
-
     pub fn take_pending_new_tab(&mut self) -> Option<u64> {
         self.pending_new_tab.take()
     }
@@ -2135,6 +1981,7 @@ impl WindowGroup {
             rect: Rect::ZERO,
             external_navigation: false,
             fullscreen_presentation: false,
+            fullscreen_bar: fullscreen_bar::FullscreenBar::default(),
             edge_drag: None,
             edge_highlight: None,
             grip_dirty: false,
@@ -3710,9 +3557,12 @@ impl Widget for WindowGroup {
         self.set_reduce_motion(theme.reduce_motion);
         // This is the layout a maximized frame that came to rest is owed.
         self.rest_layout_owed = false;
+        self.chrome_motion = theme.motion();
+        self.fullscreen_bar.laid_out = self.bar_over_content();
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
+        self.lay_bar_over_content(taffy, bar_node);
         let active_id = self.bar.active_id();
         self.offer_history_controls();
         for (id, host) in &mut self.hosts {
@@ -3893,15 +3743,9 @@ impl Widget for WindowGroup {
         }
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
-        if self.navigation_bar_visible() {
-            self.bar.set_maximized(self.maximized);
-            self.bar
-                .set_group_focused(self.focused || self.search_active);
-            // The bar's menus stay inside the window.
-            self.bar.set_popup_area(self.rect);
-            self.bar.draw(scene, transform, tr, theme, presence);
-            self.search.set_ground(self.bar.ground_color(theme));
-            self.search.draw(scene, transform, tr, theme, presence);
+        let bar_over = self.bar_over_content();
+        if self.navigation_bar_visible() && !bar_over {
+            self.draw_bar(scene, transform, tr, theme, presence);
         }
         let active_id = self.bar.active_id();
         // A tile holding a place for an app that has not arrived takes
@@ -3974,6 +3818,7 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
+        self.draw_bar_over_content(bar_over, scene, transform, tr, theme, presence);
         if self.navigation_bar_visible() {
             let band = self.bar.get_rect().inflate(0.0, 6.0);
             self.bar.draw_holder_chip(scene, transform, tr, theme, band);
@@ -4111,6 +3956,7 @@ impl Widget for WindowGroup {
         if self.maximized_chrome_live() && self.top_edge.settle(crate::time::now()) {
             self.top_edge_changed();
         }
+        self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
         let mut active_host = false;
@@ -4245,6 +4091,7 @@ impl Widget for WindowGroup {
             .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
         spawn_in_flight
             || tab_fade
+            || self.fullscreen_bar_fading()
             || top_slide
             || chrome_fade
             || close_in_flight
@@ -6476,6 +6323,11 @@ mod tests {
 
 /// The maximized window's bar: hidden at rest over a full-height client, and
 /// one bar with a Tilo app's header row.
+#[path = "window_group_fullscreen_bar.rs"]
+mod fullscreen_bar;
+#[path = "window_group_search.rs"]
+mod search;
+
 #[cfg(test)]
 #[path = "window_group_window_bar_tests.rs"]
 mod window_bar_tests;

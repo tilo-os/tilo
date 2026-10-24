@@ -1,32 +1,30 @@
 //! Arriving.
 //!
 //! Entering a workspace with people in it (joining it, or switching to it)
-//! puts up the arrival line ([`crate::shell::arrival_line`]): its name and
-//! the faces of who is here. It is not put up again while nobody arrived
-//! or left since the last time. The first time in a public workspace it
-//! also says what the people there see of you, with "Change" to choose
-//! otherwise. Nothing on it asks for anything; any input dismisses it.
-//! Someone waving at you shows in the top bar, as it does in a browser tab
-//! ([`tilo_desktop::chrome::WaveNotice`]).
+//! says so on the faces the top bar already shows, never over the windows:
+//! those faces pulse and a short name slides out of them
+//! ([`tilo_desktop::chrome::ArrivalNotice`]). It is not said again while
+//! nobody arrived or left since the last time. The first time in a public
+//! workspace it says instead what the people there see of you, and pressing
+//! it opens your own menu to choose otherwise. Nothing on it asks for
+//! anything; it goes on its own. Someone waving at you shows in the top bar
+//! the same way ([`tilo_desktop::chrome::WaveNotice`]).
 
 use std::collections::{BTreeSet, HashMap};
-use std::time::Instant;
-
-use vello::kurbo::Point;
 
 use crate::shell::i18n::t;
 use crate::shell::state::RoomId;
 use tilo_desktop::collaborators::RosterRow;
 
-/// What the people in a public workspace see of the person, as the
-/// arrival line tells them the first time.
+/// What the people in a public workspace see of the person, in the few
+/// words the bar's status has room for.
 fn intro_text(visibility: ui::PresenceVisibility) -> String {
     t(if visibility.shows_where() {
-        "presence-arrival-intro-where"
+        "presence-arrival-seen-where"
     } else if visibility.shows_presence() {
-        "presence-arrival-intro-here"
+        "presence-arrival-seen-here"
     } else {
-        "presence-arrival-intro-nothing"
+        "presence-arrival-seen-nothing"
     })
 }
 
@@ -79,29 +77,26 @@ impl PresenceNotices {
 }
 
 impl super::ShellOverlayHost {
-    /// Look at who is in the workspace on screen, and put the line up when
-    /// there is something to say.
+    /// Look at who is in the workspace on screen, and say so in the bar
+    /// when there is something to say.
     pub(crate) fn refresh_presence_notices(&mut self) -> bool {
-        let now = Instant::now();
-        let mut changed = false;
         let Some(chrome) = self.chrome.clone() else {
-            return changed;
+            return false;
         };
         let generation = chrome.borrow().tree_handle().generation();
         if self.presence_notices.looked_at == Some(generation) {
-            return changed;
+            return false;
         }
         self.presence_notices.looked_at = Some(generation);
-        let (room, workspace, rows) = {
+        let (room, rows) = {
             let state = chrome.borrow();
             let local = state.active_local_user();
             let tree = state.tree();
             let Some(active) = tree.desktop.active_workspace() else {
-                return changed;
+                return false;
             };
             (
                 active.room(),
-                active.name.clone(),
                 tilo_desktop::collaborators::collaborator_roster_rows(&tree.desktop, &local)
                     .into_iter()
                     .filter(|row| !row.invited && !row.own_device)
@@ -111,90 +106,63 @@ impl super::ShellOverlayHost {
         let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
         let intro =
             self.active_workspace_is_public() && !self.presence_notices.introduced.contains(&room);
-        if self.presence_notices.look(room, &ids, intro) {
-            let people = rows
-                .into_iter()
-                .map(|row| {
-                    let [r, g, b, _] = row.color.to_rgba8().to_u8_array();
-                    crate::shell::arrival_line::Present {
-                        name: row.label,
-                        id: row.id,
-                        colour: Some((r, g, b)),
-                        is_agent: row.is_agent,
-                    }
-                })
-                .collect();
-            self.arrival_line.show(&workspace, people, now);
-            if intro {
-                self.arrival_line
-                    .tell(intro_text(self.presence_visibility(room)));
-                self.persist_collaboration_preferences();
-            }
-            changed = true;
+        if !self.presence_notices.look(room, &ids, intro) {
+            return false;
         }
-        changed
+        let names = rows.into_iter().map(|row| row.label).collect();
+        self.say_arrived(ids, names);
+        if intro {
+            self.tell_seen(room);
+            self.persist_collaboration_preferences();
+        }
+        true
     }
 
-    /// The first time in a public workspace when it is joined: the arrival
-    /// line the join put up says what its people see of the person.
+    /// Say in the bar that the person arrived where `people` (by roster id,
+    /// named `names`) are: their faces pulse and a short name slides out.
+    pub(crate) fn say_arrived(&mut self, people: Vec<String>, names: Vec<String>) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        self.arrival_pulses.extend(people.iter().cloned());
+        let mut state = chrome.borrow_mut();
+        state.arrival_notice = Some(tilo_desktop::chrome::ArrivalNotice {
+            people,
+            names,
+            seen: None,
+            at: ui::time::now(),
+        });
+        state.bump();
+    }
+
+    /// The status just said also tells what the people in `room` see of
+    /// the person.
+    fn tell_seen(&self, room: RoomId) {
+        let seen = intro_text(self.presence_visibility(room));
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut state = chrome.borrow_mut();
+            if let Some(notice) = state.arrival_notice.as_mut() {
+                notice.seen = Some(seen);
+                state.bump();
+            }
+        }
+    }
+
+    /// The faces to pulse since the last call: the people the person just
+    /// arrived among. The frame bounces them on the presence it paints.
+    pub(crate) fn take_arrival_pulses(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.arrival_pulses)
+    }
+
+    /// The first time in a public workspace when it is joined: the status
+    /// the join put up says what its people see of the person.
     pub(crate) fn introduce_joined(&mut self, room: RoomId) {
         if self.presence_notices.introduced.contains(&room) || !self.room_is_public(room) {
             return;
         }
         self.presence_notices.introduced.insert(room);
-        self.arrival_line
-            .tell(intro_text(self.presence_visibility(room)));
+        self.tell_seen(room);
         self.persist_collaboration_preferences();
-    }
-
-    /// Whether a transient overlay is up: Quick Settings, a top-bar
-    /// popover, a menu or flyout, the palette, the capture bar, the
-    /// overview or a sheet. Each stacks above the arrival line, and each
-    /// takes the person's attention from it.
-    pub(crate) fn transient_overlay_open(&self) -> bool {
-        let flags = self.overlay_flags();
-        flags.quick_settings
-            || flags.overview
-            || flags.ws_settings
-            || flags.collaborators
-            || flags.room_activity
-            || flags.projection
-            || flags.capture
-            || flags.shortcut_help
-            || flags.desktop_tour
-            || self.palette_visible
-            || self.bar_popovers.any_open()
-            || self.layers.any_shown()
-            || self.capture_studio.is_open()
-            || self.peer_sync_overlay.visible()
-            || self.directory_sheet.is_open()
-            || self.modal_sheet_owns_keyboard()
-    }
-
-    /// The arrival line only stands on the desktop: an open overlay takes it
-    /// away (it leaves on its motion, beneath the overlay). Nothing of it
-    /// then overlaps the overlay or takes a press meant for it.
-    pub(crate) fn settle_arrival_line_under_overlays(&mut self) {
-        if self.arrival_line.is_open() && self.transient_overlay_open() {
-            self.arrival_line.dismiss();
-        }
-    }
-
-    /// A press on the arrival line's "Change" opens the avatar menu.
-    /// Returns whether it was there.
-    pub(crate) fn press_presence_notice(&mut self, at: Point) -> bool {
-        // An overlay that opened since the last frame owns the press.
-        self.settle_arrival_line_under_overlays();
-        let change = self.arrival_line.change_at(at);
-        if change {
-            self.arrival_line.dismiss();
-        }
-        if change && let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow_mut().bar_popover_request =
-                Some(crate::shell::chrome_state::BarPopoverRequest::Profile);
-            self.harvest_bar_popover_request();
-        }
-        change
     }
 }
 

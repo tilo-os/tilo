@@ -1,11 +1,7 @@
 reason = "features that landed since the last budgets (e681cae02b), measured by app-sizes-x86_64 and app-sizes-aarch64 at 37cc47aff4. E-Book (+331 KB x86_64, +329 KB aarch64) gained Project Gutenberg's catalogue, fetched over HTTP and gunzipped on the device (613d100e07: tilo-net's HTTP client and flate2), the query-view search with Gutenberg below the library (77fdb1bced), the synced full-text index (c3e91727c1) and chapter layout on a worker (ef456f4157). Typst (+158 KB, +98 KB) renders preview pages on demand through the shared page pipeline, tilo-page-raster in place of tiny-skia (4a5132b9de), and repaints only what changed (e162e7a23b). Disks (+147 KB, +130 KB) reads storage through the session's system information service, off the UI thread, and ejects through udisks2 (3f90a54090, c2a4ff3c6e, 450379e854). Sheets (+138 KB, +94 KB) gained agent-made sheets with header-keyed records and workbooks as content (65fd6289e6), window-bar slots (23067ee61b) and damage-only repaint (3a03d74339). Code Editor (+135 KB, +125 KB) moved its file tree to the shell's sidebar and its controls to the window bar and runs files and the language server off the frame loop (163830645e, df98276aea, 606a65a1c7). Settings (+133 KB, +54 KB) gained one settings search whose results are their own controls (9b69262fbb, f41852bd4f, 0bb5e01384). Messages (agents read, answer and export conversations, 16a2e1639d; window-bar controls, 740d05e0a0), Terminal (images read from the content store on a worker, 2f14bb15c8; acting in its workspace, a5a609484a), Video Editor (agent timelines and confined renders, 32608c5e5f, e76b37d899) and Calendar each grew 33 to 96 KB. Calculator and Photos on aarch64 are 4 KB and 2 KB past their budgets from the toolkit's window bar slots and one empty state (1e94ab7391, 36e1fb9a91), which every app now draws; 64 KiB is the smallest raise. Each amount is what is still over the budget after derived publishing stopped being compiled into every app, plus the budget's headroom, measured by t runs rb02f0dfe59 (x86_64) and r195c72c818 (aarch64)"
 run = "rb02f0dfe59"
 
-[apps."so.tilo.calculator"]
-aarch64 = 65536
-
 [apps."so.tilo.calendar"]
-x86_64 = 65536
 aarch64 = 131072
 
 [apps."so.tilo.code-editor"]
@@ -13,15 +9,9 @@ x86_64 = 196608
 aarch64 = 131072
 
 [apps."so.tilo.disks"]
-x86_64 = 131072
 aarch64 = 131072
 
-[apps."so.tilo.ebook"]
-x86_64 = 393216
-aarch64 = 393216
-
 [apps."so.tilo.messages"]
-x86_64 = 131072
 aarch64 = 65536
 
 [apps."so.tilo.photos"]
@@ -32,17 +22,7 @@ x86_64 = 204800
 aarch64 = 90112
 
 [apps."so.tilo.sheets"]
-x86_64 = 196608
 aarch64 = 131072
 
 [apps."so.tilo.terminal"]
-x86_64 = 131072
 aarch64 = 65536
-
-[apps."so.tilo.typst-editor"]
-x86_64 = 196608
-aarch64 = 131072
-
-[apps."so.tilo.video-editor"]
-x86_64 = 131072
-aarch64 = 131072

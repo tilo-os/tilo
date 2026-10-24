@@ -4719,9 +4719,16 @@ impl FileExplorerWidget {
                     let identity = short_fingerprint(&version.actor.person.0);
                     // The device that signed the version names who wrote it,
                     // as the file's History does: an agent's own device reads
-                    // as the agent, on behalf of its person.
+                    // as the agent, on behalf of its person, and so does the
+                    // agent that device recorded as having caused it.
+                    let attribution =
+                        crate::framework_history::version_attribution(&path, version.id);
                     let author = authors
-                        .resolve_file_actor(&version.actor.person.0, &version.actor.device.0)
+                        .resolve_attributed_file_actor(
+                            &version.actor.person.0,
+                            &version.actor.device.0,
+                            attribution.as_ref(),
+                        )
                         .unwrap_or_else(|| {
                             ui::widget::HistoryAuthor::new(
                                 self.trusted_humans.display_name_or_fingerprint(&person),

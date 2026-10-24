@@ -57,6 +57,7 @@ use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 mod accessibility;
 mod bin_paint;
+mod go_to_clip;
 mod inspector_layout;
 mod inspector_paint;
 mod interaction;
@@ -69,6 +70,7 @@ mod render_action;
 mod scenario;
 mod selection;
 mod strip_menu;
+mod timeline_empty;
 mod timeline_paint;
 mod window_bar;
 use crate::layout::{self as chrome_layout, S1, S2, S3, S4, S6};
@@ -5215,6 +5217,11 @@ impl VideoEditorApp {
             VideoEditorEffect::ToggleMedia => self.toggle_bin(),
             VideoEditorEffect::ToggleInspector => self.toggle_inspector(),
             VideoEditorEffect::SplitSelection => self.split_selected(),
+            VideoEditorEffect::GoToClip => {
+                if !self.go_to_clip() {
+                    return Err("there is no clip to go to".into());
+                }
+            }
             VideoEditorEffect::Import { path: Some(path) } => {
                 self.pending_imports.push(PathBuf::from(path));
             }
@@ -7497,7 +7504,8 @@ impl VideoEditorApp {
             | VideoEditorEffect::ShowExport
             | VideoEditorEffect::ToggleMedia
             | VideoEditorEffect::ToggleInspector
-            | VideoEditorEffect::SplitSelection => {
+            | VideoEditorEffect::SplitSelection
+            | VideoEditorEffect::GoToClip => {
                 self.perform_resource_operation(effect)?;
                 return Ok(ui::framework::Effected::done());
             }

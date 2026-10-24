@@ -35,6 +35,7 @@ pub mod film;
 mod launcher;
 mod motion_gallery;
 mod motion_review;
+mod one_place;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -120,6 +121,17 @@ pub enum Action {
     CompositorPointer(Point),
     /// Turn "hide the top bar until the pointer is near it" on or off.
     HideTopBar(bool),
+    /// A secondary click on the named target: what a long-press by touch
+    /// becomes.
+    SecondaryClickNamed(&'static str),
+    /// A finger dragged from one point to the other, as raw touch.
+    TouchSwipe(Point, Point),
+    /// A notification banner arrives: title and body.
+    Notify(&'static str, &'static str),
+    /// The focused window goes full screen, or leaves it.
+    FullScreenFocused(bool),
+    /// The key that asks for a fullscreen window's bar (Super) goes down.
+    FullscreenBarKey,
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
     MousePress,
@@ -972,6 +984,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             let snapshot = identify_snapshot(driver.host().output_geometry());
             driver.host_mut().identify_displays_now(&snapshot);
         }
+        Action::SecondaryClickNamed(name) => one_place::secondary_click_named(driver, name),
+        Action::TouchSwipe(from, to) => one_place::touch_swipe(driver, *from, *to),
+        Action::FullscreenBarKey => driver.host_mut().reveal_fullscreen_bar_by_key(),
+        Action::Notify(title, body) => one_place::notify(driver, title, body),
+        Action::FullScreenFocused(on) => one_place::full_screen_focused(driver, *on),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
             None => eprintln!(
@@ -3715,65 +3732,9 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("03-ws0-again"),
             ],
         },
-        Scenario {
-            name: "strip_switcher",
-            description: "The strip switcher on three strips with people on two: the ribbon \
-             at rest with faces beside its marks, the pointer coming to rest on it laying \
-             out the strips' names, a label lit under the pointer, New strip making a \
-             strip and naming it in place, and Super+S for the keyboard.",
-            actions: vec![
-                Action::SeedStripsWithPeople,
-                Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(1700),
-                Action::Snapshot("00-rest"),
-                Action::MoveCursor(Point::new(1200.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1350.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1450.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1515.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1552.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1572.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1582.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1587.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1589.0, 462.0)),
-                Action::WaitWall(8),
-                Action::MoveCursor(Point::new(1590.0, 462.0)),
-                Action::WaitWall(8),
-                Action::WaitWall(120),
-                Action::Wait(10),
-                Action::Snapshot("01-hover-labels"),
-                Action::MoveCursorNamed("strip_switcher.strip.2"),
-                Action::WaitWall(200),
-                Action::Wait(4),
-                Action::Snapshot("02-label-lit"),
-                Action::ClickNamed("strip_switcher.new_strip"),
-                Action::Wait(6),
-                Action::Snapshot("03-new-strip-named-in-place"),
-                Action::Type("Sketches"),
-                Action::Wait(4),
-                Action::Snapshot("04-typing-the-name"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(4),
-                Action::Snapshot("05-named"),
-                Action::MoveCursor(Point::new(800.0, 500.0)),
-                Action::WaitWall(300),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("s".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Wait(10),
-                Action::Snapshot("06-super-s"),
-                Action::Key(Key::Named(NamedKey::Escape)),
-                Action::Wait(4),
-                Action::Snapshot("07-closed"),
-            ],
-        },
+        one_place::strip_switcher(),
+        one_place::one_place(),
+        one_place::fullscreen_bar(),
         Scenario {
             name: "strip_deck",
             description: "Four strips, each a full-height screen: the first fills the work \

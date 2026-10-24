@@ -379,6 +379,7 @@ impl FileExplorerWidget {
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => return,
         };

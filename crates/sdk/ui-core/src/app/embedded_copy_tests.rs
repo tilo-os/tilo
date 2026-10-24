@@ -186,6 +186,8 @@ struct Run {
     repainted: f64,
     /// Frames the host could not compare and repainted whole.
     whole: usize,
+    /// The damage of the frame that repainted most, in host pixels.
+    largest: (f64, Vec<KurboRect>),
 }
 
 /// The device pixels `rects` cover, each once, in a `size` target.
@@ -272,7 +274,11 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
                     crate::scene_parts::present_copies(&damage.copies, rects, &[], to_device, size);
                 if !plan.copies.is_empty() {
                     run.copied_frames += 1;
-                    run.repainted += covered(&plan.raster, size);
+                    let repainted = covered(&plan.raster, size);
+                    run.repainted += repainted;
+                    if repainted > run.largest.0 {
+                        run.largest = (repainted, damage.rects.clone());
+                    }
                 }
                 let _ = presented.render_copies_and_damage_gpu_wait(
                     &scene,

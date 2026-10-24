@@ -286,27 +286,6 @@ impl HereState {
         self.revision
     }
 
-    /// The strips the room's other people are on, one per person whose
-    /// presence names one. Agents work in records, not strips.
-    pub fn strip_places(&self) -> Vec<tilo_desktop_model::StripId> {
-        let mut seen: Vec<&str> = Vec::new();
-        let mut places = Vec::new();
-        for member in self.members.iter().flatten() {
-            if member.kind == "agent" || self.is_own_person(&member.publisher) {
-                continue;
-            }
-            let person = self.person_of(&member.publisher);
-            if seen.contains(&person) {
-                continue;
-            }
-            seen.push(person);
-            if let Some(strip) = member.place.as_deref().and_then(|p| p.parse().ok()) {
-                places.push(tilo_desktop_model::StripId(strip));
-            }
-        }
-        places
-    }
-
     fn own_id(&self) -> Option<&str> {
         self.own.as_ref().map(|own| own.publisher.as_str())
     }
@@ -1221,34 +1200,6 @@ mod tests {
         }
     }
 
-    /// The strips other people are on come from their presence: this page
-    /// and agents are left out, and a person without a strip counts nowhere.
-    #[test]
-    fn strip_places_are_the_other_people_on_strips() {
-        let mut here = HereState::default();
-        let on = |publisher: &str, kind: &str, place: Option<&str>| LiveMember {
-            place: place.map(str::to_owned),
-            ..member(publisher, kind, publisher)
-        };
-        here.set_members(
-            Some(on("me", "person", Some("10"))),
-            Some(vec![
-                on("me", "person", Some("10")),
-                on("ada", "person", Some("11")),
-                on("lin", "person", Some("11")),
-                on("sam", "person", None),
-                on("bot", "agent", Some("10")),
-            ]),
-        );
-        assert_eq!(
-            here.strip_places(),
-            [
-                tilo_desktop_model::StripId(11),
-                tilo_desktop_model::StripId(11)
-            ]
-        );
-    }
-
     fn host(device: &str, status: &str, generated: bool) -> HostLine {
         HostLine {
             device: device.into(),
@@ -1432,7 +1383,7 @@ mod tests {
         ];
         let tree = DesktopTree::default();
 
-        // Ben sees Ada once, in the order she arrived, and her strip once.
+        // Ben sees Ada once, in the order she arrived.
         let mut ben = HereState::default();
         ben.set_members(
             Some(LiveMember {
@@ -1448,7 +1399,6 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(ids, ["ada-tab-1", "bot"]);
-        assert_eq!(ben.strip_places(), [tilo_desktop_model::StripId(10)]);
 
         // Ada's second tab: her first tab is her, not someone else.
         let mut ada = HereState::default();
@@ -1466,7 +1416,6 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(ids, ["ben-tab", "bot"]);
-        assert_eq!(ada.strip_places(), [tilo_desktop_model::StripId(12)]);
 
         let mut host_only = HereState::default();
         host_only.set_members(

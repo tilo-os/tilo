@@ -123,6 +123,12 @@ pub enum VideoEditorEffect {
     /// Show or hide the inspector.
     #[effect(view)]
     ToggleInspector,
+    /// Go to clip.
+    ///
+    /// Moves the playhead to the start of the next clip after it, or of the
+    /// previous one when none follows, so the preview shows a picture.
+    #[effect(view)]
+    GoToClip,
     /// Split selected clips at playhead.
     ///
     /// Cuts every selected clip that covers the playhead, and the clips

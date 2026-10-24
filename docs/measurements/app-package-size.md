@@ -19,8 +19,8 @@ enforces the budgets in these places:
   tools; the tapp names the signed runtime bundle, which covers them). A change elsewhere,
   another app's code included, leaves its result standing. `runtime-size-<arch>` does the same for the shared
   runtime (docs/measurements/runtime-size.md). The push gate runs the aarch64 one of each app whose
-  files a commit changes, when t has the commit's shared runtime built; main keeps it built for
-  its newest head (`thin-runtime-<arch>` runs `idle`). A commit that changes what the runtime is
+  files a commit changes, when t has the commit's shared runtime built; every main push that
+  changes the runtime builds it (`thin-runtime-<arch>` runs on `main`, and `idle`). A commit that changes what the runtime is
   built from, or more than three apps, skips it and says so; run the ones you need before you
   push. `tools/ci/t_toml.py` generates one per app of the default collection, so a new app has
   its own.
@@ -103,6 +103,24 @@ app-binaries-aarch64` puts the apps, `libruntime_dylib.so` and its engines in
 a toolkit type's generic code there (a widget, a dialog, a serde instance) is code every app
 using it compiles again, and is usually cheapest to fix in the toolkit. A warm build after a
 toolkit change takes about five minutes on sixteen cores.
+
+The symbol table undercounts such code: a small generic function is also inlined at each call,
+so a fix often saves several times what `nm` shows for it. What has paid most so far:
+
+- A generic entry point hands its work to a function that is not generic: a constructor taking
+  `impl Into<String>` builds from a `String`, a builder taking a closure boxes it first.
+  Thirteen of the toolkit's (`ListRow::new`, `EmptyState::new`, `Button::on_effect`, ...)
+  took 968,806 loadable bytes out of the 64 x86_64 apps (cdb9027712).
+- An impl that would be `#[inline]` is written out: a derived `PartialEq` or `Clone` on a
+  large type (`Theme`) is copied into every caller.
+- A dependency's inline or generic code that every app reaches goes out of line where the
+  runtime holds it once: `vendor/serde_json` (31d03ee94e) took 966,311 bytes out of the same
+  apps. Together the two changes made the tapps 1,932,800 bytes smaller on x86_64 (median
+  27 KB each) and 1,739,776 on aarch64.
+
+Not every erasure pays. Routing `Widget`'s default methods through a trait object made the apps
+larger: the per-type copies of a leaf widget's defaults were identical, so the linker already
+folded them into one, and each widget's vtable gained two entries.
 
 `tools/binary-budget.toml` is different: it is a weekly guard against static
 linking in release binaries, not this KPI.

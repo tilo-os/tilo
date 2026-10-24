@@ -134,6 +134,9 @@ pub(crate) fn tile_rect(widget: &dyn Widget) -> Option<Rect> {
         .then(|| widget.get_rect())
 }
 
+mod confirm;
+use confirm::{ConfirmState, confirmation_evidence};
+
 const FIELD_SIZE: crate::widget::ControlSize = crate::widget::ControlSize::Large;
 const GAP: f64 = 10.0;
 /// One row of facet chips, a small control's height.
@@ -203,51 +206,6 @@ struct ArgState {
     address: tilo_actions::ActionAddress,
     history_target: Option<crate::bound_dispatch::legacy_document::LocalResourceTarget>,
     history_draft_identity: Option<Result<crate::bound_dispatch::ControlIdentity, String>>,
-}
-
-#[derive(Clone)]
-struct ConfirmState {
-    pending: PendingOperation,
-    /// The question the palette asks: the action's own label.
-    question: String,
-    /// What the action does and how to go ahead.
-    detail: String,
-    destructive: bool,
-    button_label: String,
-}
-
-/// The question and its detail for an action labelled `label`.
-fn confirmation_text(label: &str, description: Option<&str>) -> (String, String) {
-    let label = label.trim().trim_end_matches(['.', '?']);
-    let question = if label.is_empty() {
-        "Go ahead with this action?".to_owned()
-    } else {
-        format!("{label}?")
-    };
-    // Generated action docs include their heading in the description. The
-    // heading is already the dialog title, not another sentence in its body.
-    let description = description.map(str::trim).map(|text| {
-        text.strip_prefix(label)
-            .filter(|tail| tail.is_empty() || tail.starts_with(char::is_whitespace))
-            .map_or(text, str::trim_start)
-    });
-    let detail = match description.filter(|text| !text.is_empty()) {
-        Some(text) if text.ends_with(['.', '!', '?']) => text.to_owned(),
-        Some(text) => format!("{text}."),
-        None => String::new(),
-    };
-    (question, detail)
-}
-
-/// The evidence the door expects for `policy`, given by the person's click.
-fn confirmation_evidence(policy: &ConfirmationPolicy) -> serde_json::Value {
-    match policy {
-        ConfirmationPolicy::None => serde_json::json!({}),
-        ConfirmationPolicy::Confirm => serde_json::json!({ "confirm": true }),
-        ConfirmationPolicy::Phrase { phrase } => {
-            serde_json::json!({ "confirmation_phrase": phrase })
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -532,16 +490,13 @@ impl ActionPalette {
                     })
             })
             .unwrap_or_default();
-        let (question, mut detail) = confirmation_text(&label, description.as_deref());
         // Where the room's grants ask rather than the action, say so: the
         // person is the one who decides.
-        if let Some(asked) = pending
+        let asked = pending
             .ordinary
             .as_ref()
             .and_then(crate::bound_dispatch::OrdinaryConfirmation::asked)
-        {
-            asked.clone_into(&mut detail);
-        }
+            .map(str::to_owned);
         let destructive = pending
             .ordinary
             .as_ref()
@@ -554,52 +509,32 @@ impl ActionPalette {
                     })
             })
             == Some(tilo_actions::RiskLevel::Destructive);
-        let button_label = label.trim().trim_end_matches(['.', '?']).to_owned();
-        let button_label = if button_label.is_empty() {
-            "Confirm".to_owned()
-        } else {
-            button_label
-        };
-        let submit = self.command.clone();
-        let cancel = self.command.clone();
-        self.controls = crate::widget::Row::new()
-            .push(Box::new(
-                crate::widget::Button::new("palette-submit", &button_label)
-                    .role(if destructive {
-                        crate::widget::ButtonRole::Destructive
-                    } else {
-                        crate::widget::ButtonRole::Primary
-                    })
-                    .on_click(move || submit.set(Some(true))),
-            ))
-            .push(Box::new(
-                crate::widget::Button::new("palette-cancel", "Cancel")
-                    .on_click(move || cancel.set(Some(false))),
-            ));
-        self.confirmation_sheet.reset();
-        self.search_announcement = Some(detail.clone());
-        self.field = self.field_source.build().control_size(FIELD_SIZE);
-        self.field.set_placeholder(&question);
-        self.focus_part(if destructive { 2 } else { 1 });
-        self.results.set_groups(Vec::new());
-        self.results.set_empty_text(&detail);
-        self.confirm = Some(ConfirmState {
+        self.present_confirmation(
             pending,
-            question,
-            detail,
+            &label,
+            description.as_deref(),
+            asked.as_deref(),
             destructive,
-            button_label,
-        });
+        );
     }
 
     /// The person went ahead with what the palette asked: queue it with the
     /// evidence its policy needs.
     fn accept_confirmation(&mut self) {
+        if let Some(state) = &self.confirm
+            && !state.satisfied()
+        {
+            // Not yet the name it asks for: nothing goes ahead, and the
+            // sheet keeps asking where the person is.
+            self.search_announcement = Some(state.detail.clone());
+            return;
+        }
         self.pending_dispatch = self.confirm.take().map(|state| {
             let mut pending = state.pending;
             pending.confirmation_evidence = confirmation_evidence(&pending.confirmation);
             pending
         });
+        self.reset_controls();
         self.open = false;
     }
 
@@ -632,17 +567,7 @@ impl ActionPalette {
 
     fn with_source(measure: Option<TextRenderer>, field_source: PaletteFieldSource) -> Self {
         let command = std::rc::Rc::new(std::cell::Cell::new(None));
-        let submit = command.clone();
-        let cancel = command.clone();
-        let controls = crate::widget::Row::new()
-            .push(Box::new(
-                crate::widget::Button::new("palette-submit", "Confirm")
-                    .on_click(move || submit.set(Some(true))),
-            ))
-            .push(Box::new(
-                crate::widget::Button::new("palette-cancel", "Cancel")
-                    .on_click(move || cancel.set(Some(false))),
-            ));
+        let controls = confirm::controls(&command, "Confirm", None);
         Self {
             field: field_source
                 .build()
@@ -904,7 +829,16 @@ impl ActionPalette {
     }
 
     fn focus_part(&mut self, index: usize) {
-        self.field.set_focused(index == 0);
+        if let Some(state) = self.confirm.as_mut() {
+            // While it asks, the first part is the field for a name, if any;
+            // the search field steps aside.
+            self.field.set_focused(false);
+            if let Some(field) = state.phrase_field_mut() {
+                field.set_focus(index == 0);
+            }
+        } else {
+            self.field.set_focused(index == 0);
+        }
         for (child, control) in self.controls.children_mut().into_iter().enumerate() {
             control.set_focus(index == child + 1);
         }
@@ -925,6 +859,7 @@ impl ActionPalette {
         }
         if self.confirm.is_some() {
             use crate::widget::modal_dialog::SheetResponse;
+            self.route_to_phrase(event, scale, modifiers, doc, path);
             match self.confirmation_sheet.handle(event, scale) {
                 Some(SheetResponse::Action(0)) => self.accept_confirmation(),
                 Some(SheetResponse::Action(_) | SheetResponse::Dismiss) => self.close(),
@@ -1193,6 +1128,7 @@ impl ActionPalette {
         self.open = true;
         self.arg = None;
         self.confirm = None;
+        self.reset_controls();
         self.pending_dispatch = None;
         self.history_review_required = false;
         self.pending_nav = None;
@@ -1267,6 +1203,7 @@ impl ActionPalette {
         self.open = false;
         self.arg = None;
         self.confirm = None;
+        self.reset_controls();
         self.history_review_required = false;
     }
 
@@ -1276,7 +1213,19 @@ impl ActionPalette {
 
     /// Set the query programmatically and rebuild the result set (for tests /
     /// hand-off from another surface).
+    ///
+    /// While the palette asks for a name to be typed, this is what stands
+    /// in its plain field instead: it searches nothing.
     pub fn set_query(&mut self, q: &str) {
+        if let Some(state) = self.confirm.as_mut()
+            && state.typed()
+        {
+            state.set_typed(q);
+            // What is typed for the name is typed with the keyboard there.
+            self.focus_part(0);
+            self.sync_confirmation();
+            return;
+        }
         self.field.set_query(q);
         self.rebuild(q);
     }
@@ -1287,6 +1236,20 @@ impl ActionPalette {
             .groups()
             .iter()
             .flat_map(|g| g.results.iter().map(|r| r.title.clone()))
+            .collect()
+    }
+
+    /// The rows currently shown as a person reads them, label and the line
+    /// under it, in display order (for tests / diagnostics).
+    pub fn result_rows(&self) -> Vec<(String, Option<String>)> {
+        self.results
+            .groups()
+            .iter()
+            .flat_map(|g| {
+                g.results
+                    .iter()
+                    .map(|r| (r.title.clone(), r.subtitle.clone()))
+            })
             .collect()
     }
 
@@ -2214,29 +2177,47 @@ impl ActionPalette {
         // Every available action is a candidate row with the text it is
         // found by; the index then keeps the ones matching the query.
         let mut candidates: Vec<(SearchResult, Option<String>, RowResolution)> = Vec::new();
+        // Each action once: two parts of a window publishing the same action
+        // of the same resource (its bar and its document) are one thing to
+        // the person. Different targets stay different rows.
+        let mut listed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // Keep only inert addresses in the row index. Encoding and callbacks
         // are resolved later, against the authority snapshot current at the
         // moment of activation.
-        for fa in flatten(&self.resources) {
-            // Programmatic actions are for agents and scripts, never a row.
-            if !fa.action.contract.availability.is_available() || !fa.action.reaches_people() {
+        let flat: Vec<_> = flatten(&self.resources)
+            .into_iter()
+            // Programmatic actions are for agents and scripts, never a row;
+            // a scoped palette offers the actions of that part of the app.
+            .filter(|fa| {
+                fa.action.contract.availability.is_available()
+                    && fa.action.reaches_people()
+                    && parsed.in_scope(fa.resource_id.as_str())
+            })
+            .collect();
+        // Two open documents offering the same action read alike: name the
+        // document under each, so the person can tell which one it acts on.
+        let mut targets_of: HashMap<tilo_actions::ListedRow, std::collections::HashSet<&str>> =
+            HashMap::new();
+        for fa in &flat {
+            targets_of
+                .entry(fa.row())
+                .or_default()
+                .insert(fa.key.as_str());
+        }
+        for fa in &flat {
+            if !listed.insert(fa.key.clone()) {
                 continue;
             }
-            // A scoped palette offers the actions of that part of the app.
-            if !parsed.in_scope(fa.resource_id.as_str()) {
-                continue;
+            // Read as a person reads it (`tilo_actions::listed_row`): the
+            // action's label, and the item it acts on or what it means.
+            let mut row = fa.row();
+            if targets_of.get(&row).is_some_and(|keys| keys.len() > 1) {
+                row = tilo_actions::listed_row(&fa.action.label, Some(fa.resource_label.as_str()));
             }
-            let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
-            let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
-            if let Some(desc) = &fa.action.description {
-                r = r.with_subtitle(desc.clone());
-            } else if let Some(detail) = fa
-                .resource_presentation
-                .as_ref()
-                .and_then(|presentation| presentation.detail.as_ref())
-            {
-                r = r.with_subtitle(detail.clone());
+            let mut r = SearchResult::new(ACTIONS_KIND, row.title.clone(), fa.key.clone());
+            if let Some(subtitle) = &row.subtitle {
+                r = r.with_subtitle(subtitle.clone());
             }
             if let Some(preview) = fa
                 .resource_presentation
@@ -2249,7 +2230,11 @@ impl ActionPalette {
                 fa.resource_id.as_str(),
                 fa.action.id.as_str(),
             ));
-            candidates.push((r, fa.action.description.clone(), resolution));
+            candidates.push((
+                r,
+                found_by(&row, &fa.resource_label, fa.action.description.as_deref()),
+                resolution,
+            ));
         }
 
         for snapshot in &self.bound_resources {
@@ -2265,10 +2250,10 @@ impl ActionPalette {
                     {
                         continue;
                     }
-                    let title = format!(
-                        "{} — {} · {}",
-                        fa.resource_label, fa.action.label, snapshot.binding.instance_id
-                    );
+                    // The same row as any other action: never the component
+                    // instance's number, and once however many parts of the
+                    // window publish it.
+                    let row = fa.row();
                     let target = crate::bound_dispatch::BoundActionTarget {
                         input: crate::bound_dispatch::Input::Discrete,
                         binding: snapshot.binding.clone(),
@@ -2281,9 +2266,16 @@ impl ActionPalette {
                         },
                     };
                     let key = target.key();
+                    if !listed.insert(key.clone()) {
+                        continue;
+                    }
+                    let mut result = SearchResult::new(ACTIONS_KIND, row.title.clone(), key);
+                    if let Some(subtitle) = &row.subtitle {
+                        result = result.with_subtitle(subtitle.clone());
+                    }
                     candidates.push((
-                        SearchResult::new(ACTIONS_KIND, title, key),
-                        None,
+                        result,
+                        found_by(&row, &fa.resource_label, fa.action.description.as_deref()),
                         RowResolution::Bound(target),
                     ));
                 }
@@ -2624,33 +2616,8 @@ impl ActionPalette {
     ) {
         let presented = self.is_presented();
         self.appear.follow(presented, theme.motion());
-        if presented && let Some(confirm) = &self.confirm {
-            let actions = [
-                if confirm.destructive {
-                    crate::widget::ModalAction::danger(&confirm.button_label)
-                } else {
-                    crate::widget::ModalAction::primary(&confirm.button_label)
-                }
-                .focused(self.controls.children()[0].is_focused()),
-                crate::widget::ModalAction::secondary("Cancel")
-                    .focused(self.controls.children()[1].is_focused()),
-            ];
-            let spec = crate::widget::ModalSpec::new(&confirm.question)
-                .actions(&actions)
-                .closable(false);
-            let window = presence.viewport.get().unwrap_or(self.rect);
-            self.confirmation_sheet.paint_message(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                window,
-                &spec,
-                &confirm.detail,
-            );
-            if let Some(layout) = self.confirmation_sheet.layout() {
-                self.rect = layout.scrim;
-            }
+        if presented && self.confirm.is_some() {
+            self.draw_confirmation(scene, transform, text_renderer, theme, presence);
             return;
         }
         // It arrives from its centre (`motion::Appear`).
@@ -2813,7 +2780,8 @@ impl ActionPalette {
                 .map_or(0, |index| index + 1);
             if matches!(&key.logical_key, Key::Named(NamedKey::Tab)) {
                 if self.confirm.is_some() {
-                    self.focus_part(if focused == 1 { 2 } else { 1 });
+                    let back = modifiers.state().shift_key();
+                    self.focus_part(self.next_confirmation_part(focused, back));
                 } else {
                     self.focus_part(
                         (focused + if modifiers.state().shift_key() { 2 } else { 1 }) % 3,
@@ -2865,10 +2833,22 @@ impl ActionPalette {
         }
 
         // The question takes no typing: Enter (or Confirm) goes ahead,
-        // Escape (or Cancel) does not, every other key is swallowed.
-        if let Some(confirm) = &self.confirm {
-            if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
-                if confirm.destructive {
+        // Escape (or Cancel) does not, every other key is swallowed. A name
+        // to type goes into its labelled field, which searches nothing;
+        // there Return stays the safe answer and never destroys anything,
+        // even once the name matches: only the action's own button does.
+        if let Some((typed, destructive)) = self
+            .confirm
+            .as_ref()
+            .map(|confirm| (confirm.typed(), confirm.destructive))
+        {
+            let enter = matches!(&key.logical_key, Key::Named(NamedKey::Enter));
+            if typed {
+                if !enter {
+                    self.route_to_phrase(event, 1.0, *modifiers, doc, path);
+                }
+            } else if enter {
+                if destructive {
                     self.close();
                 } else {
                     self.accept_confirmation();
@@ -3017,6 +2997,7 @@ impl ActionPalette {
         self.history_resolution_error = None;
         self.arg = None;
         self.confirm = None;
+        self.reset_controls();
         // Restore the query field and result set.
         self.field = self.query_field();
         self.focus_part(0);
@@ -3081,6 +3062,7 @@ impl ActionPalette {
         self.open = true;
         self.arg = None;
         self.confirm = None;
+        self.reset_controls();
         self.pending_dispatch = None;
         self.results.set_groups(Vec::new());
         self.results.set_empty_text(&message);
@@ -3189,6 +3171,23 @@ fn without_token(text: &str, filter: &FacetFilter) -> String {
         .join(" ")
 }
 
+/// The words besides its title a row is found by: what it acts on (named
+/// under it or not: "Apply" of the open "Sealed" is found by "sealed"), and
+/// what it means.
+fn found_by(
+    row: &tilo_actions::ListedRow,
+    resource: &str,
+    description: Option<&str>,
+) -> Option<String> {
+    let resource = Some(resource).filter(|name| Some(*name) != row.subtitle.as_deref());
+    let words = [row.subtitle.as_deref(), resource, description]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!words.is_empty()).then_some(words)
+}
+
 /// Rank `rows` by fit against `query` and bucket by kind. Uses the shared
 /// [`result_relevance`] ranker so a hit from one source is comparable to a
 /// hit from another. Caps each group so no single source floods the overlay.
@@ -3238,6 +3237,11 @@ impl Widget for ActionPalette {
                 .accessibility()
                 .is_some_and(|field| field.state.focused)
                 || self
+                    .confirm
+                    .as_ref()
+                    .and_then(ConfirmState::phrase_field)
+                    .is_some_and(|field| field.is_focused())
+                || self
                     .controls
                     .children()
                     .iter()
@@ -3246,14 +3250,17 @@ impl Widget for ActionPalette {
     fn set_focus(&mut self, focused: bool) {
         if focused {
             if !self.is_focused() {
-                self.focus_part(
-                    self.confirm
-                        .as_ref()
-                        .map_or(0, |confirm| if confirm.destructive { 2 } else { 1 }),
-                );
+                self.focus_part(self.confirm.as_ref().map_or(0, ConfirmState::first_part));
             }
         } else {
             self.field.set_focused(false);
+            if let Some(field) = self
+                .confirm
+                .as_mut()
+                .and_then(ConfirmState::phrase_field_mut)
+            {
+                field.set_focus(false);
+            }
             for control in self.controls.children_mut() {
                 control.set_focus(false);
             }
@@ -3316,6 +3323,17 @@ impl Widget for ActionPalette {
                     .with_hashed_key(&target)
                     .with_action_target(target)
                     .with_bounds(self.field.get_rect()),
+            );
+        }
+        // A name to type is a field called by its visible label.
+        if let Some(field) = self.confirm.as_ref().and_then(ConfirmState::phrase_field)
+            && let Some(node) = field.accessibility()
+        {
+            let target = self.target("field");
+            children.push(
+                node.with_hashed_key(&target)
+                    .with_action_target(target)
+                    .with_bounds(field.get_rect()),
             );
         }
         if self.confirm.is_some() || self.history_review_required {
@@ -3381,11 +3399,25 @@ impl Widget for ActionPalette {
         if !self.is_presented() {
             return false;
         }
-        if self.confirm.is_none() && target == self.target("field") {
-            if matches!(action, crate::a11y::Action::Focus) {
-                self.focus_part(0);
+        if target == self.target("field") {
+            if self.confirm.is_none() {
+                if matches!(action, crate::a11y::Action::Focus) {
+                    self.focus_part(0);
+                }
+                return self.field.perform_action(action, &[], doc, path);
             }
-            return self.field.perform_action(action, &[], doc, path);
+            if self.confirm.as_ref().is_some_and(ConfirmState::typed) {
+                if matches!(action, crate::a11y::Action::Focus) {
+                    self.focus_part(0);
+                }
+                let handled = self
+                    .confirm
+                    .as_mut()
+                    .and_then(ConfirmState::phrase_field_mut)
+                    .is_some_and(|field| field.input_mut().perform_action(action, &[], doc, path));
+                self.sync_confirmation();
+                return handled;
+            }
         }
         if !self.in_argument_mode() && !self.history_review_required {
             let handled = self
@@ -4122,17 +4154,20 @@ mod tests {
                 "activation alone must not queue the operation"
             );
 
-            // Nobody types the phrase: one Enter goes ahead, and the
-            // palette hands on the evidence the action declared.
+            // An irreversible action that names what it destroys asks for
+            // that name typed: Enter in its field alone does not go ahead.
+            focus_confirmation(&mut palette, &mut doc);
             palette.handle_key(
                 &enter(),
                 &Modifiers::default(),
                 &mut crate::widget::Edits::lend(&mut doc),
                 &ROOT,
             );
-            let pending = palette
-                .take_operation()
-                .expect("going ahead queues the operation");
+            assert!(palette.take_operation().is_none(), "not without the name");
+            assert!(palette.asking().is_some(), "it keeps asking");
+            type_confirmation(&mut palette, "MARK THING", &mut doc);
+            press(&mut palette, "submit", &mut doc);
+            let pending = palette.take_operation().expect("the typed name goes ahead");
             assert_eq!(
                 pending.confirmation_evidence(),
                 &serde_json::json!({ "confirmation_phrase": "MARK THING" }),
@@ -4216,7 +4251,6 @@ mod tests {
                 "a destructive value waits for confirmation"
             );
             let mut doc = automerge::AutoCommit::new();
-            palette.field.set_query("CONFIRM");
             palette.handle_key(
                 &enter(),
                 &Modifiers::default(),
@@ -4291,61 +4325,6 @@ mod tests {
     }
 
     #[test]
-    fn history_requires_fresh_palette_confirmation_for_ready_work() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let mut resource = thing_resource();
-        resource
-            .actions
-            .iter_mut()
-            .find(|action| action.id == "mark")
-            .unwrap()
-            .contract
-            .confirmation = ConfirmationPolicy::Phrase {
-            phrase: "MARK THING".into(),
-        };
-        let mut palette =
-            ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
-                SearchField::with_language("en_US")
-            });
-        palette.load_open_resources(&[resource]);
-        palette.open();
-        let idx = palette
-            .result_labels()
-            .iter()
-            .position(|label| label.contains("Mark done"))
-            .unwrap();
-        palette.set_cursor(idx);
-        palette.activate_selected();
-        let mut doc = automerge::AutoCommit::new();
-        palette.field.set_query("MARK THING");
-        palette.handle_key(
-            &enter(),
-            &Modifiers::default(),
-            &mut crate::widget::Edits::lend(&mut doc),
-            &ROOT,
-        );
-        assert!(palette.pending_dispatch.is_some());
-
-        palette.suspend_for_history();
-        palette.resume_after_history();
-        assert!(palette.take_operation().is_none());
-        assert!(palette.in_argument_mode());
-        assert!(palette.query().is_empty(), "old affirmative is not reused");
-        palette.field.set_query("MARK THING");
-        palette.handle_key(
-            &enter(),
-            &Modifiers::default(),
-            &mut crate::widget::Edits::lend(&mut doc),
-            &ROOT,
-        );
-        assert_eq!(
-            palette.take_operation().unwrap().confirmation_evidence(),
-            &serde_json::json!({ "confirmation_phrase": "MARK THING" })
-        );
-    }
-
-    #[test]
     fn visible_refresh_keeps_exact_selection_through_reorder_revocation_and_restore() {
         // Motion reads at its end: this test checks the resting frame.
         let _settled = crate::motion::testing::settled();
@@ -4366,7 +4345,8 @@ mod tests {
         palette.refresh_visible_resources(&[c, a.clone(), b.clone()]);
         assert_eq!(palette.results.selected_action_id(), Some("b\u{1f}mark"));
         palette.refresh_visible_resources(std::slice::from_ref(&a));
-        assert_eq!(palette.result_labels(), vec!["Alpha — Mark done"]);
+        // One document left: the row reads as the outcome alone.
+        assert_eq!(palette.result_labels(), vec!["Mark done"]);
         assert!(palette.results.selected().is_none());
         palette.activate_selected();
         assert!(palette.take_operation().is_none());
@@ -4429,7 +4409,6 @@ mod tests {
         );
         assert!(palette.confirm.is_some());
         assert!(palette.take_operation().is_none());
-        palette.field.set_query("CONFIRM");
         palette.handle_key(
             &enter,
             &Modifiers::default(),

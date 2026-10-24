@@ -820,6 +820,97 @@ fn parse_vpn_profile_settings(out: &str) -> Result<VpnProfileSettings, String> {
     Ok(settings)
 }
 
+/// The `vpn.data` keys that name a plugin profile's server: `OpenVPN`'s
+/// `remote`, the `gateway` of `OpenConnect`, L2TP, PPTP, SSTP and
+/// Fortinet, vpnc's `IPSec gateway`, strongSwan's `address` and
+/// Libreswan's `right`.
+const SERVER_KEYS: [&str; 5] = ["remote", "gateway", "IPSec gateway", "address", "right"];
+
+/// The longest host name DNS allows.
+const MAX_HOST_BYTES: usize = 253;
+
+/// Where a VPN profile's servers are, as host names or addresses without
+/// ports: where its tunnel's own packets go, which a block while it is down
+/// must let through.
+///
+/// # Errors
+/// An invalid id, or `NetworkManager` cannot be asked.
+pub fn vpn_servers(uuid: &str) -> Result<Vec<String>, String> {
+    validate_uuid(uuid)?;
+    let out = run_capture(
+        "nmcli",
+        &[
+            "-t",
+            "--escape",
+            "yes",
+            "-f",
+            "wireguard.peers,vpn.data",
+            "connection",
+            "show",
+            "uuid",
+            uuid,
+        ],
+    )?;
+    Ok(parse_vpn_servers(&out))
+}
+
+/// The host of a server as a profile writes it: `host`, `host:port`,
+/// `host:port:proto`, `[v6]:port`, a bare IPv6 address, or `host port
+/// proto`.
+fn server_host(text: &str) -> Option<String> {
+    let first = text.split_whitespace().next()?;
+    let host = if let Some(bracketed) = first.strip_prefix('[') {
+        bracketed.split(']').next()?
+    } else if first.parse::<std::net::IpAddr>().is_ok() {
+        first
+    } else {
+        first.split(':').next()?
+    };
+    (!host.is_empty() && host.len() <= MAX_HOST_BYTES && !host.chars().any(char::is_control))
+        .then(|| host.to_owned())
+}
+
+fn parse_vpn_servers(out: &str) -> Vec<String> {
+    let mut hosts: Vec<String> = Vec::new();
+    for line in out.lines() {
+        let fields = split_terse(line);
+        let Some((key, rest)) = fields.split_first() else {
+            continue;
+        };
+        let value = rest.join(":");
+        match key.as_str() {
+            "wireguard.peers" => hosts.extend(
+                value
+                    .split(',')
+                    .filter_map(Peer::parse)
+                    .filter_map(|peer| peer.endpoint)
+                    .filter_map(|endpoint| server_host(&endpoint)),
+            ),
+            "vpn.data" => {
+                // `key = value, key = value`; a list (`OpenVPN`'s remotes)
+                // goes on after a comma without a key of its own.
+                let mut serving = false;
+                for part in value.split(',') {
+                    let server = match part.split_once('=') {
+                        Some((key, server)) => {
+                            serving = SERVER_KEYS.contains(&key.trim());
+                            server
+                        }
+                        None => part,
+                    };
+                    if serving && let Some(host) = server_host(server) {
+                        hosts.push(host);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    hosts.retain(|host| seen.insert(host.clone()));
+    hosts
+}
+
 /// What to change of a VPN profile; `None` leaves a value as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct VpnProfilePatch {
@@ -1570,6 +1661,36 @@ mod tests {
         assert_eq!(parsed.mtu, Some(1400));
         assert!(!parsed.all_traffic);
         assert!(parse_vpn_profile_settings("connection.type:802-11-wireless\n").is_err());
+    }
+
+    #[test]
+    fn a_profiles_servers_are_its_peers_endpoints_or_its_plugins_server() {
+        assert_eq!(
+            parse_vpn_servers(concat!(
+                "wireguard.peers:kP8x2yQ1mZ7vR3nL9fH0sJtW6cB4dE5gA1iU2oXyz0E= endpoint=home.example\\:51820 allowed-ips=0.0.0.0/0, ",
+                "aB8x2yQ1mZ7vR3nL9fH0sJtW6cB4dE5gA1iU2oXyz0E= endpoint=[2001\\:db8\\:\\:7]\\:51820\n",
+                "vpn.data:\n",
+            )),
+            ["home.example", "2001:db8::7"]
+        );
+        assert_eq!(
+            parse_vpn_servers(concat!(
+                "wireguard.peers:\n",
+                "vpn.data:remote = vpn.work.example\\:1194\\:udp, backup.work.example 443 tcp, tunnel-mtu = 1400, connection-type = tls\n",
+            )),
+            ["vpn.work.example", "backup.work.example"]
+        );
+        assert_eq!(
+            parse_vpn_servers("vpn.data:gateway = 198.51.100.7, user = ada\n"),
+            ["198.51.100.7"]
+        );
+        assert_eq!(
+            parse_vpn_servers("vpn.data:IPSec gateway = gw.example, IPSec ID = office\n"),
+            ["gw.example"]
+        );
+        assert_eq!(server_host("2001:db8::9"), Some("2001:db8::9".into()));
+        assert_eq!(server_host(""), None);
+        assert!(parse_vpn_servers("vpn.data:tunnel-mtu = 1400\n").is_empty());
     }
 
     /// RFC 7748's Alice: a known private key gives its known public key.

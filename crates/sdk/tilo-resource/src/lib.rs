@@ -94,8 +94,9 @@
 //! permissions, history or undo. `APPLY` is for surfaces, agents and
 //! scripts, never a palette row; each value's own
 //! [`risk`](tilo_actions::Action::risk) decides whether it needs
-//! confirmation, so a destructive typed edit is confirmed exactly as a
-//! declared destructive action is.
+//! confirmation, so a destructive typed edit is treated exactly as a
+//! declared destructive action is: what Undo takes back runs at once and
+//! offers Undo, and only what it cannot is confirmed.
 
 // The derives name this crate by its path, here as in an app.
 extern crate self as tilo_resource;
@@ -306,6 +307,9 @@ pub mod __private {
         pub by_arguments: bool,
         pub field: Option<&'static str>,
         pub destructive: bool,
+        /// It also loses what Undo cannot bring back
+        /// (`#[action(irreversible)]`).
+        pub irreversible: bool,
         /// A change about the record rather than to it
         /// (`#[action(housekeeping)]`).
         pub housekeeping: bool,
@@ -460,6 +464,9 @@ pub mod __private {
         }
         decl.field = verb.field;
         decl.destructive = verb.destructive;
+        if verb.irreversible {
+            decl.tags.push(tilo_actions::IRREVERSIBLE_TAG.to_owned());
+        }
         if verb.housekeeping {
             decl.tags.push(tilo_actions::HOUSEKEEPING_TAG.to_owned());
         }

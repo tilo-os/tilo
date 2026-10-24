@@ -555,6 +555,8 @@ pub struct TextInput {
     content_sized: bool,
     /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
     span_highlighter: Option<SpanHighlighter>,
+    /// Marks what the owner judges wrong in the text ([`Self::with_mistakes`]).
+    mistakes: Option<MistakeMarker>,
     /// The text can be selected and copied but not changed ([`Self::with_read_only`]).
     read_only: bool,
     /// Link targets over byte ranges of a read-only text
@@ -574,6 +576,10 @@ struct PendingPaste {
 /// formula, in the colour of the cells it outlines).
 pub type SpanHighlighter =
     Box<dyn Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>>;
+
+/// The byte ranges of a field's text its owner judges wrong (a word outside
+/// the list an entry must come from); see [`TextInput::with_mistakes`].
+pub type MistakeMarker = Box<dyn Fn(&str) -> Vec<std::ops::Range<usize>>>;
 
 /// Where a detected address opens: a web link as it is (a bare host gets
 /// `https://`), an email address as `mailto:`; mentions and room aliases are
@@ -825,6 +831,7 @@ impl TextInput {
             accessory: None,
             content_sized: false,
             span_highlighter: None,
+            mistakes: None,
             read_only: false,
             links: Vec::new(),
         }
@@ -1683,10 +1690,6 @@ impl TextInput {
         self.preserve_unfocused_scroll = preserve;
     }
 
-    pub fn scroll_y(&self) -> f64 {
-        self.scroll_y
-    }
-
     pub fn body_line_height(&self) -> f64 {
         self.line_height()
     }
@@ -1757,7 +1760,7 @@ impl TextInput {
     pub(crate) fn first_row_band(&self) -> (f64, f64) {
         if self.multiline {
             (
-                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
                 self.line_height(),
             )
         } else {
@@ -1906,7 +1909,7 @@ impl TextInput {
             if x1 - x0 < 0.5 {
                 continue;
             }
-            let y0 = self.rect.y0 + py + r.y - self.scroll_y;
+            let y0 = self.rect.y0 + py + r.y - self.shown_scroll_y();
             out.push(Rect::new(
                 self.rect.x0 + px + x0,
                 y0,
@@ -2005,7 +2008,7 @@ impl TextInput {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
-        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.scroll_y;
+        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.shown_scroll_y();
         Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
@@ -2015,7 +2018,7 @@ impl TextInput {
             return 0;
         }
         let lh = self.line_height();
-        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.scroll_y;
+        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.shown_scroll_y();
         let max_row = self.lines.len().saturating_sub(1);
         let row = {
             let row_f = (local_y / lh).floor().max(0.0);
@@ -2573,7 +2576,7 @@ impl TextInput {
         self.measure_wrapped_content(width, tr, theme);
         self.single_origin = Point::new(
             self.rect.x0 + self.ml_left(),
-            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
     }
@@ -2869,7 +2872,7 @@ impl TextInput {
         self.update_ml_scroll(caret_top, caret_height, layout_height);
         self.single_origin = Point::new(
             self.rect.x0 + left,
-            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
         self.lines.clear();
@@ -3030,7 +3033,7 @@ impl TextInput {
             if lor != caret_line {
                 continue;
             }
-            let top = row.y - self.scroll_y;
+            let top = row.y - self.shown_scroll_y();
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
@@ -3071,7 +3074,7 @@ impl TextInput {
             .zip(is_line_start.iter())
             .enumerate()
         {
-            let top = line.y - self.scroll_y;
+            let top = line.y - self.shown_scroll_y();
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
@@ -3836,6 +3839,20 @@ impl TextInput {
         + 'static,
     ) -> Self {
         self.span_highlighter = Some(Box::new(highlighter));
+        self
+    }
+
+    /// Underline what `marker` finds wrong in the text, as a misspelling is,
+    /// for entries checked against something other than a dictionary: the
+    /// words of a recovery key. The marker sees the text as it is drawn, so
+    /// the marks never lag an edit; it should leave the word still being
+    /// typed alone.
+    #[must_use]
+    pub fn with_mistakes(
+        mut self,
+        marker: impl Fn(&str) -> Vec<std::ops::Range<usize>> + 'static,
+    ) -> Self {
+        self.mistakes = Some(Box::new(marker));
         self
     }
 
@@ -4818,8 +4835,9 @@ impl TextInput {
             .is_none_or(|(active_start, active_end)| end <= active_start || start >= active_end)
     }
 
-    /// Draw a theme-aware wavy underline using the same range geometry as
-    /// selection, so it follows shaping, `BiDi`, and soft wrapping.
+    /// Draw a theme-aware wavy underline under misspellings and the owner's
+    /// marked mistakes, using the same range geometry as selection, so it
+    /// follows shaping, `BiDi`, and soft wrapping.
     #[allow(
         clippy::while_float,
         reason = "x advances by a fixed positive 2px and is clamped to x1"
@@ -4828,10 +4846,21 @@ impl TextInput {
         self.refresh_autocorrection_preview();
         self.refresh_spelling();
         let color = theme.tokens.colors.semantic.danger;
-        for &(start, end) in &self.spell_spans {
-            if !self.spelling_span_is_visible(start, end) {
-                continue;
-            }
+        let spelling = self
+            .spell_spans
+            .iter()
+            .copied()
+            .filter(|&(start, end)| self.spelling_span_is_visible(start, end));
+        let mistakes = self
+            .mistakes
+            .as_ref()
+            .map(|marker| marker(&self.text))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|range| self.text.get(range.clone()).is_some())
+            .map(|range| (range.start, range.end));
+        let marked: Vec<(usize, usize)> = spelling.chain(mistakes).collect();
+        for (start, end) in marked {
             for rect in self.selection_rects(theme, start, end) {
                 let x0 = rect.x0.max(self.rect.x0);
                 let x1 = rect.x1.min(self.rect.x1);
@@ -6303,6 +6332,9 @@ impl Widget for TextInput {
 
     fn needs_animation_frame(&self) -> bool {
         self.wheel_glide.is_active()
+            || self
+                .wheel_glide
+                .give_needs_frame(crate::motion::frame_now())
             || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 

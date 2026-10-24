@@ -226,7 +226,7 @@ fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
             .is_normal()
     );
 
-    // A marker, and its removal (which is confirmed).
+    // A marker, and its removal (undoable, so it applies at once).
     replica
         .apply(Project::PLACE_MARKER.with((12.5, "  ".to_owned())))
         .unwrap();
@@ -237,15 +237,9 @@ fn speed_markers_titles_and_the_frame_change_through_their_verbs() {
             .apply(Project::PLACE_MARKER.with((-1.0, "Before time".to_owned())))
             .is_err()
     );
-    assert!(
-        replica
-            .apply(Project::DELETE_MARKER.with(id(marker.id)))
-            .is_err(),
-        "removing waits for confirmation"
-    );
     replica
-        .apply_confirmed(Project::DELETE_MARKER.with(id(marker.id)))
-        .unwrap();
+        .apply(Project::DELETE_MARKER.with(id(marker.id)))
+        .expect("Undo takes a removed marker back, so removing asks nothing");
     assert!(replica.state().unwrap().markers.is_empty());
 
     // A title lands in the bin as a text source.
@@ -338,16 +332,11 @@ fn deleting_clips_sources_and_tracks_takes_what_hangs_off_them() {
         .unwrap()
         .clone();
 
-    // A delete waits for confirmation, then leaves a gap.
+    // A delete applies at once (Undo takes it back) and leaves a gap.
     let mut replica = holding(&sample);
-    assert!(
-        replica
-            .apply(Project::REMOVE_CLIP.with(id(lone.id)))
-            .is_err()
-    );
     replica
-        .apply_confirmed(Project::REMOVE_CLIP.with(id(lone.id)))
-        .unwrap();
+        .apply(Project::REMOVE_CLIP.with(id(lone.id)))
+        .expect("Undo takes a deleted clip back, so deleting asks nothing");
     let after = replica.state().unwrap();
     assert!(after.clip(lone.id).is_none());
     assert_eq!(after.clips.len(), sample.clips.len() - 1);

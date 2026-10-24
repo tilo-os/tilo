@@ -609,10 +609,10 @@ fn history_says_what_each_change_did() {
     );
 }
 
-/// Merging from the review asks the host to confirm while the review stays
-/// up; confirmed, the merge lands and the review closes.
+/// Merging from the review lands at once, since Undo takes it back: the
+/// host asks nothing, and Undo brings the merged contact back.
 #[test]
-fn merging_from_the_review_asks_the_host_and_lands() {
+fn merging_from_the_review_lands_at_once_and_undo_takes_it_back() {
     let mut app = TestApp::<ContactsShell>::new().unwrap();
     let mut survivor = person("Ada", "Lovelace");
     survivor.id = Uuid::from_u128(1);
@@ -639,11 +639,12 @@ fn merging_from_the_review_asks_the_host_and_lands() {
         app.settle();
     };
     activate(&mut app, "Merge contacts", ui::a11y::Action::Activate);
-    assert_eq!(app.state().contacts.len(), 2, "nothing merges unconfirmed");
-    assert!(app.confirm_asked().is_some(), "the host asks first");
+    assert!(app.asking().is_none(), "an undoable merge asks nothing");
     let merged = app.state().contacts;
-    assert_eq!(merged.len(), 1, "the confirmed merge lands");
+    assert_eq!(merged.len(), 1, "the merge lands at once");
     assert_eq!(merged[0].org, "Analytical Engines");
+    assert!(app.undo(), "the merge is one undo step");
+    assert_eq!(app.state().contacts.len(), 2, "Undo brings the copy back");
 }
 
 /// An agent keeps the address book, or one card it names, as vCards in

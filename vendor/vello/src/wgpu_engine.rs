@@ -2904,6 +2904,51 @@ impl WgpuEngine {
                         );
                     }
                 }
+                Command::WriteImageRegion(proxy, [x, y], image, [rx, ry, width, height]) => {
+                    // Tilo patch: one rect of an image drawn from its blob's
+                    // pixels, which took over an earlier image's atlas slot.
+                    let id = image.data.id();
+                    let format = proxy.format.to_wgpu();
+                    let block_size = format
+                        .block_copy_size(None)
+                        .expect("ImageFormat must have a valid block size");
+                    let stride = u64::from(image.width) * u64::from(block_size);
+                    let offset = u64::from(*ry) * stride + u64::from(*rx) * u64::from(block_size);
+                    let end = offset
+                        + u64::from(height.saturating_sub(1)) * stride
+                        + u64::from(*width) * u64::from(block_size);
+                    if self.image_sources.sources.contains_key(&id)
+                        || self.image_overrides.contains_key(&id)
+                        || (image.data.len() as u64) < end
+                    {
+                        log::debug!("image {id} has no pixels of its own to update in place");
+                    } else {
+                        let (texture, _) = self.bind_map.get_or_create_image(*proxy, device);
+                        queue.write_texture(
+                            wgpu::TexelCopyTextureInfo {
+                                texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d {
+                                    x: x + rx,
+                                    y: y + ry,
+                                    z: 0,
+                                },
+                                aspect: TextureAspect::All,
+                            },
+                            image.data.data(),
+                            wgpu::TexelCopyBufferLayout {
+                                offset,
+                                bytes_per_row: Some(image.width * block_size),
+                                rows_per_image: None,
+                            },
+                            wgpu::Extent3d {
+                                width: *width,
+                                height: *height,
+                                depth_or_array_layers: 1,
+                            },
+                        );
+                    }
+                }
                 Command::Dispatch(shader_id, wg_size, bindings) => {
                     let (x, y, z) = *wg_size;
                     // println!("dispatching {:?} with {} bindings", wg_size, bindings.len());

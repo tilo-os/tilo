@@ -362,13 +362,7 @@ pub struct CrossStripDetach {
 /// Tile content remains owned by the shell's `WorkspaceTree`; the UI only
 /// reports identities and presentation state, avoiding a second copy of app
 /// data at the widget boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroupTopology {
-    pub id: u64,
-    pub tab_ids: Vec<u64>,
-    pub active_tab: u64,
-    pub width: WindowWidth,
-}
+pub use tilo_desktop_model::GroupShape as GroupTopology;
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -2734,14 +2728,14 @@ impl GroupRow {
         self.pan_of_lane_mut(self.focus_lane).absolute = true;
     }
 
-    /// A group focused the same frame it was spliced in hasn't been
-    /// through a layout pass yet, so its rect is degenerate and any pan
-    /// on it is a no-op.
+    /// Whether a layout pass has given `group_id` its place. A group
+    /// focused the same frame it was spliced in has none yet, so a pan to
+    /// it has nothing to aim at. A window opening has its place from its
+    /// first layout, while its slot still grows from nothing: a reveal aims
+    /// at where it will be once grown ([`Self::scroll_target_for`]), so the
+    /// strip pans as the window opens rather than once it has some width.
     pub fn group_is_laid_out(&self, group_id: u64) -> bool {
-        self.groups
-            .iter()
-            .find(|g| g.id == group_id)
-            .is_some_and(|g| g.get_rect().width() > 0.0)
+        self.laid_group_ids.contains(&group_id) && self.groups.iter().any(|g| g.id == group_id)
     }
 
     /// Pan `group_id`'s run (the row, or its display's lane) so the group
@@ -2823,19 +2817,12 @@ impl GroupRow {
     }
 
     /// The furthest a reveal pans `lane` once the slot-width springs of its
-    /// laid-out groups have settled: [`Pan::max_scroll_x`] of the finished
-    /// layout.
+    /// groups have settled: [`Pan::max_scroll_x`] of the strip they are
+    /// going to ([`Self::dest_content_w`]), which is already where they
+    /// end, so nothing of their flight is added to it again.
     fn settled_max_scroll_x(&self, lane: usize) -> f64 {
-        let growth: f64 = self
-            .groups
-            .iter()
-            .filter(|g| {
-                self.laid_group_ids.contains(&g.id) && self.lane_of_group(g.id).unwrap_or(0) == lane
-            })
-            .map(|g| g.dest_width_px() - g.layout_width_px())
-            .sum();
-        let pan = self.pan_of_lane(lane);
-        pan.max_scroll_x_of(pan.content_w + growth)
+        self.pan_of_lane(lane)
+            .max_scroll_x_of(self.dest_content_w(lane))
     }
 
     /// Pan so that `keep` and `also` are both wholly in view when they fit

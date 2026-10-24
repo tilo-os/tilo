@@ -413,7 +413,6 @@ impl ShellOverlayHost {
             strip_navigator: tilo_desktop::strip_navigator::StripNavigator::default(),
             strip_switcher_revision: None,
             outputs: Vec::new(),
-            keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             palette,
             app_actions: None,
             palette_visible: false,
@@ -482,6 +481,8 @@ impl ShellOverlayHost {
             power_bridge: None,
             session_action_policy: inputs.session_action_policy,
             top_bar_reveal: top_bar_reveal::TopBarReveal::default(),
+            fullscreen_bar_reveal: top_bar_reveal::FullscreenBarReveal::default(),
+            top_edge_swipe: None,
             strip_pan_active: false,
             qs_refresh: inputs.qs_refresh,
             workspace_settings_overlay: WorkspaceSettingsOverlay::default(),
@@ -527,7 +528,7 @@ impl ShellOverlayHost {
             status_sharing: collaboration_preferences.sharing,
             peer_sync_overlay: PeerSyncOverlay::default(),
             directory_sheet: crate::shell::directory_sheet::DirectorySheet::default(),
-            arrival_line: crate::shell::arrival_line::ArrivalLine::default(),
+            arrival_pulses: Vec::new(),
             notification_stack: NotificationStack::new(),
             acknowledgement_reduce_motion: std::cell::Cell::new(false),
             osd_painted: std::cell::Cell::new(None),
@@ -611,7 +612,6 @@ impl ShellOverlayHost {
                 introduced: collaboration_preferences.introduced,
                 ..arrival::PresenceNotices::default()
             },
-            presence_notice_press: false,
             #[cfg(feature = "hosted-test-control")]
             public_for_shots: false,
             person_quick_composer_node: None,

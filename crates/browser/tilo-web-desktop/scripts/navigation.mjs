@@ -296,6 +296,8 @@ async function travels(what, from, {sent, before}) {
     if (got.notches === sent && moved.lines * Math.sign(sent) >= 1) break;
     if (Date.now() > deadline) {
       if (process.env.SHOTS_DIR) writeFileSync(join(process.env.SHOTS_DIR, 'navigation-failed.png'), await tab.screenshot());
+      // What the page said last: a frame it skipped, a panic.
+      console.error(tab.log.slice(-30).join('\n'));
       assert.fail(`${what}: ${JSON.stringify({moved, got})} from ${from}; [ms, offset, notches, group]: ${JSON.stringify(await evaluate('wheelTrace'))}; windows: ${JSON.stringify((await snapshot()).entries.map(e => [e.label, e.route.group]))}`);
     }
     await sleep(250);

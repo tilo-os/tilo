@@ -1346,6 +1346,66 @@ async fn a_step_takes_the_value_a_formula_computed() {
     host.relay.shutdown().await;
 }
 
+const MESSAGES: &str = "so.tilo.messages";
+
+/// A step quotes one message among several alike by a rule (the newest from
+/// a sender after a time) and a part of it by a pattern: the host picks the
+/// message and takes the code out, so the model copies neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS, MESSAGES],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let messages = agent.open(MESSAGES, None).unwrap();
+    let deliver = |from: &str, body: &str, date: &str| {
+        serde_json::json!({"app": MESSAGES, "record": messages.record, "resource": "tilo.messages",
+            "action": "deliver-message", "arguments": {"from": from, "body": body, "date": date}})
+    };
+    let quoted = "messages/search-messages?query=code#/messages\
+                  [from=parcelly, after 2026-10-14T09:15Z, newest]";
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            deliver("Parcelly", "Parcelly login code: 330817.", "2026-10-13T17:42:10Z"),
+            deliver("Parcelly", "Parcelly login code: 552398.", "2026-10-14T09:15:41Z"),
+            deliver("Northwind Bank", "Your sign-in code is 615204.", "2026-10-14T09:16:00Z"),
+            deliver("Parcelly", "Parcelly: your new login code: 771046.", "2026-10-14T09:16:20Z"),
+            {"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+             "action": "set-cells", "arguments": {"sheet": FIRST_SHEET, "start": "A1", "rows": [[
+                format!("{{{{{quoted}/body|match:(\\d{{6}})}}}}"),
+                format!("Received {{{{{quoted}/date|long}}}}"),
+             ]]}},
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "A1:B1"),
+        serde_json::json!([[771_046.0, "Received October 14, 2026"]])
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
 /// A value that is not there fails its step with the reference named, and
 /// the task's repair plans around it with that reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -4027,12 +4027,11 @@ mod tests {
                 &mut Edits::lend(&mut state.doc),
                 OutEvent::Delete(welcome),
             );
+            // Undo takes a deleted note back, so it lands at once.
             assert!(
-                state.doc.get_changes(&before).is_empty(),
-                "deleting a note asks the person first"
+                !state.doc.get_changes(&before).is_empty(),
+                "deleting a note asks nothing"
             );
-            // The person confirms what the host asked.
-            app.land(&mut state.doc);
             let change = state.doc.get_changes(&before).into_iter().last().unwrap();
             let context =
                 tilo_actions::ActionContext::from_change_message(change.message().unwrap())

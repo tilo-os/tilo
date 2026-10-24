@@ -767,6 +767,7 @@ mod tests {
         }
         Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(rgba),
             width,
             height,

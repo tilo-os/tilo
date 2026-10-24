@@ -491,10 +491,16 @@ impl ToolbarAction {
     /// outcome it names.
     #[must_use]
     pub fn new(id: impl Into<String>, icon: impl Into<String>, name: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), icon.into(), name.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, icon: String, name: String) -> Self {
         Self {
-            id: id.into(),
-            icon: icon.into(),
-            name: name.into(),
+            id,
+            icon,
+            name,
             enabled: true,
             on: false,
             menu: false,
@@ -605,6 +611,12 @@ pub enum ToolbarEvent {
         with: String,
         all: bool,
     },
+    /// The search's options stand open over this much of the app's window,
+    /// in its coordinates (`None`: they closed): the current match is shown
+    /// clear of them ([`crate::widget::Findable::set_find_cover`]).
+    SearchCover {
+        cover: Option<WholeRect>,
+    },
     /// The window's History control was pressed: open History, or close it
     /// while it shows.
     History,
@@ -670,6 +682,47 @@ pub struct WindowOffer {
     /// shows its query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adopted: Option<AdoptedQuery>,
+}
+
+/// A rect in whole logical pixels, as the bar tells an app in its own
+/// process where something of the bar stands over it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WholeRect {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl WholeRect {
+    /// The whole pixels `rect` touches.
+    #[must_use]
+    pub fn around(rect: vello::kurbo::Rect) -> Self {
+        let rect = rect.expand();
+        // A window's coordinates are a few thousand logical pixels.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "window coordinates are far inside i32 once rounded outward"
+        )]
+        let whole = |v: f64| v as i32;
+        Self {
+            x0: whole(rect.x0),
+            y0: whole(rect.y0),
+            x1: whole(rect.x1),
+            y1: whole(rect.y1),
+        }
+    }
+
+    /// The rect in logical pixels.
+    #[must_use]
+    pub fn rect(self) -> vello::kurbo::Rect {
+        vello::kurbo::Rect::new(
+            f64::from(self.x0),
+            f64::from(self.y0),
+            f64::from(self.x1),
+            f64::from(self.y1),
+        )
+    }
 }
 
 /// A find an app's document ran on its own (an action went to a match) that
@@ -935,6 +988,7 @@ impl ToolbarEvent {
             | Self::SearchStep { .. }
             | Self::SearchClose
             | Self::SearchOptions { .. }
+            | Self::SearchCover { .. }
             | Self::History => {}
         }
         self
@@ -1476,6 +1530,14 @@ mod tests {
                     mode: crate::widget::FindMode::Regex,
                 },
             },
+            ToolbarEvent::SearchCover {
+                cover: Some(WholeRect {
+                    x0: 120,
+                    y0: 0,
+                    x1: 300,
+                    y1: 168,
+                }),
+            },
             ToolbarEvent::SearchReplace {
                 with: "dog".into(),
                 all: true,
@@ -1487,7 +1549,7 @@ mod tests {
             deliver(event);
         }
         let taken = take_events();
-        assert_eq!(taken.len(), 10);
+        assert_eq!(taken.len(), 11, "every event reaches the app");
         assert_eq!(taken[0], ToolbarEvent::Back);
         assert!(take_events().is_empty());
         let wire = serde_json::to_string(&browser()).unwrap();

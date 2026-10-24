@@ -29,7 +29,7 @@ use std::sync::Arc;
 use settings_store::hardware::{ShortcutAction, ShortcutConfig};
 use tilo_desktop::about::{AboutVariant, TiloMenu};
 use tilo_desktop::chrome::{
-    AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource, StripPlaces,
+    AvatarAsk, ChromeIntent, ClockSnapshot, DesktopChromeSnapshot, DesktopChromeSource,
 };
 use tilo_desktop::collaborators::{
     CollaboratorsHit, CollaboratorsModel, CollaboratorsOverlay, LineSource, RecentChange,
@@ -162,17 +162,9 @@ impl DesktopChromeSource for PageChrome {
             self.seen.set(seen);
             self.revision.set(self.revision.get().wrapping_add(1));
         }
-        let others = self.here.borrow().strip_places();
-        let mut places = self
-            .handle
-            .read(|tree| StripPlaces::in_active_workspace(tree, &others));
-        // Adding a desk is offered only to whom the workspace's policy lets
-        // add one.
-        places.can_add = self.offered_edits().add_desk;
         DesktopChromeSnapshot {
             revision: self.revision.get(),
             clock,
-            strip_places: Some(places),
             watching: self.here.borrow().watching(),
             own: Some(self.own_chip()),
             // The page has no quick settings: the cluster opens the
@@ -826,18 +818,6 @@ impl BrowserShell {
                     .toggle(&model, self.bar.own_avatar_rect(), self.rect);
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
-            ChromeIntent::SwitchStrip(strip) => {
-                if let Some(workspace) = self.active_workspace() {
-                    self.dispatch(&Command::Strip {
-                        generation: self.generation.clone(),
-                        workspace,
-                        strip: strip.0.to_string(),
-                    });
-                }
-            }
-            ChromeIntent::AddStrip { name } => {
-                self.add_strip(name);
-            }
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::ToggleTiloMenu => {
                 // One popover from the bar at a time.
@@ -950,8 +930,14 @@ impl BrowserShell {
                     self.toggle_overview();
                 }
             }
+            // Made in the strip switcher, the one place strips are.
             WorkspaceMenuChoice::NewStrip => {
-                self.bar.begin_new_strip();
+                if let Some(navigation) = self
+                    .navigator
+                    .new_strip(&self.navigator_frame, ui::time::now())
+                {
+                    self.apply_navigation(navigation);
+                }
             }
             WorkspaceMenuChoice::Rename => {
                 self.bar.begin_workspace_rename();
@@ -1427,7 +1413,7 @@ impl BrowserShell {
             }
             WindowEvent::MouseInput {
                 state,
-                button: MouseButton::Left,
+                button: button @ (MouseButton::Left | MouseButton::Right),
                 ..
             } => {
                 if *state == ElementState::Released {
@@ -1436,7 +1422,15 @@ impl BrowserShell {
                 let Some(p) = self.cursor else {
                     return false;
                 };
-                let Some(navigation) = self.navigator.press(&self.navigator_frame, p, now) else {
+                // A secondary press (a long-press by touch) puts a strip's
+                // actions out beside its label.
+                let answer = if *button == MouseButton::Right {
+                    self.navigator
+                        .secondary_press(&self.navigator_frame, p, now)
+                } else {
+                    self.navigator.press(&self.navigator_frame, p, now)
+                };
+                let Some(navigation) = answer else {
                     return false;
                 };
                 navigation

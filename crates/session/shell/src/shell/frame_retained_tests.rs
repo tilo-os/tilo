@@ -3219,6 +3219,11 @@ fn overview_fade_repaints_one_display_and_matches_dense_in_every_theme() {
         // out for, so motion is restored before that layout.
         frame.theme.reduce_motion = false;
         frame.relayout();
+        // The fixture's pointer rests in the second display's corner, which
+        // brings the desk's team glance in a moment later: let it arrive
+        // first, so the frames before the chord are settled and the fade is
+        // the only thing that moves.
+        settle_desk(&mut frame);
         let mut frames = vec![frame.paint_with_damage(), frame.paint_with_damage()];
         frame.with_chrome(|chrome| {
             chrome.overlays.overview = true;

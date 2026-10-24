@@ -115,7 +115,7 @@ impl DataTableCore {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
         presence: &PresenceCtx,
-    ) -> Vec<crate::widget::paint_damage::PaintPart> {
+    ) -> Vec<crate::scroll_copy::Piece<crate::scroll_copy::Painted>> {
         // A sort or change the person made since the last frame starts its
         // motion from where the rows were drawn to where they are now.
         let now = crate::motion::frame_now();
@@ -125,19 +125,23 @@ impl DataTableCore {
             .start(shown.iter().copied(), theme.motion(), now);
         self.moving.drawn = shown;
         let offset = self.viewport.offset();
+        // Past an end, fingers pull the rows through the rubber band: they
+        // land that much further, drawn as they are.
+        let give = self.give();
         #[allow(
             clippy::arithmetic_side_effects,
             reason = "kurbo Affine composition is floating-point matrix math; it cannot overflow or panic"
         )]
-        let scrolled = transform * Affine::translate((0.0, -offset)) * transform.inverse();
-        let parts = self.draw_rows(transform, text_renderer, theme);
-        for part in &parts {
-            scene.append(part.scene(), Some(scrolled));
+        let scrolled = transform * Affine::translate((0.0, -offset - give)) * transform.inverse();
+        let mut parts = self.draw_rows(transform, text_renderer, theme);
+        for part in &mut parts {
+            part.rect = part.rect - vello::kurbo::Vec2::new(0.0, give);
+            scene.append(&part.paint.0, Some(scrolled));
         }
         for cell in &mut self.mounted_cells {
             // A cell control travels and fades with its row.
             let (dy, alpha) = self.moving.rows.pose(&cell.row_key, now);
-            let cell_transform = transform * Affine::translate((0.0, dy));
+            let cell_transform = transform * Affine::translate((0.0, dy - give));
             let faded = alpha < 1.0;
             if faded {
                 scene.push_layer(

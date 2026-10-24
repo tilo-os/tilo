@@ -109,6 +109,41 @@ pub const ATSPI_FILTER_ARGS: &[&str] = &[
     "--call=org.a11y.atspi.Registry=org.a11y.atspi.DeviceEventController.NotifyListenersAsync@/org/a11y/atspi/registry/deviceeventcontroller",
 ];
 
+/// Set to `1` in a graphical app's environment, it makes the app's AT-SPI
+/// bridge (`vendor/accesskit_unix/src/read_only.rs`) serve the accessible
+/// tree read-only to every other client on the bus.
+///
+/// The proxy above limits what the app may call, but it cannot filter calls
+/// into the app, and an AT-SPI call carries no proof that a person asked for
+/// it: any process on the bus could otherwise press the app's buttons, type
+/// into its fields or confirm its dialogs with no input the compositor sees,
+/// past the launch-gesture rule and the action broker's attribution. With the
+/// variable set, `Action.DoAction`, `EditableText`, setting
+/// `Value.CurrentValue`, selecting, `Component.GrabFocus` and moving the caret
+/// are refused, while names, roles, states, text, values and events still
+/// answer. The built-in reader runs inside the app and acts through the
+/// person's own input, so it is unaffected.
+pub const ATSPI_READ_ONLY_ENV: &str = "TILO_ATSPI_READ_ONLY";
+
+/// Written only into the dev image (`os/scripts/finalize-dev-image.py`), in
+/// the sealed `/usr`.
+const IMAGE_FLAVOUR: &str = "/usr/lib/tilo/image-flavour";
+
+/// Whether apps launched here serve their AT-SPI tree read-only: always,
+/// except on the dev image, whose release gates drive apps over AT-SPI
+/// (`tools/atspi_external_client.py`). Nothing running on a release device
+/// can make its sealed `/usr` say `dev`.
+#[must_use]
+pub fn atspi_read_only() -> bool {
+    atspi_read_only_on(std::fs::read(IMAGE_FLAVOUR).ok().as_deref())
+}
+
+/// [`atspi_read_only`] for an image whose flavour file holds `flavour`.
+#[must_use]
+pub fn atspi_read_only_on(flavour: Option<&[u8]>) -> bool {
+    flavour.is_none_or(|flavour| flavour.trim_ascii() != b"dev")
+}
+
 /// Env-var override for the `xdg-dbus-proxy` binary path — used by the
 /// test suite (mock fixture) and installs that ship the binary
 /// somewhere non-standard.

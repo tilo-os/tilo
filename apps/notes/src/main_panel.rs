@@ -2311,7 +2311,7 @@ impl Widget for MainPanel {
                 self.set_scroll_offset(self.scroll_y + dy);
                 let moved = (self.scroll_y - prev).abs() > f64::EPSILON;
                 if pixel {
-                    self.glide.wheel_applied(dy, moved);
+                    self.glide.wheel_applied(dy, self.scroll_y - prev);
                 }
                 if moved {
                     *ctx.handled = true;

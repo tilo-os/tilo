@@ -17,7 +17,13 @@
 //! - `{{= expr }}` computes: arithmetic, sum, avg, min, max, round, abs,
 //!   percentages and dates, with references (`Sheet1!B2`, `{ref}`) as
 //!   operands.
-//! - `|$`, `|%`, `|0.00`, `|long` after either format the value.
+//! - `[rule]` after a pointer that reaches a list picks one of its items
+//!   by what it holds rather than where it is (`#/messages[from~Ada,
+//!   newest]/body`, `{{Sheet1!A1:H9[Invoice=INV-7]/Status}}`); the
+//!   rules are in [`select`].
+//! - `|$`, `|%`, `|0.00`, `|long` after either format the value, and
+//!   `|match:<regex>` takes out of it the regex's first group, or its whole
+//!   match (`|match:INV-\d+`).
 //!
 //! An argument that is one such value whole takes it typed (a number stays
 //! a number); inside text it is written out. Anything else in braces is
@@ -27,6 +33,8 @@
 
 mod dates;
 mod expr;
+mod pattern;
+mod select;
 #[cfg(test)]
 mod tests;
 
@@ -51,8 +59,18 @@ pub(crate) struct ViewRef {
 struct Reference {
     view: ViewRef,
     pointer: String,
+    /// The items picked from there on, in order.
+    selections: Vec<Selection>,
     /// A range of cells, whose rows are read as one list.
     range: bool,
+}
+
+/// A rule picking from the list a reference has reached ([`select`]), and
+/// the pointer into what it picked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Selection {
+    rule: String,
+    pointer: String,
 }
 
 /// The app id a cell reference (`Sheet1!B2`) reads, as [`ViewRef::app`]
@@ -255,16 +273,56 @@ impl Binder<'_> {
                 reference.view.operation, reference.pointer
             ));
         };
-        let empty = match found {
+        let mut found = found.clone();
+        let mut many = reference.range;
+        for selection in &reference.selections {
+            let (picked, all) = match select::select(&found, &selection.rule)? {
+                select::Picked::One(item) => (item, false),
+                select::Picked::All(items) => (serde_json::Value::Array(items), true),
+            };
+            many = all;
+            found = if selection.pointer.is_empty() {
+                picked
+            } else if let serde_json::Value::Array(items) = &picked
+                && all
+            {
+                serde_json::Value::Array(
+                    items
+                        .iter()
+                        .map(|item| {
+                            select::at(item, &selection.pointer)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    nothing_at(item, &selection.rule, &selection.pointer)
+                                })
+                        })
+                        .collect::<Result<_, _>>()?,
+                )
+            } else {
+                select::at(&picked, &selection.pointer)
+                    .cloned()
+                    .ok_or_else(|| nothing_at(&picked, &selection.rule, &selection.pointer))?
+            };
+        }
+        let empty = match &found {
             serde_json::Value::Null => true,
             serde_json::Value::String(text) => text.trim().is_empty(),
             _ => false,
         };
-        if empty && !reference.range {
+        if empty && !many {
             return Err("it is empty".into());
         }
-        Ok(found.clone())
+        Ok(found)
     }
+}
+
+/// Why `pointer` reaches nothing in the item `rule` picked.
+fn nothing_at(item: &serde_json::Value, rule: &str, pointer: &str) -> String {
+    let fields = item.as_object().map_or_else(String::new, |fields| {
+        let names: Vec<&str> = fields.keys().map(String::as_str).collect();
+        format!(" (it has {})", names.join(", "))
+    });
+    format!("the item [{rule}] picked has nothing at {pointer}{fields}")
 }
 
 /// `value` as a parameter of type `wants` takes it: written out for text,
@@ -333,8 +391,15 @@ fn closing(text: &str, from: usize) -> Option<usize> {
     None
 }
 
-/// `inner` and the format it ends with (`…|$`), when it names one.
+/// `inner` and the format it ends with (`…|$`), when it names one. A
+/// pattern (`…|match:a|b`) runs to the end, `|` and all.
 fn split_format(inner: &str) -> (&str, Option<&str>) {
+    if let Some(at) = inner.find("|match:") {
+        return (
+            inner.get(..at).unwrap_or_default(),
+            inner.get(at.saturating_add(1)..),
+        );
+    }
     let Some((body, format)) = inner.rsplit_once('|') else {
         return (inner, None);
     };
@@ -372,6 +437,13 @@ fn fixed_places(pattern: &str) -> Option<(usize, bool)> {
 
 /// `value` written as `format_as` asks.
 fn format(value: &Value, format_as: Option<&str>) -> Result<String, String> {
+    if let Some(pattern) = format_as.and_then(|format_as| format_as.strip_prefix("match:")) {
+        let text = value.text();
+        if text.trim().is_empty() {
+            return Err("it is empty".into());
+        }
+        return pattern::first_match(&text, pattern.trim());
+    }
     let Some(format_as) = format_as else {
         let text = value.text();
         return if text.trim().is_empty() {
@@ -455,8 +527,24 @@ fn parse_reference(text: &str) -> Option<Reference> {
     cell_reference(text).or_else(|| view_reference(text))
 }
 
-/// `Sheet1!B2`, `'Q3 Budget'!C7`, `Totals!A1:C4`.
+/// `Sheet1!B2`, `'Q3 Budget'!C7`, `Totals!A1:C4`, and a range's rows
+/// picked by a rule: `Totals!A1:C4[Region=North]/Amount`.
 fn cell_reference(text: &str) -> Option<Reference> {
+    let (cells, picks) = match text.find('[') {
+        Some(at) => (text.get(..at)?, text.get(at..)?),
+        None => (text, ""),
+    };
+    let mut reference = cells_reference(cells)?;
+    if !picks.is_empty() {
+        if !reference.range {
+            return None;
+        }
+        reference.selections = selections(picks)?;
+    }
+    Some(reference)
+}
+
+fn cells_reference(text: &str) -> Option<Reference> {
     let (sheet, cells) = text.rsplit_once('!')?;
     let sheet = match sheet
         .strip_prefix('\'')
@@ -486,6 +574,7 @@ fn cell_reference(text: &str) -> Option<Reference> {
             arguments: BTreeMap::from([("item".to_owned(), format!("{sheet}!{cells}"))]),
         },
         pointer: if range { "/rows" } else { "/rows/0/0" }.to_owned(),
+        selections: Vec::new(),
         range,
     })
 }
@@ -500,7 +589,8 @@ fn is_cell(text: &str) -> bool {
 }
 
 /// `app:record/operation?name=value#/pointer`, the record and the
-/// arguments optional; the pointer is empty for the whole answer.
+/// arguments optional; the pointer is empty for the whole answer, and
+/// rules may follow it (`#/messages[newest]/body`, `#[last]`).
 fn view_reference(text: &str) -> Option<Reference> {
     let app_end = text.find([':', '/'])?;
     let app = text.get(..app_end)?;
@@ -522,10 +612,18 @@ fn view_reference(text: &str) -> Option<Reference> {
         None => None,
     };
     let rest = rest.strip_prefix('/')?;
-    let hash = rest
-        .find("#/")
-        .or_else(|| rest.ends_with('#').then(|| rest.len().saturating_sub(1)))?;
-    let (operation, pointer) = (rest.get(..hash)?, rest.get(hash.saturating_add(1)..)?);
+    let (hash, _) = rest.match_indices('#').find(|(at, _)| {
+        matches!(
+            rest.get(at.saturating_add(1)..)
+                .and_then(|after| after.chars().next()),
+            None | Some('/' | '[')
+        )
+    })?;
+    let (operation, path) = (rest.get(..hash)?, rest.get(hash.saturating_add(1)..)?);
+    let (pointer, picks) = match path.find('[') {
+        Some(at) => (path.get(..at)?, path.get(at..)?),
+        None => (path, ""),
+    };
     let (operation, query) = operation.split_once('?').unwrap_or((operation, ""));
     if operation.is_empty() || operation.contains(char::is_whitespace) {
         return None;
@@ -543,6 +641,38 @@ fn view_reference(text: &str) -> Option<Reference> {
             arguments,
         },
         pointer: pointer.to_owned(),
+        selections: selections(picks)?,
         range: false,
     })
+}
+
+/// The rules of `text` (`[rule]/pointer[rule]…`) and the pointer after
+/// each; `None` when it is not that.
+fn selections(text: &str) -> Option<Vec<Selection>> {
+    let mut found = Vec::new();
+    let mut rest = text;
+    while let Some(after) = rest.strip_prefix('[') {
+        let mut quoted = false;
+        let close = after.char_indices().find_map(|(at, c)| match c {
+            '"' => {
+                quoted = !quoted;
+                None
+            }
+            ']' if !quoted => Some(at),
+            _ => None,
+        })?;
+        let rule = after.get(..close)?.trim();
+        let tail = after.get(close.saturating_add(1)..)?;
+        let pointer_end = tail.find('[').unwrap_or(tail.len());
+        let pointer = tail.get(..pointer_end)?.trim_end();
+        if !(pointer.is_empty() || pointer.starts_with('/')) {
+            return None;
+        }
+        found.push(Selection {
+            rule: rule.to_owned(),
+            pointer: pointer.to_owned(),
+        });
+        rest = tail.get(pointer_end..)?;
+    }
+    rest.is_empty().then_some(found)
 }

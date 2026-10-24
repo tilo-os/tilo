@@ -339,11 +339,13 @@ concurrent clients and the same no-op through the MCP server. Give it
 compositor through `spawn-headless.sh`. A spawned compositor is removed on
 exit. `spawn-headless.sh` runs `$TILO_HEADLESS_BINARY` when that is set. A
 release build serves the socket only with `--features dev-overrides`.
-`scripts/perf/agent_task.py` times a whole task the same way: a scripted,
-streamed fake model creates a note in Notes, writes its body and finds it by
-search, and the record splits the time between Tilo, the model and the
-agent loop. Its `--spawn` desktop is seeded by the `agent_task_desktop`
-example of `shell`.
+`scripts/perf/agent_task.py` times a whole task the way an agent in the
+login runs it: a scripted, streamed fake model drives `tilo-runtime-mcp
+--connect` through the session's agent door, creates a note in Notes,
+writes its body, finds it by its title and reads it back, and the record
+splits the time between Tilo, the model and the agent loop. Its `--spawn`
+desktop is seeded by the `agent_task_desktop` example of `shell` and
+serves the door (`TILO_AGENT_DOOR`) in its profile.
 
 Configure the headless viewport via env var (defaults to 1600×900):
 ```bash

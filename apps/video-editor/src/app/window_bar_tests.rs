@@ -13,7 +13,7 @@ use vello::kurbo::Rect;
 use super::{EXPORT, IMPORT, INSPECTOR, SPLIT};
 use crate::actions::VideoEditorEffect;
 use crate::app::VideoEditorApp;
-use crate::model::Project;
+use crate::model::{Project, TrackKind};
 
 /// The sample project in an editor `w` wide, laid out as a host lays it out;
 /// file choosers answered by a recording host, never put on a screen.
@@ -499,4 +499,374 @@ fn a_compact_preview_starts_right_under_the_window_bar() {
         (r.timeline.y0 - (wide.rect.y0 + chosen).round()).abs() < 1e-9,
         "wide, the timeline starts where the split puts it"
     );
+}
+
+/// The blank editor `width` wide, choosers answered by `services`.
+fn blank_at(width: u32) -> TestApp<crate::VideoEditor> {
+    let mut app = TestApp::<crate::VideoEditor>::new().expect("the editor opens");
+    app.harness().present_in_window_bar();
+    app.harness()
+        .relayout_at((width, 800))
+        .expect("the editor lays out");
+    app.settle();
+    app
+}
+
+/// The empty timeline's button in the exported tree: its node and where
+/// it stands.
+fn timeline_empty_button(
+    app: &mut TestApp<crate::VideoEditor>,
+    label: &str,
+) -> (ui::accesskit::NodeId, Rect) {
+    let Some((drawn, action)) = app
+        .with_surface::<VideoEditorApp, _>(|editor| {
+            editor.timeline_empty_action_rect(&editor.regions())
+        })
+        .expect("the editor surface")
+    else {
+        panic!("the empty timeline offers {label}");
+    };
+    assert_eq!(action.label(), label);
+    app.harness()
+        .a11y_nodes()
+        .into_iter()
+        .find_map(|(id, node)| {
+            let bounds = node.bounds()?;
+            let bounds = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+            (node.role() == ui::accesskit::Role::Button
+                && node.label() == Some(label)
+                && (bounds.center() - drawn.center()).hypot() < 1.0)
+                .then_some((id, bounds))
+        })
+        .unwrap_or_else(|| panic!("{label} is in the tree where it is drawn"))
+}
+
+/// Fold the Media pane in or out, as its toggle in the bar does, and let
+/// it land.
+fn toggle_media_pane(app: &mut TestApp<crate::VideoEditor>) {
+    let editor = app.surface_mut::<VideoEditorApp>();
+    editor.toggle_bin();
+    let layout = editor.bin_layout();
+    editor.bin_flap.settle(layout);
+    app.settle();
+}
+
+/// Whether the empty timeline offers its own button now, drawn and in the
+/// tree: a Button inside the timeline's empty state.
+fn timeline_offers_a_button(app: &mut TestApp<crate::VideoEditor>) -> bool {
+    let (drawn, content) = app
+        .with_surface::<VideoEditorApp, _>(|editor| {
+            let r = editor.regions();
+            (
+                editor.timeline_empty_action_rect(&r).is_some(),
+                editor.timeline_content_area(&r),
+            )
+        })
+        .expect("the editor surface");
+    let described = app.harness().a11y_nodes().into_iter().any(|(_, node)| {
+        node.role() == ui::accesskit::Role::Button
+            && node.bounds().is_some_and(|b| {
+                content.contains(vello::kurbo::Point::new(
+                    f64::midpoint(b.x0, b.x1),
+                    f64::midpoint(b.y0, b.y1),
+                ))
+            })
+    });
+    assert_eq!(drawn, described, "what is drawn is what the tree says");
+    drawn
+}
+
+/// One button per job: while the Media pane is shown, its Import answers
+/// the empty timeline's words and the timeline carries no button of its
+/// own; hidden, at any width, the timeline carries Import media, which
+/// asks for files as the pane's Import does, by pointer and through its
+/// semantic action. The button comes and goes as the pane is toggled.
+#[test]
+fn the_empty_timelines_import_media_stands_in_for_a_hidden_media_pane() {
+    let mut wide = blank_at(1280);
+    assert!(
+        !timeline_offers_a_button(&mut wide),
+        "the pane is shown wide"
+    );
+    toggle_media_pane(&mut wide);
+    assert!(
+        timeline_offers_a_button(&mut wide),
+        "hidden, the button shows"
+    );
+    toggle_media_pane(&mut wide);
+    assert!(!timeline_offers_a_button(&mut wide), "shown again, it goes");
+
+    for (width, semantic) in [(1280, false), (1280, true), (420, false), (420, true)] {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = blank_at(width);
+        if app
+            .with_surface::<VideoEditorApp, _>(|editor| editor.media_pane_shown())
+            .expect("the editor surface")
+        {
+            toggle_media_pane(&mut app);
+        }
+        let (node, bounds) = timeline_empty_button(&mut app, "Import media");
+        let asked = recorder.pick_requests().len();
+        if semantic {
+            app.harness()
+                .perform_a11y_action(node, &ui::a11y::Action::Activate)
+                .expect("Import media answers its action");
+        } else {
+            app.harness().click_at(bounds.center().x, bounds.center().y);
+        }
+        app.settle();
+        let picks = recorder.pick_requests();
+        assert_eq!(
+            picks.len(),
+            asked + 1,
+            "{width} px, semantic {semantic}: one chooser"
+        );
+        assert_eq!(
+            picks.last().map(|pick| pick.title().to_owned()).as_deref(),
+            Some("Import media")
+        );
+    }
+}
+
+/// With media to drag but the Media pane folded away, the empty timeline
+/// carries Show media, which shows it; where the pane is in view it needs
+/// no button.
+#[test]
+fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
+    let mut compact = sample(420.0);
+    compact.project.clips.clear();
+    let r = compact.regions();
+    assert!(!compact.bin_is_visible(&r), "the Media pane starts folded");
+    let (_, action) = compact
+        .timeline_empty_action_rect(&r)
+        .expect("the empty timeline offers an action");
+    assert_eq!(action.label(), "Show media");
+    let route = [
+        ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_KEY),
+        ui::a11y::hash_key(&super::timeline_empty::TIMELINE_EMPTY_ACTION_KEY),
+    ];
+    assert!(compact.a11y_timeline_action(&ui::a11y::Action::Activate, &route));
+    assert!(
+        compact.bin_flap.is_open(compact.bin_layout()),
+        "Show media opened the Media pane"
+    );
+
+    let mut wide = sample(1280.0);
+    wide.project.clips.clear();
+    let r = wide.regions();
+    assert!(wide.bin_is_visible(&r));
+    assert!(
+        wide.timeline_empty_action_rect(&r).is_none(),
+        "beside the Media pane the words point at it"
+    );
+}
+
+/// With clips the playhead crosses the ruler and the tracks and ends at
+/// the last one: it never runs through the add-track row under them, with
+/// one track or with more.
+#[test]
+fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
+    for width in [420.0, 1280.0] {
+        let mut app = sample(width);
+        for added in [false, true] {
+            if added {
+                app.add_track(TrackKind::Video);
+            }
+            let r = app.regions();
+            assert!(!app.project.clips.is_empty(), "fixture: there are clips");
+            let px = app.time_to_x(app.playhead, &r.lanes);
+            let line = Rect::new(px - 1.0, r.ruler.y0, px + 1.0, app.playhead_bottom(&r));
+            let lanes = app.lane_rects(&r);
+            let last = lanes.last().map(|(_, _, lane)| *lane).expect("a track");
+            assert!(
+                (line.y1 - last.y1).abs() < 1e-9 && line.y1 > r.ruler.y1,
+                "{width} px, {} tracks: the playhead ends at the last track: {line:?} vs {last:?}",
+                lanes.len()
+            );
+            let buttons = app.add_track_buttons(&r);
+            assert!(!buttons.is_empty(), "fixture: the add-track row is in view");
+            for (kind, button) in buttons {
+                let row = Rect::new(r.timeline.x0, button.y0, r.timeline.x1, button.y1);
+                assert!(
+                    line.intersect(row).area() <= 0.0,
+                    "{width} px, {} tracks: the playhead {line:?} crosses the \
+                     add-track row at {kind:?} {row:?}",
+                    lanes.len()
+                );
+            }
+        }
+    }
+}
+
+/// On an empty timeline the playhead stays in the ruler, clear of the
+/// add-track row and the empty state, which is centred on the tracks'
+/// content beside the header column; with a clip it crosses the tracks.
+#[test]
+fn an_empty_timelines_playhead_stays_in_the_ruler() {
+    for width in [420.0, 1280.0] {
+        let mut app = sample(width);
+        let r = app.regions();
+        let last_track = app.lane_rects(&r).last().map(|(_, _, lane)| lane.y1);
+        assert_eq!(
+            Some(app.playhead_bottom(&r)),
+            last_track,
+            "{width} px: with clips the playhead spans the tracks"
+        );
+
+        app.project.clips.clear();
+        app.project.media.clear();
+        if app.media_pane_shown() {
+            app.toggle_bin();
+            let layout = app.bin_layout();
+            app.bin_flap.settle(layout);
+        }
+        let r = app.regions();
+        let bottom = app.playhead_bottom(&r);
+        assert!(
+            (bottom - r.ruler.y1).abs() < 1e-9,
+            "{width} px: the playhead ends at the ruler"
+        );
+        let buttons = app.add_track_buttons(&r);
+        assert!(!buttons.is_empty(), "{width} px: the add-track row shows");
+        for (_, button) in &buttons {
+            assert!(
+                bottom <= button.y0,
+                "{width} px: the playhead stays clear of {button:?}"
+            );
+        }
+        let empty = app.timeline_empty(&r).expect("the empty state shows");
+        let content = app.timeline_content_area(&r);
+        assert_eq!(empty.area, content, "{width} px: centred on the content");
+        assert!(
+            content.x0 >= r.gutter.x1 - 1e-9,
+            "{width} px: the header column is not counted"
+        );
+        assert!(bottom <= content.y0, "{width} px: clear of the empty state");
+        for (_, button) in &buttons {
+            assert!(
+                button.y1 <= content.y0,
+                "{width} px: the add-track row stands above the empty state"
+            );
+        }
+        let (action, _) = app
+            .timeline_empty_action_rect(&r)
+            .expect("the empty state carries Import media");
+        assert!(
+            (action.center().x - content.center().x).abs() < 1.0,
+            "{width} px: the empty state is centred on the content, {action:?} in {content:?}"
+        );
+    }
+}
+
+/// The editor opened on the sample project `width` wide, its playhead
+/// parked past the last clip, where the preview has nothing to show.
+fn parked_between_clips(width: u32) -> TestApp<crate::VideoEditor> {
+    let mut app = opened();
+    app.harness()
+        .relayout_at((width, 800))
+        .expect("the editor lays out");
+    let editor = app.surface_mut::<VideoEditorApp>();
+    editor.playhead = editor.project.duration();
+    app.settle();
+    app
+}
+
+/// The preview shows a clip: one is under the playhead, and the hint and
+/// its button are gone.
+fn preview_shows_a_clip(app: &mut TestApp<crate::VideoEditor>) -> bool {
+    app.with_surface::<VideoEditorApp, _>(|editor| {
+        editor.project.top_video_clip_at(editor.playhead).is_some()
+            && editor.go_to_clip_button(&editor.regions()).is_none()
+    })
+    .expect("the editor surface")
+}
+
+/// The preview's hint says to move the playhead over a clip, so it carries
+/// Go to clip, which lands the playhead on the nearest clip, by pointer and
+/// through its semantic action, compact and wide; the published action
+/// does the same.
+#[test]
+fn go_to_clip_lands_the_playhead_on_a_clip_the_preview_shows() {
+    for (width, semantic) in [(420, false), (420, true), (1280, false), (1280, true)] {
+        let mut app = parked_between_clips(width);
+        assert!(
+            !preview_shows_a_clip(&mut app),
+            "{width} px: parked past the clips"
+        );
+        let drawn = app
+            .with_surface::<VideoEditorApp, _>(|editor| editor.go_to_clip_button(&editor.regions()))
+            .expect("the editor surface")
+            .unwrap_or_else(|| panic!("{width} px: the hint carries Go to clip"));
+        let (node, bounds) = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(id, node)| {
+                let b = node.bounds()?;
+                let b = Rect::new(b.x0, b.y0, b.x1, b.y1);
+                (node.role() == ui::accesskit::Role::Button
+                    && node.label() == Some("Go to clip")
+                    && (b.center() - drawn.center()).hypot() < 1.0)
+                    .then_some((id, b))
+            })
+            .unwrap_or_else(|| panic!("{width} px: Go to clip is in the tree where it is drawn"));
+        if semantic {
+            app.harness()
+                .perform_a11y_action(node, &ui::a11y::Action::Activate)
+                .expect("Go to clip answers its action");
+        } else {
+            app.harness().click_at(bounds.center().x, bounds.center().y);
+        }
+        app.settle();
+        assert!(
+            preview_shows_a_clip(&mut app),
+            "{width} px, semantic {semantic}: the playhead is on a clip the preview shows"
+        );
+    }
+
+    let mut app = parked_between_clips(1280);
+    app.effect(&VideoEditorEffect::GoToClip)
+        .expect("the published action runs");
+    app.settle();
+    assert!(
+        preview_shows_a_clip(&mut app),
+        "the published action lands it too"
+    );
+}
+
+/// Go to clip takes the next clip after the playhead, and the previous one
+/// only where none follows.
+#[test]
+fn go_to_clip_takes_the_next_clip_then_the_previous() {
+    let mut app = sample(1280.0);
+    for clip in &mut app.project.clips {
+        clip.start += 5.0;
+    }
+    let first = app
+        .project
+        .clips
+        .iter()
+        .filter(|clip| {
+            app.project
+                .track(clip.track)
+                .is_some_and(|track| track.kind == crate::model::TrackKind::Video)
+        })
+        .map(|clip| clip.start)
+        .fold(f64::INFINITY, f64::min);
+    app.playhead = 1.0;
+    assert_eq!(app.go_to_clip_target(), Some(first), "the next clip after");
+    app.playhead = app.project.duration() + 1.0;
+    let last = app
+        .project
+        .clips
+        .iter()
+        .filter(|clip| {
+            app.project
+                .track(clip.track)
+                .is_some_and(|track| track.kind == crate::model::TrackKind::Video)
+        })
+        .map(|clip| clip.start)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert_eq!(app.go_to_clip_target(), Some(last), "else the previous one");
 }

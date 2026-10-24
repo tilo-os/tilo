@@ -167,9 +167,9 @@ fits two resources the owner gets it.
 | Tool | Answers | Example |
 | --- | --- | --- |
 | `tilo_ls` | apps; an app's resources and actions; one action's parameters | `{}` · `{path: "notes"}` · `{path: "notes/Todo#rename"}` |
-| `tilo_read` | a resource as compact text: markdown with `{#block id}`, a list of what an app holds | `{path: "notes/Todo"}` |
+| `tilo_read` | a resource as compact text: markdown whose blocks end in their id, a list of what an app holds | `{path: "notes/Todo"}` |
 | `tilo_do` | the action's result, waited for (default 5 s) | `{path: "notes/Todo/body#append-paragraph", args: {text: "Buy milk"}}` |
-| `tilo_find` | ranked one-line hits, ready to pass to `tilo_do` | `{query: "checklist add", app: "notes"}` |
+| `tilo_find` | ranked one-line hits, ready to pass to `tilo_do`; `app` narrows by name or id | `{query: "checklist add", app: "notes"}` |
 | `tilo_status` | how a pending invocation went; `cancel: true` stops it | `{invocation_id}` |
 
 ```text
@@ -183,21 +183,32 @@ Groceries/  notes.page
 
 > tilo_read {path: "notes/Todo"}
 # Todo
-- [ ] milk {#b1}
-- [x] bread {#b2}
-## Later {#b3}
+- [ ] milk ^b1
+- [x] bread ^b2
+## Later ^b3
 
 > tilo_do {path: "notes/Todo/body#append-paragraph", args: {text: "call mom"}}
 ok
 {"block":"b9"}
 ```
 
+A note's blocks end in `^id` and a Word Processor document's in `{#id}`, as
+each app writes them; a block action takes the id alone
+(`{block: "b1"}`). A read longer than `max_chars` (12,000 characters by
+default, at most 200,000) is cut at a line and ends in
+`… N more characters: cursor "read+…"`; passing that cursor back answers the
+rest, and a read the app pages itself ends in the app's own cursor. A
+directory level that changes while it is read is read again at once, then
+after a pause that doubles from 5 ms up to 200 ms, for at most 5 seconds.
+
 `tilo_do` answers `ok` with the action's result, `failed: <code>: <message>`
 (with the action's parameters after an `invalid_arguments`), or `pending <id>`
 when it ran past `wait_ms`; there is no receipt to poll for an action that
 finishes. `calls: [{path, args}, …]` runs several in order and stops at the
 first failure. `notes#open` starts an installed app and lists it. `tilo_find`
-searches apps by name, then resources, then actions named as searched, then
+narrows to one app by the name `tilo_ls` lists (`notes`) or its id
+(`so.tilo.notes`), and an app that is neither running nor installed is an
+error naming the apps there are. It searches apps by name, then resources, then actions named as searched, then
 actions described so; it does not search files. It asks every running app at
 once, and an app that does not answer is named as not searched rather than
 failing the search; a search that no app answered fails and says so. Listings

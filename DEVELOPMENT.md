@@ -1493,8 +1493,35 @@ WAYLAND_DISPLAY=wayland-1 ./target/debug/shell --backend winit &   # inner → w
 ```
 
 Measured here on a debug build: ~7 s from exec to the inner compositor serving
-its own socket, and both stayed interactive afterwards. A debug build is heavy —
-it is `vello` + `wgpu` unoptimised — so expect the nested one to feel soft.
+its own socket, and both stayed interactive afterwards. Dev and test builds keep
+application code unoptimised, but optimise Vello's encoding, geometry, layout
+and wgpu's command-processing crates. Assertions, overflow checks, GPU validation
+and line-table backtraces stay enabled: using `cargo build` should not require
+turning debugging off to interact with the desktop.
+
+To compare lock-screen typing without locking your desktop, use the same GPU,
+output size and simulated refresh for both binaries:
+
+```bash
+python3 scripts/perf/lock_screen_bench.py --shell-bin target/debug/shell --label dev
+# Build on the remote builder, as for other compiling Cargo commands.
+cargo build --locked --release -p shell --bin shell --features dev-overrides
+python3 scripts/perf/lock_screen_bench.py --shell-bin target/release/shell --label release
+```
+
+The benchmark creates a private headless session, types only synthetic characters
+and never submits a password. It checks every key reached the locked field and
+requires both rendering and retirement samples. Results under `target/lock-bench`
+separate input-to-queue, simulated frame retirement, CPU submission and GPU
+completion waits; none is a measurement of a physical panel's photon latency.
+The benchmark cycles typing and backspace below the field's dot cap so every
+sample visibly changes the image, and reports raster pixels and dense frames.
+Password-only edits should repaint the bounded password part, not the full
+output. The first lock frame, either lock edge, display changes and unproven
+scene differences remain full-frame boundaries. The nested backend retains its
+own render target and checks the same predecessor relation before sparse work;
+it never relies on a swapchain image retaining pixels.
+
 `--backend drm` is not an option from inside a running session: `libseat` will
 not hand you a seat the running desktop owns, and fails with `ENOSYS` (error
 code 38), which is a refusal, not an unimplemented backend.

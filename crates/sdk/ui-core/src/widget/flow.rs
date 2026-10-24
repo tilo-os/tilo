@@ -78,6 +78,13 @@ pub(super) struct Flow {
     ghosts: super::Ghosts,
     /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
+    /// A column whose children's boxes stand in order down it, as the last
+    /// layout placed them, each starting no higher than the one before
+    /// ends: the children near a clip are then found by bisection.
+    stacked: bool,
+    /// How far past its box any child painted as the last layout placed
+    /// them ([`Widget::paint_bounds`]): the bisection reaches that far.
+    reach: f64,
 }
 
 /// The parts of a [`Theme`] a cached subtree's pixels depend on beyond its
@@ -134,6 +141,8 @@ impl Flow {
             drawn_shifted: false,
             ghosts: super::Ghosts::default(),
             motion: crate::tokens::EffectiveMotion::default(),
+            stacked: false,
+            reach: 0.0,
         }
     }
 
@@ -225,6 +234,8 @@ impl Flow {
     }
 
     pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        #[cfg(test)]
+        let _probe = crate::profiling::frame_probe::span("flow.apply");
         (self.rect, self.paint_rect) = super::layout::flow_rects(taffy, node, origin);
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         for (child_widget, child_node) in self.children.iter_mut().zip(&self.child_nodes) {
@@ -239,6 +250,43 @@ impl Flow {
             self.ghosts
                 .find("Column", &mut self.children, content, |_| gap, self.motion);
         }
+        self.stacked = self.vertical
+            && self.children.windows(2).all(|pair| match pair {
+                [above, below] => above.get_rect().y1 <= below.get_rect().y0,
+                _ => true,
+            });
+        self.reach = if self.stacked {
+            self.children
+                .iter()
+                .map(|child| {
+                    let (rect, paints) = (child.get_rect(), child.paint_bounds());
+                    (rect.y0 - paints.y0).max(paints.y1 - rect.y1).max(0.0)
+                })
+                .fold(0.0, f64::max)
+        } else {
+            0.0
+        };
+    }
+
+    /// The children that may paint inside `clip`. In a stacked column
+    /// those whose boxes, reaching as far as any child painted past its own
+    /// at the last layout, meet it, found by bisection; with a band moving
+    /// or the children out of order, every one.
+    pub fn children_near(&self, clip: Option<Rect>) -> std::ops::Range<usize> {
+        let all = 0..self.children.len();
+        let Some(clip) = clip else {
+            return all;
+        };
+        if !self.stacked || self.follower_shifts().is_some() {
+            return all;
+        }
+        let start = self
+            .children
+            .partition_point(|child| child.get_rect().y1 + self.reach <= clip.y0);
+        let end = self
+            .children
+            .partition_point(|child| child.get_rect().y0 - self.reach < clip.y1);
+        start..end.max(start)
     }
 
     /// Draw the children through the subtree cache. Returns `false` when the
@@ -575,6 +623,13 @@ macro_rules! flow_widget_methods {
 
         fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn $crate::widget::Widget)) {
             for child in &self.flow.children {
+                visitor(child.as_ref());
+            }
+        }
+
+        fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn $crate::widget::Widget)) {
+            let near = self.flow.children_near($crate::widget::layout_clip());
+            for child in self.flow.children.get(near).unwrap_or_default() {
                 visitor(child.as_ref());
             }
         }

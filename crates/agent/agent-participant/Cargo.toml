@@ -18,6 +18,9 @@ ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # The dates a step's computed arguments (`{{= workday(…) }}`) work with.
 chrono.workspace = true
+# The patterns a step's argument takes a part of a value out with
+# (`{{…|match:INV-\d+}}`): matched in linear time, compiled size bounded.
+regex.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.

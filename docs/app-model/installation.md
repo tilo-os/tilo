@@ -257,6 +257,14 @@ shared files are still stored once per store. Rows written before the
 content store existed (`payloads/<id>`) are moved into it once,
 idempotently, the next time `tilo-install` or the app host runs.
 
+Size-pressure eviction goes least recently used first, by the later of
+`last_used` (written when the app opens) and the modification time of the
+tree's launch lease under `leases/`, which the launcher sets again when the
+app closes; an app kept open for weeks counts as used the day it closed.
+It never evicts a pinned app, an app a running sandbox has mounted, an app
+a launch holds, or an app the change it follows just installed or updated:
+a store whose kept apps alone exceed the cap stays over it.
+
 ## `install`
 
 ```

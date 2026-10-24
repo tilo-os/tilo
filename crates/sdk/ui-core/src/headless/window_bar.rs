@@ -220,6 +220,10 @@ impl FrameHarness {
                 "the window bar's search did not take {action:?} on {target} now"
             ));
         }
+        // What the action opened (the search, its options) is laid out
+        // before the app hears of it, as the next frame lays it out on the
+        // desktop: the app is told what the options cover.
+        self.paint_window_bar(&mut Scene::new(), Affine::IDENTITY, width);
         self.drive_window_search();
         Ok(())
     }
@@ -358,7 +362,7 @@ impl FrameHarness {
     }
 
     /// The window's title and app, as its tab shows them.
-    fn window_tab(&self) -> TabDescriptor {
+    pub(super) fn window_tab(&self) -> TabDescriptor {
         let bound = self
             .root
             .as_any()
@@ -563,9 +567,11 @@ impl FrameHarness {
         );
         let mut bar = self.window_bar(width);
         let title = self.window_tab().title;
+        let frame_top = self.frame_top();
         let search = &mut self.window_search;
         search.set_app_name(&title);
         place_search(&bar, search);
+        search.set_frame_origin(Point::new(0.0, frame_top));
         let ground = bar.ground_color(&self.theme);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -702,7 +708,11 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
     if let Some((row, reach)) = bar.toolbar_search_slot() {
         let x0 = row.x1 + gap;
         let y0 = row.center().y - px / 2.0;
-        search.place_trailing(Rect::new(x0, y0, x0 + px, y0 + px), reach.min(x0));
+        search.place_trailing(
+            Rect::new(x0, y0, x0 + px, y0 + px),
+            reach.min(x0),
+            row.x0.min(x0),
+        );
         return;
     }
     let row = bar.get_rect();
@@ -710,6 +720,7 @@ fn place_search(bar: &TabBar, search: &mut WindowSearch) {
     let y0 = row.center().y - px / 2.0;
     let limit = bar.window_controls().content_limit(row);
     search.place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
+    search.set_cramped_start(bar.search_cramped_start());
 }
 
 #[cfg(test)]
@@ -1549,6 +1560,222 @@ mod tests {
     }
 
     /// Hosting is per thread: a test leaves it as it found it.
+    /// A text that shows its current match clear of what the window's
+    /// search covers of it, as it was told.
+    struct Covered {
+        text: String,
+        covers: Vec<Option<Rect>>,
+        /// What covered it when each match was revealed.
+        revealed_under: Vec<Option<Rect>>,
+    }
+
+    impl Widget for Covered {
+        crate::provides!(dyn crate::widget::Findable);
+        fn name(&self) -> &str {
+            "Covered"
+        }
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+        fn build_layout(
+            &mut self,
+            tree: &mut taffy::TaffyTree<()>,
+            _: &crate::theme::Theme,
+            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            use crate::widget::TaffyTreeExt as _;
+            tree.widget_leaf(taffy::Style::default(), nodes, self)
+        }
+    }
+
+    impl crate::widget::AppWidget for Covered {
+        fn app_kind(&self) -> crate::widget::AppKind {
+            crate::widget::AppKind::Files
+        }
+        fn app_title(&self) -> &str {
+            "Writer"
+        }
+        fn app_icon(&self) -> crate::widget::IconDescriptor {
+            crate::widget::IconDescriptor::Glyph("W")
+        }
+    }
+
+    impl crate::widget::Findable for Covered {
+        fn find(
+            &mut self,
+            query: &str,
+            _options: crate::widget::find_bar::FindOptions,
+        ) -> Vec<crate::widget::find_bar::FindMatch> {
+            if query.is_empty() {
+                return Vec::new();
+            }
+            self.text
+                .match_indices(query)
+                .map(|(start, m)| crate::widget::find_bar::FindMatch::new(start, start + m.len()))
+                .collect()
+        }
+        fn reveal(&mut self, _index: usize) {
+            self.revealed_under
+                .push(self.covers.last().copied().flatten());
+        }
+        fn set_find_cover(&mut self, cover: Option<Rect>) {
+            self.covers.push(cover);
+        }
+        fn content_revision(&self) -> u64 {
+            u64::try_from(self.text.len()).unwrap_or(u64::MAX)
+        }
+    }
+
+    /// A document's slots in the bar: navigation, a location and actions,
+    /// which leave a narrow window's search little room before the location.
+    fn writer_slots() -> crate::window_toolbar::WindowToolbar {
+        use crate::window_toolbar::{
+            ToolbarAction, ToolbarLocation, ToolbarNavigation, WindowToolbar,
+        };
+        WindowToolbar {
+            navigation: Some(ToolbarNavigation {
+                back: true,
+                forward: true,
+            }),
+            location: Some(ToolbarLocation {
+                label: "Quarterly report".into(),
+                value: "Quarterly report".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions: vec![
+                ToolbarAction::new("bold", "bold", "Bold"),
+                ToolbarAction::new("share", "upload", "Share"),
+            ],
+            ..WindowToolbar::default()
+        }
+    }
+
+    fn covered_window(width: u32) -> FrameHarness {
+        covered_window_with(width, Some(writer_slots()))
+    }
+
+    fn covered_window_with(
+        width: u32,
+        slots: Option<crate::window_toolbar::WindowToolbar>,
+    ) -> FrameHarness {
+        crate::window_toolbar::declare(slots);
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            Covered {
+                text: "a report on the report".into(),
+                covers: Vec::new(),
+                revealed_under: Vec::new(),
+            },
+            (width, 800),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        harness
+    }
+
+    fn query_rect(harness: &FrameHarness) -> Rect {
+        harness
+            .window_search
+            .test_rects()
+            .into_iter()
+            .find(|(name, _)| name == "window-search-query")
+            .expect("the query is shown")
+            .1
+    }
+
+    // In a narrow window the search reaches back over the app's slots
+    // rather than leave a query too narrow to type in; in a wide one it
+    // stops at the location, so Back and Forward stay.
+    #[test]
+    fn the_query_keeps_its_minimum_width_in_a_narrow_window() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let theme = crate::theme::Theme::dark();
+        for width in [420_u32, 1280] {
+            let mut harness = covered_window(width);
+            harness
+                .perform_semantic_named("window-search-open", None, &Action::Activate)
+                .unwrap();
+            harness
+                .perform_semantic_named("window-search-options", None, &Action::Expand)
+                .unwrap();
+            let query = query_rect(&harness);
+            assert!(
+                query.width() >= WindowSearch::query_min_width(&theme),
+                "{width}: the query is wide enough to type in: {query:?}"
+            );
+            let (row, reach) = harness
+                .window_bar(f64::from(width))
+                .toolbar_search_slot()
+                .expect("the app's slots are in the bar");
+            assert!(
+                query.x0 >= row.x0,
+                "{width}: the search stays on the app's slots: {query:?} {row:?}"
+            );
+            if width == 1280 {
+                assert!(query.x0 >= reach, "a wide window keeps the location");
+            }
+        }
+        // A window without slots: the search follows its title, and reaches
+        // back over it rather than past the app's icon.
+        let mut harness = covered_window_with(420, None);
+        harness
+            .perform_semantic_named("window-search-open", None, &Action::Activate)
+            .unwrap();
+        let query = query_rect(&harness);
+        assert!(
+            query.width() >= WindowSearch::query_min_width(&theme),
+            "after the title, the query is wide enough to type in: {query:?}"
+        );
+        let start = harness.window_bar(420.0).search_cramped_start();
+        assert!(
+            query.x0 >= start,
+            "the app's icon stays: {query:?} starts before {start}"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
+    // The options open over the app: it is told what they cover, in its
+    // own coordinates (under the bar), before its current match is shown
+    // again; closed, they cover nothing.
+    #[test]
+    fn the_app_hears_what_the_open_options_cover_before_its_match_is_shown() {
+        use crate::a11y::Action;
+        let _hosted = HostedReset;
+        let mut harness = covered_window(420);
+        let mut perform =
+            |target: &str, action: Action| harness.perform_semantic_named(target, None, &action);
+        perform("window-search-open", Action::Activate).unwrap();
+        perform("window-search-query", Action::SetValue("report".into())).unwrap();
+        perform("window-search-options", Action::Expand).unwrap();
+        let panel = harness
+            .window_search
+            .options_rect()
+            .expect("the options are open");
+        let under_bar = panel - vello::kurbo::Vec2::new(0.0, f64::from(bar_height_px()));
+        let app = harness
+            .widget_mut::<Covered>()
+            .expect("the window holds the document");
+        assert_eq!(app.covers.last().copied().flatten(), Some(under_bar));
+        assert_eq!(
+            app.revealed_under.last().copied().flatten(),
+            Some(under_bar),
+            "the current match is shown again, knowing what covers it"
+        );
+        harness
+            .perform_semantic_named("window-search-options", None, &Action::Collapse)
+            .unwrap();
+        let app = harness
+            .widget_mut::<Covered>()
+            .expect("the window holds the document");
+        assert_eq!(
+            app.covers.last().copied(),
+            Some(None),
+            "closed, they cover nothing"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
     struct HostedReset;
 
     impl Drop for HostedReset {

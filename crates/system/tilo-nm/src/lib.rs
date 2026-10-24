@@ -1,5 +1,5 @@
-//! `NetworkManager` over D-Bus: is the network up, is it metered, and which
-//! link carries it.
+//! `NetworkManager` over D-Bus: is the network up, is it metered, which
+//! link carries it, and which VPNs are up.
 //!
 //! # One answer
 //!
@@ -30,7 +30,10 @@ pub mod client;
 pub mod model;
 
 pub use client::{
-    BUS_NAME, NmClient, NmError, NmWatch, ROOT_INTERFACE, ROOT_PATH, WIRELESS_INTERFACE,
-    captive_portal_uri, check_connectivity_now, scan_wifi, state, watch,
+    ACTIVE_INTERFACE, BUS_NAME, NmClient, NmError, NmWatch, ROOT_INTERFACE, ROOT_PATH, VpnWatch,
+    WIRELESS_INTERFACE, captive_portal_uri, check_connectivity_now, scan_wifi, state, watch,
 };
-pub use model::{LinkKind, NetworkState, NmConnectivity, NmState, PrimaryLink, metered_from_raw};
+pub use model::{
+    ActiveState, ActiveVpn, LinkKind, NetworkState, NmConnectivity, NmState, PrimaryLink,
+    VpnReading, ended_on_purpose, is_vpn_type, metered_from_raw,
+};

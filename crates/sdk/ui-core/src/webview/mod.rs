@@ -51,6 +51,60 @@ pub struct Frame {
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
+    /// Where it differs from the frames before it, for an engine that
+    /// knows; `None` makes every frame new throughout.
+    pub damage: Option<FrameDamage>,
+}
+
+/// A rect of a frame, in its pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where a frame differs from the ones its engine made before it: a view
+/// that drew one of those repaints, and uploads, only there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrameDamage {
+    /// The frame's place in its engine's sequence. A frame whose `recent`
+    /// does not reach back to the one a view drew is new throughout to it.
+    pub generation: u64,
+    /// What each recent generation changed from the one before it, newest
+    /// first, down to some generation after the oldest still known.
+    pub recent: Arc<[(u64, Arc<[PixelRect]>)]>,
+}
+
+impl FrameDamage {
+    /// What changed since generation `drawn`: nothing when it is this
+    /// frame's, `None` when not known.
+    #[must_use]
+    pub fn since(&self, drawn: u64) -> Option<Vec<PixelRect>> {
+        changed_since(self.recent.iter(), self.generation, drawn)
+    }
+}
+
+/// What changed from generation `from` to `to`, given what each generation
+/// changed from the one before it (`recent`, newest first, from `to`).
+pub(crate) fn changed_since<'a>(
+    recent: impl IntoIterator<Item = &'a (u64, Arc<[PixelRect]>)>,
+    to: u64,
+    from: u64,
+) -> Option<Vec<PixelRect>> {
+    let mut rects = Vec::new();
+    let mut want = to;
+    let mut recent = recent.into_iter();
+    while want > from {
+        let (generation, changed) = recent.next()?;
+        if *generation != want {
+            return None;
+        }
+        rects.extend_from_slice(changed);
+        want -= 1;
+    }
+    (want == from).then_some(rects)
 }
 
 /// Latest-frame mailbox between an engine and the widget. Engines
@@ -101,6 +155,58 @@ impl KeyModifiers {
             meta: command.super_key(),
             ..Self::default()
         }
+    }
+}
+
+/// A key one of extensions' commands holds (`commands` in a manifest), as
+/// Chrome names it ("Y", "9", "Comma", "Up"), with its modifiers: `meta` is
+/// Command on macOS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionShortcut {
+    pub key: String,
+    pub modifiers: KeyModifiers,
+}
+
+impl ExtensionShortcut {
+    /// The shortcut a key pressed makes, its key named as Chrome names it,
+    /// as the engine host reads the keys the Browser forwards
+    /// (`extension_commands.h`, `KeyShortcut`): with Shift a digit, a comma
+    /// or a period is the US layout's symbol on it.
+    #[must_use]
+    pub fn pressed(key: &KeyInput, modifiers: KeyModifiers) -> Option<Self> {
+        let key = match key {
+            KeyInput::Named(named) => match named {
+                NamedKey::ArrowUp => "Up",
+                NamedKey::ArrowDown => "Down",
+                NamedKey::ArrowLeft => "Left",
+                NamedKey::ArrowRight => "Right",
+                NamedKey::Home => "Home",
+                NamedKey::End => "End",
+                NamedKey::PageUp => "PageUp",
+                NamedKey::PageDown => "PageDown",
+                NamedKey::Delete => "Delete",
+                NamedKey::Tab => "Tab",
+                NamedKey::Enter | NamedKey::Backspace | NamedKey::Escape => return None,
+            }
+            .to_owned(),
+            KeyInput::Character(text) => {
+                let mut chars = text.chars();
+                let (Some(c), None) = (chars.next(), chars.next()) else {
+                    return None;
+                };
+                match c {
+                    c if c.is_ascii_alphanumeric() => c.to_ascii_uppercase().to_string(),
+                    ',' | '<' => "Comma".to_owned(),
+                    '.' | '>' => "Period".to_owned(),
+                    ' ' => "Space".to_owned(),
+                    c => {
+                        let digit = ")!@#$%^&*(".find(c)?;
+                        digit.to_string()
+                    }
+                }
+            }
+        };
+        Some(Self { key, modifiers })
     }
 }
 
@@ -469,6 +575,13 @@ pub enum WebViewCommand {
     CopySelection {
         request_id: u32,
     },
+    /// The system clipboard's text, answering
+    /// [`WebViewEvent::ClipboardRead`] with the same id: `None` when it holds
+    /// no text or could not be read, which leaves the page the engine's own.
+    AnswerClipboardRead {
+        request_id: u32,
+        text: Option<String>,
+    },
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -668,6 +781,21 @@ pub enum WebViewCommand {
     ExtensionOpenSidePanel {
         id: String,
     },
+    /// This tab shows extension `id`'s side panel beside the page used
+    /// last: to extensions it is no tab and that page is its window, and
+    /// the extension hears of the panel opening and closing
+    /// (`sidePanel.onOpened`, `sidePanel.onClosed`).
+    ExtensionSidePanelPage {
+        id: String,
+    },
+    /// The person pressed one of extensions' keyboard shortcuts
+    /// ([`WebViewEvent::ExtensionShortcuts`]) while the Browser's own field
+    /// had the keyboard: the extension's command runs over this tab's page,
+    /// and the page sees nothing of the key.
+    ExtensionCommandKey {
+        key: KeyInput,
+        modifiers: KeyModifiers,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -732,6 +860,10 @@ pub enum WebViewEvent {
     ExtensionExecuteAction {
         id: String,
     },
+    /// The keys extensions' commands hold now, as Chrome names them: the
+    /// Browser runs them (`ExtensionCommandKey`) while its own field has the
+    /// keyboard, before the field sees them.
+    ExtensionShortcuts(Vec<ExtensionShortcut>),
     /// What extension `id`'s toolbar button menu holds now; empty when it
     /// holds nothing.
     ExtensionMenu {
@@ -939,6 +1071,23 @@ pub enum WebViewEvent {
         request_id: u32,
         text: String,
     },
+    /// What the page copied, where the engine cannot reach the system
+    /// clipboard itself (Linux): a script's copy, a site's copy button, the
+    /// person's Ctrl+C, an extension's. The embedder puts it on the system
+    /// clipboard, `html` as its formatting, and as a secret when `secret` (it
+    /// came from a password field).
+    ClipboardWrite {
+        text: String,
+        html: Option<String>,
+        secret: bool,
+    },
+    /// The page pastes or reads the clipboard (the person's Ctrl+V, a read
+    /// the person allowed), where the engine cannot reach the system
+    /// clipboard itself: answer with [`WebViewCommand::AnswerClipboardRead`]
+    /// and the same id, soon, as the page waits for it.
+    ClipboardRead {
+        request_id: u32,
+    },
     /// The address of the link under the pointer, or empty when it left
     /// the link. Sent by an engine showing sealed documents.
     LinkHovered(String),
@@ -1066,6 +1215,17 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_page_dialogs(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_page_dialogs();
+        }
+    }
+
+    /// Have what the page copies sent as [`WebViewEvent::ClipboardWrite`],
+    /// and its pastes and reads asked of the embedder
+    /// ([`WebViewEvent::ClipboardRead`]), where the engine cannot reach the
+    /// system clipboard itself. Until then, and in an engine that can or
+    /// cannot ask, the page's clipboard is the engine's own.
+    fn share_clipboard(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.share_clipboard();
         }
     }
 

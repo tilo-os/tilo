@@ -322,8 +322,10 @@ impl ShellOverlayHost {
     }
 
     /// Select the physical keyboard whose sources the switch shortcut cycles.
-    pub(crate) fn set_keyboard_scope(&mut self, scope: String) {
-        self.keyboard_scope = scope;
+    pub(crate) fn set_keyboard_scope(&self, scope: String) {
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().set_keyboard_scope(scope);
+        }
     }
 
     /// The modifiers held changed: the palette's selected row previews
