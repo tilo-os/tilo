@@ -26,6 +26,7 @@ pub mod handoff;
 pub mod i18n;
 pub mod local_users;
 pub mod output_scale;
+pub mod seat_input;
 pub mod sessions;
 
 pub use greetd_client;

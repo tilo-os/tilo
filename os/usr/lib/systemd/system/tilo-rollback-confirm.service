@@ -3,6 +3,12 @@ Description=Confirm this OS generation and raise the rollback floor
 Documentation=man:tilo-rollback(8)
 # Everything the health gate inspects has to have had its chance to fail first.
 After=multi-user.target greetd.service fs.service
+# On a boot the boot loader counts, the floor must not move before the boot is
+# proven: tilo-boot-health holds boot-complete.target until its sign-in
+# screen is drawn and a keyboard or touch screen reaches it, and confirming
+# meanwhile would destroy the fallback of a generation nobody could sign in
+# to. On an uncounted boot neither unit is queued.
+After=boot-complete.target systemd-bless-boot.service
 # Never block or delay the boot: this is deliberately late and deliberately
 # optional. A machine that never reaches it simply keeps its fallback, which is
 # the safe direction.
