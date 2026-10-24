@@ -1283,6 +1283,35 @@ impl BlobClient {
         checked_ref(stored, &hasher, total)
     }
 
+    /// Begin storing content handed over piece by piece
+    /// ([`BlobUpload::append`]): for a caller that receives the content
+    /// over its own transport rather than holding a reader. Hashed as it
+    /// goes, as [`Self::put_reader`] does; dropped unfinished, the upload
+    /// stores nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::InvalidScope`] on a session root, the service's
+    /// refusal, or a connection error.
+    pub fn begin_upload(&self, mime: &str) -> Result<BlobUpload, BlobError> {
+        let target = self.data_target()?;
+        let mime = mime.to_owned();
+        let id = self.call(|reply| {
+            Job::Store(StoreJob::Begin {
+                target,
+                mime,
+                reply,
+            })
+        })?;
+        Ok(BlobUpload {
+            client: self.clone(),
+            id,
+            hasher: blake3::Hasher::new(),
+            len: 0,
+            open: true,
+        })
+    }
+
     /// Read one range.
     ///
     /// # Errors
@@ -1569,6 +1598,113 @@ impl Drop for OpenUpload<'_> {
                 .jobs
                 .send(Job::Store(StoreJob::Abort { upload: self.id }));
         }
+    }
+}
+
+/// An upload [`BlobClient::begin_upload`] opened: content appended piece
+/// by piece, stored by [`Self::finish`]. Dropped unfinished, or after a
+/// failed append, it is released and nothing it was given is stored.
+pub struct BlobUpload {
+    client: BlobClient,
+    id: u64,
+    hasher: blake3::Hasher,
+    len: u64,
+    open: bool,
+}
+
+impl std::fmt::Debug for BlobUpload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BlobUpload")
+            .field("id", &self.id)
+            .field("len", &self.len)
+            .field("open", &self.open)
+            .finish_non_exhaustive()
+    }
+}
+
+impl BlobUpload {
+    /// Bytes appended so far.
+    pub const fn len(&self) -> u64 {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Hand the store the next `bytes`, [`MAX_PUT_CHUNK`] at a time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BlobError::TooLarge`] once the content would pass
+    /// [`MAX_BLOB_BYTES`], the service's refusal, or a connection error.
+    /// Any failure ends the upload: nothing is stored and later calls are
+    /// refused.
+    pub fn append(&mut self, bytes: &[u8]) -> Result<(), BlobError> {
+        if !self.open {
+            return Err(BlobError::Refused("upload already ended".into()));
+        }
+        let len = self.len.saturating_add(bytes.len() as u64);
+        if len > MAX_BLOB_BYTES {
+            self.abort();
+            return Err(BlobError::TooLarge {
+                len,
+                limit: MAX_BLOB_BYTES,
+            });
+        }
+        for piece in bytes.chunks(MAX_PUT_CHUNK) {
+            let upload = self.id;
+            let written = self.client.call(|reply| {
+                Job::Store(StoreJob::Write {
+                    upload,
+                    bytes: piece.to_vec(),
+                    reply,
+                })
+            });
+            if let Err(error) = written {
+                self.abort();
+                return Err(error);
+            }
+            self.hasher.update(piece);
+        }
+        self.len = len;
+        Ok(())
+    }
+
+    /// Store what was appended and answer its reference, checked against
+    /// the bytes handed over.
+    ///
+    /// # Errors
+    ///
+    /// Returns the service's refusal, a refusal when the store answers a
+    /// reference for other content or the upload already ended, or a
+    /// connection error.
+    pub fn finish(mut self) -> Result<BlobRef, BlobError> {
+        if !self.open {
+            return Err(BlobError::Refused("upload already ended".into()));
+        }
+        self.open = false;
+        let upload = self.id;
+        let stored = self
+            .client
+            .call(|reply| Job::Store(StoreJob::Finish { upload, reply }))?;
+        checked_ref(stored, &self.hasher, self.len)
+    }
+
+    fn abort(&mut self) {
+        if std::mem::take(&mut self.open) {
+            let _ = self
+                .client
+                .worker
+                .jobs
+                .send(Job::Store(StoreJob::Abort { upload: self.id }));
+        }
+    }
+}
+
+impl Drop for BlobUpload {
+    fn drop(&mut self) {
+        self.abort();
     }
 }
 
