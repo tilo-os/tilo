@@ -62,7 +62,7 @@ fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
     let fake = Arc::new(FakeNetwork::default());
     let mut network = model(&fake);
     network.open_page(PAGE_ADVANCED, t("net-advanced"));
-    network.enterprise_open = true;
+    network.enterprise_setup.set_open(true);
     let profile = network.enterprise.profile.clone();
     let root = ModelPane::new(Rc::new(RefCell::new(network)));
     let mut app = Framed::new(
@@ -88,6 +88,87 @@ fn network_editor_retains_caret_through_window_resize() -> Result<(), String> {
     Ok(())
 }
 
+/// The work or school network's setup in the composition: its row, and
+/// whether that row is open.
+fn enterprise_setup_open(widget: &dyn Widget) -> Option<(bool, vello::kurbo::Rect)> {
+    if let Some(row) = widget
+        .as_any()
+        .and_then(|any| any.downcast_ref::<DisclosureRow>())
+        && row
+            .accessibility()
+            .and_then(|node| node.name)
+            .is_some_and(|name| name.starts_with(&t("net-enterprise-entry")))
+    {
+        return Some((row.is_open(), row.get_rect()));
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(enterprise_setup_open)
+}
+
+/// The work or school network's setup opens in place under its row on the
+/// standard disclose motion. Its action and a press on the row open the
+/// same row: an agent and a person land in the same place.
+#[test]
+fn the_work_or_school_setup_opens_under_its_row() -> Result<(), String> {
+    use crate::panes::model::ModelPane;
+    use ui::headless::{Framed, viewport};
+
+    let fake = Arc::new(FakeNetwork::default());
+    let network = Rc::new(RefCell::new(model(&fake)));
+    network
+        .borrow_mut()
+        .open_page(PAGE_ADVANCED, t("net-advanced"));
+    let shown_open = |network: &Rc<RefCell<NetworkModel>>| {
+        let composed = network.borrow().build_composition();
+        enterprise_setup_open(composed.as_ref()).map(|(open, _)| open)
+    };
+    if shown_open(&network) != Some(false) {
+        return Err("the setup starts closed, under a disclosure row".into());
+    }
+    run(
+        &mut network.borrow_mut(),
+        NetworkEffect::ShowEnterpriseSetup,
+    )?;
+    if shown_open(&network) != Some(true) {
+        return Err("the action opens the row".into());
+    }
+    run(
+        &mut network.borrow_mut(),
+        NetworkEffect::ShowEnterpriseSetup,
+    )?;
+    if network.borrow().enterprise_setup.is_open() {
+        return Err("the action closes the row again".into());
+    }
+
+    let root = ModelPane::new(Rc::clone(&network));
+    let mut app = Framed::new(
+        ui::State::new(),
+        root,
+        viewport((1000.0, 1800.0)),
+        ui::Theme::dark(),
+    );
+    let host = Framed::harness_mut(&mut app);
+    let (open, rect) =
+        enterprise_setup_open(host.root_widget()).ok_or("the setup's row is on the page")?;
+    if open {
+        return Err("the setup is closed before the press".into());
+    }
+    host.click_at(rect.center().x, rect.y0 + 12.0);
+    if !network.borrow().enterprise_setup.is_open() {
+        return Err("a press on the row opens the setup the action opens".into());
+    }
+    host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
+        .map_err(|error| error.to_string())?;
+    host.click_named("network.enterprise.profile")?;
+    host.type_text("Campus");
+    if network.borrow().enterprise.profile.get() != "Campus" {
+        return Err("the opened setup takes typing".into());
+    }
+    Ok(())
+}
+
 #[test]
 fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> {
     use crate::panes::model::ModelPane;
@@ -108,7 +189,7 @@ fn network_pane_adopts_model_changes_after_layout_reuse() -> Result<(), String> 
     {
         let mut model = network.borrow_mut();
         model.open_page(PAGE_ADVANCED, t("net-advanced"));
-        model.enterprise_open = true;
+        model.enterprise_setup.set_open(true);
         model.changed = true;
     }
     host.relayout_themed(viewport((1000.0, 1800.0)), ui::Theme::dark())
@@ -656,8 +737,8 @@ fn settle_until(
 fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.networks.lock().unwrap() = networks();
-    let mut observed = model(&fake);
-    observed.enterprise_open = true;
+    let observed = model(&fake);
+    observed.enterprise_setup.set_open(true);
     *observed.hotspot_password.lock().unwrap() = "private-hotspot-input".into();
     let mut app =
         ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
