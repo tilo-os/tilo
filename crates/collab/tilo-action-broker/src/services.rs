@@ -995,6 +995,44 @@ pub trait SearchIndexServices: Send + Sync {
     fn publish(&self, room: RoomId, app: &str, record: &str, delta: &[u8]) -> Result<(), String>;
 }
 
+/// The scope component content puts are kept under in a room's content
+/// store: neutral, no application's. The store reads by room, so every app
+/// of the room reads what was put there once an action hands it the
+/// reference.
+pub const CONTENT_PUT_SCOPE: &str = "tilo.content";
+
+/// The device content store, as the content put door writes to it
+/// (`tilo_actions::remote::ContentPuts`). Actions carry intent and
+/// references; bytes travel by session transport into the content store.
+pub trait ContentStoreServices: Send + Sync {
+    /// The most bytes one piece of content may have.
+    fn max_bytes(&self) -> u64;
+    /// Open an upload kept for `room` under [`CONTENT_PUT_SCOPE`].
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store cannot take an upload.
+    fn begin(&self, room: &str) -> Result<Box<dyn ContentSink>, String>;
+}
+
+/// One upload into the content store. Dropped unfinished, it stores
+/// nothing.
+pub trait ContentSink: Send {
+    /// Hand the store the next bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store refused them; the upload is over then.
+    fn append(&mut self, bytes: &[u8]) -> Result<(), String>;
+    /// Store what was appended, recording the room's reference to it, and
+    /// answer its hash (lowercase BLAKE3 hex) and length.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the store did not keep it.
+    fn finish(self: Box<Self>) -> Result<(String, u64), String>;
+}
+
 /// Called on the broker `LocalSet`; returned Cap'n Proto clients never cross threads.
 pub trait WorkspaceControlServices: Send + Sync {
     /// Opens the workspace control handle of `room` for `target`.
@@ -1552,6 +1590,9 @@ pub struct HostServices {
     /// The session's persistent search index of applications' content.
     /// Without it apps' content is findable only while they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
+    /// The device content store content puts go to. Without it the content
+    /// put door is not offered.
+    pub content_store: Option<Arc<dyn ContentStoreServices>>,
     pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     pub realtime: Option<Arc<dyn RealtimeServices>>,
     pub speakers: Option<Arc<dyn SpeakerServices>>,

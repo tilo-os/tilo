@@ -169,15 +169,6 @@ enum SettingsPanel {
     Document,
 }
 
-/// The app's only decorative animation is the transient status bubble. Keep
-/// the preference as a semantic state rather than another independent bool so
-/// it cannot accidentally conflict with the run mode.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MotionPreference {
-    Full,
-    Reduced,
-}
-
 /// One-shot duties the app still owes the frame loop.
 #[derive(Clone, Copy, Default)]
 struct Pending {
@@ -417,23 +408,21 @@ pub struct SheetsApp {
     /// The resource's live state, read again right after an own edit.
     live: Option<ui::framework::Live<Workbook>>,
     active_sheet: usize,
-    /// The latest transient action message (e.g. "Pasted into B2"), surfaced
-    /// via the floating [`status_bubble`](Self::status_bubble) rather than a
-    /// permanent status line. Initialised to `"Ready"`, which the bubble
-    /// treats as "nothing to say".
+    /// The latest transient action message (e.g. "Pasted into B2"), said in
+    /// the window's bar ([`status_notice`](Self::status_notice)) rather than
+    /// a permanent status line. Initialised to `"Ready"`, which counts as
+    /// "nothing to say".
     status: String,
-    /// Transient floating status bubble carrying the selection summary or the
-    /// active cell's format, plus any fresh action message. It surfaces when
-    /// that composed text changes (a selection move/extend, an action) or
-    /// while the pointer rests in its corner, then fades — keeping the
-    /// sheet-tab strip free of status text so it reads purely as the sheet
-    /// switcher.
-    status_bubble: ui::StatusBubble,
+    /// The selection summary or the active cell's format, or a fresh action
+    /// message, said in the window's bar for a while when that text changes
+    /// (a selection move/extend, an action), keeping the sheet-tab strip
+    /// free of status text so it reads purely as the sheet switcher.
+    status_notice: ui::widget::toast::Transient<String>,
+    /// The status last said in the bar, so only a change is news.
+    status_said: String,
     /// The last frame's drawing, part by part, so a frame reports where it
     /// differs from it.
     paint_damage: ui::widget::paint_damage::PaintDamage,
-    /// A staged capture pins the bubble open so a still frame shows it.
-    staged_status: bool,
     /// The part of a screenshot scenario staged against the document, done
     /// by the `sync` that follows the staging.
     staged: Option<Staged>,
@@ -448,7 +437,6 @@ pub struct SheetsApp {
     /// The shared `locale` setting, followed while the app runs.
     locale: Option<ui::framework::Setting<Locale>>,
     doc_settings: DocSettings,
-    motion: MotionPreference,
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
@@ -563,9 +551,9 @@ impl SheetsApp {
             live: None,
             active_sheet: 0,
             status: "Ready".into(),
-            status_bubble: ui::StatusBubble::new(),
+            status_notice: ui::widget::toast::Transient::new(),
+            status_said: String::new(),
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
-            staged_status: false,
             staged: None,
             pending: Pending { redraw: true },
             last_press: None,
@@ -575,7 +563,6 @@ impl SheetsApp {
             global: Locale::default(),
             locale: None,
             doc_settings: DocSettings::default(),
-            motion: MotionPreference::Full,
             cache: None,
             pending_reveal: None,
             clipboard: None,
@@ -1014,13 +1001,6 @@ impl SheetsApp {
         self.settings_panel = SettingsPanel::Document;
     }
 
-    /// Pin the floating status bubble open, so a still frame shows the Sum /
-    /// Avg / Count pill or the message it carries rather than a bubble that
-    /// has faded.
-    fn pin_status_bubble(&mut self) {
-        self.staged_status = true;
-    }
-
     /// Stage a screenshot scenario's view state over the sample workbook its
     /// actions wrote: the active cell, an edit in progress, a message. A menu
     /// or sheet opens in the first measured frame (it anchors to what that
@@ -1050,14 +1030,12 @@ impl SheetsApp {
             // Budget!B2:B6 — the January column body — and its summary.
             Some("summary") => {
                 self.grid.select_range_public((1, 1), (1, 5));
-                self.pin_status_bubble();
             }
             // Two separate highlighted rectangles with lit headers: the
             // January column body and the Q1 Total column.
             Some("multiselect") => {
                 self.grid.select_range_public((1, 1), (1, 5)); // B2:B6
                 self.grid.add_range_public((4, 1), (4, 6)); // E2:E7
-                self.pin_status_bubble();
             }
             // The range reference inside E2's `=SUM(B2:D2)` selected in the
             // editable formula bar.
@@ -1075,23 +1053,19 @@ impl SheetsApp {
             Some("pasteformula") => self.staged = Some(Staged::PasteFormula),
             Some("error") => {
                 self.status = "Excel import failed: the workbook is password protected".into();
-                self.pin_status_bubble();
             }
             // An incoming revision superseding the value being edited.
             Some("conflict") => {
                 self.status =
                     "Budget was updated by a collaborator; showing the latest value".into();
-                self.pin_status_bubble();
             }
             // The acknowledgement stays visible with animations suppressed.
             Some("reducedmotion") => {
                 self.set_motion_reduced(true);
                 self.status = "Pasted into B2:D4".into();
-                self.pin_status_bubble();
             }
             Some("charts" | "comments") => {
                 self.status = "2 charts and 1 resolved comment thread added".into();
-                self.pin_status_bubble();
             }
             // The bold header row, so the Bold command shows it is on.
             Some("bold") => self.grid.select_range_public((0, 0), (6, 0)),
@@ -2524,16 +2498,16 @@ impl SheetsApp {
         })
     }
 
-    /// The text for the floating status bubble, or `None` when there is nothing
-    /// worth surfacing (an idle sheet: no pending action, no numeric selection,
-    /// a plain `General` active cell — which keeps the bubble hidden).
+    /// What the window's bar says about the sheet, or `None` when there is
+    /// nothing worth saying (an idle sheet: no pending action, no numeric
+    /// selection, a plain `General` active cell).
     ///
     /// A fresh transient action message (e.g. "Pasted into B2") wins; absent
     /// one, the text is the live selection summary (count, sum and average of
     /// the numeric selection) or, absent numbers, the active cell's format.
     /// The idle default `"Ready"` (and the empty string) count as "no action
     /// message" so they never surface on their own.
-    fn status_bubble_label(&self) -> Option<String> {
+    fn status_label(&self) -> Option<String> {
         // A selected error cell explains itself before anything else.
         let (lo, hi) = self.grid.selection_bounds();
         if lo == hi
@@ -2710,12 +2684,22 @@ impl Widget for SheetsApp {
         self.reload();
         self.current_active_format = self.format_of_active();
         self.active_cell_bold = self.grid.cell_is_bold(self.grid.active());
-        // Hand the composed label to the floating status bubble. It shows
-        // only when the text actually changes — a selection move/extend, or a
-        // fresh action message — so calling this every frame is fine, and the
-        // idle nothing state (empty label) never surfaces.
-        let label = self.status_bubble_label().unwrap_or_default();
-        self.status_bubble.show(&label, ui::time::now());
+        // Say the composed label in the window's bar when it changes — a
+        // selection move/extend, or a fresh action message; the idle
+        // nothing state (empty label) never surfaces.
+        let label = self.status_label().unwrap_or_default();
+        if label != self.status_said {
+            if label.is_empty() {
+                self.status_notice.dismiss();
+            } else {
+                self.status_notice.show(label.clone());
+            }
+            self.status_said = label;
+        }
+        self.status_notice.expire();
+        self.status_notice.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 
     fn build_layout(
@@ -2775,12 +2759,6 @@ impl Widget for SheetsApp {
         parts.draw(scene, "sheet-comment", window, |scene| {
             self.draw_comment_popover(scene, transform, tr, theme);
         });
-        // The transient floating status bubble sits above the grid and the
-        // tab strip, below the top layer.
-        let bubble = self.status_bubble_bounds(tr, theme);
-        parts.draw(scene, "sheet-status", bubble, |scene| {
-            self.draw_status_bubble(scene, transform, tr, theme);
-        });
         parts.draw(scene, "sheet-tab-rename", window, |scene| {
             self.draw_tab_rename(scene, transform, tr, theme);
         });
@@ -2807,20 +2785,20 @@ impl Widget for SheetsApp {
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
-        self.motion = if reduced {
-            MotionPreference::Reduced
-        } else {
-            MotionPreference::Full
-        };
         self.palette.set_motion_reduced(reduced);
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming while the floating status bubble is lingering /
-        // fading, so it hides itself without needing a stray pointer event.
-        (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
-            || self.dock_scroll.needs_animation_frame(&self.chrome_theme)
+        self.dock_scroll.needs_animation_frame(&self.chrome_theme)
             || self.children().iter().any(|c| c.needs_animation_frame())
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(self.status_notice.deadline())
+            .min()
     }
 
     /// The annotation dock glides on after a sideways flick, as the wheel
@@ -4540,7 +4518,7 @@ pub(crate) mod tests {
         )
     }
 
-    /// Chrome bands, status bubble, tabs, settings sheet, tab menu and pointer targets follow measured text.
+    /// Chrome bands, tabs, settings sheet, tab menu and pointer targets follow measured text.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -4618,41 +4596,6 @@ pub(crate) mod tests {
                 (app.add_tab_rect.width() - app.add_tab_rect.height()).abs() < 0.01,
                 "+ is square"
             );
-        }
-
-        // Case `status_bubble_floats_above_the_scrollbar_gutter`.
-        // The floating status pill anchors inside the grid body, clear of the
-        // scroll bar gutters and never on the tab strip.
-        {
-            for scale in [1.0_f32, 2.0] {
-                let (mut app, mut tr, theme) = measured_app(1200.0, 800.0, scale);
-                let area = app.status_area();
-                let gutter = app.grid.scrollbar_thickness();
-                assert!(
-                    (area.y1 - (app.grid_rect.y1 - gutter)).abs() < 0.01,
-                    "the area stops at the horizontal bar's gutter"
-                );
-                assert!(
-                    (area.x1 - (app.grid_rect.x1 - gutter)).abs() < 0.01,
-                    "the area stops at the vertical bar's gutter"
-                );
-                app.status_bubble.show("Currency (USD)", ui::time::now());
-                let pill = app.status_bubble.rect_in(area, &mut tr, &theme);
-                assert!(
-                    pill.y1 <= area.y1 && pill.x1 <= area.x1,
-                    "{pill:?} in {area:?}"
-                );
-                assert!(pill.y1 < app.tabs_rect.y0);
-                // The pill is at least as tall as its measured text, so a 2×
-                // label never spills out of it.
-                let (_, th) =
-                    tr.measure_style("Currency (USD)", None, &theme.text(TextRole::Label));
-                assert!(
-                    pill.height() >= f64::from(th) - 0.01,
-                    "pill height {} at {scale}x",
-                    pill.height()
-                );
-            }
         }
 
         // Case `sheet_tabs_keep_their_floor_and_ceiling_at_every_scale`.
@@ -4808,14 +4751,6 @@ pub(crate) mod tests {
             app.switch_sheet(&mut Edits::lend(&mut doc), 1);
             app.sync(&doc, &automerge::ROOT);
             assert_eq!(app.sheet_ids.as_ptr(), first_ids);
-        }
-
-        {
-            let (mut app, _doc) = seeded_app();
-            app.status_bubble.poke(ui::time::now());
-            assert!(app.needs_animation_frame());
-            app.set_motion_reduced(true);
-            assert!(!app.needs_animation_frame());
         }
     }
 

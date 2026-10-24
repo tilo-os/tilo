@@ -17,6 +17,8 @@ mod click_link_navigates;
 mod cold_start;
 #[path = "complete_capture.rs"]
 mod complete_capture;
+#[path = "content_reference.rs"]
+mod content_reference;
 #[path = "document_actions.rs"]
 mod document_actions;
 #[path = "e2e_smoke.rs"]

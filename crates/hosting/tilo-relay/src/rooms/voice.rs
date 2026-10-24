@@ -140,7 +140,7 @@ impl Participation {
     }
 
     /// What it shows that the others see: nothing, and muted, while it may
-    /// not publish.
+    /// not publish; whether it listens is its own either way.
     const fn shown(&self) -> Showing {
         if self.directions.publish {
             self.showing
@@ -149,6 +149,7 @@ impl Participation {
                 camera: false,
                 screen: false,
                 muted: true,
+                deafened: self.showing.deafened,
             }
         }
     }

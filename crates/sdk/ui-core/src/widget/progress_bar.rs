@@ -669,120 +669,122 @@ mod tests {
 
     #[test]
     fn indeterminate_segment_animates_with_tight_damage_unless_motion_is_reduced() {
-        // Case `progress_bar_indeterminate_needs_animation_frame_returns_true`.
-        // Indeterminate bars must opt into the redraw loop via
-        // `needs_animation_frame() == true`, otherwise `App` would stop
-        // pumping frames and the segment would freeze partway across the
-        // track. Determinate bars must *not* opt in — they're static.
-        {
-            let indeterminate = ProgressBar::indeterminate();
-            assert!(
-                indeterminate.needs_animation_frame(),
-                "indeterminate bar must request animation frames",
-            );
+        // One pinned instant: the sweep's position is read from the clock,
+        // and a loaded host must not move it between two reads.
+        let t0 = crate::time::now();
+        crate::time::testing::with_monotonic_time(t0, || {
+            // Case `progress_bar_indeterminate_needs_animation_frame_returns_true`.
+            // Indeterminate bars must opt into the redraw loop via
+            // `needs_animation_frame() == true`, otherwise `App` would stop
+            // pumping frames and the segment would freeze partway across the
+            // track. Determinate bars must *not* opt in — they're static.
+            {
+                let indeterminate = ProgressBar::indeterminate();
+                assert!(
+                    indeterminate.needs_animation_frame(),
+                    "indeterminate bar must request animation frames",
+                );
 
-            let determinate = ProgressBar::new(0.5);
-            assert!(
-                !determinate.needs_animation_frame(),
-                "determinate bar must not request animation frames",
-            );
-        }
+                let determinate = ProgressBar::new(0.5);
+                assert!(
+                    !determinate.needs_animation_frame(),
+                    "determinate bar must not request animation frames",
+                );
+            }
 
-        {
-            let mut bar = ProgressBar::indeterminate();
-            bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-            let _ = render(&mut bar);
-            bar.mark_drawn();
-            // The next step moves the segment: that frame's damage is the
-            // segment alone.
-            let next = crate::animation::next_indicator_step(bar.start, crate::time::now());
-            crate::time::testing::with_monotonic_time(next, || {
+            {
+                let mut bar = ProgressBar::indeterminate();
+                bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
                 let _ = render(&mut bar);
-            });
-            bar.dirty = false;
+                bar.mark_drawn();
+                // The next step moves the segment: that frame's damage is the
+                // segment alone.
+                let next = crate::animation::next_indicator_step(bar.start, crate::time::now());
+                crate::time::testing::with_monotonic_time(next, || {
+                    let _ = render(&mut bar);
+                });
+                bar.dirty = false;
 
-            let mut regions = Vec::new();
-            bar.collect_damage(&mut regions);
-            assert!(!regions.is_empty(), "moving segment should report damage");
-            assert!(regions.len() <= 2);
-            assert!(regions.iter().all(|damage| {
-                damage.width() <= bar.rect.width() * INDETERMINATE_SEGMENT_FRAC * 2.0 + 1.0
-            }));
-        }
+                let mut regions = Vec::new();
+                bar.collect_damage(&mut regions);
+                assert!(!regions.is_empty(), "moving segment should report damage");
+                assert!(regions.len() <= 2);
+                assert!(regions.iter().all(|damage| {
+                    damage.width() <= bar.rect.width() * INDETERMINATE_SEGMENT_FRAC * 2.0 + 1.0
+                }));
+            }
 
-        {
-            use crate::time::Duration;
+            {
+                use crate::time::Duration;
 
-            let mut bar = ProgressBar::indeterminate();
-            bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-            bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
-            // Build everything `draw` needs first: loading the text renderer's
-            // fonts takes long enough to move the sweep off the wraparound phase
-            // this test backdates to.
-            let theme = Theme::dark().with_reduce_motion(false);
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            bar.start = crate::time::now()
-                .checked_sub(Duration::from_millis(300))
-                .expect("the test duration is far shorter than the monotonic clock");
-            bar.dirty = false;
-            // The frame owner must collect immediately after `draw`, before it
-            // clears dirty flags. `draw` is what records this frame's outgoing
-            // and incoming segment geometry.
-            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                let mut bar = ProgressBar::indeterminate();
+                bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+                bar.last_segment = Rect::new(140.0, 0.0, 200.0, 8.0);
+                let theme = Theme::dark().with_reduce_motion(false);
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                bar.start = crate::time::now()
+                    .checked_sub(Duration::from_millis(300))
+                    .expect("the test duration is far shorter than the monotonic clock");
+                bar.dirty = false;
+                // The frame owner must collect immediately after `draw`, before it
+                // clears dirty flags. `draw` is what records this frame's outgoing
+                // and incoming segment geometry.
+                bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-            let mut regions = Vec::new();
-            bar.collect_damage(&mut regions);
-            assert_eq!(regions.len(), 2, "wraparound must not form one wide union");
-            assert!(regions.iter().all(|damage| damage.width() <= 61.0));
-        }
+                let mut regions = Vec::new();
+                bar.collect_damage(&mut regions);
+                assert_eq!(regions.len(), 2, "wraparound must not form one wide union");
+                assert!(regions.iter().all(|damage| damage.width() <= 61.0));
+            }
 
-        {
-            let mut bar = ProgressBar::indeterminate();
-            bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-            let _ = render_with(&mut bar, true);
-            bar.mark_drawn();
+            {
+                let mut bar = ProgressBar::indeterminate();
+                bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+                let _ = render_with(&mut bar, true);
+                bar.mark_drawn();
 
-            assert!(!bar.needs_animation_frame());
-            assert!(!bar.needs_redraw());
-        }
+                assert!(!bar.needs_animation_frame());
+                assert!(!bar.needs_redraw());
+            }
 
-        // Case `reduce_motion_freezes_the_indeterminate_segment`.
-        // With reduced motion an indeterminate bar holds its segment fixed:
-        // a bar backdated by a full sweep paints the same geometry as a
-        // fresh one. With motion on, the same backdate lands elsewhere —
-        // proving the freeze is the reduced-motion path, not a no-op.
-        {
-            use crate::time::Duration;
-            let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
-            // A quarter-sweep backdate so the moving segment is plainly off the
-            // resting position (a full sweep would alias back to phase 0).
-            let backdate = crate::time::now()
-                .checked_sub(one_sweep / 4)
-                .expect("process has been running longer than a quarter sweep");
+            // Case `reduce_motion_freezes_the_indeterminate_segment`.
+            // With reduced motion an indeterminate bar holds its segment fixed:
+            // a bar backdated by a full sweep paints the same geometry as a
+            // fresh one. With motion on, the same backdate lands elsewhere —
+            // proving the freeze is the reduced-motion path, not a no-op.
+            {
+                use crate::time::Duration;
+                let one_sweep = Duration::from_secs_f32(INDETERMINATE_PERIOD_SECS);
+                // A quarter-sweep backdate so the moving segment is plainly off the
+                // resting position (a full sweep would alias back to phase 0).
+                let backdate = crate::time::now()
+                    .checked_sub(one_sweep / 4)
+                    .expect("process has been running longer than a quarter sweep");
 
-            let mut fresh = ProgressBar::indeterminate();
-            fresh.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-            let fresh_geo = render_with(&mut fresh, true).encoding().path_data.clone();
+                let mut fresh = ProgressBar::indeterminate();
+                fresh.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+                let fresh_geo = render_with(&mut fresh, true).encoding().path_data.clone();
 
-            let mut aged = ProgressBar::indeterminate();
-            aged.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-            aged.start = backdate;
-            let aged_reduced = render_with(&mut aged, true).encoding().path_data.clone();
-            assert_eq!(
-                fresh_geo, aged_reduced,
-                "reduced motion must paint the resting segment regardless of elapsed time",
-            );
+                let mut aged = ProgressBar::indeterminate();
+                aged.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+                aged.start = backdate;
+                let aged_reduced = render_with(&mut aged, true).encoding().path_data.clone();
+                assert_eq!(
+                    fresh_geo, aged_reduced,
+                    "reduced motion must paint the resting segment regardless of elapsed time",
+                );
 
-            let mut aged2 = ProgressBar::indeterminate();
-            aged2.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
-            aged2.start = backdate;
-            let aged_moving = render_with(&mut aged2, false).encoding().path_data.clone();
-            assert_ne!(
-                fresh_geo, aged_moving,
-                "with motion on, a backdated bar's segment is at a different position",
-            );
-        }
+                let mut aged2 = ProgressBar::indeterminate();
+                aged2.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
+                aged2.start = backdate;
+                let aged_moving = render_with(&mut aged2, false).encoding().path_data.clone();
+                assert_ne!(
+                    fresh_geo, aged_moving,
+                    "with motion on, a backdated bar's segment is at a different position",
+                );
+            }
+        });
     }
 }

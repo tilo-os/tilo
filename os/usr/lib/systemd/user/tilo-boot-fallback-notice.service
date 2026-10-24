@@ -1,0 +1,15 @@
+[Unit]
+Description=Tell the person when this machine went back to an earlier version
+Documentation=file:///usr/share/doc/tilo/recovery.md
+PartOf=tilo-graphical-session.target
+After=tilo-graphical-session.target
+ConditionDirectoryNotEmpty=/var/lib/tilo/boot-fallback
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-boot-fallback-notice
+Nice=10
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=tilo-graphical-session.target

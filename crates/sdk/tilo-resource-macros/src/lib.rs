@@ -1349,6 +1349,35 @@ fn last_ident(ty: &Type) -> Option<(String, Option<&Type>)> {
     Some((segment.ident.to_string(), inner))
 }
 
+/// How a parameter of Rust type `ty` holds bytes, when it does (`Vec<u8>`,
+/// or a list of them): the decoder that takes them inline or by a content
+/// reference, and the schema saying both. Actions carry intent and
+/// references; bytes travel by session transport into the content store.
+fn byte_param(ty: &Type) -> Option<(Tokens, Tokens)> {
+    let krate = krate();
+    let is_bytes = |ty: &Type| {
+        last_ident(ty).is_some_and(|(name, inner)| {
+            name == "Vec"
+                && inner
+                    .and_then(last_ident)
+                    .is_some_and(|(byte, _)| byte == "u8")
+        })
+    };
+    let (name, inner) = last_ident(ty)?;
+    if is_bytes(ty) {
+        return Some((
+            quote!(#krate::content::bytes),
+            quote!(#krate::content::bytes_schema),
+        ));
+    }
+    (name == "Vec" && inner.is_some_and(is_bytes)).then(|| {
+        (
+            quote!(#krate::content::byte_lists),
+            quote!(#krate::content::byte_list_schema),
+        )
+    })
+}
+
 /// The declared type of a parameter of Rust type `ty`, and whether it is
 /// optional. An app's own type is what its schema says it is written as
 /// when `schema` (the type implements `JsonSchema`), else an object.

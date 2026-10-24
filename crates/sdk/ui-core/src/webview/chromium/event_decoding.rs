@@ -4,7 +4,7 @@
 
 use super::{
     Value, WebViewEvent, decode_base64_bounded, extension_id, extension_notification,
-    extension_sign_in, valid_id, wire_u64,
+    extension_omnibox, extension_sign_in, valid_id, wire_u64,
 };
 
 pub(super) fn valid_site_event(value: &Value, event: &str) -> bool {
@@ -60,9 +60,11 @@ pub(super) fn valid_site_event(value: &Value, event: &str) -> bool {
 }
 
 /// An `extension_action`, `extension_open_popup`, `extension_execute_action`,
-/// `extension_notification` or `extension_sign_in` event, when every part of
-/// it is what the host sends: the extension's id, its own pages or a web page
-/// to sign in on, bounded text and an icon of at most 128 pixels a side.
+/// `extension_notification`, `extension_sign_in`, `extension_omnibox_*` or
+/// `extension_side_panel`
+/// event, when every part of it is what the host sends: the extension's id,
+/// its own pages or a web page to sign in on, bounded text and an icon of at
+/// most 128 pixels a side.
 pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
     // or the event is refused.
@@ -92,11 +94,35 @@ pub(super) fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     if value["event"] == "extension_sign_in" {
         return extension_sign_in::decode(id, value);
     }
+    if value["event"]
+        .as_str()
+        .is_some_and(|event| event.starts_with("extension_omnibox_"))
+    {
+        return extension_omnibox::decode(id, value);
+    }
     if value["event"] == "extension_open_popup" {
         let url = value["url"].as_str().filter(|url| own(url))?;
         return Some(WebViewEvent::ExtensionOpenPopup {
             id: id.into(),
             url: url.into(),
+        });
+    }
+    if value["event"] == "extension_side_panel" {
+        use crate::webview::ExtensionSidePanelChange as Change;
+        let url = match &value["url"] {
+            Value::Null => None,
+            url => Some(url.as_str().filter(|url| own(url))?.to_owned()),
+        };
+        let change = match (value["mode"].as_str()?, url) {
+            ("open", Some(url)) => Change::Open(url),
+            ("toggle", Some(url)) => Change::Toggle(url),
+            ("options", url) => Change::Options(url),
+            ("close", None) => Change::Close,
+            _ => return None,
+        };
+        return Some(WebViewEvent::ExtensionSidePanel {
+            id: id.into(),
+            change,
         });
     }
     let change = value["change"].as_object()?;

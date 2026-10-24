@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use ui::framework::ResourceSurface;
 use ui::framework::testing::TestApp;
+use ui::widget::toast::ToastKind;
 use ui::widget::{FindMode, FindOptions, InPlace, SearchDriver};
 use ui::window_toolbar::{SearchOpening, ToolbarEvent};
 
@@ -227,9 +228,14 @@ fn overwrite_mode_refuses_a_replacement_that_changes_the_length() {
     );
     let told = app
         .surface_mut::<HexView>()
-        .problem
+        .said
         .get()
-        .map(|(title, _)| title.clone());
-    assert_eq!(told.as_deref(), Some("Couldn't replace in Overwrite mode"));
+        .map(|(text, kind)| (text.clone(), *kind));
+    assert!(
+        told.as_ref().is_some_and(|(text, kind)| {
+            text.starts_with("Couldn't replace in Overwrite mode") && *kind == ToastKind::Error
+        }),
+        "{told:?}"
+    );
     assert!(!app.undo(), "nothing was changed to undo");
 }

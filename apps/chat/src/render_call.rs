@@ -39,13 +39,15 @@ use crate::paint::{elide, line_in, line_of, push_clip, text, width_of};
 /// membership (not hardcoded). The host (this peer) is listed first.
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "independent facts about one participant (talking, muted, audio only, sharing), each read on its own"
+    reason = "independent facts about one participant (talking, muted, deafened, audio only, sharing), each read on its own"
 )]
 struct Participant {
     user: String,
     /// The call hears them now: their face rings.
     talking: bool,
     muted: bool,
+    /// They hear nothing of the call (and are muted).
+    deafened: bool,
     audio_only: bool,
     sharing: bool,
     /// This person silenced them for themselves.
@@ -53,10 +55,13 @@ struct Participant {
 }
 
 impl Participant {
-    /// The mark beside their name: a muted microphone while they are
-    /// muted, else a muted speaker while this person silenced them.
+    /// The mark beside their name: struck-out headphones while they hear
+    /// nothing of the call, a muted microphone while they are muted, else a
+    /// muted speaker while this person silenced them.
     fn mark(&self) -> Option<Icon> {
-        if self.muted {
+        if self.deafened {
+            Some(Icon::HeadphoneOff)
+        } else if self.muted {
             Some(Icon::MicOff)
         } else if self.silenced {
             Some(Icon::VolumeX)
@@ -194,6 +199,7 @@ fn control_icon(hit: &Hit, muted: bool) -> Icon {
     match hit {
         Hit::CallMute if muted => Icon::MicOff,
         Hit::CallMute => Icon::Mic,
+        Hit::CallDeafen => Icon::Headphones,
         Hit::CallCamera => Icon::Video,
         Hit::CallScreen => Icon::ScreenShare,
         Hit::CallExpand => Icon::Minimize2,
@@ -260,6 +266,7 @@ impl ChatApp {
                 .iter()
                 .any(|person| self.is_me(person)),
             muted: self.call.muted,
+            deafened: self.call.deafened,
             audio_only: self.call.audio_only,
             sharing: self.call.sharing,
             silenced: false,
@@ -272,6 +279,7 @@ impl ChatApp {
                 user: m.user.clone(),
                 talking: m.talking,
                 muted: m.muted,
+                deafened: m.deafened,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
                 silenced: self.call_listening(&m.user).silenced,
@@ -1296,12 +1304,23 @@ impl ChatApp {
     /// (which sizes buttons from these labels) and the pre-paint measurement
     /// (which measures exactly these labels), so a toggled label — Mute →
     /// Unmute — is measured the frame it appears.
-    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 3] {
+    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 4] {
         let t = crate::i18n::t;
         let speak = self.call_allows(crate::call::CallAction::Speak);
         // The microphone and leaving are the window bar's, wherever the call
         // is shown.
         [
+            (
+                t(if self.call.deafened {
+                    "chat-call-undeafen"
+                } else {
+                    "chat-call-deafen"
+                }),
+                self.call.deafened,
+                false,
+                true,
+                Hit::CallDeafen,
+            ),
             (
                 t(if self.call.audio_only {
                     "chat-call-camera-on"
@@ -2216,6 +2235,7 @@ mod tests {
             user: "u_x".into(),
             talking: false,
             muted: false,
+            deafened: false,
             audio_only,
             sharing: false,
             silenced: false,

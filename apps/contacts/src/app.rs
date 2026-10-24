@@ -1014,7 +1014,7 @@ impl ContactsApp {
         );
         self.shell.dismiss_toast();
         self.shell
-            .toast_with_action(notice, ToastKind::Info, "Undo");
+            .toast_with_action(notice, ToastKind::Info, "undo-2", "Undo");
         self.delete_undo.set(DeleteUndo::Offered);
     }
 

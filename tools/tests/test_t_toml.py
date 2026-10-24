@@ -152,6 +152,8 @@ class TTomlTests(unittest.TestCase):
                 self.assertIn(f"apps/{app}/**", check["inputs"])
                 self.assertNotIn("apps/**", check["inputs"])
                 self.assertNotIn("crates/**", check["inputs"])
+                # Named, or run by the push gate for an app a commit changes; never after a push.
+                self.assertNotIn("on", check)
         for arch, _ in t_toml.SIZE_ARCHES:
             shared = checks[f"thin-runtime-{arch}"]
             self.assertEqual(shared["run"], f"bash tools/apps/t-release.sh thin-runtime {arch}")
@@ -171,7 +173,10 @@ class TTomlTests(unittest.TestCase):
             self.assertEqual(runtime["needs"], [f"thin-runtime-{arch}"])
             whole = checks[f"app-sizes-{arch}"]
             self.assertFalse(whole["default"])
-            self.assertEqual(whole["on"], ["stable", "dispatch"])
+            # On the board for main's newest head, bisected when it fails.
+            self.assertEqual(whole["on"], ["stable", "dispatch", "idle"])
+            # Kept built there, so the push gate's size check of an app compiles only the app.
+            self.assertEqual(shared["on"], ["idle"])
 
     def test_a_read_inside_a_reached_package_is_already_counted(self):
         root = Path("/w")

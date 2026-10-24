@@ -72,7 +72,6 @@ impl Widget for PhotosApp {
     fn needs_animation_frame(&self) -> bool {
         let now = ui::time::now();
         self.chrome.inspector.is_animating()
-            || self.status_bubble.needs_frame(now)
             || (!self.places_motion_reduced
                 && (self
                     .places_camera_feedback
@@ -484,6 +483,15 @@ impl Widget for PhotosApp {
         self.schedule_library_thumbnail(thumbnail_sources, document_changed);
         self.refresh_chrome_text(doc);
         self.refresh_empty_state(doc);
+        self.publish_notice();
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(self.notice_said.deadline())
+            .min()
     }
 
     fn composition_follows_allocation(&self) -> bool {
@@ -660,20 +668,6 @@ impl Widget for PhotosApp {
         {
             self.draw_metadata_editor(scene, transform, text_renderer, theme, presence);
         }
-        let now = ui::time::now();
-        if let Some(notice) = self.notice.as_deref() {
-            self.status_bubble.show(notice, now);
-        }
-        self.status_bubble
-            .pointer_moved(self.canvas_rect, self.pointer, text_renderer, theme, now);
-        self.status_bubble.paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.canvas_rect,
-            now,
-        );
     }
 
     fn draw_overlay(
@@ -1545,5 +1539,24 @@ impl ui::widget::AppWidget for PhotosApp {
 
     fn permission_hint(&self) -> Option<ui::widget::AppKind> {
         Some(ui::widget::AppKind::Editor)
+    }
+}
+
+impl PhotosApp {
+    /// A new notice is said in the window's bar for a while.
+    fn publish_notice(&mut self) {
+        if self.notice != self.notice_last {
+            self.notice_last.clone_from(&self.notice);
+            match self.notice.clone() {
+                Some(notice) => self.notice_said.show(notice),
+                None => {
+                    self.notice_said.dismiss();
+                }
+            }
+        }
+        self.notice_said.expire();
+        self.notice_said.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 }

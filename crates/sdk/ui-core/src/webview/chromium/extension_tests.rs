@@ -365,8 +365,19 @@ fn an_extensions_notification_arrives_and_a_choice_goes_back() {
                 items: vec![("a".into(), "b".into())],
                 buttons: vec!["Pause".into(), "Stop".into()],
                 progress: Some(40),
+                silent: false,
             }),
         })
+    );
+    // A quiet one (asked so, or a change to one shown) says so.
+    let quiet = event(
+        json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy",
+        "title":"Copying","message":"Two files","context":"","items":[],"buttons":[],
+        "progress":80,"require_interaction":false,"silent":true}),
+    );
+    assert!(
+        matches!(&quiet, Some(WebViewEvent::ExtensionNotification { notice: Some(notice), .. }) if notice.silent),
+        "{quiet:?}"
     );
     assert_eq!(
         event(
@@ -595,4 +606,165 @@ fn an_extension_asks_the_person_to_sign_in_on_a_web_page() {
     ] {
         assert!(!command_within_limits(&bad), "{bad:?}");
     }
+}
+
+#[test]
+fn what_follows_an_extensions_keyword_goes_to_it_and_its_suggestions_come_back() {
+    use crate::webview::{OmniboxInput, OmniboxSuggestion};
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let omnibox = |input: OmniboxInput| WebViewCommand::ExtensionOmnibox {
+        id: id.into(),
+        input,
+    };
+    for (input, wire) in [
+        (
+            OmniboxInput::Started,
+            json!({"op":"extension_omnibox","id":id,"input":"started"}),
+        ),
+        (
+            OmniboxInput::Changed {
+                text: "cat".into(),
+                request: 3,
+            },
+            json!({"op":"extension_omnibox","id":id,"input":"changed","text":"cat","request":3}),
+        ),
+        (
+            OmniboxInput::Entered {
+                text: "cat one".into(),
+            },
+            json!({"op":"extension_omnibox","id":id,"input":"entered","text":"cat one"}),
+        ),
+        (
+            OmniboxInput::Cancelled,
+            json!({"op":"extension_omnibox","id":id,"input":"cancelled"}),
+        ),
+    ] {
+        let command = omnibox(input);
+        assert!(command_within_limits(&command), "{command:?}");
+        assert_eq!(encode_command(command), Some(wire));
+    }
+    // Not an extension, more than the host reads, a request past its range.
+    for bad in [
+        WebViewCommand::ExtensionOmnibox {
+            id: "short".into(),
+            input: OmniboxInput::Started,
+        },
+        omnibox(OmniboxInput::Entered {
+            text: "x".repeat(2049),
+        }),
+        omnibox(OmniboxInput::Changed {
+            text: String::new(),
+            request: u32::MAX,
+        }),
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(
+            json!({"event":"extension_omnibox_suggestions","tab":1,"id":id,"request":3,
+            "suggestions":[{"content":"cat one","description":"First <match>cat</match>"}]})
+        ),
+        Some(WebViewEvent::ExtensionOmniboxSuggestions {
+            id: id.into(),
+            request: 3,
+            suggestions: vec![OmniboxSuggestion {
+                content: "cat one".into(),
+                description: "First <match>cat</match>".into(),
+            }],
+        })
+    );
+    assert_eq!(
+        event(
+            json!({"event":"extension_omnibox_default","tab":1,"id":id,"description":"Look up %s"})
+        ),
+        Some(WebViewEvent::ExtensionOmniboxDefault {
+            id: id.into(),
+            description: Some("Look up %s".into()),
+        })
+    );
+    assert_eq!(
+        event(json!({"event":"extension_omnibox_default","tab":1,"id":id,"description":null})),
+        Some(WebViewEvent::ExtensionOmniboxDefault {
+            id: id.into(),
+            description: None,
+        })
+    );
+    let many: Vec<Value> = (0..17)
+        .map(|n| json!({"content":n.to_string(),"description":"d"}))
+        .collect();
+    for bad in [
+        json!({"event":"extension_omnibox_suggestions","id":"short","request":1,"suggestions":[]}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":-1,"suggestions":[]}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":1,"suggestions":many}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":1,
+            "suggestions":[{"content":"x".repeat(2049),"description":"d"}]}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":1,"suggestions":[{"content":"c"}]}),
+        json!({"event":"extension_omnibox_default","id":id,"description":7}),
+        json!({"event":"extension_omnibox_default","id":id}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+}
+
+#[test]
+fn an_extensions_side_panel_opens_closes_and_follows_its_options() {
+    use crate::webview::ExtensionSidePanelChange as Change;
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let page = format!("chrome-extension://{id}/panel.html");
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    let side_panel = |change| {
+        Some(WebViewEvent::ExtensionSidePanel {
+            id: id.into(),
+            change,
+        })
+    };
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"open","url":page})),
+        side_panel(Change::Open(page.clone()))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"toggle","url":page})),
+        side_panel(Change::Toggle(page.clone()))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"options","url":page})),
+        side_panel(Change::Options(Some(page.clone())))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"options","url":null})),
+        side_panel(Change::Options(None))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"close","url":null})),
+        side_panel(Change::Close)
+    );
+    // Another extension's page, a web page, a page to open missing, an
+    // unknown mode: refused.
+    let other = "bbcdefghijklmnopabcdefghijklmnop";
+    for bad in [
+        json!({"event":"extension_side_panel","id":id,"mode":"open","url":format!("chrome-extension://{other}/p.html")}),
+        json!({"event":"extension_side_panel","id":id,"mode":"options","url":"https://example.test/"}),
+        json!({"event":"extension_side_panel","id":id,"mode":"open","url":null}),
+        json!({"event":"extension_side_panel","id":id,"mode":"toggle"}),
+        json!({"event":"extension_side_panel","id":id,"mode":"close","url":page}),
+        json!({"event":"extension_side_panel","id":id,"mode":"float","url":page}),
+        json!({"event":"extension_side_panel","id":"short","mode":"open","url":page}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionOpenSidePanel { id: id.into() }),
+        Some(json!({"op":"extension_side_panel","id":id}))
+    );
+    assert!(!command_within_limits(
+        &WebViewCommand::ExtensionOpenSidePanel { id: "short".into() }
+    ));
 }

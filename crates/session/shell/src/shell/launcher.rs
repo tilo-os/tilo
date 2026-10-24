@@ -14,6 +14,7 @@
 
 pub(crate) mod diagnostics;
 pub(crate) mod launch_history;
+mod recorded_use;
 #[cfg(target_os = "linux")]
 pub(crate) mod retained_home;
 #[cfg(target_os = "linux")]
@@ -3738,6 +3739,8 @@ fn execute_installed_inner(
             });
         }
     }
+    // Opening it is a use, whichever window it opens in.
+    recorded_use::record(&app);
     launch_fitting(
         app,
         room,

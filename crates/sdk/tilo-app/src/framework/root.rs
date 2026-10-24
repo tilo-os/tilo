@@ -1973,6 +1973,8 @@ impl RootModel for ResourceRoot {
         // rebuilt only when the sync moved the state.
         let head = self.refresh_bindings(Some(head));
         *self.binding_head.borrow_mut() = Some(head);
+        // The save status says itself in the window's bar.
+        self.save.sync(ui_core::time::now());
     }
 
     fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
@@ -1991,9 +1993,8 @@ impl RootModel for ResourceRoot {
     ) {
         self.paint_ground(scene, transform, theme, presence);
         self.content.draw(scene, transform, text, theme, presence);
-        let area = self.content.get_rect();
-        self.save
-            .paint(scene, transform, text, theme, area, ui_core::time::now());
+        // The window drew: what its bar says of the save is seen.
+        self.save.seen();
     }
 
     fn needs_redraw(&self) -> bool {
@@ -2006,6 +2007,7 @@ impl RootModel for ResourceRoot {
         &self.save
     }
 
+    #[cfg(test)]
     fn save_indicator_mut(&mut self) -> &mut super::saves::SaveIndicator {
         &mut self.save
     }

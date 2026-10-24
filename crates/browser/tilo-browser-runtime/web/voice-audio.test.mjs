@@ -333,7 +333,14 @@ test('abort during input acquisition settles start and closes allocated resource
 test('play transfers decoded voice payload through the worker into the worklet buffer', async () => {
   const f = lifecycleEnvironment();
   const session = await createBrowserAudio({environment: f.environment}).start({muted: true, onFrame() {}});
-  assert.equal(f.worklets[0].connections[0], f.contexts[0].destination, 'worklet playout must reach the audible destination');
+  const output = f.worklets[0].connections[0];
+  assert.equal(output.connections[0], f.contexts[0].destination, 'worklet playout must reach the audible destination');
+  assert.equal(output.gain.value, 1);
+  session.setDeafened(true);
+  assert.equal(output.gain.value, 0, 'deafened, nothing reaches the speakers');
+  assert.equal(session.deafened, true);
+  session.setDeafened(false);
+  assert.equal(output.gain.value, 1);
   session.play({publisherId: PUB_A, sequence: 7n, timestamp: 1920n, duration: 960, payload: Uint8Array.of(9, 8, 7)});
   await drain();
   const decode = f.workers[0].sent.find(message => message.type === 'decode');

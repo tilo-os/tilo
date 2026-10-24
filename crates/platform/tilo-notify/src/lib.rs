@@ -78,6 +78,10 @@ pub struct Notification {
     /// Buttons beside the notification's own activation, at most
     /// [`MAX_BUTTONS`].
     pub buttons: Vec<NotificationButton>,
+    /// Shown without a sound: one asked for so, or a change to one already
+    /// shown (a download's progress), which would otherwise sound at every
+    /// step. Linux carries it; macOS plays no sound for any.
+    pub silent: bool,
 }
 
 /// The most buttons a notification carries, as the Tilo shell shows them.
@@ -116,7 +120,15 @@ impl Notification {
             action: None,
             severity: Severity::Info,
             buttons: Vec::new(),
+            silent: false,
         }
+    }
+
+    /// Show it without a sound.
+    #[must_use]
+    pub fn quietly(mut self) -> Self {
+        self.silent = true;
+        self
     }
 
     /// Add a button named `label` that hands `uri` to the app's activation

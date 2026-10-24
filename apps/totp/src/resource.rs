@@ -905,15 +905,12 @@ mod tests {
         assert_eq!(app.state().list().len(), 1, "nothing was added");
         app.harness().key("Enter");
         app.harness().relayout();
-        let copied: Vec<_> = app
-            .harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter_map(|(_, node)| node.value().map(str::to_owned))
-            .collect();
-        assert!(
-            copied.iter().any(|value| value == "Copied GitHub code"),
-            "Enter copies the selected account and says so: {copied:?}"
+        assert_eq!(
+            ui::window_toolbar::notice()
+                .map(|notice| notice.text)
+                .as_deref(),
+            Some("Copied GitHub code"),
+            "Enter copies the selected account and says so in the window's bar"
         );
     }
 

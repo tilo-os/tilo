@@ -90,8 +90,11 @@ class TiloVm:
         cmd = [self.binary, *args]
         started = time.monotonic()
         try:
+            # Slot output may be cut at a byte count (R09 reads the session
+            # log through `cut -c1-400`), splitting a multi-byte character;
+            # one bad byte must not lose the whole check.
             proc = subprocess.run(cmd, env=env, capture_output=True, text=True,
-                                  timeout=timeout, cwd=cwd)
+                                  errors="replace", timeout=timeout, cwd=cwd)
         except subprocess.TimeoutExpired as exc:
             self._log(cmd, None, time.monotonic() - started, "", str(exc))
             raise VmError(f"timed out after {timeout}s: {shlex.join(args)}") from exc

@@ -220,23 +220,6 @@ fn text_scale_is_applied_once_by_retained_immediate_and_renderer_paths() {
                 2.0,
             ),
             (
-                // The pill sets its label in the theme's `Label` role, so it
-                // paints it scaled once.
-                "status_bubble::draw_pill",
-                Box::new(|scene, tr, theme| {
-                    let (w, h) = tilo_ui::status_bubble::pill_size("Syncing", tr, theme, 0.0);
-                    tilo_ui::status_bubble::draw_pill(
-                        scene,
-                        Affine::IDENTITY,
-                        tr,
-                        theme,
-                        Rect::new(0.0, 0.0, w, h),
-                        "Syncing",
-                    );
-                }),
-                2.0,
-            ),
-            (
                 // Initials are sized from the disc, so they stay put when only
                 // the text scale changes — they used to grow out of it.
                 "AvatarFace::paint",

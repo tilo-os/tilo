@@ -11,10 +11,13 @@ release"). So a push runs only what is cheap to catch and annoying to break, in 
   * the generated-file and manifest checks whose inputs it touches (lockfile, deny, hakari,
     t-toml, codemap, sdk-policy, workspace-layout);
   * `changes`, the diff gates (allow reasons, commit policy, interfaces);
-  * clippy of the packages whose files it changes, not of their dependents.
+  * clippy of the packages whose files it changes, not of their dependents;
+  * the aarch64 size check of each app whose files it changes, when t has that commit's
+    shared runtime built (about a minute); skipped, said and recorded when it has not.
 
-No tests, VM checks, images, suites or dependents: main's CI runs those on every commit and
-tells the commit that broke one, and `t test <check>` runs any of them on request.
+No tests, VM checks, images, suites or dependents, and no size check of an app the change
+does not touch: main's CI runs those on every commit or its newest head and tells the commit
+that broke one, and `t test <check>` runs any of them on request.
 
 A check red on main runs all the same: t compares what fails with the same check at the commit
 the push is based on, and only what fails there too passes. A lint (`clippy/*`) and a policy
@@ -26,8 +29,11 @@ on main named its findings, is refused instead: what fails can't be told from ma
 
   pre_push.py select --scope SCOPE.json --changed CHANGED.txt
       SCOPE.json is `t scope --rev <commit> --json`, CHANGED.txt the paths the push changes, one
-      per line. Prints a JSON object: `run` (the checks to name to `t test`) and `left` (in
-      scope, but not run before a push).
+      per line. Prints a JSON object: `run` (the checks to name to `t test`), `left` (in
+      scope, but not run before a push) and `sizes` (the size checks of the apps it touches).
+  pre_push.py sizes --top DIR --rev COMMIT --record FILE CHECK...
+      Of those size checks, the ones to run: all when t has the commit's shared runtime built,
+      else none, the skip said on stderr and appended to FILE.
   pre_push.py opt-in --suggest SUGGEST.json
       The opt-in checks `t suggest --json` says the change touches, space-separated.
   pre_push.py unpassed --run RUN.jsonl CHECK...
@@ -38,9 +44,12 @@ on main named its findings, is refused instead: what fails can't be told from ma
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 from pathlib import Path
+import subprocess
 import sys
+import threading
 import tomllib
 
 # The repository this script belongs to: where the changed paths are relative to.
@@ -101,7 +110,103 @@ def select(scope: dict, changed: list[str], root: Path = ROOT) -> dict[str, list
             left.append(check)
         else:
             run.append(check)
-    return {"run": run, "left": left}
+    return {"run": run, "left": left, "sizes": app_sizes(changed, root)}
+
+
+# An app's own change is held to its size budget before it lands: `app-size/<app>-aarch64` of
+# each app whose files the change touches (aarch64 is where budgets have been crossed). Its
+# check compiles only the app, on the shared runtime `thin-runtime-aarch64` builds, which main
+# keeps built for its newest head (`idle`); with the runtime built it takes about a minute.
+# A change the runtime is built from (the toolkit, the SDK, the manifests) needs that runtime
+# built afresh, 5 minutes and more, and a change to more than SIZE_APPS apps is a shared one:
+# the check is skipped then, said so, and main's whole-collection gate (`app-sizes-<arch>`,
+# `idle`) holds the change to the budgets. Each push's decision, checked or skipped, is
+# recorded in the clone (.git/t-gate-sizes) to be counted.
+SIZE_ARCH = "aarch64"
+SIZE_RUNTIME = f"thin-runtime-{SIZE_ARCH}"
+# A change to more apps than this is a shared one (a toolkit sweep), left to main's
+# whole-collection gate like a change to the toolkit itself.
+SIZE_APPS = 3
+# How long the hook waits for t to say whether the runtime is built.
+SIZE_PROBE_SECONDS = 60
+
+
+def app_sizes(changed: list[str], root: Path = ROOT) -> list[str]:
+    """The size checks of the apps whose files the change touches: `apps/<app>/` with a
+    `tilo-app.toml`, as t.toml's `app-size/<app>-<arch>` matrix names them."""
+    apps = {parts[1] for path in changed
+            if len(parts := path.split("/")) > 2 and parts[0] == "apps"
+            and (root / "apps" / parts[1] / "tilo-app.toml").is_file()}
+    return [f"app-size/{app}-{SIZE_ARCH}" for app in sorted(apps)]
+
+
+def all_cached(planned: dict | None) -> bool:
+    """Whether a run's `planned` event says every check it names is cached."""
+    if not planned:
+        return False
+    return bool(planned.get("checks")) and planned.get("cached") == len(planned["checks"])
+
+
+def runtime_built(top: str, rev: str) -> bool:
+    """Whether t has the shared runtime of `rev` built: a run of it is cached at once. One that
+    is not is cancelled; a run t does not plan within SIZE_PROBE_SECONDS counts as not built."""
+    started = subprocess.run(["t", "test", "-C", top, "--rev", rev, "--priority", "high", "--detach",
+                              "--json", SIZE_RUNTIME], capture_output=True, text=True, check=False,
+                             timeout=SIZE_PROBE_SECONDS)
+    try:
+        run = json.loads(started.stdout).get("run")
+    except ValueError:
+        return False
+    if not run:
+        return False
+    follow = subprocess.Popen(["t", "follow", "-C", top, "--json", run], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True)
+    timer = threading.Timer(SIZE_PROBE_SECONDS, follow.kill)
+    timer.start()
+    planned = None
+    try:
+        for line in follow.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and event.get("type") == "planned":
+                planned = event
+                break
+    finally:
+        timer.cancel()
+        follow.kill()
+        follow.wait()
+    if all_cached(planned):
+        return True
+    subprocess.run(["t", "cancel", run], capture_output=True, check=False, timeout=SIZE_PROBE_SECONDS)
+    return False
+
+
+def sizes(top: str, rev: str, checks: list[str], record: Path) -> list[str]:
+    """The size checks to run before the push, each push's decision appended to `record`, one
+    line each, so how many pushes are checked and how many skip can be counted: all of them
+    when the change touches at most SIZE_APPS apps and t has its shared runtime built, else
+    none, the skip said on stderr."""
+    if not checks:
+        return []
+    if len(checks) > SIZE_APPS:
+        outcome = "shared-change"
+        why = (f"it touches {len(checks)} apps, a shared change like one to the toolkit, which main's "
+               f"whole-collection size gate (app-sizes-{SIZE_ARCH}) holds to the budgets")
+    elif runtime_built(top, rev):
+        outcome, why = "checked", ""
+    else:
+        outcome = "runtime-not-built"
+        why = (f"the shared runtime of this commit is not built yet ({SIZE_RUNTIME}), so main's "
+               f"whole-collection size gate (app-sizes-{SIZE_ARCH}) holds it to the budgets")
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with record.open("a", encoding="utf-8") as handle:
+        handle.write(f"{stamp} {rev[:10]} {outcome} {' '.join(checks)}\n")
+    if outcome == "checked":
+        return checks
+    print(f"pre-push: skipped {' '.join(checks)}: {why}", file=sys.stderr)
+    return []
 
 
 def opt_in(suggest: dict) -> list[str]:
@@ -229,10 +334,18 @@ def main(argv: list[str]) -> int:
     verdict = sub.add_parser("unpassed")
     verdict.add_argument("--run", type=Path, required=True)
     verdict.add_argument("checks", nargs="*")
+    sized = sub.add_parser("sizes")
+    sized.add_argument("--top", required=True)
+    sized.add_argument("--rev", required=True)
+    sized.add_argument("--record", type=Path, required=True)
+    sized.add_argument("checks", nargs="*")
     args = parser.parse_args(argv)
     if args.command == "unpassed":
         for line in unpassed(load_events(args.run), args.checks):
             print(line)
+        return 0
+    if args.command == "sizes":
+        print(" ".join(sizes(args.top, args.rev, args.checks, args.record)))
         return 0
     if args.command == "opt-in":
         print(opt_in_line(opt_in(load(args.suggest))))

@@ -85,6 +85,21 @@ impl ToolbarRow {
         if let Some(trigger) = trigger {
             self.choice_trigger = trigger;
         }
+        self.strip.paint(
+            scene,
+            transform,
+            (tr, theme),
+            (
+                match interaction.hover {
+                    Some(Slot::Notice(i)) => Some(i),
+                    _ => None,
+                },
+                match interaction.pressed {
+                    Some(Slot::Notice(i)) => Some(i),
+                    _ => None,
+                },
+            ),
+        );
     }
 }
 
@@ -285,6 +300,22 @@ pub(super) fn paint_slots(
             overflow,
         );
     }
+    let actions = toolbar
+        .notice
+        .as_ref()
+        .map_or(&[][..], |notice| notice.actions.as_slice());
+    for (i, (action, rect)) in actions.iter().zip(&slots.notice).enumerate() {
+        let lifted = face(Slot::Notice(i), action.enabled, false);
+        if slots.notice_labelled.get(i).copied().unwrap_or(false) {
+            let face = labelled_face(*rect, &action.name)
+                .hovered(lifted.hovered && lifted.enabled)
+                .pressed(lifted.pressed && lifted.enabled)
+                .disabled(!lifted.enabled);
+            crate::widget::Button::paint(scene, transform, tr, theme, &face);
+        } else if let Some(icon) = Icon::from_name(&action.icon) {
+            paint_icon_button(scene, transform, tr, theme, (*rect, icon), lifted);
+        }
+    }
     let editing = interaction.is_some_and(|i| i.editing);
     let location = toolbar.location.as_ref()?;
     if slots.location.area() <= 0.0 || editing || slots.views_in_location() {
@@ -303,7 +334,7 @@ pub(super) fn paint_slots(
         (tr, theme, presence),
         (location, crumbs),
         (slots.location, slots.form),
-        lifted,
+        (lifted, toolbar.notice.as_ref().map(|notice| notice.kind)),
     )
 }
 
@@ -331,7 +362,7 @@ pub(super) fn paint_location(
         Option<&mut Breadcrumb>,
     ),
     (rect, form): (Rect, usize),
-    lift: LocationLift,
+    (lift, notice): (LocationLift, Option<crate::widget::toast::ToastKind>),
 ) -> Option<Rect> {
     if !location.editable && !location.choices.is_empty() {
         let (shown, ink) = location_shown(location, form, theme);
@@ -357,7 +388,10 @@ pub(super) fn paint_location(
             transform,
             Rect::from_center_size(c, (LOCATION_ICON_PX, LOCATION_ICON_PX)),
             icon,
-            theme.tokens.colors.text_dim,
+            // A notice's icon says its kind in its kind's colour.
+            notice.map_or(theme.tokens.colors.text_dim, |kind| {
+                crate::widget::toast::kind_color(kind, theme)
+            }),
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         text_rect.x0 += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);

@@ -379,6 +379,37 @@ print(json.dumps({'signed_rootfs_id': identity}))
             arguments = self.log.read_bytes().decode().split("\0")
             self.assertIn("system", arguments)
 
+    def test_only_the_kernel_layer_reads_the_kernel_pin(self):
+        # t keys the layers that build nothing FROM the kernel without its pin
+        # (tools/ci/os/os_toml.py), so their actions must not read or verify it:
+        # a kept result would otherwise vouch for a pin it was not keyed by.
+        self.write("os/dev/verify-kernel-provenance.sh",
+                   "#!/bin/bash\necho \"verified $1\" >&2\nexit 0\n", executable=True)
+        with self.subTest(phase="a_layer_without_the_kernel_reads_no_pin"):
+            self.write("os/kernel-snapshot.env", "")
+            piece = self.write("scratch/system.Containerfile", "FROM scratch AS system\n")
+            result = self.run_builder(TILO_LAYER_TARGET="system", TILO_CONTAINERFILE=str(piece))
+            arguments = self.build_arguments(result)
+            self.assertEqual(arguments["KERNEL_RPMS_REF"], "scratch")
+            self.assertNotIn("verified", result.stderr)
+        restart_fixture(self)
+        self.write("os/dev/verify-kernel-provenance.sh",
+                   "#!/bin/bash\necho \"verified $1\" >&2\nexit 0\n", executable=True)
+        with self.subTest(phase="the_kernel_layer_resolves_and_verifies_the_pin"):
+            piece = self.write("scratch/kernel.Containerfile",
+                               "FROM ${KERNEL_RPMS_REF} AS kernel-rpms\nFROM scratch AS kernel-installed\n")
+            result = self.run_builder(TILO_LAYER_TARGET="kernel-installed", TILO_CONTAINERFILE=str(piece))
+            arguments = self.build_arguments(result)
+            self.assertEqual(arguments["KERNEL_RPMS_REF"], KERNEL_PIN)
+            self.assertIn(f"verified {KERNEL_PIN}", result.stderr)
+        restart_fixture(self)
+        with self.subTest(phase="the_kernel_layer_refuses_a_missing_pin"):
+            self.write("os/kernel-snapshot.env", "")
+            piece = self.write("scratch/kernel.Containerfile",
+                               "FROM ${KERNEL_RPMS_REF} AS kernel-rpms\nFROM scratch AS kernel-installed\n")
+            result = self.run_builder(TILO_LAYER_TARGET="kernel-installed", TILO_CONTAINERFILE=str(piece))
+            self.assert_rejected_before_build(result, "no KERNEL_RPMS_REF")
+
     def test_windows_provider_pins(self):
         with self.subTest(phase="default_pins_and_generic_profile_reach_the_first_build"):
             arguments = self.build_arguments(self.run_builder())

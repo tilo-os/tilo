@@ -126,6 +126,9 @@ pub(crate) trait MediaSession: Send {
     /// Play `participant` (a person or guest id) at `percent` of as they
     /// arrive, on this device only.
     fn set_volume(&mut self, _participant: String, _percent: u16) {}
+    /// Play nothing of the call (`true`), or play it again, and tell the
+    /// others. The microphone is stopped and restarted on its own.
+    fn set_deafened(&mut self, _deafened: bool) {}
     /// The pictures received after `after`, up to `budget` bytes but at
     /// least one, and where the next collection continues.
     fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
@@ -214,6 +217,17 @@ struct Entry {
     video_pending: BTreeMap<PictureSource, Pending>,
     /// When the capture leases are renewed next.
     renew_at: Instant,
+    /// Whether the microphone was muted when the person deafened: what
+    /// undeafening puts back.
+    muted_before_deafen: bool,
+}
+/// Silence or play what `entry`'s call plays here; its microphone is
+/// stopped or restarted on its own.
+fn deafen(entry: &mut Entry, deafened: bool) {
+    entry.snapshot.deafened = deafened;
+    if let Some(backend) = &entry.backend {
+        backend.lock_recover().set_deafened(deafened);
+    }
 }
 /// What a watcher of a call sees change between ticks.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -401,6 +415,7 @@ impl NativeMediaService {
             command,
             Command::Join { .. }
                 | Command::SetMuted { .. }
+                | Command::SetDeafened { .. }
                 | Command::SelectInput { .. }
                 | Command::Leave
         );
@@ -453,6 +468,35 @@ impl NativeMediaService {
                 self.0.stop_capture(entry);
                 return Ok(self.0.snapshot(entry));
             }
+            // Deafening silences the call and mutes at once; undeafening
+            // hears it at once and unmutes below when it was unmuted before,
+            // as unmuting while deafened hears the call again.
+            if let Command::SetDeafened { deafened } = command {
+                let Some(entry) = calls.entries.get_mut(&key) else {
+                    return Ok(idle());
+                };
+                if deafened {
+                    if !entry.snapshot.deafened {
+                        entry.muted_before_deafen = entry.snapshot.muted;
+                    }
+                    deafen(entry, true);
+                    self.0.stop_capture(entry);
+                    return Ok(self.0.snapshot(entry));
+                }
+                let was = entry.snapshot.deafened;
+                deafen(entry, false);
+                if !was || entry.muted_before_deafen {
+                    return Ok(self.0.snapshot(entry));
+                }
+            }
+            if matches!(command, Command::SetMuted { muted: false })
+                && let Some(entry) = calls
+                    .entries
+                    .get_mut(&key)
+                    .filter(|entry| entry.snapshot.deafened)
+            {
+                deafen(entry, false);
+            }
             // Turning a camera or a screen off is immediate.
             let off = match command {
                 Command::SetCamera { on: false } => Some(PictureSource::Camera),
@@ -487,7 +531,9 @@ impl NativeMediaService {
                     .get(&key)
                     .map_or_else(idle, |entry| self.0.snapshot(entry)))
             }
-            Command::SetMuted { muted: false } => self.request_capture(&key, intent),
+            Command::SetMuted { muted: false } | Command::SetDeafened { deafened: false } => {
+                self.request_capture(&key, intent)
+            }
             Command::SetCamera { on: true } => self.request_video(&key, PictureSource::Camera),
             Command::SetScreen { on: true } => self.request_video(&key, PictureSource::Screen),
             Command::Show { pictures } => {
@@ -556,6 +602,7 @@ impl NativeMediaService {
             }
             Command::Leave
             | Command::SetMuted { muted: true }
+            | Command::SetDeafened { deafened: true }
             | Command::SetCamera { on: false }
             | Command::SetScreen { on: false } => Err("native media intent already handled".into()),
             Command::Pictures { .. } => Err("pictures are collected on their own lane".into()),
@@ -636,6 +683,7 @@ impl NativeMediaService {
                 renew_at: Instant::now()
                     .checked_add(LEASE_RENEWAL)
                     .unwrap_or_else(Instant::now),
+                muted_before_deafen: true,
             },
         );
         let weak = Arc::downgrade(&self.0);
@@ -1015,6 +1063,8 @@ impl NativeMediaServices for NativeMediaService {
             Command::Leave => "leave",
             Command::SetMuted { muted: true } => "mute",
             Command::SetMuted { muted: false } => "unmute",
+            Command::SetDeafened { deafened: true } => "deafen",
+            Command::SetDeafened { deafened: false } => "undeafen",
             Command::SelectInput { .. } => "select_input",
             Command::Status => "status",
             Command::Watch { .. } => "watch",
@@ -1210,6 +1260,7 @@ impl Shared {
             snapshot.state,
             State::Unavailable | State::Idle | State::Ended
         );
+        snapshot.deafened &= in_call;
         snapshot.camera = in_call && entry.video.contains_key(&PictureSource::Camera);
         snapshot.screen = in_call && entry.video.contains_key(&PictureSource::Screen);
         if snapshot.state == State::Live {
@@ -1749,7 +1800,11 @@ async fn run_call(weak: Weak<Shared>, key: Key, generation: u64, intent: u64, pr
             return;
         };
         match prepared {
-            Ok(backend) => {
+            Ok(mut backend) => {
+                // Deafened while the call was still starting.
+                if entry.snapshot.deafened {
+                    backend.set_deafened(true);
+                }
                 entry.backend = Some(Arc::new(Mutex::new(backend)));
             }
             Err(issue) => {

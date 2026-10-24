@@ -1454,7 +1454,9 @@ already under way keeps going, so a retry can find the bytes local. On the
 FUSE mount the failure is also written on the file's availability record
 (`fs_protocol::NO_PEER_DELIVERED_ERROR`), so Files shows the file as
 unavailable until a device that keeps it is back, and the note is cleared
-as soon as bytes arrive, through that fetch or a later read. The
+as soon as bytes arrive, through that fetch or a later read. So is the same
+failure of a "Retry download" that has ended; only a pin's fetch still
+waiting for its next attempt reports its own outcome. The
 bound sits well inside the kernel's two-minute hung-task report. On the
 native plane an access waiting for another reader's fill, or queued behind
 fills of other files, is held to the same bound, and an access to resident

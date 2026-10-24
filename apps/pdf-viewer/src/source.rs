@@ -2069,6 +2069,19 @@ impl RasterHandle {
         self.enqueue(RasterCommand::CancelSave { request })
     }
 
+    /// Note that this viewer lost queued results, as the bounded result
+    /// queue does when it lets the oldest go, so its next drain carries
+    /// [`RasterEvent::VisualWorkEvicted`].
+    #[cfg(test)]
+    pub(crate) fn note_results_evicted(&self) {
+        self.session
+            .queue
+            .state
+            .lock_recover()
+            .evicted_sessions
+            .insert(self.session.id);
+    }
+
     /// Drain completed work without waiting. UI code should call this once per
     /// frame/event turn and match only its current document/request id.
     pub fn drain_events(&self) -> Vec<RasterEvent> {

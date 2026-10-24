@@ -60,14 +60,18 @@ actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
 [[ $(podman image inspect --format '{{.Architecture}}' "$id") == "$oci_arch" ]] \
   || die "$in/oci is not an $arch image"
 
-# Refuse a base that cannot become this medium before spending the disk build on it.
-podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -ec '
-  test -x /usr/libexec/tilo/tilo-installer
-  test -x /usr/libexec/tilo-session-select
-  test -x /usr/libexec/tilo-uki-cmdline
+# Refuse a base that cannot become this medium before spending the disk build on it. The
+# installer's session plumbing (tilo-session-select, the greetd configuration) is not the base's:
+# os/dev/installer_overlay.py stages it from os/usr and os/Containerfile.installer checks it there.
+podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c '
+  status=0
+  for tool in /usr/libexec/tilo/tilo-installer /usr/libexec/tilo-uki-cmdline; do
+    test -x "$tool" || { echo "missing: $tool ($(ls -ld "$tool" 2>&1))" >&2; status=1; }
+  done
   set -- /boot/EFI/Linux/*.efi
-  test "$#" -eq 1 && test -f "$1"
-' >/dev/null || die "$in/oci has no graphical installer or no single sealed UKI"
+  test "$#" -eq 1 && test -f "$1" || { echo "UKIs under /boot/EFI/Linux: $*" >&2; status=1; }
+  exit "$status"
+' || die "$in/oci has no graphical installer or no single sealed UKI"
 
 source_epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$id" 2>/dev/null || true)
 if ! [[ $source_epoch =~ ^[1-9][0-9]*$ ]] && git cat-file -e "$revision^{commit}" 2>/dev/null; then
@@ -103,7 +107,12 @@ export TMPDIR="$out/tmp"
 mkdir -p "$TMPDIR"
 podman tag "$id" "$TILO_IMAGE"
 
-bash os/dev/build-custom-installer.sh --reuse-image-installer
+if ! bash os/dev/build-custom-installer.sh --reuse-image-installer; then
+  # The disk step keeps bootc's own words in a log beside the disk, which t does not keep.
+  log="$installer_output/qcow2/.install.log"
+  [[ ! -s $log ]] || { echo "--- the last lines of $log:" >&2; tail -n 120 "$log" >&2; }
+  die "the installer disk step failed"
+fi
 
 [[ -s "$TILO_INSTALLER_DISK" ]] || die "the installer disk step produced no qcow2"
 [[ -f "$TILO_INSTALLER_DISK.hardware.json" ]] \

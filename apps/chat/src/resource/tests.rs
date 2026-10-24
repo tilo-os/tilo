@@ -27,6 +27,8 @@ fn a_calls_own_controls_are_unavailable_until_you_join_it() {
         "leave-call",
         "mute",
         "unmute",
+        "deafen",
+        "undeafen",
         "camera-on",
         "camera-off",
         "share-screen",

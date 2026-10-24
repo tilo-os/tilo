@@ -129,3 +129,45 @@ fn queue_edits_under_shuffle_keep_what_played_and_play_next_plays_next() {
         );
     }
 }
+
+/// A queue can hold one song twice side by side. An edit an agent makes
+/// through the action surface then moves the copy it names in the shuffled
+/// order, not the one beside it, so a copy already heard is not heard again.
+#[test]
+fn an_agents_queue_edit_moves_the_copy_it_names_under_shuffle() {
+    use crate::actions::MusicEffect;
+    // Play next on the song queued right after the playing one, which has
+    // already played: the new copy plays next and the heard one stays heard.
+    {
+        let (mut app, _) = shuffled_four();
+        app.shuffle_order = vec![1, 0, 2, 3];
+        app.begin_effect(
+            tilo_actions::InvocationId::new(),
+            MusicEffect::PlayNext {
+                track: "tk_g2".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(rest_of_shuffle(&mut app), ["tk_g2", "tk_g3", "tk_g4"]);
+    }
+    // Removing the playing song, queued twice side by side, moves on to the
+    // next shuffled song instead of starting its other copy over.
+    {
+        let (mut app, _) = shuffled_four();
+        app.pb.queue = ["tk_g1", "tk_g2", "tk_g2", "tk_g3"]
+            .map(String::from)
+            .to_vec();
+        app.pb.queue_index = 1;
+        app.pb.current = Some("tk_g2".into());
+        app.shuffle_order = vec![0, 1, 3, 2];
+        app.begin_effect(
+            tilo_actions::InvocationId::new(),
+            MusicEffect::QueueRemove {
+                track: "music.track:tk_g2".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.pb.current.as_deref(), Some("tk_g3"));
+        assert_eq!(rest_of_shuffle(&mut app), ["tk_g2"]);
+    }
+}

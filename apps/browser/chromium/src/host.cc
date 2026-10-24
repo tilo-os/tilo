@@ -448,7 +448,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     return false;
   }
   // Answer a page menu still open: Chromium closing the browser with it
-  // pending crashes.
+  // pending crashes the host, a tab closed alone as much as the host's
+  // last.
   void CancelMenu() { if(context_callback_){auto callback=context_callback_;context_callback_=nullptr;callback->Cancel();} }
   void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
@@ -1069,6 +1070,15 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="extension_click") {if(extension_tabs)extension_tabs->Clicked(d->GetString("id"),id_);}
     // An item of an extension's toolbar button menu, chosen over this page.
     else if(op=="extension_menu_action") {if(extension_tabs)extension_tabs->ActionMenuChosen(id_,d->GetString("id"),d->GetString("key"));}
+    // What the person types after an extension's keyword in this page's address.
+    else if(op=="extension_omnibox") {
+      // The window the person types in is theirs now: an extension's
+      // "current window" for what it does with the words.
+      if(!extension_panel_ && last_focused_tab!=id_) {last_focused_tab=id_;if(extension_tabs)extension_tabs->Focused(id_);}
+      if(extension_tabs)extension_tabs->Omnibox(d->GetString("id"),id_,d->GetString("input"),d->HasKey("text")?d->GetString("text").ToString():std::string(),d->HasKey("request")?d->GetInt("request"):0);
+    }
+    // The person opened an extension's side panel beside this page.
+    else if(op=="extension_side_panel") {if(extension_tabs)extension_tabs->OpenSidePanel(d->GetString("id"),id_);}
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -1209,7 +1219,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // as long as Chromium counts it as their activation of the page.
   bool activated() const {return activated_ && std::chrono::steady_clock::now()-*activated_<=std::chrono::seconds(5);}
   bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
-  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
+  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;CancelMenu();browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
   void DetachVisible() {
     if(transfer_owner_ || native_closing_)return;const bool retained=downloads->Detach(id_);if(!retained){CloseNative();return;}
     // Every busy visible owner reserved this slot at admission, so detaching
@@ -1954,7 +1964,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action")return false;
     return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
   }
-  if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
+  if(op=="extension_click" || op=="extension_side_panel" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
   if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
   if(op=="extension_notification_chosen") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
@@ -1981,6 +1991,18 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="flow")return false;
     return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("flow",VTYPE_INT) && d->GetInt("flow")>0;
+  }
+  if(op=="extension_omnibox") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="input" && key!="text" && key!="request")return false;
+    if(!type("id",VTYPE_STRING) || !tilo::ExtensionId(d->GetString("id")) || !type("input",VTYPE_STRING))return false;
+    const auto input=d->GetString("input").ToString();
+    // Typed text comes with what was typed; a change also with its request.
+    const bool typed=input=="changed" || input=="entered";
+    if(!typed && input!="started" && input!="cancelled")return false;
+    if(typed != d->HasKey("text") || (input=="changed") != d->HasKey("request"))return false;
+    if(typed && (!type("text",VTYPE_STRING) || d->GetString("text").length()>tilo::kMaxOmniboxText))return false;
+    return input!="changed" || (type("request",VTYPE_INT) && d->GetInt("request")>=0);
   }
   if(op=="extension_access") {
     auto strings=[&](const char* key){

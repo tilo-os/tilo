@@ -420,3 +420,104 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
         );
     }
 }
+
+/// Release a marquee over the upper-left of displayed page `page` before
+/// its page is rendered for the crop: the copy waits for that render.
+/// The bitmap key the crop is cut from.
+fn release_region_awaiting_render(app: &mut PdfApp, page: usize) -> (usize, u32) {
+    let (pw, ph) = app.raster_document.as_ref().unwrap().page_sizes[0];
+    let region = RegionSelect {
+        page,
+        start: (40.0, 40.0),
+        cur: (pw * 0.6, ph * 0.5),
+    };
+    let key = app.region_source(region).0;
+    assert!(
+        !app.raster_images.contains_key(&key),
+        "the crop's render is not here before the release"
+    );
+    app.region = Some(region);
+    assert!(!app.release_region(), "the crop waits for its page render");
+    assert!(app.region_waiting.is_some(), "the copy waits");
+    assert!(app.status_note.is_progress(), "{:?}", app.status_note);
+    key
+}
+
+/// A released marquee whose render result was lost before the reader saw
+/// it (the bounded result queue lets its oldest results go) asks for the
+/// render again and is copied, instead of saying it is copying for good.
+#[serial(pdfium)]
+#[test]
+fn a_region_copy_whose_render_result_was_lost_asks_again() {
+    let Some((mut app, mut st)) = open_laid_out_sample() else {
+        return;
+    };
+    let key = release_region_awaiting_render(&mut app, 1);
+    let handle = app
+        .raster_handle
+        .as_ref()
+        .expect("the sample opened on a worker");
+    let deadline = tilo_test_env::hang_deadline();
+    // The render finishes, and its result goes before the reader drains it.
+    while !handle.drain_events().iter().any(|event| {
+        matches!(
+            event,
+            crate::source::RasterEvent::Rendered { request, .. }
+                if (request.page, crate::source::RasterBackend::bucket_for(request.target_width)) == key
+        )
+    }) {
+        assert!(ui::time::now() < deadline, "the crop's render never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    handle.note_results_evicted();
+    settle_until(&mut app, &mut st, |app| app.region_waiting.is_none());
+    assert!(
+        app.raster_images.contains_key(&key),
+        "the render was asked for again and arrived"
+    );
+    let note = app.status_note.as_deref().unwrap_or_default().to_owned();
+    assert!(
+        [
+            crate::t("pdf-note-copied-area"),
+            crate::t("pdf-note-area-not-copied")
+        ]
+        .contains(&note),
+        "the arrived render is cropped, and the note says how the copy went: {note:?}"
+    );
+    assert!(!app.status_note.is_progress(), "{note:?}");
+}
+
+/// A released marquee whose page the engine draws no bitmap for is not
+/// copied, and the reader says so instead of saying it is copying for good.
+#[serial(pdfium)]
+#[test]
+fn a_region_copy_whose_page_cannot_be_drawn_says_it_was_not_copied() {
+    let Some((mut app, mut st)) = open_laid_out_sample() else {
+        return;
+    };
+    // A page past the document's last: the engine answers with no bitmap.
+    let past_last = app.raster_document.as_ref().unwrap().page_sizes.len() + 1;
+    let key = release_region_awaiting_render(&mut app, past_last);
+    settle_until(&mut app, &mut st, |app| app.region_waiting.is_none());
+    assert!(!app.raster_images.contains_key(&key), "no bitmap was drawn");
+    assert_eq!(
+        app.status_note.as_deref(),
+        Some(crate::t("pdf-note-area-not-copied").as_str()),
+        "the person is told the area was not copied"
+    );
+    assert!(!app.status_note.is_progress());
+}
+
+/// Saving a copy before any PDF is open (an agent's Save As on an empty
+/// window) says to open one first, not to try another folder or name.
+#[test]
+fn saving_with_no_pdf_open_says_to_open_one_first() {
+    let mut app = PdfApp::empty();
+    let out = std::env::temp_dir().join("tilo_pdf_nothing_open.pdf");
+    assert!(!app.save_annotated_to(&out), "there is nothing to save");
+    assert!(!out.exists());
+    assert_eq!(
+        app.status_note.as_deref(),
+        Some(crate::t("pdf-note-save-no-document").as_str()),
+    );
+}

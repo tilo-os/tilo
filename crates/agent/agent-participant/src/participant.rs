@@ -584,7 +584,7 @@ impl AgentParticipant {
                         .insert(document.route.clone(), document.author);
                     if !self.news.contains(&document.route) {
                         // Read before the change merges below.
-                        let before = self.record_text(&document.route).unwrap_or_default();
+                        let before = self.record_messages(&document.route).unwrap_or_default();
                         self.news_before.insert(document.route.clone(), before);
                         self.news.push(document.route.clone());
                     }
@@ -1073,9 +1073,24 @@ impl AgentParticipant {
                         running.observe(app, seen);
                     }
                     running.looked_at(rendered);
-                    running.queue_rest(steps);
+                    running.queue_answer(steps);
                     self.plan_ready_at = Some(ready_at);
                 }
+            }
+            // News that changes nothing for the task is no reason to end
+            // it: a re-plan for it that found nothing to do goes on with
+            // the steps it replaced, a wait among them waiting again (at
+            // most MOST_NEWS_REPLANS re-plans, and MOST_WAITS waits).
+            Err(error)
+                if continues
+                    && running_it
+                    && error.starts_with(NOTHING_LEFT)
+                    && self
+                        .running
+                        .as_mut()
+                        .is_some_and(Running::resume_after_news) =>
+            {
+                tracing::debug!(%error, "agent: news changed nothing; the task goes on");
             }
             Err(error) => {
                 if !continues && error.starts_with(NOTHING_LEFT) && self.reopen_for(&task, &text) {

@@ -32,6 +32,8 @@ mod app_settings_tests;
 mod authority_sample_tests;
 mod canonical_route;
 mod committed_document;
+mod content_put;
+pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
 mod directory_pagination;

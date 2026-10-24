@@ -9903,6 +9903,16 @@ mod tests {
                 "{id}"
             );
         }
+
+        // The undo lasts its eight seconds whether or not anything painted.
+        let id = chrome.borrow_mut().push_notification("Backup done", "");
+        chrome.borrow_mut().dismiss_notification(id);
+        run(&clear).expect("a list with something in it clears");
+        let ended = ui::time::now() + tilo_desktop::notifications::CLEAR_UNDO_WINDOW;
+        ui::time::testing::with_monotonic_time(ended, || {
+            let offered = action_available("notifications.clear.undo", &chrome.borrow(), false);
+            assert!(!offered && matches!(run(&undo), Err(ActionError::Refused(_))));
+        });
     }
 
     #[test]

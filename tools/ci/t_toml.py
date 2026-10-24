@@ -584,11 +584,11 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             memory = "10GiB" if name.startswith("app-size/") else "16GiB"
             lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
         lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
-        if name.startswith("app-size/"):
-            # Each commit on main measures the apps it changes, so t names the commit that
-            # crosses a budget. Not on pre-push, which would build the shared runtime for most
-            # changes.
-            lines.append('on = ["main"]')
+        if shared is None:
+            # Kept built for main's newest head when t has room, so the push gate's size check of
+            # an app a commit changes (tools/ci/pre_push.py, aarch64) and one named for a working
+            # tree compile only that app.
+            lines.append('on = ["idle"]')
         return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
     shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",
