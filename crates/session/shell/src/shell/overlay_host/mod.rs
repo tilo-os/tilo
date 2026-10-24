@@ -963,6 +963,12 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Who is here arriving from the bar and leaving (`motion::Appear`).
+    collaborators_appearing: ui::motion::Appearing,
+    /// The roster as it was last painted at rest, and its panel: what is
+    /// drawn arriving, and leaving once it is closed.
+    collaborators_painted: Scene,
+    collaborators_painted_panel: Rect,
     /// Roster id whose recent summary People shows. Local view state: the
     /// same person stays expanded as the roster reorders.
     expanded_collaborator: Option<String>,
@@ -1827,6 +1833,12 @@ mod parked_workspaces_tests;
 #[cfg(test)]
 #[path = "capture_tool_tests.rs"]
 mod capture_tool_tests;
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_motion_tests;
 
 #[cfg(test)]
 #[allow(

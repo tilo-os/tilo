@@ -287,6 +287,9 @@ pub struct CollaboratorsOverlay {
     /// Whom the last frame showed waved at.
     shown_waved: Vec<String>,
     motion: ui::tokens::EffectiveMotion,
+    /// How the host draws the roster now, while it arrives; input is
+    /// hit-tested there (`Pose::to_local`), not where it will rest.
+    drawn: ui::motion::Pose,
     /// When someone here was first seen in a call, so their ring breathes
     /// from its start.
     call_since: Option<ui::time::Instant>,
@@ -372,8 +375,16 @@ impl CollaboratorsOverlay {
                 .find(|hit| self.target_id(*hit).as_deref() == Some(id.as_str()))
         });
         self.configure_scroll(theme);
+        let cursor = cursor.map(|point| self.drawn.to_local(point));
         self.paint(scene, transform, text, theme, model, cursor);
         self.register_targets(model.host);
+    }
+
+    /// How the host draws the roster now, while it arrives: input is
+    /// hit-tested where it is drawn ([`ui::motion::Pose::to_local`]), not
+    /// where it will rest.
+    pub fn set_drawn_pose(&mut self, pose: ui::motion::Pose) {
+        self.drawn = pose;
     }
 
     /// Open the row the host says is open, on the disclose motion.
@@ -1227,6 +1238,19 @@ impl CollaboratorsOverlay {
             }
             return None;
         }
+        // While it arrives, the pointer acts on what is drawn under it.
+        let drawn = self.drawn;
+        let cursor = cursor.map(|point| drawn.to_local(point));
+        let posed;
+        let event = match event {
+            WindowEvent::CursorMoved { position, .. } if !drawn.is_rest() => {
+                let scale = ctx.scale_factor;
+                let local = drawn.to_local(Point::new(position.x / scale, position.y / scale));
+                posed = ui::synthetic_input::cursor_moved(local.x * scale, local.y * scale);
+                &posed
+            }
+            _ => event,
+        };
         if matches!(
             event,
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
