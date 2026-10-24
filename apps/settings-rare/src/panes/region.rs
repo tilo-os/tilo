@@ -254,17 +254,42 @@ pub(crate) fn first_day(cx: &PaneCx, locale: &Followed<Locale>) -> Item {
         )
 }
 
+impl Languages {
+    /// The revisions of what the languages show now.
+    fn revisions(&self) -> (u64, (u64, u64)) {
+        (
+            self.offered.revision(),
+            (self.installing.revision(), self.failed.revision()),
+        )
+    }
+
+    fn moved(&self) -> bool {
+        self.revisions() != (self.offered_seen, self.install_seen)
+    }
+}
+
 impl Widget for RegionPane {
+    /// What `sync` takes up from outside the document: a format or the
+    /// language stored (a change this pane made lands once the settings
+    /// write is stored), what the repositories offer, an install starting
+    /// or stopping. A frame that reports none of them does not sync.
+    fn update(&mut self, state: &AppModel, root: &ModelPath) -> bool {
+        let own = self.locale.moved()
+            || self.appearance.moved()
+            || self.languages.as_ref().is_some_and(Languages::moved);
+        let mut children = false;
+        for child in self.children_mut() {
+            children |= child.update(state, root);
+        }
+        own || children
+    }
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // What the repositories offer landed, or an install started or
         // stopped.
         let languages_moved = self.languages.as_mut().is_some_and(|languages| {
-            let seen = (
-                languages.offered.revision(),
-                (languages.installing.revision(), languages.failed.revision()),
-            );
-            let moved = seen != (languages.offered_seen, languages.install_seen);
-            (languages.offered_seen, languages.install_seen) = seen;
+            let moved = languages.moved();
+            (languages.offered_seen, languages.install_seen) = languages.revisions();
             moved
         });
         if self.locale.refresh() | self.appearance.refresh() | languages_moved {
