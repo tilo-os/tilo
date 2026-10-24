@@ -17097,6 +17097,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-canvas"
+version = "0.1.0"
+dependencies = [
+ "tilo-ui",
+ "tilo-ui-paint",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-caps"
 version = "0.1.0"
 dependencies = [
