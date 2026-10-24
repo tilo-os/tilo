@@ -2244,6 +2244,7 @@ impl ShellNetwork {
             ),
         );
 
+        let readiness = tree.room_readiness().clone();
         let network = Self {
             cmd_tx,
             tree,
@@ -2318,7 +2319,7 @@ impl ShellNetwork {
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
             embedded_host: embedded_host::State::new(local_host),
-            hosted_sites: hosted_sites::State::open(state_dir),
+            hosted_sites: hosted_sites::State::open(state_dir, readiness),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
@@ -8230,6 +8231,7 @@ pub(crate) fn shell_network_for_test(
         .into_iter()
         .map(|room| (room.to_string(), ui::PresenceVisibility::WhereIAm))
         .collect();
+    let readiness = tree.room_readiness().clone();
     let net = ShellNetwork {
         cmd_tx,
         tree,
@@ -8317,7 +8319,7 @@ pub(crate) fn shell_network_for_test(
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
         embedded_host: embedded_host::State::default(),
-        hosted_sites: hosted_sites::State::default(),
+        hosted_sites: hosted_sites::State::with_readiness(readiness),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),

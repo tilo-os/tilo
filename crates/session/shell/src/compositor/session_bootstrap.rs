@@ -210,6 +210,12 @@ fn bind_session_collab_broker(
         return Err(BrokerStartFailure::SocketTaken);
     }
 
+    // Workspaces waiting for this device's own host are placed before any
+    // app starts: placing one is local, so an app restored into it (Notes
+    // in Home on a first boot, online or not) opens at once.
+    if let Some(network) = peer_sync {
+        network.place_before_launches();
+    }
     let network = peer_sync.cloned();
     let action_offload = session_action_offload(&membership);
     let spawned = crate::shell::collab_broker::spawn_native_offloading(
