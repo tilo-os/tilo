@@ -475,6 +475,43 @@ mod tests {
         );
     }
 
+    /// A line of buttons that runs out of room moves the buttons that do
+    /// not fit onto lines of their own, one gap apart, rather than letting
+    /// them overlap or run past the edge.
+    #[test]
+    fn a_line_of_buttons_wraps_before_it_overlaps() {
+        use crate::widget::Button;
+        let mut row = Row::new()
+            .with_rhythm(crate::tokens::Rhythm::Related)
+            .align_start()
+            .push(Box::new(Button::new("up", "Move earlier")))
+            .push(Box::new(Button::new("down", "Move later")))
+            .push(Box::new(Button::new("delete", "Delete workspace")));
+        let wide = lay_out(&mut row, 600.0);
+        assert!(
+            wide.iter().all(|rect| (rect.y0 - wide[0].y0).abs() < 0.5),
+            "three buttons share one line at 600 px: {wide:?}"
+        );
+        let narrow = lay_out(&mut row, 240.0);
+        let lines = narrow
+            .iter()
+            .filter(|rect| rect.y0 > narrow[0].y0 + 0.5)
+            .count();
+        assert!(lines >= 1, "a 240 px row wraps: {narrow:?}");
+        for (index, a) in narrow.iter().enumerate() {
+            assert!(a.x1 <= 240.5, "{a:?} runs past the edge");
+            for b in &narrow[index + 1..] {
+                assert!(a.intersect(*b).area() <= 0.0, "{a:?} and {b:?} overlap");
+            }
+        }
+        let gap = narrow
+            .iter()
+            .filter(|rect| rect.y0 > narrow[0].y0 + 0.5)
+            .map(|rect| rect.y0 - narrow[0].y1)
+            .fold(f64::INFINITY, f64::min);
+        assert!(gap >= 4.0, "wrapped lines keep a gap: {gap}");
+    }
+
     #[test]
     fn row_gap_justify_and_alignment_place_children() {
         {
