@@ -23,6 +23,8 @@ pub(crate) struct ResourceOptions {
     document_child: Option<syn::Path>,
     /// A read that looks at the document too: `fn(&Self, &Doc, Option<&Id>)`.
     read_content_in_doc: Option<syn::Path>,
+    /// The record's facts: `fn(&Self) -> Result<Value, String>`.
+    facts: Option<syn::Path>,
     views: Option<syn::Path>,
     version: Option<syn::LitInt>,
     migrate: Option<syn::Path>,
@@ -39,7 +41,7 @@ pub(crate) struct ResourceOptions {
 
 const RESOURCE_KEYS: &str = "expected `kind = \"...\"`, `label = \"...\"`, `params = name`, `search = path`, \
      `scopes = path`, `children = path`, `initialize = path`, `seed = path`, `available = path`, \
-     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
+     `read_content = path`, `read_content_in_doc = path`, `document_child = path`, `facts = path`, `views = path`, `version = N`, `migrate = path`, `load = path`, \
      `locate = path`, `lands = path`, `queue = path`, `effects = Type`, `answer = path` or \
      `item_views = path`";
 
@@ -58,6 +60,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
         read_content: None,
         document_child: None,
         read_content_in_doc: None,
+        facts: None,
         views: None,
         version: None,
         migrate: None,
@@ -111,6 +114,7 @@ pub(crate) fn resource_options(attr: proc_macro::TokenStream) -> syn::Result<Res
             ("read_content_in_doc", Expr::Path(path)) => {
                 options.read_content_in_doc = Some(path.path.clone());
             }
+            ("facts", Expr::Path(path)) => options.facts = Some(path.path.clone()),
             ("views", Expr::Path(path)) => options.views = Some(path.path.clone()),
             (
                 "version",
@@ -1644,6 +1648,17 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             }
         }
     });
+    let facts = options.facts.as_ref().map(|path| {
+        quote! {
+            const HAS_FACTS: bool = true;
+            fn facts(
+                state: &Self,
+                _doc: &#krate::Doc,
+            ) -> ::core::result::Result<#krate::__private::serde_json::Value, ::std::string::String> {
+                #path(state)
+            }
+        }
+    });
     let document_child = options.document_child.as_ref().map(|path| {
         quote! {
             fn document_child(state: &Self, id: &str) -> bool {
@@ -2061,6 +2076,7 @@ pub(crate) fn expand(options: &ResourceOptions, item: &mut ItemImpl) -> syn::Res
             #locate
             #availability
             #read_content
+            #facts
             #document_child
             #views
             #field_fn

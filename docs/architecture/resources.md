@@ -218,7 +218,8 @@ The resource attribute covers what used to need a hand-written `Resource`:
 `initialize` (deterministic genesis), `seed` (first content, by the creator,
 nobody's undo step), `available` (state-dependent availability of verbs),
 `children` (derived child resources, §2.5), `search` and `scopes`,
-`read_content`, `views`.
+`read_content`, `facts` (a compact summary to check the record against a
+request, published as the `facts` view), `views`.
 
 ### 2.3 How the kind is derived
 
@@ -228,7 +229,7 @@ nobody's undo step), `available` (state-dependent availability of verbs),
 - A verb that takes `&mut Outbox<T>` records an outside consequence: **Outside**.
 - An effect (`#[derive(Effect)]`) is **Outside**, or **Read** when it is a view
   effect (`#[effect(view)]`).
-- The `read_content` and view operations are **Read**.
+- The `read_content`, `facts` and view operations are **Read**.
 
 A lint covers what types cannot: no clock, randomness, file, network or process
 access inside a verb, because verbs run again on every replica. The kind

@@ -344,6 +344,26 @@ pub trait Resource: Sized + 'static {
         Err(format!("a {} does not answer reads", Self::LABEL))
     }
 
+    /// Whether [`facts`](Self::facts) answers. A resource that does is
+    /// published with the framework's `facts` read, which an agent's host
+    /// shows when it checks work done on the resource.
+    const HAS_FACTS: bool = false;
+
+    /// What the resource holds as a compact summary of plain values, meant
+    /// for checking it against a request: names, times, counts and text as
+    /// a person would state them (a cut's shots with their source, in and
+    /// out points; a deck's slide titles), not ids or storage. Two answers
+    /// compare field by field, so keep a list's order meaningful and its
+    /// items' keys stable. Called only when [`HAS_FACTS`](Self::HAS_FACTS)
+    /// is set.
+    ///
+    /// # Errors
+    /// A message naming why the facts could not be read.
+    fn facts(state: &Self::State, doc: &Doc) -> Result<serde_json::Value, String> {
+        let _ = (state, doc);
+        Err(format!("a {} states no facts", Self::LABEL))
+    }
+
     /// What declared action `action` (one [`ActionDecl::answering`]) made,
     /// answered to its caller once it applied to `doc` as `changes`: the
     /// ids it minted, the area it selected, a warning that what it drew is
