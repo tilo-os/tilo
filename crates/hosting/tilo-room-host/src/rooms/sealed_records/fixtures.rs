@@ -9,9 +9,8 @@
 
 use std::time::SystemTime;
 
-use automerge::{ROOT, transaction::Transactable as _};
 use channel_crypto::ChannelContentKeys;
-use collab_types::{CommitNamed as _, ContentRetention, SignedOp};
+use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_automerge::ApplyIncoming as _;
