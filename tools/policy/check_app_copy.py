@@ -27,7 +27,7 @@ RESOLVER = re.compile(r"\b(?:t|t_args|tr|tr_args)\s*\(")
 QUALIFIED = re.compile(r"\b([A-Za-z_]\w*)::i18n::(?:t|t_args|tr|tr_args)\s*\(")
 # These argument positions are stable machine identifiers, never Fluent IDs.
 MACHINE_CALL = re.compile(
-    r"(?:\bButton::new|\bdevice_read::thread|\.(?:with_id|thread_name|name))\s*\("
+    r"(?:\bButton::new|\bdevice_read::thread|\.(?:with_id|thread_name|name|start_job))\s*\("
 )
 
 

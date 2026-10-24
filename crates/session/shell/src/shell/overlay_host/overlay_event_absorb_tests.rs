@@ -19,6 +19,8 @@ use winit::keyboard::{Key, NamedKey};
 
 #[path = "notification_header_tests.rs"]
 mod notification_header_tests;
+#[path = "overlay_event_absorb_tests/palette_click_tests.rs"]
+mod palette_click_tests;
 #[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
 mod picker_scroll_tests;
 #[path = "overlay_event_absorb_tests/quick_settings_controls_tests.rs"]
@@ -3754,56 +3756,61 @@ fn notification_banner_pointer_feedback_matches_shared_close_face() {
     std::fs::create_dir_all(&out).unwrap();
     let mut missing_feedback = Vec::new();
     for (name, theme, viewport, width) in banner_pointer_capture_variants() {
-        let theme = theme.with_reduce_motion(true);
-        let mut h = build_harness_sized(viewport, 540.0);
-        h.chrome.borrow_mut().push_notification_full(
-            tilo_desktop::notifications::Notification::new(
-                "Backup failed",
-                "Try again from Search.",
-            )
-            .with_app_name("Files")
-            .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
-        );
-        settle_with_theme(&mut h, viewport, 540.0, &theme);
-        let card = h.host.notification_stack.rect();
-        assert!(card.area() > 0.0);
-        let hit = ui::widget::toast::paint_card(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            card,
-            &ui::widget::toast::ToastCard::new(
-                "Backup failed",
-                ui::widget::toast::ToastKind::Error,
-            )
-            .body("Try again from Search.")
-            .caption("Files")
-            .closable(true),
-        );
-        let idle = out.join(format!("{name}-idle.png"));
-        capture_banner_pointer_state(&mut h, &theme, width, &idle);
-        pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
-        let hover = out.join(format!("{name}-hover.png"));
-        capture_banner_pointer_state(&mut h, &theme, width, &hover);
-        if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
-            missing_feedback.push(name);
-        }
-        assert!(pump(&mut h, &left_button_pressed()));
-        assert_eq!(h.chrome.borrow().notifications().len(), 1);
-        capture_banner_pointer_state(
-            &mut h,
-            &theme,
-            width,
-            &out.join(format!("{name}-pressed.png")),
-        );
-        assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
-        assert!(pump(&mut h, &left_button_released()));
-        assert_eq!(
-            h.chrome.borrow().notifications().len(),
-            1,
-            "cancelled close gestures retain the error"
-        );
+        // The banner's own clock stands still: rendering the captures is
+        // slow on a busy machine, and an error banner left alone for its
+        // dwell would leave before the press this test makes on it.
+        ui::time::testing::with_monotonic_time(ui::time::now(), || {
+            let theme = theme.with_reduce_motion(true);
+            let mut h = build_harness_sized(viewport, 540.0);
+            h.chrome.borrow_mut().push_notification_full(
+                tilo_desktop::notifications::Notification::new(
+                    "Backup failed",
+                    "Try again from Search.",
+                )
+                .with_app_name("Files")
+                .with_severity(tilo_desktop::notifications::NotificationSeverity::Error),
+            );
+            settle_with_theme(&mut h, viewport, 540.0, &theme);
+            let card = h.host.notification_stack.rect();
+            assert!(card.area() > 0.0);
+            let hit = ui::widget::toast::paint_card(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                card,
+                &ui::widget::toast::ToastCard::new(
+                    "Backup failed",
+                    ui::widget::toast::ToastKind::Error,
+                )
+                .body("Try again from Search.")
+                .caption("Files")
+                .closable(true),
+            );
+            let idle = out.join(format!("{name}-idle.png"));
+            capture_banner_pointer_state(&mut h, &theme, width, &idle);
+            pump(&mut h, &cursor_moved_at(hit.close_rect.center()));
+            let hover = out.join(format!("{name}-hover.png"));
+            capture_banner_pointer_state(&mut h, &theme, width, &hover);
+            if std::fs::read(&idle).unwrap() == std::fs::read(&hover).unwrap() {
+                missing_feedback.push(name);
+            }
+            assert!(pump(&mut h, &left_button_pressed()));
+            assert_eq!(h.chrome.borrow().notifications().len(), 1);
+            capture_banner_pointer_state(
+                &mut h,
+                &theme,
+                width,
+                &out.join(format!("{name}-pressed.png")),
+            );
+            assert!(pump(&mut h, &key_pressed(Key::Named(NamedKey::Escape))));
+            assert!(pump(&mut h, &left_button_released()));
+            assert_eq!(
+                h.chrome.borrow().notifications().len(),
+                1,
+                "cancelled close gestures retain the error"
+            );
+        });
     }
     assert!(
         missing_feedback.is_empty(),

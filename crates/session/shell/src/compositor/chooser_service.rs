@@ -2021,7 +2021,7 @@ type = "gui"
         let _ = shell_launcher::drain_events();
 
         let tree = WorkspaceTreeHandle::new(WorkspaceTree::bootstrap_demo());
-        shell_launcher::action_authority::follow_tree(&tree);
+        crate::shell::action_authority::follow_tree(&tree);
         let chrome = ChromeState::new_with_handle(tree.clone());
         let room = chrome
             .borrow()

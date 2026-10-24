@@ -969,6 +969,52 @@ fn unfocused_input_shows_start_and_placeholder() {
         );
     }
 
+    // Case `an_unfocused_field_the_wheel_scrolled_keeps_its_scroll`.
+    {
+        for shaped in [false, true] {
+            let text = "a long source row\n".repeat(80);
+            let mut input = TextInput::local().multiline(true).with_initial_value(&text);
+            input.rect = Rect::new(0., 0., 300., 100.);
+            input.is_focused = false;
+            input.is_hovered = true;
+            input.lines = (0..80)
+                .map(|i| VisualLine {
+                    start: i * 18,
+                    end: i * 18 + 17,
+                    hard_break: true,
+                    y: i as f64 * 20.,
+                    char_x: vec![],
+                })
+                .collect();
+            let mut handled = false;
+            input.handle_mouse_wheel(
+                &winit::event::MouseScrollDelta::LineDelta(0.0, -2.0),
+                winit::event::TouchPhase::Moved,
+                1.0,
+                &mut handled,
+            );
+            let scrolled = input.scroll_y;
+            assert!(
+                handled && scrolled > 0.0,
+                "the wheel scrolls a hovered field"
+            );
+            if shaped {
+                input.update_ml_scroll(0., 20., 1600.);
+            } else {
+                input.update_ml_body_scroll(20.);
+            }
+            assert_eq!(input.scroll_y, scrolled, "the next frame keeps the scroll");
+            input.set_focus(true);
+            input.set_focus(false);
+            if shaped {
+                input.update_ml_scroll(0., 20., 1600.);
+            } else {
+                input.update_ml_body_scroll(20.);
+            }
+            assert_eq!(input.scroll_y, 0.0, "a field left again shows its start");
+        }
+    }
+
     // Case `snapshot_scroll_opt_in_preserves_unfocused_shaped_and_body_views`.
     {
         for shaped in [false, true] {

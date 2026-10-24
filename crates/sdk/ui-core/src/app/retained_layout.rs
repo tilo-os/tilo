@@ -34,6 +34,7 @@ impl App {
     /// Right after a rebuild registered widgets in the maps, before any
     /// widget code runs: find each of them in the live tree.
     pub(super) fn admit_layout_maps(&mut self) {
+        self.layout.admissions = self.layout.admissions.wrapping_add(1);
         let mut maps = std::mem::take(&mut self.layout.adopted);
         // SAFETY: every pointer not yet adopted was registered by the build
         // that just ran on these trees, and no widget code ran since.

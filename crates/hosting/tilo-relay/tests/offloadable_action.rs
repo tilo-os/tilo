@@ -31,8 +31,8 @@ use tilo_clock::unix_now_ms;
 use tilo_relay::offload::{
     ComputePlacement, DeviceOffload, DeviceOffloadConfig, DeviceRevocations, LocalTransform,
     OffloadError, OffloadIdentity, OffloadJob, OffloadRelay, OffloadRoute, Offloader,
-    OffloaderParts, PlacementQuery, RanOn, RelayPlacement, SessionMedia, WorkspaceContent,
-    start_route,
+    OffloaderParts, PlacementQuery, RanOn, RelayPlacement, RoomMedia, RoomOffload, RoomPlacements,
+    RoomRelays, SessionMedia, WorkspaceContent, start_route,
 };
 use tilo_relay::{
     ComputeClient, ComputeEnvelope, ComputeJobBinding, ComputeJobPhase, ComputeOutputSource,
@@ -1386,6 +1386,155 @@ async fn a_session_route_started_from_its_home_relay_offloads_and_falls_back_tru
         panic!("a route that did not start places nothing elsewhere");
     };
     assert!(reason.contains("did not start"), "{reason}");
+    worker.stop();
+}
+
+/// The laptop's home-peer registry as the person changes it while its
+/// session runs: the relay registered as retaining the room, once it is.
+struct LiveRegistry {
+    relay: Mutex<Option<OffloadRelay>>,
+    identity: OffloadIdentity,
+}
+
+impl RoomPlacements for LiveRegistry {
+    fn resolve(&self, room: &str) -> Result<Option<RoomRelays>, String> {
+        if room != ROOM {
+            return Ok(None);
+        }
+        Ok(self.relay.lock().unwrap().clone().map(|relay| RoomRelays {
+            identity: self.identity.clone(),
+            workspace_id: WORKSPACE,
+            relays: vec![relay],
+        }))
+    }
+}
+
+/// The laptop session's route for every room, as a session builds it:
+/// each route it starts dials the relay for real over `media`, and
+/// `started` counts them.
+fn counting_room_offload(
+    placements: Arc<dyn RoomPlacements>,
+    media: Arc<dyn RoomMedia>,
+    package: package_store::InstalledPackage,
+    started: Arc<std::sync::atomic::AtomicUsize>,
+) -> RoomOffload {
+    let runtime = tokio::runtime::Handle::current();
+    RoomOffload::new(
+        placements,
+        Box::new(move |config: DeviceOffloadConfig| {
+            started.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let media = Arc::clone(&media);
+            let package = package.clone();
+            DeviceOffload::spawn(
+                config.trust(),
+                async move {
+                    start_route(
+                        config,
+                        client_endpoint().await,
+                        media,
+                        Arc::new(FixtureCatalogue(package)),
+                    )
+                    .await
+                },
+                &runtime,
+            )
+        }),
+        tokio::runtime::Handle::current(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_room_joined_after_the_session_started_is_offloaded_once_its_relay_is_registered() {
+    let user = TestUser::fresh("offload owner");
+    let relay_device = user.enrol("relay", DeviceCapabilities::host());
+    let relay_key = relay_device.device_pubkey();
+    let laptop = user.enrol("laptop", DeviceCapabilities::primary());
+    let laptop_key = laptop.device_pubkey();
+    let desktop = user.enrol("desktop", DeviceCapabilities::host());
+    let desktop_key = desktop.device_pubkey();
+    let relay = Box::pin(spawn_relay(
+        &user,
+        relay_device,
+        &[WORKSPACE],
+        &[laptop_key, desktop_key],
+    ))
+    .await;
+    let address = relay.relay.node_addr();
+    let root = tempfile::tempdir().unwrap();
+    let worker = thumbnail_worker(address.clone(), &user, relay_key, desktop, root.path()).await;
+
+    // The laptop's session started before it joined the room, and with no
+    // relay registered for it. Photos put the photographs in the room's
+    // media once it joined.
+    let store = Arc::new(fs::store::ContentStore::memory());
+    let media = DocumentMedia::new(Arc::clone(&store));
+    let scope = BlobScope::new(ROOM, PHOTOS).unwrap();
+    let photographs: Vec<Vec<u8>> = (0..3).map(photograph).collect();
+    let mut hashes = Vec::new();
+    for bytes in &photographs {
+        hashes.push(media.store(&scope, bytes.clone()).await.unwrap().to_hex());
+    }
+    let registry = Arc::new(LiveRegistry {
+        relay: Mutex::new(None),
+        identity: offload_identity(&user, &laptop),
+    });
+    let (laptop_package, _) = installed_package(&root.path().join("laptop"), PACKAGE, ENTRYPOINT);
+    let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let offload = counting_room_offload(
+        Arc::clone(&registry) as Arc<dyn RoomPlacements>,
+        media.clone(),
+        laptop_package,
+        Arc::clone(&started),
+    );
+
+    // No relay retains the room yet: Photos' handler runs here, and the
+    // door is told why. Nothing is dialled.
+    let request = make_thumbnails_request(&hashes);
+    let Offloaded::RunHere { reason } = offload.offload(request.clone()).await else {
+        panic!("no relay, no offload");
+    };
+    assert_eq!(reason, "no home relay of this device retains the room");
+    assert_eq!(started.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // The person registers the relay that retains the room. Without a new
+    // session, the room's next invocations go through a route to it — once
+    // it is up — and the door gets exactly what Photos' handler makes here.
+    *registry.relay.lock().unwrap() = Some(OffloadRelay {
+        address,
+        device: relay_key,
+    });
+    let app_content = tilo_content::ContentStore::memory();
+    for bytes in &photographs {
+        app_content.put(bytes).unwrap();
+    }
+    let here = photos::actions::make_thumbnails(&hashes, &app_content).unwrap();
+    let (output, device) = tilo_test_env::within("the later room's offloaded run", async {
+        loop {
+            match offload.offload(request.clone()).await {
+                Offloaded::Ran { output, device, .. } => break (output, device),
+                Offloaded::RunHere { reason } => {
+                    assert!(reason.contains("still starting"), "{reason}");
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    })
+    .await;
+    assert_eq!(device, hex::encode(desktop_key));
+    assert_eq!(output, here, "the same output, wherever it ran");
+    for resource in &output.resources {
+        let mut digest = [0; 32];
+        hex::decode_to_slice(tilo_actions::content_hash(resource).unwrap(), &mut digest).unwrap();
+        assert!(
+            media.contains(&scope, digest.into()).await,
+            "the room's media"
+        );
+    }
+    assert_eq!(
+        started.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "one route for the room, reused"
+    );
     worker.stop();
 }
 

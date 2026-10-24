@@ -72,6 +72,21 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-entry-card label { display: grid; gap: 6px; }
     .tilo-entry-card input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: inherit; }
     .tilo-entry-card .tilo-entry-error { margin: 0; color: #ff8a80; }
+    /* Who waits to join and the room's wait list (entry-page.mjs
+       `waitingCard`): a row each, the person or address, then its answers. */
+    .tilo-waiting { width: min(480px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
+    .tilo-waiting h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
+    .tilo-waiting h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #e6e6e9; }
+    .tilo-waiting ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+    .tilo-waiting li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid #2a2c32; }
+    .tilo-waiting li:first-child { border-top: 0; }
+    .tilo-waiting .tilo-waiting-who { display: grid; flex: 1; min-width: 0; color: #e6e6e9; }
+    .tilo-waiting .tilo-waiting-contact { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tilo-waiting time { font-size: 12px; color: #8f8f99; }
+    .tilo-waiting li button { flex: none; padding: 6px 12px; }
+    .tilo-waiting .tilo-waiting-none { color: #9b9ba3; }
+    .tilo-waiting section:empty { display: none; }
+    .tilo-waiting .tilo-waiting-note { margin: 0 0 8px; font-size: 13px; color: #9b9ba3; }
     /* Pairing a device: the link's sheet, the ask on the device that sent
        it, and the code a new device shows while it waits (entry-page.mjs). */
     .tilo-pair { width: min(400px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
@@ -114,25 +129,65 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-retry:focus-visible, #arrival-own:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
     [data-arrival=stopped][data-entry=refused][data-own-desktop] #arrival-own { display: block; }
-    /* Turned away for coming without an invitation: a door of its own,
-       one group centred a little above the middle (optically centred): the
-       mark, a heading, a line on how to get in, the field for the invite
-       link, and their own desktop under it. #status keeps the same words
-       for screen readers. */
+    /* Turned away for coming without an invitation: a door of its own
+       (entry-page.mjs `offerDoor`). One calm group, its top fixed a little
+       above the middle so nothing it reveals moves what is above: the mark,
+       a heading, one line, the wait list's field (or, without a wait list,
+       the invite link's), a quiet note under it; then signing in with an
+       identity the person already has, and an invite link behind a small
+       toggle. Trying Tilo on their own sits at the foot of the page.
+       #status keeps the words for screen readers. */
     #arrival-door { display: none; }
-    [data-arrival=stopped][data-entry=refused][data-invite-link] #arrival-door { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; justify-content: center; box-sizing: border-box; padding: 24px 24px 8vh; text-align: center; background: #121214; }
-    [data-invite-link] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-    #arrival-door > svg { display: block; margin-bottom: 20px; }
-    #arrival-door h1 { margin: 0 0 8px; font-size: 20px; font-weight: 600; line-height: 1.3; color: #ececf0; text-wrap: balance; }
-    #arrival-door > p { margin: 0 0 24px; max-width: 30em; line-height: 1.5; color: #a8a8b2; text-wrap: balance; }
-    #arrival-door #arrival-own { position: static; transform: none; margin-top: 4px; }
-    #arrival-invite { display: grid; width: min(26em, 100%); grid-template-columns: 1fr auto; gap: 8px; margin: 0; }
-    #arrival-invite input { min-width: 0; font: inherit; padding: 8px 10px; border-radius: 8px; border: 1px solid #3a3d44; background: #14161a; color: #e6e6e9; }
-    #arrival-invite input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; }
-    #arrival-invite button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
-    #arrival-invite button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
-    #arrival-invite-error { grid-column: 1 / -1; margin: 0; min-height: 1.5em; color: #ff8a80; text-align: center; }
-    [data-invite-link] #arrival-own { background: transparent; border: 1px solid #34363d; color: #d4d4d8; }
+    [data-arrival=stopped][data-entry=refused][data-door] #arrival-door { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
+    [data-door] #status { position: fixed; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    .door-main { display: flex; flex-direction: column; align-items: center; width: min(400px, 100%); }
+    .door-main > svg { display: block; margin-bottom: 24px; }
+    #arrival-door h1 { margin: 0 0 10px; font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em; color: #ececf0; text-wrap: balance; }
+    #arrival-door-body { margin: 0 0 28px; font-size: 15px; line-height: 1.5; color: #a8a8b2; text-wrap: balance; }
+    .door-field { display: grid; grid-template-columns: 1fr auto; gap: 8px; width: 100%; margin: 0; }
+    .door-field input { box-sizing: border-box; height: 40px; min-width: 0; font: inherit; font-size: 15px; padding: 0 12px; border-radius: 8px; border: 1px solid #3a3d44; background: #17181c; color: #ececf0; }
+    .door-field input::placeholder { color: #6c6c76; }
+    .door-field input:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 1px; border-color: transparent; }
+    .door-field input[aria-invalid=true] { border-color: #b4574f; }
+    .door-field button { box-sizing: border-box; height: 40px; font: inherit; font-size: 15px; font-weight: 500; padding: 0 16px; border-radius: 8px; border: 0; background: #f2f2f4; color: #121214; cursor: pointer; white-space: nowrap; }
+    .door-field button:hover { background: #ffffff; }
+    .door-field button:disabled { cursor: default; opacity: .6; }
+    .door-field button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    /* The wait list once it took the address: the same height as the field
+       it replaces. */
+    #arrival-wait-done { display: none; box-sizing: border-box; width: 100%; min-height: 40px; margin: 0; padding: 9px 12px; border-radius: 8px; background: #1a2a20; color: #cfe9d6; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+    [data-wait-listed] #arrival-wait { display: none; }
+    [data-wait-listed] #arrival-wait-done { display: block; }
+    .door-note { width: 100%; margin: 10px 0 0; min-height: 3em; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: pretty; }
+    .door-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+    .door-note a:hover { color: #c4c4cc; }
+    .door-note.door-problem, .door-problem { color: #ff8a80; }
+    .door-alt { width: 100%; margin: 20px 0 0; padding-top: 20px; border-top: 1px solid #23252a; }
+    .door-alt p { margin: 0; font-size: 14px; line-height: 1.5; color: #a8a8b2; }
+    .door-alt p + p { margin-top: 8px; }
+    .door-link { font: inherit; padding: 0; border: 0; background: none; color: #c9d3ff; cursor: pointer; text-decoration: underline; text-decoration-color: rgb(201 211 255 / 35%); text-underline-offset: 3px; }
+    .door-link:hover { color: #e4e9ff; text-decoration-color: currentColor; }
+    .door-link:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
+    .door-link:disabled { cursor: default; opacity: .6; }
+    #arrival-sign-in-note:empty, #arrival-invite-error:empty { display: none; }
+    #arrival-invite-toggle { font-size: 13px; color: #8f8f99; text-decoration-color: rgb(143 143 153 / 35%); }
+    #arrival-invite-toggle:hover { color: #c4c4cc; }
+    #arrival-invite { margin-top: 12px; }
+    #arrival-invite[hidden] { display: none; }
+    #arrival-invite-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; color: #ff8a80; text-align: center; }
+    /* A door without a wait list: the invite link is the way in, shown. */
+    [data-door=invite] #arrival-wait, [data-door=invite] #arrival-wait-note, [data-door=invite] #arrival-invite-toggle { display: none; }
+    [data-door=invite] #arrival-invite { margin-top: 0; }
+    [data-door=invite] .door-alt { margin-top: 24px; }
+    .door-foot { margin-top: auto; padding: 32px 0 24px; }
+    #arrival-door #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: #8f8f99; text-decoration: underline; text-decoration-color: rgb(143 143 153 / 35%); text-underline-offset: 3px; }
+    #arrival-door #arrival-own:hover { color: #c4c4cc; }
+    [data-own-desktop] #arrival-door #arrival-own { visibility: visible; }
+    @media (max-width: 480px) {
+      [data-arrival=stopped][data-entry=refused][data-door] #arrival-door { padding-top: max(32px, calc(42vh - 230px)); }
+      #arrival-door h1 { font-size: 20px; }
+      .door-field { grid-template-columns: 1fr; }
+    }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     .tilo-entry-card { z-index: 3; }
     /* A workspace that turned this browser away for good: only its card shows. */
@@ -151,7 +206,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
-  <section id="arrival-door" aria-labelledby="arrival-door-heading"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-invite"><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></section>
+  <section id="arrival-door" aria-labelledby="arrival-door-heading"><div class="door-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-wait" class="door-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-note" class="door-note"></p><div class="door-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="door-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="door-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><form id="arrival-invite" class="door-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="door-foot"></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">
     // A Tilo link under this entry: desktop mode. The route is in the

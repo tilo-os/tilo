@@ -872,6 +872,8 @@ pub struct BooksApp {
     // --- taffy / paint geometry -------------------------------------------
     rect: Rect,
     dirty: bool,
+    /// The settings' switches, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
 
     // --- view state (ephemeral, per-peer) ---------------------------------
     view: View,
@@ -1245,6 +1247,7 @@ impl BooksApp {
             open_failure: None,
             rect: Rect::ZERO,
             dirty: true,
+            faces: ui::widget::FaceMotions::default(),
             view: View::Library,
             book_idx: 0,
             chapter: 0,
@@ -5319,7 +5322,10 @@ impl Widget for BooksApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.flaps_animating()
+        self.dirty
+            || self.flaps_animating()
+            || self.faces.is_moving(ui::motion::frame_now())
+            || self.shelf_controls.is_moving()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
@@ -5329,11 +5335,13 @@ impl Widget for BooksApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep the loop pumping while a flap is mid-slide, a page turn is
         // easing in, or the floating page bubble is lingering/fading.
-        !self.reduce_motion
-            && (self.flaps_animating()
-                || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
-                || self.reader_bubble.needs_frame(ui::time::now())
-                || (self.view != View::Reader && self.awaiting_arrival()))
+        self.faces.is_moving(ui::motion::frame_now())
+            || self.shelf_controls.is_moving()
+            || (!self.reduce_motion
+                && (self.flaps_animating()
+                    || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
+                    || self.reader_bubble.needs_frame(ui::time::now())
+                    || (self.view != View::Reader && self.awaiting_arrival())))
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -6713,14 +6721,24 @@ impl BooksApp {
     }
 
     /// Draw a shared switch face and retain the app-specific action routing.
-    fn switch(&mut self, ctx: &mut PaintCtx<'_>, track: Rect, on: bool, action: Action) {
+    /// `key` names the switch, so it slides when a click turns it.
+    fn switch(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        key: impl std::hash::Hash,
+        track: Rect,
+        on: bool,
+        action: Action,
+    ) {
         let theme = ctx.theme;
         let hit = pointer_target(track, theme);
         Toggle::paint(
             ctx.scene,
             ctx.transform,
             theme,
-            &ToggleFace::new(track, on).hovered(hit.contains(self.cursor)),
+            &ToggleFace::new(track, on)
+                .pose(self.faces.switch(key, on, theme.motion()))
+                .hovered(hit.contains(self.cursor)),
         );
         self.push_hit(hit, action);
     }
@@ -6730,6 +6748,7 @@ impl BooksApp {
     fn switch_at(
         &mut self,
         ctx: &mut PaintCtx<'_>,
+        key: impl std::hash::Hash,
         x1: f64,
         cy: f64,
         on: bool,
@@ -6737,7 +6756,7 @@ impl BooksApp {
     ) -> Rect {
         let (w, h) = switch_size(ctx.theme);
         let track = Rect::new(x1 - w, cy - h / 2.0, x1, cy + h / 2.0);
-        self.switch(ctx, track, on, action);
+        self.switch(ctx, key, track, on, action);
         track
     }
 }

@@ -991,6 +991,8 @@ impl VideoEditorApp {
                 rect,
                 "Play backwards",
                 clip.speed.reverse,
+                self.faces
+                    .switch((clip.id, "reverse"), clip.speed.reverse, theme.motion()),
                 rect.contains(self.last_mouse),
             );
         }
@@ -1071,6 +1073,8 @@ impl VideoEditorApp {
                 rect,
                 "Key a colour out",
                 clip.key.enabled,
+                self.faces
+                    .switch((clip.id, "key"), clip.key.enabled, theme.motion()),
                 rect.contains(self.last_mouse),
             );
         }
@@ -1153,6 +1157,8 @@ impl VideoEditorApp {
                 rect,
                 "Invert",
                 clip.mask.invert,
+                self.faces
+                    .switch((clip.id, "mask-invert"), clip.mask.invert, theme.motion()),
                 rect.contains(self.last_mouse),
             );
         }

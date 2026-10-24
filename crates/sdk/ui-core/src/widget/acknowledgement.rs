@@ -13,9 +13,9 @@
 //!   pill.
 //! - It is a polite live region, so a screen reader says it once, after
 //!   what it is already saying.
-//! - It holds for [`ACKNOWLEDGEMENT_HOLD`], the last [`ACKNOWLEDGEMENT_FADE`]
-//!   of that fading out. With reduced motion it disappears without the
-//!   fade.
+//! - It holds for [`ACKNOWLEDGEMENT_HOLD`], the end of that fading out on
+//!   the standard confirmation's exit (`motion::Transient::CONFIRMATION`).
+//!   With reduced motion it disappears without the fade.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -36,11 +36,6 @@ use vello::peniko::{BlendMode, Fill};
 /// How long an acknowledgement stays: enough to read two or three words
 /// after the action, short enough to be gone before the next one.
 pub const ACKNOWLEDGEMENT_HOLD: Duration = Duration::from_millis(1_500);
-
-/// The fade at the end of [`ACKNOWLEDGEMENT_HOLD`]: the standard
-/// confirmation's exit (`motion::Transient::CONFIRMATION`), the token
-/// `durations.base`.
-pub const ACKNOWLEDGEMENT_FADE: Duration = Duration::from_millis(210);
 
 /// The motion a host allows, from its reduced-motion setting.
 fn motion_for(reduce_motion: bool) -> crate::tokens::EffectiveMotion {
@@ -402,7 +397,13 @@ mod tests {
         let ack = Acknowledgement::new("Link copied", start);
         assert_eq!(
             ack.next_wake_at(start, false),
-            Some(start + ACKNOWLEDGEMENT_HOLD - ACKNOWLEDGEMENT_FADE)
+            Some(
+                start + ACKNOWLEDGEMENT_HOLD
+                    - crate::motion::Transient::exit_time(
+                        crate::motion::Transient::CONFIRMATION,
+                        motion_for(false),
+                    )
+            )
         );
         assert_eq!(
             ack.next_wake_at(at(start, 1_300), false),

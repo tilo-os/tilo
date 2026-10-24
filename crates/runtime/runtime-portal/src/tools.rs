@@ -365,7 +365,8 @@ impl ToolIntent {
     /// contextual surface.
     pub fn package_id(&self) -> Option<&'static str> {
         match self {
-            Self::Vpn { .. } => Some("so.tilo.vpn"),
+            // VPN lives in Settings → Network.
+            Self::Vpn { .. } => Some("so.tilo.settings"),
             Self::Firewall { .. } => Some("so.tilo.firewall"),
             Self::Disks { .. } => Some("so.tilo.disks"),
             Self::Backups { .. } => Some("so.tilo.backups"),

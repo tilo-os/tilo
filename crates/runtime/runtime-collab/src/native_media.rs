@@ -283,6 +283,9 @@ pub enum Issue {
     ScreenDenied,
     /// Sharing the screen could not start, or stopped.
     ScreenLost,
+    /// This device cannot take part in calls at all (a browser without
+    /// the WebTransport the call's carrier needs): no retry helps.
+    Unsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -403,6 +406,10 @@ pub struct Roster {
     /// Those of `people` who share a screen, sorted and distinct.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub screens: Vec<String>,
+    /// Those of `people` whose microphone is off, sorted and distinct;
+    /// someone who may not speak in the call counts as muted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub muted: Vec<String>,
     /// The people a bridge carries into the call from another service,
     /// sorted by id and distinct: each shown as themselves, reached
     /// through their service.
@@ -493,6 +500,7 @@ impl Roster {
             && people_valid(&self.people)
             && among(&self.cameras)
             && among(&self.screens)
+            && among(&self.muted)
             && self
                 .guests
                 .iter()

@@ -60,11 +60,11 @@ fi
 
 # The imager's native syscall tests need a cache on a qualified filesystem
 # (ext4, XFS or Btrfs), never an overlay or tmpfs: the build directory where it
-# is one, else the job's scratch TMPDIR (t mounts the build directory as an
-# overlay when it stacks it on earlier builds).
+# is one, else the job's scratch TMPDIR, else /var/tmp, which t keeps on the
+# node's volume itself (it mounts the build directory and /tmp as overlays).
 if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
     qualified() { case $(stat -f -c %t "$1") in ef53|58465342|9123683e) return 0 ;; esac; return 1; }
-    for candidate in "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs"; do
+    for candidate in "${CARGO_TARGET_DIR:-$root/target}/ci/imager-test-fs" "${TMPDIR:-/tmp}/imager-test-fs" /var/tmp/imager-test-fs; do
         mkdir -p "$candidate"
         chmod 700 "$candidate"
         if qualified "$candidate"; then
@@ -73,7 +73,7 @@ if tests imager && [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
         fi
     done
     if [[ -z ${TILO_IMAGER_TEST_CACHE_ROOT:-} ]]; then
-        echo "t-nextest.sh: neither the build directory nor TMPDIR is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
+        echo "t-nextest.sh: none of the build directory, TMPDIR and /var/tmp is on ext4, XFS or Btrfs, which the imager's cache tests need" >&2
         exit 1
     fi
 fi

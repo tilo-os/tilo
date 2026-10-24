@@ -10938,6 +10938,7 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bounded-command",
  "getrandom 0.4.3",
  "libc",
@@ -10954,6 +10955,7 @@ dependencies = [
  "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-seal",
  "tilo-test-env",
  "tracing",
  "uuid",
@@ -14962,6 +14964,7 @@ dependencies = [
  "tilo-desktop-entry",
  "tilo-desktop-model",
  "tilo-desktop-search",
+ "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-doc",
  "tilo-doc-codecs",
@@ -17713,6 +17716,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-device-vpn"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "iroh",
+ "libc",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-seat-peer",
+ "tilo-test-env",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-dialogs"
 version = "0.1.0"
 dependencies = [
@@ -18876,6 +18897,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-sandbox-core",
+ "tilo-seat-peer",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -19836,6 +19858,15 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-seat-peer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
  "workspace-hack",
 ]
 
@@ -22366,28 +22397,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "vpn"
-version = "0.1.0"
-dependencies = [
- "bounded-command",
- "os-actions",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-history",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "uuid",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]

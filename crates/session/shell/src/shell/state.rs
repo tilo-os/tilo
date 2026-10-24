@@ -3192,7 +3192,7 @@ impl WorkspaceTree {
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
-        let actions = crate::shell::launcher::action_authority::Export::of(self);
+        let actions = crate::shell::action_authority::Export::of(self);
         let failure = actions.failure_handle();
         match (&self.persist_path, export) {
             (Some(path), export) => {

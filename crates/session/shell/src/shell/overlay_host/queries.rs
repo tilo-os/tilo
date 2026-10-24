@@ -79,6 +79,11 @@ impl ShellOverlayHost {
 
     /// The laid-out window group showing `tab` in front.
     pub(super) fn asking_window(&self, tab: crate::shell::state::TabId) -> Option<AskingWindow> {
+        // Whether its window has the keyboard: the focused tab, where keys
+        // go. Not the group's accent, which a lone window never shows.
+        let focused = self.chrome.as_ref().is_some_and(|chrome| {
+            crate::shell::window_actions::active_tab_id(&chrome.borrow()) == Some(tab)
+        });
         self.group_row_ptrs.iter().find_map(|(&strip, &ptr)| {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &GroupRow = unsafe { &*ptr };
@@ -93,7 +98,7 @@ impl ShellOverlayHost {
                 group: group.id,
                 window,
                 content,
-                focused: group.focused,
+                focused,
             })
         })
     }
@@ -537,6 +542,55 @@ impl ShellOverlayHost {
 
     pub(crate) fn palette_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.palette.ime_edit_fingerprint(key)
+    }
+
+    /// Whether one of the shell's password prompts is up and takes the
+    /// keyboard: the compositor's sheet, modal over everything, or Quick
+    /// Settings' Wi-Fi prompt. Its field takes the input method.
+    pub fn shell_prompt_up(&self) -> bool {
+        self.portal_prompt_up() || self.wifi_password_prompt_up()
+    }
+
+    fn portal_prompt_up(&self) -> bool {
+        self.portal_dialogs.view().is_some() && self.portal_dialogs.prompt().is_some()
+    }
+
+    /// The password prompt that is up, as the input method and the
+    /// on-screen keyboard see it.
+    fn shell_prompt(&self) -> Option<&ui::widget::SecretPrompt> {
+        if self.portal_prompt_up() {
+            self.portal_dialogs.prompt()
+        } else {
+            self.wifi_password_prompt_up().then_some(&self.wifi_prompt)
+        }
+    }
+
+    /// Whether the input method serves an overlay's own field — the
+    /// palette's, or a password prompt's — rather than the focused node's.
+    pub fn overlay_owns_ime(&self) -> bool {
+        self.palette_visible || self.shell_prompt_up()
+    }
+
+    /// The overlay field the input method serves ([`Self::overlay_owns_ime`]).
+    pub fn overlay_ime_field(&self) -> Option<ui::ime::ImeWindowState> {
+        if self.palette_visible {
+            return self.palette_ime_field();
+        }
+        self.shell_prompt()
+            .and_then(|prompt| ui::ime::ImeWindowState::from_widget(prompt))
+    }
+
+    pub(crate) fn overlay_ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
+        if self.palette_visible {
+            return self.palette_ime_edit_fingerprint(key);
+        }
+        self.shell_prompt()?.ime_edit_fingerprint(key)
+    }
+
+    /// Where the on-screen keyboard covers the desktop, so a password
+    /// prompt stays above it.
+    pub fn set_keyboard_cover(&mut self, cover: Option<Rect>) {
+        self.portal_dialogs.set_keyboard_cover(cover);
     }
 
     /// Force-set the palette visibility, so headless harnesses can drive

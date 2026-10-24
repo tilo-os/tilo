@@ -391,6 +391,26 @@ tree-move-outdent = Move out of the parent item
 text-input-show-password = Show password
 text-input-hide-password = Hide password
 
+# The password prompt every secret in Tilo is asked by.
+secret-prompt-continue = Continue
+secret-prompt-cancel = Cancel
+secret-prompt-username = User name
+secret-prompt-password = Password
+secret-prompt-pin = PIN
+secret-prompt-puk = PUK
+secret-prompt-new-pin = New PIN
+secret-prompt-confirm-pin = Confirm new PIN
+secret-prompt-caps-lock = Caps Lock is on
+secret-prompt-pin-length = { $min } to { $max } digits
+secret-prompt-pin-length-exact = { $count } digits
+secret-prompt-attempts-left = { $count ->
+    [one] One attempt left
+   *[other] { $count } attempts left
+}
+secret-prompt-pins-differ = The new PINs don’t match
+secret-prompt-keypad-delete = Delete
+secret-prompt-keypad-enter = Done
+
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Welcome back
 
@@ -857,3 +877,10 @@ text-menu-numbered-list = Numbered list
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = Open { $label }
+
+# A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
+signal-meter-unknown = Signal strength unknown
+signal-meter-weak = Weak signal
+signal-meter-fair = Fair signal
+signal-meter-good = Good signal
+signal-meter-strong = Strong signal

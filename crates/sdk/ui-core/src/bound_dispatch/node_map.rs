@@ -19,6 +19,36 @@ pub struct BoundNodeMap {
     // owner/lifetime + local node, never once per redraw or tree rebuild.
     pub(super) a11y_aliases: a11y_owner::OwnerAliases,
 }
+/// A node to admit, with the binding, legacy owner and inactivity it inherits.
+type PendingAdmission = (
+    NodeId,
+    Option<CallbackBinding>,
+    Option<crate::history_mode::HistoryOwner>,
+    bool,
+);
+
+/// The legacy-owner and inactive callback boundaries widgets declare.
+#[derive(Default)]
+struct Boundaries {
+    legacy: HashMap<NodeId, crate::history_mode::HistoryOwner>,
+    inactive: std::collections::HashSet<NodeId>,
+}
+
+impl Boundaries {
+    /// Add the boundaries `widget` and its descendants declare.
+    fn collect(&mut self, widget: &dyn Widget) {
+        if let Some(node) = widget.inactive_callback_boundary() {
+            self.inactive.insert(node);
+        }
+        if let Some((node, owner)) = widget.legacy_callback_boundary() {
+            self.legacy.insert(node, owner);
+        }
+        for child in widget.children() {
+            self.collect(child);
+        }
+    }
+}
+
 impl BoundNodeMap {
     /// Read the nearest canonical record owner's document and history stamp.
     /// Local writes, remote merges and undo/redo invalidate it, including an
@@ -68,6 +98,12 @@ impl BoundNodeMap {
             .get(&node)
             .filter(|node| !node.inactive)
             .and_then(|node| node.binding.clone())
+    }
+    /// Whether `node` was admitted inside a bound component or a legacy tile.
+    pub(crate) fn has_owner(&self, node: NodeId) -> bool {
+        self.nodes
+            .get(&node)
+            .is_some_and(|entry| entry.binding.is_some() || entry.legacy.is_some())
     }
     pub(crate) fn legacy_for(&self, node: NodeId) -> Option<crate::history_mode::HistoryOwner> {
         self.nodes.get(&node).and_then(|entry| entry.legacy.clone())
@@ -158,37 +194,85 @@ impl BoundNodeMap {
         taffy: &TaffyTree<()>,
         nodes: &HashMap<NodeId, *mut dyn Widget>,
     ) {
-        fn collect(
-            widget: &dyn Widget,
-            boundaries: &mut HashMap<NodeId, crate::history_mode::HistoryOwner>,
-            inactive: &mut std::collections::HashSet<NodeId>,
-        ) {
-            if let Some(node) = widget.inactive_callback_boundary() {
-                inactive.insert(node);
-            }
-            if let Some((node, owner)) = widget.legacy_callback_boundary() {
-                boundaries.insert(node, owner);
-            }
-            for child in widget.children() {
-                collect(child, boundaries, inactive);
-            }
-        }
         self.clear();
-        let mut boundaries = HashMap::new();
-        let mut inactive_boundaries = std::collections::HashSet::new();
+        let mut boundaries = Boundaries::default();
         for (root, _) in roots {
-            collect(*root, &mut boundaries, &mut inactive_boundaries);
+            boundaries.collect(*root);
         }
         if let Some(retained) = retained {
-            collect(retained, &mut boundaries, &mut inactive_boundaries);
+            boundaries.collect(retained);
         }
-        let mut pending: Vec<_> = roots
+        let pending: Vec<_> = roots
             .iter()
             .map(|(root, layout_root)| (*layout_root, root.callback_binding(), None, false))
             .collect();
+        // SAFETY: the caller owns all supplied roots and layout pointers.
+        unsafe { self.admit(pending, &boundaries, taffy, nodes) };
+    }
+
+    /// Admit the subtree at `child`, which the widget at `parent` mounted in
+    /// place ([`crate::widget::Remount`]), as a rebuild would: under the
+    /// binding, legacy owner and inactivity `parent` was admitted with, and
+    /// the boundaries the subtree's own widgets declare. Returns `false`
+    /// when `parent` or `child` is not admitted, and the host rebuilds.
+    ///
+    /// # Safety
+    /// As [`Self::rebuild`]: the tree, the maps and every pointer belong to
+    /// one live build under one exclusive owner.
+    pub(crate) unsafe fn admit_mounted(
+        &mut self,
+        parent: NodeId,
+        child: NodeId,
+        taffy: &TaffyTree<()>,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+    ) -> bool {
+        let Some(entry) = self.nodes.get(&parent) else {
+            return false;
+        };
+        let inherited = (entry.binding.clone(), entry.legacy.clone(), entry.inactive);
+        let Some(&pointer) = nodes.get(&child) else {
+            return false;
+        };
+        let mut boundaries = Boundaries::default();
+        // SAFETY: the caller guarantees every admitted pointer is live.
+        boundaries.collect(unsafe { &*pointer });
+        // Its layout parent may be a structural node under `parent`.
+        self.parents
+            .insert(child, taffy.parent(child).unwrap_or(parent));
+        let (binding, legacy, inactive) = inherited;
+        // SAFETY: forwarded from the caller.
+        unsafe {
+            self.admit(
+                vec![(child, binding, legacy, inactive)],
+                &boundaries,
+                taffy,
+                nodes,
+            );
+        }
+        true
+    }
+
+    /// Forget `removed`, nodes a widget unmounted in place
+    /// ([`crate::widget::Remount`]).
+    pub(crate) fn forget(&mut self, removed: &[NodeId]) {
+        for node in removed {
+            self.nodes.remove(node);
+            self.parents.remove(node);
+        }
+    }
+
+    /// Admit each pending node and everything under it, inheriting its
+    /// binding, legacy owner and inactivity down the layout tree.
+    unsafe fn admit(
+        &mut self,
+        mut pending: Vec<PendingAdmission>,
+        boundaries: &Boundaries,
+        taffy: &TaffyTree<()>,
+        nodes: &HashMap<NodeId, *mut dyn Widget>,
+    ) {
         while let Some((node, inherited, inherited_legacy, inherited_inactive)) = pending.pop() {
-            let inactive = inherited_inactive || inactive_boundaries.contains(&node);
-            let mut legacy = boundaries.get(&node).cloned().or(inherited_legacy);
+            let inactive = inherited_inactive || boundaries.inactive.contains(&node);
+            let mut legacy = boundaries.legacy.get(&node).cloned().or(inherited_legacy);
             let binding = if let Some(&pointer) = nodes.get(&node) {
                 // SAFETY: rebuild's owner guarantees all admitted pointers are live.
                 let widget = unsafe { &*pointer };

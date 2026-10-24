@@ -496,18 +496,32 @@ impl Unopened {
         route: &DocumentRoute,
         replica: &crate::worker::ConfinedReplica,
     ) -> Option<Arc<str>> {
-        replica.read(|doc| {
-            let stats = doc.stats();
-            let stamp = Stamp::Open(stats.num_changes, stats.num_ops);
-            match self.texts.get(route) {
-                Some((at, text)) if *at == stamp => Arc::clone(text),
-                _ => {
-                    let text: Arc<str> = crate::search::plain_text(doc).into();
-                    self.texts.insert(route.clone(), (stamp, Arc::clone(&text)));
-                    text
-                }
+        replica.read(|doc| self.held_text(route, doc))
+    }
+
+    /// The plain text of the part at `route`, held beside its open record
+    /// in `holder` ([`super::parts`]), read again only once it changed.
+    /// `None` when `holder` does not hold it.
+    pub(super) fn part_text(
+        &mut self,
+        route: &DocumentRoute,
+        holder: &crate::worker::ConfinedReplica,
+    ) -> Option<Arc<str>> {
+        let record = ui::record::RecordId::parse(&route.record)?;
+        holder.read_record(&record, |doc| self.held_text(route, doc))
+    }
+
+    fn held_text(&mut self, route: &DocumentRoute, doc: &AutoCommit) -> Arc<str> {
+        let stats = doc.stats();
+        let stamp = Stamp::Open(stats.num_changes, stats.num_ops);
+        match self.texts.get(route) {
+            Some((at, text)) if *at == stamp => Arc::clone(text),
+            _ => {
+                let text: Arc<str> = crate::search::plain_text(doc).into();
+                self.texts.insert(route.clone(), (stamp, Arc::clone(&text)));
+                text
             }
-        })
+        }
     }
 
     /// How many changes the unopened record at `route` holds, counted once

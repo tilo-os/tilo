@@ -77,6 +77,7 @@ mod task_import;
 mod top_bar_reveal;
 mod widget;
 mod window_toolbars;
+mod workspace_slide;
 
 pub use controller::{ControllerDelivery, ControllerKey};
 use layers::{
@@ -122,7 +123,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
-    PermissionPrompt, PromptChoice, TextInput, Widget, WindowGroup as UiWindowGroup,
+    PermissionPrompt, PromptChoice, SecretPrompt, TextInput, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -245,6 +246,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+use palette_search::LaunchpadMark;
 mod peer_sync;
 mod portal_prompts;
 mod projection;
@@ -488,6 +490,9 @@ pub struct ShellOverlayHost {
     /// The content of workspaces shown recently, kept while another one is
     /// `content` so a switch back puts it back instead of building it again.
     parked_workspaces: parked_workspaces::ParkedWorkspaces,
+    /// The pointer-made workspace switch moving between the content kept
+    /// for the workspace shown before and the content shown now.
+    workspace_slide: Option<workspace_slide::WorkspaceSlide>,
     /// Trusted first-login chrome. While present it is the entire root
     /// surface: desktop content, launch affordances, and every other overlay
     /// stay unreachable until a real identity has been provisioned and the
@@ -563,6 +568,9 @@ pub struct ShellOverlayHost {
     /// A launchpad app card awaiting the Applications index; see
     /// [`Self::retry_pending_launchpad_app`].
     pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Where the widget document stood when the launchpad harvest last found
+    /// no request in it; see [`Self::settle_launchpad`].
+    launchpad_quiet_at: Option<LaunchpadMark>,
     /// Launchpad cards' app actions awaiting admission; see
     /// [`Self::poll_pending_launchpad_actions`].
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,
@@ -738,6 +746,9 @@ pub struct ShellOverlayHost {
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::motion::Presence,
+    /// The checkboxes the shell's own sheets paint, filling as a click
+    /// checks them.
+    faces: ui::widget::FaceMotions,
     /// Per-strip raw pointers to the [`GroupRow`] widgets inside
     /// `content`, so the per-frame reconcilers reach them without
     /// downcasting `&dyn Widget`. Empty until
@@ -960,6 +971,12 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// Who is here arriving from the bar and leaving (`motion::Appear`).
+    collaborators_appearing: ui::motion::Appearing,
+    /// The roster as it was last painted at rest, and its panel: what is
+    /// drawn arriving, and leaving once it is closed.
+    collaborators_painted: Scene,
+    collaborators_painted_panel: Rect,
     /// Roster id whose recent summary People shows. Local view state: the
     /// same person stays expanded as the roster reorders.
     expanded_collaborator: Option<String>,
@@ -1011,6 +1028,9 @@ pub struct ShellOverlayHost {
     /// The question about one of the person's apps on screen, "Uninstall
     /// <name>?" or "Add <name> to apps?" ([`app_sheets`]).
     app_sheet: Option<app_sheets::AppSheet>,
+    /// The question just answered, drawn leaving until it has gone; it
+    /// takes no input.
+    app_sheet_leaving: Option<app_sheets::AppSheet>,
     /// The sheet's window node and its own, while it is laid out.
     app_sheet_nodes: Option<(NodeId, NodeId)>,
     /// The sheet opened or closed since the tree was last built.
@@ -1047,10 +1067,10 @@ pub struct ShellOverlayHost {
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
-    /// The Wi-Fi join prompt's passphrase field — the only place the
+    /// The Wi-Fi join prompt — its passphrase field is the only place the
     /// passphrase lives — and the prompt (`WifiPasswordPrompt::id`) it is
     /// typed for.
-    wifi_password_input: TextInput,
+    wifi_prompt: SecretPrompt,
     wifi_password_prompt: Option<u64>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.
@@ -1668,6 +1688,8 @@ fn active_tab_provider_id(
 /// an optional detail in secondary ink, the row lifted while focused.
 struct CheckRow<'a> {
     checked: bool,
+    /// Where the box's fill and mark are this frame.
+    pose: ui::widget::CheckPose,
     label: &'a str,
     detail: Option<&'a str>,
     focused: bool,
@@ -1697,7 +1719,7 @@ fn draw_check_row(
         scene,
         transform,
         theme,
-        &ui::widget::CheckboxFace::new(check, row.checked),
+        &ui::widget::CheckboxFace::new(check, row.checked).pose(row.pose),
     );
     let style = theme.text(TextRole::Body);
     let x = check.x1 + pad;
@@ -1819,6 +1841,12 @@ mod parked_workspaces_tests;
 #[cfg(test)]
 #[path = "capture_tool_tests.rs"]
 mod capture_tool_tests;
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+mod people_motion_tests;
 
 #[cfg(test)]
 #[allow(

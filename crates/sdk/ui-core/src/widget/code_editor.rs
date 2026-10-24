@@ -626,6 +626,27 @@ impl Widget for CodeEditor {
         self.draw_diagnostic_hover(scene, transform, text_renderer, theme, presence);
     }
 
+    /// The field's: the editor is its field and the diagnostics it marks.
+    fn needs_redraw(&self) -> bool {
+        Widget::needs_redraw(&self.inner)
+    }
+
+    /// The field's damage, as this widget's: a scroll is offered as a copy,
+    /// the lines and marks (the diagnostics among them) that changed
+    /// repaint where they were and are.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.inner.collect_damage_for(self, regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        Widget::mark_drawn(&mut self.inner);
+    }
+
+    /// The field's glide after the fingers lifted.
+    fn needs_animation_frame(&self) -> bool {
+        Widget::needs_animation_frame(&self.inner)
+    }
+
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.hover = Some(ctx.logical(position));

@@ -868,6 +868,20 @@ impl ProtocolHandler for DeviceUnlockProtocol {
     }
 }
 
+/// Another of the person's devices routing through this one; the exit
+/// decides whether it may (`crate::shell::device_vpn`).
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct DeviceVpnProtocol;
+
+#[cfg(target_os = "linux")]
+impl ProtocolHandler for DeviceVpnProtocol {
+    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
+        tokio::spawn(crate::shell::device_vpn::serve_connection(connection));
+        Ok(())
+    }
+}
+
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -4239,6 +4253,8 @@ async fn run(
             },
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
+    #[cfg(target_os = "linux")]
+    let router = router.accept(device_vpn::tunnel::ALPN, DeviceVpnProtocol);
     // Answered only where this device may govern rooms; a dial elsewhere
     // finds no such protocol, as at any device that governs none.
     let router = match governing {

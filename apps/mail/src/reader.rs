@@ -1368,8 +1368,10 @@ impl MessageReader {
         } else {
             offset
         };
+        // A find's match glides into view, or fades in when far
+        // (`ScrollRegion::glide_to`).
         self.region
-            .set_offset(Vec2::new(0.0, target.clamp(0.0, self.scroll_max)));
+            .glide_to(Vec2::new(0.0, target.clamp(0.0, self.scroll_max)));
         self.dirty = true;
     }
 
@@ -1574,6 +1576,12 @@ impl Widget for MessageReader {
                 .bodies
                 .values()
                 .any(|body| body.input.needs_animation_frame())
+    }
+
+    /// A glide after a flick scrolls the message as the wheel does.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.dirty |= self.region.advance();
+        false
     }
 
     /// An HTML message still on its way to the screen.

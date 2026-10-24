@@ -1192,17 +1192,27 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # The keyboard focus order of a long framework list: the framework-scaling
 # example (`focus` mode) mounts every row of a 500, 1,000 and 2,500 item
 # checklist (about four widgets an item), through adapters.py framework-focus
-# in the render job. Recomputing the order is one pass over the layout: on an
-# M5 Max 0.26 ms at 500 items (natively and in the test harness), 0.54-0.60 ms
-# at 1,000 and 2.0-2.3 ms at 2,500 (from 0.29-0.33, 0.70-0.83 and 1.9-2.4 ms
-# when the History-owned sort and its capture filter re-walked History per
-# node; about 25 ms at 500 when every node re-enumerated History). The 500 item
-# recomputations are enforced at 2 ms p95, far under what a per-node walk costs
-# and well over a slower runner's single pass; the 0.3 ms at 2,000 widgets and
-# 1.5 ms at 10,000 targets are reported. Adding one item through an agent call
-# is reported against a 16 ms frame: 8.9 / 17.7 / 240 ms at 500 / 1,000 /
-# 2,500 items (from 25 / 82 / 619 ms, when recovering focus after the rebuild
-# asked History about every node), most of it now layout and text shaping.
+# in the render job. Recomputing the order is one pass over the layout that
+# reads each widget's `accessibility_hidden` instead of building its
+# accessibility node: on an M5 Max (release, thin LTO) 0.26-0.28 / 0.58-0.63 /
+# 1.8-1.9 ms at 500 / 1,000 / 2,500 items in the test harness and 0.24 / 0.58-
+# 0.63 / 1.75-1.8 ms in the live window (from 0.37-0.42 / 0.84-0.88 / 2.7 and
+# 0.34 / 0.69-0.75 / 2.5 ms when every text and checkbox resolved its
+# translated name to say whether it was hidden; about 25 ms at 500 when every
+# node re-enumerated History). The harness figure is its `focus_order` walk
+# after each added item: it no longer walks the order inside a call while
+# nothing can trap focus. The shared x86_64 runner takes two to three times as
+# long (0.54-0.66 / 1.55-1.59 / 5.5-6.3 ms, its p95 at 500 items up to 1.5 ms), so
+# the 500 item recomputations stay enforced at 2 ms p95, far under what a
+# per-node walk costs; the 1,000 and 2,500 item figures are reported.
+#
+# Adding one item through an agent call targets a 16 ms frame at 1,000
+# items: 4.6 / 9.4 / 27 ms at 500 / 1,000 / 2,500 items on an M5 Max (from
+# 8.6-10.5 / 17.6-19.6 / 179-185 ms, when every added row rebuilt the window's
+# layout tree and laid every row out again because rows took the list's
+# height as their available space). The shared x86_64 runner takes 13 / 31 /
+# 109 ms, so every figure is reported: enforcing the frame there would fail
+# every run, and the relative rule guards each against regressions.
 
 [kpi."render.framework_focus.recompute_ms.500"]
 unit = "ms"
@@ -1227,7 +1237,7 @@ unit = "ms"
 p50 = 0.6
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 0.2
+min_delta = 0.1
 source = "framework-scaling focus, one focus-order recomputation in the test harness, 1,000 items (reported)"
 
 [kpi."render.framework_focus.native_recompute_ms.1k"]
@@ -1235,7 +1245,7 @@ unit = "ms"
 p50 = 0.6
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 0.2
+min_delta = 0.1
 source = "framework-scaling focus, one focus-order recomputation of the live window, 1,000 items (reported)"
 
 [kpi."render.framework_focus.recompute_ms.2500"]
@@ -1243,7 +1253,7 @@ unit = "ms"
 p50 = 1.5
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 0.5
+min_delta = 0.2
 source = "framework-scaling focus, one focus-order recomputation in the test harness, 2,500 items (about 10,000 widgets; reported)"
 
 [kpi."render.framework_focus.native_recompute_ms.2500"]
@@ -1251,15 +1261,15 @@ unit = "ms"
 p50 = 1.5
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 0.5
+min_delta = 0.2
 source = "framework-scaling focus, one focus-order recomputation of the live window, 2,500 items (about 10,000 widgets; reported)"
 
 [kpi."render.framework_focus.add_item_ms.500"]
 unit = "ms"
-p50 = 16.0
+p50 = 6.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 2.0
+min_delta = 1.0
 source = "framework-scaling focus, an agent call adding one item end to end, 500 items (reported)"
 
 [kpi."render.framework_focus.add_item_ms.1k"]
@@ -1267,15 +1277,15 @@ unit = "ms"
 p50 = 16.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 4.0
-source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (reported)"
+min_delta = 2.0
+source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (one 16 ms frame; reported)"
 
 [kpi."render.framework_focus.add_item_ms.2500"]
 unit = "ms"
 p50 = 16.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
-min_delta = 40.0
+min_delta = 4.0
 source = "framework-scaling focus, an agent call adding one item end to end, 2,500 items (reported)"
 
 # Notes input latency: the notes-latency example

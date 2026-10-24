@@ -107,7 +107,7 @@ can change without editing its callers.
 | An app's controls are its window bar's slots: it draws no toolbar or header row of its own under the bar, no History or Back of its own, and no search, filter or find field: the window bar's search is the only search entry (a query view of the app's resources, a narrowed list, a find). | Check: [`check_app_toolbars.py`](../tools/policy/check_app_toolbars.py) (ratchet). The [baseline](../tools/policy/app_toolbars_baseline.txt) only shrinks; a reasoned `// window-bar:` comment exempts a line (see Exceptions) |
 | Apps compose `ui` text widgets; shaping and glyph emission stay private to `ui`. | Check: [`check_app_text_contract.py`](../tools/policy/check_app_text_contract.py) |
 | The shared desktop crates reach no compositor, transport or host stack. | Check: [`check_desktop_model_dependencies.py`](../tools/policy/check_desktop_model_dependencies.py) |
-| Shell layers: the shell's service modules (workspace model, persistence, collaboration broker, network bridge, identity broker, runtime host) reach no compositor, chrome, launcher, overlay or renderer code; crates carved out of the shell depend on neither the shell nor the toolkit or a renderer; no new crate depends on the shell, and the shell gains no dependency unnoticed. Rendering and state stay decoupled, and each extraction from the shell has no new edge to undo first. | Check: [`check_shell_layers.py`](../tools/policy/check_shell_layers.py) (ratchet), reading `use` trees and `Cargo.toml` only. The [baseline](../tools/policy/shell_layers_baseline.toml) only shrinks: a removed edge or dependency fails until its line goes (`--write-baseline` drops it). A new shell dependency is a reasoned `[shell_dependencies.added]` entry; a new extracted crate is a line in `[extracted]` |
+| Shell layers: the shell's service modules (workspace model, persistence, action-policy publication, collaboration broker, network bridge, identity broker, runtime host) reach no compositor, chrome, launcher, overlay or renderer code; crates carved out of the shell depend on neither the shell nor the toolkit or a renderer; no new crate depends on the shell, and the shell gains no dependency unnoticed. Rendering and state stay decoupled, and each extraction from the shell has no new edge to undo first. | Check: [`check_shell_layers.py`](../tools/policy/check_shell_layers.py) (ratchet), reading `use` trees and `Cargo.toml` only. The [baseline](../tools/policy/shell_layers_baseline.toml) only shrinks: a removed edge or dependency fails until its line goes (`--write-baseline` drops it). A new shell dependency is a reasoned `[shell_dependencies.added]` entry; a new extracted crate is a line in `[extracted]` |
 | The shared app runtime carries no OS internals and no unused crates. | Check: [`check_runtime_dylib_surface.py`](../tools/policy/check_runtime_dylib_surface.py) |
 | Crates the browser builds for wasm32 name `workspace-hack` only for native targets. | Check: [`check_wasm_workspace_hack.py`](../tools/policy/check_wasm_workspace_hack.py) |
 | Each interface between separately updated parts (app ↔ shell, app ↔ runtime, device ↔ device, store package formats) has one version number and a committed schema (`interface.toml`); an incompatible change bumps the number, and the two sides talk only at equal numbers ([compatibility](architecture/compatibility.md)). | Check: [`check_interfaces.py`](../tools/policy/check_interfaces.py): `check` in the policy suite (schema matches the code), `against` in t's `changes` check (an incompatible change since main bumps the version) |
@@ -179,15 +179,16 @@ toolkit, the shell and the apps uses a named motion from `ui::motion` (HIG
 §9.7), which decides its spring, its duration, its reduced-motion variant and
 what a shortcut gets; a motion that is genuinely new goes into the library.
 Check: [`check_motion_library.py`](../tools/policy/check_motion_library.py)
-fails on easing math, ad-hoc springs and lerp-over-time outside the library;
-content curves (video keyframes, paint physics) are its short exception list.
+fails on easing math, ad-hoc springs, lerp-over-time and literal motion
+timings (a spring timed by the call site's own duration, a duration constant
+named for a fade or a slide, a literal duration handed to a motion helper)
+outside the library; content curves (video keyframes, paint physics) are its
+short exception list.
 
 Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
 `crates/session/shell/tests/strip_navigation.rs` (the first frame after a
 chord or action shows the final layout, and only the viewport may still move,
-within `fast`). A new transition that ignores its source, and a literal
-`Duration::from_millis` in an animation instead of `tokens::motion`
-(HIG §9.13), are review.
+within `fast`). A new transition that ignores its source is review.
 
 ## Security and sandboxing
 

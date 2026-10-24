@@ -196,6 +196,7 @@ const SCENARIOS: &[&str] = &[
     "search-focus",
     "skeleton",
     "nowplaying",
+    "nowplaying-page",
     "queue",
     "lyrics",
     "downloading",

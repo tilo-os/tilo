@@ -36,14 +36,25 @@ use vello::peniko::{BlendMode, Fill};
 pub const OSD_HOLD: Duration = Duration::from_millis(1_500);
 
 /// The fade-in, from the moment the readout first appears: the arrival of
-/// the standard transient motion (`ui::motion::Transient`), the token
-/// `durations.fast`; the lifecycle clock runs without a theme in hand, so a
-/// test pins the two together.
-pub const OSD_FADE_IN: Duration = Duration::from_millis(130);
+/// the standard readout (`ui::motion::Transient::READOUT`). The lifecycle
+/// clock runs without a theme in hand, so it reads the default tokens.
+#[must_use]
+pub fn osd_fade_in() -> Duration {
+    ui::motion::Transient::enter_time(
+        ui::motion::Transient::READOUT,
+        ui::tokens::EffectiveMotion::default(),
+    )
+}
 
-/// The fade-out tail, inside [`OSD_HOLD`]'s trailing edge: the transient's
-/// exit, the token `durations.base`.
-pub const OSD_FADE: Duration = Duration::from_millis(210);
+/// The fade-out tail, inside [`OSD_HOLD`]'s trailing edge: the readout's
+/// exit.
+#[must_use]
+pub fn osd_fade() -> Duration {
+    ui::motion::Transient::exit_time(
+        ui::motion::Transient::READOUT,
+        ui::tokens::EffectiveMotion::default(),
+    )
+}
 
 /// What the slab is reporting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,8 +396,8 @@ impl Osd {
         }
     }
 
-    /// Opacity at `now`: easing in over [`OSD_FADE_IN`], opaque, then easing
-    /// out over [`OSD_FADE`], then `0.0`.
+    /// Opacity at `now`: easing in over [`osd_fade_in`], opaque, then easing
+    /// out over [`osd_fade`], then `0.0`.
     pub fn alpha_at(&self, now: Instant) -> f32 {
         let expires = self
             .raised_at
@@ -419,12 +430,16 @@ impl Osd {
     /// deliberately excluded: a static OSD should not keep the compositor
     /// repainting for more than a second.
     pub fn needs_animation_frame_at(&self, now: Instant) -> bool {
-        let elapsed = now.saturating_duration_since(self.raised_at);
-        if elapsed >= OSD_HOLD {
-            return false;
-        }
-        now.saturating_duration_since(self.shown_since) < OSD_FADE_IN
-            || elapsed >= OSD_HOLD.saturating_sub(OSD_FADE)
+        let expires = self
+            .raised_at
+            .checked_add(OSD_HOLD)
+            .unwrap_or(self.raised_at);
+        ui::motion::Transient::is_moving(
+            ui::motion::Transient::READOUT,
+            (self.shown_since, expires),
+            now,
+            ui::tokens::EffectiveMotion::default(),
+        )
     }
 
     /// The next lifecycle boundary while the readout is static.
@@ -437,10 +452,15 @@ impl Osd {
     /// after waking, so dropping it at the deadline would skip the final
     /// clearing frame.
     pub fn next_wake_deadline_at(&self, now: Instant) -> Option<Instant> {
-        let fade_start = self
+        let expires = self
             .raised_at
-            .checked_add(OSD_HOLD.saturating_sub(OSD_FADE))
+            .checked_add(OSD_HOLD)
             .unwrap_or(self.raised_at);
+        let fade_start = ui::motion::Transient::exit_starts(
+            ui::motion::Transient::READOUT,
+            expires,
+            ui::tokens::EffectiveMotion::default(),
+        );
         if now < fade_start {
             Some(fade_start)
         } else {
@@ -935,7 +955,7 @@ mod tests {
             let o = Osd::volume(0.5, false);
             let t0 = o.raised_at;
             assert_eq!(o.alpha_at(t0), 0.0, "it fades in rather than popping");
-            assert_eq!(o.alpha_at(t0 + OSD_FADE_IN), 1.0);
+            assert_eq!(o.alpha_at(t0 + osd_fade_in()), 1.0);
             assert!(o.is_live(t0));
             let past = t0 + OSD_HOLD;
             assert_eq!(o.alpha_at(past), 0.0);
@@ -947,13 +967,13 @@ mod tests {
             let t0 = o.raised_at;
             // Just before the fade begins: still fully opaque.
             let before_fade = (t0 + OSD_HOLD)
-                .checked_sub(OSD_FADE)
+                .checked_sub(osd_fade())
                 .unwrap()
                 .checked_sub(Duration::from_millis(1))
                 .unwrap();
             assert_eq!(o.alpha_at(before_fade), 1.0);
             // Halfway through the fade: partly transparent, not yet gone.
-            let mid = (t0 + OSD_HOLD).checked_sub(OSD_FADE / 2).unwrap();
+            let mid = (t0 + OSD_HOLD).checked_sub(osd_fade() / 2).unwrap();
             let a = o.alpha_at(mid);
             assert!(a > 0.0 && a < 1.0, "expected a partial alpha, got {a}");
         }
@@ -962,10 +982,10 @@ mod tests {
             let o = Osd::volume(0.5, false);
             let t0 = o.raised_at;
             let expiry = t0.checked_add(OSD_HOLD).unwrap();
-            let fade_start = expiry.checked_sub(OSD_FADE).unwrap();
+            let fade_start = expiry.checked_sub(osd_fade()).unwrap();
 
             assert!(o.needs_animation_frame_at(t0), "the fade-in animates");
-            let opaque = t0 + OSD_FADE_IN;
+            let opaque = t0 + osd_fade_in();
             assert!(!o.needs_animation_frame_at(opaque));
             assert_eq!(o.next_wake_deadline_at(opaque), Some(fade_start));
             assert!(o.needs_animation_frame_at(fade_start));
@@ -1010,15 +1030,18 @@ mod tests {
 
         fn motion_tokens_back_the_lifecycle_constants() {
             let d = ui::tokens::motion::Durations::default();
-            assert_eq!(OSD_FADE_IN, d.fast());
-            assert_eq!(OSD_FADE, d.base());
+            assert_eq!(osd_fade_in(), d.fast());
+            assert_eq!(osd_fade(), d.base());
             let motion = ui::tokens::EffectiveMotion::default();
             let readout = ui::motion::Transient::READOUT;
             assert_eq!(
                 ui::motion::Transient::enter_time(readout, motion),
-                OSD_FADE_IN
+                osd_fade_in()
             );
-            assert_eq!(ui::motion::Transient::exit_time(readout, motion), OSD_FADE);
+            assert_eq!(
+                ui::motion::Transient::exit_time(readout, motion),
+                osd_fade()
+            );
             let theme = Theme::dark().with_reduce_motion(true);
             let o = Osd::volume(0.5, false);
             assert_eq!(o.alpha_in(&theme, o.raised_at), 1.0, "cuts in");

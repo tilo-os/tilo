@@ -3,6 +3,7 @@ use super::*;
 use crate::network::actor::{Actor, NetCmd};
 use crate::shell::network::ShellNetwork;
 use cold_code::{APP, BODY, FILE, LocalSurface, MountedCode};
+use futures_util::FutureExt as _;
 use sha2::{Digest as _, Sha256};
 
 #[path = "mounted_code/acknowledgement_recovery.rs"]
@@ -734,19 +735,18 @@ async fn drive(
                     result.expect("the actual refresh owner must remain live").unwrap();
                 }
                 Some(tilo_relay::Inbound::Delta { author, data }) = context.publisher.recv() => {
-                    let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
-                    if let NeighbourMsg::AppDocument { app_id, .. } = &message
-                        && app_id == APP
-                        && author != authority.lock().unwrap().as_ref().unwrap().governor().device_public_key
+                    // An edit arrives as several deltas. The governor takes
+                    // every one already here and re-signs its checkpoint once
+                    // for them: a checkpoint per delta queued more relay
+                    // writes than a loaded runner's disk completes.
+                    let mut admitted = govern_member_delta(authority, source, author, &data);
+                    while let Some(Some(tilo_relay::Inbound::Delta { author, data })) =
+                        context.publisher.recv().now_or_never()
                     {
-                        let admission = source.receive(RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(), tilo_peer_state::TransportOrigin::RelayDelta(author), message.clone(), SystemTime::now()).unwrap();
-                        eprintln!("mounted native governor input {}: {:?}", hex::encode(blake3::hash(&data).as_bytes()), admission.primary());
-                        {
-                            let mut state = authority.lock().unwrap();
-                            let state = state.as_mut().unwrap();
-                            state.receive(tilo_peer_state::TransportOrigin::RelayDelta(author), message).unwrap();
-                            state.refresh_checkpoint().unwrap();
-                        }
+                        admitted |= govern_member_delta(authority, source, author, &data);
+                    }
+                    if admitted {
+                        authority.lock().unwrap().as_mut().unwrap().refresh_checkpoint().unwrap();
                         publish(authority, context.publisher);
                     }
                 }
@@ -754,6 +754,53 @@ async fn drive(
             }
         }
     }).await;
+}
+
+/// Admit a member's delta of the mounted app into the governor; `false` for
+/// anything else.
+fn govern_member_delta(
+    authority: &ActualAuthority,
+    source: &NativeWorkspaceOwner,
+    author: [u8; 32],
+    data: &[u8],
+) -> bool {
+    let message: NeighbourMsg = postcard::from_bytes(data).unwrap();
+    let governor = authority
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .governor()
+        .device_public_key;
+    if !matches!(&message, NeighbourMsg::AppDocument { app_id, .. } if app_id == APP)
+        || author == governor
+    {
+        return false;
+    }
+    let admission = source
+        .receive(
+            RoomId::parse(tilo_joined_room::testing::ROOM).unwrap(),
+            tilo_peer_state::TransportOrigin::RelayDelta(author),
+            message.clone(),
+            SystemTime::now(),
+        )
+        .unwrap();
+    eprintln!(
+        "mounted native governor input {}: {:?}",
+        hex::encode(blake3::hash(data).as_bytes()),
+        admission.primary()
+    );
+    authority
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .receive(
+            tilo_peer_state::TransportOrigin::RelayDelta(author),
+            message,
+        )
+        .unwrap();
+    true
 }
 
 fn signed_audits(owner: &NativeWorkspaceOwner) -> std::collections::BTreeSet<uuid::Uuid> {

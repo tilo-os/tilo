@@ -706,9 +706,12 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().emoji_picker_open() {
         return true;
     }
-    // The portal's file chooser, for the same reason as the peer-sync card
-    // below: modal, drawn over a scrim, but "drawn above" and "receives the click" are separate — without this it was unreachable with mouse or keyboard.
-    if fb.host().file_picker().is_some() {
+    // The portal's file chooser is modal for the window that asked: while
+    // that window has the keyboard its sheet types, and another window
+    // focused keeps its keys (the sheet takes the pointer only over its own
+    // window, `chrome_band_captures_pointer_at`). A chooser no window asked
+    // for holds everything.
+    if fb.host().file_picker_takes_keyboard() {
         return true;
     }
     // Permission and other portal sheets are the same kind of modal. Without

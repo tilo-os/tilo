@@ -285,6 +285,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
     const JUDGE_THEMSELVES: &[(&str, &str)] = &[
         ("poll_frame", "the frame itself"),
         (
+            "take_skip_report",
+            "hands over a log line; nothing a frame reads",
+        ),
+        (
             "render_window_png",
             "rasterises the last frame under the window bar; lays out only the bar's own row",
         ),

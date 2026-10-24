@@ -73,5 +73,23 @@ class SourceArtifactTests(unittest.TestCase):
         self.assertEqual(list(self.file.parent.iterdir()), [self.file])
 
 
+    def test_build_script_downloads_into_out_dir_and_reads_a_prewarmed_shared_copy(self):
+        out_dir = self.root / 'out'
+        shared = self.root.parents[2] / 'target/ntfs-source' / self.sha / source.NAME
+        env = {'OUT_DIR': str(out_dir), 'TILO_NTFS_SOURCE_OFFLINE': '0', 'CARGO_NET_OFFLINE': 'false'}
+        with patch.dict(os.environ, env):
+            del os.environ['TILO_NTFS_SOURCE_CACHE']
+            with patch.object(source.urllib.request, 'urlopen', return_value=io.BytesIO(self.data)):
+                self.assertEqual(source.source_bytes(), self.data)
+            self.assertEqual((out_dir / 'ntfs-source' / self.sha / source.NAME).read_bytes(), self.data)
+            self.assertFalse(shared.exists())
+            (out_dir / 'ntfs-source' / self.sha / source.NAME).unlink()
+            shared.parent.mkdir(parents=True)
+            shared.write_bytes(self.data)
+            with patch.object(source.urllib.request, 'urlopen') as network:
+                self.assertEqual(source.source_bytes(), self.data)
+                network.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -308,11 +308,14 @@ export function workspaceActions(choices, {current = null} = {}) {
 export const removedFrom = name => `You were removed from ${name || 'this workspace'}. To come back, ask someone in it for a new invitation.`;
 
 export class HostAdmissionError extends Error {
-  constructor(code, message, retryAfter = null) {
+  /** `door`: what the door said beside its refusal: `{waitList, contact}`
+   * from a room taking people by invitation that keeps a wait list. */
+  constructor(code, message, retryAfter = null, door = null) {
     super(message);
     this.name = 'HostAdmissionError';
     this.code = code;
     this.retryAfter = retryAfter;
+    this.door = door;
   }
 }
 
@@ -404,7 +407,41 @@ async function ask({workspace, path, body, fetch}) {
   // room that takes people by invitation (`invitation-only`).
   const code = response.status === 403 && ['removed', 'invitation-only'].includes(reply.code) ? reply.code
     : response.status === 503 && !hasRetry ? 'unavailable' : (CODES[response.status] ?? 'unavailable');
-  throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null);
+  // A room taking people by invitation may keep a wait list, and name where
+  // to ask to be taken off it.
+  const door = code === 'invitation-only' && reply.waitList === true
+    ? {waitList: true, contact: typeof reply.contact === 'string' && reply.contact ? reply.contact : null} : null;
+  throw new HostAdmissionError(code, reply.error ?? `${path}: HTTP ${response.status}`, hasRetry && retry > 0 ? retry : null, door);
+}
+
+/** Why the door kept no address, by its `code`: the cases a door page says. */
+const WAIT_CODES = new Set(['invalid-email', 'too-many', 'wait-list-full', 'no-wait-list']);
+
+/**
+ * Leave `email` at `workspace`'s door, to be invited at (`POST
+ * <admission>wait-list`): a room taking people by invitation keeps it with
+ * its join requests for whoever may invite. Resolves to the address as the
+ * door keeps it (trimmed, lowercased); rejects with `HostAdmissionError`
+ * code `invalid-email`, `too-many` (with `retryAfter`), `wait-list-full`,
+ * `no-wait-list` or `unavailable`.
+ */
+export async function leaveOnWaitList({workspace, email, fetch = globalThis.fetch}) {
+  const door = new URL('wait-list', admissionDoor(workspace));
+  let response;
+  try {
+    response = await fetch(door, {
+      method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({email: String(email ?? '')}),
+      credentials: 'omit',
+    });
+  } catch (error) {
+    throw new HostAdmissionError('unavailable', `wait list: ${error?.message ?? error}`);
+  }
+  const reply = await response.json().catch(() => ({}));
+  if (response.ok && typeof reply.email === 'string') return reply.email;
+  const retry = Number(response.headers.get('retry-after'));
+  const code = WAIT_CODES.has(reply.code) ? reply.code : 'unavailable';
+  throw new HostAdmissionError(code, reply.error ?? `wait list: HTTP ${response.status}`,
+    Number.isFinite(retry) && retry > 0 ? retry : null);
 }
 
 const readMemberships = store => {

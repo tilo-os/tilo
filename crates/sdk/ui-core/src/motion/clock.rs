@@ -67,6 +67,11 @@ pub(crate) struct PinnedFrame(Option<Instant>);
 impl Drop for PinnedFrame {
     fn drop(&mut self) {
         FRAME_AT.with(|cell| cell.set(self.0));
+        if self.0.is_none() {
+            // The frame's layout is done: what a rebuild before it dropped
+            // and nothing took up is let go (`motion::keep`).
+            super::frame_ended();
+        }
     }
 }
 

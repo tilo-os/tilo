@@ -33,26 +33,19 @@ chrome.runtime.onMessage.addListener((message, sender) => {
     const missing = await chrome.scripting.executeScript({target: {tabId: sender.tab.id, frameIds: [id('/inner') + 100000]}, func: () => 1})
       .then(() => 'ran', (error) => error.message.startsWith('No frame with id'));
     const named = (frameId) => (frames.find((path) => id(path) === frameId) || frameId);
-    // The frame of the same site goes to a page the content script does not
-    // match: it keeps its id, but the extension has no world there any
-    // more. A script into every frame still runs in those it can reach.
-    await chrome.scripting.executeScript({
-      target: {tabId: sender.tab.id, frameIds: [id('/inner')]},
-      func: () => { location.href = '/unmatched'; },
+    // The frame of the same site goes to a page of the other site the
+    // content script does not match: another process renders it now, and it
+    // keeps its id, but the extension has no world there. A script into
+    // every frame still runs in those it can reach.
+    const [{result: moved}] = await chrome.scripting.executeScript({
+      target: {tabId: sender.tab.id},
+      func: () => new Promise((resolve) => {
+        const [inner, outer] = document.querySelectorAll('iframe');
+        inner.addEventListener('load', () => resolve(true), {once: true});
+        setTimeout(() => resolve(false), 10000);
+        inner.src = new URL('/unmatched', outer.src).href;
+      }),
     });
-    const left = async (tries) => {
-      const [{result}] = await chrome.scripting.executeScript({
-        target: {tabId: sender.tab.id},
-        func: () => {
-          const inner = document.querySelector('iframe').contentDocument;
-          return !!inner && inner.location.pathname === '/unmatched' && inner.readyState === 'complete';
-        },
-      });
-      if (result || !tries) return result;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      return left(tries - 1);
-    };
-    const moved = await left(100);
     const after = await chrome.scripting.executeScript({
       target: {tabId: sender.tab.id, allFrames: true},
       func: () => location.pathname,

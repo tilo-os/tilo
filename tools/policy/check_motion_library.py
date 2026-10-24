@@ -16,7 +16,16 @@ rolled instead, anywhere else in the toolkit, the shell and the apps:
   (``elapsed().as_secs_f32() / …``, ``duration_since(…).as_secs_f64() / …``),
   or any span divided by a duration constant (``remain.as_secs_f32() /
   FADE.as_secs_f32()``): a literal duration timing a fade;
-* a wall-clock tween built by hand: ``Animated::new`` / ``Animated::starting_at``.
+* a wall-clock tween built by hand: ``Animated::new`` / ``Animated::starting_at``;
+* a literal timing instead of a named motion's pace: a spring timed by a
+  duration of the call site's choosing (``SpringSpec::settling_within(…)``),
+  a duration constant named for a motion (``const SNAP_ANIM_MS: u32 = 200``,
+  ``const OSD_FADE: Duration = Duration::from_millis(210)``), or a literal
+  duration handed to a motion helper (``motion.context(source,
+  Duration::from_millis(200))``, ``IdleFade::new(hold,
+  Duration::from_millis(320))``). The tokens and the named motions decide how
+  long a motion takes; a fixed life that is the content's own (a reaction's
+  rise, a peer's typing trace) is a named motion in the library too.
 
 Only production code counts (tests, benches, examples, ``#[cfg(test)]`` items
 and comments are exempt). The motion library itself and the legacy primitives it
@@ -60,6 +69,10 @@ EXEMPT = {
     "vendor/": "vendored upstream code",
 }
 
+# A word in a constant's name that says it times a motion. ``ANIMATION``
+# alone is left out: it names frame diagnostics as often as a motion.
+MOTION_WORD = r"(?:ANIM|FADE|FADES|FADING|EASE|EASING|SLIDE|MORPH|TWEEN|TRANSITION)"
+
 PATTERNS = (
     ("easing curve", re.compile(r"\bCurve::(?:Linear|EaseOut|EaseInOut|Spring)\b")),
     (
@@ -84,6 +97,25 @@ PATTERNS = (
     (
         "hand-rolled time ratio",
         re.compile(r"\b(?:duration_fraction|elapsed_ms_f32)\s*\("),
+    ),
+    ("spring timed by a literal duration", re.compile(r"\bsettling_within\s*\(")),
+    (
+        "literal motion duration",
+        re.compile(
+            # A `Duration` built from a literal…
+            rf"\bconst\s+(?:[A-Z0-9]+_)*{MOTION_WORD}(?:_[A-Z0-9]+)*\s*:\s*"
+            r"[\w:]*Duration\s*=\s*[\w:]*Duration::from_(?:millis|micros|secs|secs_f32|secs_f64)\(\s*\d"
+            # …or a number of time units.
+            rf"|\bconst\s+(?:[A-Z0-9]+_)*{MOTION_WORD}(?:_[A-Z0-9]+)*_(?:MS|US|SECS|MILLIS)\s*:\s*"
+            r"(?:u16|u32|u64|u128|f32|f64)\s*=\s*\d"
+        ),
+    ),
+    (
+        "literal duration given to a motion",
+        re.compile(
+            r"(?:\.(?:context|result|movement|fade)|\bIdleFade::new)\s*\("
+            r"[^;{}]*?Duration::from_(?:millis|micros|secs|secs_f32|secs_f64)\(\s*\d"
+        ),
     ),
 )
 

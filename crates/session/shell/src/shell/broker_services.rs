@@ -1111,7 +1111,7 @@ impl LauncherServices for NativeLauncher {
         app: &str,
         room: &str,
     ) -> bool {
-        let Some((_, start)) = super::launcher::proc_stat(launcher_pid) else {
+        let Some((_, start)) = super::host_runtime::proc_stat(launcher_pid) else {
             return false;
         };
         super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room).is_some()
@@ -2065,6 +2065,12 @@ pub struct NativeSpeakers(pub Arc<super::network::ShellNetwork>);
 impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
         crate::shell::speaker_settings::handle(&self.0, command)
+    }
+
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::SpeakerChange> {
+        Some(Box::pin(crate::shell::speaker_settings::changed(
+            &self.0, after,
+        )))
     }
 }
 /// Wi-Fi credentials carried between the person's certified devices.

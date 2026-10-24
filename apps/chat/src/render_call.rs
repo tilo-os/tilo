@@ -600,6 +600,27 @@ impl ChatApp {
         crate::i18n::t_args("chat-call-count", &[("count", n.into())])
     }
 
+    /// How the call is connected, as its status line says it.
+    pub(crate) fn call_connection_label(&self) -> String {
+        crate::i18n::t(match self.native_voice.snapshot.state {
+            ui::native_media::State::Live => "chat-call-connected",
+            ui::native_media::State::Reconnecting => "chat-call-reconnecting",
+            ui::native_media::State::Preparing | ui::native_media::State::Joining => {
+                "chat-call-joining"
+            }
+            _ => "chat-call-voice-unavailable",
+        })
+    }
+
+    /// What the call panel tells the person besides its count: what is
+    /// wrong (a blocked microphone, a call that ended, a browser that
+    /// cannot join), else how it is connected.
+    pub(crate) fn call_status_label(&self) -> String {
+        self.media_error
+            .clone()
+            .unwrap_or_else(|| self.call_connection_label())
+    }
+
     pub(crate) fn draw_huddle_bg(
         &self,
         scene: &mut Scene,
@@ -769,14 +790,7 @@ impl ChatApp {
             (Some(reason), _) if self.native_voice.ended_for_a_reason() => reason,
             // Connected, and where everyone's voice goes besides.
             (_, Some(note)) => note,
-            _ => crate::i18n::t(match self.native_voice.snapshot.state {
-                ui::native_media::State::Live => "chat-call-connected",
-                ui::native_media::State::Reconnecting => "chat-call-reconnecting",
-                ui::native_media::State::Preparing | ui::native_media::State::Joining => {
-                    "chat-call-joining"
-                }
-                _ => "chat-call-voice-unavailable",
-            }),
+            _ => self.call_connection_label(),
         };
         line_in(
             &mut PaintCtx::new(scene, tf, tr, theme),

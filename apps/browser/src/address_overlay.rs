@@ -384,6 +384,10 @@ impl Widget for AddressSuggestions {
             .collect()
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        self.items.is_empty()
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -417,7 +421,7 @@ impl Widget for AddressSuggestions {
                 .with_name("Address suggestions")
                 .with_bounds(self.get_rect())
                 .with_state(AccessState {
-                    hidden: self.items.is_empty(),
+                    hidden: self.accessibility_hidden(),
                     expanded: Some(!self.items.is_empty()),
                     ..Default::default()
                 })

@@ -695,6 +695,7 @@ impl crate::app::ChatApp {
                 ui::native_media::Issue::CameraLost => "chat-call-issue-camera-lost",
                 ui::native_media::Issue::ScreenDenied => "chat-call-issue-screen-denied",
                 ui::native_media::Issue::ScreenLost => "chat-call-issue-screen-lost",
+                ui::native_media::Issue::Unsupported => "chat-call-issue-unsupported",
             })
         });
         self.refresh_native_streams();
@@ -880,9 +881,25 @@ impl crate::app::ChatApp {
     pub(crate) fn refresh_native_streams(&mut self) {
         self.voice_members.clear();
         let snapshot = &self.native_voice.snapshot;
+        // This person's own mute is known here first; the room's word on it
+        // follows a moment later.
+        let own = self
+            .call
+            .active
+            .then_some((self.call.channel.as_str(), self.call.muted));
+        let me: Vec<&str> = std::iter::once(self.me.id.as_str())
+            .chain(self.former_ids.iter().map(String::as_str))
+            .collect();
         for roster in &snapshot.rosters {
-            // What the room says each person shows: their tile reserves a
-            // picture from that moment, before the first one arrives.
+            // What the room says each person shows and whether they are
+            // muted: their tile reserves a picture from that moment, before
+            // the first one arrives.
+            let muted = |user: &str| match own {
+                Some((channel, muted)) if channel == roster.channel_id && me.contains(&user) => {
+                    muted
+                }
+                _ => roster.muted.iter().any(|person| person == user),
+            };
             let member = |user: &str, muted: bool| crate::model::VoiceMember {
                 user: user.to_owned(),
                 talking: snapshot.speaking.iter().any(|person| person == user),
@@ -900,7 +917,7 @@ impl crate::app::ChatApp {
                 let mut members: Vec<_> = roster
                     .people
                     .iter()
-                    .map(|person| member(person, false))
+                    .map(|person| member(person, muted(person)))
                     .collect();
                 // A person's devices are one person; the service sorted them.
                 members.dedup_by(|a, b| a.user == b.user);

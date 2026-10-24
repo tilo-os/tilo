@@ -128,6 +128,8 @@ mod offload_media;
 #[cfg(not(target_arch = "wasm32"))]
 mod offload_placement;
 #[cfg(not(target_arch = "wasm32"))]
+mod offload_rooms;
+#[cfg(not(target_arch = "wasm32"))]
 mod offload_route;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;

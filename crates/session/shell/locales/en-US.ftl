@@ -409,6 +409,8 @@ qs-bluetooth-device-paired-a11y = Paired; activate to connect
 
 # Quick Settings: VPN
 qs-vpn-empty = No VPN profiles. Add one in Settings.
+qs-device-vpn-through = Through { $device }
+qs-device-vpn-unnamed = your other device
 
 # Quick Settings failures, as notifications
 qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
@@ -435,6 +437,7 @@ portal-shortcut-duplicate = Already assigned in this request. Choose another sho
 portal-shortcut-taken = Already used by { $app }. Choose another shortcut.
 portal-shortcut-another-app = another application
 portal-auth-heading = Administrator access
+portal-auth-as = As { $user }
 portal-auth-ended = Authentication ended unexpectedly.
 portal-auth-rejected = That password was not accepted.
 portal-grant-title = { $app } wants to use { $target }
@@ -1809,6 +1812,13 @@ search-continuity-unlock-deny = Keep { $device } locked (code { $code })
 search-continuity-unlock-subtitle = It restarted and is asking to open its encrypted disk
 search-continuity-device-remove = Remove { $device } from your devices
 search-continuity-device-remove-subtitle = It can no longer act for you or unlock its disk through your devices
+search-continuity-vpn-through = Send this device's traffic through { $device }
+search-continuity-vpn-stop = Stop sending traffic through { $device }
+search-continuity-vpn-subtitle = Your devices as a VPN
+search-continuity-vpn-exit-stop = Stop { $device } using this device's connection
+search-continuity-vpn-exit-subtitle = Sharing this device's connection with your other devices
+search-continuity-vpn-share = Share this device's connection with your other devices
+search-continuity-vpn-unshare = Stop sharing this device's connection
 device-unlock-error-not-pending = That unlock request is no longer waiting
 device-unlock-error-cannot-remove = This device cannot remove that device
 device-unlock-error-no-identity = This device does not hold your identity

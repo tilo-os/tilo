@@ -1,8 +1,10 @@
 mod action_directory_identity;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-pub use disclosing::{Disclosing, event_offset};
-pub(crate) use disclosing::{follower_shifts, route_to_shifted_children};
+pub use disclosing::{Disclosing, Placement, event_offset};
+pub(crate) use disclosing::{
+    Ghosts, KeptBand, content_box, follower_shifts, place_bands, route_to_shifted_children,
+};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
@@ -831,6 +833,12 @@ pub enum StructureChange {
     /// Nothing was inserted or removed.
     #[default]
     None,
+    /// The widgets that reported it mount and unmount children of their own,
+    /// and every widget stays alive: they carry it out in the retained tree,
+    /// in place ([`Widget::remount_children`]), and their own damage this
+    /// frame covers every pixel that changed with it. A host that cannot
+    /// rebuilds its tree, as for [`Self::Described`].
+    Children,
     /// The host rebuilds its tree, but the frame's damage still describes it:
     /// the widget that reported it replaced only widgets of its own, and its
     /// own damage this frame covers every pixel that changed with them.
@@ -847,7 +855,8 @@ impl StructureChange {
         if dirty { Self::Rebuild } else { Self::None }
     }
 
-    /// Whether the host rebuilds its tree for it.
+    /// Whether the host rebuilds its tree for it, or (for
+    /// [`Self::Children`]) changes it in place.
     #[must_use]
     pub fn rebuilds(self) -> bool {
         self != Self::None
@@ -1881,11 +1890,13 @@ pub trait Widget {
 
     /// Whether [`Self::accessibility`] reports this subtree hidden, for a
     /// host that asks it of every node to prune focus traversal. Widgets
-    /// whose node is costly to build (text values, per-block children) and is
-    /// never hidden answer without building it; any override must agree with
-    /// `accessibility()`.
+    /// whose node is costly to build (text values, per-block children, a
+    /// translated name) answer without building it: the focus walk asks
+    /// every widget in the window on every recomputation. Any override must
+    /// agree with `accessibility()`; debug builds check it in the walk.
     fn accessibility_hidden(&self) -> bool {
-        self.accessibility().is_some_and(|node| node.state.hidden)
+        self.accessibility_root()
+            .is_some_and(|node| node.state.hidden)
     }
 
     /// [`Self::accessibility`]'s own node with its `children` left empty:
@@ -2242,14 +2253,34 @@ pub trait Widget {
     }
 
     /// While this widget is a band on its way in or out
-    /// (`motion::Disclosure`: an in-window banner arriving or leaving), how
-    /// much of it is drawn against what the layout gives it. A column draws
-    /// the widgets after it that much lower, by transform, so they move
-    /// with the band's edge instead of being laid out again every frame.
-    /// `None` at rest (the default).
+    /// (`motion::Disclosure`: an in-window banner arriving or leaving), or a
+    /// content-sized container one moves in, how far what follows it is
+    /// drawn from where it is laid out. A moving band stands out of the
+    /// layout; its container places it ([`Self::place_disclosing`]) and
+    /// draws the widgets after it lower by transform, so they move with the
+    /// band's edge instead of being laid out again every frame. `None` at
+    /// rest (the default).
     fn disclosing(&self) -> Option<Disclosing> {
         None
     }
+
+    /// Where a band on its way ([`Disclosing::Band`]) stands while it is
+    /// out of the layout: its slot's top and width (`slot`'s height is
+    /// zero), set by its container after each layout.
+    fn place_disclosing(&mut self, _slot: vello::kurbo::Rect) {}
+
+    /// A band that comes and goes (an in-window banner): when its view
+    /// stops building it, its column draws it leaving
+    /// (`widget::Disclosing`). Its column leaves it out of its identity
+    /// across rebuilds.
+    fn is_band(&self) -> bool {
+        false
+    }
+
+    /// Where a band stands in its column, set by the column after each
+    /// layout: what it leaves when dropped, so the column a rebuild makes
+    /// can draw it leaving.
+    fn note_placement(&mut self, _placement: Placement) {}
 
     /// Why this widget itself asks for animation frames, for diagnostics
     /// that name a desktop which keeps painting. `None` when it has nothing
@@ -2313,6 +2344,19 @@ pub trait Widget {
     /// this.
     fn take_structure_change(&mut self) -> StructureChange {
         StructureChange::of(self.take_structure_dirty())
+    }
+
+    /// Carry out a [`StructureChange::Children`] this widget or one under it
+    /// reported, in the retained layout tree, through `remount` (see
+    /// [`remount`](crate::widget::remount)). Returns `false` when it cannot be
+    /// carried out in place: the host then rebuilds its tree, and the change
+    /// is carried out by [`Self::build_layout`]. A widget reports such a
+    /// change until either has carried it out. The default carries out its
+    /// children's.
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        self.children_mut()
+            .into_iter()
+            .all(|child| child.remount_children(remount))
     }
 
     /// Work already requested by this view whose completion will replace a
@@ -2900,6 +2944,8 @@ pub use crate::pen::PenSample;
 pub use decorator::Decorator;
 
 pub(crate) mod layout;
+pub mod remount;
+pub use remount::Remount;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
 pub use layout::{
@@ -2913,7 +2959,9 @@ mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
 mod checkbox;
-pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
+#[cfg(test)]
+mod control_hand_on_tests;
+pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
@@ -2936,9 +2984,12 @@ pub use manual::{
 };
 mod row;
 pub use row::Row;
+mod face_motions;
+pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    Toggle, ToggleColors, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract,
+    toggle_accessibility, toggle_face_colors,
 };
 mod stack;
 pub use stack::Stack;
@@ -3024,7 +3075,7 @@ pub use image::{Image, ImageDecodeError, ImageFit};
 mod image_crop;
 pub use image_crop::{CropSelection, ImageCropEditor};
 mod slider;
-pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep};
+pub use slider::{Slider, SliderFace, SliderTouch, SliderTouchStep, paint_held_readout};
 mod text_input;
 pub use text_input::{
     AccessoryAction, FieldFace, SpanHighlighter, TextActionRequest, TextActionResult, TextInput,
@@ -3194,6 +3245,11 @@ pub use native_view::{
 };
 pub mod modal_prompt;
 pub use modal_prompt::PromptBody;
+pub mod secret_prompt;
+pub use secret_prompt::{
+    FieldRole, FieldSpec, NoticeTone, Presentation, PromptOutcome, SecretAnswer, SecretKind,
+    SecretPrompt,
+};
 pub mod toolbar;
 pub use toolbar::Toolbar;
 pub mod undo_button;
@@ -3206,6 +3262,8 @@ pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
 pub use icon::{IconSize, IconWidget};
+pub mod signal_meter;
+pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
@@ -3301,6 +3359,8 @@ pub use media_transport::{
     MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
     TransportState,
 };
+pub mod now_playing;
+pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
 pub use drop_zone::{DropZone, DropZoneFace};
 pub mod file_open;

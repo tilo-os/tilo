@@ -314,6 +314,24 @@ impl EmojiPicker {
     }
 
     /// Shared scrollbar fades request bounded repainting, never idle frames.
+    /// Step a glide after a flick to the frame's time, once per frame;
+    /// returns whether the open grid moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        if !self.open {
+            return false;
+        }
+        let moved = if self.tones.is_some() {
+            self.tone_scroll.advance()
+        } else {
+            self.body_scroll.advance()
+        };
+        if moved {
+            self.press = None;
+            self.hover = None;
+        }
+        moved
+    }
+
     pub fn needs_animation_frame(&self) -> bool {
         self.open
             && [
