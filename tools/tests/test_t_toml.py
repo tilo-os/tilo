@@ -176,7 +176,7 @@ class TTomlTests(unittest.TestCase):
             # On the board for main's newest head, bisected when it fails.
             self.assertEqual(whole["on"], ["stable", "dispatch", "idle"])
             # Kept built there, so the push gate's size check of an app compiles only the app.
-            self.assertEqual(shared["on"], ["idle"])
+            self.assertEqual(shared["on"], ["main", "idle"])
 
     def test_a_read_inside_a_reached_package_is_already_counted(self):
         root = Path("/w")

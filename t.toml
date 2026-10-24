@@ -4745,7 +4745,7 @@ requires = ["{node}"]
 cost = "heavy"
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
-on = ["idle"]
+on = ["main", "idle"]
 default = false
 
 [check.matrix]
