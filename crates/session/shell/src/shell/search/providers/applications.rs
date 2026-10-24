@@ -1286,7 +1286,7 @@ mod tests {
             next_id,
         };
         let tab_id = next_id();
-        let workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
         let mut strip = Strip::new(StripId::from(next_id()), "Main");
         let group_id = next_id();
         strip.window_groups.push(WindowGroup {
@@ -1346,7 +1346,7 @@ mod tests {
             next_id,
         };
         let tab_id = next_id();
-        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
         let mut strip = Strip::new(StripId::from(next_id()), "Main");
         let group_id = next_id();
         strip.window_groups.push(WindowGroup {
