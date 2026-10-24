@@ -1230,18 +1230,25 @@ impl CommandPalette {
     }
 
     /// The whole rows from the top that fit under the cap: a cap that cut
-    /// a row in half would leave a sliver nothing paints.
+    /// a row in half would leave a sliver nothing paints, and a header
+    /// with no row under it is not painted ([`Self::painted_window`]).
     fn fitted_list_height(&self) -> f64 {
         let cap = self.max_list_height().max(self.row_height());
         let mut used = 0.0;
+        let mut trailing_header = 0.0;
         for row in &self.rows {
             let h = self.visual_row_height(row);
             if used + h > cap + 0.01 {
                 break;
             }
             used += h;
+            trailing_header = if matches!(row, VisualRow::Header { .. }) {
+                trailing_header + h
+            } else {
+                0.0
+            };
         }
-        used.max(self.row_height())
+        (used - trailing_header).max(self.row_height())
     }
 
     fn visual_row_height(&self, row: &VisualRow) -> f64 {
@@ -4369,6 +4376,23 @@ mod keyboard_flow_tests {
         dispatch(&mut p, &crate::synthetic_input::mouse_press());
         assert!(p.take_scope_token_removed(), "a press widens");
         assert!(p.scope_token.is_none());
+    }
+
+    #[test]
+    fn a_list_cut_under_a_header_ends_on_the_row_above_it() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("a", "Pitch deck").in_section("Continue"),
+            CommandEntry::new("b", "Notes").in_section("Apps"),
+        ]);
+        let gap = f64::from(crate::tokens::RhythmScale::BASE.section);
+        p.set_max_list_height(HEADER_HEIGHT * 2.0 + gap + p.row_height());
+        assert_eq!(
+            p.fitted_list_height(),
+            HEADER_HEIGHT + p.row_height(),
+            "the Apps header has no row under it, so the list ends on Pitch deck"
+        );
     }
 
     #[test]
