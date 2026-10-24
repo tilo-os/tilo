@@ -1080,8 +1080,8 @@ impl ConsentContext for PortalContext {
 
 pub mod flow {
     use super::{
-        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, PortalCaller,
-        PromptOutcome,
+        Capability, CapabilityKind, ConsentContext, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
+        PortalCaller, PromptOutcome,
     };
 
     pub async fn resolve(
@@ -1115,9 +1115,12 @@ pub mod flow {
         let Some(consent_key) = ctx.grants().portal_consent_key(&caller, kind) else {
             return PromptOutcome::Deny;
         };
-        // Fast path — `Always`-scoped grant already present.
-        if matches!(ctx.grants().lookup(&caller, kind), Some(GRANT_ALWAYS)) {
-            return PromptOutcome::AllowAlways;
+        // An answer that still stands is not asked again: "Always", and
+        // "This session" until the session ends.
+        match ctx.grants().lookup(&caller, kind) {
+            Some(GRANT_ALWAYS) => return PromptOutcome::AllowAlways,
+            Some(GRANT_SESSION) => return PromptOutcome::AllowSession,
+            _ => {}
         }
         let rx = ctx
             .prompts()
@@ -1424,6 +1427,52 @@ mod tests {
 
     fn empty_ws(id: u64) -> Workspace {
         Workspace::new(WorkspaceId(id), "t")
+    }
+
+    #[tokio::test]
+    async fn this_session_is_not_asked_again_until_the_session_ends() {
+        let (store, id) = GrantStoreHandle::test_with_workspace(empty_ws(41));
+        let queue = PromptQueueHandle::new(PromptResolver::Channel);
+        let ctx = (store.clone(), queue.clone());
+        let caller = PortalCaller::new(id, "org.example.Meet");
+        let ask = || {
+            flow::resolve_for_request(
+                &ctx,
+                caller.clone(),
+                CapabilityKind::Camera,
+                Capability::Camera { scope: GRANT_ONCE },
+                "/request/camera".into(),
+            )
+        };
+        let first = ask();
+        tokio::pin!(first);
+        assert!(futures_util::poll!(&mut first).is_pending());
+        let prompts = queue.drain();
+        assert_eq!(prompts.len(), 1);
+        for prompt in prompts {
+            let _ = prompt.reply.send(PromptOutcome::AllowSession);
+        }
+        assert_eq!(first.await, PromptOutcome::AllowSession);
+
+        let again = ask();
+        tokio::pin!(again);
+        assert_eq!(
+            futures_util::poll!(&mut again),
+            std::task::Poll::Ready(PromptOutcome::AllowSession),
+            "an app allowed for this session must not be asked again"
+        );
+        assert_eq!(queue.queued_len(), 0);
+
+        // A different capability is its own question.
+        let microphone = flow::resolve(
+            &ctx,
+            caller.clone(),
+            CapabilityKind::Microphone,
+            Capability::Microphone { scope: GRANT_ONCE },
+        );
+        tokio::pin!(microphone);
+        assert!(futures_util::poll!(&mut microphone).is_pending());
+        assert_eq!(queue.queued_len(), 1);
     }
 
     #[tokio::test]
