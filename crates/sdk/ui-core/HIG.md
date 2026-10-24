@@ -1218,9 +1218,9 @@ edge kept at full strength, so rest and disabled never look the same.
 | Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
 | Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
 | Toggle | off `intent.selection`, on `intent.inverted` | `edge_on(track)`; on, the knob is `on_inverted`; off, a raised white knob with a ring that clears 3:1 on a light material and `text_dim` on a dark one |
-| Slider | unfilled `intent.selection`, filled `intent.inverted` | `edge_on(unfilled)`; the thumb is a raised white object with a ring on a light material and primary ink on a dark one, clearing both halves; never collapses below six knob widths |
-| Checkbox | unchecked `surfaces.raised`, checked `intent.inverted`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
-| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.inverted`, `radii.detail` | none |
+| Slider | unfilled `intent.selection`, filled `intent.value_fill` (the accent as a mark, 3:1 on its ground, never the text colour) | `edge_on(unfilled)`; the thumb is a raised white disc on a light material, its fill setting it off the filled half and its ring off the unfilled half, and primary ink ringed in the ground on a dark one; never collapses below six knob widths |
+| Checkbox | unchecked `surfaces.raised`, checked `intent.on_state`; always the largest square in its rect, `radii.item` | `edge_on(raised)`, kept at full strength when disabled (as a switch's) |
+| ProgressBar | track `intent.selection` (a lift of the ground, as a slider's unfilled half), fill `intent.value_fill`, `radii.detail` | none |
 | TimePicker | value cells `surfaces.raised` at `radii.control`; step arrows are `Icon::ChevronUp` / `ChevronDown`, lifted under the pointer | `edge_on(raised)`; the focused cell `border_focus` |
 | Scroll thumb | `text_tertiary` at rest (a third lighter on a light ground), `text_dim` active stepped to 3:1 on the ground; `metrics.scroll_thumb` thick, centred in its lane | none; a `Scrollable` (or a painted `ScrollRegion`) keeps `metrics.scrollbar_gutter` (thumb plus `s1` each side) free on its trailing edge while its content overflows, and on its bottom edge for a horizontal bar |
 | DataTable header and rules | the region's ground (no fill of its own) | `edge_on(ground)` under the header and, with `.ruled()`, between columns |

@@ -377,7 +377,8 @@ impl Theme {
         c.text_tertiary = on.ink_tertiary;
         c.intent.selection = c.selected_on(ground);
         c.intent.selection_hover = c.lift_on(ground, 0.5);
-        c.intent.neutral_fill = crate::tokens::colors::mix8(ground, on.ink, 0.9);
+        c.intent.value_fill =
+            crate::tokens::colors::value_fill_on(c.intent.accent_ink, ground, c.intent.selection);
         let ground_dark = crate::color::relative_luminance(ground) < Self::POLARITY_LUMINANCE;
         if ground_dark != c.palette.dark && matches!(c.emphasis, crate::tokens::Emphasis::Inverted)
         {
@@ -1053,6 +1054,80 @@ pub fn workspace_hue(wallpaper_rgba: &[u8]) -> Option<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every control fill in every shipped theme, on every ground a control
+    /// stands on, clears the non-text contrast floor there and is never the
+    /// text colour; and a control's face (an unchecked box, a button, a
+    /// track) is a surface that body text reads on, never ink. A filled
+    /// progress bar or an unchecked box that renders as a black slab on a
+    /// light window fails here.
+    #[test]
+    fn every_control_fill_reads_on_its_ground_and_is_never_the_text_colour() {
+        use crate::a11y::contrast_ratio;
+        use crate::color::Oklch;
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        let lab = |c: Color| {
+            let o = Oklch::from_color(c);
+            let h = f64::from(o.h).to_radians();
+            (
+                f64::from(o.l),
+                f64::from(o.c) * h.cos(),
+                f64::from(o.c) * h.sin(),
+            )
+        };
+        let distance = |a: Color, b: Color| {
+            let ((l1, a1, b1), (l2, a2, b2)) = (lab(a), lab(b));
+            ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
+        };
+        for preset in Preset::ALL {
+            let base = Theme::preset(preset);
+            let s = &base.tokens.colors.surfaces;
+            for (ground_name, ground) in [
+                ("content", s.content),
+                ("sidebar", s.sidebar),
+                ("inspector", s.inspector),
+                ("raised", s.raised),
+                ("overlay", composite(s.overlay, s.content)),
+            ] {
+                let theme = base.on_ground(ground);
+                let c = &theme.tokens.colors;
+                let ink = c.text_primary;
+                for (token, fill) in [
+                    ("value_fill", c.intent.value_fill),
+                    ("on_state", c.intent.on_state),
+                ] {
+                    let ratio = contrast_ratio(fill, ground);
+                    assert!(
+                        ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                        "{}: {token} reaches only {ratio:.2}:1 on the {ground_name} ground",
+                        base.name
+                    );
+                    assert!(
+                        distance(fill, ink) >= 0.08,
+                        "{}: {token} {fill:?} is the text colour {ink:?} on the {ground_name} ground",
+                        base.name
+                    );
+                }
+                let track = contrast_ratio(c.intent.value_fill, c.intent.selection);
+                assert!(
+                    track >= NON_TEXT_MIN_CONTRAST - 0.01,
+                    "{}: value_fill reaches only {track:.2}:1 on its track on the {ground_name} ground",
+                    base.name
+                );
+                assert!(
+                    distance(c.intent.value_fill, c.border_focus) >= 0.08,
+                    "{}: value_fill is the focus ring's colour on the {ground_name} ground",
+                    base.name
+                );
+                let face = contrast_ratio(c.surfaces.raised, ink);
+                assert!(
+                    face >= 4.5 - 0.01,
+                    "{}: a control face on the {ground_name} ground carries text at only {face:.2}:1, so it reads as ink",
+                    base.name
+                );
+            }
+        }
+    }
 
     // Catches a note maximised on a 1440p-class display reading as a narrow
     // strip of laptop-sized text in a field of empty space.
