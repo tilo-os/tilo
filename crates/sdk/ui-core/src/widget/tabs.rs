@@ -2155,7 +2155,9 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) || !self.closable {
+        // A window's title has no chips: the window's own controls close
+        // it and list its History.
+        if self.pinned_ids.contains(&t.id) || !self.closable || self.solo() {
             return Reveal::None;
         }
         if t.id == self.active_id || self.modified_ids.contains(&t.id) {
@@ -2174,7 +2176,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return Reveal::None;
         };
-        if self.pinned_ids.contains(&t.id) || !self.closable {
+        if self.pinned_ids.contains(&t.id) || !self.closable || self.solo() {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
@@ -4722,7 +4724,11 @@ impl TabBar {
             .fold(0.0, f64::max);
         let row = self.pill_row();
         let laid_out = row.width() > 0.0;
-        let fit_avail = if laid_out {
+        let fit_avail = if laid_out && self.solo() {
+            // A window's title opens no chips and stands beside no "+": it
+            // takes the whole row.
+            row.width()
+        } else if laid_out {
             (row.width() - headroom - NEW_TAB_CHIP_PX - PILL_GAP).max(1.0)
         } else {
             row.width()
