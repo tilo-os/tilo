@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
-import {CarrierUnsupportedError, carrierUnsupported} from './moq-carrier.mjs';
+import {CarrierUnsupportedError, MediaAdmissionError, carrierUnsupported} from './moq-carrier.mjs';
 
 const CALL = 'c'.repeat(64);
 const ME = 'a'.repeat(64);
@@ -263,6 +263,56 @@ test('a join the host never grants ends at the deadline with a reason; a grant i
   await drain();
   assert.equal(refused.call.state.phase, 'ended');
   assert.equal(refused.call.state.admitted, false);
+});
+
+test('a call whose carrier lost its admission waits out an offline spell for the fresh grant', async () => {
+  const offline = fixture();
+  offline.environment.navigator = {onLine: true};
+  offline.call.join(CALL);
+  await drain();
+  offline.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  assert.equal(offline.call.state.phase, 'live');
+  // The session lost the host while the carrier still ran: the host forgot
+  // the participation and refuses its token.
+  offline.environment.navigator.onLine = false;
+  const working = offline.transport.connect;
+  offline.transport.connect = async () => { throw new MediaAdmissionError(); };
+  offline.carriers[0].close();
+  await drain();
+  offline.timers.findLast(timer => timer.delay > 0 && timer.delay !== GRANT_LOOK_MS)?.callback();
+  await drain();
+  assert.equal(offline.call.state.phase, 'reconnecting');
+  // Offline for twice the deadline: no grant could come, the call waits.
+  for (let index = 0; index < 2 * GRANT_DEADLINE_MS / GRANT_LOOK_MS; index++) {
+    offline.clock.at += GRANT_LOOK_MS;
+    offline.timers.findLast(timer => timer.delay === GRANT_LOOK_MS).callback();
+  }
+  await drain();
+  assert.equal(offline.call.state.phase, 'reconnecting');
+  assert.deepEqual(offline.sent, [['join', CALL]], 'the participation is kept');
+  // Back online, the session joins afresh and the host grants again.
+  offline.environment.navigator.onLine = true;
+  offline.transport.connect = working;
+  offline.event({kind: 'granted', grant: grantFor({participation: BOB.replace(/b/g, 'd'), token: '02'})});
+  await drain();
+  assert.equal(offline.call.state.phase, 'live');
+
+  // Online, the same wait ends at the deadline.
+  const online = fixture();
+  online.environment.navigator = {onLine: true};
+  online.call.join(CALL);
+  await drain();
+  online.event({kind: 'granted', grant: grantFor()});
+  await drain();
+  online.transport.connect = async () => { throw new MediaAdmissionError(); };
+  online.carriers[0].close();
+  await drain();
+  online.timers.findLast(timer => timer.delay > 0 && timer.delay !== GRANT_LOOK_MS)?.callback();
+  await drain();
+  assert.equal(runDeadline(online), Math.ceil(GRANT_DEADLINE_MS / GRANT_LOOK_MS));
+  await drain();
+  assert.equal(online.call.state.phase, 'ended');
 });
 
 test('peer.voice lists, governs and signals through the wasm peer', async () => {
