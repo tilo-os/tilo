@@ -539,7 +539,19 @@ async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
 /// stream closes.
 #[tokio::test(start_paused = true)]
 async fn a_refusal_queued_as_a_session_ends_reaches_the_peer() {
-    const REQUESTS: usize = 16;
+    refusal_queued_as_the_session_ends(16).await;
+}
+
+/// The same with the writer idle when the session ends: it is told, writes
+/// the refusal and closes.
+#[tokio::test(start_paused = true)]
+async fn an_idle_writer_writes_the_refusal_and_closes_as_the_session_ends() {
+    refusal_queued_as_the_session_ends(0).await;
+}
+
+/// Remove the member of a session whose writer `held` unread replies
+/// hold, then end the session from the peer's side.
+async fn refusal_queued_as_the_session_ends(held: usize) {
     let (root, user) = UserIdentity::generate("alice", 1);
     let (a, _) = certified_device(&root, user.public_key, "a");
     let room = uuid::Uuid::from_u128(7);
@@ -603,7 +615,7 @@ async fn a_refusal_queued_as_a_session_ends_reaches_the_peer() {
     ));
     let enable =
         tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room }).unwrap();
-    for _ in 0..REQUESTS {
+    for _ in 0..held {
         requests.write_all(&enable).await.unwrap();
     }
     // The clock is paused: each sleep returns once the relay has nothing
