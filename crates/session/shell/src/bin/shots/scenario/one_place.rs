@@ -3,10 +3,75 @@
 
 use vello::kurbo::Point;
 use winit::event::{MouseButton, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::super::driver::ShellDriver;
 use super::{Action, Scenario};
+
+/// The strip switcher by pointer and keyboard: its ribbon at rest, its
+/// labels laid out, New strip named in place, and Super+S.
+pub(super) fn strip_switcher() -> Scenario {
+    Scenario {
+        name: "strip_switcher",
+        description: "The strip switcher on three strips with people on two: the ribbon \
+         at rest (its marks only; who is where shows in the labels), the pointer coming \
+         to rest on it laying out the strips' names with the faces of the people on \
+         each, a label lit under the pointer, New strip making a strip and naming it in \
+         place, and Super+S for the keyboard.",
+        actions: vec![
+            Action::SeedStripsWithPeople,
+            Action::MoveCursor(Point::new(800.0, 500.0)),
+            Action::WaitWall(1700),
+            Action::Snapshot("00-rest"),
+            Action::MoveCursor(Point::new(1200.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1350.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1450.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1515.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1552.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1572.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1582.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1587.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1589.0, 462.0)),
+            Action::WaitWall(8),
+            Action::MoveCursor(Point::new(1590.0, 462.0)),
+            Action::WaitWall(8),
+            Action::WaitWall(120),
+            Action::Wait(10),
+            Action::Snapshot("01-hover-labels"),
+            Action::MoveCursorNamed("strip_switcher.strip.2"),
+            Action::WaitWall(200),
+            Action::Wait(4),
+            Action::Snapshot("02-label-lit"),
+            Action::ClickNamed("strip_switcher.new_strip"),
+            Action::Wait(6),
+            Action::Snapshot("03-new-strip-named-in-place"),
+            Action::Type("Sketches"),
+            Action::Wait(4),
+            Action::Snapshot("04-typing-the-name"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Wait(4),
+            Action::Snapshot("05-named"),
+            Action::MoveCursor(Point::new(800.0, 500.0)),
+            Action::WaitWall(300),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Character("s".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Wait(10),
+            Action::Snapshot("06-super-s"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::Wait(4),
+            Action::Snapshot("07-closed"),
+        ],
+    }
+}
 
 /// The strip switcher as the one place strips are picked, by pointer and by
 /// touch, and what stays clear of the window bars.
