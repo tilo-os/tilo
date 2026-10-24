@@ -1281,11 +1281,6 @@ impl RoomStatusSource {
             }
         }
     }
-
-    /// Wake whoever waits on a room to look again.
-    pub(crate) fn wake(&self) {
-        self.tree.room_readiness().announce();
-    }
 }
 
 /// Where `room` stands for the apps on this device. On this device only, or

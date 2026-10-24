@@ -144,6 +144,14 @@ impl OpeningCard {
     /// The line under the indicator right now, and what stands in the
     /// indicator's place.
     pub(crate) fn status_at(&self, now: Instant) -> (String, Indicator) {
+        #[cfg(any(test, target_os = "linux"))]
+        if let Some(wait) = self
+            .package
+            .as_deref()
+            .and_then(crate::shell::launcher::room_hold::room_wait)
+        {
+            return (wait, Indicator::Dots);
+        }
         let slow = now.saturating_duration_since(self.since) >= SLOW_AFTER;
         if let Some(package) = self.updating() {
             return self.download_status(package, &self.title, &UPDATING, slow);

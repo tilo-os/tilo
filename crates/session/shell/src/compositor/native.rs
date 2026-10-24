@@ -13923,6 +13923,13 @@ pub fn run() {
             // Launches that waited for a network that never came are
             // reported, not silently started without it; later launches
             // run normally.
+            // Each launch then waits for its own room, if that is not ready.
+            crate::shell::launcher::room_hold::set_source(
+                crate::shell::broker_services::RoomStatusSource::new(
+                    tree_handle.clone(),
+                    peer_sync.clone(),
+                ),
+            );
             match start_failure {
                 None => crate::shell::launcher::release_held_launches(),
                 Some(error) => {
