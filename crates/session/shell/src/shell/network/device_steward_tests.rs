@@ -163,8 +163,9 @@ fn describe(
         .filter(|frame| frame.channel == channel)
         .map(|frame| {
             format!(
-                "  {} after {} epoch {} {}",
+                "  {} signed {} after {} epoch {} {}",
                 hex::encode(&frame.transaction_id[..4]),
+                hex::encode(&frame.signature.as_bytes()[..4]),
                 hex::encode(&frame.previous_frame_digest[..4]),
                 frame.epoch,
                 match &frame.action {
@@ -291,11 +292,14 @@ fn a_room_hosted_on_a_device_has_one_channel_steward() {
     let stewards = || {
         let sent = owner_transport.sent.borrow();
         let broker = sent.iter().any(|frame| frame.channel == channel);
+        // A steward names a channel's frames by their revision alone, so two
+        // stewards signing under one key send frames with the same ids: only
+        // the signature tells one's frame from the other's.
         let other = member_transport.received.borrow().iter().any(|frame| {
             frame.channel == channel
                 && !sent
                     .iter()
-                    .any(|own| own.transaction_id == frame.transaction_id)
+                    .any(|own| own.signature.as_bytes() == frame.signature.as_bytes())
         });
         (broker, other)
     };
