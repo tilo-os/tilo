@@ -485,7 +485,10 @@ impl ShellOverlayHost {
                 }
             }
             ui::InputModality::Keyboard | ui::InputModality::Pointer => {
-                let shortcuts = &self.shortcut_config;
+                let shortcuts = self
+                    .nested_shortcuts
+                    .as_ref()
+                    .unwrap_or(&self.shortcut_config);
                 let defaults = settings_store::hardware::ShortcutConfig::default();
                 let binding = |action| {
                     let chord = shortcuts.bindings.get(&action);

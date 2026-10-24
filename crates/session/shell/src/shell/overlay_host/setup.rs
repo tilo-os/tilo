@@ -397,6 +397,7 @@ impl ShellOverlayHost {
             shortcut_guide_max_scroll: 0.0,
             shortcut_help_done_width: 0.0,
             shortcut_config: inputs.shortcut_config,
+            nested_shortcuts: None,
             shortcut_triggers: shortcut_triggers::ShortcutTriggerState::new(
                 inputs.shortcut_triggers,
             ),

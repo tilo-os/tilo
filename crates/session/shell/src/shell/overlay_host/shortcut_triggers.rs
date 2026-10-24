@@ -276,6 +276,7 @@ impl ShellOverlayHost {
             tracing::warn!(%error, "shortcut chords were not saved to settings");
         }
         self.shortcut_config = keymap;
+        self.refresh_nested_shortcuts();
     }
 
     fn start_firings(&self, firings: Vec<Firing>) -> bool {

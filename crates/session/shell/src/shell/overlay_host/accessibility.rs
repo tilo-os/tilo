@@ -320,7 +320,7 @@ impl ShellOverlayHost {
                 }
                 LayerId::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
-                    let shortcuts = &self.shortcut_config;
+                    let shortcuts = self.shortcut_config();
                     let chord = |action| {
                         shortcuts
                             .bindings
