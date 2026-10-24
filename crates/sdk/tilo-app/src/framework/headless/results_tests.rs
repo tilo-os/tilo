@@ -1,5 +1,5 @@
 //! Retained results must come from the real framework semantic door.
-use super::{ResourceApp, ViewCx, testing::TestApp};
+use crate::framework::{ResourceApp, ViewCx, testing::TestApp};
 use crate::prelude::*;
 use serde_json::{Map, Value, json};
 use tilo_resource::{Doc, ModelError};

@@ -4680,6 +4680,22 @@ on = ["stable"]
 secrets = ["TAPP_PUBLISHER_IDENTITY"]
 # END generated
 
+# Release apps carry no SDK test helpers: no symbol of `tilo_app::framework::testing` in the
+# default collection's apps, the shared runtime or its engines, read from app-binaries' symbol
+# tables (tools/apps/release-test-code.sh). It gates stable, beside the collection's size gate.
+[[check]]
+name = "release-test-code-{arch}"
+run = "bash tools/apps/release-test-code.sh /target/app-binaries/{arch}"
+needs = ["app-binaries-{arch}"]
+inputs = ["tools/apps/release-test-code.sh"]
+requires = ["{node}"]
+cost = "minutes"
+on = ["stable", "dispatch"]
+default = false
+
+[check.matrix]
+arch = [{ arch = "x86_64", node = "arch=x86_64" }, { arch = "aarch64", node = "arch=arm64" }]
+
 # The size of one app's tapp, and of the shared runtime, per architecture: `t test
 # app-size/notes-aarch64`, `t test runtime-size-x86_64`. Each is keyed by what building and
 # measuring its subject reads, so a change elsewhere leaves its result standing; none runs by
