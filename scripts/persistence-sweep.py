@@ -48,7 +48,7 @@ SCENARIOS = pathlib.Path(__file__).resolve().parent / "persistence-scenarios.jso
 # sessions. These need a curated scenario in persistence-scenarios.json, and
 # are reported as unswept rather than clicked at random.
 NEEDS_CURATION = {
-    "terminal", "osk", "disks", "imager", "firewall", "vpn", "containers",
+    "terminal", "osk", "disks", "imager", "firewall", "containers",
     "store", "remote", "backups", "camera",
 }
 

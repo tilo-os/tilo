@@ -293,10 +293,6 @@ aarch64 = 2031616
 x86_64 = 983040
 aarch64 = 917504
 
-[apps."so.tilo.vpn"]
-x86_64 = 1048576
-aarch64 = 983040
-
 [apps."so.tilo.weather"]
 x86_64 = 1048576
 aarch64 = 983040

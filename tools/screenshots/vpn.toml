@@ -1,7 +1,0 @@
-# VPN: the vault before a configuration is imported, from the app's own
-# scenario.
-
-[[situation]]
-name = "empty"
-title = "No connections yet"
-scenario = "empty"
