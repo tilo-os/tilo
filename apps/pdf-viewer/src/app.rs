@@ -5766,15 +5766,26 @@ mod tests {
     fn settled(
         mut app: ui::framework::testing::TestApp<crate::PdfViewerShell>,
     ) -> ui::framework::testing::TestApp<crate::PdfViewerShell> {
+        settle_document(&mut app);
+        app
+    }
+
+    /// Run `app`'s frames until the document it shows has loaded and its
+    /// record holds what opening it adds: the PDF worker answers an open on
+    /// its own time, and a further open waits for it.
+    fn settle_document(app: &mut ui::framework::testing::TestApp<crate::PdfViewerShell>) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let shown = app
                 .with_surface::<PdfApp, _>(|pdf| {
-                    pdf.has_document && pdf.pending_open.is_none() && !pdf.seed_pending
+                    pdf.has_document
+                        && pdf.pending_open.is_none()
+                        && pdf.pending_reopen.is_none()
+                        && !pdf.seed_pending
                 })
                 .unwrap_or(false);
             if shown && app.state().imported_source().is_some() {
-                return app;
+                return;
             }
             assert!(
                 ui::time::now() < deadline,
@@ -6013,6 +6024,7 @@ mod tests {
 
             app.effect_confirmed(&open(&b))
                 .expect("the app opens another document");
+            settle_document(&mut app);
             app.harness().relayout();
             assert_ne!(
                 app.record(),
@@ -6027,6 +6039,7 @@ mod tests {
             let b_record = app.record().clone();
 
             app.effect_confirmed(&open(&a)).expect("and back");
+            settle_document(&mut app);
             app.harness().relayout();
             assert_eq!(app.record(), &a_record);
             assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");
