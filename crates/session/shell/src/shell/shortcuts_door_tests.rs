@@ -708,6 +708,7 @@ fn publish_draft(id: &str, granted: &[&str]) -> Shortcut {
             .collect(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 
@@ -748,6 +749,7 @@ fn a_saved_shortcut_runs_its_steps_through_the_door_and_undoes_as_one() {
     }
     let stored = Shortcut {
         saved_by: Some(owner_principal()),
+        saved_proof: None,
         ..shortcut
     };
     assert_eq!(
@@ -891,7 +893,12 @@ fn utc_clock(now: &str) -> std::sync::Arc<ManualClock> {
 /// the loop does once the write wakes it.
 fn tick(triggers: &mut TriggerHost, door: &Door, person: &str) -> Vec<Firing> {
     let tree = door.membership.read();
-    let armed = armed(&tree.desktop.workspaces, |_| person.to_string());
+    let armed = armed(
+        &tree.desktop.workspaces,
+        |_| person.to_string(),
+        |ws| tree.room_revocations(ws.room()),
+        tilo_clock::unix_now_ns(),
+    );
     let mut fired = triggers.observe(TriggerEvent::Tick, &armed);
     drop(tree);
     crate::shell::durable_writer::global().flush();
@@ -1083,7 +1090,12 @@ fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
         let running: std::collections::BTreeSet<String> =
             running.iter().map(ToString::to_string).collect();
         let tree = door.membership.read();
-        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let armed = armed(
+            &tree.desktop.workspaces,
+            |_| owner.clone(),
+            |ws| tree.room_revocations(ws.room()),
+            tilo_clock::unix_now_ns(),
+        );
         let fired = triggers.observe(TriggerEvent::Apps(&running), &armed);
         drop(tree);
         fired
