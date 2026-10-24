@@ -15,11 +15,6 @@
 //! the device names itself with its certificate, signs the host's join
 //! challenge ([`join_proof_digest`]) and waits until the room's owner admits
 //! or declines it.
-//!
-//! A room that takes people by invitation also keeps the requests of people
-//! who asked at its door without one: each leaves an address to be invited
-//! at ([`JoinRequest::contact`]), and someone who may invite answers it with
-//! an invitation of their own, sent there, or declines it.
 
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
@@ -29,41 +24,6 @@ pub const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
 
 /// Pending join requests a room keeps at once.
 pub const MAX_JOIN_REQUESTS: usize = 64;
-
-/// The longest address a request left at the door gives ([`JoinRequest::contact`]):
-/// the longest an email address can be.
-pub const MAX_CONTACT_CHARS: usize = 254;
-
-/// `text` as the address a request left at a room's door keeps
-/// ([`JoinRequest::contact`]): an email address, trimmed and lowercased, so
-/// one address is one request however it was typed.
-///
-/// # Errors
-///
-/// Anything that is not one plausible email address of at most
-/// [`MAX_CONTACT_CHARS`] characters: one `@` with something before it and a
-/// dotted domain after it, and no space or control character.
-pub fn contact_address(text: &str) -> Result<String, &'static str> {
-    let address = text.trim().to_lowercase();
-    if address.chars().count() > MAX_CONTACT_CHARS {
-        return Err("an email address is at most 254 characters");
-    }
-    let plausible = address.split_once('@').is_some_and(|(local, domain)| {
-        !local.is_empty()
-            && !domain.contains('@')
-            && domain
-                .split('.')
-                .all(|label| !label.is_empty() && !label.starts_with('-'))
-            && domain.contains('.')
-    }) && !address
-        .chars()
-        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'));
-    if plausible {
-        Ok(address)
-    } else {
-        Err("that is not an email address")
-    }
-}
 
 /// What the device signs to answer the join challenge whose canonical
 /// encoding the host sent as [`JoinReply::Challenge`]:
@@ -142,9 +102,7 @@ pub struct Room {
     pub members: Vec<RoomMember>,
 }
 
-/// A person who asked to join and waits for someone who may let them in:
-/// one who redeemed an invitation, or one who left an address at the door
-/// of a room that takes people by invitation ([`Self::contact`]).
+/// A person who redeemed an invitation and waits for the owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JoinRequest {
     /// The device's request.
@@ -159,19 +117,6 @@ pub struct JoinRequest {
     pub role: RoomRole,
     /// When they asked.
     pub requested_at_ns: u64,
-}
-
-impl JoinRequest {
-    /// For a request left at the door without an invitation, the address
-    /// ([`contact_address`]) its answer goes to: someone who may invite
-    /// sends an invitation of their own there, or declines the request.
-    /// Such a request has no person or device yet (both all zero) and is
-    /// named by the address; its role is the one an invitation gives. The
-    /// room keeps it until it is declined.
-    pub fn contact(&self) -> Option<&str> {
-        (self.user_public_key == [0; 32] && self.device_public_key == [0; 32])
-            .then_some(self.name.as_str())
-    }
 }
 
 /// The person who sent an invitation, as the host signed it into the
@@ -550,6 +495,61 @@ pub enum JoinReply {
     Declined,
     /// Refused, and why.
     Refused(String),
+}
+
+// Requests left at the door. A room that takes people by invitation also
+// keeps the requests of people who asked at its door without one: each
+// leaves an address to be invited at ([`JoinRequest::contact`]), and someone
+// who may invite answers it with an invitation of their own, sent there, or
+// declines it. A request redeemed from an invitation is one too
+// ([`JoinRequest`]), waiting for someone who may let them in.
+
+/// The longest address a request left at the door gives ([`JoinRequest::contact`]):
+/// the longest an email address can be.
+pub const MAX_CONTACT_CHARS: usize = 254;
+
+/// `text` as the address a request left at a room's door keeps
+/// ([`JoinRequest::contact`]): an email address, trimmed and lowercased, so
+/// one address is one request however it was typed.
+///
+/// # Errors
+///
+/// Anything that is not one plausible email address of at most
+/// [`MAX_CONTACT_CHARS`] characters: one `@` with something before it and a
+/// dotted domain after it, and no space or control character.
+pub fn contact_address(text: &str) -> Result<String, &'static str> {
+    let address = text.trim().to_lowercase();
+    if address.chars().count() > MAX_CONTACT_CHARS {
+        return Err("an email address is at most 254 characters");
+    }
+    let plausible = address.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && !domain.contains('@')
+            && domain
+                .split('.')
+                .all(|label| !label.is_empty() && !label.starts_with('-'))
+            && domain.contains('.')
+    }) && !address
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '<' | '>' | ',' | ';'));
+    if plausible {
+        Ok(address)
+    } else {
+        Err("that is not an email address")
+    }
+}
+
+impl JoinRequest {
+    /// For a request left at the door without an invitation, the address
+    /// ([`contact_address`]) its answer goes to: someone who may invite
+    /// sends an invitation of their own there, or declines the request.
+    /// Such a request has no person or device yet (both all zero) and is
+    /// named by the address; its role is the one an invitation gives. The
+    /// room keeps it until it is declined.
+    pub fn contact(&self) -> Option<&str> {
+        (self.user_public_key == [0; 32] && self.device_public_key == [0; 32])
+            .then_some(self.name.as_str())
+    }
 }
 
 #[cfg(test)]
