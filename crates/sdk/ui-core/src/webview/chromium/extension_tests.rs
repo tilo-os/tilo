@@ -7,6 +7,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         id: id.into(),
         permissions: vec!["tabs".into()],
         hosts: vec!["https://*/*".into()],
+        scriptable: vec!["<all_urls>".into()],
         token: Some("f".repeat(48)),
         commands: Some(json!({"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}})),
     };
@@ -14,7 +15,8 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
     assert_eq!(
         encode_command(access),
         Some(
-            json!({"op":"extension_access","id":id,"permissions":["tabs"],"hosts":["https://*/*"],"token":"f".repeat(48),
+            json!({"op":"extension_access","id":id,"permissions":["tabs"],"hosts":["https://*/*"],
+                "scriptable":["<all_urls>"],"token":"f".repeat(48),
                 "commands":{"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}}})
         )
     );
@@ -45,6 +47,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             id: id.into(),
             permissions: Vec::new(),
             hosts: Vec::new(),
+            scriptable: Vec::new(),
             token: Some("f".into()),
             commands: None,
         },
@@ -52,6 +55,15 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             id: id.into(),
             permissions: vec![String::new(); 513],
             hosts: Vec::new(),
+            scriptable: Vec::new(),
+            token: None,
+            commands: None,
+        },
+        WebViewCommand::ExtensionAccess {
+            id: id.into(),
+            permissions: Vec::new(),
+            hosts: Vec::new(),
+            scriptable: vec!["x".repeat(2049)],
             token: None,
             commands: None,
         },
@@ -60,6 +72,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             id: id.into(),
             permissions: Vec::new(),
             hosts: Vec::new(),
+            scriptable: Vec::new(),
             token: None,
             commands: Some(json!(["_execute_action"])),
         },
@@ -67,6 +80,7 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             id: id.into(),
             permissions: Vec::new(),
             hosts: Vec::new(),
+            scriptable: Vec::new(),
             token: None,
             commands: Some(json!({"long": {"description": "x".repeat(70 * 1024)}})),
         },

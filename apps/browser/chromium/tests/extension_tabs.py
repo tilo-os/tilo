@@ -25,6 +25,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A tab is captured as it shows, as PNG or JPEG at the quality asked for, by
   an extension given it by a click (activeTab) or with access to every site,
   and by no other; at most twice a second, as Chrome allows.
+- Content scripts on every site are no host permission, as in Chrome: such
+  an extension, clicked without activeTab, sees no tab's address or title,
+  finds none by its address, and may neither script nor capture the page,
+  while its content script runs there.
 - An extension's context menu items show in the page's menu where their
   contexts say (page, selection, link, image); choosing one tells the
   extension with the tab, which it may then script (activeTab), and the
@@ -375,7 +379,7 @@ class ExtensionTabs(unittest.TestCase):
     def start(self, *names, access, installed=None, profile=None, files=None, focus=True):
         """A host with the fixtures `names` loaded, each granted what the
         Browser grants an installed extension (`access`: name -> (permissions,
-        hosts)), with `files` (name -> {file: bytes}) written into its copy. A
+        hosts[, scriptable])), with `files` (name -> {file: bytes}) written into its copy. A
         host started again with the `installed` directory and the `profile` of
         an earlier one finds the same extensions there. With `focus`, the
         person has focused the first page."""
@@ -399,8 +403,9 @@ class ExtensionTabs(unittest.TestCase):
         ids = {}
         for name, (path, token) in zip(names, prepared):
             ids[name] = extension_id(path)
-            permissions, hosts = access.get(name, ([], []))
-            command = {'id': ids[name], 'permissions': permissions, 'hosts': hosts}
+            permissions, hosts, *scriptable = access.get(name, ([], []))
+            command = {'id': ids[name], 'permissions': permissions, 'hosts': hosts,
+                       'scriptable': scriptable[0] if scriptable else []}
             if token:
                 command['token'] = token
             # Its keyboard shortcuts, as its manifest declares them
@@ -579,7 +584,9 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(plain, {'found': True, 'url': True})
 
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
-        host, ids = self.start('messenger', access={'messenger': ([], ['http://127.0.0.1/*'])})
+        # Its content script's site is no host permission (the Browser sends
+        # it apart), and the two talk all the same.
+        host, ids = self.start('messenger', access={'messenger': ([], [], ['http://127.0.0.1/*'])})
         host.navigate(self.url + '/talk')
         answer = json.loads(self.title(host, 1, 'messenger:')[len('messenger:'):])
         self.assertEqual(answer, {'known': True, 'pong': 'pong:/talk:true', 'ported': 'ping:declared:true'})
@@ -648,6 +655,24 @@ class ExtensionTabs(unittest.TestCase):
             self.assertEqual(jpeg_size(image(url, 'jpeg')), (800, 600))
         self.assertEqual([entry['value'] for entry in burst if not entry['ok']],
                          ['This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.'])
+
+    def test_content_scripts_on_every_site_give_no_access_to_the_tabs(self):
+        # As the Browser reads its manifest: content scripts on <all_urls>,
+        # `scripting`, and neither a host permission nor activeTab.
+        host, ids = self.start('reacher', access={'reacher': (['scripting'], [], ['<all_urls>'])})
+        host.navigate(self.url + '/reached')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['reacher'])
+        self.assertEqual(self.report('reacher'), {
+            # Its content script runs in the page all the same.
+            'content': '/reached', 'found': True,
+            # The tab it was clicked over, and every tab, without an address
+            # or a title, and none found by its address.
+            'clicked': [], 'shown': [], 'by_url': 0,
+            'script': {'ok': False, 'value': 'Cannot access contents of the page. Extension manifest '
+                                             'must request permission to access the respective host.'},
+            'capture': {'ok': False, 'value': "Either the '<all_urls>' or 'activeTab' permission is required."},
+        })
 
     def test_a_script_injected_on_a_click_and_the_worker_talk_over_ports(self):
         host, ids = self.start('porter', access={'porter': (['activeTab', 'scripting', 'storage'], [])})

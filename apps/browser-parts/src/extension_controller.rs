@@ -793,6 +793,7 @@ impl ExtensionController {
                     id: id.clone(),
                     permissions: access.permissions.clone(),
                     hosts: access.hosts.clone(),
+                    scriptable: access.scriptable.clone(),
                     token: access.token.clone(),
                     commands: access.commands.clone(),
                 });
@@ -1923,6 +1924,7 @@ mod tests {
         let tabs = toolbar::Access {
             permissions: vec!["tabs".into()],
             hosts: vec!["https://*/*".into()],
+            scriptable: vec!["<all_urls>".into()],
             token: Some("a".repeat(48)),
             commands: Some(shortcuts.clone()),
         };
@@ -1947,6 +1949,7 @@ mod tests {
                 id: "reader".into(),
                 permissions: vec!["tabs".into()],
                 hosts: vec!["https://*/*".into()],
+                scriptable: vec!["<all_urls>".into()],
                 token: Some("a".repeat(48)),
                 commands: Some(shortcuts),
             }]
