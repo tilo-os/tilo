@@ -12,8 +12,15 @@ After=local-fs.target systemd-pstore.service
 # The running deployment is made the default only once it proved itself. On a
 # boot the boot loader counts (it was on trial too), that is when the boot was
 # judged good and blessed; on any other boot neither unit is queued and this
-# runs at once.
+# runs as soon as multi-user.target is reached.
 After=boot-complete.target systemd-bless-boot.service
+# tilo-boot-health, and with it boot-complete.target, starts after
+# multi-user.target, so this must not be one of the units multi-user.target
+# waits for: that closes an ordering cycle on every counted boot, and systemd
+# breaks it by dropping one of these jobs, possibly the health check itself.
+# Ordering after the target keeps systemd from adding the implicit
+# multi-user.target-after-this ordering that WantedBy= would otherwise bring.
+After=multi-user.target
 ConditionKernelCommandLine=!tilo.mode=repair
 
 [Service]
