@@ -738,6 +738,9 @@ pub struct ShellOverlayHost {
     palette_was_visible: bool,
     /// Interruptible open/close driver for the command palette.
     palette_transition: ui::motion::Presence,
+    /// The checkboxes the shell's own sheets paint, filling as a click
+    /// checks them.
+    faces: ui::widget::FaceMotions,
     /// Per-strip raw pointers to the [`GroupRow`] widgets inside
     /// `content`, so the per-frame reconcilers reach them without
     /// downcasting `&dyn Widget`. Empty until
@@ -1668,6 +1671,8 @@ fn active_tab_provider_id(
 /// an optional detail in secondary ink, the row lifted while focused.
 struct CheckRow<'a> {
     checked: bool,
+    /// Where the box's fill and mark are this frame.
+    pose: ui::widget::CheckPose,
     label: &'a str,
     detail: Option<&'a str>,
     focused: bool,
@@ -1697,7 +1702,7 @@ fn draw_check_row(
         scene,
         transform,
         theme,
-        &ui::widget::CheckboxFace::new(check, row.checked),
+        &ui::widget::CheckboxFace::new(check, row.checked).pose(row.pose),
     );
     let style = theme.text(TextRole::Body);
     let x = check.x1 + pad;

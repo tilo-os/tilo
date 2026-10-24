@@ -186,7 +186,31 @@ pub struct Slider {
     level: Option<std::rc::Rc<dyn Fn() -> Option<f32>>>,
     /// The level last painted, so a change asks for a frame.
     level_drawn: Option<f32>,
+    /// Where the thumb is drawn, as a share of the range: on the value,
+    /// except while it glides to where the track was pressed.
+    thumb: crate::motion::Thumb,
+    /// The thumb has been placed on a value (its first one rests there).
+    thumb_placed: bool,
+    /// Where the press that sent the thumb gliding was, and what pressed
+    /// (the pointer or a finger): the glide gives way to the hand once it
+    /// moves past [`DRAG_SLOP`] from there.
+    glide_from: Option<(Point, crate::tokens::MotionSource)>,
+    /// The motion the person allows, as last drawn.
+    motion: Option<crate::tokens::EffectiveMotion>,
+    /// What the last presented frame painted, and what the frame being drawn
+    /// paints: the slider needs a redraw only when they differ.
+    painted: Option<Painted>,
+    drawing: Option<Painted>,
 }
+
+/// What a slider's paint depends on besides its place, the theme and its
+/// live level: the value and the drawn thumb (as bits), hovered, dragging,
+/// focused and enabled.
+type Painted = (u64, u64, bool, bool, bool, bool);
+
+/// How far the hand moves from a press before the drag is the hand's: a
+/// thumb gliding to the press gives way to it there.
+const DRAG_SLOP: f64 = 3.0;
 
 /// How far toward the filled ink the fill up to the thumb stands while a
 /// live level is drawn inside it: a step softer than the level.
@@ -234,6 +258,47 @@ impl Slider {
             touch: SliderTouch::default(),
             level: None,
             level_drawn: None,
+            thumb: crate::motion::Thumb::default(),
+            thumb_placed: false,
+            glide_from: None,
+            motion: None,
+            painted: None,
+            drawing: None,
+        }
+    }
+
+    fn painted_now(&self) -> Painted {
+        (
+            self.fraction().to_bits(),
+            self.thumb.get(crate::motion::frame_now()).to_bits(),
+            self.is_hovered,
+            self.is_dragging,
+            self.is_focused,
+            self.effectively_enabled(),
+        )
+    }
+
+    fn effective_motion(&self) -> crate::tokens::EffectiveMotion {
+        self.motion.unwrap_or_else(|| {
+            crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+        })
+    }
+
+    /// Put the thumb on the value: a press away from it glides there
+    /// (`source` is the pointer or a finger), a press on it or a drag
+    /// holds it under the hand.
+    fn place_thumb(&mut self, glide: Option<crate::tokens::MotionSource>) {
+        let to = self.fraction();
+        if !self.thumb_placed {
+            return;
+        }
+        match glide {
+            Some(source) => {
+                let motion = self.effective_motion();
+                self.thumb
+                    .go(to, motion, source, crate::motion::frame_now());
+            }
+            None => self.thumb.track(to),
         }
     }
 
@@ -500,8 +565,15 @@ impl Slider {
         self.track_rect().inflate(KNOB_RADIUS, 0.0)
     }
 
-    /// Take hold at `point` and jump the value there.
-    fn press_at(&mut self, point: Point, ctx: &mut crate::widget::EventCtx<'_>) {
+    /// Take hold at `point` and jump the value there. The value is set at
+    /// once; the thumb glides there when the press was away from it, from
+    /// `source` (the pointer or a finger).
+    fn press_at(
+        &mut self,
+        point: Point,
+        source: crate::tokens::MotionSource,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
         self.last_cursor = point;
         self.is_dragging = true;
         self.gesture = false;
@@ -510,6 +582,14 @@ impl Slider {
         *ctx.handled = true;
         let new_value = self.value_from_cursor_x(point.x);
         self.commit_value(new_value, ctx.state.doc(), ctx.path);
+        let track = self.track_rect();
+        let thumb_x = track.x0
+            + TRACK_PADDING
+            + self.thumb.get(crate::motion::frame_now())
+                * (track.width() - TRACK_PADDING * 2.0).max(0.0);
+        let away = (point.x - thumb_x).abs() > KNOB_RADIUS;
+        self.glide_from = away.then_some((point, source));
+        self.place_thumb(away.then_some(source));
     }
 
     /// The held slider follows `point`; `fine` moves it a tenth as fast
@@ -530,12 +610,22 @@ impl Slider {
         if self.commit_value(new_value, ctx.state.doc(), ctx.path) {
             *ctx.handled = true;
         }
+        // A thumb gliding to the press follows the value there until the
+        // hand moves off the press; from then it is welded to the hand.
+        if self
+            .glide_from
+            .is_some_and(|(from, _)| (point.x - from.x).abs() > DRAG_SLOP)
+        {
+            self.glide_from = None;
+        }
+        self.place_thumb(self.glide_from.map(|(_, source)| source));
     }
 
     /// Let go: a slider that settles reports the value it was left at.
     fn release(&mut self, ctx: &mut crate::widget::EventCtx<'_>) {
         self.is_dragging = false;
         self.fine_from = None;
+        self.glide_from = None;
         *ctx.handled = true;
         let moved = self
             .drag_from
@@ -927,14 +1017,28 @@ impl Widget for Slider {
         dyn crate::presence::capability::PublishesPresence
     );
 
-    /// A live level that moved since it was painted asks for a frame; the
-    /// level's publisher wakes the window while there is sound.
+    /// A slider repaints when what it paints changed since the frame on
+    /// screen: its value, its thumb on its way, its state. A live level that
+    /// moved since it was painted asks for a frame too; the level's
+    /// publisher wakes the window while there is sound.
     fn needs_redraw(&self) -> bool {
-        self.level.is_some()
-            && match (self.live_level(), self.level_drawn) {
-                (Some(now), Some(drawn)) => (now - drawn).abs() > LEVEL_STEP,
-                (now, drawn) => now.is_some() != drawn.is_some(),
-            }
+        self.painted != Some(self.painted_now())
+            || self.level.is_some()
+                && match (self.live_level(), self.level_drawn) {
+                    (Some(now), Some(drawn)) => (now - drawn).abs() > LEVEL_STEP,
+                    (now, drawn) => now.is_some() != drawn.is_some(),
+                }
+    }
+
+    fn mark_drawn(&mut self) {
+        if let Some(drawing) = self.drawing.take() {
+            self.painted = Some(drawing);
+        }
+    }
+
+    /// Frames only while the thumb glides to a press.
+    fn needs_animation_frame(&self) -> bool {
+        self.thumb.is_moving(crate::motion::frame_now())
     }
 
     fn set_interaction_environment(
@@ -1053,11 +1157,21 @@ impl Widget for Slider {
             self.value_lane = 0.0;
         }
         self.level_drawn = self.live_level();
+        self.motion = Some(theme.motion());
+        // The thumb is on the value, unless it glides there from a press: a
+        // key, an assistive action or a sync puts it there at once.
+        let value = self.fraction();
+        if !self.thumb_placed || self.thumb.target().to_bits() != value.to_bits() {
+            self.thumb.snap(value);
+            self.thumb_placed = true;
+        }
+        let now = crate::motion::frame_now();
+        self.drawing = Some(self.painted_now());
         Slider::paint(
             scene,
             transform,
             theme,
-            &SliderFace::new(self.track_rect(), self.fraction())
+            &SliderFace::new(self.track_rect(), self.thumb.get(now))
                 .level(self.level_drawn)
                 .hovered(self.is_hovered)
                 .dragging(self.is_dragging)
@@ -1101,7 +1215,7 @@ impl Widget for Slider {
                 if *element_state == ElementState::Pressed
                     && self.hit_band().contains(self.last_cursor)
                 {
-                    self.press_at(self.last_cursor, ctx);
+                    self.press_at(self.last_cursor, crate::tokens::MotionSource::Pointer, ctx);
                 } else if *element_state == ElementState::Released
                     && self.is_dragging
                     && !self.touch.is_active()
@@ -1116,7 +1230,9 @@ impl Widget for Slider {
                     .touch
                     .step(touch, ctx.scale_factor, |point| band.contains(point))
                 {
-                    SliderTouchStep::Press(point) => self.press_at(point, ctx),
+                    SliderTouchStep::Press(point) => {
+                        self.press_at(point, crate::tokens::MotionSource::Gesture, ctx);
+                    }
                     SliderTouchStep::Move(point) => {
                         self.drag_to(point, false, ctx);
                         // The finger is the slider's even where the value
@@ -1998,5 +2114,96 @@ mod tests {
             hit.x0 < 20.0 && hit.height() >= 32.0,
             "the knob overhangs: {hit:?}"
         );
+    }
+
+    fn present(s: &mut Slider, theme: &Theme) {
+        s.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            &crate::presence::PresenceCtx::empty(),
+        );
+        s.mark_drawn();
+    }
+
+    #[test]
+    fn a_press_on_the_track_glides_the_thumb_and_the_drag_after_it_is_welded_to_the_hand() {
+        use crate::time::testing::with_monotonic_time;
+        let ms = |t0: crate::time::Instant, ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        let theme = Theme::dark();
+        // Rect [0..200, 0..30]; the track runs flush, so x is 200 × value.
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || present(&mut s, &theme));
+        assert!(!s.needs_animation_frame() && !s.needs_redraw(), "at rest");
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut s, &cursor_moved(180.0, 15.0));
+            dispatch(&mut s, &mouse_press());
+            assert!((s.value - 0.9).abs() < 1e-9, "the value is set at once");
+            present(&mut s, &theme);
+            assert!(s.needs_animation_frame(), "the thumb glides there");
+        });
+        with_monotonic_time(ms(t0, 40), || {
+            assert!(s.needs_redraw());
+            present(&mut s, &theme);
+            let drawn = s.thumb.get(ms(t0, 40));
+            assert!(drawn > 0.5 && drawn < 0.9, "on its way: {drawn}");
+            // A tremor of the hand on the press keeps the glide going.
+            dispatch(&mut s, &cursor_moved(182.0, 15.0));
+            assert!(s.thumb.is_moving(ms(t0, 40)));
+            assert!((s.thumb.target() - 0.91).abs() < 1e-9);
+        });
+        // The drag takes the thumb from that frame: exactly under the hand.
+        with_monotonic_time(ms(t0, 48), || {
+            dispatch(&mut s, &cursor_moved(150.0, 15.0));
+            assert!((s.value - 0.75).abs() < 1e-9);
+            assert_eq!(s.thumb.get(ms(t0, 48)), s.value);
+            assert!(!s.needs_animation_frame(), "welded: nothing runs");
+            dispatch(&mut s, &cursor_moved(60.0, 15.0));
+            assert_eq!(s.thumb.get(ms(t0, 48)), 0.3);
+            dispatch(&mut s, &mouse_release());
+            present(&mut s, &theme);
+            assert!(!s.needs_redraw(), "settled: no repaint");
+        });
+        // A press on the thumb itself holds it where it is: no glide.
+        with_monotonic_time(ms(t0, 1_000), || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut s, &cursor_moved(64.0, 15.0));
+            dispatch(&mut s, &mouse_press());
+            assert!(!s.needs_animation_frame());
+            assert_eq!(s.thumb.get(ms(t0, 1_000)), s.value);
+            dispatch(&mut s, &mouse_release());
+        });
+    }
+
+    #[test]
+    fn keys_and_reduced_motion_land_the_thumb() {
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark();
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || {
+            present(&mut s, &theme);
+            Widget::set_focus(&mut s, true);
+            crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+            dispatch(&mut s, &crate::synthetic_input::named_key(NamedKey::End));
+            assert_eq!(s.value, 1.0);
+            present(&mut s, &theme);
+            assert_eq!(s.thumb.get(t0), 1.0, "a key lands");
+            assert!(!s.needs_animation_frame());
+        });
+        let calm = Theme::dark().with_reduce_motion(true);
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        with_monotonic_time(t0, || {
+            present(&mut s, &calm);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut s, &cursor_moved(20.0, 15.0));
+            dispatch(&mut s, &mouse_press());
+            present(&mut s, &calm);
+            assert!((s.thumb.get(t0) - 0.1).abs() < 1e-9, "reduced motion lands");
+            assert!(!s.needs_animation_frame());
+        });
     }
 }

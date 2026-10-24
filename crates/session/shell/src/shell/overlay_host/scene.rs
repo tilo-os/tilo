@@ -887,6 +887,7 @@ impl ShellOverlayHost {
             || self.peer_sync_overlay.needs_animation_frame()
             || self.directory_sheet.needs_animation_frame()
             || self.arrival_line.needs_animation_frame()
+            || self.faces.is_moving(now)
     }
 }
 

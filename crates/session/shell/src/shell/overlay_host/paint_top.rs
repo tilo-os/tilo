@@ -335,6 +335,12 @@ impl ShellOverlayHost {
                     *rect,
                     &CheckRow {
                         checked: device.selected,
+                        pose: self.faces.check(
+                            ("usb", view.handle(), index),
+                            device.selected,
+                            ui::widget::CheckGlyph::Check,
+                            theme.motion(),
+                        ),
                         label: &device.label,
                         detail: Some(&crate::shell::i18n::t(access_key)),
                         focused,
@@ -401,6 +407,12 @@ impl ShellOverlayHost {
                     rect,
                     &CheckRow {
                         checked: remember,
+                        pose: self.faces.check(
+                            ("remember", view.handle()),
+                            remember,
+                            ui::widget::CheckGlyph::Check,
+                            theme.motion(),
+                        ),
                         label: &remember_label,
                         detail: None,
                         focused,
