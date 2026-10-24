@@ -1683,7 +1683,8 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         app.drain_import();
         let notice = app
             .import_notice
-            .clone()
+            .get()
+            .cloned()
             .expect("a refusal explains itself");
         assert!(
             notice.text.contains("not-a-video.mp4"),
@@ -1753,7 +1754,11 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         app.pending_imports = batch.clone();
         app.drain_import();
 
-        let notice = app.import_notice.clone().expect("the batch reports itself");
+        let notice = app
+            .import_notice
+            .get()
+            .cloned()
+            .expect("the batch reports itself");
         assert_eq!(
             app.project.media.len() - before,
             2,
@@ -1791,13 +1796,12 @@ fn bin_discloses_missing_unknown_and_refused_media() {
     // Severity is data, not prose. A portal refusal ("the file picker needs
     // the real-desktop build") matches none of `"could not"` / `"couldn't"` /
     // `"is not"`, so the old substring rule painted a *failure* in the
-    // success tint — in the import strip and the project strip alike. It also
+    // success tint — for imports and project files alike. It also
     // made the colour of a message depend on the language it was written in.
     {
         // The real wording `ui::portal` hands back on a box with no portal.
         const REFUSAL: &str = "the file picker needs the real-desktop build (`--features portal`)";
-        let theme = Theme::dark();
-        let danger = ui::widget::BannerKind::Error;
+        let failure = ui::widget::toast::ToastKind::Error;
 
         let (mut app, mut doc) = app_and_doc();
         let (services, recorder) = ui::host::HostServices::recording();
@@ -1805,26 +1809,20 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         recorder.respond_to_pick_multiple(ImportOutcome::Failed(REFUSAL.to_string()));
         app.trigger_import();
         sync(&mut app, &mut doc);
-        let notice = app.import_notice.clone().expect("the refusal is on screen");
+        let notice = app
+            .import_notice
+            .get()
+            .cloned()
+            .expect("the refusal is said");
         assert_eq!(notice.text, REFUSAL, "in the picker's own words");
+        assert_eq!(notice.level, NoticeLevel::Failed);
+        // …and the window's bar says it as the refusal it is.
         assert_eq!(
-            notice.level.banner_kind(),
-            danger,
-            "and tinted as the refusal it is",
+            ui::window_toolbar::notice().map(|shown| (shown.text, shown.kind)),
+            Some((REFUSAL.to_owned(), failure)),
+            "tinted as the refusal it is",
         );
-
-        // …and the strip really paints that, rather than the sentence.
-        let failed_px = render_pixels(&mut app, 1280, 800, &theme);
-        let strip = {
-            let r = app.regions();
-            Rect::new(r.bin.x0, r.bin.y1 - 34.0, r.bin.x1, r.bin.y1)
-        };
-        app.import_notice = Some(Notice::ok(REFUSAL));
-        let ok_px = render_pixels(&mut app, 1280, 800, &theme);
-        assert!(
-            region_diff(&failed_px, &ok_px, 1280, 800, strip) > 20,
-            "the same sentence at two severities must not paint the same",
-        );
+        drop(app);
 
         // Project side: the same picker, the same refusal, the same rule.
         let (mut app, mut doc) = app_and_doc();
@@ -1833,10 +1831,14 @@ fn bin_discloses_missing_unknown_and_refused_media() {
         sync(&mut app, &mut doc);
         let notice = app
             .project_notice
-            .clone()
+            .get()
+            .cloned()
             .expect("a project chooser that refused says so");
         assert_eq!(notice.text, REFUSAL);
-        assert_eq!(notice.level.banner_kind(), danger);
+        assert_eq!(
+            ui::window_toolbar::notice().map(|shown| shown.kind),
+            Some(failure)
+        );
     }
 }
 
@@ -3323,7 +3325,8 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         assert!(app.project_is_dirty(), "and it is still unsaved");
         let notice = app
             .project_notice
-            .clone()
+            .get()
+            .cloned()
             .expect("the failure is on screen");
         assert!(notice.text.starts_with("Could not save"), "{}", notice.text);
         assert_eq!(
@@ -3331,6 +3334,51 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
             NoticeLevel::Failed,
             "and it is tinted as a failure",
         );
+    }
+    // Case `a_failed_save_stays_in_the_bar_with_try_again_until_a_save_succeeds`.
+    {
+        let dir = scratch("held-failure");
+        let (mut app, mut doc) = app_and_doc();
+        app.project_path = Some(PathBuf::from("/definitely/not/a/directory/x.qvp"));
+        // The save failed longer ago than any notice lasts.
+        let failed = ui::time::now()
+            .checked_sub(ui::widget::toast::NOTICE_LIFETIME + ui::time::Duration::from_secs(1))
+            .expect("the test clock can age the failure");
+        ui::time::testing::with_monotonic_time(failed, || {
+            app.queue_save_project();
+            sync(&mut app, &mut doc);
+        });
+        sync(&mut app, &mut doc);
+        let shown = ui::window_toolbar::notice().expect("the failure is still in the bar");
+        assert!(shown.text.starts_with("Could not save"), "{}", shown.text);
+        assert_eq!(shown.kind, ui::widget::toast::ToastKind::Error);
+        assert_eq!(
+            shown.action.as_ref().map(|action| action.id.as_str()),
+            Some(notices::SAVE_RETRY_ACTION),
+            "with Try again beside it",
+        );
+        assert_eq!(app.next_wake_deadline(), None, "it waits for the person");
+
+        // Try again where the save can land: the failure goes, and nothing
+        // claims the project unsaved.
+        let saved = dir.join("Held.qvp");
+        app.project_path = Some(saved.clone());
+        ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+            id: notices::SAVE_RETRY_ACTION.into(),
+        });
+        assert!(
+            app.update(&doc, &automerge::ROOT),
+            "the press asks for a sync"
+        );
+        sync(&mut app, &mut doc);
+        assert!(saved.is_file(), "Try again saved the project");
+        assert!(!app.project_is_dirty());
+        assert_eq!(
+            ui::window_toolbar::notice(),
+            None,
+            "and the failure left the bar"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
     // Case `opening_something_that_is_not_a_project_reports_it_and_keeps_the_project`.
     {
@@ -3347,7 +3395,11 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
             before,
             "the open project is untouched"
         );
-        let notice = app.project_notice.clone().expect("it says what went wrong");
+        let notice = app
+            .project_notice
+            .get()
+            .cloned()
+            .expect("it says what went wrong");
         assert_eq!(notice.text, "Not a video project file");
         assert_eq!(notice.level, NoticeLevel::Failed);
         std::fs::remove_dir_all(&dir).ok();
@@ -3379,7 +3431,8 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         app.load_project_file(path, None);
         let notice = app
             .project_notice
-            .clone()
+            .get()
+            .cloned()
             .expect("the open reported something");
         assert!(notice.text.contains("Opened Moved"), "{}", notice.text);
         assert!(
@@ -4006,12 +4059,12 @@ fn portal_destinations_save_where_chosen_or_cancel_cleanly() {
         let (services, _recorder) = ui::host::HostServices::recording();
         ui::host::scoped(&services, || app.request_save_as());
         assert_eq!(
-            app.project_notice.as_ref().map(|n| n.text.as_str()),
+            app.project_notice.get().map(|n| n.text.as_str()),
             Some("Choose where to save…"),
         );
         sync(&mut app, &mut doc);
         assert!(
-            app.project_notice.is_none(),
+            !app.project_notice.is_shown() && ui::window_toolbar::notice().is_none(),
             "no stale 'choosing…' line left behind"
         );
         assert!(
