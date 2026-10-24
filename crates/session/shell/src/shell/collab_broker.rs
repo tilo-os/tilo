@@ -34,10 +34,7 @@ pub(crate) use personal_session::{
     NativePersonalSession, NativePersonalSource, RetainedProofRecipient,
 };
 
-/// What a room calls the peers in it, keyed by the handle presence
-/// frames identify their sender by. Same shape as
-/// [`crate::shell::peer_presence::PeerLabels`].
-pub type PeerLabels = std::collections::BTreeMap<u64, String>;
+pub use crate::shell::peer_presence::PeerLabels;
 
 /// How long a room's answer is cached before re-asking. Reading it
 /// takes the replica's lock and parses every peer id in the room
@@ -1287,9 +1284,6 @@ fn remote_participant_id(
     labels: &mut HashMap<String, (Instant, PeerLabels)>,
     announced: &mut Announced,
 ) -> String {
-    // Attributed to the publishing host, not a local peer slot: this is
-    // what colours the caret, so two peers must never collapse to one id.
-    let user_id = format!("peer@{peer}");
     let now = Instant::now();
     let fresh = labels
         .get(cluster_id)
@@ -1297,13 +1291,16 @@ fn remote_participant_id(
     if !fresh {
         labels.insert(cluster_id.to_string(), (now, labels_of(cluster_id)));
     }
-    // What the room (i.e. whoever invited them) calls this peer. An
-    // unnamed peer has no entry and stays labelled with the id above.
+    // Attributed to the publishing session, not a local peer slot: this is
+    // what colours the caret, so two peers must never collapse to one id.
+    // What the room (i.e. whoever invited them) calls this peer; an
+    // unnamed peer has no name and stays labelled with its id.
+    let unnamed = PeerLabels::new();
+    let room = labels.get(cluster_id).map_or(&unnamed, |(_, room)| room);
+    let crate::shell::peer_presence::PresencePrincipal { id: user_id, name } =
+        crate::shell::peer_presence::resolve_presence_principal(room, peer);
     let slot = (cluster_id.to_string(), peer);
-    let known = labels
-        .get(cluster_id)
-        .and_then(|(_, m)| m.get(&peer))
-        .map(String::as_str);
+    let known = name.as_deref();
     let prior = announced.get(&slot);
     let generation = table.connections_seen();
     let colour = colour_of(peer);

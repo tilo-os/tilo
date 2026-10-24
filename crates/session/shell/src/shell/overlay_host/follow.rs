@@ -362,7 +362,10 @@ impl ShellOverlayHost {
         for participant in &workspace.collaborators {
             roster_id_for_presence.insert(participant.id.clone(), participant.id.clone());
             if let Some(session) = participant.session {
-                roster_id_for_presence.insert(format!("peer@{session}"), participant.id.clone());
+                roster_id_for_presence.insert(
+                    crate::shell::peer_presence::presence_id(session),
+                    participant.id.clone(),
+                );
             }
         }
         let relationships = presence
@@ -658,8 +661,8 @@ impl ShellOverlayHost {
                         .iter()
                         .find(|participant| participant.id == id)
                         .and_then(|participant| participant.session);
-                    let target =
-                        session.map_or_else(|| id.to_string(), |session| format!("peer@{session}"));
+                    let target = session
+                        .map_or_else(|| id.to_string(), crate::shell::peer_presence::presence_id);
                     (workspace.room(), Some(target), session)
                 });
                 drop(tree);
