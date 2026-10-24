@@ -701,6 +701,11 @@ dictation-cancel = Cancel
 
 widget-sidebar-resize = Resize sidebar
 widget-inspector-resize = Resize inspector
+widget-inspector = Inspector
+widget-sheet-height = Height
+widget-sheet-peek = Lowered
+widget-sheet-half = Half height
+widget-sheet-full = Full height
 
 dictation-copy-transcript = Copy transcript
 dictation-discard-transcript = Discard transcript

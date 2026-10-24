@@ -92,8 +92,10 @@ use crate::widget::{
     AppModel, Button, Element, ModelPath, SearchField, TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
+mod back;
 mod band;
 mod header_parts;
+mod inspector;
 pub(crate) mod memory;
 mod nothing_listed;
 mod notices;
@@ -107,10 +109,12 @@ mod window_toolbar;
 use crate::widget::toast::ToastKind;
 use band::plan;
 use header_parts::{HeaderTitle, MoreActions};
+use inspector::inspector_layout_of;
+pub use inspector::{InspectorFrame, InspectorLink};
 use sidebar_resize::AdaptiveSidebar;
 use status_action::place_status_action;
 use window_toolbar::Requests;
-pub use window_toolbar::WindowBarLink;
+pub use window_toolbar::{WINDOW_BACK, WindowBarLink};
 
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -150,6 +154,11 @@ pub enum ContentKind {
     /// Too narrow to dock, the sidebar floats as a drawer over the content
     /// instead of taking turns with it. Needs a reading column.
     Document,
+    /// A surface drawn on, zoomed and panned: a canvas, a map, a board.
+    /// Content-primary as a [`Self::Document`] is, but it works as narrow as
+    /// a grid of tiles (`metrics.grid_min_width`), so its inspector docks
+    /// beside it sooner and the surface stays in view.
+    Canvas,
 }
 
 impl ContentKind {
@@ -161,7 +170,7 @@ impl ContentKind {
             Self::List => metrics.list_min_width,
             Self::Reading | Self::Document => metrics.reading_min_width,
             Self::Page => metrics.page_min_width,
-            Self::Grid => metrics.grid_min_width,
+            Self::Grid | Self::Canvas => metrics.grid_min_width,
         }
     }
 
@@ -169,7 +178,7 @@ impl ContentKind {
     /// occasional visit: too narrow to dock, the sidebar floats over it.
     #[must_use]
     pub fn is_content_primary(self) -> bool {
-        self == Self::Document
+        matches!(self, Self::Document | Self::Canvas)
     }
 }
 
@@ -205,7 +214,9 @@ pub enum InspectorPlacement {
     #[default]
     None,
     Docked,
-    Drawer,
+    /// Too narrow to dock: a sheet up from the window's foot, over the
+    /// content's lower part ([`crate::widget::BottomSheet`]).
+    Sheet,
 }
 
 /// Where the overview is this frame.
@@ -373,6 +384,9 @@ struct Metrics {
     rail: f64,
     overview: f64,
     inspector: f64,
+    /// The inspector's docked width before larger text widens it: a
+    /// sheet in a window short of twice that opens at the whole height.
+    sheet_least_half: f64,
     drawer: f64,
     drawer_dismiss_band: f64,
     list_min: f64,
@@ -383,6 +397,7 @@ struct Metrics {
     hysteresis: f64,
     filter: f64,
     resize_grip: f64,
+    pointer: f64,
     scale: f64,
     /// One line of body text: the unit of a page column's width.
     body_line: f64,
@@ -410,6 +425,7 @@ impl Metrics {
             rail: f64::from(m.rail_width),
             overview: f64::from(m.overview_width) * growth,
             inspector: f64::from(m.inspector_width) * growth,
+            sheet_least_half: f64::from(m.inspector_width),
             drawer: f64::from(m.drawer_width) * growth,
             drawer_dismiss_band: f64::from(m.min_pointer_target + s.s4),
             list_min: f64::from(m.list_min_width) * growth,
@@ -423,6 +439,7 @@ impl Metrics {
                 theme,
             ),
             resize_grip: f64::from(s.s1),
+            pointer: f64::from(m.min_pointer_target),
             scale: theme.responsive_scale(),
             body_line: f64::from(theme.text(crate::TextRole::Body).line_height_px()),
             scroll_gutter: f64::from(m.scrollbar_gutter),
@@ -509,6 +526,7 @@ struct Inputs {
     adaptive: Option<AdaptiveSidebar>,
     sidebar: FlapState,
     inspector: FlapState,
+    sheet: crate::widget::BottomSheet,
     pane: NavPane,
     /// The drawn position in the push stack while a push slides; `None` at
     /// rest, where the front screen's index stands.
@@ -588,6 +606,7 @@ impl Default for Inputs {
             adaptive: None,
             sidebar: FlapState::open_when_docked(),
             inspector: FlapState::open_when_docked(),
+            sheet: crate::widget::BottomSheet::new(),
             pane: NavPane::Content,
             push_pos: None,
             push: crate::motion::MotionValue::new(0.0),
@@ -617,7 +636,7 @@ impl Inputs {
             ContentKind::List => m.list_min,
             ContentKind::Reading | ContentKind::Document => m.reading_min,
             ContentKind::Page => m.page_min,
-            ContentKind::Grid => m.grid_min,
+            ContentKind::Grid | ContentKind::Canvas => m.grid_min,
         }
     }
 
@@ -702,6 +721,10 @@ pub struct NavGeometry {
     inspector_toggle_column: Option<Column>,
     history_column: Option<Column>,
     pub resize_handle: Rect,
+    /// What the inspector's sheet stands in, and how much of the foot it
+    /// keeps the content clear of.
+    pub sheet: crate::widget::SheetFrame,
+    pub sheet_covered: f64,
     /// The content edges of a centred page column (its leading and trailing
     /// text edge), where the content is one ([`NavShell::with_page_column`]).
     page_edges: Option<(f64, f64)>,
@@ -769,6 +792,10 @@ impl NavGeometry {
             window_row: t(self.window_row),
             band: t(self.band),
             resize_handle: t(self.resize_handle),
+            sheet: crate::widget::SheetFrame {
+                area: t(self.sheet.area),
+                ..self.sheet
+            },
             page_edges: self.page_edges.map(|(x0, x1)| (x0 + by.x, x1 + by.x)),
             ..self.clone()
         }
@@ -877,7 +904,7 @@ impl NavGeometry {
     fn floating(&self, column: Column) -> bool {
         match column {
             Column::Sidebar => self.sidebar == SidebarPlacement::Drawer,
-            Column::Inspector => self.inspector == InspectorPlacement::Drawer,
+            Column::Inspector => self.inspector == InspectorPlacement::Sheet,
             Column::Overview | Column::Content => false,
         }
     }
@@ -1025,7 +1052,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
 
     // 2. The inspector docks while the content keeps its minimum beside it;
-    //    narrower, it floats over the content from the trailing edge.
+    //    narrower, it is a sheet up from the window's foot.
     g.inspector = if !inputs.has_inspector {
         InspectorPlacement::None
     } else if reaches(
@@ -1036,7 +1063,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     ) {
         InspectorPlacement::Docked
     } else {
-        InspectorPlacement::Drawer
+        InspectorPlacement::Sheet
     };
     let inspector_layout = inspector_layout_of(g.inspector);
     let inspector_open = inputs.inspector.is_open(inspector_layout);
@@ -1103,7 +1130,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     //    starts at the top.
     let in_row = |column: Column| match column {
         Column::Sidebar => g.sidebar != SidebarPlacement::Drawer,
-        Column::Inspector => g.inspector != InspectorPlacement::Drawer,
+        Column::Inspector => g.inspector != InspectorPlacement::Sheet,
         Column::Overview | Column::Content => true,
     };
     // The shell's own buttons (and a window's controls merged into the
@@ -1260,17 +1287,24 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 inspector_header = header_of(g.inspector_column, Column::Inspector);
             }
         }
-        InspectorPlacement::Drawer => {
-            if inspector_reveal > 0.001 {
-                let dw = iw.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
-                let x1 = w - m.gap + (dw + m.gap) * (1.0 - inspector_reveal);
-                g.inspector_column = Rect::new(x1 - dw, drawer_top, x1, drawer_bottom);
-                (inspector_header, inspector_body) = drawer_split(
-                    g.inspector_column,
-                    drawer_hh,
-                    inputs.header_wanted(Column::Inspector),
-                );
-            }
+        InspectorPlacement::Sheet => {
+            let header = inputs.header_wanted(Column::Inspector);
+            g.sheet = crate::widget::SheetFrame {
+                area: Rect::new(0.0, drawer_top, w, h),
+                peek: if header {
+                    drawer_hh.max(m.header)
+                } else {
+                    m.header
+                },
+                grip: m.pointer,
+                least_half: m.sheet_least_half,
+            };
+            let sheet = inputs
+                .sheet
+                .geometry(g.sheet, inspector_reveal, inspector_open);
+            g.inspector_column = sheet.panel;
+            g.sheet_covered = sheet.covered;
+            (inspector_header, inspector_body) = drawer_split(sheet.content, drawer_hh, header);
         }
     }
 
@@ -1297,6 +1331,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if g.rail.width() > 0.0 {
         g.rail = Rect::new(g.rail.x0, bt, g.rail.x1, g.rail.y1);
     }
+    inspector::keep_clear(&mut g, h);
     g.page_edges = inputs
         .page_lines
         .and_then(|lines| page_edges(g.content_column, lines, &m));
@@ -1497,13 +1532,6 @@ fn layout_of(sidebar: SidebarPlacement) -> SplitLayout {
     match sidebar {
         SidebarPlacement::Drawer | SidebarPlacement::Screen => SplitLayout::Overlay,
         SidebarPlacement::Docked | SidebarPlacement::None => SplitLayout::Docked,
-    }
-}
-
-fn inspector_layout_of(inspector: InspectorPlacement) -> SplitLayout {
-    match inspector {
-        InspectorPlacement::Drawer => SplitLayout::Overlay,
-        InspectorPlacement::Docked | InspectorPlacement::None => SplitLayout::Docked,
     }
 }
 
@@ -2432,15 +2460,6 @@ impl NavShell {
         }
     }
 
-    /// Whether the inspector shows.
-    pub fn is_inspector_open(&self) -> bool {
-        let layout = match self.geometry.inspector {
-            InspectorPlacement::None => return false,
-            placement => inspector_layout_of(placement),
-        };
-        self.inputs.borrow().inspector.is_open(layout)
-    }
-
     /// The front screen of the push stack (meaningful when it has more than
     /// one screen).
     pub fn front_pane(&self) -> NavPane {
@@ -2497,30 +2516,6 @@ impl NavShell {
         }
     }
 
-    /// Show or hide the inspector, remembering the choice for this window
-    /// size class (also while the app takes the inspector away and gives it
-    /// back).
-    pub fn toggle_inspector(&mut self) {
-        let layout = match self.geometry.inspector {
-            InspectorPlacement::None => return,
-            placement => inspector_layout_of(placement),
-        };
-        self.inputs.borrow_mut().inspector.toggle(layout);
-        self.after_flap_change();
-    }
-
-    pub fn open_inspector(&mut self) {
-        if !self.is_inspector_open() {
-            self.toggle_inspector();
-        }
-    }
-
-    pub fn close_inspector(&mut self) {
-        if self.is_inspector_open() {
-            self.toggle_inspector();
-        }
-    }
-
     fn after_flap_change(&mut self) {
         if self.layout_theme.reduce_motion {
             // Under reduced motion the panel does not slide; it fades in.
@@ -2548,6 +2543,7 @@ impl NavShell {
             state.binding.publish(&inspector);
         }
         self.publish_window_slots();
+        self.publish_inspector_frame();
     }
 
     /// Bring the sidebar and inspector in line with bound states that
@@ -2648,33 +2644,6 @@ impl NavShell {
         self.invalidate();
     }
 
-    /// Go back one screen: the app's page stack first ([`Self::with_back`]),
-    /// then a narrow window's push stack. Returns whether it did.
-    pub fn back(&mut self) -> bool {
-        if self.inputs.borrow().content_back
-            && self.geometry.back_column == Some(Column::Content)
-            && let Some(back) = self.content_back.as_mut()
-        {
-            (back.go_back)();
-            self.refresh_content_back();
-            return true;
-        }
-        self.pop_push_stack()
-    }
-
-    fn pop_push_stack(&mut self) -> bool {
-        if self.geometry.back_column.is_none() {
-            return false;
-        }
-        let stack = self.geometry.stack.clone();
-        let front = stack_index(&stack, self.front_pane());
-        let Some(previous) = front.checked_sub(1).and_then(|i| stack.get(i).copied()) else {
-            return false;
-        };
-        self.show(previous);
-        true
-    }
-
     /// Ask the app's page stack whether it can go back.
     fn refresh_content_back(&mut self) {
         let Some(back) = self.content_back.as_ref() else {
@@ -2694,6 +2663,8 @@ impl NavShell {
             let layout = inspector_layout_of(self.geometry.inspector);
             let open = inputs.inspector.is_open(layout);
             inputs.inspector.snap(open);
+            let detent = inputs.sheet.detent();
+            inputs.sheet.snap_to(detent);
             inputs.push_pos = None;
             let at = inputs.push.target();
             inputs.push.snap(at);
@@ -2870,7 +2841,7 @@ impl NavShell {
                 _ => theme.in_region(crate::surface::Region::Sidebar),
             },
             Some(Column::Inspector) => match self.geometry.inspector {
-                InspectorPlacement::Drawer => theme.on_ground(crate::chrome::panel_ground(theme)),
+                InspectorPlacement::Sheet => theme.on_ground(crate::chrome::panel_ground(theme)),
                 _ => theme.in_region(crate::surface::Region::Inspector),
             },
             Some(Column::Overview | Column::Content) | None => theme.clone(),
@@ -3022,9 +2993,11 @@ impl NavShell {
                 inputs.sidebar.reveal(),
                 inputs.inspector.reveal(),
                 inputs.push_pos,
+                inputs.sheet.drawn(),
             );
             moving |= inputs.sidebar.advance(sidebar_layout, now, motion);
             moving |= inputs.inspector.advance(inspector_layout, now, motion);
+            moving |= inputs.sheet.advance(now);
             if stack_empty || !inputs.push.is_moving(now) {
                 // Settled: the front screen's index, exactly.
                 inputs.push_pos = None;
@@ -3037,6 +3010,7 @@ impl NavShell {
                     inputs.sidebar.reveal(),
                     inputs.inspector.reveal(),
                     inputs.push_pos,
+                    inputs.sheet.drawn(),
                 )
         };
         if self.switch_fade.is_moving(now) {
@@ -3082,6 +3056,7 @@ impl NavShell {
     fn refresh_geometry(&mut self) {
         let local = plan(&self.inputs.borrow(), self.rect.width(), self.rect.height());
         self.geometry = local.translated(Vec2::new(self.rect.x0, self.rect.y0));
+        self.place_sheet();
     }
 
     /// The screen a new window opens on: the first list of items, which is
@@ -3384,7 +3359,7 @@ impl NavShell {
                 if !g.floating(column) || rect.width() <= 0.0 {
                     continue;
                 }
-                crate::widget::sidebar::paint_floating_drawer(f.scene, f.transform, rect, f.theme);
+                self.paint_drawer_ground(f, column, rect);
                 self.paint_column(f, column);
             }
             if faded {
@@ -3914,6 +3889,19 @@ fn place_header(
 }
 
 impl Widget for NavShell {
+    fn on_nav_gesture(
+        &mut self,
+        dir: crate::gesture::NavDirection,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        self.nav_gesture(dir, state, path)
+    }
+
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.nav_gesture_availability()
+    }
+
     // The shell frames the app; what the window is (its view, presence,
     // what continues on another device, what a diagnostic input reads) is
     // the content it frames.
@@ -4323,11 +4311,12 @@ impl Widget for NavShell {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.resize.is_some() || self.geometry.resize_handle.contains(point))
             .then_some(winit::window::CursorIcon::ColResize)
+            .or_else(|| self.sheet_cursor(point))
     }
 
     /// A finger on the sidebar's edge drags it; it never scrolls.
     fn claims_raw_touch(&self, point: Point) -> bool {
-        self.sidebar_resize_touch_band().contains(point)
+        self.sidebar_resize_touch_band().contains(point) || self.sheet_claims_touch(point)
     }
 
     /// The window's group: keyed by the shell's id, so what stands under a
@@ -4348,7 +4337,12 @@ impl Widget for NavShell {
         Some(
             AccessNode::new(Role::Group)
                 .with_semantic_key(format!("{key}.window"))
-                .with_children(resize.into_iter().collect()),
+                .with_children(
+                    resize
+                        .into_iter()
+                        .chain(self.sheet_accessibility())
+                        .collect(),
+                ),
         )
     }
 
@@ -4359,6 +4353,9 @@ impl Widget for NavShell {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if target == self.sheet_target() {
+            return self.perform_sheet_action(action);
+        }
         if target != self.sidebar_resize_target() || self.sidebar_resize_handle().is_none() {
             return false;
         }
@@ -4371,6 +4368,9 @@ impl Widget for NavShell {
     }
 
     fn set_focus(&mut self, focused: bool) {
+        if !focused {
+            self.inputs.borrow_mut().sheet.set_focused(false);
+        }
         if !focused && self.resize_focused {
             self.resize_focused = false;
             self.invalidate();
@@ -4638,6 +4638,9 @@ impl NavShell {
         event: &WindowEvent,
         ctx: &mut crate::widget::EventCtx<'_>,
     ) -> bool {
+        if self.sheet_event(event, ctx) {
+            return true;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -4737,11 +4740,7 @@ impl NavShell {
                 self.toggle_by_key(Column::Sidebar);
                 return true;
             }
-            if self.geometry.inspector == InspectorPlacement::Drawer && self.is_inspector_open() {
-                self.toggle_by_key(Column::Inspector);
-                return true;
-            }
-            if self.pop_push_stack() {
+            if self.sheet_back() || self.pop_push_stack() {
                 return true;
             }
         }
@@ -4764,15 +4763,14 @@ impl NavShell {
         }
         // A press on the content beside an open drawer puts the drawer away
         // (and does nothing else); the header row and the band stay live.
+        // The content above the inspector's sheet stays live too.
         if let Some(column) = g.open_drawer()
+            && column == Column::Sidebar
             && !g.column(column).contains(p)
             && !g.window_row_contains(p)
             && !g.band.contains(p)
         {
-            match column {
-                Column::Sidebar => self.toggle_sidebar(),
-                _ => self.toggle_inspector(),
-            }
+            self.toggle_sidebar();
             return true;
         }
         // Remember which content pane the person works in.

@@ -277,6 +277,7 @@ mod caller_palette;
 mod capture;
 mod drive;
 mod invocation_results;
+mod nav_gesture;
 #[cfg(test)]
 mod palette_window_tests;
 mod retained_layout;

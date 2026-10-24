@@ -1036,9 +1036,9 @@ impl MonitorApp {
             menu.push(item);
             choices.push(choice);
         };
-        // "Show details" only earns a place where the inspector is a closed
-        // drawer; beside the table the right-click already showed them.
-        if self.shell.geometry().inspector == InspectorPlacement::Drawer
+        // "Show details" only earns a place where the inspector is a put-away
+        // sheet; beside the table the right-click already showed them.
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
         {
             push(
@@ -1266,10 +1266,10 @@ impl MonitorApp {
         self.shell.set_inspector_title(process.name.clone());
     }
 
-    /// Open the inspector where it is a closed drawer, so choosing a process
+    /// Open the inspector where it is a put-away sheet, so choosing a process
     /// on a narrow window shows it.
     fn reveal_inspector(&mut self) {
-        if self.shell.geometry().inspector == InspectorPlacement::Drawer
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
         {
             self.shell.toggle_inspector();
@@ -2065,13 +2065,13 @@ mod tests {
     }
 
     /// The window lays out at desktop, narrow and phone sizes: the inspector
-    /// docks where it leaves the table its room and is a drawer below that.
+    /// docks where it leaves the table its room and is a sheet below that.
     #[test]
     fn window_lays_out_at_every_size() {
         for (viewport, placement) in [
             ((1280, 800), InspectorPlacement::Docked),
             ((800, 600), InspectorPlacement::Docked),
-            ((480, 820), InspectorPlacement::Drawer),
+            ((480, 820), InspectorPlacement::Sheet),
         ] {
             let harness = window(app(), viewport);
             let monitor = harness.root::<MonitorApp>();

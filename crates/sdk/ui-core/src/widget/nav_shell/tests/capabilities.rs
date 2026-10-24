@@ -372,39 +372,67 @@ fn an_open_drawer_leaves_the_window_live_beside_it() {
 }
 
 #[test]
-fn enlarged_drawers_leave_a_pointer_target_that_dismisses_them() {
+fn an_enlarged_sidebar_drawer_leaves_a_pointer_target_that_dismisses_it() {
     for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
         let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
-        for inspector in [false, true] {
-            let shell = NavShell::new()
-                .content_kind(ContentKind::Document)
-                .sidebar(Probe::boxed("sidebar").0)
-                .content(Probe::boxed("content").0)
-                .inspector(Probe::boxed("inspector").0);
-            let mut h = harness(shell, 480, 800, theme.clone());
-            if inspector {
-                h.root_mut::<NavShell>().open_inspector();
-            } else {
-                h.root_mut::<NavShell>().open_sidebar();
-            }
-            settle(&mut h, 480, 800);
-            let g = geometry(&h);
-            let x = if inspector {
-                assert!(g.inspector_column.x0 >= band - 0.5);
-                g.inspector_column.x0 / 2.0
-            } else {
-                assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
-                (480.0 + g.sidebar_column.x1) / 2.0
-            };
-            assert!(g.open_drawer().is_some());
-            h.click_at(x, g.content_column.center().y);
-            settle(&mut h, 480, 800);
-            assert_eq!(
-                geometry(&h).open_drawer(),
-                None,
-                "a press beside the drawer closes it"
-            );
-        }
+        let shell = NavShell::new()
+            .content_kind(ContentKind::Document)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+            .inspector(Probe::boxed("inspector").0);
+        let mut h = harness(shell, 480, 800, theme.clone());
+        h.root_mut::<NavShell>().open_sidebar();
+        settle(&mut h, 480, 800);
+        let g = geometry(&h);
+        assert!(480.0 - g.sidebar_column.x1 >= band - 0.5);
+        assert_eq!(g.open_drawer(), Some(Column::Sidebar));
+        h.click_at(
+            (480.0 + g.sidebar_column.x1) / 2.0,
+            g.content_column.center().y,
+        );
+        settle(&mut h, 480, 800);
+        assert_eq!(
+            geometry(&h).open_drawer(),
+            None,
+            "a press beside the drawer closes it"
+        );
+    }
+}
+
+#[test]
+fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
+    let _settled = crate::motion::testing::settled();
+    for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
+        let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
+        let (content, events) = Probe::boxed("content");
+        let shell = NavShell::new()
+            .content_kind(ContentKind::Document)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(content)
+            .inspector(Probe::boxed("inspector").0);
+        let mut h = harness(shell, 480, 800, theme.clone());
+        h.root_mut::<NavShell>().open_inspector();
+        settle(&mut h, 480, 800);
+        let g = geometry(&h);
+        assert_eq!(g.open_drawer(), Some(Column::Inspector));
+        let content = child_rect(&h, "content").expect("the content stands");
+        assert!(
+            g.inspector_column.y0 - content.y0 >= band - 0.5,
+            "a pointer target of content above the sheet: {content:?} {:?}",
+            g.inspector_column
+        );
+        let before = events.get();
+        h.click_at(
+            content.center().x,
+            (content.y0 + g.inspector_column.y0) / 2.0,
+        );
+        settle(&mut h, 480, 800);
+        assert!(events.get() > before, "the press reaches the content");
+        assert_eq!(
+            geometry(&h).open_drawer(),
+            Some(Column::Inspector),
+            "the sheet stays up while the content above is used"
+        );
     }
 }
 

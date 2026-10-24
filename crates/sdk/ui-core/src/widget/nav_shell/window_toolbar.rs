@@ -28,6 +28,11 @@ pub(super) struct Requests {
     pub(super) put_drawer_away: Cell<bool>,
     /// The shell's own slots for the window's bar as of its last layout.
     slots: RefCell<WindowToolbar>,
+    /// The inspector's frame as of the last layout, and what an
+    /// [`super::InspectorLink`] asked of it.
+    pub(super) inspector_frame: Cell<super::InspectorFrame>,
+    pub(super) inspector_wanted: Cell<Option<bool>>,
+    pub(super) inspector_detent: Cell<Option<crate::widget::SheetDetent>>,
 }
 
 /// The shell's own buttons in the window's bar, for an app that paints
@@ -111,6 +116,7 @@ impl NavShell {
         if crate::window_toolbar::take_notice_press(super::notices::WINDOW_NOTICE_ACTION) {
             acted |= self.press_notice_action();
         }
+        acted |= self.take_inspector_requests();
         if self.built
             && let Some(open) = self.requests.staged_sidebar.take()
         {
@@ -188,11 +194,11 @@ impl NavShell {
     }
 
     /// Whether Back goes anywhere: the app's page stack
-    /// ([`Self::with_back`], [`Self::set_can_go_back`]) or a narrow
-    /// window's push stack.
+    /// ([`Self::with_back`], [`Self::set_can_go_back`]), a narrow
+    /// window's push stack, or the inspector's sheet to lower or put away.
     #[must_use]
     pub fn can_go_back(&self) -> bool {
-        self.geometry.back_column.is_some()
+        self.geometry.back_column.is_some() || self.sheet_shown()
     }
 
     /// The shell's own slots for the window's bar
