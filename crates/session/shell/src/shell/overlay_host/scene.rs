@@ -24,7 +24,8 @@ impl ShellOverlayHost {
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.overview_zoom_moving(now),
-                workspace_switch: self.workspace_switch_holding_at(now),
+                workspace_switch: self.workspace_switch_holding_at(now)
+                    || self.workspace_slide_moving(now),
                 quick_settings: self.qs_motion.is_animating(now)
                     || self.qs_root.is_animating(now)
                     || self.qs_root_scroll_fading(),
@@ -136,6 +137,7 @@ impl ShellOverlayHost {
         // geometry is resolved below; otherwise a first frame at large type
         // has a default-height card and clips its two-line controls.
         self.refresh_active_tab_presence();
+        self.hand_flying_windows_to_the_overview(ui::time::now());
         self.qs_root.set_layout_text_scale(theme.text_scale);
         self.qs_type_lines = CenterLayout::metrics(theme, text_renderer);
         self.qs_panel = QsPanelMetrics::for_theme(theme);
@@ -157,7 +159,8 @@ impl ShellOverlayHost {
         let mut phase_at = std::time::Instant::now();
         // Strips drawn in canvas coordinates are each drawn on their own:
         // the column skips them and they are drawn below, top to bottom.
-        let apart = if unbaked {
+        // A workspace slide moves the arriving windows as one drawing.
+        let apart = if unbaked && self.workspace_slide.is_none() {
             self.rows_on_screen()
         } else {
             Vec::new()
@@ -640,7 +643,9 @@ impl ShellOverlayHost {
     /// Whether a transition still owes a present. The clock may have been
     /// deferred; this is the signal that keeps the frame run alive.
     pub(crate) fn transition_present_pending(&self) -> bool {
-        self.overview_zoom_moving(ui::time::now()) || self.workspace_switch_holding()
+        self.overview_zoom_moving(ui::time::now())
+            || self.workspace_switch_holding()
+            || self.workspace_slide_moving(ui::time::now())
     }
 
     /// Give `by` back to a running overview or workspace switch. Call with
@@ -863,6 +868,7 @@ impl ShellOverlayHost {
             || self.desk_animating(now)
             || self.strip_navigator.indicators_need_animation_frame(now)
             || self.workspace_switch_holding_at(now)
+            || self.workspace_slide_moving(now)
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
@@ -887,6 +893,7 @@ impl ShellOverlayHost {
             || self.peer_sync_overlay.needs_animation_frame()
             || self.directory_sheet.needs_animation_frame()
             || self.arrival_line.needs_animation_frame()
+            || self.faces.is_moving(now)
     }
 }
 

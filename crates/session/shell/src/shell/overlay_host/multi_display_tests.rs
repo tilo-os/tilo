@@ -468,6 +468,108 @@ fn the_file_chooser_sheet_goes_on_the_window_its_handle_names() {
     crate::compositor::window_handles::forget(0xdead_0000_0001);
 }
 
+/// Escape takes the chooser down as Cancel does, also when the window that
+/// asked is the only one, which shows no focus accent.
+#[test]
+fn escape_cancels_the_file_chooser_of_a_lone_window() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let mut tree = app_tree();
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .retain(|group| group.id == ON_MONITOR);
+    let (mut desk, pickers) = Desk::with_queue(tree);
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let mut answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    assert!(
+        matches!(
+            desk.fb.host().file_picker_place(),
+            PickerPlace::Window { focused: true, .. }
+        ),
+        "the lone window that asked is the one in use"
+    );
+    for pressed in [true, false] {
+        desk.dispatch(&crate::shell::test_control::keyboard_input_event(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            pressed,
+        ));
+    }
+    let _ = desk.fb.host_mut().pump_file_picker();
+    desk.settle();
+    assert!(desk.fb.host().file_picker().is_none(), "Escape closed it");
+    assert_eq!(
+        answer.try_recv().ok(),
+        Some(None),
+        "and the app hears it was cancelled"
+    );
+}
+
+/// While another window has the keyboard, the compositor lets its keys
+/// and its pointer through to that window; the chooser holds the keyboard
+/// only while the window that asked is focused, and the pointer only over
+/// that window and its sheet. A chooser held back every key wherever the
+/// person had gone, and ignored them itself.
+#[test]
+fn a_file_chooser_holds_back_input_only_for_the_window_it_blocks() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+    use crate::shell::input_policy::{chrome_captures_input, chrome_captures_touch_at};
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let _answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    assert!(
+        chrome_captures_input(&desk.fb),
+        "the asking window is focused: its sheet has the keys"
+    );
+
+    let other = desk.display(0).center();
+    desk.click(other);
+    let PickerPlace::Window {
+        window,
+        focused: false,
+        ..
+    } = desk.fb.host().file_picker_place()
+    else {
+        panic!("the other window took the keyboard");
+    };
+    assert!(
+        !chrome_captures_input(&desk.fb),
+        "the focused window gets its keys while the sheet waits on another"
+    );
+    assert!(
+        !chrome_captures_touch_at(&desk.fb, other),
+        "and the pointer over it"
+    );
+    assert!(
+        chrome_captures_touch_at(&desk.fb, window.center()),
+        "the waiting window stays closed to the pointer"
+    );
+    assert!(
+        chrome_captures_touch_at(&desk.fb, desk.sheet().center()),
+        "and its sheet takes it"
+    );
+
+    desk.click(window.center());
+    assert!(
+        chrome_captures_input(&desk.fb),
+        "a click back on the waiting window gives its sheet the keys again"
+    );
+}
+
 /// The sheet closes only its own window to input: the other window takes
 /// a click and the keys that follow, the sheet's name field stays as it
 /// was, and a click back on the waiting window gives the sheet the keys.

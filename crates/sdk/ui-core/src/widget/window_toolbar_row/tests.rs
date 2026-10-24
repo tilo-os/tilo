@@ -27,6 +27,7 @@ fn browser() -> WindowToolbar {
             navigates: false,
             toggles: false,
             destructive: false,
+            labelled: false,
         }],
         ..WindowToolbar::default()
     }
@@ -403,7 +404,7 @@ fn calendar() -> WindowToolbar {
         leading: vec![
             ToolbarAction::new("previous", "chevron-left", "Previous week").navigating(),
             ToolbarAction::new("next", "chevron-right", "Next week").navigating(),
-            ToolbarAction::new("today", "calendar", "Today"),
+            ToolbarAction::new("today", "calendar", "Today").labelled(),
         ],
         location: Some(ToolbarLocation::period(a_week())),
         views: Some(ToolbarViews {
@@ -478,7 +479,12 @@ fn file_toolbar(actions: usize) -> WindowToolbar {
 fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
     // As wide as the row a compact (420 px) window leaves the toolbar.
     let compact = Rect::new(0.0, 0.0, 220.0, 40.0);
-    let one = Slots::lay_out(&file_toolbar(1), compact, None, &LocationForms::default());
+    let one = Slots::lay_out(
+        &file_toolbar(1),
+        compact,
+        None,
+        (&LocationForms::default(), &[]),
+    );
     assert_eq!(one.actions.len(), 1, "the action stands in the row");
     assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
 
@@ -487,7 +493,7 @@ fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
             &file_toolbar(declared),
             compact,
             None,
-            &LocationForms::default(),
+            (&LocationForms::default(), &[]),
         );
         let folded = declared - slots.actions.len();
         assert!(
@@ -501,7 +507,7 @@ fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
         &file_toolbar(1),
         Rect::new(0.0, 0.0, 900.0, 40.0),
         None,
-        &LocationForms::default(),
+        (&LocationForms::default(), &[]),
     );
     assert_eq!(wide.actions.len(), 1);
     assert_eq!(wide.overflow, Rect::ZERO);
@@ -665,6 +671,50 @@ fn the_location_picks_the_view_from_the_width_its_narrower_form_fits_whole() {
     assert_eq!(
         picker.take_events(),
         vec![(3, ToolbarEvent::Action { id: "day".into() })]
+    );
+}
+
+#[test]
+fn today_says_its_name_where_the_row_has_room_and_folds_to_its_icon_then_the_menu() {
+    const TODAY: usize = 2;
+    let shown = |width: f64| {
+        let row = calendar_row(width);
+        let slots = row.slots();
+        let rect = slots.leading[TODAY];
+        if rect.area() <= 0.0 {
+            "in the menu"
+        } else if slots.labelled {
+            assert!(
+                rect.width() > CONTROL_PX,
+                "a text button is wider than an icon"
+            );
+            "named"
+        } else {
+            assert_eq!(rect.width(), CONTROL_PX);
+            "an icon"
+        }
+    };
+    assert_eq!(shown(1280.0), "named", "a wide row names Today");
+    assert_eq!(shown(233.0), "in the menu", "a compact row folds it");
+    let order = ["in the menu", "an icon", "named"];
+    let mut was = 0;
+    let mut seen = Vec::new();
+    for width in (233..=1280).map(f64::from) {
+        let now = shown(width);
+        let rank = order.iter().position(|form| *form == now).unwrap_or(0);
+        assert!(
+            rank >= was,
+            "{width} px shows Today {now} after {}",
+            order[was]
+        );
+        if rank > was || seen.is_empty() {
+            seen.push(now);
+        }
+        was = rank;
+    }
+    assert_eq!(
+        seen, order,
+        "it narrows from its name to its icon to the menu"
     );
 }
 

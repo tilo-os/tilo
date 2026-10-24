@@ -6291,3 +6291,7 @@ mod tests {
 #[cfg(test)]
 #[path = "live_app_actions/job_progress_tests.rs"]
 mod job_progress_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/window_records_tests.rs"]
+mod window_records_tests;

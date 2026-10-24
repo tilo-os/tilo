@@ -479,36 +479,8 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
     let Some(root) = isolated_root(OFFLOAD_TEST) else {
         return;
     };
-    // No home relay: the broker has no route, and every offloadable action
-    // runs through its app's handler exactly as before.
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
-    assert!(state.action_offload().is_none(), "unconfigured: no route");
-    let session_room = session.room().to_owned();
-    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_room).unwrap();
-    drop(state);
-    drop(session);
-
-    // The person's home relay retains the room: the session's broker gets
-    // the route. This relay never answers, so the route cannot place
-    // anything elsewhere, and says so: the door runs the app's handler.
-    let identity_root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
-    let unreachable = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
-        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
-    register_home_relay(
-        &identity_root,
-        cert.user_public_key,
-        &session_room,
-        unreachable,
-    );
-    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
-    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
-    let route = state
-        .action_offload()
-        .expect("the configured home relay routes the room's offloadable actions")
-        .clone();
-    let request = tilo_actions::offload::OffloadRequest {
-        room: session_room,
+    let request = |room: &str| tilo_actions::offload::OffloadRequest {
+        room: room.to_owned(),
         app_id: "so.tilo.photos".into(),
         address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
         offload: tilo_actions::Offload {
@@ -521,12 +493,70 @@ fn the_session_hands_its_broker_the_route_its_home_relay_configures() {
         },
         inputs: vec![hex::encode([1; 32])],
     };
-    let answer = tilo_rt::app().handle().block_on(route.offload(request));
-    let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
-        panic!("an unreachable relay places nothing elsewhere: {answer:?}");
+    let run_here = |route: &Arc<dyn tilo_actions::offload::ActionOffload>, room: &str| {
+        let answer = tilo_rt::app()
+            .handle()
+            .block_on(route.offload(request(room)));
+        let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
+            panic!("nothing here can run elsewhere: {answer:?}");
+        };
+        reason
     };
+
+    // No home relay yet: the broker holds the route, which runs every
+    // offloadable action through its app's handler and says why.
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    let route = state
+        .action_offload()
+        .expect("the session routes its rooms' offloadable actions")
+        .clone();
+    let session_room = session.room().to_owned();
+    assert_eq!(
+        run_here(&route, &session_room),
+        "no home relay of this device retains the room"
+    );
+
+    // The person registers their home relay as retaining the room while the
+    // session runs: the same session's route reaches it from the next
+    // invocation on. This relay never answers, so the route cannot place
+    // anything elsewhere, and says so: the door runs the app's handler.
+    let (_, cert) = tilo_identity_host::broker::trusted_current_device(&session_room).unwrap();
+    let identity_root = std::path::PathBuf::from(std::env::var_os("TILO_IDENTITY_ROOT").unwrap());
+    let unreachable = iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
+        .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
+    register_home_relay(
+        &identity_root,
+        cert.user_public_key,
+        &session_room,
+        unreachable,
+    );
+    let reason = run_here(&route, &session_room);
     assert!(reason.contains("offload route"), "{reason}");
     drop(route);
+    drop(state);
+    drop(session);
+
+    // A session started with the relay registered holds the room's route
+    // from the start.
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    let route = state
+        .action_offload()
+        .expect("the configured home relay routes the room's offloadable actions")
+        .clone();
+    let reason = run_here(&route, &session_room);
+    assert!(reason.contains("offload route"), "{reason}");
+    drop(route);
+    drop(state);
+    drop(session);
+
+    // Turned off, nothing is routed at all.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set(crate::offload::OFFLOAD_ENV, "off");
+    let session = Standalone::start_reporting(&root, &mut |_| {}).unwrap();
+    let state = Arc::clone(session.broker.app_action_broker().unwrap().state());
+    assert!(state.action_offload().is_none(), "offload is off: no route");
     drop(state);
     drop(session);
 }

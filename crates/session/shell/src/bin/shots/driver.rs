@@ -32,6 +32,7 @@ use taffy::prelude::NodeId;
 mod desktop_control;
 mod downloaded_scene;
 mod invite_scenes;
+mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
 mod two_groups_scene;
@@ -93,6 +94,8 @@ pub enum LockVisualState {
     Verifying,
     Error,
     Notifications,
+    /// The compact now-playing card under the credential panel.
+    NowPlaying,
 }
 
 impl ShellDriver {
@@ -624,6 +627,7 @@ impl ShellDriver {
                 self.fb.scene_size(),
                 None,
             );
+            let lock_player = now_playing_fixture::shots_player();
             let view = match state {
                 LockVisualState::Default => shell::compositor::lock_screen::LockView {
                     clock: "12:34",
@@ -653,6 +657,12 @@ impl ShellDriver {
                     clock: "12:34",
                     date: "Monday, 7 September",
                     notification_count: 3,
+                    ..Default::default()
+                },
+                LockVisualState::NowPlaying => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    now_playing: Some(&lock_player),
                     ..Default::default()
                 },
             };
@@ -1299,8 +1309,12 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
+        use shell::shell::now_playing::FixturePlayers;
         use shell::shell::state::Collaborator;
-        self.seed_now_playing_for_shots();
+        let mut player = now_playing_fixture::shots_player();
+        player.artwork = None;
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1350,28 +1364,13 @@ impl ShellDriver {
         }
     }
 
-    /// A music player playing, as the now-playing card reads it.
+    /// A song playing with its cover, for the now-playing cards.
     pub fn seed_now_playing_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
+        use shell::shell::now_playing::FixturePlayers;
         self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![
+                now_playing_fixture::shots_player(),
+            ])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada
@@ -2069,6 +2068,23 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "secret-prompt-authentication" => {
+                self.scene_secret_prompt_authentication(&["quinn"], None);
+            }
+            "secret-prompt-authentication-rejected" => self.scene_secret_prompt_authentication(
+                &["quinn"],
+                Some("That password was not accepted."),
+            ),
+            "secret-prompt-authentication-accounts" => {
+                self.scene_secret_prompt_authentication(&["quinn", "root"], None);
+            }
+            "secret-prompt-wifi" => self.scene_secret_prompt_network(SecretPromptNetwork::Wifi),
+            "secret-prompt-sign-in" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SignIn);
+            }
+            "secret-prompt-sim-pin" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SimPin);
+            }
             "desktop-control-ask" => self.scene_desktop_control_ask(),
             "desktop-control-chip" => self.scene_desktop_control_chip(),
             "desktop-control-menu" => self.scene_desktop_control_menu(),
@@ -3061,6 +3077,87 @@ impl ShellDriver {
     /// A portal permission sheet: a sandboxed app asks for the camera and the
     /// request travels the production prompt queue into the compositor's
     /// prompt (`PermissionPrompt`, hosted by `overlay_host`).
+    /// The compositor's password sheet as polkit raises it: for one
+    /// account, after a failed attempt, or with a choice of account.
+    fn scene_secret_prompt_authentication(&mut self, accounts: &[&str], notice: Option<&str>) {
+        let queue = self.host_mut().portal_dialog_queue();
+        let request = shell::shell::portal_dialog::AuthenticationRequest {
+            // Each variant is its own request: a live handle is never queued twice.
+            handle: format!("polkit:shots/{}/{}", accounts.len(), notice.is_some()),
+            message: "Authentication is required to install software".into(),
+            action_id: "org.freedesktop.Flatpak.app-install".into(),
+            identities: accounts.iter().map(ToString::to_string).collect(),
+            identity: 0,
+            prompt: "Password:".into(),
+            echo: false,
+            notice: notice.map(str::to_owned),
+        };
+        if let Ok(reply) = queue.enqueue_authentication(request) {
+            self.held.push(Box::new(reply));
+        }
+        self.host_mut().pump_portal_dialogs();
+        self.step_frames(2);
+    }
+
+    /// The compositor's password sheet as the network daemon raises it.
+    fn scene_secret_prompt_network(&mut self, kind: SecretPromptNetwork) {
+        use shell::shell::portal_dialog::{
+            NetworkSecretsRequest, SecretFieldRule, SecretFieldSpec,
+        };
+        let field = |key: &str, label: &str, masked: bool, initial: &str| SecretFieldSpec {
+            key: key.into(),
+            label: label.into(),
+            masked,
+            required: true,
+            initial: initial.into(),
+            rule: SecretFieldRule::Any,
+        };
+        let request = match kind {
+            SecretPromptNetwork::Wifi => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/wifi".into(),
+                title: "Wi-Fi password required".into(),
+                detail: "Enter the password for \u{201c}Café Lindenhof\u{201d}.".into(),
+                fields: vec![SecretFieldSpec {
+                    rule: SecretFieldRule::WpaPassphrase,
+                    ..field("psk", "Password", true, "")
+                }],
+                remember: Some(true),
+            },
+            SecretPromptNetwork::SignIn => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/8021x".into(),
+                title: "Network sign-in".into(),
+                detail: "\u{201c}eduroam\u{201d} needs your user name and password.".into(),
+                fields: vec![
+                    field("identity", "User name", false, "quinn@example.edu"),
+                    SecretFieldSpec {
+                        required: false,
+                        ..field(
+                            "anonymous-identity",
+                            "Anonymous identity (optional)",
+                            false,
+                            "",
+                        )
+                    },
+                    field("password", "Password", true, ""),
+                ],
+                remember: Some(true),
+            },
+            SecretPromptNetwork::SimPin => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/gsm".into(),
+                title: "SIM PIN required".into(),
+                detail: "Enter the PIN to unlock the SIM for \u{201c}Carrier\u{201d}.".into(),
+                fields: vec![field("pin", "SIM PIN", true, "")],
+                remember: Some(false),
+            },
+        };
+        let queue = self.host_mut().portal_dialog_queue();
+        if let Ok(reply) = queue.enqueue_network_secrets(request) {
+            self.held.push(Box::new(reply));
+        }
+        self.host_mut().pump_portal_dialogs();
+        self.step_frames(2);
+    }
+
     fn scene_portal_permission(&mut self) {
         use shell::portal::{FilePickerQueue, PortalCaller, PromptQueueHandle, PromptResolver};
         use shell::shell::state::{Capability, Expiry, WorkspaceId};
@@ -4351,4 +4448,12 @@ mod tests {
         );
         (files_tab_id, files_rect)
     }
+}
+
+/// Which network sheet a shots scene raises.
+#[derive(Clone, Copy)]
+enum SecretPromptNetwork {
+    Wifi,
+    SignIn,
+    SimPin,
 }

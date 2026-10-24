@@ -31,8 +31,6 @@ pub(crate) enum SectionStop {
     /// "Turn on" while the radio is off.
     TurnOn,
     Network(usize),
-    PasswordCancel,
-    PasswordConnect,
     Settings,
     /// An accessory in `bt_devices`: connect or disconnect.
     Device(usize),
@@ -75,10 +73,10 @@ pub(crate) enum ItemKind {
     /// "Turn on" under a radio that is off.
     TurnOn(String),
     Network(usize),
-    /// The inline password for the network above it: its field and status.
+    /// The inline password prompt for the network above it, which the
+    /// overlay host draws and routes: its field, its status line and its
+    /// Cancel and Connect.
     Password,
-    /// Cancel and Connect under the password.
-    PasswordButtons,
     Settings(String),
     Device(usize),
     Profile(usize),
@@ -297,8 +295,7 @@ fn wifi(b: &mut Builder, state: &QuickSettingsState, m: SectionMetrics) {
                 .is_some_and(|network| prompt == Some(network.ssid.as_str()));
             if asked {
                 b.gap();
-                b.push_inset(ItemKind::Password, m.control + m.caption + RELATED_GAP);
-                b.push_inset(ItemKind::PasswordButtons, m.control);
+                b.push_inset(ItemKind::Password, password_height(state, m));
                 b.gap();
             }
         }
@@ -458,18 +455,16 @@ pub(crate) fn mode_segments(state: &QuickSettingsState, rect: Rect) -> Vec<(Powe
         .collect()
 }
 
-/// Cancel and Connect, side by side in `rect`, one related step apart.
-pub(crate) fn password_buttons(rect: Rect) -> (Rect, Rect) {
-    let width = (rect.width() - RELATED_GAP) / 2.0;
-    (
-        Rect::new(rect.x0, rect.y0, rect.x0 + width, rect.y1),
-        Rect::new(rect.x1 - width, rect.y0, rect.x1, rect.y1),
-    )
-}
-
-/// The password field inside a [`ItemKind::Password`] item's rect.
-pub(crate) fn password_field(rect: Rect, m: SectionMetrics) -> Rect {
-    Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + m.control)
+/// The room the inline password prompt takes: as tall as the host last
+/// laid it out, or, before it has, a field and a button row with their
+/// label and status lines.
+fn password_height(state: &QuickSettingsState, m: SectionMetrics) -> f64 {
+    state
+        .wifi_password
+        .as_ref()
+        .map(|prompt| f64::from(prompt.height))
+        .filter(|height| *height > 0.0)
+        .unwrap_or(m.control * 2.0 + m.caption * 2.0 + RELATED_GAP * 3.0)
 }
 
 /// "Turn on", centred under its message at its natural width.
@@ -514,11 +509,6 @@ pub(crate) fn stops(
                 {
                     out.push((SectionStop::Network(*index), item.rect));
                 }
-            }
-            ItemKind::PasswordButtons => {
-                let (cancel, connect) = password_buttons(item.rect);
-                out.push((SectionStop::PasswordCancel, cancel));
-                out.push((SectionStop::PasswordConnect, connect));
             }
             ItemKind::Settings(_) => out.push((SectionStop::Settings, item.rect)),
             ItemKind::Device(index) => {
@@ -580,8 +570,8 @@ pub(crate) struct SectionPaint<'a> {
     /// The pointer, in the section's coordinates.
     pub cursor: Option<Point>,
     pub focused: Option<SectionStop>,
-    /// The password typed so far can be submitted.
-    pub password_ready: bool,
+    /// The motion of the switches the section paints.
+    pub faces: &'a ui::widget::FaceMotions,
 }
 
 /// Paint `layout`'s items.
@@ -617,10 +607,8 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
             ItemKind::Network(index) => {
                 paint_network(&mut ctx, rect, p, *index, hovered(rect));
             }
-            ItemKind::Password => paint_password_status(&mut ctx, rect, p),
-            ItemKind::PasswordButtons => {
-                paint_password_buttons(&mut ctx, rect, p, (hovered, focused));
-            }
+            // The overlay host draws the prompt over this item.
+            ItemKind::Password => {}
             ItemKind::Settings(label) => {
                 let mut face =
                     ListRowFace::new(label).leading(RowLeading::Icon(ui::icons::Icon::Settings2));
@@ -686,49 +674,6 @@ pub(crate) fn paint(ctx: &mut PaintCtx<'_>, layout: &SectionLayout, p: &SectionP
     }
 }
 
-/// The Wi-Fi password prompt's Cancel and Connect, Connect waiting on a
-/// password it can send.
-fn paint_password_buttons(
-    ctx: &mut PaintCtx<'_>,
-    rect: Rect,
-    p: &SectionPaint<'_>,
-    (hovered, focused): (impl Fn(Rect) -> bool, impl Fn(SectionStop) -> bool),
-) {
-    let (cancel, connect) = password_buttons(rect);
-    let connecting = p
-        .state
-        .wifi_password
-        .as_ref()
-        .is_some_and(|prompt| prompt.connecting);
-    Button::paint(
-        ctx.scene,
-        ctx.transform,
-        ctx.text,
-        ctx.theme,
-        &ButtonFace::new(cancel, &t("portal-cancel"))
-            .hovered(hovered(cancel))
-            .focused(focused(SectionStop::PasswordCancel)),
-    );
-    Button::paint(
-        ctx.scene,
-        ctx.transform,
-        ctx.text,
-        ctx.theme,
-        &ButtonFace::new(
-            connect,
-            &t(if connecting {
-                "qs-connecting"
-            } else {
-                "portal-connect"
-            }),
-        )
-        .role(ButtonRole::Primary)
-        .disabled(!p.password_ready)
-        .hovered(hovered(connect))
-        .focused(focused(SectionStop::PasswordConnect)),
-    );
-}
-
 /// The keyboard ring of a row-shaped stop.
 fn focus_ring(ctx: &mut PaintCtx<'_>, rect: Rect, focused: bool) {
     if focused {
@@ -781,9 +726,9 @@ fn paint_message(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str) {
     );
 }
 
-/// A network: its signal as the Wi-Fi glyph lit by strength, its name with
-/// a lock when it has a password, and "Connected", "Connecting…" or
-/// "Saved" on the trailing side.
+/// A network: its signal as the shared signal meter, its name with a lock
+/// when it has a password, and "Connected", "Connecting…" or "Saved" on the
+/// trailing side.
 fn paint_network(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -794,31 +739,10 @@ fn paint_network(
     let Some(network) = p.state.wifi_networks.get(index) else {
         return;
     };
-    let theme = ctx.theme;
-    let ink = theme.tokens.colors.text_primary;
-    // An unlit arc of the signal: the quietest ink.
-    let faint = theme.tokens.colors.text_tertiary;
-    let signal = network.signal;
-    let side = f64::from(theme.tokens.metrics.icon_md);
-    let bars = move |c: &mut PaintCtx<'_>, slot: Rect| {
-        ui::icons::draw_icon_layered(
-            c.scene,
-            c.transform,
-            Rect::from_center_size(slot.center(), (side, side)),
-            ui::icons::Icon::Wifi,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            // [dot, outer, middle, inner]: a weak network lights fewer arcs.
-            |arc| {
-                let needed = match arc {
-                    0 => 1,
-                    1 => 4,
-                    2 => 3,
-                    _ => 2,
-                };
-                if signal >= needed { ink } else { faint }
-            },
-        );
-    };
+    let level = ui::widget::SignalLevel::from_bars(network.signal);
+    // The other rows of the list share this column, so every title starts
+    // on one edge.
+    let column = f64::from(ctx.theme.tokens.metrics.icon_lg);
     let joining = p.state.wifi_joining.as_deref() == Some(network.ssid.as_str());
     let value = if joining {
         Some(t("qs-connecting"))
@@ -830,7 +754,8 @@ fn paint_network(
         None
     };
     let mut face = ListRowFace::new(&network.ssid)
-        .leading(RowLeading::Paint(&bars))
+        .leading(RowLeading::Signal(level))
+        .leading_column(column)
         .selected(network.connected)
         .interaction(Interaction {
             hovered: hovered && !network.connected,
@@ -845,35 +770,6 @@ fn paint_network(
     }
     face.paint(ctx, rect);
     focus_ring(ctx, rect, p.focused == Some(SectionStop::Network(index)));
-}
-
-/// The password's status line under its field (the field itself is the
-/// overlay host's secret input, drawn over this item).
-fn paint_password_status(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>) {
-    let Some(prompt) = p.state.wifi_password.as_ref() else {
-        return;
-    };
-    let field = password_field(rect, p.metrics);
-    let colors = &ctx.theme.tokens.colors;
-    let (text, color) = if let Some(error) = prompt.error.as_ref() {
-        (error.clone(), colors.semantic.danger)
-    } else if prompt.connecting {
-        (t("qs-connecting"), colors.text_dim)
-    } else {
-        (t("qs-wifi-password-for"), colors.text_dim)
-    };
-    let style = ctx.theme.text(TextRole::Caption);
-    let width = ui::num::f32_of_f64(rect.width().max(1.0));
-    let text = ctx.text.elide_to_width_style(&text, width, &style);
-    ctx.text.draw_style(
-        ctx.scene,
-        &text,
-        color,
-        ctx.transform
-            .pre_translate((rect.x0, field.y1 + RELATED_GAP / 2.0).into()),
-        None,
-        &style,
-    );
 }
 
 fn paint_device(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>, index: usize) {
@@ -970,7 +866,12 @@ fn paint_profile(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>, index
         ctx.scene,
         ctx.transform,
         ctx.theme,
-        &ToggleFace::new(switch, profile.active).hovered(hovered),
+        &ToggleFace::new(switch, profile.active)
+            .pose(
+                p.faces
+                    .switch(("vpn", &profile.uuid), profile.active, ctx.theme.motion()),
+            )
+            .hovered(hovered),
     );
 }
 
@@ -1147,7 +1048,6 @@ mod tests {
                 &ItemKind::Network(0),
                 &ItemKind::Network(1),
                 &ItemKind::Password,
-                &ItemKind::PasswordButtons,
                 &ItemKind::Settings("Wi-Fi settings".into()),
             ]
         );
@@ -1157,13 +1057,9 @@ mod tests {
             .collect();
         assert_eq!(
             stops,
-            [
-                SectionStop::Network(1),
-                SectionStop::PasswordCancel,
-                SectionStop::PasswordConnect,
-                SectionStop::Settings,
-            ],
-            "the network in use is not a stop: pressing it does nothing"
+            [SectionStop::Network(1), SectionStop::Settings],
+            "the network in use is not a stop: pressing it does nothing; the \
+             prompt routes its own keys"
         );
         // Items never overlap, and the section is as tall as they are.
         for pair in laid.items.windows(2) {

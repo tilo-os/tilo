@@ -47,6 +47,9 @@ pub type FieldRequest = ui::ime::ImeWindowState;
 pub enum NativeFieldId {
     Widget(u64),
     Palette,
+    /// A shell password prompt: the compositor's sheet or Quick Settings'
+    /// Wi-Fi prompt.
+    Prompt,
 }
 
 /// Private opaque edit metadata, never surrounding text or a persisted hash.

@@ -5,7 +5,7 @@
 
 settings-index-page-network = Network
 settings-index-page-network-subtitle = Wi-Fi, wired connections, and VPN
-settings-index-page-network-words = wifi, wi-fi, wlan, wired, ethernet, vpn, wireguard, proxy, internet, connection, network, dns, ip address
+settings-index-page-network-words = wifi, wi-fi, wlan, wired, ethernet, vpn, wireguard, openvpn, proxy, internet, connection, network, dns, ip address
 settings-index-page-bluetooth = Bluetooth
 settings-index-page-bluetooth-subtitle = Pair and manage Bluetooth devices
 settings-index-page-bluetooth-words = pair, pairing, headphones, bluetooth keyboard, bluetooth mouse, wireless, devices, speaker

@@ -248,7 +248,11 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   const ben = 'b'.repeat(64);
   f.voice.calls = [{app: 'so.tilo.chat', record: '', channel: 'standup', call: CALL, active: true,
     participants: [{user: ana, camera: true}, {user: ben, screen: true}]}];
-  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}]);
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben]}], 'muted is written only when someone is');
+  f.voice.calls[0].participants[1].muted = true;
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben], muted: [ben]}]);
+  f.voice.calls[0].participants.push({user: ben});
+  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].muted, undefined, 'heard on another device: not muted');
 });
 
 test('the app says what it shows and collects the pictures as they arrive', async () => {
@@ -328,4 +332,33 @@ test('a participant\'s volume reaches this device\'s playback only', async () =>
   await f.controls.execute(f.request({op: 'set_volume', participant: 'discord:7', percent: 0}));
   await f.controls.execute(f.request({op: 'set_volume', participant: 'a'.repeat(64), percent: 150}));
   assert.deepEqual(volumes, [['discord:7', 0], ['a'.repeat(64), 1.5]]);
+});
+
+test('the status names who the call hears talking, so the app can ring them', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  const [ana, ben] = ['a'.repeat(64), 'b'.repeat(64)];
+  Object.assign(f.state, {phase: 'live', canPublish: true, participants: [
+    {namespace: `${CALL}/${'1'.repeat(64)}`, user: ben, self: false, publishes: true, speaking: true},
+    {namespace: `${CALL}/${'2'.repeat(64)}`, user: ana, self: true, publishes: true, speaking: true},
+    {namespace: `${CALL}/${'3'.repeat(64)}`, user: ben, self: false, publishes: true, speaking: true},
+    {namespace: `${CALL}/${'4'.repeat(64)}`, user: 'c'.repeat(64), self: false, publishes: true, speaking: false},
+  ]});
+  const talking = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(talking.speaking, [ana, ben], 'each person once, sorted');
+  f.state.participants = f.state.participants.map(participant => ({...participant, speaking: false}));
+  const quiet = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(quiet.speaking, []);
+  assert.notEqual(quiet.revision, talking.revision, 'a held watch wakes when who talks changes');
+});
+
+test('a browser that cannot carry calls is told so when it joins, and opens no call', async () => {
+  const f = fixture();
+  f.voice.call.unsupported = () => 'WebTransport is unavailable';
+  const answer = await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  assert.equal(answer.state, 'ended');
+  assert.equal(answer.issue, 'unsupported');
+  assert.deepEqual(f.opened, []);
+  assert.deepEqual(f.operations, []);
+  assert.equal(endedIssue({admitted: false, unsupported: true, reason: 'WebTransport is unavailable'}), 'unsupported');
 });

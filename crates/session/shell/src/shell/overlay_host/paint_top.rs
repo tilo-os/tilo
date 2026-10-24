@@ -240,7 +240,30 @@ impl ShellOverlayHost {
             let Some(view) = self.portal_dialogs.view() else {
                 return;
             };
-            let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
+            let area = self.overlay_area();
+            let inset = self.portal_dialogs.keyboard_inset(area);
+            if let Some(prompt) = self.portal_dialogs.prompt_mut() {
+                prompt.set_keyboard_inset(inset);
+                // A password is asked with the one prompt every part of Tilo
+                // uses, sealed as the compositor's own.
+                prompt.place(area, text_renderer, theme);
+                prompt.paint(scene, transform, text_renderer, theme);
+                if let Some(modal) = &prompt.layout().modal {
+                    crate::shell::trusted_ui::paint_seal(
+                        scene,
+                        transform,
+                        modal.card,
+                        theme,
+                        if modal.card == modal.scrim {
+                            0.0
+                        } else {
+                            ui::widget::floating_surface::radius(theme)
+                        },
+                    );
+                }
+                return;
+            }
+            let Some(layout) = self.portal_dialogs.layout(area) else {
                 return;
             };
             draw_modal_scrim_at(scene, transform, self.rect, 1.0, theme);
@@ -335,6 +358,12 @@ impl ShellOverlayHost {
                     *rect,
                     &CheckRow {
                         checked: device.selected,
+                        pose: self.faces.check(
+                            ("usb", view.handle(), index),
+                            device.selected,
+                            ui::widget::CheckGlyph::Check,
+                            theme.motion(),
+                        ),
                         label: &device.label,
                         detail: Some(&crate::shell::i18n::t(access_key)),
                         focused,
@@ -401,6 +430,12 @@ impl ShellOverlayHost {
                     rect,
                     &CheckRow {
                         checked: remember,
+                        pose: self.faces.check(
+                            ("remember", view.handle()),
+                            remember,
+                            ui::widget::CheckGlyph::Check,
+                            theme.motion(),
+                        ),
                         label: &remember_label,
                         detail: None,
                         focused,

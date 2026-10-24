@@ -88,12 +88,23 @@ pub struct Scrollable {
     content_h: f32,
     viewport_w: f32,
     viewport_h: f32,
-    vx: f32,
-    vy: f32,
-    /// When the glide was last advanced, or started; `None` at rest. The
-    /// glide shares the lists' time-based model
-    /// ([`crate::virtual_viewport::glide_step`]).
-    glide_clock: Option<crate::time::Instant>,
+    /// The glide after a flick: the lists' decay
+    /// ([`crate::virtual_viewport::glide_step`]), in whole device pixels so
+    /// a host that copies what a scroll keeps on screen copies every frame
+    /// of it.
+    glide: crate::virtual_viewport::ScrollGlide,
+    /// The motion toward what [`Self::scroll_into_view`] was asked to show.
+    scroll_to: crate::motion::ScrollTo,
+    /// Device pixels per logical pixel on the display the last input came
+    /// from: glides and jumps step in whole ones.
+    device_scale: f64,
+    /// The motion the theme allows, sampled by the latest draw.
+    motion: crate::tokens::EffectiveMotion,
+    /// The content's opacity in the latest draw: below 1 while it fades in
+    /// after a long jump.
+    fade_drawn: Cell<f32>,
+    /// The content's opacity in the frame the host last presented.
+    fade_shown: f32,
     /// Pins the outer viewport to an exact height instead of `percent(1.0)`,
     /// which resolves against nothing (viewport collapses to zero) when the
     /// parent has no definite height. See [`Scrollable::fill_parent_height`]
@@ -238,9 +249,12 @@ impl Scrollable {
             content_h: 0.0,
             viewport_w: 0.0,
             viewport_h: 0.0,
-            vx: 0.0,
-            vy: 0.0,
-            glide_clock: None,
+            glide: crate::virtual_viewport::ScrollGlide::new(),
+            scroll_to: crate::motion::ScrollTo::new(),
+            device_scale: 1.0,
+            motion: crate::tokens::EffectiveMotion::default(),
+            fade_drawn: Cell::new(1.0),
+            fade_shown: 1.0,
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
@@ -575,10 +589,18 @@ impl Scrollable {
         self.draw_scrollbars(scene, transform, theme);
     }
     pub fn momentum_speed(&self) -> f32 {
-        (self.vx * self.vx + self.vy * self.vy).sqrt()
+        let (vx, vy) = self.glide.velocity();
+        f32_of_f64(vx.hypot(vy))
     }
 
+    /// Move the content by `dx`, `dy`: the hand (a wheel, a key, a bar
+    /// drag) or the caller takes over from any jump in progress.
     pub fn scroll_by(&mut self, dx: f32, dy: f32) {
+        self.scroll_to.take_over(crate::motion::frame_now());
+        self.move_by(dx, dy);
+    }
+
+    fn move_by(&mut self, dx: f32, dy: f32) {
         let (ox, oy) = (self.offset_x, self.offset_y);
         match self.axis {
             ScrollAxis::Vertical => {
@@ -608,44 +630,66 @@ impl Scrollable {
         self.last_activity = Some(crate::time::now());
         self.bar_dirty = true;
     }
+    /// Glide on at `vx`, `vy` (logical pixels per second, in content
+    /// space); zero stops a glide.
     pub fn fling(&mut self, vx: f32, vy: f32) {
-        if self.momentum_speed() == 0.0 {
-            self.glide_clock = Some(crate::time::now());
-        }
-        self.vx = vx;
-        self.vy = vy;
-        if self.momentum_speed() == 0.0 {
-            self.glide_clock = None;
-        }
+        self.glide.set_device_scale(self.device_scale);
+        self.glide.fling(f64::from(vx), f64::from(vy));
     }
 
     /// Advance a glide to `now` (the frame's time): by the time since the
     /// last step, or since the fling began — never by an idle gap before it.
     pub fn advance_momentum(&mut self, now: crate::time::Instant) {
-        let elapsed = self.glide_clock.replace(now).map_or(0.0, |last| {
-            now.saturating_duration_since(last).as_secs_f32()
-        });
-        self.tick(elapsed);
-        if self.momentum_speed() == 0.0 {
-            self.glide_clock = None;
-        }
+        let (dx, dy) = self.glide.advance(now);
+        self.glided(dx, dy);
     }
 
     /// Advance a glide by `dt` seconds ([`crate::virtual_viewport::glide_step`]).
     pub fn tick(&mut self, dt: f32) {
-        let (ox, oy) = (self.offset_x, self.offset_y);
-        let seconds = f64::from(dt);
-        let (dx, vx) = crate::virtual_viewport::glide_step(f64::from(self.vx), seconds);
-        let (dy, vy) = crate::virtual_viewport::glide_step(f64::from(self.vy), seconds);
-        self.offset_x += f32_of_f64(dx);
-        self.offset_y += f32_of_f64(dy);
-        self.vx = f32_of_f64(vx);
-        self.vy = f32_of_f64(vy);
-        self.clamp();
-        if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
-            self.scroll_dirty = true;
-            self.cursor_initialized = false;
+        let elapsed = Duration::from_secs_f64(f64::from(dt.max(0.0)));
+        let (dx, dy) = self.glide.advance_by(elapsed);
+        self.glided(dx, dy);
+    }
+
+    /// Move by a glide's step; content that cannot move further stops it.
+    fn glided(&mut self, dx: f64, dy: f64) {
+        let before = (self.offset_x, self.offset_y);
+        self.move_by(f32_of_f64(dx), f32_of_f64(dy));
+        if (self.offset_x, self.offset_y) == before && (dx != 0.0 || dy != 0.0) {
+            self.glide.stop();
         }
+    }
+
+    /// Follow a jump in progress ([`Self::scroll_into_view`]) to where it is
+    /// drawn at `now`.
+    fn follow_scroll_to(&mut self, now: Instant) {
+        let Some(at) = self
+            .scroll_to
+            .offset_in_device_pixels(now, self.device_scale)
+        else {
+            return;
+        };
+        self.move_by(
+            f32_of_f64(at.x) - self.offset_x,
+            f32_of_f64(at.y) - self.offset_y,
+        );
+        let _ = self.scroll_to.arrived(now);
+    }
+
+    /// A jump still moves, or has arrived and waits for the frame that
+    /// puts the content at its target.
+    fn jump_in_progress(&self) -> bool {
+        self.scroll_to.target().is_some()
+            || self.scroll_to.is_moving(crate::motion::frame_now())
+            || self.fade_drawn.get() < 1.0
+    }
+
+    /// The content fades in after a long jump, or the last frame drew it
+    /// still fading: its whole viewport repaints.
+    fn content_fading(&self) -> bool {
+        self.fade_drawn.get() < 1.0
+            || self.fade_shown < 1.0
+            || self.scroll_to.opacity(crate::motion::frame_now()) < 1.0
     }
     /// Reveal newly focused controls while allowing manual scroll away from
     /// unchanged focus. Opt-in for form panels; ordinary scrolling is unchanged.
@@ -655,23 +699,64 @@ impl Scrollable {
         self
     }
 
+    /// Show the content rect at `x`, `y` (`w` by `h`, in content
+    /// coordinates), moving as little as it takes. A jump the person's hand
+    /// or key just asked for moves there ([`crate::motion::ScrollTo`]): it
+    /// glides when short and fades in at the target when long; one nobody
+    /// asked for (a sync, a restored view) or an agent's lands at once.
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let (ox, oy) = (self.offset_x, self.offset_y);
-        if y < self.offset_y {
-            self.offset_y = y;
-        } else if y + h > self.offset_y + self.effective_viewport_h() {
-            self.offset_y = (y + h - self.effective_viewport_h()).max(0.0);
+        let now = crate::motion::frame_now();
+        let (tx, ty) = self.offset_showing(x, y, w, h);
+        let viewport = vello::kurbo::Vec2::new(
+            f64::from(self.viewport_w),
+            f64::from(self.effective_viewport_h()),
+        );
+        let drawn = vello::kurbo::Vec2::new(f64::from(self.offset_x), f64::from(self.offset_y));
+        let target = vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty));
+        self.glide.stop();
+        if self.scroll_to.go(drawn, target, viewport, self.motion, now)
+            == crate::motion::ScrollJump::Glide
+        {
+            self.follow_scroll_to(now);
+        } else {
+            self.move_by(tx - self.offset_x, ty - self.offset_y);
         }
-        if x < self.offset_x {
-            self.offset_x = x;
-        } else if x + w > self.offset_x + self.viewport_w {
-            self.offset_x = (x + w - self.viewport_w).max(0.0);
-        }
-        self.clamp();
-        if self.offset_x.to_bits() != ox.to_bits() || self.offset_y.to_bits() != oy.to_bits() {
+        if self.scroll_to.is_moving(now) {
             self.scroll_dirty = true;
-            self.cursor_initialized = false;
         }
+    }
+
+    /// [`Self::scroll_into_view`] that lands at once: keyboard focus moving
+    /// to a control out of view while tabbing.
+    pub fn scroll_into_view_at_once(&mut self, x: f32, y: f32, w: f32, h: f32) {
+        let (tx, ty) = self.offset_showing(x, y, w, h);
+        self.glide.stop();
+        self.scroll_to
+            .land(vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty)));
+        self.move_by(tx - self.offset_x, ty - self.offset_y);
+    }
+
+    /// The offset that shows the content rect at `x`, `y`, `w` by `h`,
+    /// moving the least from where the content is going.
+    fn offset_showing(&self, x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
+        let (mut ox, mut oy) = self
+            .scroll_to
+            .target()
+            .map_or((self.offset_x, self.offset_y), |target| {
+                (f32_of_f64(target.x), f32_of_f64(target.y))
+            });
+        if y < oy {
+            oy = y;
+        } else if y + h > oy + self.effective_viewport_h() {
+            oy = (y + h - self.effective_viewport_h()).max(0.0);
+        }
+        if x < ox {
+            ox = x;
+        } else if x + w > ox + self.viewport_w {
+            ox = (x + w - self.viewport_w).max(0.0);
+        }
+        let max_x = (self.content_w - self.viewport_w).max(0.0);
+        (ox.clamp(0.0, max_x), oy.clamp(0.0, self.max_offset_y()))
     }
     /// Reserve the bar's lane on the edge it scrolls along while the solved
     /// content overflows the viewport, and give it back once it fits.
@@ -1233,6 +1318,9 @@ impl Scrollable {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         const LINE_PX: f32 = 60.0;
+        self.device_scale = scale_factor;
+        // The hand takes over a jump in progress from where it is drawn.
+        self.scroll_to.take_over(crate::motion::frame_now());
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
         if pixel {
             match phase {
@@ -1410,9 +1498,11 @@ impl Widget for Scrollable {
     /// glide took it; reporting it synced the app and republished its
     /// resources on every frame of every fling.
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
-        if self.momentum_speed() > 0.0 {
+        if self.glide.is_active() {
             self.advance_momentum(crate::time::now());
         }
+        // A jump in progress, like a glide, moves only this view.
+        self.follow_scroll_to(crate::motion::frame_now());
         // Click-and-hold auto-repeat: the host wakes on the repeat's
         // deadline (`next_wake_deadline`), not on animation frames.
         let held = self.hold.is_some() && {
@@ -1663,7 +1753,7 @@ impl Widget for Scrollable {
             if path != self.last_focus_path {
                 self.last_focus_path = path;
                 if let Some((_, rect)) = focus {
-                    self.scroll_into_view(
+                    self.scroll_into_view_at_once(
                         f32_of_f64(rect.x0 - self.rect.x0) + self.offset_x,
                         f32_of_f64(rect.y0 - self.rect.y0) + self.offset_y,
                         f32_of_f64(rect.width()),
@@ -1698,6 +1788,7 @@ impl Widget for Scrollable {
         presence: &PresenceCtx,
     ) {
         self.reduce_motion_active = theme.reduce_motion;
+        self.motion = theme.motion();
         let corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         if corners != self.corners {
             self.corners = corners;
@@ -1717,8 +1808,24 @@ impl Widget for Scrollable {
             &clip,
         );
         let previous_viewport = presence.push_viewport(self.content_viewport_rect());
+        // After a long jump the content fades in where it landed.
+        let opacity = self.scroll_to.opacity(crate::motion::frame_now());
+        self.fade_drawn.set(opacity);
+        let fading = opacity < 1.0;
+        if fading {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                opacity,
+                transform,
+                &clip,
+            );
+        }
         if let Some(c) = &mut self.child {
             crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, presence);
+        }
+        if fading {
+            scene.pop_layer();
         }
         presence.pop_viewport(previous_viewport);
         scene.pop_layer();
@@ -1921,7 +2028,8 @@ impl Widget for Scrollable {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.momentum_speed() > 0.0
+        self.glide.is_active()
+            || self.jump_in_progress()
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
             || self
@@ -1946,6 +2054,7 @@ impl Widget for Scrollable {
     /// hold the thumb stays unchanged; only the fade itself needs new damage.
     fn needs_redraw(&self) -> bool {
         self.scroll_dirty
+            || self.content_fading()
             || self.bar_dirty
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
@@ -1953,6 +2062,10 @@ impl Widget for Scrollable {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.content_fading() {
+            regions.push(self.rect);
+            return;
+        }
         if self.scroll_dirty {
             if let Some((shown, delta)) = self.scrolled_since_presented()
                 && crate::scroll_copy::offer(
@@ -2018,6 +2131,7 @@ impl Widget for Scrollable {
         // what the screen shows where it lies is not known to be its content:
         // the next scroll repaints its viewport before copies resume.
         self.shown_presented = self.shown_drawing.take();
+        self.fade_shown = self.fade_drawn.get();
         self.scroll_dirty = false;
         self.bar_dirty = false;
         self.terminal_fade_damage.set(false);
@@ -2052,7 +2166,7 @@ impl Widget for Scrollable {
         // The margin is capped so very small viewports still prioritise the
         // control itself.
         let context = (self.effective_viewport_h() * 0.12).clamp(16.0, 56.0);
-        self.scroll_into_view(
+        self.scroll_into_view_at_once(
             (x - context).max(0.0),
             (y - context).max(0.0),
             crate::num::f32_of_f64(rect.width()) + context * 2.0,

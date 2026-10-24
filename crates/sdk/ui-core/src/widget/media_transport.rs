@@ -58,15 +58,16 @@ use vello::peniko::ImageData;
 use crate::icons::Icon;
 use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::text_render::{ParagraphAlign, TextRenderer};
+use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::media_card::{MediaArt, MediaSize, paint_art_tile};
+use crate::widget::media_card::MediaSize;
+use crate::widget::now_playing::{Song, SongFace};
 use tilo_actions::ActionBinding;
 
 use crate::widget::{
     Button, ButtonFace, ControlSize, Element, Manual, ManualContext, PanelAlign, PopoverSide,
-    Slider, TaffyTreeExt, Text, TextStack, Tone, TransportControl, TransportFace, When, Widget,
+    Slider, SliderFace, TaffyTreeExt, TransportControl, TransportFace, When, Widget,
     WidgetLayoutError,
 };
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -267,12 +268,65 @@ struct Shared {
     /// Which children have what they invoke: an action the app handed in,
     /// or a request of the window's own.
     handed: Cell<[bool; CHILDREN]>,
+    /// The song as the art and the lines show it, cross-fading to the next.
+    song: RefCell<SongFace>,
+    /// Where the scrubber's knob is held (`0..=1`), while a finger or the
+    /// pointer holds it.
+    scrub: Cell<Option<f64>>,
+    /// A page showing the song large has the cover in flight: the band
+    /// leaves its place empty until it lands back.
+    art_lent: Cell<bool>,
 }
 
 impl Shared {
     fn push(&self, event: TransportEvent) {
         self.events.borrow_mut().push(event);
     }
+
+    /// Show the declared song from the frame at `now`.
+    fn follow_song(&self, theme: &Theme, now: crate::time::Instant) {
+        let song = song_of(&self.state.borrow());
+        self.song.borrow_mut().show(&song, theme.motion(), now);
+    }
+
+    fn song_moving(&self) -> bool {
+        self.song.borrow().is_moving(crate::time::now())
+    }
+
+    /// The time a caption shows: the knob's while it is held.
+    fn caption(&self, side: Caption) -> String {
+        let state = self.state.borrow();
+        if state.idle {
+            return String::new();
+        }
+        match side {
+            Caption::Elapsed => time(
+                self.scrub
+                    .get()
+                    .map_or(state.position_ms, |held| held * state.duration_ms),
+            ),
+            Caption::Total => time(state.duration_ms),
+        }
+    }
+}
+
+/// The song `state` declares, as the art and the lines show it.
+fn song_of(state: &TransportState) -> Song {
+    Song {
+        title: state.title.clone(),
+        subtitle: state.subtitle.clone(),
+        detail: String::new(),
+        error: state.error,
+        art: state.art.clone(),
+        art_name: state.art_name.clone(),
+    }
+}
+
+/// Which of the scrubber's times a caption shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Caption {
+    Elapsed,
+    Total,
 }
 
 /// Where an app declares what plays and takes what the person asked for.
@@ -305,6 +359,34 @@ impl TransportFeed {
     #[must_use]
     pub fn take_events(&self) -> Vec<TransportEvent> {
         std::mem::take(&mut *self.0.events.borrow_mut())
+    }
+
+    /// Where the art stands in the window, while it is there: what a page
+    /// showing the song large zooms from and back to.
+    #[must_use]
+    pub fn art_rect(&self) -> Option<Rect> {
+        let art = self.0.placed.get()[ART];
+        (art.width() > 0.0).then(|| art + self.0.origin.get().to_vec2())
+    }
+
+    /// The corners of the band's art.
+    #[must_use]
+    pub fn art_radius(theme: &Theme) -> f64 {
+        f64::from(theme.tokens.radii.control)
+    }
+
+    /// The song as the band shows it.
+    #[must_use]
+    pub fn song(&self) -> Song {
+        song_of(&self.0.state.borrow())
+    }
+
+    /// Whether a page has the cover in flight to or from it: while it does,
+    /// the band leaves the art's place empty, so one cover moves, not two.
+    pub fn lend_art(&self, lent: bool) {
+        if self.0.art_lent.replace(lent) != lent {
+            self.0.revision.set(self.0.revision.get().wrapping_add(1));
+        }
     }
 }
 
@@ -435,18 +517,30 @@ impl Widget for Art {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let state = self.shared.state.borrow();
-        let art = match &state.art {
-            TransportArt::None => return,
-            TransportArt::Placeholder => MediaArt::Placeholder,
-            TransportArt::Image(image) => MediaArt::Image(image),
-        };
-        let radius = f64::from(theme.tokens.radii.control);
+        let now = crate::time::now();
+        self.shared.follow_song(theme, now);
+        if self.shared.art_lent.get() {
+            return;
+        }
+        let radius = TransportFeed::art_radius(theme);
         let ctx = &mut PaintCtx::new(scene, transform, text, theme);
-        paint_art_tile(ctx, self.rect, art, &state.art_name, radius);
+        self.shared
+            .song
+            .borrow()
+            .paint_art(ctx, self.rect, radius, now);
     }
 
-    crate::redraw_flag!();
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.shared.song_moving()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.shared.song_moving()
+    }
 
     fn get_rect(&self) -> Rect {
         self.rect
@@ -548,6 +642,197 @@ impl Widget for Art {
     }
 }
 
+/// The song's lines, cross-fading with the art when the song changes.
+struct SongLines {
+    shared: Rc<Shared>,
+    seen: Option<u64>,
+    rect: Rect,
+    dirty: bool,
+}
+
+impl Widget for SongLines {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = crate::widget::layout_rect(taffy, node, origin);
+        self.dirty |= rect != self.rect;
+        self.rect = rect;
+    }
+
+    fn update(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) -> bool {
+        let revision = self.shared.revision.get();
+        if self.seen == Some(revision) {
+            return false;
+        }
+        self.seen = Some(revision);
+        self.dirty = true;
+        true
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 {
+            return;
+        }
+        let now = crate::time::now();
+        self.shared.follow_song(theme, now);
+        let ctx = &mut PaintCtx::new(scene, transform, text, theme);
+        self.shared
+            .song
+            .borrow()
+            .paint_lines(ctx, self.rect, None, now);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.shared.song_moving()
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.shared.song_moving()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "TransportSong"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some("transport.song")
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        let state = self.shared.state.borrow();
+        let song = song_of(&state);
+        let spoken = crate::widget::TextStackFace::new(&song.title)
+            .secondary(&song.subtitle)
+            .spoken();
+        Some(AccessNode::new(Role::StaticText).with_name(spoken))
+    }
+}
+
+/// One of the scrubber's times: the elapsed one follows the knob while it
+/// is held, so the time under the finger reads beside the bar too.
+struct TimeLabel {
+    shared: Rc<Shared>,
+    side: Caption,
+    rect: Rect,
+    drawn: Option<String>,
+}
+
+impl Widget for TimeLabel {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let rect = crate::widget::layout_rect(taffy, node, origin);
+        if rect != self.rect {
+            self.drawn = None;
+        }
+        self.rect = rect;
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let label = self.shared.caption(self.side);
+        if !label.is_empty() {
+            let style = theme.text(TextRole::Caption).numeric();
+            let (width, height) = text.measure_style(&label, None, &style);
+            let x = match self.side {
+                Caption::Elapsed => self.rect.x1 - f64::from(width),
+                Caption::Total => self.rect.x0,
+            };
+            let y = self.rect.y0 + (self.rect.height() - f64::from(height)) / 2.0;
+            text.draw_style(
+                scene,
+                &label,
+                theme.text_dim,
+                transform.pre_translate((x, y).into()),
+                None,
+                &style,
+            );
+        }
+        self.drawn = Some(label);
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.drawn.as_deref() != Some(self.shared.caption(self.side).as_str())
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn name(&self) -> &'static str {
+        "TransportTime"
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        let label = self.shared.caption(self.side);
+        (!label.is_empty()).then(|| AccessNode::new(Role::StaticText).with_name(label))
+    }
+}
+
+/// The scrubber: the position slider, telling the transport where its knob
+/// is held so the elapsed time follows it.
+struct Scrubber {
+    slider: Follow<Slider>,
+}
+
+impl crate::widget::Decorator for Scrubber {
+    type Inner = Follow<Slider>;
+
+    fn inner(&self) -> &Follow<Slider> {
+        &self.slider
+    }
+
+    fn inner_mut(&mut self) -> &mut Follow<Slider> {
+        &mut self.slider
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        Widget::handle_event(&mut self.slider, event, ctx);
+        let slider = &self.slider.widget;
+        self.slider
+            .shared
+            .scrub
+            .set(slider.is_held().then(|| slider.value()));
+    }
+}
+
 // The transport's children, in placement order.
 const ART: usize = 0;
 const SONG: usize = 1;
@@ -606,6 +891,9 @@ fn present(index: usize, state: &TransportState, form: Form, handed: &[bool; CHI
         _ => true,
     }
 }
+
+/// A song this long or longer counts its time in hours.
+const HOUR_MS: f64 = 3_600_000.0;
 
 fn time(ms: f64) -> String {
     #[allow(
@@ -715,14 +1003,6 @@ fn speaker(volume: f64) -> Icon {
 }
 
 fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
-    let caption = |source: fn(&TransportState) -> String, align| {
-        let shared = shared.clone();
-        Text::dynamic(move || source(&shared.state.borrow()))
-            .with_role(TextRole::Caption)
-            .numeric()
-            .dimmed()
-            .with_align(align)
-    };
     let parts: [Element; CHILDREN] = [
         Box::new(Art {
             shared: shared.clone(),
@@ -733,15 +1013,12 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
             focused: false,
             cursor: Point::ZERO,
         }),
-        Box::new(Follow::new(TextStack::new(""), shared, |stack, state| {
-            stack.set_lines(&state.title, &state.subtitle, "");
-            stack.set_secondary_tone(if state.error {
-                Tone::Danger
-            } else {
-                Tone::Neutral
-            });
-            false
-        })),
+        Box::new(SongLines {
+            shared: shared.clone(),
+            seen: None,
+            rect: Rect::ZERO,
+            dirty: true,
+        }),
         Box::new(Follow::new(
             button("transport.like", Icon::Heart, "Like", actions.like.as_ref()),
             shared,
@@ -835,37 +1112,49 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
                 toggle(b, Some(repeat != TransportRepeat::Off), state.idle)
             },
         )),
-        Box::new(caption(
-            |state| time(state.position_ms),
-            ParagraphAlign::End,
-        )),
-        Box::new(Follow::new(
-            bound_slider(
-                Slider::from_state(&crate::LocalState::new(0.0))
-                    .with_id("transport.position")
-                    .with_accessible_name("Position")
-                    .commits_on_release(),
-                actions.seek.as_ref(),
+        Box::new(TimeLabel {
+            shared: shared.clone(),
+            side: Caption::Elapsed,
+            rect: Rect::ZERO,
+            drawn: None,
+        }),
+        Box::new(Scrubber {
+            slider: Follow::new(
+                bound_slider(
+                    Slider::from_state(&crate::LocalState::new(0.0))
+                        .with_id("transport.position")
+                        .with_accessible_name("Position")
+                        .value_text({
+                            let shared = shared.clone();
+                            move |fraction| time(fraction * shared.state.borrow().duration_ms)
+                        })
+                        .reads_out_while_held()
+                        .commits_on_release(),
+                    actions.seek.as_ref(),
+                ),
+                shared,
+                |slider, state| {
+                    let before = (slider.value(), slider.is_enabled());
+                    slider.set_enabled(!state.idle);
+                    if !slider.is_held() {
+                        let fraction = if state.duration_ms > 0.0 {
+                            (state.position_ms / state.duration_ms).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        slider.set_value(fraction);
+                    }
+                    (before.0 - slider.value()).abs() > f64::EPSILON
+                        || before.1 != slider.is_enabled()
+                },
             ),
-            shared,
-            |slider, state| {
-                let before = (slider.value(), slider.is_enabled());
-                slider.set_enabled(!state.idle);
-                if !slider.is_held() {
-                    let fraction = if state.duration_ms > 0.0 {
-                        (state.position_ms / state.duration_ms).clamp(0.0, 1.0)
-                    } else {
-                        0.0
-                    };
-                    slider.set_value(fraction);
-                }
-                (before.0 - slider.value()).abs() > f64::EPSILON || before.1 != slider.is_enabled()
-            },
-        )),
-        Box::new(caption(
-            |state| time(state.duration_ms),
-            ParagraphAlign::Start,
-        )),
+        }),
+        Box::new(TimeLabel {
+            shared: shared.clone(),
+            side: Caption::Total,
+            rect: Rect::ZERO,
+            drawn: None,
+        }),
         Box::new(Follow::new(
             view_button(
                 "transport.queue",
@@ -1017,8 +1306,11 @@ fn place_scrub(rects: &mut [Rect; CHILDREN], m: &Metrics, x0: f64, x1: f64, y: f
     };
     rects[ELAPSED] = text(row.x0, row.x0 + m.time);
     rects[TOTAL] = text(row.x1 - m.time, row.x1);
-    let knob0 = row.x0 + m.time + m.related;
-    let knob1 = (row.x1 - m.time - m.related).max(knob0);
+    // The held knob reaches past the track's ends: the gap keeps it off
+    // the times at either end.
+    let gap = m.related + SliderFace::overhang();
+    let knob0 = row.x0 + m.time + gap;
+    let knob1 = (row.x1 - m.time - gap).max(knob0);
     rects[SCRUBBER] = Rect::new(knob0, row.y0, knob1, row.y1);
 }
 
@@ -1239,7 +1531,14 @@ impl crate::widget::decorator::concrete::Decorator for MediaTransport {
         let mut changed = Widget::adjust_layout_style(&mut self.content, taffy, node, text);
         if let Some(theme) = &self.theme {
             let style = theme.text(TextRole::Caption).numeric();
-            let time = f64::from(text.measure_style("00:00", None, &style).0).ceil();
+            // As wide as the song's longest time, so the bar keeps its
+            // length through the song.
+            let widest = if self.shared.state.borrow().duration_ms >= HOUR_MS {
+                "00:00:00"
+            } else {
+                "00:00"
+            };
+            let time = f64::from(text.measure_style(widest, None, &style).0).ceil();
             let metrics = self.shared.metrics.get();
             if (metrics.time - time).abs() > f64::EPSILON {
                 self.shared.metrics.set(Metrics { time, ..metrics });

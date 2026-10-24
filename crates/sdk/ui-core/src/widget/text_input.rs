@@ -64,6 +64,8 @@ struct AlternateLayout {
 mod damage;
 #[path = "text_input_reveal.rs"]
 mod reveal;
+#[path = "text_input_scroll.rs"]
+mod scroll;
 use reveal::RevealToggle;
 
 #[path = "text_input_spelling.rs"]
@@ -487,6 +489,11 @@ pub struct TextInput {
     /// Unmasked multiline fields use the shared cosmic-text paragraph,
     /// including attributed syntax-highlighted code.
     multiline_shaped: bool,
+    /// A multiline field's glide after fingers lift off a touchpad or a
+    /// screen while moving: the shared fling every scroller uses.
+    wheel_glide: crate::virtual_viewport::ScrollMomentum,
+    /// Reduced motion, as the latest draw saw it: fingers leave no glide.
+    reduce_motion: bool,
     /// Plain `Enter` submits instead of inserting a newline; multiline keeps
     /// `Shift+Enter` for a real newline (chat-composer pattern).
     enter_submits: bool,
@@ -503,6 +510,10 @@ pub struct TextInput {
     goal_x: Option<f64>,
     scroll_y: f64,
     preserve_unfocused_scroll: bool,
+    /// The wheel or a finger scrolled the field since its focus last
+    /// changed: an unfocused field keeps that scroll rather than showing
+    /// its start again ([`Self::set_preserve_unfocused_scroll`]).
+    hand_scrolled: bool,
     gutter: bool,
     /// Width measured from the same scaled line-number style used to paint.
     measured_gutter_width: f64,
@@ -782,6 +793,8 @@ impl TextInput {
             family: None,
             multiline: false,
             multiline_shaped: false,
+            wheel_glide: crate::virtual_viewport::ScrollMomentum::new(),
+            reduce_motion: false,
             enter_submits: false,
             submit_requested: false,
             reveal: RevealToggle::new(),
@@ -790,6 +803,7 @@ impl TextInput {
             goal_x: None,
             scroll_y: 0.0,
             preserve_unfocused_scroll: false,
+            hand_scrolled: false,
             gutter: false,
             measured_gutter_width: 0.0,
             highlight_current_line: false,
@@ -1698,16 +1712,6 @@ impl TextInput {
         self.resolve_position(point)
     }
 
-    /// No-op for a single-line field.
-    pub fn scroll_by(&mut self, dy: f64) {
-        if !self.multiline {
-            return;
-        }
-        let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
-        let max = (self.content_height() - self.multiline_padding_y() * 2.0 - view_h).max(0.0);
-        self.scroll_y = (self.scroll_y + dy).clamp(0.0, max);
-    }
-
     pub fn is_plain(&self) -> bool {
         self.plain
     }
@@ -2526,7 +2530,7 @@ impl TextInput {
             } else if f64::from(caret_top + caret_height) - self.scroll_y > view_height {
                 self.scroll_y = f64::from(caret_top + caret_height) - view_height;
             }
-        } else if !self.is_focused && !self.preserve_unfocused_scroll {
+        } else if !self.is_focused && !self.preserve_unfocused_scroll && !self.hand_scrolled {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.core.caret());
@@ -2832,7 +2836,11 @@ impl TextInput {
             reason = "widget width is a bounded on-screen size for vello/layout math, never near f32's range"
         )]
         let available_width = (self.rect.width() - left - self.ml_pad_x()).max(1.0) as f32;
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("text.shape");
         self.ensure_shaped_layout(tr, theme, &style, available_width);
+        #[cfg(test)]
+        drop(probe);
 
         let caret_position = if self.core.has_preedit() {
             TextPosition::new(self.preedit_layout_caret())
@@ -2913,6 +2921,8 @@ impl TextInput {
             // field's clip and the viewport let through.
             let syntax = &theme.tokens.syntax;
             let paint = |byte: usize| self.highlight_color_at(byte, syntax);
+            #[cfg(test)]
+            let _probe = crate::profiling::frame_probe::span("text.rows");
             tr.draw_rich_in_clip_painted(
                 scene,
                 layout,
@@ -2924,6 +2934,8 @@ impl TextInput {
             );
         }
 
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("text.gutter");
         self.draw_gutter_line_numbers(
             scene,
             transform,
@@ -2933,6 +2945,8 @@ impl TextInput {
             caret_byte,
             (gutter_width, visible),
         );
+        #[cfg(test)]
+        drop(probe);
         self.draw_ml_caret(scene, transform, theme, (caret_position, shape));
         scene.pop_layer();
     }
@@ -2954,7 +2968,7 @@ impl TextInput {
                     self.scroll_y = caret_bot - view_h;
                 }
             }
-        } else if !self.preserve_unfocused_scroll {
+        } else if !self.preserve_unfocused_scroll && !self.hand_scrolled {
             self.scroll_y = 0.0;
         }
         self.last_scroll_caret = Some(self.core.caret());
@@ -5653,6 +5667,10 @@ impl Widget for TextInput {
     ) {
         self.last_caret_width = theme.caret_width;
         self.ml_caret = None;
+        self.reduce_motion = theme.reduce_motion;
+        if self.reduce_motion {
+            self.wheel_glide.stop();
+        }
         self.gutter_text_scale = f64::from(self.scale_for(theme.text_scale));
         self.prepare_theme(theme);
         if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
@@ -5689,6 +5707,8 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
             self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
+            #[cfg(test)]
+            let _probe = crate::profiling::frame_probe::span("text.note");
             self.note_shown(transform, theme);
             return;
         }
@@ -5856,13 +5876,13 @@ impl Widget for TextInput {
 
         match event {
             // Only when hovered, so it never steals the wheel from a surrounding scroll region.
-            WindowEvent::MouseWheel { delta, .. }
+            WindowEvent::MouseWheel { delta, phase, .. }
                 if self.multiline
                     && self.is_hovered
                     && !self.effectively_disabled()
                     && !crate::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
-                self.handle_mouse_wheel(delta, ctx.handled);
+                self.handle_mouse_wheel(delta, *phase, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
@@ -6044,6 +6064,9 @@ impl Widget for TextInput {
         self.invalid = invalid;
     }
     fn set_focus(&mut self, focused: bool) {
+        if focused != self.is_focused {
+            self.hand_scrolled = false;
+        }
         self.is_focused = focused;
         if focused {
             self.activate_spelling();
@@ -6269,6 +6292,18 @@ impl Widget for TextInput {
     /// into a sibling widget.
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
+    }
+
+    /// A glide after the fingers lifted moves the text on in the frames it
+    /// asks for.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.advance_wheel_glide();
+        super::defaults::update(self.children_mut(), state, path)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.wheel_glide.is_active()
+            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -6913,18 +6948,6 @@ impl TextInput {
             None,
             &cursor_rect,
         );
-    }
-
-    fn handle_mouse_wheel(&mut self, delta: &winit::event::MouseScrollDelta, handled: &mut bool) {
-        let dy = match delta {
-            winit::event::MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * self.line_height(),
-            winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
-        };
-        let before = self.scroll_y;
-        self.scroll_by(dy);
-        if (self.scroll_y - before).abs() > f64::EPSILON {
-            *handled = true;
-        }
     }
 
     fn handle_cursor_moved(

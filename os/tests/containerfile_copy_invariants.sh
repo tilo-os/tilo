@@ -306,7 +306,11 @@ containerfile="$repo/os/Containerfile"
 # tilo-clock-floor, its service, timer and shutdown service keep the clock
 # floor PID 1 starts from at chrony's authenticated time: four payload rows
 # riding existing COPY instructions.
-expected_contract=61c50071c9b6a110148bcb7f86f47c44f3cf179dde223f35ae1eefd8e3871d43
+# The device VPN helper's units (tilo-device-vpn.socket, .service and
+# -reset.service) ride the system-unit COPY; its tmpfiles entry, firewalld zone
+# and policy, and NetworkManager drop-in (30-tilo-device-vpn.conf) are four
+# payload rows (docs/device-vpn.md).
+expected_contract=59d5e17082815e054c8bf7a469a510215d9b94da0586ea4d78d94cf285656306
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

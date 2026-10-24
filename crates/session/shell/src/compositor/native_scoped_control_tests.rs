@@ -98,7 +98,7 @@ fn a_program_in_an_app_lists_and_runs_actions_with_its_workspaces_scope() {
     // The tab: this test process stands for its shell.
     let tab = {
         let pid = std::process::id();
-        let (_, start) = crate::shell::launcher::proc_stat(pid).expect("own stat");
+        let (_, start) = crate::shell::host_runtime::proc_stat(pid).expect("own stat");
         Holder { pid, start }
     };
     let (server, client) = UnixStream::pair().expect("socket pair");

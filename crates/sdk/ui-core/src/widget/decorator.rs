@@ -496,6 +496,8 @@ decorator_trait! {
         fn minimum_window_width() -> Option<f64>;
         fn needs_idle_sync() -> bool;
         fn wants_pointer_capture() -> bool;
+        fn disclosing() -> Option<crate::widget::Disclosing>;
+        fn is_band() -> bool;
         fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
@@ -522,6 +524,8 @@ decorator_trait! {
 
     mut {
         fn set_full_bleed(full_bleed: bool);
+        fn place_disclosing(slot: vello::kurbo::Rect);
+        fn note_placement(placement: crate::widget::Placement);
         #[doc(hidden)]
         #[allow(
             private_interfaces,
@@ -598,6 +602,7 @@ decorator_trait! {
             payload: &[u8],
         ) -> bool;
         fn take_structure_dirty() -> bool;
+        fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
         fn release_scene_cache();
         fn draw_overlay(

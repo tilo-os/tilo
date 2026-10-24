@@ -7693,7 +7693,7 @@ impl State {
 /// process.
 #[cfg(target_os = "linux")]
 fn end_unresponsive_process(pid: u32, start_time: Option<u64>) {
-    let Some((_, started)) = crate::shell::launcher::proc_stat(pid) else {
+    let Some((_, started)) = crate::shell::host_runtime::proc_stat(pid) else {
         return;
     };
     if start_time.is_some_and(|expected| started != expected) {
@@ -9841,7 +9841,7 @@ mod loop_gating_tests {
             "wakeups that change nothing take neither the tree nor the protection lock"
         );
 
-        drop(state.workspace_tree.write());
+        crate::shell::tab_binding::note_tab_artwork_changed(&mut state.workspace_tree.write());
         state.sync_capture_protection();
         assert_eq!(
             state.capture_protection_passes(),

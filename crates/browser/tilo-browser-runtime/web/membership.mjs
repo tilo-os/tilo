@@ -53,6 +53,9 @@ const waiting = value => ({
   name: value.name,
   role: pageRole(value.role),
   requestedAtMs: Math.floor(value.requested_at_ns / 1e6),
+  // A request left at the door without an invitation (the room's wait
+  // list): the address to invite, answered with an invitation, not `admit`.
+  contact: typeof value.contact === 'string' && value.contact ? value.contact : null,
 });
 const invitation = value => ({
   inviteId: hex(value.invite_id),
@@ -138,7 +141,8 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
      * The room as governance records it: `{room, name, generation, members,
      * waiting, invitations, notices}`. `members` include removed people
      * (`removed`); `waiting` are people who redeemed an invitation and wait
-     * for `admit` or `decline`; `invitations` are those still redeemable;
+     * for `admit` or `decline`, or left an address at the door (`contact`)
+     * to be sent an invitation or declined; `invitations` are those still redeemable;
      * `notices` tell the owner who joined under a pre-admission
      * (`{kind: 'pre-admitted', userPublicKey, name, label, role, atMs}`).
      */

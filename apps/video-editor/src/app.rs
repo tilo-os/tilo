@@ -950,6 +950,8 @@ pub struct VideoEditorApp {
     /// the next edit of one of them is the difference from, and what the
     /// optimistic `project` returns to once a drag lets go.
     stored: std::rc::Rc<Project>,
+    /// The inspector's switches, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
     /// The content store the host lent the window: where a render made for
     /// a caller is kept.
     content: Option<ui::framework::content::ContentStore>,
@@ -1389,6 +1391,7 @@ impl VideoEditorApp {
         Self {
             project: Project::new("Untitled"),
             stored: std::rc::Rc::new(Project::new("Untitled")),
+            faces: ui::widget::FaceMotions::default(),
             content: None,
             clip_edit_bases: HashMap::new(),
             shot_scenario: ShotScenario::Live,
@@ -6369,6 +6372,8 @@ impl Widget for VideoEditorApp {
             // A meter that stopped mid-fall reads as a level that is still
             // there. Frames keep coming until the bars are down.
             || self.mix_meter_is_live()
+            // A clip's switch turning as a click turns it.
+            || self.faces.is_moving(ui::motion::frame_now())
     }
 
     fn build_layout(

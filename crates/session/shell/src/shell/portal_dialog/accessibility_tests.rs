@@ -1,8 +1,8 @@
 use super::*;
 use crate::shell::portal_dialog::{
     AuthenticationDecision, AuthenticationRequest, NetworkSecretsDecision, NetworkSecretsRequest,
-    ReviewDecision, ReviewRequest, SecretFieldRule, SecretFieldSpec, UsbDeviceRequest,
-    UsbDeviceRow,
+    PortalDialogQueue, ReviewDecision, ReviewRequest, SecretFieldRule, SecretFieldSpec,
+    UsbDeviceRequest, UsbDeviceRow,
 };
 
 const SCREEN: Rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

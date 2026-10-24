@@ -57,6 +57,7 @@ chat-call-issue-camera-denied = Camera blocked. Allow it in settings, then turn 
 chat-call-issue-camera-lost = Camera stopped
 chat-call-issue-screen-denied = Screen sharing was not allowed
 chat-call-issue-screen-lost = Screen sharing stopped
+chat-call-issue-unsupported = This browser can't join calls. Use a current Chrome, Edge, Firefox or Safari.
 
 chat-call-title = Call: { $channel }
 chat-call-count = { $count ->

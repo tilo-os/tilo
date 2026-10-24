@@ -54,6 +54,7 @@ impl ShellOverlayHost {
             source: self.input_source,
             now,
         });
+        self.follow_now_playing_side(flags.quick_settings, theme);
     }
 
     /// Reconcile Quick Settings' retained widget with the authoritative
@@ -123,18 +124,25 @@ impl ShellOverlayHost {
             let pose = self.quick_settings_pose(now);
             let in_flight = !pose.is_rest();
             let qs_rect = self.qs_motion.drawn_rect(self.quick_settings_rect(), now);
-            let card_rect = self
+            // Everything the panel paints, in its own coordinates: the card
+            // and the full reach of its `e4` shadow, and the now-playing card
+            // with its own. The pose's opacity layer clips to this, and the
+            // damage bounds are this where the pose draws it. A pose at full
+            // opacity that is still moving pushes no layer, so a tighter clip
+            // would bound the damage but not the shadow, which then stayed
+            // on screen outside it once the panel moved on.
+            let panel_reach = quick_settings_settled_bounds(qs_rect, theme, Affine::IDENTITY);
+            // The card on each side it stands on while it changes sides.
+            let reach = self
                 .now_playing_view()
-                .and_then(|view| self.now_playing_rect(&view));
-            let clip = Rect::new(
-                qs_rect.x0 - 8.0,
-                qs_rect.y0 - 16.0,
-                qs_rect.x1 + 8.0,
-                qs_rect.y1 + 8.0,
-            );
-            let clip = card_rect.map_or(clip, |card| clip.union(card.inflate(8.0, 8.0)));
+                .map(|view| self.now_playing_drawn(&view))
+                .unwrap_or_default()
+                .into_iter()
+                .fold(panel_reach, |reach, (card, _)| {
+                    reach.union(quick_settings_settled_bounds(card, theme, Affine::IDENTITY))
+                });
             let mut card_rect = None;
-            pose.paint(scene, transform, clip, |scene, qs_xform| {
+            pose.paint(scene, transform, reach, |scene, qs_xform| {
                 // A Panel casts `e4` (HIG §9.1) along the card's own outline
                 // (`ChromeRole::Panel.radius`, the radius
                 // `draw_quick_settings_card_background` paints); the pose's
@@ -149,10 +157,8 @@ impl ShellOverlayHost {
                 self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
                 card_rect = self.draw_now_playing(scene, qs_xform, text_renderer, theme);
             });
-            // The in-flight layer clips every QS command to `clip`. Once
-            // settled, the damage bounds cover the `e4` shadow's reach.
             return Some(if in_flight {
-                transform.transform_rect_bbox(clip)
+                pose.applied_to(transform).transform_rect_bbox(reach)
             } else {
                 let settled = quick_settings_settled_bounds(qs_rect, theme, transform);
                 card_rect.map_or(settled, |card| {
@@ -228,11 +234,6 @@ impl ShellOverlayHost {
         // Bluetooth levels replace the body with a header + list.
         if !self.draw_quick_settings_drill_in(scene, transform, text_renderer, theme, &qs) {
             self.sync_wifi_password_input();
-            let ready = qs
-                .wifi_password
-                .as_ref()
-                .is_some_and(|prompt| prompt.can_submit(self.wifi_password_input.value()));
-            self.qs_root.set_wifi_password_ready(ready);
             self.qs_root.draw(
                 scene,
                 transform,
@@ -242,10 +243,10 @@ impl ShellOverlayHost {
                 self.last_cursor,
                 &qs,
             );
-            // The inline password's field is the host's secret input, drawn
-            // where the Wi-Fi section leaves room for it.
-            if let Some(prompt) = qs.wifi_password.as_ref()
-                && let Some(field) = self.qs_root.wifi_password_field_rect(&qs)
+            // The inline password prompt is the host's, drawn where the
+            // Wi-Fi section leaves room for it.
+            if qs.wifi_password.is_some()
+                && let Some(prompt) = self.qs_root.wifi_password_rect(&qs)
             {
                 scene.push_layer(
                     Fill::NonZero,
@@ -254,12 +255,7 @@ impl ShellOverlayHost {
                     transform,
                     &self.qs_root.shown_rect(),
                 );
-                self.draw_qs_wifi_password_field(scene, transform, text_renderer, theme, field);
-                if prompt.error.is_some() {
-                    // A rejected password outlines its field in the danger
-                    // colour, over the field's own edge.
-                    ui::widget::paint_invalid_edge(scene, transform, field, theme);
-                }
+                self.draw_qs_wifi_prompt(scene, transform, text_renderer, theme, prompt);
                 scene.pop_layer();
             }
         }

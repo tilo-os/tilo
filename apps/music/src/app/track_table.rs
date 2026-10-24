@@ -101,6 +101,9 @@ pub(super) struct Shape {
     pub index_width: f32,
     pub duration_width: f32,
     pub action_width: f32,
+    /// Rows spring to their new places when the songs change: the queue,
+    /// whose order the person changes in place.
+    pub moves: bool,
 }
 
 /// What a row asked for; the index is the row's place in the table.
@@ -174,6 +177,11 @@ impl TrackTableHost {
             self.selected = selected;
         }
         self.host.unplace();
+    }
+
+    /// Whether rows are on their way after the songs changed.
+    pub(super) fn rows_moving(&self) -> bool {
+        ui::widget::Widget::needs_animation_frame(self.host.widget())
     }
 
     /// The rows selected, by their place in the table.
@@ -394,6 +402,12 @@ fn build_table(shape: Shape, theme: &Theme, events: &Events) -> DataTable<TrackC
         });
     if !(shape.header && shape.second.is_some()) {
         table = table.without_header();
+    }
+    if shape.moves {
+        table = table.with_row_key(|row: &TrackCell| {
+            use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
+            BuildHasherDefault::<DefaultHasher>::default().hash_one(&row.id)
+        });
     }
     table
 }

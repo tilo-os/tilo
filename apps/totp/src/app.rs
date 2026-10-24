@@ -922,6 +922,9 @@ impl Widget for AuthenticatorApp {
         // leaves nothing else changed when it closes, so the answer is
         // taken here, where every frame looks.
         let answered = self.drain_portal();
+        // A glide moves the list's rows, which the frame repaints; it
+        // changes no model.
+        self.list.advance_scroll();
         let mut changed = answered;
         for child in self.children_mut() {
             changed |= child.update(state, path);

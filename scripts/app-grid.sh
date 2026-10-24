@@ -72,7 +72,7 @@ declare -A NAME=(
 [sheets]="Sheets" [slides]="Slides" [shortcuts]="Shortcuts" [snippets]="Snippets" [speed-test]="Speed Test" [store]="App Store"
 [terminal]="Terminal" [themes]="Themes" [totp]="Authenticator" [tube]="Tube"
 [typst-editor]="Typst Editor" [video-editor]="Video Editor" [video-player]="Video Player"
-[vpn]="VPN" [weather]="Weather" [windows]="Windows Apps" [word-processor]="Word Processor")
+[weather]="Weather" [windows]="Windows Apps" [word-processor]="Word Processor")
 
 # Apps with no window to shoot, and why. Listing them explicitly is what lets
 # the drift check below treat anything *else* that is missing as a mistake.

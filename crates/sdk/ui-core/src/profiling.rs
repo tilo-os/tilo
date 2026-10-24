@@ -120,6 +120,9 @@ pub enum InputPhase {
 
 impl InputPhaseClock {
     pub fn new(enabled: bool) -> Self {
+        // A test probing what a frame costs sees the input's phases too.
+        #[cfg(test)]
+        let enabled = enabled || frame_probe::enabled();
         Self {
             enabled,
             phases: InputPhases::default(),
@@ -139,6 +142,17 @@ impl InputPhaseClock {
             return;
         };
         let elapsed = start.elapsed();
+        #[cfg(test)]
+        frame_probe::record(
+            match phase {
+                InputPhase::Dispatch => "input.dispatch",
+                InputPhase::HitTest => "input.hit_test",
+                InputPhase::Resources => "input.resources",
+                InputPhase::Publication => "input.publication",
+                InputPhase::Commit => "input.commit",
+            },
+            elapsed.as_nanos(),
+        );
         let slot = match phase {
             InputPhase::Dispatch => &mut self.phases.dispatch,
             InputPhase::HitTest => &mut self.phases.hit_test,

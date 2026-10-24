@@ -17,6 +17,20 @@ use std::cell::{Cell, RefCell};
 use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
+/// The mapped nodes that take part in history: those inside a bound
+/// component or a legacy tile, and widgets that show or ask for undo or
+/// report an action bracket. Found once per admitted map, so a frame's
+/// history sweep visits them and not every row of a long list.
+#[derive(Default)]
+pub(super) struct HistoryNodes {
+    /// The admission and map size these were found for.
+    pub(super) found_for: Option<(u64, usize)>,
+    pub(super) nodes: Vec<NodeId>,
+    /// Whether any mapped node is outside a bound component: the sweep then
+    /// keeps the transaction boundary such a node's status read made.
+    pub(super) any_unbound: bool,
+}
+
 /// Retained layout and widget lookup state.
 #[cfg_attr(
     not(feature = "native"),
@@ -32,11 +46,24 @@ pub(super) struct LayoutRuntime {
     /// Which `node_map` pointers were taken from the live tree
     /// (`app::retained_layout`).
     pub(super) adopted: crate::retained_widgets::Adopted,
+    /// How many builds' maps were admitted (`App::admit_layout_maps`).
+    pub(super) admissions: u64,
+    /// The mapped nodes the history sweep visits, and the admission and map
+    /// size they were found for (`App::history_sweep_nodes`).
+    pub(super) history_nodes: HistoryNodes,
     pub(super) layout_dirty: bool,
     /// Set when a widget reports `take_structure_dirty()`: without a taffy
     /// rebuild before the next layout pass, runtime-spawned widgets have no
     /// `NodeId` and `apply_layout` skips them.
     pub(super) structure_dirty: bool,
+    /// Set when the root's widgets report a change they carry out in place
+    /// ([`crate::widget::StructureChange::Children`]): the next layout pass
+    /// remounts their children in the retained tree instead of rebuilding
+    /// it, unless something rebuilds it first.
+    pub(super) remount: bool,
+    /// How many times widgets changed the retained tree in place: like
+    /// [`Self::rebuilds`], the widgets compared across a frame changed.
+    pub(super) remounts: u64,
     /// Diffed against `inner_size()` to catch a resize without a `Resized` event.
     pub(super) last_frame_size: Option<winit::dpi::PhysicalSize<u32>>,
     /// Last settled logical content size (the window inside `safe_area`);
@@ -61,6 +88,10 @@ pub(super) struct LayoutRuntime {
     /// itself with the last one) was described: that host keeps the frame's
     /// damage instead of repainting whole.
     pub(super) frame_rebuilds_described: bool,
+    /// Where the last rebuild no widget describes was asked for, for a test
+    /// that tells why a frame repainted whole.
+    #[cfg(test)]
+    pub(super) undescribed_by: Option<&'static std::panic::Location<'static>>,
     /// Frames whose layout failed, skipped, and when that was last logged.
     pub(super) skipped_frames: crate::widget::SkippedFrames,
 }
@@ -72,8 +103,12 @@ impl LayoutRuntime {
             root_node: None,
             node_map: std::collections::HashMap::new(),
             adopted: crate::retained_widgets::Adopted::default(),
+            admissions: 0,
+            history_nodes: HistoryNodes::default(),
             layout_dirty: true,
             structure_dirty: false,
+            remount: false,
+            remounts: 0,
             last_frame_size: None,
             last_layout_logical: None,
             safe_area: crate::scale::SafeArea::default(),
@@ -82,15 +117,22 @@ impl LayoutRuntime {
             rebuilds: 0,
             rebuild_described: true,
             frame_rebuilds_described: false,
+            #[cfg(test)]
+            undescribed_by: None,
             skipped_frames: crate::widget::SkippedFrames::default(),
         }
     }
 
     /// Rebuild the tree before the next layout, for a reason no widget
     /// describes: the frame that does it repaints whole.
+    #[track_caller]
     pub(super) fn request_rebuild(&mut self) {
         self.structure_dirty = true;
         self.rebuild_described = false;
+        #[cfg(test)]
+        {
+            self.undescribed_by = Some(std::panic::Location::caller());
+        }
     }
 }
 

@@ -2219,9 +2219,10 @@ impl FrameBuilder {
     /// `Rc<RefCell<_>>`, the tree behind an `Arc<RwLock<_>>`, and
     /// `ui::App::set_frame_tick` requires `Send + Sync`, which an `Rc` can't enter.
     ///
-    /// Cheap on a quiet frame: `RoomRecords::replicate_with` compares a
-    /// generation counter before reading any document, and the chrome only
-    /// bumps when something actually arrived.
+    /// Cheap on a quiet frame: `RoomRecords::replication_due` compares a
+    /// generation counter before reading any document, the tree is written
+    /// only when it is due, and the chrome only bumps when something
+    /// actually arrived.
     fn replicate_room_records(&self) {
         let index = self.host.room_records();
 
@@ -2233,7 +2234,9 @@ impl FrameBuilder {
             let chrome = self.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let mut index = index.borrow_mut();
-            index.replicate_with(&mut tree)
+            // Asked through the guard first: a pump with nothing to exchange
+            // lends the tree no mutable access, so it announces no write.
+            index.replication_due(&tree) && index.replicate_with(&mut tree)
         };
         if arrived {
             self.chrome.borrow_mut().bump();
@@ -5145,6 +5148,8 @@ impl FrameBuilder {
             _ => {}
         }
         self.layout_osk_overlay();
+        let cover = self.osk_overlay.as_ref().filter(|_| active);
+        self.host.set_keyboard_cover(cover.map(Widget::get_rect));
     }
 
     /// Reconcile exact authenticated interactive bounds separately from the
@@ -5486,8 +5491,8 @@ impl FrameBuilder {
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
-        if self.host.palette_visible() {
-            return self.host.palette_ime_field();
+        if self.host.overlay_owns_ime() {
+            return self.host.overlay_ime_field();
         }
         let widget = *self.node_map.get(&focus?)?;
         // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
@@ -5497,7 +5502,7 @@ impl FrameBuilder {
     }
 
     pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return false;
         }
         let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
@@ -5511,7 +5516,7 @@ impl FrameBuilder {
     pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
         let widget = focus.and_then(|focus| self.node_map.get(&focus));
         // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
-        !self.host.palette_visible()
+        !self.host.overlay_owns_ime()
             && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
     }
 
@@ -5521,7 +5526,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5557,7 +5562,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5590,12 +5595,12 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         document: &automerge::AutoCommit,
     ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return Some(crate::compositor::shell_text_input::NativeEditStamp {
                 document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
                 fingerprint: self
                     .host
-                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+                    .overlay_ime_edit_fingerprint(&self.ime_stamp_key)?,
             });
         }
         let focus = focus?;
@@ -6526,45 +6531,6 @@ mod tests {
                 &automerge::ROOT,
             ));
         });
-    }
-
-    #[test]
-    fn frame_pump_settles_a_launchpad_request_once() {
-        let mut frame = FrameBuilder::new((1280, 800));
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
-            true,
-        )
-        .expect("queued launcher request");
-
-        assert!(
-            frame.pump_apps(&mut doc, &automerge::ROOT),
-            "a settled action requests repaint"
-        );
-        assert!(
-            frame.host.palette_visible(),
-            "the production frame pump opens the launcher"
-        );
-        assert!(
-            matches!(
-                doc.get(&automerge::ROOT, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
-                Ok(Some((automerge::Value::Scalar(value), _)))
-                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(false))
-            ),
-            "typed settlement consumes the request"
-        );
-        doc.put(&automerge::ROOT, "pending-observer-witness", "uncommitted")
-            .expect("pending fixture edit");
-        assert!(doc.pending_ops() > 0);
-        let revision = (doc.base_heads(), doc.pending_ops());
-        frame.pump_apps(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            revision,
-            (doc.base_heads(), doc.pending_ops()),
-            "the next pump does not repeat the request"
-        );
     }
 
     #[test]
@@ -10860,6 +10826,10 @@ mod retained_tests;
 #[cfg(test)]
 #[path = "frame_window_bar_keyboard_tests.rs"]
 mod window_bar_keyboard_tests;
+
+#[cfg(test)]
+#[path = "frame_quiet_pump_tests.rs"]
+mod quiet_pump_tests;
 
 /// `regions` without any region another one contains (the first of two
 /// equal ones stays): the same pixels, rasterised once. A changed card's

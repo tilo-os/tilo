@@ -3,6 +3,12 @@
 //! drills into its pages and back ([`ui::motion::Drill`]), and its height
 //! follows the page it shows ([`ui::motion::Extent`]).
 //!
+//! The now-playing card is the panel's companion: it stands under the panel
+//! or beside it ([`CardSide`]), placed against the panel as drawn, so it
+//! follows the height's motion; when it has to change sides it fades out
+//! where it was and in where it goes ([`ui::motion::Appear`]), and it
+//! leaves with the panel, never on its own.
+//!
 //! The chrome state's page stack is the truth: input acts on it at once.
 //! This only remembers what is drawn: the page being left while a drill
 //! runs, and how far along each motion is.
@@ -12,6 +18,13 @@ use ui::motion::{Appear, Drill, DrillDepth, Extent, Pose, Presence};
 use ui::time::Instant;
 use ui::tokens::{EffectiveMotion, MotionSource};
 use vello::kurbo::{Point, Rect};
+
+/// Where the now-playing card stands against the panel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CardSide {
+    Below,
+    Beside,
+}
 
 /// One frame's input to [`QsMotion::follow`].
 pub(super) struct QsFrame<'a> {
@@ -37,6 +50,12 @@ pub(super) struct QsMotion {
     /// one takes the stack and height as they are (a panel settled for a
     /// capture shows its page, it does not drill into it).
     synced: bool,
+    /// The now-playing card under the panel and beside it.
+    below: Presence,
+    beside: Presence,
+    /// The card takes its side as it is on the next
+    /// [`Self::follow_card`]: the panel has just appeared.
+    card_synced: bool,
 }
 
 impl QsMotion {
@@ -62,6 +81,9 @@ impl QsMotion {
             shown: vec![QsLevel::Root],
             leaving: None,
             synced: false,
+            below: Presence::closed(),
+            beside: Presence::closed(),
+            card_synced: false,
         }
     }
 
@@ -74,6 +96,7 @@ impl QsMotion {
         let level = frame.stack.len().saturating_sub(1);
         if was_hidden || !self.synced || !self.presence.is_visible(now) {
             self.synced = true;
+            self.card_synced = false;
             // A panel that opens shows its page as it is: nothing drills or
             // grows on the way in.
             self.shown = frame.stack.to_vec();
@@ -102,6 +125,45 @@ impl QsMotion {
         }
     }
 
+    /// Follow where the now-playing card goes this frame: `side`, or
+    /// nowhere. While the panel closes the card stays as it is and leaves
+    /// with the panel's own pose.
+    pub(super) fn follow_card(
+        &mut self,
+        open: bool,
+        side: Option<CardSide>,
+        motion: EffectiveMotion,
+        source: MotionSource,
+        now: Instant,
+    ) {
+        if !open {
+            return;
+        }
+        let below = side == Some(CardSide::Below);
+        let beside = side == Some(CardSide::Beside);
+        if !self.card_synced {
+            // The card comes in with the panel, on the panel's pose.
+            self.card_synced = true;
+            self.below.snap(below);
+            self.beside.snap(beside);
+            return;
+        }
+        self.below.show(below, Appear::SPEC, motion, source, now);
+        self.beside.show(beside, Appear::SPEC, motion, source, now);
+    }
+
+    /// The sides the card is drawn on at `now`, each with its opacity.
+    pub(super) fn card_sides(&self, now: Instant) -> Vec<(CardSide, f32)> {
+        [
+            (CardSide::Below, &self.below),
+            (CardSide::Beside, &self.beside),
+        ]
+        .into_iter()
+        .filter(|(_, presence)| presence.is_visible(now))
+        .map(|(side, presence)| (side, ui::motion::unit_opacity(presence.progress(now))))
+        .collect()
+    }
+
     /// Whether any of the panel draws at `now` (open, opening or closing).
     pub(super) fn is_visible(&self, now: Instant) -> bool {
         self.presence.is_visible(now)
@@ -109,7 +171,11 @@ impl QsMotion {
 
     /// Whether anything about the panel still moves at `now`.
     pub(super) fn is_animating(&self, now: Instant) -> bool {
-        self.presence.is_moving(now) || self.depth.is_moving(now) || self.height.is_moving(now)
+        self.presence.is_moving(now)
+            || self.depth.is_moving(now)
+            || self.height.is_moving(now)
+            || self.below.is_moving(now)
+            || self.beside.is_moving(now)
     }
 
     /// Where the panel `rect` appears from: the tray it hangs from sits over
@@ -226,6 +292,61 @@ mod tests {
         assert!(!qs.is_animating(settled), "settles and asks for no frames");
         assert!(qs.leaving(settled, 360.0, motion).is_none());
         assert!(qs.current(settled, 360.0, motion).is_rest());
+    }
+
+    #[test]
+    fn the_card_comes_with_the_panel_changes_sides_by_fading_and_leaves_with_it() {
+        let now = ui::time::now();
+        let motion = EffectiveMotion::new(Motion::default(), false);
+        let root = [QsLevel::Root];
+        let mut qs = QsMotion::closed();
+        qs.follow(&frame(true, &root, 420.0, now));
+        qs.follow_card(
+            true,
+            Some(CardSide::Below),
+            motion,
+            MotionSource::Pointer,
+            now,
+        );
+        assert_eq!(
+            qs.card_sides(now),
+            [(CardSide::Below, 1.0)],
+            "it appears on the panel's pose, not on its own"
+        );
+        let opened = qs.presence.settles_at().expect("appearing");
+        qs.follow(&frame(true, &root, 700.0, opened));
+        qs.follow_card(
+            true,
+            Some(CardSide::Beside),
+            motion,
+            MotionSource::Pointer,
+            opened,
+        );
+        let mid = opened + Duration::from_millis(30);
+        let sides = qs.card_sides(mid);
+        assert_eq!(
+            sides.len(),
+            2,
+            "it fades out under and in beside: {sides:?}"
+        );
+        assert!(
+            sides
+                .iter()
+                .all(|(_, opacity)| *opacity > 0.0 && *opacity < 1.0)
+        );
+        let moved = [qs.below.settles_at(), qs.beside.settles_at()]
+            .into_iter()
+            .flatten()
+            .max()
+            .expect("moving");
+        assert_eq!(qs.card_sides(moved), [(CardSide::Beside, 1.0)]);
+        qs.follow(&frame(false, &root, 700.0, moved));
+        qs.follow_card(false, None, motion, MotionSource::Pointer, moved);
+        assert_eq!(
+            qs.card_sides(moved),
+            [(CardSide::Beside, 1.0)],
+            "closing leaves the card to the panel's pose"
+        );
     }
 
     #[test]

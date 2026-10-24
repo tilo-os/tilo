@@ -410,6 +410,16 @@ interface ChannelHandle {
   # the opaque ids the shell publishes; PipeWire identities are not
   # representable.
   speakerCommand @52 (appId :Text, commandJson :Data) -> (replyJson :Data);
+  # Resolves once what `speakerCommand`'s snapshot would show (devices and
+  # their outputs, speaker groups and their members, calibrations, playback)
+  # may have changed since `after`: 0 at first, then the `change` the
+  # previous call returned. It carries no device, group or label; the
+  # endpoint asks for a fresh snapshot through `speakerCommand`, which
+  # re-checks the route and the person's media policy on every answer. An
+  # endpoint keeps one call pending instead of asking on a timer. Only the
+  # certified Settings route is answered; a host without speaker groups
+  # answers unimplemented.
+  speakerChanged @68 (after :UInt64) -> (change :UInt64);
 
   # This application's settings in the session's records: its own
   # `app_personal` and `app_device_local` entries and the shared sections

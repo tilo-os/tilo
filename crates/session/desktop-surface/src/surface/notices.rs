@@ -720,6 +720,18 @@ impl Widget for NotificationLayer {
     }
     fn needs_animation_frame(&self) -> bool {
         self.stack.needs_animation_frame(self.notifications.host())
+            || self
+                .center
+                .as_ref()
+                .is_some_and(NotificationCenter::reading_needs_frame)
+    }
+    /// The reading page glides on after a flick, repainted as a wheel's
+    /// scroll is; that changes no model.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        if let Some(center) = self.center.as_mut() {
+            self.dirty |= center.advance_reading();
+        }
+        false
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
         let banner = self.stack.next_wake_deadline(self.notifications.host());

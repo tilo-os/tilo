@@ -649,6 +649,11 @@ impl Widget for ListPane {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.follow();
+        // A glide after a flick moves the rows; the frame copies them as it
+        // does a wheel's scroll ([`Core::list_damage`]).
+        if let Ok(mut core) = self.core.try_borrow_mut() {
+            core.list.scroller.advance();
+        }
         self.empty
             .as_mut()
             .is_some_and(|(_, empty)| empty.update(state, path))

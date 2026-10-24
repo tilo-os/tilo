@@ -310,7 +310,40 @@ fn os_radios() -> Option<qs::RadioState> {
 }
 
 fn os_vpns() -> Option<Vec<qs::VpnConnectionInfo>> {
-    qs::log_get("list_vpn_connections", qs::list_vpn_connections())
+    let mut vpns = qs::log_get("list_vpn_connections", qs::list_vpn_connections());
+    #[cfg(target_os = "linux")]
+    {
+        let routes = device_vpn_entries();
+        if !routes.is_empty() {
+            vpns.get_or_insert_with(Vec::new).extend(routes);
+        }
+    }
+    vpns
+}
+
+/// Routing through another of the person's devices, as entries after the
+/// system's VPN profiles.
+#[cfg(target_os = "linux")]
+fn device_vpn_entries() -> Vec<qs::VpnConnectionInfo> {
+    crate::shell::device_vpn::entries()
+        .into_iter()
+        .map(|entry| {
+            let device = if entry.label.is_empty() {
+                crate::shell::i18n::t("qs-device-vpn-unnamed")
+            } else {
+                entry.label
+            };
+            qs::VpnConnectionInfo {
+                name: crate::shell::i18n::t_args(
+                    "qs-device-vpn-through",
+                    &[("device", device.into())],
+                ),
+                uuid: entry.id,
+                active: entry.on,
+                kind: "tilo-device".into(),
+            }
+        })
+        .collect()
 }
 
 /// Tracked so a second open while a read is running doesn't pile up
