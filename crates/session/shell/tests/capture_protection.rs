@@ -492,6 +492,7 @@ fn the_shells_secret_prompts_are_never_captured() {
                     rule: SecretFieldRule::WpaPassphrase,
                 }],
                 remember: Some(true),
+                sim: None,
             })
             .expect("the sheet is queued");
         fb.host_mut().pump_portal_dialogs();

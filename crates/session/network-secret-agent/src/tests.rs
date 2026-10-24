@@ -533,6 +533,16 @@ fn a_sim_pin_is_asked_as_a_pin() {
     assert_eq!(request.title, Message::new("portal-network-sim-pin-title"));
     assert_eq!(request.fields[0].key, "pin");
     assert!(request.fields[0].masked);
+    assert_eq!(request.kind, RequestKind::SimPin);
+    // The SIM counts wrong PINs; a remembered one is never offered.
+    assert!(!request.remember_default);
+}
+
+#[test]
+fn a_mobile_password_is_asked_as_connection_secrets() {
+    let request = request_for(gsm_connection(), "gsm", &["password"]);
+    assert_eq!(request.kind, RequestKind::Secrets);
+    assert_eq!(request.title, Message::new("portal-network-mobile-title"));
 }
 
 /// The shell's catalogue is checked against [`MESSAGE_KEYS`]; a key the
