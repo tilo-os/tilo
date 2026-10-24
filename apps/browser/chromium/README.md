@@ -499,11 +499,17 @@ content scripts (with `sender.tab`) work without help.
 - `contextMenus` items are kept by the host (`src/extension_menus.h`) and
   shown in the page's menu where their contexts (page, selection, link,
   image, video, audio, editable, frame) and URL patterns say, after the
-  page's own items. Tilo's page menu has no submenus: an item with items
-  under it gives way to them. Choosing one fires `contextMenus.onClicked`
-  with Chrome's info and the tab, and grants `activeTab`. The items and their
-  checked state are kept in the profile (`Extension Menus.json`, never for a
-  private window), since an extension makes them once, when installed.
+  page's own items, each extension's set apart: checkbox and radio items
+  with their check marks, an item with items under it as a submenu, a
+  disabled one greyed. Items for the toolbar button (`action`, `all`) go to
+  the Browser as `extension_menu` events whenever they change, and to each
+  tab as it opens; the Browser shows them in the button's menu and names a
+  choice with `extension_menu_action`. Choosing one fires
+  `contextMenus.onClicked` with Chrome's info and the tab, and grants
+  `activeTab`. The items and their checked state are kept in the profile
+  (`Extension Menus.json`, never for a private window), since an extension
+  makes them once, when installed. Unlike Chrome, the page menu does not
+  gather an extension's items under its name.
 - Keyboard shortcuts (`commands`): the Browser tells the host each
   extension's manifest `commands` with its access, in the order the
   extensions were installed, and `src/extension_commands.h` gives each

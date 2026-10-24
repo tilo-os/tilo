@@ -285,6 +285,8 @@ class ExtensionTabs {
                  const std::string& token, CefRefPtr<CefDictionaryValue> commands) {
     access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable)};
     commands_.Set(id, CommandsOf(commands));
+    // The items its button's menu kept from an earlier run.
+    TellActionMenus();
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     if (token.empty()) return;
     tokens_[token] = id;
@@ -519,9 +521,21 @@ class ExtensionTabs {
     if (!web && own.empty()) return offers;
     for (const auto& [extension, access] : access_) {
       if (extension == identity_ || !access.permissions.count("contextMenus") || (!web && extension != own)) continue;
-      for (auto& offer : menus_.Offers(extension, context)) offers.push_back(std::move(offer));
+      auto mine = menus_.Offers(extension, context);
+      // Each extension's items are a group of their own.
+      if (!offers.empty() && !mine.empty()) offers.push_back(MenuOffer{extension, std::string(), std::string(), "separator"});
+      for (auto& offer : mine) offers.push_back(std::move(offer));
     }
     return offers;
+  }
+  // The person chose the item `key` in the menu of `extension`'s toolbar
+  // button over `tab`'s page: as a choice in the page's menu, with no page
+  // context, as in Chrome.
+  void ActionMenuChosen(int tab, const std::string& extension, const std::string& key) {
+    if (!Has(extension, "contextMenus")) return;
+    MenuContext context;
+    context.in_page = false;
+    MenuChosen(tab, MenuOffer{extension, key}, context);
   }
   // The person chose an extension's item in the menu of `tab`'s page: the
   // extension hears of it with the page, which it may then script until the
@@ -605,6 +619,7 @@ class ExtensionTabs {
     for (const auto& [extension, values] : buttons_) {
       if (values->GetSize()) TellButton(tab, extension, true, values);
     }
+    for (const auto& [extension, items] : action_menus_) TellActionMenu(tab, extension, items);
   }
 
   // A tab's page changed: `status`, `url` or `title`.
@@ -805,6 +820,7 @@ class ExtensionTabs {
   // Keep the items with the profile a moment after a change: an extension
   // makes its items in a burst, which is written once.
   void MenusChanged() {
+    TellActionMenus();
     if (!hooks_.save_menus || saving_) return;
     saving_ = true;
     // The host may close first: the destructor keeps the items then, and
@@ -2259,6 +2275,53 @@ class ExtensionTabs {
     const size_t bytes = static_cast<size_t>(*width) * static_cast<size_t>(*height) * 4;
     return icon->GetString("data").ToString().size() == (bytes + 2) / 3 * 4;
   }
+  // What each extension's toolbar button menu holds, for the Browser to
+  // show: told to every page tab as it changes, and to a tab as it opens.
+  void TellActionMenus() {
+    if (!hooks_.event) return;
+    std::set<std::string> extensions;
+    for (const auto& [extension, access] : access_)
+      if (extension != identity_ && access.permissions.count("contextMenus")) extensions.insert(extension);
+    for (const auto& [extension, items] : action_menus_) extensions.insert(extension);
+    std::optional<std::vector<ExtensionTab>> tabs;
+    for (const auto& extension : extensions) {
+      size_t left = 200;
+      auto items = Has(extension, "contextMenus") ? ActionMenuItems(menus_.ActionOffers(extension), left) : CefListValue::Create();
+      auto told = action_menus_.find(extension);
+      if (told != action_menus_.end() ? told->second->IsEqual(items) : items->GetSize() == 0) continue;
+      if (items->GetSize()) action_menus_[extension] = items;
+      else action_menus_.erase(extension);
+      if (!tabs) tabs = Tabs();
+      for (const auto& each : *tabs) if (!each.panel) TellActionMenu(each.tab, extension, items);
+    }
+  }
+  void TellActionMenu(int tab, const std::string& extension, CefRefPtr<CefListValue> items) {
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetList("items", items->Copy());
+    hooks_.event(tab, "extension_menu", fields);
+  }
+  // A menu's items as the Browser reads them: each by its key, which a
+  // choice names (`extension_menu_action`); at most 24 at each level and
+  // `left` in all.
+  static CefRefPtr<CefListValue> ActionMenuItems(const std::vector<MenuOffer>& offers, size_t& left) {
+    auto list = CefListValue::Create();
+    for (const auto& offer : offers) {
+      if (list->GetSize() >= 24 || left == 0) break;
+      --left;
+      auto item = CefDictionaryValue::Create();
+      item->SetString("type", offer.type);
+      if (offer.type != "separator") {
+        item->SetString("key", offer.key);
+        item->SetString("label", offer.label);
+        item->SetBool("enabled", offer.enabled);
+        if (offer.type == "checkbox" || offer.type == "radio") item->SetBool("checked", offer.checked);
+        if (!offer.children.empty()) item->SetList("items", ActionMenuItems(offer.children, left));
+      }
+      list->SetDictionary(list->GetSize(), item);
+    }
+    return list;
+  }
   void TellButton(int tab, const std::string& extension, bool global, CefRefPtr<CefDictionaryValue> change) {
     if (!hooks_.event) return;
     auto fields = CefDictionaryValue::Create();
@@ -2313,6 +2376,8 @@ class ExtensionTabs {
   ExtensionCommands commands_{false};
 #endif
   bool saving_ = false;
+  // The toolbar button menus the Browser was told of, by extension.
+  std::map<std::string, CefRefPtr<CefListValue>> action_menus_;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 

@@ -169,3 +169,175 @@ fn an_extensions_button_state_arrives_for_one_tab_or_every_tab() {
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
 }
+
+#[test]
+fn a_page_menu_arrives_with_check_marks_separators_and_submenus() {
+    use crate::webview::ContextMenuItem;
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    let menu =
+        |items: Value| json!({"event":"context_menu","id":3,"x":10,"y":20,"link":"","items":items});
+    assert_eq!(
+        event(menu(json!([
+            {"id":100,"label":"Back"},
+            {"separator":true},
+            {"id":27000,"label":"Remember the page","checked":true},
+            {"id":27001,"label":"Not here","enabled":false},
+            {"id":27002,"label":"Translate","items":[{"id":27003,"label":"To German","checked":false}]}
+        ]))),
+        Some(WebViewEvent::ContextMenu {
+            id: 3,
+            x: 10.0,
+            y: 20.0,
+            link: String::new(),
+            items: vec![
+                ContextMenuItem::Command {
+                    id: 100,
+                    label: "Back".into(),
+                    checked: None,
+                    enabled: true
+                },
+                ContextMenuItem::Separator,
+                ContextMenuItem::Command {
+                    id: 27000,
+                    label: "Remember the page".into(),
+                    checked: Some(true),
+                    enabled: true
+                },
+                ContextMenuItem::Command {
+                    id: 27001,
+                    label: "Not here".into(),
+                    checked: None,
+                    enabled: false
+                },
+                ContextMenuItem::Submenu {
+                    label: "Translate".into(),
+                    enabled: true,
+                    items: vec![ContextMenuItem::Command {
+                        id: 27003,
+                        label: "To German".into(),
+                        checked: Some(false),
+                        enabled: true
+                    }],
+                },
+            ],
+        })
+    );
+    // Five levels, more than 24 rows at a level or 200 in all, or a check
+    // mark that is not one: refused whole.
+    let mut deep = json!([{"id":1,"label":"Five"}]);
+    for level in 0..4 {
+        deep = json!([{"id":level + 2,"label":"Deeper","items":deep}]);
+    }
+    let wide: Vec<Value> = (1..=25).map(|id| json!({"id":id,"label":"Row"})).collect();
+    let many: Vec<Value> = (1..=9)
+        .map(|id| {
+            let rows: Vec<Value> = (1..=23)
+                .map(|row| json!({"id":row,"label":"Row"}))
+                .collect();
+            json!({"id":id,"label":"Rows","items":rows})
+        })
+        .collect();
+    for items in [
+        deep,
+        Value::Array(wide),
+        Value::Array(many),
+        json!([{"id":1,"label":"Row","checked":"yes"}]),
+        json!([{"separator":false}]),
+        json!([{"id":0,"label":"Row"}]),
+    ] {
+        assert_eq!(event(menu(items.clone())), None, "{items}");
+    }
+}
+
+#[test]
+fn an_extensions_button_menu_arrives_and_a_choice_names_its_item() {
+    use crate::webview::ExtensionMenuItem;
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(json!({"event":"extension_menu","tab":1,"id":id,"items":[
+            {"type":"checkbox","key":"\"dark\"","label":"Dark pages","enabled":true,"checked":true},
+            {"type":"separator"},
+            {"type":"normal","key":"\"lists\"","label":"Lists","enabled":true,"items":[
+                {"type":"radio","key":"1","label":"Easy","enabled":false,"checked":false}
+            ]}
+        ]})),
+        Some(WebViewEvent::ExtensionMenu {
+            id: id.into(),
+            items: vec![
+                ExtensionMenuItem::Command {
+                    key: "\"dark\"".into(),
+                    label: "Dark pages".into(),
+                    checked: Some(true),
+                    enabled: true
+                },
+                ExtensionMenuItem::Separator,
+                ExtensionMenuItem::Submenu {
+                    label: "Lists".into(),
+                    enabled: true,
+                    items: vec![ExtensionMenuItem::Command {
+                        key: "1".into(),
+                        label: "Easy".into(),
+                        checked: Some(false),
+                        enabled: false
+                    }],
+                },
+            ],
+        })
+    );
+    assert_eq!(
+        event(json!({"event":"extension_menu","id":id,"items":[]})),
+        Some(WebViewEvent::ExtensionMenu {
+            id: id.into(),
+            items: Vec::new()
+        })
+    );
+    for items in [
+        json!([{"type":"checkbox","key":"1","label":"No state","enabled":true}]),
+        json!([{"type":"radio","key":"1","label":"Under","enabled":true,"checked":true,"items":[]}]),
+        json!([{"type":"normal","key":"","label":"No key","enabled":true}]),
+        json!([{"type":"other","key":"1","label":"Odd","enabled":true}]),
+    ] {
+        assert_eq!(
+            event(json!({"event":"extension_menu","id":id,"items":items.clone()})),
+            None,
+            "{items}"
+        );
+    }
+    assert_eq!(
+        event(json!({"event":"extension_menu","id":"short","items":[]})),
+        None
+    );
+
+    let choice = WebViewCommand::ExtensionMenuChoice {
+        id: id.into(),
+        key: "\"dark\"".into(),
+    };
+    assert!(command_within_limits(&choice));
+    assert_eq!(
+        encode_command(choice),
+        Some(json!({"op":"extension_menu_action","id":id,"key":"\"dark\""}))
+    );
+    for bad in [
+        WebViewCommand::ExtensionMenuChoice {
+            id: id.into(),
+            key: String::new(),
+        },
+        WebViewCommand::ExtensionMenuChoice {
+            id: id.into(),
+            key: "k".repeat(1025),
+        },
+        WebViewCommand::ExtensionMenuChoice {
+            id: "short".into(),
+            key: "1".into(),
+        },
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+}

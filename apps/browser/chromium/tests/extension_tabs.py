@@ -868,7 +868,7 @@ class ExtensionTabs(unittest.TestCase):
         host.send(op='mouse_button', button='right', down=True, x=x, y=y)
         host.send(op='mouse_button', button='right', down=False, x=x, y=y)
         menu = host.until(lambda e: e['event'] == 'context_menu')
-        return menu, {item['label']: item['id'] for item in menu['items']}
+        return menu, labelled(menu['items'])
 
     def close_menu(self, host, menu):
         host.send(op='context_action', id=menu['id'], command=0)
@@ -949,6 +949,75 @@ class ExtensionTabs(unittest.TestCase):
         chosen = self.choose(host, menu, items, 'Remember the page')
         self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (True, False))
 
+    def test_check_marks_radio_groups_submenus_and_the_buttons_menu(self):
+        access = {'menus': (['contextMenus', 'activeTab', 'scripting'], [])}
+        host, ids = self.start('menus', access=access)
+        page = self.url + '/menus'
+        host.navigate(page)
+        menu, items = self.page_menu(host, 400, 400, 'Save && share')
+        rows = {item['label']: item for item in walk(menu['items']) if 'label' in item}
+        # A checkbox and a radio group with their state, set apart from the
+        # items around them; a submenu; a disabled item greyed; an ampersand
+        # kept, not read as marking a key.
+        self.assertIs(rows['Remember the page']['checked'], False)
+        self.assertEqual((rows['Light']['checked'], rows['Dark']['checked']), (False, True))
+        labels = [item.get('label', '-') for item in menu['items']]
+        light = labels.index('Light')
+        self.assertEqual(labels[light - 1:light + 3], ['-', 'Light', 'Dark', '-'], labels)
+        self.assertEqual([item['label'] for item in rows['Translate']['items']], ['To German'])
+        self.assertNotIn(rows['Translate']['id'], items.values(), 'a submenu is no command')
+        self.assertIs(rows['Not here']['enabled'], False)
+        self.assertNotIn('Sort', rows, "the button's items stay out of the page's menu")
+
+        # A radio item chosen: it is checked and its group's other is not.
+        chosen = self.choose(host, menu, items, 'Light')
+        self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (False, True))
+        menu, items = self.menu(host, 400, 400)
+        rows = {item['label']: item for item in walk(menu['items']) if 'label' in item}
+        self.assertEqual((rows['Light']['checked'], rows['Dark']['checked']), (True, False))
+        # An item in a submenu.
+        chosen = self.choose(host, menu, items, 'To German')
+        self.assertEqual((chosen['info']['menuItemId'], chosen['info']['parentMenuItemId']), ('german', 'translate'))
+
+        # The button's menu reaches the Browser: the items made for it and
+        # those for every context, which Chrome shows there too, whatever
+        # the page.
+        def button_menu(since, checked):
+            match = lambda e: (e['event'] == 'extension_menu' and e.get('tab', 1) == 1 and e['id'] == ids['menus']
+                               and any(item.get('label') == 'Sort' and item.get('items', [{}])[0].get('checked') == checked
+                                       for item in e['items']))
+            return next((e for e in host.seen[since:] if match(e)), None) or host.until(match)
+        told = button_menu(0, True)
+        self.assertEqual(told['items'], [
+            {'type': 'normal', 'key': '"elsewhere"', 'label': 'Elsewhere', 'enabled': True},
+            {'type': 'normal', 'key': '"renamed"', 'label': 'Everywhere', 'enabled': True},
+            {'type': 'normal', 'key': '"sort"', 'label': 'Sort', 'enabled': True, 'items': [
+                {'type': 'checkbox', 'key': '"by-name"', 'label': 'By name', 'enabled': True, 'checked': True}]},
+        ])
+        # Chosen over the page: the extension hears of it with the tab, with
+        # no page context, and may script the page.
+        before = len(host.seen)
+        host.send(op='extension_menu_action', id=ids['menus'], key='"by-name"')
+        match = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('chosen:')
+        seen = next((e for e in host.seen[before:] if match(e)), None) or host.until(match)
+        chosen = json.loads(seen['title'][len('chosen:'):])
+        self.assertEqual(chosen['url'], page)
+        self.assertEqual(chosen['info'], {'menuItemId': 'by-name', 'parentMenuItemId': 'sort', 'editable': False,
+                                          'wasChecked': True, 'checked': False})
+        button_menu(before, False)
+        # A page item is not the button's to choose.
+        before = len(host.seen)
+        host.send(op='extension_menu_action', id=ids['menus'], key='"page"')
+        host.settle(1.0)
+        self.assertFalse([e for e in host.seen[before:] if match(e)], 'a page item chosen as the button\'s')
+
+        # A tab opened later is told what the button's menu holds.
+        before = len(host.seen)
+        host.send(op='create_tab', tab=2)
+        told = host.until(lambda e: e['event'] == 'extension_menu' and e.get('tab') == 2)
+        self.assertEqual(told['id'], ids['menus'])
+        self.assertEqual([item['label'] for item in told['items']], ['Elsewhere', 'Everywhere', 'Sort'])
+
     def test_a_button_shows_what_its_extension_set_for_each_page(self):
         host, ids = self.start('counter', access={'counter': (['scripting'], ['http://127.0.0.1/*'])},
                                files={'counter': {'on.png': png(16, 16)}})
@@ -1009,6 +1078,18 @@ class ExtensionTabs(unittest.TestCase):
         opened, _ = seek(mark, lambda e: e['event'] == 'extension_open_popup')
         self.assertEqual((opened.get('tab'), opened['id'], opened['url']),
                          (1, counter, f'chrome-extension://{counter}/popup.html'))
+
+
+def walk(items):
+    """Every row of a menu the host sent, its submenus' rows after it."""
+    for item in items:
+        yield item
+        yield from walk(item.get('items', []))
+
+
+def labelled(items):
+    """A menu's commands, at any depth, by label."""
+    return {item['label']: item['id'] for item in walk(items) if 'label' in item and 'items' not in item}
 
 
 def png(width, height):
