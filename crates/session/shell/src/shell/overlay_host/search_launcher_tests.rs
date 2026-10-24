@@ -275,7 +275,9 @@ fn continue_is_where_the_windows_were_as_their_bars_said() {
     use ui::window_toolbar::{ToolbarLocation, WindowToolbar};
     let (mut host, chrome) = host();
     host.search_registry.register(Rc::new(
-        crate::shell::search::providers::ContinueProvider::without_broker(),
+        crate::shell::search::providers::ContinueProvider::without_broker(std::sync::Arc::new(
+            crate::shell::search::app_content_index::AppContentIndex::in_memory(),
+        )),
     ));
     let tabs: Vec<u64> = {
         let state = chrome.borrow();

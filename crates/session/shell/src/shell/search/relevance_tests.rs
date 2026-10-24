@@ -29,7 +29,7 @@ use crate::shell::search::providers::store_catalogue::{
     StoreCatalogueTestSource, StoreCatalogueTestState,
 };
 use crate::shell::search::providers::{
-    ActionsProvider, ApplicationsProvider, FilesProvider, SessionActionPolicy,
+    ActionsProvider, ApplicationsProvider, ContinueProvider, FilesProvider, SessionActionPolicy,
     SessionActionsProvider, SettingsPagesProvider, WebProvider,
 };
 use crate::shell::search::providers::{HostApplicationsProvider, StoreCatalogueProvider};
@@ -207,6 +207,36 @@ impl Palette {
                 .flat_map(|group| group.results)
                 .collect()
         })
+    }
+
+    /// The palette on a desk whose Notes windows were lately on `notes`
+    /// (title, anchor) in the workspace in front, as Continue lists them;
+    /// Notes published no entry for any of them.
+    fn with_places(mut self, notes: &[(&str, &str)]) -> Self {
+        let room = self
+            .chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .expect("a workspace in front")
+            .room()
+            .to_string();
+        for (at, (title, anchor)) in (1u64..).zip(notes) {
+            crate::shell::search::recent_places::visit_ago(
+                "so.tilo.notes",
+                &room,
+                0,
+                title,
+                Some(anchor),
+                Duration::from_secs(at.saturating_mul(60)),
+            );
+        }
+        self.registry
+            .register(Rc::new(ContinueProvider::without_broker(Arc::new(
+                crate::shell::search::app_content_index::AppContentIndex::in_memory(),
+            ))));
+        self
     }
 
     /// The palette with the web as a provider too, on a device whose apps
@@ -779,6 +809,36 @@ fn two_letters_find_apps_by_name_not_by_a_keyword_they_begin() {
             .iter()
             .any(|title| title == "Speed Test"),
         "a keyword typed whole still finds its app"
+    );
+}
+
+/// The busy launcher's desk: "pi" finds the note the person was just in by
+/// its name, and nothing whose "pi" only begins a keyword or sits inside a
+/// word of a description ("ping", "take a picture", "typing").
+#[test]
+fn pi_finds_the_pitch_deck_continue_lists_and_nothing_pi_only_begins() {
+    let palette = Palette::new().with_places(&[
+        ("Pitch deck", "pages/pitch"),
+        ("Launch plan", "pages/launch"),
+        ("Interview notes", "pages/interviews"),
+    ]);
+    for rows in [palette.ask("pi"), palette.shown("pi")] {
+        let found = titles(&rows);
+        assert!(found.contains(&"Pitch deck"), "{found:?}");
+        for not_begun in [
+            "Speed Test",
+            "Video Editor",
+            "Camera",
+            "Choose an emoji",
+            "Launch plan",
+            "Interview notes",
+        ] {
+            assert!(!found.contains(&not_begun), "{not_begun} in {found:?}");
+        }
+    }
+    assert!(
+        titles(&palette.ask("pitch")).contains(&"Pitch deck"),
+        "and by more of its name"
     );
 }
 
