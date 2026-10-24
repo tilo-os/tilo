@@ -309,9 +309,11 @@ hold_awake() {
   note "$each's session is held awake for the rest of the run"
 }
 
+# Each waits at onboarding while the gate drives the other, A while B signs in,
+# B while A creates its identity, and then for the rest of the run.
 wait_onboarding vm_a
+hold_awake vm_a
 wait_onboarding vm_b
-# B waits at onboarding while A creates its identity, then pairs.
 hold_awake vm_b
 
 # A: the ordinary Create path, exactly as the release gate makes it.
@@ -326,12 +328,6 @@ identity="$(vm_a ssh 'od -An -v -tx1 /var/lib/tilo/user-identity/pubkey.bin' | t
 [[ $identity =~ ^[0-9a-f]{64}$ ]] || die "VM A has no readable identity public key"
 note "VM A holds identity $identity"
 
-if [ "$wake" = 1 ] || [ "$unlock" = 1 ]; then
-  # From here on the gate drives A over ssh and, in the --wake and --unlock
-  # phases, over its control socket, for many minutes without touching its
-  # keyboard.
-  hold_awake vm_a
-fi
 
 # --- the image owns the enrollment layout --------------------------------------
 layout="$(vm_b ssh 'stat -c "%n %a %U %G" /var/lib/tilo/enrollment-staging /var/lib/tilo/enrollment-commits /var/lib/tilo/peers')"
