@@ -715,8 +715,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
         SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
       } else if(action=="reset") {
-        // Back to asking: what was blocked or allowed for the site is forgotten.
+        // Back to asking: what was blocked or allowed for the site is forgotten,
+        // and so are the questions set aside, which after a few make Chromium
+        // refuse the site unasked while site information still says it asks.
         auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_DEFAULT);
+        context->SetWebsiteSetting(origin,origin,CEF_CONTENT_SETTING_TYPE_PERMISSION_AUTOBLOCKER_DATA,nullptr);
         SiteResult(request,origin,document->generation,action,true,"The site asks again for what it needs.");
       } else if(action=="enable" || action=="disable") {
         auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);

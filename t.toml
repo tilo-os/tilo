@@ -1360,6 +1360,12 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
   python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/sealed_documents.py target/chromium/tilo-chromium-host
+# Camera and microphone questions only: on this node Chromium refuses notifications and
+# location without asking, so the rest of capabilities.py runs against a macOS host.
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/capabilities.py target/chromium/tilo-chromium-host \
+    Capabilities.test_fake_camera_microphone_policy_grant_revoke_and_new_request \
+    Capabilities.test_refused_camera_is_kept_until_the_site_may_ask_again
 # The same page again with the engine started the way a Browser launch starts it: its
 # environment and the seccomp filters its sandbox stacks (launcher example web_engine_sandbox).
 cargo build --locked -p launcher --example web_engine_sandbox
