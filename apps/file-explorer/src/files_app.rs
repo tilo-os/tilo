@@ -10411,6 +10411,14 @@ impl Widget for FileExplorerWidget {
         v
     }
 
+    /// The shell is laid out whether or not a panel covers it, so the
+    /// retained layout check walks it even while the panel keeps it from
+    /// routing.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        visitor(&self.nav);
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         if self.collab_panel.is_some() {
             return Vec::new();
