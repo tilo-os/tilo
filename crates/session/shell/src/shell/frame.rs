@@ -7667,6 +7667,99 @@ mod tests {
         );
     }
 
+    /// A window maximized by key is drawn whole in the key's own frame: the
+    /// bar steps aside and the window takes the display in that frame, so
+    /// the next one repaints nothing. Restored by key, the same.
+    #[test]
+    fn a_maximize_by_key_is_drawn_whole_in_its_own_frame() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        use tilo_desktop::chrome::TopBarPresence;
+        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        fn frame(fb: &mut FrameBuilder, doc: &mut AutoCommit) -> FramePaint {
+            fb.pump_apps(doc, &automerge::ROOT);
+            fb.relayout();
+            fb.paint_with_damage()
+        }
+        let ws_id = WorkspaceId(91);
+        let strip = StripId(92);
+        let mut ws = Workspace::new(ws_id, "Typing");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 93,
+                tabs: vec![Tab {
+                    id: 94,
+                    title: "Notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: 94,
+                width: WindowWidth::Fraction(667),
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+        tree.desktop.active_group.insert(strip, 93);
+        let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
+        let mut doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let _ = frame(&mut fb, &mut doc);
+            if !fb.needs_animation_frame() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the desktop settles: {:?}",
+                fb.animation_owners()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        let _ = frame(&mut fb, &mut doc);
+        let super_held = winit::event::Modifiers::from(ModifiersState::SUPER);
+        for (key, presence) in [
+            (NamedKey::ArrowUp, TopBarPresence::Hidden),
+            (NamedKey::ArrowDown, TopBarPresence::Docked),
+        ] {
+            let press = ui::synthetic_input::key_press(Key::Named(key), None);
+            let mut focus = None;
+            assert!(
+                fb.dispatch_event(
+                    &press,
+                    &super_held,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "Super+{key:?} is the desktop's"
+            );
+            let _ = frame(&mut fb, &mut doc);
+            assert_eq!(
+                fb.chrome().top_bar_presence(),
+                presence,
+                "after Super+{key:?}; maximized {:?}",
+                fb.chrome().maximized_group()
+            );
+            let next = frame(&mut fb, &mut doc);
+            assert!(
+                matches!(next.damage_regions.as_deref(), Some([])),
+                "Super+{key:?} was drawn whole in its own frame; the next repaints {:?}",
+                next.damage_regions
+            );
+        }
+    }
+
     /// A window that was a tile before it went fullscreen keeps drawing over
     /// the whole output: the tile's last configure must not leave it a
     /// centred, tile-sized box floating above the desktop.
