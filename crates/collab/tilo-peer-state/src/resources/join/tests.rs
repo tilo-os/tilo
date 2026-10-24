@@ -228,12 +228,13 @@ fn bounded_join_response_announced_nested_length_and_trailing_bytes_are_refused(
     };
     let original = postcard::to_allocvec(&response).unwrap();
     let nested = postcard::to_allocvec(&bootstrap.governance_messages).unwrap();
-    let generation = postcard::to_allocvec(&bootstrap.generation).unwrap();
-    let position = original.len() - generation.len() - nested.len();
+    let mut tail = postcard::to_allocvec(&bootstrap.generation).unwrap();
+    tail.extend(postcard::to_allocvec(&bootstrap.hosts).unwrap());
+    let position = original.len() - tail.len() - nested.len();
     assert_eq!(&original[position..position + nested.len()], nested);
     let mut huge = original[..position].to_vec();
     huge.extend(postcard::to_allocvec(&u64::MAX).unwrap());
-    huge.extend(generation);
+    huge.extend(tail);
     let mut trailing = original.clone();
     trailing.push(0);
     for bytes in [huge, trailing] {
