@@ -209,6 +209,12 @@ fn word(index: usize) -> Option<&'static str> {
 
 /// The index of `word` on the list. The list is sorted, but a phrase is a
 /// few dozen lookups in a device's life: a scan is enough.
+/// Whether `word` is on the BIP39 English list, as written there (lowercase).
+#[must_use]
+pub fn is_word(word: &str) -> bool {
+    index_of(word).is_some()
+}
+
 fn index_of(word: &str) -> Option<usize> {
     WORDS.split(' ').position(|listed| listed == word)
 }

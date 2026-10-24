@@ -138,6 +138,39 @@ pub fn check_recovery_words(phrase: &str) -> Result<(), RecoveryWordsError> {
     decode_seed(phrase).map(drop)
 }
 
+/// How far a person has got typing a recovery key, for feedback while they
+/// type: a word still being typed is not flagged until it is finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryWordsProgress {
+    /// Words entered so far, read as [`recovery_words_public_key`] reads them.
+    pub words: usize,
+    /// The 1-based position of the first finished word that is not a
+    /// recovery-key word.
+    pub unknown_word: Option<usize>,
+}
+
+/// Progress through typing `phrase`. The last word counts as finished only
+/// once something other than a letter follows it.
+#[must_use]
+pub fn recovery_words_progress(phrase: &str) -> RecoveryWordsProgress {
+    let normalized = normalize(phrase);
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    let finished = if phrase.chars().last().is_some_and(char::is_alphabetic) {
+        words.len().saturating_sub(1)
+    } else {
+        words.len()
+    };
+    let unknown_word = words
+        .iter()
+        .take(finished)
+        .position(|word| !bip39::is_word(word))
+        .map(|at| at.saturating_add(1));
+    RecoveryWordsProgress {
+        words: words.len(),
+        unknown_word,
+    }
+}
+
 /// The identity (its public key; hex of it is the fingerprint) `phrase`
 /// restores, so a person can confirm it before restoring.
 ///
@@ -424,14 +457,7 @@ fn single_device_seed(path: &Path) -> io::Result<Zeroizing<[u8; 32]>> {
 /// every run of anything else (digits, punctuation, whitespace) separates
 /// words, which drops list numbering and commas.
 fn decode_seed(phrase: &str) -> Result<Zeroizing<[u8; 32]>, RecoveryWordsError> {
-    let mut normalized = Zeroizing::new(String::with_capacity(phrase.len().saturating_mul(2)));
-    for character in phrase.chars() {
-        if character.is_alphabetic() {
-            normalized.extend(character.to_lowercase());
-        } else {
-            normalized.push(' ');
-        }
-    }
+    let normalized = normalize(phrase);
     let found = normalized.split_whitespace().count();
     if found != RECOVERY_WORD_COUNT {
         return Err(RecoveryWordsError::WordCount { found });
@@ -443,6 +469,18 @@ fn decode_seed(phrase: &str) -> Result<Zeroizing<[u8; 32]>, RecoveryWordsError> 
     }
     seed.copy_from_slice(&entropy);
     Ok(seed)
+}
+
+fn normalize(phrase: &str) -> Zeroizing<String> {
+    let mut normalized = Zeroizing::new(String::with_capacity(phrase.len().saturating_mul(2)));
+    for character in phrase.chars() {
+        if character.is_alphabetic() {
+            normalized.extend(character.to_lowercase());
+        } else {
+            normalized.push(' ');
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -474,6 +512,32 @@ mod tests {
 
     fn words_of(seed: u8) -> Zeroizing<String> {
         bip39::encode(&[seed; 32]).unwrap()
+    }
+
+    #[test]
+    fn progress_flags_only_finished_unknown_words() {
+        assert_eq!(
+            recovery_words_progress("1. abandon 2. abil"),
+            RecoveryWordsProgress {
+                words: 2,
+                unknown_word: None
+            },
+            "a word still being typed is not flagged"
+        );
+        assert_eq!(
+            recovery_words_progress("abandon abil "),
+            RecoveryWordsProgress {
+                words: 2,
+                unknown_word: Some(2)
+            }
+        );
+        assert_eq!(
+            recovery_words_progress(&words_of(7)),
+            RecoveryWordsProgress {
+                words: RECOVERY_WORD_COUNT,
+                unknown_word: None
+            }
+        );
     }
 
     #[test]
