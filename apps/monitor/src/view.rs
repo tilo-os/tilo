@@ -1,10 +1,10 @@
 //! The Monitor window's widgets.
 //!
 //! The window is one [`ui::widget::NavShell`]. Its content is the active tab:
-//! [`ProcessesPane`] (the summary tiles and the process table, which the
-//! window bar's search narrows) or [`ResourcesPane`] (the system dashboard). The selected process
-//! is the inspector ([`process_detail`]). [`crate::app::MonitorApp`] owns the
-//! model and the shared view state; the panes meet it in a [`Bridge`]: the
+//! `ProcessesPane` (the summary tiles and the process table, which the
+//! window bar's search narrows) or `ResourcesPane` (the system dashboard). The selected process
+//! is the inspector (`process_detail`). [`crate::app::MonitorApp`] owns the
+//! model and the shared view state; the panes meet it in a `Bridge`: the
 //! app publishes what they show, the panes queue what the person asked for,
 //! and the app turns each request into a view change or a document action.
 

@@ -155,7 +155,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "watch",
 ];
 
-/// Framework app: the Tube widget is the surface over [`Tube`].
+/// Framework app: the Tube widget is the surface over [`Library`].
 pub struct TubeShell;
 
 /// What the binary runs instead of opening a window.

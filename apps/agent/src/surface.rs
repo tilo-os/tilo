@@ -1,6 +1,6 @@
 //! What the room's apps currently have open, and what may be done to it.
 //!
-//! An app on the Tilo action model publishes a [`Resource`] tree and the
+//! An app on the Tilo action model publishes a [`Resource`](tilo_actions::Resource) tree and the
 //! operations each resource exports (`docs/action-model-recipe.md`), and
 //! [`tilo_actions::door`] turns a live tree into inert, stably-addressed
 //! descriptors the agent can perform. The agent queries that tree each time,
@@ -22,7 +22,7 @@
 //!
 //! ## Authority
 //!
-//! A denied operation is **absent** from [`offers`], not marked unavailable
+//! A denied operation is **absent** from [`offers`](Catalogue::offers), not marked unavailable
 //! in it. The question asked is the shell's own gate: `Write` on
 //! `(app, action)`, resolved against the agent's capability set and denied
 //! unless something explicitly permits. It runs again at dispatch, because a
@@ -398,7 +398,7 @@ pub struct ResourceFacts {
 /// reading two different rooms.
 #[derive(Clone, Debug, Default)]
 pub struct Catalogue {
-    /// Everything the agent may perform. Denied is absent, as in [`offers`].
+    /// Everything the agent may perform. Denied is absent, as in [`offers`](Self::offers).
     pub offers: Vec<Offer>,
     /// Every resource the room's apps publish, gate or no gate: showing a
     /// resource is non-destructive and needs no permission, acting on one

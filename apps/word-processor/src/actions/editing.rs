@@ -17,12 +17,12 @@
 //!   Backspace at document start), not an error.
 //! - An edit that creates a block whose id is minted at apply time (Enter,
 //!   a multi-paragraph paste) returns a view with a
-//!   [`PendingCaret`](super::participant::PendingCaret); it resolves through
-//!   [`ParticipantView::settle`] once the envelope is applied, and every
+//!   [`PendingCaret`](crate::actions::participant::PendingCaret); it resolves through
+//!   [`ParticipantView::settle`](crate::actions::participant::ParticipantView::settle) once the envelope is applied, and every
 //!   function here settles its input first.
 //!
 //! The same logic backs the root operations published on
-//! `word-processor.document` ([`add_operations`]): each operation resolves a
+//! `word-processor.document` (`add_operations`): each operation resolves a
 //! small *target* from the invoker's view at tree-build time and its build
 //! closure finishes the same computation from the arguments, so an operation
 //! invoked through Ctrl+K or by an agent encodes byte-for-byte what the

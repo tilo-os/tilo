@@ -1,6 +1,6 @@
 //! `StoreApp` — the root widget.
 //!
-//! The Store's screens are composed in [`view`] from the toolkit's content
+//! The Store's screens are composed in `view` from the toolkit's content
 //! widgets, one column on the window ground each:
 //!
 //! ```text

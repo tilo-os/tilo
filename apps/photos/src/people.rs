@@ -1,6 +1,6 @@
 //! Device-local People recognition and review.
 //!
-//! This module is deliberately *not* part of [`crate::doc`]. Face embeddings,
+//! This module is deliberately *not* part of `crate::doc`. Face embeddings,
 //! geometry, crop pixels, and even the existence of an unconfirmed proposal
 //! are sensitive device-local state. The only bridge to collaboration is
 //! [`PeopleController::approve_membership`], which produces a compact,

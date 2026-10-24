@@ -151,7 +151,7 @@ fn sample_media() -> Option<PathBuf> {
 /// places; a path naming content resolves nowhere else.
 static CONTENT_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-/// Read content-addressed sources from `dir` (see [`CONTENT_ROOT`]); `None`
+/// Read content-addressed sources from `dir` (see `CONTENT_ROOT`); `None`
 /// stops it.
 pub fn set_content_root(dir: Option<PathBuf>) {
     if let Ok(mut slot) = CONTENT_ROOT.lock() {

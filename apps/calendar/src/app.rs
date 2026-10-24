@@ -14,7 +14,7 @@
 //! - `build_layout` — register the editor node, return a full-bleed root.
 //! - `apply_layout` — compute region rects, place the editor.
 //! - `draw` — paint the active view + detail panel (the sidebar is the
-//!   shell's, [`shell`]),
+//!   shell's, `shell`),
 //!   rebuilding the click hit-map.
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!   shortcuts, and forward to the editor when notes are active.
