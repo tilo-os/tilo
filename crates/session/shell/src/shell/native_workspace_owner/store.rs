@@ -215,6 +215,13 @@ impl Default for Runtime {
         }
     }
 }
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // The policy this writer's tree published is no longer accepted by
+        // a writer that holds it: what was judged against it is judged again.
+        self.action_authority.judge_again();
+    }
+}
 #[derive(Default)]
 pub(super) struct Writer {
     /// The exclusive lease on the state file's writer sentinel, once bound;
@@ -484,6 +491,8 @@ impl NativeStateRuntime {
                         uncertain.extend(next.rooms());
                     }
                     self.0.healthy.store(false, Ordering::Release);
+                    // Every authority this writer vouched for is withdrawn.
+                    tilo_identity_host::policy_change::announce();
                     return Err(WriteError::Uncertain(error.into_io_error()));
                 }
                 Err(WriteError::Refused(error.into_io_error()))
