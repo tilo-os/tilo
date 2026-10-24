@@ -111,6 +111,19 @@ impl ControlBindingMetadata {
 pub fn semantic_action_bindings(
     semantics: Option<crate::a11y::AccessNode>,
 ) -> Vec<ControlBindingMetadata> {
+    let mut bindings = Vec::new();
+    if let Some(semantics) = semantics {
+        semantic_action_bindings_into(&semantics, &mut bindings);
+    }
+    bindings
+}
+
+/// [`semantic_action_bindings`] of `node`, appended to `out`: read in place,
+/// so a widget's kept rows are listed without copying them.
+pub(crate) fn semantic_action_bindings_into(
+    node: &crate::a11y::AccessNode,
+    out: &mut Vec<ControlBindingMetadata>,
+) {
     fn is_effect_role(role: crate::a11y::Role) -> bool {
         use crate::a11y::Role;
         matches!(
@@ -129,22 +142,14 @@ pub fn semantic_action_bindings(
         )
     }
 
-    fn visit(node: &crate::a11y::AccessNode, out: &mut Vec<ControlBindingMetadata>) {
-        if is_effect_role(node.role)
-            && let Some(target) = &node.action_target
-        {
-            out.push(ControlBindingMetadata::semantic(target.clone()));
-        }
-        for child in &node.children {
-            visit(child, out);
-        }
+    if is_effect_role(node.role)
+        && let Some(target) = &node.action_target
+    {
+        out.push(ControlBindingMetadata::semantic(target.clone()));
     }
-
-    let mut bindings = Vec::new();
-    if let Some(semantics) = semantics {
-        visit(&semantics, &mut bindings);
+    for child in &node.children {
+        semantic_action_bindings_into(child, out);
     }
-    bindings
 }
 
 /// How readily `widget` takes the keyboard when its app does without a

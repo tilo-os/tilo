@@ -81,6 +81,21 @@ pub(crate) struct NavItemSpec {
 impl NavItemSpec {
     /// The face of this row over `row`, labelled `label`, without state.
     pub(crate) fn face<'a>(&'a self, row: Rect, label: &'a str, theme: &Theme) -> NavRowFace<'a> {
+        let mut face = self.plain_face(row, label);
+        if self.badge.is_some() {
+            let codes: Vec<&str> = self.section_badges.iter().map(String::as_str).collect();
+            face.badge_column = Some(crate::text_render::with_layout_renderer(
+                theme.text_scale,
+                |text| nav_badge_column(theme, text, &codes),
+            ));
+        }
+        face
+    }
+
+    /// [`Self::face`] without the badge column, which only painting and
+    /// hit-testing read: what the row says to assistive technology is not
+    /// made of the width every badge of its section lays out at.
+    fn plain_face<'a>(&'a self, row: Rect, label: &'a str) -> NavRowFace<'a> {
         let mut face = NavRowFace::new(row, label).depth(self.depth);
         face.under_section = self.under_section;
         face.icon = self.icon;
@@ -93,13 +108,6 @@ impl NavItemSpec {
             .as_ref()
             .map(|(label, tone)| (label.as_str(), *tone));
         face.badge = self.badge.as_deref();
-        if self.badge.is_some() {
-            let codes: Vec<&str> = self.section_badges.iter().map(String::as_str).collect();
-            face.badge_column = Some(crate::text_render::with_layout_renderer(
-                theme.text_scale,
-                |text| nav_badge_column(theme, text, &codes),
-            ));
-        }
         face.swatch = self.swatch;
         face.avatar = self.art.as_ref().map(|art| {
             crate::widget::AvatarFace::new(&art.name, &art.name)
@@ -197,6 +205,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub(crate) fn set_nav_presentation(&mut self, nav: NavPresentation<M>) {
         let theme = nav.theme.clone();
         self.nav = Some(nav);
+        self.changed_nav_presentation();
         self.apply_nav_metrics(&theme);
         // A list stands still when it first appears.
         self.transitions.clear();
@@ -226,7 +235,21 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     pub(crate) fn nav_mut(&mut self) -> Option<&mut NavPresentation<M>> {
+        self.changed_nav_presentation();
         self.nav.as_mut()
+    }
+
+    /// What a navigation row is read from beyond its own inputs (the model,
+    /// the presentation, the checks it shows) may have changed: no row of
+    /// the last accessibility walk is kept ([`Self::access_rows`]).
+    pub(super) fn changed_nav_presentation(&mut self) {
+        self.nav_revision = self.nav_revision.wrapping_add(1);
+    }
+
+    /// The revision of what navigation rows are read from beyond their own
+    /// inputs, while the tree is a navigation list.
+    pub(super) fn nav_revision(&self) -> Option<u64> {
+        self.nav.as_ref().map(|_| self.nav_revision)
     }
 
     pub(crate) fn is_nav(&self) -> bool {
@@ -245,8 +268,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(nav) = self.nav.as_mut() else {
             return;
         };
-        nav.theme = theme.clone();
-        let row = if nav.rail {
+        let rail = nav.rail;
+        // Laid out on every layout pass: the rows' semantics (a section's
+        // action button) are read from the theme only when it changed.
+        if nav.theme != *theme {
+            nav.theme = theme.clone();
+            self.changed_nav_presentation();
+        }
+        let row = if rail {
             nav_rail_row_height(theme)
         } else {
             nav_row_height(theme)
@@ -705,6 +734,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if let Some(callback) = self.nav.as_mut().and_then(|nav| nav.on_check.as_mut()) {
             callback(id);
         }
+        // The row shows the new state before the app confirms it.
+        self.changed_nav_presentation();
         self.paint_dirty = true;
         true
     }
@@ -775,11 +806,10 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// What assistive technology hears about item `id` beyond its label
     /// (the secondary line, the state), and its check.
     pub(super) fn nav_semantics(&self, id: NodeId) -> Option<(Option<String>, Option<bool>)> {
-        let nav = self.nav.as_ref()?;
         let NavRowSpec::Item(item) = self.nav_spec(id)? else {
             return None;
         };
-        let face = item.face(Rect::ZERO, "", &nav.theme);
+        let face = item.plain_face(Rect::ZERO, "");
         Some((crate::chrome::nav_row_description(&face), item.checked))
     }
 

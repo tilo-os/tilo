@@ -1982,6 +1982,36 @@ pub(crate) fn take_navigation(widget: &mut dyn crate::widget::Widget) -> bool {
     found
 }
 
+/// Whether `node` is a destination's row whose selection action is
+/// unavailable.
+fn unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
+    node.action_target
+        .as_deref()
+        .and_then(|target| target.strip_prefix("node:"))
+        .and_then(|id| id.parse::<NodeId>().ok())
+        .and_then(|id| shared.keys.get(&id))
+        .and_then(|key| shared.selection_actions.get(key))
+        .is_some_and(|action| !action.is_available())
+}
+
+/// Publish every row under `node` whose selection action is unavailable as
+/// disabled.
+fn disable_unavailable(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
+    node.state.disabled |= unavailable(node, shared);
+    for child in &mut node.children {
+        disable_unavailable(child, shared);
+    }
+}
+
+/// Whether [`disable_unavailable`] would change anything under `node`.
+fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
+    (!node.state.disabled && unavailable(node, shared))
+        || node
+            .children
+            .iter()
+            .any(|child| has_unavailable(child, shared))
+}
+
 // Not the blanket `Decorator`: apps box a navigation list, and its Widget
 // methods (with the tree view they forward to) are compiled once, here
 // (`concrete_decorator_widget!` in decorator.rs).
@@ -2071,23 +2101,32 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        fn refresh(node: &mut crate::a11y::AccessNode, shared: &NavShared) {
-            if let Some(id) = node
-                .action_target
-                .as_deref()
-                .and_then(|target| target.strip_prefix("node:"))
-                .and_then(|id| id.parse::<NodeId>().ok())
-                && let Some(key) = shared.keys.get(&id)
-                && let Some(action) = shared.selection_actions.get(key)
-            {
-                node.state.disabled |= !action.is_available();
-            }
-            for child in &mut node.children {
-                refresh(child, shared);
+        crate::widget::decorator::concrete::Decorator::accessibility_shared(self)
+            .map(crate::a11y::SharedAccessNode::into_owned)
+    }
+
+    /// The tree's rows as it keeps them between walks
+    /// ([`TreeView::access_rows`]), each the very node of the last walk
+    /// while nothing it is built from changed: a keystroke in the pane
+    /// beside the list builds none of them. A row whose destination's
+    /// selection action is unavailable is published disabled, as a copy of
+    /// the tree's row; availability changes without the tree changing, so
+    /// those few are copied on every walk.
+    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+        let mut access = crate::widget::Widget::accessibility_shared(&self.tree)?;
+        let shared = self.shared.borrow();
+        if shared
+            .selection_actions
+            .values()
+            .any(|action| !action.is_available())
+        {
+            disable_unavailable(&mut access.node, &shared);
+            for row in &mut access.children {
+                if has_unavailable(row, &shared) {
+                    disable_unavailable(std::sync::Arc::make_mut(row), &shared);
+                }
             }
         }
-        let mut access = crate::widget::Widget::accessibility(&self.tree)?;
-        refresh(&mut access, &self.shared.borrow());
         Some(access)
     }
 
@@ -2114,6 +2153,18 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
                 .collect();
             feed.publish_rows(crate::widget::Widget::get_rect(&self.tree), rows);
         }
+    }
+
+    /// Never hidden: answered without building the rows.
+    fn accessibility_hidden(&self) -> bool {
+        crate::widget::Widget::accessibility_hidden(&self.tree)
+    }
+
+    /// The tree's own node, without building its rows.
+    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+        let mut root = crate::widget::Widget::accessibility_root(&self.tree)?;
+        disable_unavailable(&mut root, &self.shared.borrow());
+        Some(root)
     }
 
     fn name(&self) -> &'static str {
@@ -2168,6 +2219,22 @@ impl crate::widget::controls::ActionControls for NavList {
             }
         }
         bindings
+    }
+
+    /// Whether [`Self::control_action_bindings`] holds an action, answered
+    /// without building the rows' semantics it also lists: the host asks it
+    /// on every frame. The actions are the visible destinations' selection
+    /// actions and whatever the tree's own children bind.
+    fn has_action_control_bindings(&self) -> bool {
+        let shared = self.shared.borrow();
+        let selection = !shared.selection_actions.is_empty()
+            && self
+                .tree
+                .visible_row_range()
+                .filter_map(|index| self.tree.visible_row(index))
+                .filter_map(|(node, _, _)| shared.keys.get(&node))
+                .any(|key| shared.selection_actions.contains_key(key));
+        selection || crate::widget::controls::has_action_control_bindings(&self.tree)
     }
 
     fn refresh_control_action_availability(
