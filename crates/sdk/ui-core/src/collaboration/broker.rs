@@ -12636,7 +12636,7 @@ mod tests {
             // The frame loop keeps calling these while connecting. With no
             // acknowledged route nothing is queued behind the connection.
             assert!(!mgr.send(CollabRequest::Presence {
-                key: PresenceKey::local_surface_pointer(),
+                key: crate::presence::local_surface_pointer(),
                 payload: PresencePayload::Arrived,
             }));
             assert!(mgr.poll().is_empty());

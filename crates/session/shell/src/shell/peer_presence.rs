@@ -32,8 +32,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use collab_types::presence::PresenceKey;
 use ui::collaboration::{CollabEvent, PresencePayload};
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};
 use crate::shell::network::ShellNetwork;
@@ -1407,7 +1408,7 @@ pub fn fold_inbound(
     let mut resolved: Option<(String, PeerLabels)> = None;
     for entry in entries {
         let Ok(PresenceKey::Pointer {
-            space: ui::presence::PointerSpace::Tile { room, tab },
+            space: collab_types::presence::PointerSpace::Tile { room, tab },
         }) = serde_json::from_str::<PresenceKey>(&entry.key)
         else {
             continue;
