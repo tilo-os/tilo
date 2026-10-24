@@ -1,16 +1,14 @@
-//! Answering systemd-cryptsetup's passphrase request, as a password agent.
+//! systemd's password agent protocol
+//! (<https://systemd.io/PASSWORD_AGENTS/>), for early boot's own agents.
 //!
-//! The passphrase prompt is up from the start, and the person at the keyboard
-//! can type the passphrase or recovery key while a sibling is being asked.
-//! Whichever answers first opens the volume. That is the systemd password
-//! agent protocol (<https://systemd.io/PASSWORD_AGENTS/>): a request is an
-//! `ask.*` file in [`ASK_DIR`], and an agent answers it with one datagram,
-//! `+` followed by the passphrase, to the request's socket. The socket checks
-//! that the sender is root.
+//! A request is an `ask.*` file in [`ASK_DIR`], and an agent answers it with
+//! one datagram, `+` followed by the answer, to the request's socket. The
+//! socket checks that the sender is root.
 //!
-//! Only cryptsetup's request for this volume is answered, and only with a
-//! passphrase already checked against the slot, so a wrong answer can never
-//! use up one of the person's tries or show them a rejection.
+//! Two agents use it: `tilo-sibling-unlock` answers systemd-cryptsetup's
+//! passphrase request with what another of the owner's devices released,
+//! and `tilo-boot-signin` carries the volume's requests to the boot screen
+//! while the person uses another way in, so they can go back to signing in.
 
 use anyhow::{Context, Result, bail};
 use std::os::unix::net::UnixDatagram;
@@ -24,6 +22,8 @@ pub const ASK_DIR: &str = "/run/systemd/ask-password";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ask {
     pub id: String,
+    /// The question, as the asking program words it.
+    pub message: String,
     pub socket: PathBuf,
     pub pid: Option<u32>,
     /// `CLOCK_MONOTONIC` deadline in microseconds; 0 when there is none.
@@ -33,7 +33,8 @@ pub struct Ask {
 /// Parses the `[Ask]` section of a request file.
 pub fn parse(text: &str) -> Result<Ask> {
     let mut in_ask = false;
-    let (mut id, mut socket, mut pid, mut not_after) = (String::new(), None, None, 0);
+    let (mut id, mut message, mut socket, mut pid, mut not_after) =
+        (String::new(), String::new(), None, None, 0);
     for line in text.lines() {
         let line = line.trim();
         if line.starts_with('[') {
@@ -48,6 +49,7 @@ pub fn parse(text: &str) -> Result<Ask> {
         };
         match key.trim() {
             "Id" => value.trim().clone_into(&mut id),
+            "Message" => value.trim().clone_into(&mut message),
             "Socket" => socket = Some(PathBuf::from(value.trim())),
             "PID" => pid = value.trim().parse().ok(),
             "NotAfter" => not_after = value.trim().parse().unwrap_or(0),
@@ -59,6 +61,7 @@ pub fn parse(text: &str) -> Result<Ask> {
     };
     Ok(Ask {
         id,
+        message,
         socket,
         pid,
         not_after,
@@ -94,7 +97,9 @@ fn monotonic_micros() -> u64 {
         .saturating_add(u64::try_from(now.tv_nsec).unwrap_or(0) / 1000)
 }
 
-fn live(ask: &Ask) -> bool {
+/// Whether the request is still waiting: its program runs and its deadline,
+/// if any, has not passed.
+pub fn live(ask: &Ask) -> bool {
     if ask.not_after != 0 && monotonic_micros() > ask.not_after {
         return false;
     }
@@ -104,6 +109,14 @@ fn live(ask: &Ask) -> bool {
 
 /// The pending requests for `device` in `dir`, oldest name first.
 pub fn pending(dir: &Path, device: &Path) -> Vec<Ask> {
+    requests(dir)
+        .into_iter()
+        .filter(|ask| is_for(ask, device))
+        .collect()
+}
+
+/// Every live request in `dir`, oldest name first.
+pub fn requests(dir: &Path) -> Vec<Ask> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -120,7 +133,7 @@ pub fn pending(dir: &Path, device: &Path) -> Vec<Ask> {
         .iter()
         .filter_map(|path| std::fs::read_to_string(path).ok())
         .filter_map(|text| parse(&text).ok())
-        .filter(|ask| is_for(ask, device) && live(ask))
+        .filter(live)
         .collect()
 }
 
@@ -146,6 +159,7 @@ mod tests {
     fn parses_a_cryptsetup_request() {
         let ask = parse(ASK).unwrap();
         assert_eq!(ask.id, "cryptsetup:/dev/vda3");
+        assert_eq!(ask.message, "Please enter passphrase for disk root");
         assert_eq!(ask.socket, Path::new("/run/systemd/ask-password/sck.1234"));
         assert_eq!(ask.pid, Some(1));
         assert!(is_for(&ask, Path::new("/dev/vda3")));

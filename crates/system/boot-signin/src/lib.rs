@@ -8,6 +8,7 @@
 pub mod auth;
 pub mod flow;
 pub mod people;
+pub mod relay;
 pub mod screen;
 
 #[cfg(test)]

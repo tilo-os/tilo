@@ -55,6 +55,8 @@ assert "draw_signin()" in hotplug, \
     "a display change must lay the sign-in screen out again too"
 assert "tilo-signin-" in body("display_message"), \
     "the theme must take the sign-in screen's messages"
+assert '"tilo-otherways:"' in body("display_message"), \
+    "the theme must say how to go back to signing in from another way in"
 # Every message tilo-boot-signin sends is one the theme reads.
 signin = body("signin_message")
 for key in ("people", "person", "choose", "name", "kind", "back", "note",
@@ -131,7 +133,7 @@ expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "avatar.png", "avatar-person.png", "signin-heading.png",
             "placeholder-pin.png", "placeholder-password.png",
             "note-wrong-pin.png", "note-wrong-password.png", "note-wait.png",
-            "signing-in.png", "hint-other-ways.png", "hint-someone-else.png",
+            "signing-in.png", "hint-other-ways.png", "hint-someone-else.png", "hint-go-back.png",
             "list-heading.png", "list-keys.png", "row.png", "row-selected.png",
             "cant-sign-in.png", "account-1.png", "account-2.png", "account-3.png",
             "account-4.png"}

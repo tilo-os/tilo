@@ -19,6 +19,7 @@ path = "src/main.rs"
 # initramfs carries, as tilo-rollback and tilo-sibling-unlock drive theirs.
 serde.workspace = true
 serde_json.workspace = true
+tilo-ask-password = { path = "../ask-password" }
 zeroize.workspace = true
 workspace-hack = { version = "0.1" }
 
