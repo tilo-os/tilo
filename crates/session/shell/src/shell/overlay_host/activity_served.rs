@@ -8,23 +8,21 @@
 use super::*;
 use tilo_action_broker::services::HostStepOutcome;
 use tilo_actions::ActionFailure;
-use tilo_actions::remote::workspace_activity as wire;
 
 use crate::shell::activity_provider::{refused, unreadable};
 
-/// The arguments a read or write carries, as `T`.
-fn read<T: serde::de::DeserializeOwned + Default>(
-    arguments: &serde_json::Map<String, serde_json::Value>,
-) -> Result<T, String> {
-    if arguments.is_empty() {
-        return Ok(T::default());
-    }
-    serde_json::from_value(serde_json::Value::Object(arguments.clone()))
-        .map_err(|error| format!("the arguments were not understood: {error}"))
-}
+/// The desktop chrome holds, read through its read lock and written
+/// through its write lock only by what writes.
+struct ChromeTree<'a>(&'a crate::shell::chrome_state::ChromeState);
 
-fn json(value: &impl serde::Serialize) -> Result<serde_json::Value, Box<ActionFailure>> {
-    serde_json::to_value(value).map_err(|error| unreadable(error.to_string()))
+impl tilo_desktop::activity::ServedTree for ChromeTree<'_> {
+    type Tree = crate::shell::state::WorkspaceTree;
+    fn read<R>(&mut self, read: impl FnOnce(&Self::Tree) -> R) -> R {
+        read(&self.0.tree())
+    }
+    fn write<R>(&mut self, write: impl FnOnce(&mut Self::Tree) -> R) -> R {
+        write(&mut self.0.tree_mut())
+    }
 }
 
 impl ShellOverlayHost {
@@ -72,26 +70,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return Ok(None);
         };
-        let pane = &mut self.room_activity;
-        let value = match action {
-            wire::FEED => {
-                let query: wire::FeedQuery = read(arguments).map_err(unreadable)?;
-                let state = chrome.borrow();
-                let tree = state.tree();
-                json(&pane.serve_feed(&query, &*tree))?
-            }
-            wire::SUMMARY => json(&pane.serve_summary())?,
-            wire::REPLAY => json(&pane.serve_replay())?,
-            wire::FOCUS => json(&pane.serve_focus())?,
-            wire::DETAIL => {
-                let query: wire::DetailQuery = read(arguments).map_err(unreadable)?;
-                let state = chrome.borrow();
-                let records = state.records().clone();
-                let mut tree = state.tree_mut();
-                json(&pane.serve_detail(&query, &mut *tree, Some(&records)))?
-            }
-            other => return Err(unreadable(format!("`{other}` is not a read"))),
-        };
+        let state = chrome.borrow();
+        let records = state.records().clone();
+        let value = self
+            .room_activity
+            .serve_read(action, arguments, &mut ChromeTree(&state), Some(&records))
+            .map_err(unreadable)?;
+        drop(state);
         // A read can narrow the model (a scope, a filter, a selection).
         self.publish_activity_revision();
         Ok(Some(value))

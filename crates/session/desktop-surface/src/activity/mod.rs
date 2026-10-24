@@ -19,7 +19,8 @@ mod testing;
 pub use index::*;
 pub use pane::{
     ACTIVITY_ACKNOWLEDGE, ActivityView, HISTORY_COMPARE, HISTORY_RESTORE, HISTORY_UNDO, Period,
-    RoomActivityOutcome, RoomActivityPane, RoomScope, TASKS_APP,
+    RoomActivityOutcome, RoomActivityPane, RoomScope, ServedTree, TASKS_APP, is_document_write,
+    is_personal, is_read, refused_to_agent,
 };
 
 /// A causal document paired with its admitted desktop projection. Implementors

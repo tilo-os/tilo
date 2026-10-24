@@ -29,7 +29,7 @@ mod shared_tree;
 pub mod surface;
 
 pub use surface::{
-    ActivityPane, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
+    ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
     DesktopSurface, HistorySource, HostAction, HostActionSource, NotificationOutcome, OpenActivity,
     PersonalAsk, TileSource, is_host_offer, open_activity, published_selection, seed_tree,
     tile_app_kind,

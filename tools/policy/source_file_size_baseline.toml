@@ -127,8 +127,8 @@
 "crates/sdk/ui-core/src/widget/tree_view.rs" = 7000
 "crates/sdk/ui-core/src/widget/virtual_list.rs" = 3500
 "crates/sdk/ui-core/src/widget/window_group.rs" = 6500
-"crates/session/desktop-surface/src/activity/pane.rs" = 8000
-"crates/session/desktop-surface/src/activity/pane_tests.rs" = 4500
+"crates/session/desktop-surface/src/activity/pane.rs" = 4000
+"crates/session/desktop-surface/src/activity/pane_tests.rs" = 3500
 "crates/session/desktop-surface/src/notifications/center.rs" = 3500
 "crates/session/desktop/src/topbar.rs" = 7500
 "crates/session/desktop/src/workspace_settings.rs" = 6000

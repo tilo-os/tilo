@@ -16677,6 +16677,7 @@ name = "tilo-agent-participant"
 version = "0.1.0"
 dependencies = [
  "accounts",
+ "activity",
  "agent",
  "api-tester",
  "base64",
@@ -20724,6 +20725,7 @@ dependencies = [
 name = "tilo-web-desktop"
 version = "0.1.0"
 dependencies = [
+ "activity",
  "api-tester",
  "calculator",
  "calendar",

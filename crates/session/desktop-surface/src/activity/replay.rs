@@ -31,7 +31,6 @@ pub(super) struct WorkspaceReplayFrame {
 pub(super) struct ReplayPointer {
     pub(super) name: String,
     pub(super) color: (u8, u8, u8),
-    pub(super) point: (f32, f32),
     pub(super) desktop_space: bool,
 }
 

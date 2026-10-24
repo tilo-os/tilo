@@ -155,6 +155,82 @@ fn read<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("the action's arguments were not understood: {error}"))
 }
 
+/// The desktop a served read or write is about, as its host holds it: read
+/// through, or written to only by what writes.
+pub trait ServedTree {
+    type Tree: ActivityTree;
+    fn read<R>(&mut self, read: impl FnOnce(&Self::Tree) -> R) -> R;
+    fn write<R>(&mut self, write: impl FnOnce(&mut Self::Tree) -> R) -> R;
+}
+
+/// A desktop the host holds outright.
+impl<T: ActivityTree> ServedTree for &mut T {
+    type Tree = T;
+    fn read<R>(&mut self, read: impl FnOnce(&T) -> R) -> R {
+        read(self)
+    }
+    fn write<R>(&mut self, write: impl FnOnce(&mut T) -> R) -> R {
+        write(self)
+    }
+}
+
+/// Whether `action` is one only the person at the device asks for: what
+/// they saw, which sources they hear about each morning.
+#[must_use]
+pub fn is_personal(action: &str) -> bool {
+    [
+        wire::MARK_VIEWED,
+        wire::FOCUSED,
+        wire::CHOOSE_SOURCE,
+        wire::SOURCE,
+    ]
+    .contains(&action)
+}
+
+/// Whether `action` is a read an app follows.
+#[must_use]
+pub fn is_read(action: &str) -> bool {
+    [
+        wire::FEED,
+        wire::SUMMARY,
+        wire::REPLAY,
+        wire::DETAIL,
+        wire::FOCUS,
+    ]
+    .contains(&action)
+}
+
+/// Whether `action` changes the workspace's shared history: naming,
+/// splitting, merging, undoing, restoring.
+#[must_use]
+pub fn is_document_write(action: &str) -> bool {
+    [
+        wire::NAME,
+        wire::SPLIT,
+        wire::MERGE,
+        wire::MOVE_BOUNDARY,
+        wire::UNDO,
+        wire::RESTORE,
+        wire::UNDO_RUN,
+    ]
+    .contains(&action)
+}
+
+/// Why an agent may not ask for `action` with `arguments`, if it may not:
+/// what this device has seen and the sources it hears about are the
+/// person's own, and so is every workspace's history but the one the agent
+/// works in.
+#[must_use]
+pub fn refused_to_agent(
+    action: &str,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let all_workspaces = action == wire::FEED
+        && read::<wire::FeedQuery>(arguments)
+            .is_ok_and(|query| query.scope == wire::Scope::AllWorkspaces);
+    (is_personal(action) || all_workspaces).then(|| t("activity-served-personal-only"))
+}
+
 impl RoomActivityPane {
     /// A fingerprint of everything the served reads show: it moves when
     /// one of them would read differently, and an app following them is
@@ -202,6 +278,34 @@ impl RoomActivityPane {
             .map(|focus| focus.serial)
             .hash(&mut hasher);
         hasher.finish()
+    }
+
+    /// Read `action` with `arguments`, as an app following it gets it.
+    ///
+    /// # Errors
+    /// The action is no read, or its arguments were not understood.
+    pub fn serve_read(
+        &mut self,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+        tree: &mut impl ServedTree,
+        records: Option<&RecordStore>,
+    ) -> Result<serde_json::Value, String> {
+        let value = match action {
+            wire::FEED => {
+                let query: wire::FeedQuery = read(arguments)?;
+                serde_json::to_value(tree.read(|tree| self.serve_feed(&query, tree)))
+            }
+            wire::SUMMARY => serde_json::to_value(self.serve_summary()),
+            wire::REPLAY => serde_json::to_value(self.serve_replay()),
+            wire::FOCUS => serde_json::to_value(self.serve_focus()),
+            wire::DETAIL => {
+                let query: wire::DetailQuery = read(arguments)?;
+                serde_json::to_value(tree.write(|tree| self.serve_detail(&query, tree, records)))
+            }
+            other => return Err(format!("`{other}` is not a read")),
+        };
+        value.map_err(|error| error.to_string())
     }
 
     /// Narrow the timeline as `query` says, then read it.
