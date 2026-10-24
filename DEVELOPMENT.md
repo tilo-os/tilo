@@ -1475,6 +1475,14 @@ tilo compositor listening on "wayland-1"
   also written to /run/user/1000/tilo-session/wayland-display
 ```
 
+In the windowed (`winit`) session, **Ctrl+Space** opens search and
+**Ctrl+Shift+Space** opens the workspace overview, without requiring the host
+to forward Super. F1 shows these effective bindings. They are session-only
+defaults: native and headless sessions keep their normal shortcuts, saved
+rebindings take precedence, and an already-bound chord is never taken from
+another action. Editing shortcuts does not save the windowed defaults over
+the native preferences.
+
 Run an app on that socket:
 
 ```bash

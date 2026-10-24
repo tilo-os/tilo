@@ -9629,6 +9629,12 @@ pub fn run() {
         initial_size,
         crate::shell::session_record_store(),
     );
+    frame_builder
+        .host_mut()
+        .set_nested_shortcuts(backend_kind == BackendKind::Winit);
+    state
+        .global_shortcuts
+        .set_shortcut_config(frame_builder.host().shortcut_config().clone());
     frame_builder.set_strip_pan_presenter(
         backend.pixel_aligned_strip_pan(),
         backend.composites_strip_layers(),
