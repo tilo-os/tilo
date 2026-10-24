@@ -136,15 +136,17 @@ impl CapnpChannelHandle {
         let workspace = route.cluster_id.clone();
         let window = route.channel_key();
         let duplicate = self.clipboard_descriptor_source()?;
-        let owner = if let Some(pending) = &original {
-            pending
+        let (owner, attributed_agent) = if let Some(pending) = &original {
+            let actor = pending
                 .caller
                 .as_ref()
                 .and_then(|caller| caller.current(&self.state))
-                .map(|caller| self.state.caller_actor(&caller, &workspace).id().to_owned())
-                .ok_or("original clipboard caller unavailable")?
+                .map(|caller| self.state.caller_actor(&caller, &workspace))
+                .ok_or("original clipboard caller unavailable")?;
+            let agent = attributed_agent(&actor, session_person(&self.verified_identity)).ok();
+            (actor.id().to_owned(), agent)
         } else {
-            self.verified_identity.broker_actor().id().to_owned()
+            (self.verified_identity.broker_actor().id().to_owned(), None)
         };
         let local_action = action.to_owned();
         let peer = self.peer_id;
@@ -211,8 +213,67 @@ impl CapnpChannelHandle {
             workspace,
             owner,
             history_compensation,
+            attributed_agent,
             check,
         })
+    }
+
+    /// Name the agent behind the writes Files is about to make for its own
+    /// live invocation `parent`, so the filesystem records it beside the
+    /// versions they make. Who acted comes from this broker's custody of that
+    /// invocation alone, never from the request, and only an agent acting
+    /// for the person whose session Files runs in is ever named: a person's
+    /// own invocation, an app's, an agent acting for someone else, or no
+    /// live invocation is refused.
+    pub(super) fn write_attribution_dispatch(
+        &self,
+        bytes: &[u8],
+        parent: &[u8],
+    ) -> Result<Vec<u8>, capnp::Error> {
+        let failed = capnp::Error::failed;
+        let request = runtime_collab::write_attribution::decode(bytes).map_err(failed)?;
+        let parent = super::observed_launch::launch_parent(parent)?
+            .ok_or_else(|| failed("write attribution requires its invocation".into()))?;
+        let local = self
+            .native_media_context(false)
+            .map_err(|error| failed(error.to_string()))?;
+        if local.app_id() != "so.tilo.file-explorer" {
+            return Err(failed(
+                "only Files names the agent behind its writes".into(),
+            ));
+        }
+        let agent = self.invocation_agent(parent).map_err(failed)?;
+        let service = self
+            .state
+            .services
+            .file_clipboard
+            .as_ref()
+            .ok_or_else(|| failed("write attribution unavailable".into()))?;
+        service
+            .attribute_writes(&agent, request.paths)
+            .map_err(failed)?;
+        Ok(Vec::new())
+    }
+
+    /// The agent behind this peer's live invocation `parent`, when it acts
+    /// for this connection's own person.
+    fn invocation_agent(&self, parent: InvocationId) -> Result<String, String> {
+        let pending = self
+            .clipboard_original(Some(parent))?
+            .ok_or("write attribution requires a live invocation")?;
+        if pending.cancellation_fence.load(super::Ordering::Acquire) {
+            return Err("the invocation ended".into());
+        }
+        let caller = pending
+            .caller
+            .as_ref()
+            .and_then(|caller| caller.current(&self.state))
+            .ok_or("the invocation's caller is no longer admitted")?;
+        if caller.execution_id().is_some() && !caller.execution_is_live() {
+            return Err("the invocation's execution ended".into());
+        }
+        let actor = self.state.caller_actor(&caller, &self.route().cluster_id);
+        attributed_agent(&actor, session_person(&self.verified_identity))
     }
 
     #[cfg(target_os = "linux")]
@@ -406,6 +467,32 @@ impl CapnpChannelHandle {
     }
 }
 
+/// The person whose session this connection runs in: its own person, never
+/// an agent's.
+fn session_person(identity: &super::AdmittedJoinIdentity) -> Option<&str> {
+    identity
+        .agent_id
+        .is_none()
+        .then_some(identity.principal_id.as_str())
+}
+
+/// `actor`'s principal when it is an agent acting for `person`, the person
+/// whose session the writing app runs in: the only actor a write is ever
+/// attributed to. A person, an app, a bot, an agent acting for somebody else
+/// or for nobody is refused.
+fn attributed_agent(actor: &super::BrokerActor, person: Option<&str>) -> Result<String, String> {
+    match person {
+        Some(person)
+            if actor.is_agent()
+                && actor.id().starts_with("agent:")
+                && actor.for_person.as_deref() == Some(person) =>
+        {
+            Ok(actor.id().to_owned())
+        }
+        _ => Err("only an agent acting for this session's person is attributed".into()),
+    }
+}
+
 struct HandedRelease {
     descriptors: Option<runtime_portal::descriptor_lane::ReceivedDescriptors>,
     numbers: Vec<u32>,
@@ -565,5 +652,42 @@ impl SelectedOpenCustody {
             })?
             .map_err(str::to_owned)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod attribution_tests {
+    use super::super::BrokerActor;
+    use super::attributed_agent;
+
+    /// Only an agent acting for the session's own person is ever named; the
+    /// actor always comes from custody, so what is checked here is whom.
+    #[test]
+    fn writes_are_attributed_only_to_an_agent_acting_for_the_session_person() {
+        let scribe = BrokerActor::agent("agent:scribe").for_person("ada");
+        assert_eq!(
+            attributed_agent(&scribe, Some("ada")),
+            Ok("agent:scribe".into())
+        );
+        assert_eq!(
+            attributed_agent(&scribe.clone().session_delegated(), Some("ada")),
+            Ok("agent:scribe".into())
+        );
+        for (actor, person) in [
+            (scribe.clone(), Some("bea")),
+            (scribe, None),
+            (BrokerActor::agent("agent:scribe"), Some("ada")),
+            (BrokerActor::person("ada"), Some("ada")),
+            (
+                BrokerActor::agent("app:so.tilo.notes").for_person("ada"),
+                Some("ada"),
+            ),
+            (BrokerActor::bot("helper", "ada"), Some("ada")),
+        ] {
+            assert!(
+                attributed_agent(&actor, person).is_err(),
+                "{actor:?} for {person:?}"
+            );
+        }
     }
 }
