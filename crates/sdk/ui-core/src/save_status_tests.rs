@@ -1,4 +1,5 @@
 use super::*;
+use crate::time::testing::with_monotonic_time;
 use crate::window_toolbar::{ToolbarEvent, deliver, notice, notify};
 
 const DOC: Option<&str> = Some("Launch checklist");
@@ -58,14 +59,15 @@ fn autosave_is_silent_until_a_save_stalls() {
     );
     assert!(surface.take_retry(), "one more submission");
     assert!(!surface.take_retry(), "once");
+    // A notice's lifetime runs on the window's clock.
     let landed = t1 + SAVE_STALL + Duration::from_secs(1);
-    surface.set(SaveState::Saved, landed);
+    with_monotonic_time(landed, || surface.set(SaveState::Saved, landed));
     surface.publish();
     assert_eq!(bar(), Some(("Saved".to_owned(), ToastKind::Success, None)));
-    let gone = surface
-        .next_wake_deadline()
-        .expect("Saved leaves on its own");
-    surface.advance(gone + Duration::from_millis(1));
+    let gone = with_monotonic_time(landed, || surface.next_wake_deadline())
+        .expect("Saved leaves on its own")
+        + Duration::from_millis(1);
+    with_monotonic_time(gone, || surface.advance(gone));
     surface.publish();
     assert_eq!(bar(), None);
     assert_eq!(

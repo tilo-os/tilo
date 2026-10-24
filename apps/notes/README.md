@@ -8,9 +8,8 @@ include bold, italic, underline, strikethrough, code, external links and
 stable target survives renames and bounded previews keep cyclic embeds safe.
 
 Created and last-edited dates sit below the title, with the note's tags and the
-notes that link to it as buttons. The transient status bubble reports save
-state and word count without taking permanent editor space, and a note that
-cannot be saved says so under its title until it can. The
+notes that link to it as buttons. A note that cannot be saved says so in
+the window's bar, with Try again beside it, until a save succeeds. The
 layout fills the available view, keeps the note header visible while the body
 scrolls, and collapses the note tree into a drawer at narrow widths.
 

@@ -169,15 +169,6 @@ enum SettingsPanel {
     Document,
 }
 
-/// The app's only decorative animation is the transient status bubble. Keep
-/// the preference as a semantic state rather than another independent bool so
-/// it cannot accidentally conflict with the run mode.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MotionPreference {
-    Full,
-    Reduced,
-}
-
 /// One-shot duties the app still owes the frame loop.
 #[derive(Clone, Copy, Default)]
 struct Pending {
@@ -446,7 +437,6 @@ pub struct SheetsApp {
     /// The shared `locale` setting, followed while the app runs.
     locale: Option<ui::framework::Setting<Locale>>,
     doc_settings: DocSettings,
-    motion: MotionPreference,
     /// Memoised recalculation: `reload` recomputes only when the document
     /// heads or active sheet change, so selection/scroll frames are cheap.
     cache: Option<ReloadCache>,
@@ -573,7 +563,6 @@ impl SheetsApp {
             global: Locale::default(),
             locale: None,
             doc_settings: DocSettings::default(),
-            motion: MotionPreference::Full,
             cache: None,
             pending_reveal: None,
             clipboard: None,
@@ -2509,9 +2498,9 @@ impl SheetsApp {
         })
     }
 
-    /// The text for the floating status bubble, or `None` when there is nothing
-    /// worth surfacing (an idle sheet: no pending action, no numeric selection,
-    /// a plain `General` active cell — which keeps the bubble hidden).
+    /// What the window's bar says about the sheet, or `None` when there is
+    /// nothing worth saying (an idle sheet: no pending action, no numeric
+    /// selection, a plain `General` active cell).
     ///
     /// A fresh transient action message (e.g. "Pasted into B2") wins; absent
     /// one, the text is the live selection summary (count, sum and average of
@@ -2796,11 +2785,6 @@ impl Widget for SheetsApp {
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
-        self.motion = if reduced {
-            MotionPreference::Reduced
-        } else {
-            MotionPreference::Full
-        };
         self.palette.set_motion_reduced(reduced);
     }
 
@@ -4534,7 +4518,7 @@ pub(crate) mod tests {
         )
     }
 
-    /// Chrome bands, status bubble, tabs, settings sheet, tab menu and pointer targets follow measured text.
+    /// Chrome bands, tabs, settings sheet, tab menu and pointer targets follow measured text.
     #[test]
     #[expect(
         clippy::too_many_lines,

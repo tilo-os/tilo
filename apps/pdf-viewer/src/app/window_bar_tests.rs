@@ -10,8 +10,8 @@ use ui::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolb
 use super::super::selection_tests::text_pdf;
 use super::super::tests::launched;
 use super::{
-    FIT_PAGE, FIT_WIDTH, MARKER_COLOUR, OPEN, REVIEW_PANEL, SAVE, TOOLS, ZOOM, ZOOM_IN, ZOOM_OUT,
-    colour_id, tool_id,
+    FIT_PAGE, FIT_WIDTH, MARKER_COLOUR, NEXT_PAGE, OPEN, PREVIOUS_PAGE, REVIEW_PANEL, SAVE, TOOLS,
+    ZOOM, ZOOM_IN, ZOOM_OUT, colour_id, tool_id,
 };
 use crate::actions::PdfEffect;
 use crate::markup::PdfMarkup;
@@ -97,11 +97,23 @@ fn the_reader_draws_no_toolbar_and_its_controls_are_in_the_window_bar() {
         .iter()
         .map(|action| action.id.as_str())
         .collect();
-    assert_eq!(ids, [TOOLS, MARKER_COLOUR, REVIEW_PANEL, ZOOM, OPEN, SAVE]);
+    assert_eq!(
+        ids,
+        [
+            TOOLS,
+            MARKER_COLOUR,
+            REVIEW_PANEL,
+            ZOOM,
+            PREVIOUS_PAGE,
+            NEXT_PAGE,
+            OPEN,
+            SAVE
+        ]
+    );
     assert_eq!(
         toolbar.row_actions(),
         3,
-        "zoom, Open and Save are in the menu"
+        "zoom, page stepping, Open and Save are in the menu"
     );
     let tools: Vec<String> = slot(&toolbar, TOOLS)
         .items

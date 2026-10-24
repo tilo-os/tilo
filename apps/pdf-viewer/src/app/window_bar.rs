@@ -2,8 +2,8 @@
 //! ([`ui::window_toolbar`]): the bar's sidebar toggle shows and hides the
 //! pages, its location names the open document, and its actions carry the
 //! annotation tools, the marker colour, the review panel, zoom, page
-//! stepping, Open and Save. Each slot runs the reader's published [`PdfEffect`] through the
-//! same handler the palette and agents reach. The window's search finds in
+//! stepping, Open and Save. Each slot runs the reader's published
+//! [`PdfEffect`] through the same handler the palette and agents reach. The window's search finds in
 //! the pages (the reader is its [`ui::widget::Findable`]) and its History
 //! control opens the record's History; the reader draws no toolbar row.
 

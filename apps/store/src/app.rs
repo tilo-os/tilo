@@ -555,8 +555,6 @@ pub struct StoreApp {
     /// List position survives the composed widget tree being rebuilt after a
     /// filter, search result, or catalogue update.
     scroll_offset: Rc<Cell<(f32, f32)>>,
-    /// The transient status bubble: an operation's result, shown once when
-    /// it changes.
     /// The latest outcome (installed, removed, …), said in the window's bar
     /// for a while; work under way and failures say themselves in place.
     status_notice: ui::widget::toast::Transient<String>,

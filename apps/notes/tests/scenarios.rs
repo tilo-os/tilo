@@ -180,6 +180,14 @@ fn shown_title(scenario: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// Whether the window's bar says `text`, with the button `action` beside
+/// it.
+fn bar_says(text: &str, action: Option<&str>) -> bool {
+    ui::window_toolbar::notice().is_some_and(|notice| {
+        notice.text == text && notice.action.map(|button| button.name).as_deref() == action
+    })
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one table of every scenario's checks keeps them comparable"
@@ -450,18 +458,22 @@ fn reached(
         Some("sidebar_scroll") => observed(driver, |node| {
             node.name.as_deref() == Some("Reference 28") && node.bounds.is_some()
         }),
-        Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved")),
+        Some("status") => observed(driver, |node| node.name.as_deref() == Some("Saved"))
+            && bar_says("Saved", None),
         Some("save_retrying") => {
             observed(driver, |node| node.name.as_deref() == Some("Saving…"))
+                && bar_says("Couldn't save yet. Retrying…", None)
         }
-        Some("save_not_saved") => observed(driver, |node| {
-            node.name.as_deref() == Some("Not saved")
-                && node
-                    .children
-                    .iter()
-                    .any(|child| child.name.as_deref() == Some("Try again"))
-        }),
-        Some("save_error") => observed(driver, |node| node.name.as_deref() == Some("Save failed")),
+        Some("save_not_saved") => bar_says("Not saved", Some("Try again")),
+        Some("save_error") => {
+            observed(driver, |node| node.name.as_deref() == Some("Save failed"))
+                && ui::window_toolbar::notice().is_some_and(|notice| {
+                    notice.text.starts_with("Save failed")
+                        && notice
+                            .action
+                            .is_some_and(|action| action.name == "Try again")
+                })
+        }
         Some("import_success") => {
             !blocks.iter().any(|block| {
                 matches!(block.kind, BlockKind::Heading(1)) && block.text() == "Project brief"

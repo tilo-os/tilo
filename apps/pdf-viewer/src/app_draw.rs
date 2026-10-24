@@ -2588,8 +2588,14 @@ impl PdfApp {
         )]
         let now = (self.current_page, self.shown_zoom_percent() as u32);
         if self.page_said.is_some_and(|said| said != now) {
+            // The bar says it; nothing on the pages changes.
             self.page_notice.show(self.page_line());
-            self.dirty = true;
+            self.page_notice.publish(|line| {
+                ui::window_toolbar::ToolbarNotice::new(
+                    line.clone(),
+                    ui::widget::toast::ToastKind::Info,
+                )
+            });
         }
         self.page_said = Some(now);
     }
