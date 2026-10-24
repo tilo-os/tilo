@@ -1,5 +1,0 @@
-reason = "Music's transport controls invoke the player's actions instead of click callbacks (aa042777e6): the shared MediaTransport takes the app's actions and Music binds play/pause, previous, next, shuffle, repeat, mute, seek and volume to them, which certify requires. Measured by app-sizes-aarch64 at 4c4c207e37: so.tilo.music aarch64 4135936 bytes, 7168 over its budget of 4128768; x86_64 stays within its budget. The amount is the ratchet's own suggestion"
-run = "r1b6578929b"
-
-[apps."so.tilo.music"]
-aarch64 = 65536

@@ -31,7 +31,45 @@ pub(crate) struct SurfaceScope {
     children: RefCell<Vec<Weak<Self>>>,
     jobs: RefCell<Vec<SyncWeak<AtomicBool>>>,
 }
+/// Keep `now` in `statuses` when it says something else. Not generic, so
+/// every app's hosts share it.
+#[inline(never)]
+fn note_statuses(statuses: &RefCell<Vec<EffectStatus>>, now: Vec<EffectStatus>) {
+    if *statuses.borrow() != now {
+        *statuses.borrow_mut() = now;
+    }
+}
+
+/// Have a hosted surface of `scope` stage what `stages` run, on its next
+/// sync through `pending`, while the scope is active. Not generic, so every
+/// app's hosts share it.
+#[inline(never)]
+fn stage_hosted(stages: &super::stage::Stages, scope: Rc<SurfaceScope>, pending: Staging) {
+    stages.push(
+        scope.alive(),
+        Box::new(move |scenario| {
+            if scope.active() {
+                *pending.borrow_mut() = Some(scenario.map(str::to_owned));
+            }
+        }),
+    );
+}
+
 impl SurfaceScope {
+    /// A scope alive while `parent` is, a child of the surface scope
+    /// `within` when there is one. Not generic, so every app's hosts share
+    /// it.
+    #[inline(never)]
+    fn under(parent: Weak<()>, within: Option<&Rc<Self>>) -> Rc<Self> {
+        let scope = Self::new(parent);
+        if let Some(within) = within {
+            let mut children = within.children.borrow_mut();
+            children.retain(|child| child.strong_count() > 0);
+            children.push(Rc::downgrade(&scope));
+        }
+        scope
+    }
+
     fn new(parent: Weak<()>) -> Rc<Self> {
         Rc::new(Self {
             token: RefCell::new(Some(Rc::new(()))),
@@ -549,12 +587,7 @@ impl<R: Resource> SurfaceCx<R> {
         S: ResourceSurface<R, E> + 'static,
         E: Effect,
     {
-        let scope = SurfaceScope::new(self.alive.clone());
-        if let Some(parent) = &self.scope {
-            let mut children = parent.children.borrow_mut();
-            children.retain(|child| child.strong_count() > 0);
-            children.push(Rc::downgrade(&scope));
-        }
+        let scope = SurfaceScope::under(self.alive.clone(), self.scope.as_ref());
         let jobs = self.effects.scoped_surface_jobs(&scope);
         let mut cx = self.clone();
         cx.jobs = jobs.clone();
@@ -570,15 +603,7 @@ impl<R: Resource> SurfaceCx<R> {
             Rc::clone(&scope),
             surface,
         );
-        let pending = host.staging();
-        self.stages.push(
-            scope.alive(),
-            Box::new(move |scenario| {
-                if scope.active() {
-                    *pending.borrow_mut() = Some(scenario.map(str::to_owned));
-                }
-            }),
-        );
+        stage_hosted(&self.stages, scope, host.staging());
         HostedSurface::element(Box::new(host))
     }
     /// The host-owned identity of the record this surface shows. A durable
@@ -788,7 +813,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceHost<R, 
         }
         Self {
             presented: (live.revision(), live.loads()),
-            landings: live.landings_since(u64::MAX).1,
+            landings: live.next_landing(),
             live,
             read_only: dispatch.read_only(),
             dispatch,
@@ -900,10 +925,7 @@ impl<R: Resource, S: ResourceSurface<R, E> + 'static, E: Effect> SurfaceDriver
         self.search_queries
             .settle(self.effects.is_some() && self.surface.search_pending());
         if self.effects.is_some() {
-            let now = self.surface.effects();
-            if *self.statuses.borrow() != now {
-                *self.statuses.borrow_mut() = now;
-            }
+            note_statuses(&self.statuses, self.surface.effects());
         }
     }
     fn start_effect(

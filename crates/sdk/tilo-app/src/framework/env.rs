@@ -59,15 +59,53 @@ impl<R: Resource> Clone for WindowDocument<R> {
 
 impl<R: Resource> Clone for RecordEnv<R> {
     fn clone(&self) -> Self {
+        let Shared {
+            alive,
+            saved,
+            saves,
+            run,
+            storage,
+        } = Shared::of(
+            &self.alive,
+            &self.saved,
+            (&self.saves, &self.run, &self.storage),
+        );
         Self {
             live: self.live.clone(),
-            alive: self.alive.clone(),
+            alive,
             dispatch: self.dispatch.clone(),
-            saved: self.saved.clone(),
-            saves: self.saves.clone(),
-            run: self.run.clone(),
-            storage: Rc::clone(&self.storage),
+            saved,
+            saves,
+            run,
+            storage,
             effects: self.effects.clone(),
+        }
+    }
+}
+
+/// What a [`RecordEnv`] holds that does not name its resource type, cloned
+/// here once rather than in every app's clone of it.
+struct Shared {
+    alive: Weak<()>,
+    saved: LocalState<RecordSaveStatus>,
+    saves: super::saves::Saves,
+    run: Run,
+    storage: Rc<ViewStorage>,
+}
+
+impl Shared {
+    #[inline(never)]
+    fn of(
+        alive: &Weak<()>,
+        status: &LocalState<RecordSaveStatus>,
+        (saves, run, storage): (&super::saves::Saves, &Run, &Rc<ViewStorage>),
+    ) -> Self {
+        Self {
+            alive: alive.clone(),
+            saved: status.clone(),
+            saves: saves.clone(),
+            run: run.clone(),
+            storage: Rc::clone(storage),
         }
     }
 }

@@ -6,8 +6,4 @@ x86_64 = 131072
 aarch64 = 65536
 
 [apps."so.tilo.sheets"]
-x86_64 = 65536
-aarch64 = 65536
-
-[apps."so.tilo.typst-editor"]
 aarch64 = 65536

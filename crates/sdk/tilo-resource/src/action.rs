@@ -1324,14 +1324,13 @@ impl<R, A: Serialize> ActionRef<R, A> {
         &self,
         input: &A,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        let id = self.id;
         // Through bytes: the serializer writing recorded actions serves
         // here too, rather than one more per parameter type.
-        let value = match crate::__private::json_via_bytes(input) {
-            Ok(value) => value,
-            Err(error) => return Err(format!("`{id}`: {error}")),
-        };
-        bind_arguments(id, self.params, value)
+        bind_serialized(
+            self.id,
+            self.params,
+            crate::__private::json_via_bytes(input),
+        )
     }
 
     /// Fully apply the input: an invocation with nothing left to supply.
@@ -1363,6 +1362,20 @@ impl<R, A: Serialize> ActionRef<R, A> {
             Some(refusal) => Err(refusal),
             None => Ok(invoke),
         }
+    }
+}
+
+/// [`bind_arguments`] of an action input as it serialized, or why it did
+/// not: compiled once rather than for every input type.
+#[inline(never)]
+fn bind_serialized(
+    id: &'static str,
+    params: &'static [&'static str],
+    value: Result<serde_json::Value, serde_json::Error>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    match value {
+        Ok(value) => bind_arguments(id, params, value),
+        Err(error) => Err(format!("`{id}`: {error}")),
     }
 }
 

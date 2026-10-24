@@ -105,6 +105,22 @@ struct Following {
 }
 
 impl Following {
+    /// Following a document from `heads` (`None` when unknown: the first
+    /// sync reads everything again). Out of line, so every app's reader
+    /// calls the one copy in the runtime.
+    #[inline(never)]
+    fn at(heads: Option<Vec<ChangeHash>>) -> Self {
+        Self::new(heads.map(Tracker::at).unwrap_or_default())
+    }
+
+    /// Following `doc` from where it stands, out of line as [`Self::at`].
+    #[inline(never)]
+    fn started(doc: &mut Doc) -> Self {
+        let mut tracker = Tracker::new();
+        tracker.start(doc);
+        Self::new(tracker)
+    }
+
     fn new(tracker: Tracker) -> Self {
         Self {
             tracker,
@@ -186,10 +202,8 @@ impl<R: Resource> Reader<R> {
     pub fn open(doc: &mut Doc) -> Result<Self, ModelError> {
         let mut state = R::read(doc)?;
         R::load(&mut state, doc, &Demand::none())?;
-        let mut tracker = Tracker::new();
-        tracker.start(doc);
         Ok(Self {
-            core: Following::new(tracker),
+            core: Following::started(doc),
             state: Rc::new(state),
         })
     }
@@ -206,7 +220,7 @@ impl<R: Resource> Reader<R> {
     /// (`None` when unknown: the first sync reads everything again).
     pub fn with_state(state: R::State, heads: Option<Vec<ChangeHash>>) -> Self {
         Self {
-            core: Following::new(heads.map(Tracker::at).unwrap_or_default()),
+            core: Following::at(heads),
             state: Rc::new(state),
         }
     }

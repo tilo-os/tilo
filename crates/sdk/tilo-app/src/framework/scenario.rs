@@ -413,26 +413,33 @@ impl<R: Resource> Fixture<R> {
 
     /// What the capture's views read.
     pub(crate) fn into_run(self) -> Run {
-        Run {
-            mode: RunMode::Capture,
-            fixtures: Rc::new(Fixtures {
-                values: self.values,
-                collaborators: self.collaborators,
-                content: self.content,
-                _directory: self.directory,
-            }),
-            launched: Rc::default(),
-            private: false,
-            file_history: None,
-            people: super::People::new(None),
-            opener: None,
-            driven: false,
-        }
+        capture_run(Fixtures {
+            values: self.values,
+            collaborators: self.collaborators,
+            content: self.content,
+            _directory: self.directory,
+        })
     }
 
     /// The content store the capture lends, once the fixture is prepared.
     pub(crate) fn lent_content(&self) -> Option<&tilo_content::ContentStore> {
         self.content.as_ref()
+    }
+}
+
+/// The run of a capture whose views read `fixtures`: made here once rather
+/// than in every app's [`Fixture::into_run`].
+#[inline(never)]
+fn capture_run(fixtures: Fixtures) -> Run {
+    Run {
+        mode: RunMode::Capture,
+        fixtures: Rc::new(fixtures),
+        launched: Rc::default(),
+        private: false,
+        file_history: None,
+        people: super::People::new(None),
+        opener: None,
+        driven: false,
     }
 }
 
