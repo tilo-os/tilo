@@ -1051,8 +1051,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<tilo::TabInspector> inspector() const {return inspector_;}
   // The page as this tab last painted it, for an extension that captures it.
   std::shared_ptr<tilo::ExtensionFrame> PaintedFrame() const {
-    if(!visible_ || pixels_.empty())return nullptr;
-    auto frame=std::make_shared<tilo::ExtensionFrame>();frame->pixels=pixels_;frame->width=pixel_width_;frame->height=pixel_height_;return frame;
+    if(!visible_ || !frame_)return nullptr;
+    auto frame=std::make_shared<tilo::ExtensionFrame>();frame->pixels.assign(*frame_,tilo::FramePixelOffset(static_cast<uint32_t>(id_)));frame->width=pixel_width_;frame->height=pixel_height_;return frame;
   }
   bool records_agent() const {return agent_log_ && agent_log_->active();}
   void LoadUrl(const std::string& url) {if(browser_)browser_->GetMainFrame()->LoadURL(url);}
