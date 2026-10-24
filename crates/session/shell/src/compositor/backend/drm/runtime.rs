@@ -2943,7 +2943,7 @@ impl DrmDispatchState {
             let Some(kbd) = self.keyboard.as_mut() else {
                 return;
             };
-            kbd.process(keycode, pressed)
+            kbd.process_latched(keycode, pressed, self.sticky_latched)
         };
         if let Some(mods) = outcome.modifiers_changed {
             let actual = mods.state();
