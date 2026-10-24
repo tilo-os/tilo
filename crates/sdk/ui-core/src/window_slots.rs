@@ -144,6 +144,7 @@ impl WindowSlots {
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
+            | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
             | ToolbarEvent::History => self.offers.get(&tab).map(|(connection, _)| *connection),
             ToolbarEvent::ToggleSidebar

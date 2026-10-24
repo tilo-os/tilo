@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 14
+version = 15
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -481,6 +481,8 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "ToolbarEvent::search" = "struct"
 "ToolbarEvent::search.query" = "String"
 "ToolbarEvent::search_close" = "unit"
+"ToolbarEvent::search_cover" = "struct"
+"ToolbarEvent::search_cover.cover" = "Option<WholeRect> optional"
 "ToolbarEvent::search_options" = "struct"
 "ToolbarEvent::search_options.options" = "FindOptions"
 "ToolbarEvent::search_replace" = "struct"
@@ -520,6 +522,11 @@ Uuid = "uuid::Uuid: 16 bytes, written as its hyphenated text"
 "ToolbarViews.choices" = "Vec<ToolbarView>"
 "ToolbarViews.chosen" = "String"
 "ToolbarViews.name" = "String"
+"WholeRect" = "struct"
+"WholeRect.x0" = "i32"
+"WholeRect.x1" = "i32"
+"WholeRect.y0" = "i32"
+"WholeRect.y1" = "i32"
 "WindowOffer" = "struct"
 "WindowOffer.adopted" = "Option<AdoptedQuery> optional"
 "WindowOffer.count" = "Option<SearchCount> optional"
