@@ -1164,3 +1164,27 @@ fn a_search_answers_from_the_apps_that_answer_and_names_the_one_that_did_not() {
         "{text}"
     );
 }
+
+/// A search no app answered found nothing because it looked nowhere: it
+/// fails and says so, rather than answering that nothing matches.
+#[test]
+fn a_search_no_app_answered_fails_rather_than_finding_nothing() {
+    let host = Notes::new(true);
+    *host.silent.lock().unwrap() = Some(Vec::new());
+    let (text, failed) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()
+        .unwrap()
+        .block_on(tool(
+            &agent(&host),
+            "tilo_find",
+            json!({"query": "append paragraph", "app": "sheets"}),
+        ));
+    assert!(failed, "{text}");
+    assert!(!text.contains("nothing matches"), "{text}");
+    assert_eq!(
+        text, "not searched, the app did not answer: sheets; try again",
+        "{text}"
+    );
+}

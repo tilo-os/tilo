@@ -1737,12 +1737,24 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .collect(),
         )
         .await;
+        let answers_asked = answers.len();
         let mut silent: Vec<String> = Vec::new();
         for ((name, _), answer) in searched.into_iter().zip(answers) {
             match answer {
                 Ok(found) => hits.extend(found),
                 Err(_) => silent.push(name),
             }
+        }
+        // Nothing found because no app was searched is not "nothing
+        // matches": an agent would take the resource for absent.
+        if hits.is_empty() && !silent.is_empty() && silent.len() == answers_asked {
+            return Ok(Reply {
+                text: format!(
+                    "not searched, the app did not answer: {}; try again",
+                    list_names(&silent)
+                ),
+                failed: true,
+            });
         }
         hits.sort_by_key(|hit| hit.tier);
         let total = hits.len();
