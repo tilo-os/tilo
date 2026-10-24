@@ -955,6 +955,7 @@ thread_local! {
     static NOTICE: RefCell<Option<ToolbarNotice>> = const { RefCell::new(None) };
     static REVISION: Cell<u64> = const { Cell::new(0) };
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
+    static NOTICE_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static HOSTED: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_REQUESTED: Cell<Option<SearchOpening>> = const { Cell::new(None) };
@@ -1155,6 +1156,35 @@ pub fn hands_keyboard_to_app(event: &ToolbarEvent) -> bool {
     )
 }
 
+/// The id of the notice's button `event` presses, if it presses it: such a
+/// press is the notice's poster's ([`take_notice_press`]), never among the
+/// app's slot events.
+pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent) -> Option<String> {
+    let ToolbarEvent::Action { id } = event else {
+        return None;
+    };
+    notice
+        .and_then(|notice| notice.action.as_ref())
+        .filter(|action| action.id == *id)
+        .map(|_| id.clone())
+}
+
+/// Whether the button `id` of a notice was pressed in the bar since the
+/// last call: the notice's poster takes it, whatever else the window does
+/// with its bar's events.
+#[must_use]
+pub fn take_notice_press(id: &str) -> bool {
+    if let Some(window) = window() {
+        return window.take_notice_press(id);
+    }
+    NOTICE_PRESSES.with(|presses| {
+        let mut presses = presses.borrow_mut();
+        let before = presses.len();
+        presses.retain(|pressed| pressed != id);
+        presses.len() != before
+    })
+}
+
 /// What the person did in the bar since the last call, oldest first.
 #[must_use]
 pub fn take_events() -> Vec<ToolbarEvent> {
@@ -1220,6 +1250,15 @@ pub fn take_search_request() -> Option<SearchOpening> {
 pub fn deliver(event: ToolbarEvent) {
     if let Some(window) = window() {
         window.deliver(event);
+        return;
+    }
+    if let Some(id) = NOTICE.with(|notice| notice_press(notice.borrow().as_ref(), &event)) {
+        NOTICE_PRESSES.with(|presses| {
+            let mut presses = presses.borrow_mut();
+            if presses.len() < MAX_PENDING {
+                presses.push(id);
+            }
+        });
         return;
     }
     EVENTS.with(|events| {

@@ -408,18 +408,10 @@ pub struct NotesApp {
     /// flagging itself dirty.
     self_dirty: bool,
     paint_damage: ui::widget::paint_damage::PaintDamage,
-    /// Where this draw painted the save status (its bubble or failure card).
-    status_painted: Option<Rect>,
-    /// Where the last drawn frame painted it.
-    status_drawn: Option<Rect>,
     /// A scroll of the note this draw left to a copy the host makes of what
     /// stays on screen (`ui::scroll_copy`), offered when the host collects
     /// damage.
     main_scroll_copy: Option<crate::main_panel::ScrollCopy>,
-    /// Where the save status floats over the note, this frame and the last,
-    /// with its shadow: a copy of the note's scroll repaints it over what
-    /// moved under it.
-    status_over_main: Vec<Rect>,
     /// Inputs of the last canonical projection: document heads, pending
     /// operations, selected page and tag filter. `sync` re-projects the
     /// whole page tree only when one of them moved instead of every frame.
@@ -750,10 +742,7 @@ impl NotesApp {
             laid_out: false,
             self_dirty: false,
             paint_damage: ui::widget::paint_damage::PaintDamage::default(),
-            status_painted: None,
-            status_drawn: None,
             main_scroll_copy: None,
-            status_over_main: Vec::new(),
             canonical_synced: None,
             reconciled_heads: None,
             projection_adopted: false,
@@ -890,45 +879,23 @@ impl NotesApp {
         self.refresh_status();
     }
 
-    /// Draw the save status: in the header row beside the note's title,
-    /// where it covers none of the note, and a failed save's card in the
-    /// bottom-right corner. It shows on a status change or while the pointer
-    /// rests on it, then fades. Returns where it painted, `self.rect` when
-    /// it painted without saying.
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<Rect> {
-        let now = ui::time::now();
-        let before = scene.encoding().draw_tags.len();
-        self.save_surface
-            .set_header_slot(self.shell.header_status_slot());
-        let painted = self
-            .save_surface
-            .paint(scene, transform, tr, theme, self.rect, now);
-        painted.or_else(|| (scene.encoding().draw_tags.len() != before).then_some(self.rect))
-    }
-
     /// What `draw` painted, as the parts its damage is proven by: the note
-    /// panel, the shell, the page tree and the save status (`scenes`, in
-    /// that order), each with where it can change. `None`
+    /// panel, the shell and the page tree (`scenes`, in that order), each
+    /// with where it can change. `None`
     /// while something reaches past those parts' own damage: an editor
     /// popup, the page tree's menu or a dragged row.
     fn paint_frame(
         &self,
         transform: Affine,
         theme: &Theme,
-        scenes: [&Scene; 4],
+        scenes: [&Scene; 3],
     ) -> Option<ui::widget::paint_damage::PaintFrame> {
         use ui::widget::paint_damage::{PaintFrame, PaintPart};
         let sidebar = self.sidebar.tree();
         if self.main.has_editor_popup() || self.sidebar.menu_is_open() || sidebar.is_dragging() {
             return None;
         }
-        let [main, shell, page_tree, status] = scenes;
+        let [main, shell, page_tree] = scenes;
         // A scroll of the note the host may copy damages only what the copy
         // leaves; the copy is offered when the host collects damage.
         let mut main_damage = Vec::new();
@@ -944,18 +911,6 @@ impl NotesApp {
         if self.sidebar_node.is_some() {
             sidebar.collect_damage(&mut sidebar_damage);
         }
-        // The bubble where it was and where it is, with its shadow, within
-        // the app: past its edge a window or a tile clips the shadow (the
-        // bubble sits in the corner a tile shares with the app), and damage
-        // there would repaint whatever lies beyond, another display included.
-        let status_damage = [self.status_drawn, self.status_painted]
-            .into_iter()
-            .flatten()
-            .map(|rect| {
-                ui::widget::floating_surface::painted_bounds(rect, theme).intersect(self.rect)
-            })
-            .filter(|rect| !rect.is_zero_area())
-            .collect();
         let part = |key: &str, rect: Rect, scene: &Scene, damage: Vec<Rect>| {
             PaintPart::new(key.into(), rect, scene.clone(), damage)
         };
@@ -968,7 +923,6 @@ impl NotesApp {
                 part("note-main", self.main.get_rect(), main, main_damage),
                 part("notes-shell", self.rect, shell, shell_damage),
                 part("notes-sidebar", self.rect, page_tree, sidebar_damage),
-                part("notes-status", self.rect, status, status_damage),
             ],
         ))
     }
@@ -981,29 +935,6 @@ impl NotesApp {
             || Widget::modal_capture(&self.shell).is_some()
             || Widget::modal_capture(&self.main).is_some()
             || Widget::modal_capture(self.sidebar.tree()).is_some()
-    }
-
-    /// A press on the failed save's toast: "Try again" asks the host to
-    /// submit the note again, the close button dismisses it. Returns whether
-    /// the press was the toast's.
-    fn handle_save_status_press(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
-        let WindowEvent::MouseInput {
-            state: winit::event::ElementState::Pressed,
-            button: winit::event::MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        if !self.save_surface.contains(self.last_mouse) {
-            return false;
-        }
-        if self.save_surface.click(self.last_mouse) == Some(ui::SaveAction::Retry) {
-            self.save_retry = true;
-        }
-        self.self_dirty = true;
-        *handled = true;
-        true
     }
 
     /// Resolve a page's breadcrumb path by walking parent pointers.
@@ -2561,9 +2492,6 @@ impl ui::application_view::ApplicationViewState for NotesApp {
     }
 }
 
-/// The action target prefix of the save status surface's buttons.
-const SAVE_STATUS_TARGET: &str = "notes.save-status";
-
 impl NotesApp {
     fn finish_block_reveal(&mut self) {
         if self
@@ -2710,6 +2638,14 @@ impl Widget for NotesApp {
         // A save that gave up is raised as a notification only if no frame
         // paints this note: the person could lose work they cannot see.
         self.deliver_save_notice(ui::time::now());
+        // "Try again" beside the save's notice in the window's bar submits
+        // the note again; the notice says the save in the bar.
+        if self.save_surface.take_bar_action() == Some(ui::SaveAction::Retry) {
+            self.save_retry = true;
+            self.self_dirty = true;
+        }
+        self.save_surface.advance(ui::time::now());
+        self.save_surface.publish();
         self.refresh_canonical_assets();
         let requested = std::mem::take(&mut self.opened.borrow_mut().requests);
         for page in requested {
@@ -2862,11 +2798,9 @@ impl Widget for NotesApp {
             }
         }
         if let Some(n) = self.main_node {
-            self.main.set_bottom_inset(
-                ui::status_bubble::pill_height(&self.theme)
-                    + f64::from(self.theme.tokens.spacing.s4)
-                    + f64::from(self.theme.tokens.spacing.rhythm.group),
-            );
+            // One gutter under the last line at the window's foot.
+            self.main
+                .set_bottom_inset(f64::from(self.theme.tokens.spacing.rhythm.group));
             self.main
                 .apply_layout(taffy, n, self.columns.content.rect().origin());
         }
@@ -2917,38 +2851,24 @@ impl Widget for NotesApp {
                 .draw(scene, transform, text_renderer, &sidebar_theme, presence);
         }
         let sidebar_scene = std::mem::take(scene);
-        // Transient floating status bubble (bottom-right).
-        self.status_painted = self.draw_status_bubble(scene, transform, text_renderer, theme);
-        let status_scene = std::mem::take(scene);
+        // The window drew: a save that gave up is said in its bar, not
+        // raised as a notification.
+        self.save_surface.seen();
         self.main_scroll_copy = self.main.scroll_copy();
-        self.status_over_main = [self.status_drawn, self.status_painted]
-            .into_iter()
-            .flatten()
-            .map(|rect| {
-                ui::widget::floating_surface::painted_bounds(rect, theme)
-                    .intersect(self.main.get_rect())
-            })
-            .filter(|rect| !rect.is_zero_area())
-            .collect();
         let frame = self.paint_frame(
             transform,
             theme,
-            [&main_scene, &shell_scene, &sidebar_scene, &status_scene],
+            [&main_scene, &shell_scene, &sidebar_scene],
         );
         self.paint_damage.record(self.rect, frame);
         *scene = incoming;
-        for part in [&main_scene, &shell_scene, &sidebar_scene, &status_scene] {
+        for part in [&main_scene, &shell_scene, &sidebar_scene] {
             scene.append(part, None);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep frames coming only while the floating status bubble is lingering
-        // / fading, so it hides itself without needing a stray pointer event.
-        // Idle otherwise (no idle redraw spin).
-        (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
-            || self.main.block_drag_scrolling()
-            || self.main.gliding()
+        self.main.block_drag_scrolling() || self.main.gliding()
             || self.main.editor().drag_handles_fading()
             || self.shell.needs_animation_frame()
     }
@@ -2997,8 +2917,7 @@ impl Widget for NotesApp {
             return;
         }
         // An open popup (a dropdown's list, a menu, the editor's block
-        // menu) takes the pointer before the save bubble in the corner it
-        // may reach over.
+        // menu) takes the pointer even where something earlier handled it.
         let popup_holds_pointer = self.popup_open()
             && matches!(
                 event,
@@ -3006,13 +2925,8 @@ impl Widget for NotesApp {
                     | WindowEvent::MouseWheel { .. }
                     | WindowEvent::Touch(_)
             );
-        if !popup_holds_pointer {
-            if self.handle_save_status_press(event, ctx.handled) {
-                return;
-            }
-            if *ctx.handled {
-                return;
-            }
+        if !popup_holds_pointer && *ctx.handled {
+            return;
         }
         if self.handle_shell(event, ctx) {
             return;
@@ -3055,13 +2969,8 @@ impl Widget for NotesApp {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
-        match self.save_surface.perform(SAVE_STATUS_TARGET, target) {
-            Some(ui::SaveAction::Retry) => self.save_retry = true,
-            Some(ui::SaveAction::Dismiss) => {}
-            None => return false,
-        }
-        self.self_dirty = true;
-        true
+        let _ = target;
+        false
     }
 
     fn get_rect(&self) -> Rect {
@@ -3070,7 +2979,7 @@ impl Widget for NotesApp {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        let mut children = vec![
+        let children = vec![
             AccessNode::new(Role::StaticText)
                 .with_name(self.status.save_text())
                 .with_description(if self.status.needs_attention() {
@@ -3079,11 +2988,10 @@ impl Widget for NotesApp {
                     self.status.right_text()
                 })
                 // Readable on request, never announced: autosave is silent.
-                // The save surface announces a failure and the save that
-                // ends it, as it shows them.
+                // The window's bar announces a failure and the save that
+                // ends it, as it says them.
                 .with_hashed_key("notes.save-status"),
         ];
-        children.extend(self.save_surface.accessibility(SAVE_STATUS_TARGET));
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Notes")
@@ -3140,14 +3048,10 @@ impl Widget for NotesApp {
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // The note's scroll, copied by a host that keeps its last frame; a
         // host that does not copy repaints the body.
-        if let Some(copy) = &self.main_scroll_copy {
-            if copy.offer(&self.main) {
-                // The save status floats over the note: it is repainted
-                // over what moved under it, and where the copy took it.
-                regions.extend(self.status_over_main.iter().copied());
-            } else {
-                regions.push(copy.body());
-            }
+        if let Some(copy) = &self.main_scroll_copy
+            && !copy.offer(&self.main)
+        {
+            regions.push(copy.body());
         }
         if self.needs_redraw() || self.paint_damage.is_recorded() {
             self.paint_damage.collect(self.rect, regions);
@@ -3162,9 +3066,6 @@ impl Widget for NotesApp {
     }
 
     fn mark_drawn(&mut self) {
-        if self.paint_damage.is_recorded() {
-            self.status_drawn = self.status_painted;
-        }
         self.paint_damage.mark_drawn();
         self.main_scroll_copy = None;
         self.self_dirty = false;
@@ -3687,18 +3588,7 @@ impl NotesApp {
         // Update the last-mouse cache so the next MouseInput knows
         // where to hit-test for link clicks.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            let logical = ctx.logical(position);
-            self.last_mouse = logical;
-            // Resting on the bubble's corner pins it open; over a failed
-            // save's toast its actions lift.
-            let (area, theme) = (self.rect, &self.theme);
-            ui::text_render::with_layout_renderer(theme.text_scale, |text| {
-                self.save_surface
-                    .hover_bubble(area, logical, text, theme, ui::time::now())
-            });
-            if self.save_surface.pointer_moved(logical) {
-                self.self_dirty = true;
-            }
+            self.last_mouse = ctx.logical(position);
         }
         // Status bar refresh runs at the tail of every event so word
         // count + save indicator stay current. Cheap — the StatusBar
@@ -4197,11 +4087,17 @@ mod tests {
         }
     }
 
-    /// A retry must recover the actual record writer, not leave a latch for
-    /// the test to consume after the production owner already took it.
-    fn assert_real_save_retry(expected_target: &str) {
+    /// A save that fails holds its notice in the window's bar, "Try again"
+    /// beside it, for as long as the failure stands; "Try again" recovers
+    /// the actual record writer (not a latch the test consumes after the
+    /// production owner took it), and the save that succeeds takes the
+    /// failure down.
+    #[test]
+    fn a_failed_save_holds_its_notice_with_try_again_until_a_save_succeeds() {
         use ui::tilo_resource::Resource as _;
+        use ui::widget::toast::ToastKind;
 
+        ui::i18n::I18nManager::init("en-US");
         let profile = TempDir::new().unwrap();
         let mut host =
             ui::prelude::TestApp::<crate::NotesShell>::open_data_dir(profile.path()).unwrap();
@@ -4231,31 +4127,30 @@ mod tests {
         .unwrap();
         assert!(host.flush().is_err(), "the actual writer must fail");
         host.settle();
-        let hosted_retry = host
-            .surface::<NotesApp, _>(|notes| {
-                assert!(matches!(
-                    notes.record_save_status,
-                    ui::record::RecordSaveStatus::Failed(_)
-                ));
-                let failure = notes
-                    .accessibility()
-                    .unwrap()
-                    .children
-                    .into_iter()
-                    .find(|node| node.children.len() == 2)
-                    .expect("the actual writer failure offers retry");
-                failure.children[0]
-                    .action_target
-                    .clone()
-                    .expect("live retry target")
-            })
-            .unwrap();
-        assert_eq!(hosted_retry, expected_target);
+        host.surface::<NotesApp, _>(|notes| {
+            assert!(matches!(
+                notes.record_save_status,
+                ui::record::RecordSaveStatus::Failed(_)
+            ));
+        })
+        .unwrap();
+        let held = ui::window_toolbar::notice().expect("the failure is said in the window's bar");
+        assert_eq!(held.kind, ToastKind::Error);
+        assert!(held.text.starts_with("Save failed: "), "{held:?}");
+        let retry = held.action.clone().expect("Try again beside it");
+        assert_eq!(retry.name, "Try again");
+        host.settle();
+        host.settle();
+        assert_eq!(
+            ui::window_toolbar::notice(),
+            Some(held),
+            "the failure stands until a save succeeds"
+        );
+
         std::fs::remove_file(&directory).unwrap();
         std::fs::rename(&backup, &directory).unwrap();
         host.harness()
-            .perform_named(&hosted_retry, &ui::a11y::Action::Activate)
-            .unwrap();
+            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: retry.id });
         host.settle();
         host.surface::<NotesApp, _>(|notes| {
             assert_eq!(
@@ -4268,6 +4163,12 @@ mod tests {
         })
         .unwrap();
         assert!(!host.take_save_retry().unwrap(), "no second retry remains");
+        let said = ui::window_toolbar::notice().expect("the save that ends it says so");
+        assert_eq!(
+            (said.text.as_str(), said.kind, said.action),
+            ("Saved", ToastKind::Success, None),
+            "the failure is down"
+        );
         let bytes = std::fs::read(directory.join("state.automerge")).unwrap();
         let persisted = automerge::AutoCommit::load(&bytes).unwrap();
         let notebook = crate::resource::Notebook::read(&persisted).unwrap();
@@ -4277,10 +4178,10 @@ mod tests {
         );
     }
 
-    /// A note whose save gives up says "Not saved" with "Try again" in its
-    /// bubble while it is painted, and raises nothing; one that nothing
-    /// paints raises a notification whose "Try again" submits the note
-    /// again.
+    /// A note whose save gives up says "Not saved" with "Try again" in the
+    /// window's bar while it is painted, and raises nothing; one that
+    /// nothing paints raises a notification whose "Try again" submits the
+    /// note again.
     #[test]
     fn a_save_that_gives_up_asks_in_place_in_view_and_notifies_out_of_sight() {
         ui::i18n::I18nManager::init("en-US");
@@ -4295,16 +4196,16 @@ mod tests {
 
         let in_view = std::sync::Arc::new(ui::notify::conformance::Recording::default());
         let (mut app, _state, _tmp) = staged(&in_view);
-        app.draw_status_bubble(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-        )
-        .expect("the bubble is painted");
+        // The window draws a frame: the person sees it.
+        app.save_surface.seen();
         assert!(app.save_surface.gave_up());
-        assert_eq!(app.save_surface.bubble_text(), "Not saved");
-        assert!(app.save_surface.failure().is_none(), "no toast");
+        let notice = app.save_surface.notice().expect("said in the bar");
+        assert_eq!(notice.text, "Not saved");
+        assert_eq!(
+            notice.action.map(|action| action.name).as_deref(),
+            Some("Try again")
+        );
+        assert!(app.save_surface.failure().is_none(), "no failure reason");
         app.deliver_save_notice(later());
         assert!(in_view.shown().is_empty(), "in view, nothing is notified");
 
@@ -4347,42 +4248,26 @@ mod tests {
             for status in [SaveStatus::Saving, SaveStatus::Saved].repeat(3) {
                 app.shots_save_status = Some(status);
                 app.refresh_status();
-                assert!(
-                    !app.save_surface.is_visible(ui::time::now()),
-                    "autosave must not flash a bubble while typing"
+                assert_eq!(
+                    app.save_surface.notice(),
+                    None,
+                    "autosave must not say anything while typing"
                 );
             }
             assert_eq!(app.save_surface.state(), Some(&ui::SaveState::Saved));
 
             app.shots_save_status = Some(SaveStatus::Failed);
             app.refresh_status();
-            app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
-            app.draw_status_bubble(
-                &mut Scene::new(),
-                Affine::IDENTITY,
-                &mut TextRenderer::new(),
-                &Theme::default(),
-            );
             assert!(
                 app.save_surface.failure().is_some(),
                 "an unresolved save failure stays on the surface"
             );
-            assert!(
-                !app.save_surface.needs_frame(ui::time::now()),
-                "persistent status must not cause an idle redraw loop"
+            assert_eq!(
+                app.save_surface.next_wake_deadline(),
+                None,
+                "a held failure must not cause an idle wake loop"
             );
-            let node = app
-                .accessibility()
-                .unwrap()
-                .children
-                .into_iter()
-                .find(|node| node.children.len() == 2)
-                .expect("the failure is announced with its actions");
-            let retry = node.children[0]
-                .action_target
-                .clone()
-                .expect("Try again is a target");
-            assert_real_save_retry(&retry);
+            assert!(!app.needs_animation_frame(), "nor an idle redraw loop");
 
             app.shots_save_status = Some(SaveStatus::Saved);
             app.refresh_status();
@@ -4393,21 +4278,17 @@ mod tests {
             );
         }
 
-        eprintln!("phase reduced_motion_stops_notes_owned_status_bubble_frames");
+        eprintln!("phase a_passing_save_notice_wakes_once_to_leave");
         {
             let (mut app, state, _tmp, _) = app_seeded_into_doc();
-            app.theme.reduce_motion = false;
             app.set_save_status_for_shots(SaveStatus::Saved, ui::SAVE_STALL);
-            assert!(app.needs_animation_frame(), "normal fade requests frames");
-
-            app.theme.reduce_motion = true;
             assert!(
                 !app.needs_animation_frame(),
-                "reduced motion must not keep the compositor awake for a decorative fade"
+                "the bar's notice takes no frames of its own"
             );
             assert!(
                 app.next_wake_deadline().is_some(),
-                "the reduced-motion chip must still schedule its removal"
+                "a passing Saved schedules its removal"
             );
             assert!(
                 app.has_transient_feedback(),
@@ -4448,15 +4329,10 @@ mod tests {
             "deadline sync must request the chip-removal frame"
         );
         assert!(app.self_dirty, "the native host must present the change");
-        app.draw_status_bubble(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::default(),
-        );
+        app.sync(&state.doc, &state.root);
         assert!(
             app.save_surface.next_wake_deadline().is_none(),
-            "painting the removal consumes the one-shot wake"
+            "the sync that takes it down consumes the one-shot wake"
         );
     }
 

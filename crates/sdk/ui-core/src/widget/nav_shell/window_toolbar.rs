@@ -18,8 +18,6 @@ pub(super) struct Requests {
     pub(super) toggle: Cell<bool>,
     pub(super) back: Cell<bool>,
     pub(super) inspector: Cell<bool>,
-    /// The notice's button was pressed in the bar.
-    pub(super) notice_action: Cell<bool>,
     /// The sidebar open or closed, landed with no motion: a capture's
     /// staging ([`WindowBarLink::stage_sidebar`]).
     pub(super) staged_sidebar: Cell<Option<bool>>,
@@ -83,9 +81,6 @@ impl WindowBarLink {
             ToolbarEvent::Back => &self.0.back,
             ToolbarEvent::Action { id } if id == WINDOW_BACK => &self.0.back,
             ToolbarEvent::Action { id } if id == WINDOW_INSPECTOR => &self.0.inspector,
-            ToolbarEvent::Action { id } if id == super::notices::WINDOW_NOTICE_ACTION => {
-                &self.0.notice_action
-            }
             _ => return false,
         };
         request.set(true);
@@ -113,7 +108,7 @@ impl NavShell {
             self.toggle_inspector();
             acted = true;
         }
-        if self.requests.notice_action.replace(false) {
+        if crate::window_toolbar::take_notice_press(super::notices::WINDOW_NOTICE_ACTION) {
             acted |= self.press_notice_action();
         }
         if self.built
@@ -286,9 +281,6 @@ impl NavShell {
                 self.back();
             }
             ToolbarEvent::Action { id } if id == WINDOW_INSPECTOR => self.toggle_inspector(),
-            ToolbarEvent::Action { id } if id == super::notices::WINDOW_NOTICE_ACTION => {
-                self.press_notice_action();
-            }
             _ => return false,
         }
         true

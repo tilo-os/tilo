@@ -144,10 +144,6 @@ fn status(out: &Path, name: &str, theme: &Theme) {
         "1,204 words",
         "Ln 12, Col 4",
     );
-    let mut bubble = tilo_ui::StatusBubble::new();
-    let now = tilo_ui::time::now();
-    bubble.show("Saved", now);
-    bubble.paint(&mut scene, Affine::IDENTITY, &mut tr, theme, content, now);
     let path = out.join(format!("status-{name}.png"));
     OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.content, &path);
 }

@@ -4457,6 +4457,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -4481,7 +4482,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .into_iter()
                 .chain(app.local_input_capture_deadline())
                 .chain(app.presence_ctx.interaction_next_wake_deadline(now))
+                .chain(app.accessibility.zoom.deadline())
                 .any(|due| due <= now);
+            app.accessibility.zoom.publish();
             let widget_due = app
                 .root_widget
                 .next_wake_deadline()
@@ -4510,6 +4513,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),

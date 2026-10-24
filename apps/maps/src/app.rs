@@ -234,7 +234,11 @@ pub struct MapsApp {
     /// controls, the cards, the footer); the markers keep clear of them.
     chrome_rects: Vec<Rect>,
     /// Transient status (searching, routing, a download, a failure).
-    status_bubble: ui::StatusBubble,
+    /// The model's status (searching, routing, a download's progress, a
+    /// recoverable failure), said in the window's bar while it is news.
+    status_notice: ui::widget::toast::Transient<String>,
+    /// The status last said in the bar, so only a change is news.
+    status_said: String,
     /// Directions From/To fields, dropdown, focus, debounce and hit routing.
     endpoints: EndpointEditor,
     left_down: bool,
@@ -567,7 +571,8 @@ impl MapsApp {
             history: ui::widget::HistoryOpener::new(),
             results_anchor: None,
             chrome_rects: Vec::new(),
-            status_bubble: ui::StatusBubble::new(),
+            status_notice: ui::widget::toast::Transient::new(),
+            status_said: String::new(),
             endpoints: EndpointEditor::new(),
             left_down: false,
             dragging: false,
@@ -2627,7 +2632,6 @@ impl MapsApp {
         if self.overflow.is_open() {
             self.floats(self.overflow.get_rect());
         }
-        self.draw_status(scene, t, tr, theme);
         self.map_controls.draw_tooltip(scene, t, tr, theme);
     }
 
@@ -2774,26 +2778,25 @@ impl MapsApp {
         }
     }
 
-    /// The transient status (searching, routing, a download's progress, a
-    /// recoverable failure) in the status bubble, above the overflow button.
-    fn draw_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let now = ui::time::now();
-        self.status_bubble.show(&self.model.status, now);
-        let area = self.status_area(theme);
-        self.status_bubble.paint(scene, t, tr, theme, area, now);
-    }
-
-    /// Where the status bubble floats: the map beside the panel, ending just
-    /// above the footer row.
-    fn status_area(&self, theme: &Theme) -> Rect {
-        let inset = f64::from(theme.tokens.spacing.s4);
-        let bottom = self.overflow_rect().y0 - self.gap() + inset;
-        Rect::new(
-            self.map_left_edge() - inset,
-            self.rect.y0,
-            self.rect.x1 - self.margin() + inset,
-            bottom,
-        )
+    /// The model's status in the window's bar: a new line is news; one
+    /// that ends in "…" is work under way and stays while it is the status.
+    fn publish_status(&mut self) {
+        if self.model.status != self.status_said {
+            self.status_said.clone_from(&self.model.status);
+            if self.status_said.is_empty() {
+                self.status_notice.dismiss();
+            } else if self.status_said.ends_with('…') {
+                self.status_notice.show_progress(self.status_said.clone());
+            } else {
+                self.status_notice.show(self.status_said.clone());
+            }
+        }
+        self.status_notice
+            .keep_while(self.status_said.ends_with('…'));
+        self.status_notice.expire();
+        self.status_notice.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 
     /// Text over the substrate grid telling the person the imagery is
@@ -4700,6 +4703,7 @@ impl Widget for MapsApp {
         if let Some(effect) = self.endpoints.take_due_search(ui::time::now()) {
             self.apply_endpoint_effect(effect);
         }
+        self.publish_status();
     }
 
     fn build_layout(
@@ -5243,7 +5247,6 @@ impl Widget for MapsApp {
             || self.navigation_placement.is_dragging()
             || self.navigation_placement.is_handoff_animating()
             || self.map_controls.needs_frame()
-            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -5251,6 +5254,7 @@ impl Widget for MapsApp {
             self.endpoints.query_deadline(),
             self.offline_panel.query_deadline(),
             self.poi_debounce,
+            self.status_notice.deadline(),
         ]
         .into_iter()
         .flatten()

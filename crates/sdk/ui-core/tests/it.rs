@@ -102,6 +102,8 @@ mod menu_material_contrast;
 mod mouse_navigation_test;
 #[path = "multi_user_session.rs"]
 mod multi_user_session;
+#[path = "no_transient_cards.rs"]
+mod no_transient_cards;
 #[path = "overlay_test.rs"]
 mod overlay_test;
 #[path = "permission_context.rs"]

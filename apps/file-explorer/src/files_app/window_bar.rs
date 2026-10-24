@@ -356,12 +356,6 @@ impl FileExplorerWidget {
                 None
             }
             ToolbarEvent::Action { id } => match id.as_str() {
-                super::notice::NOTICE_ACTION => {
-                    if let Some(action) = self.notice.press() {
-                        self.act_on_notice(action);
-                    }
-                    None
-                }
                 UP => Some(FileCommand::Up),
                 VIEW => Some(FileCommand::SetView(match self.view_mode {
                     ViewMode::List => ViewMode::Grid,

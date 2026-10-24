@@ -39,7 +39,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tilo_resource::{Atom, Invoke};
-use ui::widget::toast::{ToastKind, ToastStack};
+use ui::widget::toast::ToastKind;
 use ui::widget::{
     AppModel, Collaborative, Column, Element, ModalDialog, ModelPath, NavMode, NavShell,
     TaffyTreeExt, Text, Widget,
@@ -582,15 +582,14 @@ pub struct RemoteApp {
     /// never replicated with the connection profile.
     pending_confirmation: Option<PendingConfirmation>,
     dialog: Option<ModalDialog<Column>>,
-    /// The way out of full screen, said over the session while the window's
-    /// bar is hidden.
-    toasts: ToastStack,
-    toast_clock: Option<ui::time::Instant>,
 
     /// The window: rail and current screen.
     shell: NavShell,
     /// The session alone, while it fills the window.
     immersive: Option<SessionPane>,
+    /// When the session went full screen, while the way out is said over
+    /// it ([`FULLSCREEN_HINT`]).
+    fullscreen_hint: Option<ui::time::Instant>,
     /// The queue every control reports to.
     requests: Requests,
     /// Search hits picked in the platform search, waiting to be shown.
@@ -635,14 +634,13 @@ impl RemoteApp {
             pending_resource_operation: None,
             pending_confirmation: None,
             dialog: None,
-            toasts: ToastStack::new(),
-            toast_clock: None,
             shell: NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
                 .with_id("remote.shell")
                 .with_window_toolbar()
                 .mode(NavMode::Docked),
             immersive: None,
+            fullscreen_hint: None,
             requests: Requests::default(),
             opened: Rc::default(),
             built: None,
@@ -906,14 +904,9 @@ impl RemoteApp {
         }
         self.fullscreen = fullscreen;
         self.immersive = fullscreen.then(|| SessionPane::new(Rc::clone(&self.session)));
-        if fullscreen {
-            // Full screen hides the window's bar: the way out is said over
-            // the session itself.
-            self.toasts.push(
-                "Press Esc to leave full screen.".to_owned(),
-                ToastKind::Info,
-            );
-        }
+        // Full screen hides the window's bar: the way out is said over the
+        // session for a moment.
+        self.fullscreen_hint = fullscreen.then(ui::time::now);
         self.layout_dirty = true;
         self.dirty = true;
     }
@@ -1814,15 +1807,6 @@ impl RemoteApp {
         }
     }
 
-    /// Advance the toasts' timers.
-    fn tick_toasts(&mut self) {
-        let now = ui::time::now();
-        if let Some(last) = self.toast_clock {
-            self.toasts.tick(now.saturating_duration_since(last));
-        }
-        self.toast_clock = (!self.toasts.is_empty()).then_some(now);
-    }
-
     /// The child that fills the window: the shell, or the session alone.
     fn body_mut(&mut self) -> &mut dyn Widget {
         match self.immersive.as_mut() {
@@ -2081,16 +2065,18 @@ impl Widget for RemoteApp {
     ) {
         self.body_mut()
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        self.tick_toasts();
-        if !self.toasts.is_empty() {
-            self.toasts
-                .place_bottom_right(self.rect, f64::from(theme.tokens.spacing.s4));
-            self.toasts
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.draw_fullscreen_hint(scene, transform, text_renderer, theme);
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.children()
+            .into_iter()
+            .filter_map(Widget::next_wake_deadline)
+            .chain(self.fullscreen_hint_deadline())
+            .min()
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -2112,18 +2098,6 @@ impl Widget for RemoteApp {
             self.apply(action);
             *ctx.handled = true;
             return;
-        }
-        // An open popup of the window (a dropdown's list, a menu) takes the
-        // pointer before a toast in the corner it may reach over.
-        let popup_holds_pointer = self.body().modal_capture().is_some()
-            && matches!(
-                event,
-                WindowEvent::MouseInput { .. }
-                    | WindowEvent::MouseWheel { .. }
-                    | WindowEvent::Touch(_)
-            );
-        if !self.toasts.is_empty() && !popup_holds_pointer {
-            self.toasts.handle_event(event, ctx);
         }
         if !*ctx.handled
             && let Some(child) = child_node(ctx.taffy, ctx.node_id)
@@ -2206,9 +2180,7 @@ impl Widget for RemoteApp {
     fn needs_animation_frame(&self) -> bool {
         // A live session needs continuous frames so incoming remote data
         // (PTY output, framebuffer updates) is drained and painted.
-        self.session.borrow().live_active()
-            || !self.toasts.is_empty()
-            || self.body().needs_animation_frame()
+        self.session.borrow().live_active() || self.body().needs_animation_frame()
     }
 }
 
@@ -2218,7 +2190,53 @@ impl ui::widget::controls::ActionControls for RemoteApp {
     }
 }
 
+/// How long the way out of full screen is said over the session.
+const FULLSCREEN_HINT: std::time::Duration = std::time::Duration::from_secs(3);
+
 impl RemoteApp {
+    /// When the way out of full screen stops being said, while it is.
+    fn fullscreen_hint_deadline(&self) -> Option<ui::time::Instant> {
+        self.fullscreen_hint
+            .filter(|_| self.fullscreen)
+            .and_then(|since| since.checked_add(FULLSCREEN_HINT))
+            .filter(|due| ui::time::wall_frozen() || *due > ui::time::now())
+    }
+
+    /// "Press Esc to leave full screen." on the floating material at the
+    /// top of the session, for [`FULLSCREEN_HINT`] after it went full
+    /// screen.
+    fn draw_fullscreen_hint(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        if self.fullscreen_hint_deadline().is_none() {
+            self.fullscreen_hint = None;
+            return;
+        }
+        let text = "Press Esc to leave full screen.";
+        let style = theme.text(ui::tokens::TextRole::Body);
+        let (width, height) = text_renderer.measure_style(text, None, &style);
+        let pad_x = f64::from(theme.tokens.spacing.s4);
+        let pad_y = f64::from(theme.tokens.spacing.s2);
+        let gap = f64::from(theme.tokens.spacing.s6);
+        let w = f64::from(width) + 2.0 * pad_x;
+        let h = f64::from(height) + 2.0 * pad_y;
+        let x0 = self.rect.center().x - w / 2.0;
+        let pill = Rect::new(x0, self.rect.y0 + gap, x0 + w, self.rect.y0 + gap + h);
+        ui::widget::floating_surface::paint_card(scene, transform, pill, theme);
+        text_renderer.draw_style(
+            scene,
+            text,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((pill.x0 + pad_x, pill.y0 + pad_y)),
+            None,
+            &style,
+        );
+    }
+
     /// The open session, published as a live row beside the saved
     /// connections: disconnect, send text, and the SSH host-key decisions.
     pub(crate) fn live_connection_rows(&self) -> Vec<ui::framework::LiveRow> {

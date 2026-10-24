@@ -629,13 +629,11 @@ history-day-earlier = Früher
 
 save-status-stalled = Noch nicht gespeichert. Neuer Versuch…
 save-status-not-saved = Nicht gespeichert
-save-status-not-saved-detail = Deine Änderungen sind noch da.
 save-status-not-saved-named = „{ $document }“ wurde nicht gespeichert
 save-status-not-saved-notice = Deine Änderungen sind noch in { $app }.
 save-status-saved = Gespeichert
 save-status-failed = Speichern fehlgeschlagen
 save-status-retry = Erneut versuchen
-save-status-dismiss = Schließen
 
 # Suchleiste: das Band oben in einem Dokument, das darin sucht.
 find-bar-name = Suchen

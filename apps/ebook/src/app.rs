@@ -80,7 +80,6 @@ use crate::model::{
 };
 use crate::paginate::{ChapterLayout, LayoutKey, LayoutKind, font_choice};
 use crate::paint;
-use crate::reader_bubble::{ReaderBubble, ReaderBubbleAction, ReaderPosition};
 use crate::reader_theme::ReaderPalette;
 use crate::reading_settings::{Appearance, ReadingSettings, ReadingSettingsAction};
 use crate::resource::{Ebook, HiPiece, Passage, books};
@@ -894,10 +893,10 @@ pub struct BooksApp {
     reader_spacing: ui::tokens::spacing::Spacing,
     reader_compact_breakpoint: f64,
     selection_hud_h: f64,
-    /// Height of the page bubble in the current theme: the page foot's band
-    /// is at least this tall, so the bubble it shares with the progress
-    /// slider never covers text. Refreshed with `header_h`.
-    bubble_h: f64,
+    /// Height of the page foot's control row in the current theme: the
+    /// foot's band is at least this tall, so the progress slider and its
+    /// label never cover text. Refreshed with `header_h`.
+    foot_h: f64,
     /// The reading-appearance button as last painted: where its popover
     /// opens from.
     type_button: Rect,
@@ -981,8 +980,12 @@ pub struct BooksApp {
     /// modal hit stack, and emits settings effects for CRDT persistence here.
     reading_settings: ReadingSettings,
 
-    /// Owns the transient page indicator's animation, drawing and hit-testing.
-    reader_bubble: ReaderBubble,
+    /// The reading position, said in the window's bar for a while when the
+    /// page changes ("Chapter 2, page 3 of 12").
+    page_notice: Transient<String>,
+    /// The (chapter, page) last seen, so only a change is news; `None`
+    /// before a book shows, so opening one is not a change.
+    page_said: Option<(usize, usize)>,
 
     cursor: Point,
     /// Pointer tooltip derived from the same semantic label the accessibility
@@ -1256,7 +1259,7 @@ impl BooksApp {
             reader_spacing: ui::tokens::spacing::Spacing::BASE,
             reader_compact_breakpoint: f64::from(Metrics::BASE.compact_breakpoint),
             selection_hud_h: ui::SelectionHud::height(&Theme::dark()),
-            bubble_h: ui::status_bubble::pill_height(&Theme::dark()),
+            foot_h: foot_control_height(&Theme::dark()),
             type_button: Rect::ZERO,
             toc_scroll: 0.0,
             toc_max_scroll: 0.0,
@@ -1291,7 +1294,8 @@ impl BooksApp {
             scroll_to_cursor: false,
             turn_accum: 0.0,
             reading_settings: ReadingSettings::default(),
-            reader_bubble: ReaderBubble::default(),
+            page_notice: Transient::new(),
+            page_said: None,
             cursor: Point::ZERO,
             hover_tooltip: None,
             semantic_focus: None,
@@ -1371,11 +1375,38 @@ impl BooksApp {
         }
     }
 
-    /// Screenshot-only: force the floating page bubble hover-pinned open so
-    /// a single still frame captures the transient indicator. Never armed at
-    /// runtime.
+    /// Screenshot-only: say the reading position in the window's bar, as a
+    /// page change does. Never armed at runtime.
     fn arm_reader_bubble_for_shots(&mut self) {
-        self.reader_bubble.arm_for_shots();
+        self.page_notice.show(self.page_line());
+    }
+
+    /// "Chapter 2, page 3 of 12", or "3 of 12" for a book without chapters.
+    fn page_line(&self) -> String {
+        let page = self.page + 1;
+        let pages = self.cur_page_count.max(1);
+        if self.num_chapters() > 0 {
+            format!("Chapter {}, page {page} of {pages}", self.chapter + 1)
+        } else {
+            format!("{page} of {pages}")
+        }
+    }
+
+    /// Say the reading position in the window's bar when the page changes
+    /// in the reader; opening a book is not a change.
+    fn follow_page_line(&mut self) {
+        if self.view == View::Reader {
+            let now = (self.chapter, self.page);
+            if self.page_said.is_some_and(|said| said != now) {
+                self.page_notice.show(self.page_line());
+            }
+            self.page_said = Some(now);
+        } else {
+            self.page_said = None;
+        }
+        self.page_notice.expire();
+        self.page_notice
+            .publish(|line| ToolbarNotice::new(line.clone(), ToastKind::Info));
     }
 
     fn num_chapters(&self) -> usize {
@@ -4591,6 +4622,7 @@ impl Widget for BooksApp {
         self.ensure_library_loaded(doc);
         self.drain_opens();
         self.expire_load_toast();
+        self.follow_page_line();
         self.poll_query();
         if self.absorb_layout_chunks() {
             self.dirty = true;
@@ -4715,7 +4747,7 @@ impl Widget for BooksApp {
         self.reader_spacing = theme.tokens.spacing;
         self.reader_compact_breakpoint = f64::from(theme.tokens.metrics.compact_breakpoint);
         self.selection_hud_h = ui::SelectionHud::height(theme);
-        self.bubble_h = ui::status_bubble::pill_height(theme);
+        self.foot_h = foot_control_height(theme);
         // Resolve the drawers against this frame's width (a breakpoint
         // crossing settles them without a slide), then advance any toggle.
         self.toc_drawer.scale_for(theme);
@@ -5283,18 +5315,18 @@ impl Widget for BooksApp {
         self.load_toast_deadline()
             .into_iter()
             .chain(self.next_query_placeholder_step(ui::time::now()))
+            .chain(self.page_notice.deadline())
             .min()
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the loop pumping while a flap is mid-slide, a page turn is
-        // easing in, or the floating page bubble is lingering/fading.
+        // Keep the loop pumping while a flap is mid-slide or a page turn is
+        // easing in.
         self.faces.is_moving(ui::motion::frame_now())
             || self.shelf_controls.is_moving()
             || (!self.reduce_motion
                 && (self.flaps_animating()
                     || self.page_turn.is_some_and(|pt| !pt.done(ui::time::now()))
-                    || self.reader_bubble.needs_frame(ui::time::now())
                     || (self.view != View::Reader && self.awaiting_arrival())))
     }
 
@@ -5888,23 +5920,9 @@ impl BooksApp {
         } else {
             None
         };
-        // The bubble is drawn below subsequent reader overlays, whose hits
-        // keep precedence where geometry overlaps; but it is drawn over the
-        // progress slider it shares the foot with, so its chevrons win there.
-        let bubble_action = if comment_action.is_none()
-            && shelf_action.is_none()
-            && top
-                .as_ref()
-                .is_none_or(|hit| matches!(hit.action, Action::SeekProgress))
-        {
-            self.reader_bubble.hit_test(self.cursor)
-        } else {
-            None
-        };
         if comment_action.is_none()
             && shelf_action.is_none()
             && top.is_none()
-            && bubble_action.is_none()
             && self.turn_page_from_margin(doc)
         {
             *handled = true;
@@ -5915,12 +5933,10 @@ impl BooksApp {
         self.press_pos = self.cursor;
         self.shelf_focus_visible = false;
 
-        if bubble_action.is_none()
-            && matches!(
-                top.as_ref().map(|hit| &hit.action),
-                Some(Action::SeekProgress)
-            )
-        {
+        if matches!(
+            top.as_ref().map(|hit| &hit.action),
+            Some(Action::SeekProgress)
+        ) {
             self.progress_dragging = true;
             self.on_seek_progress(self.progress_fraction_at(self.cursor));
             self.dirty = true;
@@ -5935,10 +5951,7 @@ impl BooksApp {
 
         // A press on page text runs through the shared
         // selection-gesture core: single → double (word) → triple.
-        let on_page = self.view == View::Reader
-            && comment_action.is_none()
-            && top.is_none()
-            && bubble_action.is_none();
+        let on_page = self.view == View::Reader && comment_action.is_none() && top.is_none();
         let consumed_page = self.resolve_page_press(on_page, modifiers.state().shift_key());
 
         if let Some(action) = comment_action {
@@ -5950,18 +5963,6 @@ impl BooksApp {
         } else if let Some(action) = shelf_action {
             self.dispatch_shelf_control(action, doc);
             self.refresh_from_doc(doc);
-            self.dirty = true;
-            *handled = true;
-        } else if let Some(action) = bubble_action {
-            self.dispatch(
-                match action {
-                    ReaderBubbleAction::PreviousPage => Action::PrevPage,
-                    ReaderBubbleAction::NextPage => Action::NextPage,
-                },
-                doc,
-            );
-            self.refresh_from_doc(doc);
-            self.persist_progress(doc);
             self.dirty = true;
             *handled = true;
         } else if let Some(h) = top {
@@ -7156,8 +7157,7 @@ struct ReaderPageGeometry {
     /// rule, so header, rule and first line never meet at any text scale.
     header_y: f64,
     rule_y: f64,
-    /// The band at the page's foot the progress slider is centred in. The
-    /// page bubble's slot lies between it and the content box.
+    /// The band at the page's foot the progress slider is centred in.
     slider_band: f64,
 }
 
@@ -7312,7 +7312,7 @@ impl BooksApp {
     }
 
     /// The page-bottom progress bar, then chrome drawn over the finished
-    /// page: top bar, floating page bubble, selection HUD, rails, note
+    /// page: top bar, selection HUD, rails, note
     /// composer, comment overlay, and reading-settings popover. Restores
     /// `self.library`, taken at the top of [`Self::draw_reader`].
     fn draw_reader_footer_and_chrome(
@@ -7371,39 +7371,9 @@ impl BooksApp {
             .with_ui_scale(theme.ui_scale)
             .with_text_scale(theme.text_scale)
         };
-        // The foot's band: the slider's, and the page bubble's while a new
-        // page is shown. Reaching for the slider gives it back.
-        let band = Rect::new(
-            geom.center_x0,
-            paper_y1 - geom.slider_band,
-            geom.center_x1,
-            paper_y1,
-        );
-        let position = ReaderPosition {
-            chapter: self.chapter,
-            page: self.page,
-            page_count: self.cur_page_count,
-            chapter_count: nchap.max(1),
-        };
-        let slider_active = self.progress_dragging || band.contains(self.cursor);
-        let bubble = self
-            .reader_bubble
-            .advance(position, slider_active, self.cursor);
-        let slider_alpha = 1.0 - bubble;
-        if slider_alpha > 0.0 {
-            ctx.scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                slider_alpha,
-                ctx.transform,
-                &band,
-            );
-            Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
-            draw_progress_label(ctx, label, frac, page_theme.text_dim);
-            ctx.scene.pop_layer();
-        }
+        Slider::paint(ctx.scene, ctx.transform, &page_theme, &face);
+        draw_progress_label(ctx, label, frac, page_theme.text_dim);
         self.push_hit(slider_rect, Action::SeekProgress);
-        self.reader_bubble.draw(ctx, band, self.cursor, position);
 
         // ---- chrome: header row, selection HUD, drawers
         self.draw_reader_header(ctx, &lib);
@@ -7451,8 +7421,8 @@ impl BooksApp {
         let center_x0 = column.x0;
         let center_x1 = column.x1;
         let body_y0 = r.y0 + self.header_h;
-        // The page renders to the window bottom: the page indicator floats as
-        // a transient bubble (`ReaderBubble`) instead of a permanent strip.
+        // The page renders to the window bottom: the reading position is
+        // said in the window's bar instead of a permanent strip.
         let body_y1 = r.y1;
 
         // ---- paper rect + content box -----------------------------------
@@ -7465,14 +7435,14 @@ impl BooksApp {
         // kept whether or not text is selected, so selecting never covers a
         // line or moves the text.
         let hud_slot = self.selection_hud_h + 2.0 * f64::from(sp.s2);
-        // The foot is one band the progress slider and the page bubble take
-        // turns in, so neither ever lies over the text.
+        // The foot is the progress slider's band, so it never lies over the
+        // text.
         let slider_band = if framed {
             f64::from(sp.s12)
         } else {
             f64::from(sp.s8)
         }
-        .max(self.bubble_h + f64::from(sp.s4));
+        .max(self.foot_h + f64::from(sp.s4));
         let pad_bot = slider_band;
         let (paper_x, paper_y, paper_w, paper_h, pad_x, pad_top, header_y, rule_y) = if framed {
             let margin = f64::from(sp.s6);
@@ -9044,6 +9014,14 @@ fn progress_label(fraction: f32) -> String {
 
 /// The width the widest progress label takes, so the slider beside it
 /// keeps one length as the number grows.
+/// The height of the page foot's control row: a `Label` line with its
+/// padding, never below a bar control.
+fn foot_control_height(theme: &Theme) -> f64 {
+    let pad = f64::from(theme.tokens.spacing.s1) * 1.5;
+    (f64::from(theme.text(TextRole::Label).line_height_px()) + 2.0 * pad)
+        .max(f64::from(theme.tokens.metrics.bar_control_height))
+}
+
 fn progress_label_width(ctx: &mut PaintCtx<'_>) -> f64 {
     let style = ctx.theme.text(TextRole::Caption).numeric();
     f64::from(ctx.text.measure_style("100%", None, &style).0)

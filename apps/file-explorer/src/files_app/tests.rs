@@ -5196,15 +5196,13 @@ mod responsive_body_tests {
         for name in ["a.txt", "b.txt", "c.txt"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
-        // A desktop bar hosts the window: the notice and its Undo are there.
-        ui::window_toolbar::set_hosted(true);
         let mut h = H::new(Some(dir.path()), 1000.0, 720.0);
         h.draw_overlay();
         h.w.status = None;
         h.w.select(Some(1));
         h.draw_overlay();
         assert!(
-            !h.w.status_bubble.is_visible(ui::time::now()) || ui::time::wall_frozen(),
+            !h.w.status_notice.is_shown(),
             "selecting a file is not news"
         );
 
@@ -5350,23 +5348,6 @@ mod responsive_body_tests {
         assert_eq!(rename_stem_end("photos.2024", true), None);
     }
 
-    fn first_scrollable_viewport(
-        widget: &mut dyn Widget,
-    ) -> Option<(vello::kurbo::Rect, vello::kurbo::Rect)> {
-        if let Some(scrollable) = widget
-            .as_any_mut()
-            .and_then(|value| value.downcast_mut::<Scrollable>())
-        {
-            return Some((scrollable.get_rect(), scrollable.content_viewport_rect()));
-        }
-        for child in widget.children_mut() {
-            if let Some(viewport) = first_scrollable_viewport(child) {
-                return Some(viewport);
-            }
-        }
-        None
-    }
-
     /// Wide/narrow body modes and the narrow places drawer, each phase on its
     /// own temp dir and harness.
     #[test]
@@ -5377,7 +5358,6 @@ mod responsive_body_tests {
         narrow_places_are_a_screen_of_their_own();
         narrow_places_screen_takes_input_the_files_do_not();
         narrow_navigation_returns_to_the_files();
-        floating_status_bubble_reserves_a_noninteractive_bottom_lane();
     }
 
     fn body_docks_wide_and_reflows_to_push_when_narrowed() {
@@ -5631,6 +5611,11 @@ mod responsive_body_tests {
             "archive toolbar must not expose a one-item duplicate menu"
         );
         assert_eq!(h.w.footer_label(), t("files-archive-read-only"));
+        assert_eq!(
+            h.w.status_notice.get().cloned(),
+            Some(t("files-archive-read-only")),
+            "entering an archive says it is read-only in the window's bar"
+        );
 
         h.lay_out(1200.0, 760.0);
         if h.w.take_structure_dirty() {
@@ -5674,28 +5659,6 @@ mod responsive_body_tests {
         assert!(
             (h.w.debug_content_rect().width() - 480.0).abs() <= f64::EPSILON,
             "the content pane spans the whole narrow window",
-        );
-    }
-
-    fn floating_status_bubble_reserves_a_noninteractive_bottom_lane() {
-        let dir = tempfile::tempdir().unwrap();
-        for index in 0..40 {
-            std::fs::write(dir.path().join(format!("item-{index}.txt")), b"x").unwrap();
-        }
-        let mut h = H::new(Some(dir.path()), 390.0, 720.0);
-        // The grid scrolls under the shared scrollable; the list is a table
-        // that scrolls itself and keeps the lane clear in its own layout (see
-        // `FileView`'s list tests).
-        h.w.set_view_mode(crate::model::ViewMode::Grid);
-        h.lay_out(390.0, 720.0);
-        let (scrollable, content_viewport) = first_scrollable_viewport(&mut h.w)
-            .expect("Files grid is wrapped in the shared scrollable");
-
-        assert!(
-            scrollable.y1 - content_viewport.y1
-                >= f64::from(status_bubble_safe_inset(&ui::Theme::dark())) - f64::EPSILON,
-            "the item/status pill has a dedicated bottom lane rather than overlaying files: \
-             scrollable={scrollable:?} viewport={content_viewport:?}"
         );
     }
 

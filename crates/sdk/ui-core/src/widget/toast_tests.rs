@@ -1,6 +1,4 @@
 use super::*;
-use crate::testing::dispatch;
-use std::collections::HashMap;
 
 /// A card's lifetime counts only time on screen and unheld: off screen
 /// or under the pointer it keeps what it has left, and letting go of it
@@ -35,27 +33,6 @@ fn a_dwell_runs_only_while_shown_and_unheld() {
     assert!(dwell.is_over(lifetime, at(44_000)));
     dwell.spend(Duration::from_secs(9));
     assert!(dwell.is_over(lifetime, at(43_000)));
-}
-
-/// A stack that shows what it painted asks for no frame, so a pointer
-/// moving over a window with a notice up repaints nothing; a new or
-/// dismissed notice asks for one.
-#[test]
-fn a_painted_stack_needs_a_frame_only_when_its_notices_change() {
-    let mut stack = ToastStack::new();
-    lay_out(&mut stack);
-    assert!(stack.needs_redraw(), "a stack never drawn needs a frame");
-    stack.mark_drawn();
-    assert!(
-        !stack.needs_redraw(),
-        "an empty stack it painted needs none"
-    );
-    stack.push("Saved", ToastKind::Success);
-    assert!(stack.needs_redraw(), "a new notice needs a frame");
-    stack.mark_drawn();
-    assert!(!stack.needs_redraw(), "the notice it painted needs none");
-    stack.dismiss(0);
-    assert!(stack.needs_redraw(), "a dismissed notice needs a frame");
 }
 
 /// A notice's one button ("Undo") is reported to its owner once and
@@ -185,60 +162,6 @@ fn a_progress_notice_stays_while_its_work_runs() {
     with_monotonic_time(start, || plain.show("Saved"));
     with_monotonic_time(at(3), || assert!(!plain.keep_while(true)));
     with_monotonic_time(at(5), || assert_eq!(plain.get(), None));
-}
-
-#[test]
-fn a_notice_button_is_reported_once_and_takes_the_notice_down() {
-    let mut stack = ToastStack::new();
-    stack.push_with_action("Archived", ToastKind::Success, "Undo");
-    lay_out(&mut stack);
-    let mut scene = Scene::new();
-    Widget::draw(
-        &mut stack,
-        &mut scene,
-        Affine::IDENTITY,
-        &mut TextRenderer::new(),
-        &Theme::dark(),
-        &PresenceCtx::empty(),
-    );
-    let button = stack
-        .action_rects
-        .first()
-        .copied()
-        .flatten()
-        .expect("the notice shows its button");
-    let at = button.center();
-    dispatch(
-        &mut stack,
-        &WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: (at.x, at.y).into(),
-        },
-    );
-    assert!(
-        stack.needs_redraw(),
-        "the button under the pointer lights up"
-    );
-    dispatch(&mut stack, &crate::synthetic_input::mouse_press());
-    assert_eq!(stack.take_activated().as_deref(), Some("Archived"));
-    assert!(stack.is_empty(), "the notice is done with");
-    assert_eq!(stack.take_activated(), None, "and reported once");
-}
-
-fn lay_out(stack: &mut ToastStack) {
-    let mut tree = TaffyTree::<()>::new();
-    let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let theme = Theme::dark();
-    let node = stack.build_layout(&mut tree, &theme, &mut nm);
-    tree.compute_layout(
-        node,
-        Size {
-            width: taffy::AvailableSpace::Definite(f32_of_f64(TOAST_WIDTH)),
-            height: taffy::AvailableSpace::Definite(1000.0),
-        },
-    )
-    .unwrap();
-    stack.apply_layout(&tree, node, Point::ZERO);
 }
 
 /// A card's one action sits beside its text while the text keeps room
@@ -526,88 +449,4 @@ fn toast_card_paints_text_close_and_actions_inside_the_card() {
         assert!(!single_line_text("Couldn't open\nNotes").contains('\n'));
         assert!(!single_line_text("The app stopped\nbefore opening").contains('\n'));
     }
-}
-
-#[test]
-fn toast_interaction_dismisses_pauses_and_announces() {
-    {
-        let mut s = ToastStack::new();
-        s.push("first", ToastKind::Info);
-        s.push("second", ToastKind::Error);
-        lay_out(&mut s);
-        // Card 1 ("second") spans y ∈ [56, 104); centre ≈ (160, 80).
-        dispatch(
-            &mut s,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: (160.0, 80.0).into(),
-            },
-        );
-        dispatch(&mut s, &crate::synthetic_input::mouse_press());
-        assert_eq!(s.len(), 1);
-        assert_eq!(s.iter().next().unwrap().text, "first");
-    }
-
-    {
-        use crate::a11y::{Politeness, Role};
-        // Empty stack: a named, assertive live region with no value yet.
-        let s = ToastStack::new();
-        let node = Widget::accessibility(&s).expect("toast stack is not presentational");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Notifications"));
-        assert_eq!(node.live, Some(Politeness::Assertive));
-        assert_eq!(node.value, None, "an empty stack has no current toast");
-
-        // With a live toast the stack surfaces the most recent text as value,
-        // so the host's live-region scan announces it.
-        let mut s = ToastStack::new();
-        s.push("hello", ToastKind::Info);
-        s.push("world", ToastKind::Error);
-        let node = Widget::accessibility(&s).unwrap();
-        assert_eq!(
-            node.value.as_deref(),
-            Some("world"),
-            "value is the newest toast"
-        );
-        assert_eq!(node.live, Some(Politeness::Assertive));
-    }
-
-    {
-        let mut s = ToastStack::new().with_default_ttl(Duration::from_millis(100));
-        s.push("stay", ToastKind::Info);
-        lay_out(&mut s);
-        // Hover over the only card.
-        dispatch(
-            &mut s,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: (160.0, 24.0).into(),
-            },
-        );
-        assert!(s.is_hovered());
-        // tick longer than the TTL — but hovered, so it must NOT expire.
-        s.tick(Duration::from_millis(500));
-        assert_eq!(s.len(), 1, "hovered toast does not expire");
-        // Move away → expiry resumes.
-        dispatch(
-            &mut s,
-            &WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: (900.0, 900.0).into(),
-            },
-        );
-        assert!(!s.is_hovered());
-        s.tick(Duration::from_millis(500));
-        assert_eq!(s.len(), 0, "expires once un-hovered");
-    }
-}
-
-#[test]
-fn notices_with_a_button_go_once_what_they_act_on_moves_on() {
-    let mut s = ToastStack::new();
-    s.push_with_action("Deleted Groceries", ToastKind::Info, "Undo");
-    s.push("Imported", ToastKind::Success);
-    s.dismiss_actionable();
-    assert_eq!(s.len(), 1, "only the notice without a button stays");
-    assert!(s.iter().all(|toast| toast.action.is_none()));
 }

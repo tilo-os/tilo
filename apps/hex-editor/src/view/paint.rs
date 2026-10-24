@@ -386,13 +386,6 @@ impl HexView {
         let mut left = vec![StatusReadout::action(&offset)];
         left.extend(selected.as_deref().map(StatusReadout::text));
         left.extend(edited.as_deref().map(StatusReadout::text));
-        // A change worth noticing once ("Saved") reads in the status bar
-        // while it lingers, so it never covers the grid.
-        let notice = self
-            .status_bubble
-            .is_visible(ui::time::now())
-            .then(|| self.status_bubble.text().to_owned());
-        left.extend(notice.as_deref().map(StatusReadout::text));
         let hovered = self.offset_readout.contains(self.last_mouse).then_some(0);
         let rects = draw_readouts(
             scene,

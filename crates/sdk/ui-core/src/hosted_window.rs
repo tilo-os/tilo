@@ -45,6 +45,8 @@ struct State {
     toolbar: Option<WindowToolbar>,
     /// The notice up ([`crate::window_toolbar::notify`]).
     notice: Option<crate::window_toolbar::ToolbarNotice>,
+    /// The notices' buttons pressed, not yet taken by their posters.
+    notice_presses: Vec<String>,
     /// Bumped by every declaration that changed the slots.
     revision: u64,
     events: VecDeque<ToolbarEvent>,
@@ -134,6 +136,15 @@ impl HostedWindow {
             state.wake.clone()
         };
         Self::wake(wake);
+    }
+
+    /// Whether the notice's button `id` was pressed since the last call.
+    #[must_use]
+    pub fn take_notice_press(&self, id: &str) -> bool {
+        let mut state = self.state();
+        let before = state.notice_presses.len();
+        state.notice_presses.retain(|pressed| pressed != id);
+        state.notice_presses.len() != before
     }
 
     /// The notice up.
@@ -250,6 +261,12 @@ impl HostedWindow {
     /// Hand the app what the person did with its slots.
     pub fn deliver(&self, event: ToolbarEvent) {
         let mut state = self.state();
+        if let Some(id) = crate::window_toolbar::notice_press(state.notice.as_ref(), &event) {
+            if state.notice_presses.len() < MAX_PENDING {
+                state.notice_presses.push(id);
+            }
+            return;
+        }
         if state.events.len() < MAX_PENDING {
             state.events.push_back(event.bounded());
         }
