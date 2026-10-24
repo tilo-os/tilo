@@ -91,6 +91,19 @@ literals and integer offsets by `tools/regex-syntax-tables.py`: about 121 KB
 the shared runtime no longer relocates in every app process. Every set,
 name and fold is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
 
+## JSON value code compiled once
+
+`serde_json` 1.0.151 is the checksum-verified MIT/Apache-2.0 registry release
+with the `Value` code every crate compiled for itself moved into serde_json,
+which the shared runtime holds once: the parser a raw value is read back
+with (reached from every generic read of a `Value` once `raw_value` is on),
+the map's insertion, cloning and comparing, which `#[inline]` copied into
+each caller, and `Value`'s derived, and so inlined, `Clone` and `PartialEq`.
+Measured on the x86_64 app binaries at dcac562fe9: the 64 apps lose 966,311
+loadable bytes (median 17 KB each), the shared runtime 246,289 and its engines
+183,000. Behaviour is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
+Keep the copy while apps link serde_json through the shared runtime.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
