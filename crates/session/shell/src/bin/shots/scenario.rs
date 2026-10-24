@@ -1011,7 +1011,9 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
                 let st = handle.borrow();
                 let tree = st.tree();
                 let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
-                strip.and_then(|strip| tree.desktop.active_group_for(strip))
+                let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+                drop(tree);
+                group
             };
             handle
                 .borrow_mut()
