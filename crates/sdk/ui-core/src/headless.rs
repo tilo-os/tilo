@@ -348,6 +348,9 @@ pub struct FrameHarness {
     bindings: crate::bound_dispatch::BoundNodeMap,
     component_close_reports: Vec<crate::application::ComponentCloseReport>,
     root_node: NodeId,
+    /// A frame was laid out: what arrives after it moves in
+    /// (`motion::window_has_shown`).
+    shown_a_frame: bool,
     child_node: NodeId,
     document_history: Box<crate::standalone_history_host::StandaloneHistoryHost>,
     history_chrome_enabled: bool,
@@ -1631,6 +1634,7 @@ impl FrameHarness {
             framework_input: std::rc::Rc::new(std::cell::Cell::new(false)),
             component_close_reports: vec![],
             root_node: NodeId::from(0usize),
+            shown_a_frame: false,
             child_node: NodeId::from(0usize),
             document_history: Box::new(crate::standalone_history_host::StandaloneHistoryHost::new()),
             history_chrome_enabled: false,
@@ -3629,6 +3633,9 @@ impl FrameHarness {
         let mut stats = RelayoutStats::default();
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
+        // What arrives in the window's first frame shows at rest.
+        let _window = crate::motion::laying_out_window(self.shown_a_frame);
+        self.shown_a_frame = true;
         settle_widget_composition(recompose_for_viewport, |rebuild| {
             let t_build = self.profiler.as_ref().map(|_| crate::time::now());
             let layout_phase = tilo_resource::profiling::Phase::start("ui.layout");

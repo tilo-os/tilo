@@ -28,7 +28,8 @@ pub struct Toggle {
     hold: Option<KnobHold>,
     /// The last pointer x, where a press takes hold.
     pointer_x: f64,
-    /// The pill as last drawn, for a hand dragging its knob.
+    /// The pill as last drawn, from the switch's origin, for a hand
+    /// dragging its knob.
     drawn_track: Rect,
     /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
@@ -47,18 +48,16 @@ type Painted = (bool, bool, bool, bool, u64, u32);
 /// press is a click.
 const DRAG_SLOP: f64 = 3.0;
 
-/// A pointer or a finger holding a switch.
+/// A hand holding a switch: the pointer, or a finger dragging across it
+/// (which the touch emulator presents as the pointer).
 #[derive(Clone, Copy, Debug)]
 struct KnobHold {
-    /// The finger, or `None` for the pointer.
-    contact: Option<u64>,
-    /// Where the hold started, then where the drag started.
+    /// Where the hold started.
     start_x: f64,
-    /// The knob's drawn position when the drag started.
+    /// The knob's drawn position when the hold started.
     from: f64,
     dragged: bool,
-    /// The value the control was asked for when the hold began: what the
-    /// press flipped it to, or what a finger found.
+    /// What the press flipped the control to.
     asked: bool,
     /// The last two knob positions the hand set, for its velocity.
     last: Option<(crate::time::Instant, f64)>,
@@ -70,11 +69,10 @@ struct KnobHold {
 const STILL_AFTER: crate::time::Duration = crate::time::Duration::from_millis(80);
 
 impl KnobHold {
-    fn new(contact: Option<u64>, x: f64, asked: bool) -> Self {
+    fn new(x: f64, from: f64, asked: bool) -> Self {
         Self {
-            contact,
             start_x: x,
-            from: 0.0,
+            from,
             dragged: false,
             asked,
             last: None,
@@ -143,7 +141,9 @@ impl Toggle {
         if self.drawn_track.area() <= 0.0 {
             return false;
         }
-        let track = self.drawn_track;
+        // Where the pill is now: a scroll moves the switch without always
+        // drawing it again.
+        let track = self.drawn_track + self.control.rect.origin().to_vec2();
         let knob = self.switch.knob(crate::motion::frame_now());
         let centre = Point::new(
             track.x0 + track.height() / 2.0 + knob * self.knob_travel(),
@@ -153,11 +153,11 @@ impl Toggle {
     }
 
     /// The held knob follows the hand to `x`, once it has moved past the
-    /// slop; from where it was drawn when the drag began, 1:1.
+    /// slop: 1:1 from where it was drawn when the hand took it, so it stays
+    /// under the hand however far the slop let the hand go first (a
+    /// finger's drag begins only past the touch slop).
     fn drag_to(&mut self, x: f64) {
-        let now = crate::motion::frame_now();
         let travel = self.knob_travel();
-        let drawn = self.switch.knob(now);
         let Some(hold) = self.hold.as_mut() else {
             return;
         };
@@ -166,8 +166,6 @@ impl Toggle {
                 return;
             }
             hold.dragged = true;
-            hold.from = drawn;
-            hold.start_x = x;
         }
         let position = (hold.from + (x - hold.start_x) / travel).clamp(0.0, 1.0);
         hold.sample(crate::time::now(), position);
@@ -176,8 +174,8 @@ impl Toggle {
 
     /// The hand lets go. A drag settles on the side its release heads for,
     /// with its velocity, and asks for that side if the press asked for the
-    /// other; a finger's tap flips the switch; a cancelled drag goes back.
-    fn let_go(&mut self, cancelled: bool) {
+    /// other.
+    fn let_go(&mut self) {
         let Some(hold) = self.hold.take() else {
             return;
         };
@@ -185,54 +183,12 @@ impl Toggle {
         if hold.dragged {
             let now = crate::motion::frame_now();
             let velocity = hold.velocity(crate::time::now());
-            let side = if cancelled {
-                hold.asked
-            } else {
-                let position = self.switch.knob(now);
-                crate::motion::Snap::rest_for(position, velocity, motion) >= 0.5
-            };
+            let position = self.switch.knob(now);
+            let side = crate::motion::Snap::rest_for(position, velocity, motion) >= 0.5;
             if side != hold.asked {
                 self.control.choose(side);
             }
             self.switch.release(side, velocity, motion, now);
-        } else if hold.contact.is_some() && !cancelled {
-            self.control.flip();
-        }
-    }
-
-    fn handle_touch(&mut self, touch: &winit::event::Touch, ctx: &mut crate::widget::EventCtx<'_>) {
-        use winit::event::TouchPhase;
-        let scale = if ctx.scale_factor > 0.0 {
-            ctx.scale_factor
-        } else {
-            1.0
-        };
-        let point = Point::new(touch.location.x / scale, touch.location.y / scale);
-        let ours = self.hold.is_some_and(|hold| hold.contact == Some(touch.id));
-        match touch.phase {
-            TouchPhase::Started if self.hold.is_none() && self.on_knob(point) => {
-                *ctx.handled = true;
-                self.control.pressed_into_focus |= !self.control.is_focused;
-                *ctx.focus_target = Some(ctx.node_id);
-                self.hold = Some(KnobHold::new(
-                    Some(touch.id),
-                    point.x,
-                    self.control.is_checked,
-                ));
-            }
-            TouchPhase::Moved if ours => {
-                *ctx.handled = true;
-                self.drag_to(point.x);
-            }
-            TouchPhase::Ended if ours => {
-                *ctx.handled = true;
-                self.let_go(false);
-            }
-            TouchPhase::Cancelled if ours => {
-                *ctx.handled = true;
-                self.let_go(true);
-            }
-            _ => {}
         }
     }
 
@@ -802,12 +758,13 @@ impl Widget for Toggle {
         // the two cannot drift: the pill is centred in the layout target and
         // every state resolves through the same `ToggleFace`.
         let c = &self.control;
-        self.drawn_track = track_rect(c.rect, theme);
+        let track = track_rect(c.rect, theme);
+        self.drawn_track = track - c.rect.origin().to_vec2();
         Self::paint(
             scene,
             transform,
             theme,
-            &ToggleFace::new(self.drawn_track, c.is_checked)
+            &ToggleFace::new(track, c.is_checked)
                 .pose(self.switch.pose(motion, now))
                 .hovered(c.is_hovered)
                 .focused(c.focus_visible())
@@ -847,7 +804,7 @@ impl Widget for Toggle {
             }
             return;
         }
-        let pointer_held = self.hold.is_some_and(|hold| hold.contact.is_none());
+        let pointer_held = self.hold.is_some();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
@@ -868,8 +825,9 @@ impl Widget for Toggle {
                 // The press flips at once, as ever; holding on, the hand
                 // may then take the knob.
                 let asked = !self.control.is_checked;
+                let drawn = self.switch.knob(crate::motion::frame_now());
                 self.control.handle_event(event, ctx);
-                self.hold = Some(KnobHold::new(None, self.pointer_x, asked));
+                self.hold = Some(KnobHold::new(self.pointer_x, drawn, asked));
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -877,17 +835,21 @@ impl Widget for Toggle {
                 ..
             } if pointer_held => {
                 *ctx.handled = true;
-                self.let_go(false);
+                self.let_go();
             }
-            WindowEvent::Touch(touch) => self.handle_touch(touch, ctx),
             _ => self.control.handle_event(event, ctx),
         }
     }
 
-    /// A finger on the knob is the switch's, to drag it; elsewhere on the
-    /// switch a tap is a click and a swipe still scrolls.
-    fn claims_raw_touch(&self, point: Point) -> bool {
-        self.control.effectively_enabled() && (self.hold.is_some() || self.on_knob(point))
+    /// A finger on the knob drags it once it heads across; heading up or
+    /// down it scrolls the page, as anywhere else on the switch, where a
+    /// tap is a click.
+    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+        if self.control.effectively_enabled() && self.on_knob(point) {
+            crate::interaction::TouchClaim::DragAcross
+        } else {
+            crate::interaction::TouchClaim::Pointer
+        }
     }
 
     /// A held knob keeps the hand that holds it, wherever it goes.
@@ -1602,11 +1564,12 @@ mod tests {
         assert!(state.get(), "the press flips at once, as a click");
         assert!(Widget::wants_pointer_capture(&t), "the hand holds the knob");
         // Within the slop it is still a click; past it the knob is the
-        // hand's, 1:1 over its 20 px of travel, wherever the pointer goes.
+        // hand's, 1:1 over its 20 px of travel from where the hand took
+        // it, wherever the pointer goes.
         with_monotonic_time(ms(t0, 8), || dispatch(&mut t, &cursor_moved(14.0, 16.0)));
         assert!(!t.hold.unwrap().dragged);
         with_monotonic_time(ms(t0, 16), || dispatch(&mut t, &cursor_moved(20.0, 16.0)));
-        for (i, (x, knob)) in [(26.0, 0.3), (30.0, 0.5), (24.0, 0.2), (21.0, 0.05)]
+        for (i, (x, knob)) in [(26.0, 0.7), (30.0, 0.9), (18.0, 0.3), (13.0, 0.05)]
             .into_iter()
             .enumerate()
         {
@@ -1646,71 +1609,71 @@ mod tests {
         assert_eq!(t.switch.knob(ms(t0, 2_000)), 1.0);
     }
 
+    /// Touch on a page of switches: a finger on a knob drags it once it
+    /// heads across, a vertical swipe from the same knob scrolls the page,
+    /// and a tap flips the switch.
     #[test]
-    fn a_finger_drags_the_knob_and_a_tap_on_it_flips_the_switch() {
-        use crate::testing::dispatch;
-        use crate::time::testing::with_monotonic_time;
-        use winit::event::TouchPhase;
-        let finger = |phase, x: f64| {
-            WindowEvent::Touch(winit::event::Touch {
-                device_id: winit::event::DeviceId::dummy(),
-                phase,
-                location: winit::dpi::PhysicalPosition::new(x, 16.0),
-                force: None,
-                id: 7,
-            })
-        };
+    fn a_vertical_swipe_on_a_knob_scrolls_and_a_horizontal_one_drags_it() {
+        use crate::widget::{Column, Scrollable};
+        use winit::event::TouchPhase::{Ended, Moved, Started};
         let theme = Theme::dark();
-        let state = crate::LocalState::new(false);
-        let mut t = Toggle::from_state(&state);
-        switch_at_origin(&mut t);
-        let t0 = crate::time::now();
-        with_monotonic_time(t0, || present(&mut t, &theme));
-        assert!(
-            Widget::claims_raw_touch(&t, Point::new(12.0, 16.0)),
-            "a finger on the knob"
+        let states: Vec<_> = (0..30).map(|_| crate::LocalState::new(false)).collect();
+        let mut column = Column::new();
+        for state in &states {
+            column = column.push(Box::new(Toggle::from_state(state)));
+        }
+        let mut frame = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_child(Box::new(column)),
+            (360, 300),
+            theme.clone(),
         );
-        assert!(
-            !Widget::claims_raw_touch(&t, Point::new(40.0, 16.0)),
-            "elsewhere a tap is a click and a swipe scrolls"
+        let offset = |frame: &crate::headless::FrameHarness| frame.root::<Scrollable>().offset_y();
+        // The knob of switch `index`, at rest off, where it is drawn now.
+        let knob = |frame: &crate::headless::FrameHarness, index: usize| {
+            let column = frame.root::<Scrollable>().children()[0];
+            let track = track_rect(column.children()[index].get_rect(), &theme);
+            Point::new(track.x0 + track.height() / 2.0, track.center().y)
+        };
+        let at = knob(&frame, 1);
+        assert_eq!(
+            Widget::touch_claim(frame.root::<Scrollable>().children()[0].children()[1], at),
+            crate::interaction::TouchClaim::DragAcross
         );
-        // A tap on the knob flips it, when the finger lifts.
-        with_monotonic_time(t0, || {
-            crate::motion::note_source(crate::tokens::MotionSource::Gesture);
-            assert!(dispatch(&mut t, &finger(TouchPhase::Started, 12.0)));
-            assert!(!state.get());
-            assert!(dispatch(&mut t, &finger(TouchPhase::Ended, 12.0)));
-        });
-        assert!(state.get(), "a tap flips");
-        with_monotonic_time(ms(t0, 1_000), || present(&mut t, &theme));
-        // A drag holds it under the finger and lets it settle where it was
-        // left.
-        with_monotonic_time(ms(t0, 1_000), || {
-            dispatch(&mut t, &finger(TouchPhase::Started, 32.0));
-            dispatch(&mut t, &finger(TouchPhase::Moved, 28.0));
-        });
-        with_monotonic_time(ms(t0, 1_010), || {
-            dispatch(&mut t, &finger(TouchPhase::Moved, 18.0))
-        });
-        assert!((t.switch.knob(ms(t0, 1_010)) - 0.5).abs() < 1e-9);
-        with_monotonic_time(ms(t0, 1_020), || {
-            dispatch(&mut t, &finger(TouchPhase::Moved, 12.0))
-        });
-        with_monotonic_time(ms(t0, 1_300), || {
-            dispatch(&mut t, &finger(TouchPhase::Ended, 12.0))
-        });
-        assert!(!state.get(), "dragged off");
-        // A cancelled drag goes back to the value.
-        with_monotonic_time(ms(t0, 2_000), || {
-            present(&mut t, &theme);
-            dispatch(&mut t, &finger(TouchPhase::Started, 12.0));
-            dispatch(&mut t, &finger(TouchPhase::Moved, 15.0));
-            dispatch(&mut t, &finger(TouchPhase::Moved, 30.0));
-            assert!((t.switch.knob(ms(t0, 2_000)) - 0.75).abs() < 1e-9);
-            dispatch(&mut t, &finger(TouchPhase::Cancelled, 30.0));
-        });
-        assert!(!state.get(), "nothing changes");
-        assert_eq!(t.switch.knob(ms(t0, 3_000)), 0.0);
+
+        // Up from the knob: the page scrolls and the switch stays off.
+        frame.touch(1, Started, at.x, at.y);
+        for step in 1..=6 {
+            frame.touch(1, Moved, at.x + 2.0, at.y - 10.0 * f64::from(step));
+        }
+        frame.touch(1, Ended, at.x + 2.0, at.y - 60.0);
+        assert!(offset(&frame) > 0.0, "the page scrolled");
+        assert!(!states[1].get(), "the switch is untouched");
+        assert!(states.iter().all(|state| !state.get()));
+
+        // Across from a knob still on screen, once the swipe's glide has
+        // come to rest: it is dragged to on, and the page stays.
+        assert!(frame.settle_for_capture(crate::time::Duration::from_secs(5)));
+        let scrolled = offset(&frame);
+        let at = knob(&frame, 6);
+        assert!(at.y > 0.0 && at.y < 300.0, "on screen: {at:?}");
+        frame.touch(2, Started, at.x, at.y);
+        for step in 1..=5 {
+            frame.touch(2, Moved, at.x + 5.0 * f64::from(step), at.y + 1.0);
+        }
+        frame.touch(2, Ended, at.x + 25.0, at.y + 1.0);
+        assert!(states[6].get(), "dragged on");
+        assert_eq!(states.iter().filter(|state| state.get()).count(), 1);
+        assert_eq!(offset(&frame), scrolled, "a drag across does not scroll");
+
+        // A tap on the knob flips it back.
+        let at = Point::new(at.x + 20.0, at.y);
+        frame.touch(3, Started, at.x, at.y);
+        frame.touch(3, Ended, at.x, at.y);
+        assert!(!states[6].get(), "a tap flips");
+        assert_eq!(offset(&frame), scrolled);
     }
 
     #[test]

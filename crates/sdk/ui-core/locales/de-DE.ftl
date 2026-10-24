@@ -388,6 +388,26 @@ tree-move-outdent = Aus dem übergeordneten Element verschieben
 text-input-show-password = Passwort anzeigen
 text-input-hide-password = Passwort verbergen
 
+# The password prompt every secret in Tilo is asked by.
+secret-prompt-continue = Weiter
+secret-prompt-cancel = Abbrechen
+secret-prompt-username = Benutzername
+secret-prompt-password = Passwort
+secret-prompt-pin = PIN
+secret-prompt-puk = PUK
+secret-prompt-new-pin = Neue PIN
+secret-prompt-confirm-pin = Neue PIN bestätigen
+secret-prompt-caps-lock = Feststelltaste ist aktiv
+secret-prompt-pin-length = { $min } bis { $max } Ziffern
+secret-prompt-pin-length-exact = { $count } Ziffern
+secret-prompt-attempts-left = { $count ->
+    [one] Noch ein Versuch
+   *[other] Noch { $count } Versuche
+}
+secret-prompt-pins-differ = Die neuen PINs stimmen nicht überein
+secret-prompt-keypad-delete = Löschen
+secret-prompt-keypad-enter = Fertig
+
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Willkommen zurück
 

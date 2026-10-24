@@ -159,6 +159,8 @@ fn the_retained_banner_holds_its_buttons_and_dismisses_through_its_control() {
 
 #[test]
 fn a_state_bound_banner_collapses_while_absent() {
+    // Where it rests: the motion on the way is its own test.
+    let _settled = crate::motion::testing::settled();
     let state = crate::LocalState::new(None::<BannerNotice>);
     let root = Column::new()
         .push(Box::new(Banner::from_state(&state).with_id("sync")))
@@ -194,23 +196,31 @@ fn the_banner_is_a_live_region_by_severity() {
     );
 }
 
-/// The banner (first) and what follows it in the harness's column.
-fn band_and_shift(d: &FrameHarness, span: f64) -> (Option<crate::widget::Disclosing>, f64) {
-    let children = d.root_widget().children();
-    let band = children[0].disclosing();
-    let shift = band.map_or(0.0, |band| band.follower_offset(span - band.extent));
-    (band, shift)
+/// The first child of the harness's column, as it moves.
+fn band(d: &FrameHarness) -> Option<crate::widget::Disclosing> {
+    d.root_widget().children()[0].disclosing()
 }
 
-fn sync_column(state: &crate::LocalState<Option<BannerNotice>>, dismissible: bool) -> Column {
+/// A band's full and drawn height.
+fn band_heights(band: Option<crate::widget::Disclosing>) -> (f64, f64) {
+    match band {
+        Some(crate::widget::Disclosing::Band { extent, drawn }) => (extent, drawn),
+        other => panic!("a banner on its way is a band, not {other:?}"),
+    }
+}
+
+fn sync_banner(state: &crate::LocalState<Option<BannerNotice>>, dismissible: bool) -> Banner {
     let banner = Banner::from_state(state).with_id("sync");
-    let banner = if dismissible {
+    if dismissible {
         banner.dismissible()
     } else {
         banner
-    };
+    }
+}
+
+fn sync_column(state: &crate::LocalState<Option<BannerNotice>>, dismissible: bool) -> Column {
     Column::new()
-        .push(Box::new(banner))
+        .push(Box::new(sync_banner(state, dismissible)))
         .push(Box::new(crate::widget::Text::new("Below").with_id("below")))
 }
 
@@ -219,58 +229,69 @@ fn sync_failed() -> BannerNotice {
 }
 
 #[test]
-fn an_arriving_banner_discloses_and_what_follows_moves_with_its_edge() {
+fn an_arriving_banner_discloses_over_what_follows_laid_out_where_it_stood() {
     let state = crate::LocalState::new(None::<BannerNotice>);
     let mut d = driver(Box::new(sync_column(&state, false)));
     let empty_y = d.targets()["below"].y0;
     // Nobody did anything: the window went offline. The frame's instant is
     // held, so the test reads the motion where it starts.
-    let _frame = crate::motion::pin_frame();
+    let frame = crate::motion::pin_frame();
     state.set(Some(sync_failed()));
     d.relayout();
-    let shown_y = d.targets()["below"].y0;
+    d.relayout();
     assert!(
-        shown_y > empty_y + 30.0,
-        "the layout gives the banner its room at once"
+        (d.targets()["below"].y0 - empty_y).abs() < 0.5,
+        "what follows keeps its place, so nothing under it is left bare"
     );
-    let (band, shift) = band_and_shift(&d, shown_y - empty_y);
-    let band = band.expect("an unprompted banner still discloses");
-    assert!(band.laid && band.drawn.abs() < 0.5, "it opens from nothing");
-    assert!(
-        (shown_y + shift - empty_y).abs() < 0.5,
-        "what follows is drawn where it stood and moves by transform"
-    );
+    let (extent, drawn) = band_heights(band(&d));
+    assert!(extent > 30.0, "the banner is drawn at its full height");
+    assert!(drawn.abs() < 0.5, "and opens from nothing");
     assert!(d.root_widget().needs_animation_frame());
+    assert!(
+        !d.root_widget().is_layout_dirty(),
+        "a frame of the motion lays nothing out"
+    );
+    drop(frame);
 
-    // At rest it asks for nothing and nothing is shifted.
+    // At rest the layout takes the banner in, once; then nothing is asked.
     let _settled = crate::motion::testing::settled();
-    let (band, _) = band_and_shift(&d, shown_y - empty_y);
-    assert!(band.is_none());
+    assert!(band(&d).is_none());
+    assert!(d.root_widget().is_layout_dirty());
+    d.relayout();
+    let shown_y = d.targets()["below"].y0;
+    assert!(shown_y >= empty_y + extent - 0.5);
     assert!(!d.root_widget().needs_animation_frame());
+    assert!(!d.root_widget().is_layout_dirty());
 }
 
 #[test]
 fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
     let state = crate::LocalState::new(Some(sync_failed()));
     let mut d = driver(Box::new(sync_column(&state, true)));
-    let (band, _) = band_and_shift(&d, 0.0);
-    assert!(band.is_none(), "first paint shows the banner at rest");
+    assert!(band(&d).is_none(), "first paint shows the banner at rest");
     let shown_y = d.targets()["below"].y0;
     let dismiss = d.targets()["sync.dismiss"];
 
-    let _frame = crate::motion::pin_frame();
+    let frame = crate::motion::pin_frame();
     d.click_at(dismiss.center().x, dismiss.center().y);
     d.relayout();
     let empty_y = d.targets()["below"].y0;
-    assert!(empty_y < shown_y - 30.0, "the layout closes at once");
-    let (band, shift) = band_and_shift(&d, shown_y - empty_y);
-    let band = band.expect("a click collapses it");
-    assert!(!band.laid);
     assert!(
-        (empty_y + shift - shown_y).abs() < 0.5,
+        empty_y < shown_y - 30.0,
+        "what follows is laid out once where it rests, with more room"
+    );
+    let moving = band(&d).expect("a click collapses it");
+    let (extent, drawn) = band_heights(Some(moving));
+    assert!(
+        (drawn - extent).abs() < 0.5,
+        "it closes from its full height"
+    );
+    let gap = shown_y - empty_y - extent;
+    assert!(
+        (empty_y + moving.follower_offset(gap) - shown_y).abs() < 0.5,
         "what follows starts where it stood"
     );
-    drop(_frame);
+    drop(frame);
 
     // Shown again and hidden by a key: it lands.
     let mut d = driver(Box::new(sync_column(&state, false)));
@@ -279,7 +300,7 @@ fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
     crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
     state.set(None);
     d.relayout();
-    assert!(band_and_shift(&d, 0.0).0.is_none(), "a key's result lands");
+    assert!(band(&d).is_none(), "a key's result lands");
 }
 
 #[test]
@@ -291,12 +312,122 @@ fn under_reduced_motion_a_banner_lands_and_its_contents_fade_in() {
     let _frame = crate::motion::pin_frame();
     state.set(Some(sync_failed()));
     d.relayout();
-    let shown_y = d.targets()["below"].y0;
-    let (band, shift) = band_and_shift(&d, shown_y - empty_y);
-    let band = band.expect("its contents fade in");
     assert!(
-        (band.drawn - band.extent).abs() < 0.5,
+        d.targets()["below"].y0 > empty_y + 30.0,
         "the height lands at once"
     );
-    assert!(shift.abs() < 0.5, "nothing below moves");
+    assert!(band(&d).is_none(), "nothing below moves");
+    assert!(
+        d.root_widget().needs_animation_frame(),
+        "its contents fade in"
+    );
+}
+
+#[test]
+fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
+    for nest in ["section", "container"] {
+        let state = crate::LocalState::new(None::<BannerNotice>);
+        // Each nest its own banner: the one the last nest dropped is not
+        // this one coming back.
+        let banner: Box<dyn Widget> =
+            Box::new(Banner::from_state(&state).with_id(format!("sync-{nest}")));
+        let group: Box<dyn Widget> = if nest == "section" {
+            Box::new(crate::widget::Section::new(vec![
+                banner,
+                Box::new(crate::widget::Text::new("Inside").with_id("inside")),
+            ]))
+        } else {
+            Box::new(crate::widget::Container::new().with_child(banner))
+        };
+        let root = Column::new()
+            .with_intrinsic_height()
+            .push(group)
+            .push(Box::new(crate::widget::Text::new("After").with_id("after")));
+        let mut d = driver(Box::new(root));
+        let empty_after = d.targets()["after"].y0;
+
+        let frame = crate::motion::pin_frame();
+        state.set(Some(sync_failed()));
+        d.relayout();
+        d.relayout();
+        assert!(
+            (d.targets()["after"].y0 - empty_after).abs() < 0.5,
+            "{nest}: what follows the group keeps its place"
+        );
+        let group = d.root_widget().children()[0].disclosing();
+        assert!(
+            matches!(group, Some(crate::widget::Disclosing::Grows(by)) if by.abs() < 0.5),
+            "{nest}: the group grows with the band, from nothing: {group:?}"
+        );
+        assert!(
+            matches!(
+                d.root_widget().disclosing(),
+                Some(crate::widget::Disclosing::Grows(_))
+            ),
+            "{nest}: and so does a content-sized column around it"
+        );
+        drop(frame);
+
+        let _settled = crate::motion::testing::settled();
+        assert!(d.root_widget().children()[0].disclosing().is_none());
+        d.relayout();
+        assert!(
+            d.targets()["after"].y0 > empty_after + 30.0,
+            "{nest}: at rest the layout takes the banner in"
+        );
+        assert!(!d.root_widget().needs_animation_frame());
+    }
+}
+
+fn rooted(column: Column) -> FrameHarness {
+    let mut d = FrameHarness::for_root(State::new(), column, (640, 400), Theme::dark());
+    d.relayout();
+    d
+}
+
+/// A view that builds its banner anew on every change, as most apps do.
+fn rebuild(d: &mut FrameHarness, banner: Option<Banner>) {
+    let mut children: Vec<Box<dyn Widget>> = Vec::new();
+    if let Some(banner) = banner {
+        children.push(Box::new(banner));
+    }
+    children.push(Box::new(crate::widget::Text::new("Below").with_id("below")));
+    d.root_mut::<Column>().set_children(children);
+    d.relayout();
+}
+
+#[test]
+fn a_banner_its_view_builds_again_goes_on_from_the_one_it_replaces() {
+    let mut d = rooted(Column::new());
+    rebuild(&mut d, None);
+    let empty_y = d.targets()["below"].y0;
+    let frame = crate::motion::pin_frame();
+    rebuild(&mut d, Some(Banner::error("Sync failed")));
+    assert!(band(&d).is_some(), "a banner new to the view discloses");
+    assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
+    rebuild(&mut d, Some(Banner::error("Sync failed")));
+    assert!(
+        band(&d).is_some(),
+        "built again mid-motion, it goes on opening"
+    );
+    assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
+    drop(frame);
+
+    // A banner there from the first frame, built again at rest.
+    let mut d = rooted(
+        Column::new()
+            .push(Box::new(Banner::warning("Offline")))
+            .push(Box::new(crate::widget::Text::new("Below").with_id("below"))),
+    );
+    let shown_y = d.targets()["below"].y0;
+    let _frame = crate::motion::pin_frame();
+    rebuild(&mut d, Some(Banner::warning("Offline")));
+    assert!(band(&d).is_none(), "built again at rest, it stays at rest");
+    assert!(!d.root_widget().needs_animation_frame());
+    assert!((d.targets()["below"].y0 - shown_y).abs() < 0.5);
+    rebuild(&mut d, Some(Banner::warning("Offline, retrying")));
+    assert!(
+        band(&d).is_none() && !d.root_widget().needs_animation_frame(),
+        "a banner that says something new in the same place does not arrive again"
+    );
 }

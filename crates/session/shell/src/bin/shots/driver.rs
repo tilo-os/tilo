@@ -2069,6 +2069,23 @@ impl ShellDriver {
             "emoji-picker" => self.scene_emoji_picker(),
             "display-confirm" => self.scene_display_confirm(),
             "portal-permission" => self.scene_portal_permission(),
+            "secret-prompt-authentication" => {
+                self.scene_secret_prompt_authentication(&["quinn"], None);
+            }
+            "secret-prompt-authentication-rejected" => self.scene_secret_prompt_authentication(
+                &["quinn"],
+                Some("That password was not accepted."),
+            ),
+            "secret-prompt-authentication-accounts" => {
+                self.scene_secret_prompt_authentication(&["quinn", "root"], None);
+            }
+            "secret-prompt-wifi" => self.scene_secret_prompt_network(SecretPromptNetwork::Wifi),
+            "secret-prompt-sign-in" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SignIn);
+            }
+            "secret-prompt-sim-pin" => {
+                self.scene_secret_prompt_network(SecretPromptNetwork::SimPin);
+            }
             "desktop-control-ask" => self.scene_desktop_control_ask(),
             "desktop-control-chip" => self.scene_desktop_control_chip(),
             "desktop-control-menu" => self.scene_desktop_control_menu(),
@@ -3061,6 +3078,87 @@ impl ShellDriver {
     /// A portal permission sheet: a sandboxed app asks for the camera and the
     /// request travels the production prompt queue into the compositor's
     /// prompt (`PermissionPrompt`, hosted by `overlay_host`).
+    /// The compositor's password sheet as polkit raises it: for one
+    /// account, after a failed attempt, or with a choice of account.
+    fn scene_secret_prompt_authentication(&mut self, accounts: &[&str], notice: Option<&str>) {
+        let queue = self.host_mut().portal_dialog_queue();
+        let request = shell::shell::portal_dialog::AuthenticationRequest {
+            // Each variant is its own request: a live handle is never queued twice.
+            handle: format!("polkit:shots/{}/{}", accounts.len(), notice.is_some()),
+            message: "Authentication is required to install software".into(),
+            action_id: "org.freedesktop.Flatpak.app-install".into(),
+            identities: accounts.iter().map(ToString::to_string).collect(),
+            identity: 0,
+            prompt: "Password:".into(),
+            echo: false,
+            notice: notice.map(str::to_owned),
+        };
+        if let Ok(reply) = queue.enqueue_authentication(request) {
+            self.held.push(Box::new(reply));
+        }
+        self.host_mut().pump_portal_dialogs();
+        self.step_frames(2);
+    }
+
+    /// The compositor's password sheet as the network daemon raises it.
+    fn scene_secret_prompt_network(&mut self, kind: SecretPromptNetwork) {
+        use shell::shell::portal_dialog::{
+            NetworkSecretsRequest, SecretFieldRule, SecretFieldSpec,
+        };
+        let field = |key: &str, label: &str, masked: bool, initial: &str| SecretFieldSpec {
+            key: key.into(),
+            label: label.into(),
+            masked,
+            required: true,
+            initial: initial.into(),
+            rule: SecretFieldRule::Any,
+        };
+        let request = match kind {
+            SecretPromptNetwork::Wifi => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/wifi".into(),
+                title: "Wi-Fi password required".into(),
+                detail: "Enter the password for \u{201c}Café Lindenhof\u{201d}.".into(),
+                fields: vec![SecretFieldSpec {
+                    rule: SecretFieldRule::WpaPassphrase,
+                    ..field("psk", "Password", true, "")
+                }],
+                remember: Some(true),
+            },
+            SecretPromptNetwork::SignIn => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/8021x".into(),
+                title: "Network sign-in".into(),
+                detail: "\u{201c}eduroam\u{201d} needs your user name and password.".into(),
+                fields: vec![
+                    field("identity", "User name", false, "quinn@example.edu"),
+                    SecretFieldSpec {
+                        required: false,
+                        ..field(
+                            "anonymous-identity",
+                            "Anonymous identity (optional)",
+                            false,
+                            "",
+                        )
+                    },
+                    field("password", "Password", true, ""),
+                ],
+                remember: Some(true),
+            },
+            SecretPromptNetwork::SimPin => NetworkSecretsRequest {
+                handle: "nm-secrets:shots/gsm".into(),
+                title: "SIM PIN required".into(),
+                detail: "Enter the PIN to unlock the SIM for \u{201c}Carrier\u{201d}.".into(),
+                fields: vec![field("pin", "SIM PIN", true, "")],
+                remember: Some(false),
+            },
+        };
+        let queue = self.host_mut().portal_dialog_queue();
+        if let Ok(reply) = queue.enqueue_network_secrets(request) {
+            self.held.push(Box::new(reply));
+        }
+        self.host_mut().pump_portal_dialogs();
+        self.step_frames(2);
+    }
+
     fn scene_portal_permission(&mut self) {
         use shell::portal::{FilePickerQueue, PortalCaller, PromptQueueHandle, PromptResolver};
         use shell::shell::state::{Capability, Expiry, WorkspaceId};
@@ -4351,4 +4449,12 @@ mod tests {
         );
         (files_tab_id, files_rect)
     }
+}
+
+/// Which network sheet a shots scene raises.
+#[derive(Clone, Copy)]
+enum SecretPromptNetwork {
+    Wifi,
+    SignIn,
+    SimPin,
 }

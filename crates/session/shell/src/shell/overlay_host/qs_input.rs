@@ -94,8 +94,6 @@ impl ShellOverlayHost {
                 // without asking.
                 let _ = self.try_connect_with_shared_wifi_password();
             }
-            WifiIntent::SubmitPassword => self.submit_wifi_password(),
-            WifiIntent::CancelPassword => self.cancel_wifi_password(),
         }
     }
 
@@ -166,10 +164,25 @@ impl ShellOverlayHost {
 
     /// Turn a VPN profile on or off, then read the profiles back.
     pub(super) fn apply_qs_vpn_change(&mut self, chrome: &Chrome, name: &str, enabled: bool) {
-        let result = crate::shell::search::providers::actions::ValidatedQsActions::new(
-            self.qs_actions.as_ref(),
-        )
-        .set_vpn_connection(name, enabled);
+        #[cfg(target_os = "linux")]
+        let device_route = chrome
+            .borrow()
+            .quick_settings
+            .vpns
+            .iter()
+            .find(|profile| profile.name == name)
+            .and_then(|profile| crate::shell::device_vpn::entry_device(&profile.uuid))
+            .map(str::to_owned);
+        #[cfg(not(target_os = "linux"))]
+        let device_route: Option<String> = None;
+        let result = match device_route {
+            #[cfg(target_os = "linux")]
+            Some(device) => crate::shell::device_vpn::choose(&device, enabled),
+            _ => crate::shell::search::providers::actions::ValidatedQsActions::new(
+                self.qs_actions.as_ref(),
+            )
+            .set_vpn_connection(name, enabled),
+        };
         {
             let mut state = chrome.borrow_mut();
             match result {

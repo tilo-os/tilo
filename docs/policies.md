@@ -179,15 +179,16 @@ toolkit, the shell and the apps uses a named motion from `ui::motion` (HIG
 §9.7), which decides its spring, its duration, its reduced-motion variant and
 what a shortcut gets; a motion that is genuinely new goes into the library.
 Check: [`check_motion_library.py`](../tools/policy/check_motion_library.py)
-fails on easing math, ad-hoc springs and lerp-over-time outside the library;
-content curves (video keyframes, paint physics) are its short exception list.
+fails on easing math, ad-hoc springs, lerp-over-time and literal motion
+timings (a spring timed by the call site's own duration, a duration constant
+named for a fade or a slide, a literal duration handed to a motion helper)
+outside the library; content curves (video keyframes, paint physics) are its
+short exception list.
 
 Check: `the_first_frame_after_a_chord_shows_the_final_layout` in
 `crates/session/shell/tests/strip_navigation.rs` (the first frame after a
 chord or action shows the final layout, and only the viewport may still move,
-within `fast`). A new transition that ignores its source, and a literal
-`Duration::from_millis` in an animation instead of `tokens::motion`
-(HIG §9.13), are review.
+within `fast`). A new transition that ignores its source is review.
 
 ## Security and sandboxing
 

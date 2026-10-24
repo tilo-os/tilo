@@ -48,6 +48,12 @@ impl ShellOverlayHost {
         self.file_picker_overlay.pump(self.chrome.as_ref())
     }
 
+    /// The queue the compositor's sheets come from, for a harness that
+    /// raises one the way a request from polkit or the network daemon does.
+    pub fn portal_dialog_queue(&self) -> crate::shell::portal_dialog::PortalDialogQueue {
+        self.portal_dialogs.queue().clone()
+    }
+
     /// Latch the next portal-owned sheet. Its async reply remains held by the
     /// controller until an explicit confirm or cancel event.
     pub fn pump_portal_dialogs(&mut self) -> bool {

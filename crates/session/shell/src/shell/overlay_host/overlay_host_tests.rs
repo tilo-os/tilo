@@ -1524,8 +1524,8 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
         ));
         assert!(h.chrome.borrow().quick_settings.wifi_password.is_some());
         assert_eq!(
-            h.host.wifi_password_input.value(),
-            "ab",
+            h.host.wifi_password_field().map(TextInput::value),
+            Some("ab"),
             "after capture closes, the original credential field must regain its text focus and selection"
         );
 

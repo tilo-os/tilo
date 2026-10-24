@@ -891,6 +891,17 @@ impl Follow {
         shortcut: Shortcut::Context,
     };
 
+    /// The longest a glide between two samples takes: a pointer that sat
+    /// still for a while goes to where it was just put without drifting
+    /// lazily there. A stream heard thirty times a second glides over the
+    /// gap between its samples (~33 ms), well under this.
+    pub const GLIDE_MAX: crate::time::Duration = crate::time::Duration::from_millis(100);
+
+    /// How long something whose stream went quiet takes to fade out, at the
+    /// end of its owner's retirement window: a peer's pointer that stopped
+    /// being heard about, the name beside a pointer at rest.
+    pub const FADE: crate::time::Duration = crate::time::Duration::from_millis(400);
+
     /// How far a glide that started at `since` and spans `span` has come at
     /// `now`, eased, `0..=1`.
     #[must_use]
@@ -911,6 +922,50 @@ impl Follow {
             return 1.0;
         }
         unit_opacity(left.as_secs_f64() / fade.as_secs_f64())
+    }
+}
+
+/// A mark a collaborator just left (the run a peer typed) going on its own:
+/// whole when made, it steps down evenly over [`Self::LIFE`] in
+/// [`Self::STEPS`] steps. Each step is a wake deadline, so while a peer types
+/// the window repaints a few times a second rather than at every refresh; a
+/// slow taper reads the same in steps of a quarter second. Its life is fixed
+/// rather than a token pace: the mark says who wrote what just now, and has
+/// to stay long enough to be seen.
+pub struct Trace;
+
+impl Trace {
+    /// How long a mark shows, its taper included.
+    pub const LIFE: crate::time::Duration = crate::time::Duration::from_millis(2500);
+    /// How many steps it tapers in.
+    pub const STEPS: u32 = 10;
+    /// One step of the taper.
+    const STEP: crate::time::Duration = match Self::LIFE.checked_div(Self::STEPS) {
+        Some(step) => step,
+        None => crate::time::Duration::ZERO,
+    };
+
+    /// Which step a mark `age` old is in; `None` once it has gone.
+    #[must_use]
+    pub fn step(age: crate::time::Duration) -> Option<u32> {
+        (age < Self::LIFE).then(|| {
+            u32::try_from(age.as_nanos() / Self::STEP.as_nanos().max(1)).unwrap_or(u32::MAX)
+        })
+    }
+
+    /// The opacity of a mark `age` old: `1.0` just made, down a step at a
+    /// time; `None` once it has gone.
+    #[must_use]
+    pub fn alpha(age: crate::time::Duration) -> Option<f32> {
+        Self::step(age).map(|step| (1.0 - step as f32 / Self::STEPS as f32).clamp(0.0, 1.0))
+    }
+
+    /// When a mark made at `born` leaves the step it is in at `now` (steps
+    /// down, or goes); `None` once it has gone.
+    #[must_use]
+    pub fn next_step(born: Instant, now: Instant) -> Option<Instant> {
+        let step = Self::step(now.saturating_duration_since(born))?;
+        born.checked_add(Self::STEP.saturating_mul(step.saturating_add(1)))
     }
 }
 

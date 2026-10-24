@@ -2066,6 +2066,12 @@ impl tilo_action_broker::services::SpeakerServices for NativeSpeakers {
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply {
         crate::shell::speaker_settings::handle(&self.0, command)
     }
+
+    fn changed(&self, after: u64) -> Option<tilo_action_broker::services::SpeakerChange> {
+        Some(Box::pin(crate::shell::speaker_settings::changed(
+            &self.0, after,
+        )))
+    }
 }
 /// Wi-Fi credentials carried between the person's certified devices.
 pub struct NativeWifiContinuity(pub Arc<super::network::ShellNetwork>);

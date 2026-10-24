@@ -672,6 +672,8 @@ fn run_layout_pass(
             || crate::widget::layout::tree_composition_follows_allocation(
                 app.root_widget.as_ref(),
             ));
+    // What arrives in the window's first frame shows at rest.
+    let _window = crate::motion::laying_out_window(app.layout.root_node.is_some());
     let result = settle_widget_composition(recompose_for_viewport, |rebuild| {
         if rebuild || app.layout.structure_dirty {
             recomposed = true;

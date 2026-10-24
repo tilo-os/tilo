@@ -5145,6 +5145,8 @@ impl FrameBuilder {
             _ => {}
         }
         self.layout_osk_overlay();
+        let cover = self.osk_overlay.as_ref().filter(|_| active);
+        self.host.set_keyboard_cover(cover.map(Widget::get_rect));
     }
 
     /// Reconcile exact authenticated interactive bounds separately from the
@@ -5486,8 +5488,8 @@ impl FrameBuilder {
     /// What the focused chrome widget asks of an input method — its purpose
     /// and caret — when it takes text; `None` otherwise.
     pub fn focused_ime_field(&self, focus: Option<NodeId>) -> Option<ui::ime::ImeWindowState> {
-        if self.host.palette_visible() {
-            return self.host.palette_ime_field();
+        if self.host.overlay_owns_ime() {
+            return self.host.overlay_ime_field();
         }
         let widget = *self.node_map.get(&focus?)?;
         // SAFETY: `node_map` is rebuilt from widgets owned by `host`; the
@@ -5497,7 +5499,7 @@ impl FrameBuilder {
     }
 
     pub(crate) fn focused_ime_requires_deferred_ack(&self, focus: Option<NodeId>) -> bool {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return false;
         }
         let Some(widget) = focus.and_then(|focus| self.node_map.get(&focus)) else {
@@ -5511,7 +5513,7 @@ impl FrameBuilder {
     pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
         let widget = focus.and_then(|focus| self.node_map.get(&focus));
         // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
-        !self.host.palette_visible()
+        !self.host.overlay_owns_ime()
             && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
     }
 
@@ -5521,7 +5523,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5557,7 +5559,7 @@ impl FrameBuilder {
         document: &mut automerge::AutoCommit,
         root: &automerge::ObjId,
     ) -> Option<ui::webview::text_input::Receipt> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return None;
         }
         let focus = focus?;
@@ -5590,12 +5592,12 @@ impl FrameBuilder {
         focus: Option<NodeId>,
         document: &automerge::AutoCommit,
     ) -> Option<crate::compositor::shell_text_input::NativeEditStamp> {
-        if self.host.palette_visible() {
+        if self.host.overlay_owns_ime() {
             return Some(crate::compositor::shell_text_input::NativeEditStamp {
                 document: ui::bound_dispatch::DocumentEditStamp::for_document(document),
                 fingerprint: self
                     .host
-                    .palette_ime_edit_fingerprint(&self.ime_stamp_key)?,
+                    .overlay_ime_edit_fingerprint(&self.ime_stamp_key)?,
             });
         }
         let focus = focus?;
