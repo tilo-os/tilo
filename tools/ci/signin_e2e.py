@@ -20,8 +20,8 @@ target is changed.
 
 Variants:
   one-secret             the installer's own path: one secret for disk and account
-  separate-disk-secret   the installer's separate disk secret; migration needs the
-                         link-volume-key follow-up, and is reported pending until the image has it
+  separate-disk-secret   the installer's separate disk secret: migration adds the keyslot with the
+                         volume key the initrd links, then the boot sign-in takes the password
 
 Writes report.json and report.md, screenshots and per-boot logs into --out. Every file there is
 searched for every secret the run used before the run ends; a file that holds one is emptied
@@ -657,6 +657,14 @@ cryptsetup close e2e-target
             raise Failed(f"tpm2_getcap could not read the lockout counter: {text.strip()[-300:]}")
         return values
 
+    def kernel_keys(self) -> list[str]:
+        """The sign-in's kernel keys still present: the initrd's linked volume key
+        (`tilo-auth:volume-key`) and the boot handoff (`tilo-signin`). The shell links uid 0's
+        user keyring into its session keyring first, so keys only a possessor may view show."""
+        _, text = self.guest("command -v keyctl >/dev/null && keyctl link @u @s >/dev/null 2>&1; "
+                             "grep -E 'tilo-auth:volume-key|tilo-signin' /proc/keys || true", quiet=True)
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
     def root_device(self) -> str:
         _, text = self.guest("cryptsetup status root | sed -n 's/^ *device: *//p'")
         dev = text.strip()
@@ -780,6 +788,8 @@ cryptsetup close e2e-target
         reopen = {"disk_secret": self.slot_opened_by(self.shell, dev, unlock)}
         if self.recovery:
             reopen["recovery_key"] = self.slot_opened_by(self.shell, dev, self.recovery)
+        keys = self.kernel_keys()
+        volume_key_left = [k for k in keys if "tilo-auth:volume-key" in k]
         _, authd = self.guest("journalctl -b --no-pager -o cat -t tilo-authd -u tilo-authd | tail -n 60", quiet=True)
         self.save("tilo-authd-migration.txt", authd)
         evidence = {"disk_prompts_answered": typed, "session": session, "record": summary,
@@ -789,7 +799,8 @@ cryptsetup close e2e-target
                     "pre_existing_secrets_open": reopen,
                     "baseline_slots": {"disk_secret": self.baseline.get("disk_secret_slot"),
                                        "recovery_key": self.baseline.get("recovery_slot")},
-                    "tilo_authd": authd.strip().splitlines()[-8:]}
+                    "tilo_authd": authd.strip().splitlines()[-8:],
+                    "volume_key_left_in_keyring": volume_key_left}
         self.migration = evidence
         if self.variant == "separate-disk-secret":
             return
@@ -799,6 +810,7 @@ cryptsetup close e2e-target
             "a tilo-signin token for that keyslot": isinstance(slot, int) and str(slot) in token_slots,
             "the keyslot is new": isinstance(slot, int) and str(slot) not in self.baseline["keyslots"],
             "shadow entry locked": locked,
+            "no tilo-auth:volume-key left in the kernel keyring": not volume_key_left,
             "pre-existing keyslots unchanged": bool(unchanged) and all(unchanged.values()),
             "the disk secret still opens its slot":
                 reopen["disk_secret"] is not None and reopen["disk_secret"] == self.baseline.get("disk_secret_slot"),
@@ -864,7 +876,12 @@ cryptsetup close e2e-target
             time.sleep(1)
         if connected:
             prompts += self.watch_greeter_prompts(label, 20)
-        evidence.update(user_session=session, greeter_prompts=prompts, disk_prompt_after=disk_again)
+        handoff_left = None
+        if connected and session:
+            time.sleep(5)
+            handoff_left = [k for k in self.kernel_keys() if "tilo-signin" in k]
+        evidence.update(user_session=session, greeter_prompts=prompts, disk_prompt_after=disk_again,
+                        handoff_key_left=handoff_left)
         if connected:
             _, journal = self.guest("journalctl -b --no-pager -o short-monotonic | grep -Ei "
                                     "'tilo-authd|pam_tilo|greetd|tilo-boot-signin|tilo-root' | tail -n 80", quiet=True)
@@ -872,7 +889,7 @@ cryptsetup close e2e-target
             evidence["journal"] = [l for l in journal.splitlines()
                                    if "boot" in l.lower() and "tilo-authd" in l][-6:]
             evidence["greeter_states"] = sorted({s.get("phase") for s in self.read_greeter_log(label)})
-        if session and not prompts and not disk_again:
+        if session and not prompts and not disk_again and not handoff_left:
             self.item("3", "passed", "boot sign-in screen, one entry, the session started with no "
                       "greeter prompt (greeter phases seen: "
                       f"{evidence.get('greeter_states')})", **evidence)
@@ -884,6 +901,8 @@ cryptsetup close e2e-target
                 why.append("no session started")
             if prompts:
                 why.append(f"the greeter asked ({len(prompts)} prompt states)")
+            if handoff_left:
+                why.append(f"the tilo-signin handoff key is still in the kernel keyring: {handoff_left}")
             self.item("3", "failed", "; ".join(why), **evidence)
             if not connected:
                 self.recover_boot(label, "stuck")
@@ -1072,25 +1091,32 @@ cryptsetup close e2e-target
     def separate_disk_secret(self) -> None:
         """Item 7: the disk passphrase differs from the login password."""
         evidence = dict(self.migration)
-        _, help_text = self.guest("/usr/libexec/tilo/tilo-auth --help 2>&1; /usr/libexec/tilo/tilo-auth 2>&1 | head -n 20",
-                                  quiet=True)
-        has_link = "link-volume-key" in help_text
-        evidence["image_has_link_volume_key"] = has_link
         slot = evidence["record"].get("system_keyslot")
         tokens = evidence["tilo_signin_tokens"]
-        migrated = isinstance(slot, int) and any(str(slot) in t.get("keyslots", []) for t in tokens)
-        kept = all(evidence["pre_existing_keyslots_unchanged"].values())
-        if migrated and kept:
-            self.item("7", "passed", f"with a separate disk secret, sign-in added keyslot {slot} and its "
-                      "token; every pre-existing keyslot is unchanged", **evidence)
-        elif not has_link:
-            self.item("7", "pending", "expected: the image has no link-volume-key yet, so a password "
-                      "that is not a disk passphrase cannot add the person's keyslot "
-                      f"(record: {evidence['record']}); re-run once that follow-up is on main", **evidence)
+        opened = evidence["pre_existing_secrets_open"]
+        checks = {
+            "record with a tpm wrapper": "tpm" in evidence["record"]["kinds"],
+            "a new keyslot with its tilo-signin token": isinstance(slot, int)
+            and str(slot) not in self.baseline["keyslots"]
+            and any(str(slot) in t.get("keyslots", []) for t in tokens),
+            "shadow entry locked": evidence["shadow_locked"],
+            "pre-existing keyslots unchanged": all(evidence["pre_existing_keyslots_unchanged"].values()),
+            "the disk secret still opens its slot": opened["disk_secret"] is not None
+            and opened["disk_secret"] == self.baseline.get("disk_secret_slot"),
+            "the recovery key still opens its slot": self.recovery is None
+            or opened.get("recovery_key") == self.baseline.get("recovery_slot"),
+            "no tilo-auth:volume-key left in the kernel keyring": not evidence["volume_key_left_in_keyring"],
+        }
+        evidence["checks"] = checks
+        failed = [name for name, ok in checks.items() if not ok]
+        migrated = checks["a new keyslot with its tilo-signin token"]
+        if failed:
+            self.item("7", "failed", "with a separate disk secret: " + "; ".join(failed)
+                      + f" (record: {evidence['record']})", **evidence)
         else:
-            self.item("7", "failed", "the image has link-volume-key, but signing in with a password "
-                      f"that is not the disk passphrase added no keyslot/token (record: {evidence['record']})",
-                      **evidence)
+            self.item("7", "passed", f"with a separate disk secret, sign-in added keyslot {slot} and its "
+                      "token from the linked volume key, which is gone afterwards; every pre-existing "
+                      "keyslot opens as before", **evidence)
         self.lockout_before = self.lockout()
         self.power_off("migration")
         if migrated:
@@ -1163,7 +1189,7 @@ def report(runs: list[Run], out: Path, withheld: list[Path]) -> int:
         "4": "Wrong entry at boot reports tries left; the same wrong entry twice costs one TPM try",
         "5": "Lock screen, sudo and polkit accept the secret through pam_tilo and reject a wrong one",
         "6": "Recovery key opens the volume from \"Can't sign in\"",
-        "7": "Separate disk passphrase: migration (link-volume-key follow-up)",
+        "7": "Separate disk passphrase: migration through the linked volume key, then boot sign-in",
     }
     for key in names:
         items.setdefault(key, {"status": "not-run", "summary": "an earlier step failed", "evidence": {}})
