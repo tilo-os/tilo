@@ -12868,19 +12868,25 @@ pub fn run() {
                     crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
                 })
             };
-            let mut typed = proxy.sync_for_field(&mut state, shell_field, identity);
-            state.shell_field_active = proxy.holds_focus(&state);
-            typed.append(&mut state.shell_field_keys);
-            for event in &typed {
+            let typed = proxy.sync_for_field(&mut state, shell_field, identity);
+            let keys = state.take_shell_field_keys();
+            // Text carries the keyboard's modifiers; a virtual keyboard's key
+            // carries the ones it held for it, so its Ctrl+C is a chord.
+            let delivered = typed
+                .iter()
+                .map(|event| (event, test_control_ctx.modifiers))
+                .chain(keys.iter().map(|(event, modifiers)| (event, *modifiers)))
+                .collect::<Vec<_>>();
+            for (event, modifiers) in &delivered {
                 frame_builder.dispatch_event(
                     event,
-                    &test_control_ctx.modifiers,
+                    modifiers,
                     &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                     &test_control_ctx.root_obj,
                     &mut test_control_ctx.focus,
                 );
             }
-            if !typed.is_empty() {
+            if !delivered.is_empty() {
                 injected_redraw_pending = true;
             }
             if state.has_dictation_target() && shell_field.is_some() {
