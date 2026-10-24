@@ -29,10 +29,36 @@
     return reply.result;
   };
 
+  // Calls not answered yet. In Chrome a call is on its way once made, so a
+  // popup acts and closes at once (`tabs.reload(tab.id); window.close()`,
+  // as Privacy Badger's "Disable for this site" and uBlock Origin Lite's
+  // element zapper do). Here a call is a request its page cancels as it
+  // closes, so the page closes once its calls are answered, or after
+  // two seconds.
+  let pending = 0;
+  const unblocked = [];
+  const settle = () => {
+    pending -= 1;
+    if (!pending) for (const resume of unblocked.splice(0)) resume();
+  };
+  if (typeof document !== 'undefined' && typeof globalThis.close === 'function') {
+    const close = globalThis.close.bind(globalThis);
+    let closing = false;
+    globalThis.close = () => {
+      if (!pending) { close(); return; }
+      if (closing) return;
+      closing = true;
+      const late = setTimeout(close, 2000);
+      unblocked.push(() => { clearTimeout(late); close(); });
+    };
+  }
+
   // Chrome's APIs return a promise, or call a trailing callback instead.
   const api = (method) => (...args) => {
     const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
     const result = method(...args);
+    pending += 1;
+    result.then(settle, settle);
     if (!callback) return result;
     result.then((value) => callback(value), (error) => {
       console.error(`Unchecked runtime.lastError: ${error.message}`);
