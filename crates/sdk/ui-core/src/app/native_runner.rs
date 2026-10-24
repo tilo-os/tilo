@@ -3079,11 +3079,8 @@ impl AppHandler {
                 let _a11y = slow_event::phase("a11y");
                 let app_ref: &mut App = app;
                 let scale = window_scale;
-                adapter.update_if_active(|| {
-                    crate::accesskit_bridge::native_tree_update(
-                        app_ref.build_a11y_tree_update(scale),
-                    )
-                });
+                let bar = &self.slot_bar;
+                adapter.update_if_active(|| slot_bar::window_tree_update(app_ref, bar, scale));
             }
             record_main_stage(&mut native_main_stages, MainStage::AfterAccessibility);
         });
@@ -3684,10 +3681,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         if let Some(adapter) = self.a11y_adapter.as_mut() {
                             let scale = window.scale_factor();
                             let app_ref: &mut App = &mut self.app;
+                            let bar = &self.slot_bar;
                             adapter.update_if_active(|| {
-                                crate::accesskit_bridge::native_tree_update(
-                                    app_ref.build_a11y_tree_update(scale),
-                                )
+                                slot_bar::window_tree_update(app_ref, bar, scale)
                             });
                         }
                         window.request_redraw();
@@ -3701,7 +3697,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             req.action,
                             req.data.as_ref(),
                         ) {
-                            let click = self.app.dispatch_a11y_action(req.target_node, &action);
+                            // The window's row of slots is no widget of the
+                            // app's: its nodes run their slots.
+                            let slot_ran = self.slot_bar.perform_accessibility(
+                                &mut self.app,
+                                req.target_node,
+                                &action,
+                            );
+                            let click = if slot_ran {
+                                None
+                            } else {
+                                self.app.dispatch_a11y_action(req.target_node, &action)
+                            };
                             if let Some((x, y)) = click {
                                 let scale = window.scale_factor();
                                 let (px, py) = (x * scale, y * scale);
