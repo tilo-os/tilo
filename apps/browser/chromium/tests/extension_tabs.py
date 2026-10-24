@@ -90,6 +90,15 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   Chrome's; its own data, and a file its page made, download too; it opens
   a download only on the person's click, and shows one in its folder,
   through the Browser.
+- An extension signs in (identity.launchWebAuthFlow): the Browser is asked
+  to show the sign-in page over the page in front, and the page going to the
+  extension's own address, by a redirect or a script, ends the call with
+  that address and closes the panel; the page never loads there. Closing the
+  panel turns the sign-in down, also after the extension waited longer than
+  one request is held. A sign-in that may not ask the person loads out of
+  sight: a site that sends them straight back signs them in, one whose page
+  loads and waits for them says it needs them. getAuthToken says no one
+  signed in to the Browser.
 """
 import base64
 import hashlib
@@ -108,6 +117,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zlib
 from native_regressions import HANG_BOUND, Host
 
@@ -403,6 +413,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 time.sleep(0.05)
             return
         kind = 'text/html'
+        if self.path.startswith('/authorize'):
+            self.authorize()
+            return
         if self.path == '/shot':
             body = SHOT.encode()
         elif self.path.startswith('/menus'):
@@ -434,6 +447,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = COUNTED
         self.send_response(200)
         self.send_header('Content-Type', kind)
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def authorize(self):
+        """A sign-in page: with `auto` it sends the person straight back to
+        `redirect_uri` with a code, as a site does where they are signed in
+        already; with `script` its script does once it loads; else it waits
+        for them."""
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        back = query['redirect_uri'][0] + '?code=' + query.get('code', ['none'])[0]
+        if 'auto' in query:
+            self.send_response(302)
+            self.send_header('Location', back)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+        script = f'<script>setTimeout(() => {{ location.href = {json.dumps(back)}; }}, 100);</script>' if 'script' in query else ''
+        body = f'<!doctype html><title>Sign in</title><body>Sign in{script}</body>'.encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html')
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -1585,6 +1619,85 @@ class ExtensionTabs(unittest.TestCase):
         saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'setting,on\n')
+
+    def test_an_extension_signs_in_on_a_page_shown_over_the_window(self):
+        host, ids = self.start('signer', access={'signer': (['identity'], [])})
+        signer = ids['signer']
+        host.navigate(self.url + '/front')
+        host.settle(1.0)
+        back = f'https://{signer}.chromiumapp.org/'
+        read = lambda expression: self.in_worker(host, signer, expression)
+        self.assertEqual(read("chrome.identity.getRedirectURL('cb')"), back + 'cb')
+        self.assertEqual(read('chrome.identity.getRedirectURL()'), back)
+        self.assertEqual(read("chrome.identity.getAuthToken({interactive: true}).then(() => 'a token', (e) => e.message)"),
+                         'The user is not signed in.')
+
+        def outcomes(count):
+            """The worker's first `count` outcomes, once it has them."""
+            deadline = time.monotonic() + HANG_BOUND
+            while True:
+                seen = json.loads(read('JSON.stringify(signIns)'))
+                if len(seen) >= count:
+                    return seen[:count]
+                self.assertGreater(deadline - time.monotonic(), 0, f'no outcome in {seen}')
+                time.sleep(0.2)
+
+        def page(how, code):
+            query = urllib.parse.urlencode({'redirect_uri': back + 'cb', 'code': code, how: '1'})
+            return f'{self.url}/authorize?{query}'
+
+        def sign_in(url, tab, interactive=True):
+            """Start a sign-in on `url` and show its page in the panel `tab`,
+            or load it there out of sight, as the Browser does when asked."""
+            mark = len(host.seen)
+            self.assertEqual(read(f'signIn({{url: {json.dumps(url)}, interactive: {json.dumps(interactive)}}})'), 'started')
+            asked = next((e for e in host.seen[mark:] if e['event'] == 'extension_sign_in'), None) \
+                or host.until(lambda e: e['event'] == 'extension_sign_in')
+            self.assertEqual((asked.get('tab'), asked['id'], asked['url'], asked['interactive']),
+                             (1, signer, url, interactive))
+            host.send(op='create_tab', tab=tab)
+            host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == tab)
+            host.send(op='extension_sign_in_panel', tab=tab, id=signer, flow=asked['flow'])
+            if interactive:
+                host.send(op='resize', tab=tab, width=800, height=600, scale_factor=1.0)
+            host.send(op='navigate', tab=tab, url=url)
+            return mark
+
+        def closed(tab, since):
+            return next((e for e in host.seen[since:] if e['event'] == 'closed' and e.get('tab') == tab), None) \
+                or host.until(lambda e: e['event'] == 'closed' and e.get('tab') == tab)
+
+        # A site that signs the person in at once redirects to the
+        # extension's address: the call ends with it, and the panel closes
+        # without the page ever going there.
+        mark = sign_in(page('auto', 'first'), 2)
+        closed(2, mark)
+        self.assertEqual(outcomes(1)[0], {'url': back + 'cb?code=first'})
+        # Its script sends the person back once they are done.
+        mark = sign_in(page('script', 'second'), 3)
+        closed(3, mark)
+        self.assertEqual(outcomes(2)[1], {'url': back + 'cb?code=second'})
+
+        # Out of sight, for one that may not ask the person: a site that
+        # sends them straight back signs them in; one whose page loads and
+        # waits for them needs them, and its tab closes.
+        mark = sign_in(page('auto', 'quiet'), 4, interactive=False)
+        closed(4, mark)
+        self.assertEqual(outcomes(3)[2], {'url': back + 'cb?code=quiet'})
+        mark = sign_in(page('wait', 'needed'), 5, interactive=False)
+        closed(5, mark)
+        self.assertEqual(outcomes(4)[3], {'error': 'User interaction required.'})
+        self.assertFalse([e for e in host.seen if e['event'] == 'uri' and e.get('url', '').startswith(back)],
+                         'the extension\'s address never loads')
+
+        # The person closes the panel instead, after longer than one request
+        # for the outcome is held: the sign-in is turned down.
+        mark = sign_in(page('wait', 'third'), 6)
+        host.until(lambda e: e['event'] == 'title' and e.get('tab') == 6 and e['title'] == 'Sign in')
+        host.settle(21.0)
+        self.assertEqual(len(json.loads(read('JSON.stringify(signIns)'))), 4, 'still going on')
+        host.send(op='close_tab', tab=6)
+        self.assertEqual(outcomes(5)[4], {'error': 'The user did not approve access.'})
 
 
 def walk(items):

@@ -124,6 +124,35 @@ enum ExtensionPage {
         id: String,
         url: String,
     },
+    /// A web page it asked the person to sign in on
+    /// (`identity.launchWebAuthFlow`), which the engine watches: the
+    /// sign-in ends, and the page closes, once it goes to the extension's
+    /// own address.
+    SignIn {
+        id: String,
+        url: String,
+        flow: u32,
+    },
+}
+
+/// The most sign-ins loaded out of sight at once: an extension checking
+/// whether the person is still signed in, which takes a moment.
+const QUIET_SIGN_INS: usize = 4;
+
+/// The extension a panel's page belongs to, by the key it is shown under:
+/// its popup's is its id, its settings' and a sign-in's carry a prefix.
+fn panel_owner(key: &str) -> &str {
+    key.strip_prefix("settings:")
+        .or_else(|| key.strip_prefix("sign-in:"))
+        .unwrap_or(key)
+}
+
+/// The site a sign-in page is on, as the panel names it above the page:
+/// the person types a password there, so they see whose page it is.
+fn sign_in_site(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
 }
 
 /// An icon an extension gave its button through `chrome.action.setIcon`.
@@ -246,6 +275,8 @@ enum Panel {
         engine: SharedEngine,
         /// The size its page asked for, once it said.
         size: Option<(f32, f32)>,
+        /// For a sign-in page, the site it is on now.
+        site: Option<String>,
     },
 }
 
@@ -291,6 +322,9 @@ pub struct ExtensionController {
     /// Extensions' requests for more access, for the window to ask the
     /// person ([`Self::take_questions`]).
     questions: Vec<ExtensionQuestion>,
+    /// Pages extensions sign in on out of sight, until the engine closes
+    /// each as its sign-in ends.
+    quiet_sign_ins: Vec<SharedEngine>,
 }
 
 /// The switches `installed` asks for that this session has not made yet,
@@ -357,6 +391,7 @@ impl ExtensionController {
             awaiting: Vec::new(),
             menus: HashMap::new(),
             questions: Vec::new(),
+            quiet_sign_ins: Vec::new(),
         }
     }
 
@@ -537,6 +572,37 @@ impl ExtensionController {
                 self.keep_granted(&id, granted);
                 false
             }
+            // It asks the person to sign in: the page shows where its popup
+            // would, in place of whatever the panel showed. One that may
+            // not ask them loads out of sight, as in Chrome.
+            WebViewEvent::ExtensionSignIn {
+                id,
+                url,
+                interactive,
+                flow,
+            } => {
+                let running = self
+                    .installed
+                    .iter()
+                    .any(|extension| extension.id == id && extension.enabled);
+                if !running {
+                    return false;
+                }
+                if interactive {
+                    self.open_page(ExtensionPage::SignIn { id, url, flow }, engine);
+                    return true;
+                }
+                if let Ok(page) = engine.create_tab() {
+                    page.send(WebViewCommand::ExtensionSignInPanel { id, flow });
+                    page.send(WebViewCommand::Navigate(url));
+                    // The oldest goes for a new one: its sign-in ends.
+                    if self.quiet_sign_ins.len() >= QUIET_SIGN_INS {
+                        self.quiet_sign_ins.remove(0);
+                    }
+                    self.quiet_sign_ins.push(page);
+                }
+                false
+            }
             _ => false,
         }
     }
@@ -711,9 +777,19 @@ impl ExtensionController {
         self.tell_access(engine);
         changed |= self.switch(engine, now);
         let mut permissions = Vec::new();
+        // Their events are not the window's; what they open goes nowhere.
+        self.quiet_sign_ins.retain(|page| {
+            let closed = page
+                .drain_events()
+                .into_iter()
+                .any(|event| matches!(event, WebViewEvent::TabClosed));
+            let _ = page.take_new_tab_requests();
+            !closed
+        });
         if let Some(Panel::Popup {
             engine: popup,
             size,
+            site: shown_site,
             ..
         }) = &mut self.panel
         {
@@ -727,8 +803,17 @@ impl ExtensionController {
                     | ui::webview::WebViewEvent::ExtensionPermissions { .. }) => {
                         permissions.push(event);
                     }
-                    // Its page closed it (a password filled, a choice made).
+                    // Its page closed it (a password filled, a choice made),
+                    // or a sign-in reached its end.
                     ui::webview::WebViewEvent::TabClosed => closed = true,
+                    // A sign-in page names the site it moved on to.
+                    ui::webview::WebViewEvent::UriChanged(url) if shown_site.is_some() => {
+                        let now = sign_in_site(&url);
+                        if now.is_some() && now != *shown_site {
+                            *shown_site = now;
+                            changed = true;
+                        }
+                    }
                     // As big as its page, as Chrome sizes a popup.
                     ui::webview::WebViewEvent::DocumentSize { width, height, .. } => {
                         let page = (
@@ -821,7 +906,7 @@ impl ExtensionController {
         // A page of an extension turned off or removed closes with it, and
         // an update waits for the person only while its extension is off.
         if let Some(Panel::Popup { id, .. }) = &self.panel {
-            let owner = id.strip_prefix("settings:").unwrap_or(id);
+            let owner = panel_owner(id);
             if !profile
                 .installed
                 .iter()
@@ -1172,27 +1257,53 @@ impl ExtensionController {
         );
     }
 
-    /// Open one of an extension's own pages in the panel, in a tab of its own.
+    /// Open one of an extension's own pages, or a page it asks the person to
+    /// sign in on, in the panel, in a tab of its own.
     fn open_page(&mut self, kind: ExtensionPage, engine: &SharedEngine) {
-        let (key, url, action, size) = match kind {
-            ExtensionPage::Popup { id, url, clicked } => {
-                (id.clone(), url, clicked.then_some(id), None)
-            }
-            ExtensionPage::Settings { id, url } => {
-                (format!("settings:{id}"), url, None, Some(POPUP_MAX))
+        // Its "current tab" is the page it opened over, which the extension
+        // may script when its button opened it. A sign-in page keeps the
+        // size it is given: it is a site's, sized for a window.
+        let (key, url, mark, size, heading) = match kind {
+            ExtensionPage::Popup { id, url, clicked } => (
+                id.clone(),
+                url,
+                WebViewCommand::ExtensionPanel {
+                    action: clicked.then_some(id),
+                },
+                None,
+                None,
+            ),
+            ExtensionPage::Settings { id, url } => (
+                format!("settings:{id}"),
+                url,
+                WebViewCommand::ExtensionPanel { action: None },
+                Some(POPUP_MAX),
+                None,
+            ),
+            ExtensionPage::SignIn { id, url, flow } => {
+                let heading = Some(sign_in_site(&url).unwrap_or_default());
+                (
+                    format!("sign-in:{id}"),
+                    url,
+                    WebViewCommand::ExtensionSignInPanel { id, flow },
+                    Some(POPUP_MAX),
+                    heading,
+                )
             }
         };
         match engine.create_tab() {
             Ok(page) => {
-                // Its "current tab" is the page it opened over, which the
-                // extension may script when its button opened it.
-                page.send(WebViewCommand::ExtensionPanel { action });
-                page.send(WebViewCommand::ReportDocumentSize(true));
+                let sign_in = heading.is_some();
+                page.send(mark);
+                if !sign_in {
+                    page.send(WebViewCommand::ReportDocumentSize(true));
+                }
                 page.send(WebViewCommand::Navigate(url));
                 self.panel = Some(Panel::Popup {
                     id: key,
                     engine: page,
                     size,
+                    site: heading,
                 });
             }
             Err(error) => self.panel = Some(Panel::Message(error)),
@@ -1487,18 +1598,43 @@ impl ExtensionController {
                 ),
                 vec![ADD_BUTTON.to_owned(), MENU_BUTTON.to_owned()],
             ),
-            Panel::Popup { id, engine, size } => {
+            Panel::Popup {
+                id,
+                engine,
+                size,
+                site: heading,
+            } => {
                 let view = ui::widget::WebView::new(engine.clone())
                     .with_test_id("browser.extension.popup");
                 let page = size.unwrap_or(POPUP_SIZE);
                 let size = (page.0.min(width), page.1.min(max_height));
+                // A sign-in page under the name of the site it is on.
+                let content: Element = match heading {
+                    Some(name) => Box::new(
+                        Column::new()
+                            .with_no_padding()
+                            .with_rhythm(ui::tokens::Rhythm::Sibling)
+                            .push(Box::new(
+                                Text::new(name)
+                                    .with_role(ui::tokens::TextRole::Caption)
+                                    .dimmed(),
+                            ))
+                            .push(Box::new(
+                                Container::new()
+                                    .with_no_padding()
+                                    .with_flex_grow()
+                                    .with_child(Box::new(view)),
+                            )),
+                    ),
+                    None => Box::new(view),
+                };
                 (
                     Box::new(
                         Container::new()
                             .with_no_padding()
                             .with_width(size.0)
                             .with_height(size.1)
-                            .with_child(Box::new(view)),
+                            .with_child(content),
                     ),
                     vec![
                         format!("browser.extension.action.{id}"),
@@ -1821,6 +1957,8 @@ fn read_package_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    mod sign_in;
+
     const STORE_ITEM: &str = "https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh";
 
     fn queued(controller: &ExtensionController) -> Vec<String> {
@@ -1871,6 +2009,7 @@ mod tests {
             id: "abc".into(),
             engine: page.clone(),
             size: None,
+            site: None,
         });
         let shown = |controller: &ExtensionController| match &controller.panel {
             Some(Panel::Popup { size, .. }) => *size,
@@ -2630,6 +2769,7 @@ mod tests {
             id: "settings:abc".into(),
             engine: ui::webview::test_engine::TestEngine::new(),
             size: None,
+            site: None,
         });
         controller.awaiting = vec!["abc".into()];
         let profile = |installed: Vec<Installed>| Profile {

@@ -55,6 +55,7 @@
 #include "extension_menus.h"
 #include "extension_notifications.h"
 #include "extension_permissions.h"
+#include "extension_sign_in.h"
 #include "extension_tabs_script.h"
 #include "match_pattern.h"
 
@@ -363,6 +364,7 @@ class ExtensionTabs {
     displays_.erase(id);
     counts_.Forget(id);
     for (auto it = shown_.begin(); it != shown_.end();) it = it->first.first == id ? shown_.erase(it) : std::next(it);
+    sign_in_.Forget(id);
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
@@ -512,6 +514,10 @@ class ExtensionTabs {
       fields->SetString("url", url);
       if (hooks_.event) hooks_.event(tab->tab, "extension_open_popup", fields);
       Succeed(reply, nullptr);
+    } else if (method == "identity.launchWebAuthFlow") {
+      SignIn(extension, tabs, args, reply);
+    } else if (method == "identity.wait") {
+      WaitForSignIn(extension, IntOf(args, "flow").value_or(0), reply);
     } else if (method == "windows.update") {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "windowId"));
       if (!tab) { Fail(reply, "No window with id: " + std::to_string(IntOf(args, "windowId").value_or(-1)) + "."); return; }
@@ -822,6 +828,7 @@ class ExtensionTabs {
   void Removed(int tab) {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
+    sign_in_.Closed(tab, ExtensionSignIn::Clock::now());
     native_.erase(tab);
     unknown_.erase(tab);
     Drop(tab);
@@ -842,6 +849,16 @@ class ExtensionTabs {
       Push(extension, "tabs.onRemoved", args, false);
     }
   }
+  // The Browser shows the page of sign-in `flow` of `extension` in `tab`, a
+  // panel or out of sight: false when it is no such sign-in's.
+  bool SignInPanel(const std::string& extension, int flow, int tab) {
+    return flow > 0 && sign_in_.Bind(extension, static_cast<uint64_t>(flow), tab);
+  }
+  // The sign-in tab `tab` is about to go to `url`: true when that ends the
+  // sign-in, and the page must go no further.
+  bool SignInNavigating(int tab, const std::string& url) { return sign_in_.Navigating(tab, url, ExtensionSignIn::Clock::now()); }
+  // The sign-in tab `tab` finished loading `url`.
+  void SignInLoaded(int tab, const std::string& url) { sign_in_.Loaded(tab, url, ExtensionSignIn::Clock::now()); }
   // A page created a tab that opens `url`: answers an extension waiting on
   // the tab it asked for.
   void Opened(int tab, const std::string& url) {
@@ -1592,6 +1609,64 @@ class ExtensionTabs {
     }
     creations_.erase(url);
   }
+
+  // `identity.launchWebAuthFlow`: the Browser is asked to show the page in
+  // a panel over the page in front, or to load it out of sight for one that
+  // may not ask the person (`interactive` false), and the extension is
+  // given the sign-in's number to wait on (extension_sign_in.h).
+  void SignIn(const std::string& extension, const std::vector<ExtensionTab>& tabs, CefRefPtr<CefDictionaryValue> args, const Reply& reply) {
+    if (!Has(extension, "identity")) { Fail(reply, "The extension did not ask for the identity permission"); return; }
+    const auto url = StringOf(args, "url");
+    if (!SignInPage(url)) { Fail(reply, kSignInNotShown); return; }
+    const bool interactive = args->GetType("interactive") == VTYPE_BOOL && args->GetBool("interactive");
+    const bool abort_on_load = args->GetType("abortOnLoad") != VTYPE_BOOL || args->GetBool("abortOnLoad");
+    const auto* over = LastFocused(tabs);
+    if (!over || !hooks_.event) { Fail(reply, interactive ? kSignInNotShown : kSignInInteraction); return; }
+    const uint64_t number = sign_in_.Start(extension, url, interactive, abort_on_load, ExtensionSignIn::Clock::now());
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetString("url", url);
+    fields->SetBool("interactive", interactive);
+    fields->SetInt("flow", static_cast<int>(number));
+    hooks_.event(over->tab, "extension_sign_in", fields);
+    // The Browser shows it at once, or not at all (a private window). One
+    // out of sight goes on at most as long as the extension allows, within
+    // a minute.
+    std::weak_ptr<bool> alive = alive_;
+    CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, uint64_t number) {
+      if (!alive.expired()) self->sign_in_.Unshown(number, ExtensionSignIn::Clock::now());
+    }, this, alive, number), 10000);
+    if (!interactive) {
+      const auto allowed = IntOf(args, "timeout");
+      const int64_t timeout = std::clamp<int64_t>(allowed.value_or(kSignInOutOfSightMs), 0, kSignInOutOfSightMs);
+      CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, uint64_t number) {
+        if (!alive.expired()) self->sign_in_.Expire(number, ExtensionSignIn::Clock::now());
+      }, this, alive, number), timeout);
+    }
+    auto flow = CefValue::Create();
+    flow->SetInt(static_cast<int>(number));
+    Succeed(reply, flow);
+  }
+  // The extension asks how its sign-in ended: answered when it does, or
+  // after a while with nothing, and it asks again (extension_sign_in.h).
+  void WaitForSignIn(const std::string& extension, int number, const Reply& reply) {
+    const bool known = number > 0 && sign_in_.Wait(extension, static_cast<uint64_t>(number), [reply](std::optional<ExtensionSignIn::Outcome> outcome) {
+      if (!outcome) { Succeed(reply, nullptr); return; }
+      if (!outcome->error.empty()) { Fail(reply, outcome->error); return; }
+      auto url = CefValue::Create();
+      url->SetString(outcome->url);
+      Succeed(reply, url);
+    });
+    if (!known) { Fail(reply, kSignInRefused); return; }
+    std::weak_ptr<bool> alive = alive_;
+    CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, uint64_t number) {
+      if (!alive.expired()) self->sign_in_.Lapse(number);
+    }, this, alive, static_cast<uint64_t>(number)), kSignInTurnMs);
+  }
+  // How long one request for a sign-in's outcome is held, and the longest a
+  // sign-in out of sight goes on.
+  static constexpr int kSignInTurnMs = 20000;
+  static constexpr int64_t kSignInOutOfSightMs = 60000;
 
   // The extension's isolated world in the tab's main frame, where its
   // content scripts run: 0 when it has none there. `then` runs with the
@@ -3006,6 +3081,14 @@ class ExtensionTabs {
   // The toolbar button menus the Browser was told of, by extension.
   std::map<std::string, CefRefPtr<CefListValue>> action_menus_;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
+  // Extensions' sign-ins; a panel whose sign-in ended closes after the
+  // navigation that ended it was turned away.
+  ExtensionSignIn sign_in_{[this](int tab) {
+    std::weak_ptr<bool> alive = alive_;
+    CefPostTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, int tab) {
+      if (!alive.expired()) self->hooks_.close(tab);
+    }, this, alive, tab));
+  }};
 };
 
 // A request to the bridge, read here and answered on the UI thread.

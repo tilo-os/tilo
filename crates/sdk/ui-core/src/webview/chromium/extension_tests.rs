@@ -537,3 +537,62 @@ fn an_extensions_request_to_open_a_download_names_the_download_and_how() {
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
 }
+
+#[test]
+fn an_extension_asks_the_person_to_sign_in_on_a_web_page() {
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    let page = "https://accounts.example/authorize?client_id=1&redirect_uri=x";
+    assert_eq!(
+        event(
+            json!({"event":"extension_sign_in","tab":2,"id":id,"url":page,"interactive":true,"flow":3})
+        ),
+        Some(WebViewEvent::ExtensionSignIn {
+            id: id.into(),
+            url: page.into(),
+            interactive: true,
+            flow: 3,
+        })
+    );
+    // Only a web page, of a bounded length, from an extension's id, for a
+    // sign-in the engine numbered.
+    let sign_in = |url: Value| json!({"event":"extension_sign_in","id":id,"url":url,"interactive":false,"flow":1});
+    for bad in [
+        sign_in(json!(format!("chrome-extension://{id}/p.html"))),
+        sign_in(json!("javascript:alert(1)")),
+        sign_in(json!("file:///etc/passwd")),
+        sign_in(json!(format!("https://example.test/{}", "a".repeat(8192)))),
+        sign_in(Value::Null),
+        json!({"event":"extension_sign_in","id":"short","url":page,"interactive":true,"flow":1}),
+        json!({"event":"extension_sign_in","id":id,"url":page,"flow":1}),
+        json!({"event":"extension_sign_in","id":id,"url":page,"interactive":true,"flow":0}),
+        json!({"event":"extension_sign_in","id":id,"url":page,"interactive":true,"flow":1u64 << 31}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+    // The tab the Browser shows it in is marked as that sign-in's.
+    let panel = WebViewCommand::ExtensionSignInPanel {
+        id: id.into(),
+        flow: 3,
+    };
+    assert!(command_within_limits(&panel));
+    assert_eq!(
+        encode_command(panel),
+        Some(json!({"op":"extension_sign_in_panel","id":id,"flow":3}))
+    );
+    for bad in [
+        WebViewCommand::ExtensionSignInPanel {
+            id: "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP".into(),
+            flow: 3,
+        },
+        WebViewCommand::ExtensionSignInPanel {
+            id: id.into(),
+            flow: 0,
+        },
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+}

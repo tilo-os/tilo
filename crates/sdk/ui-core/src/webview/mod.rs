@@ -542,6 +542,14 @@ pub enum WebViewCommand {
     ExtensionPanel {
         action: Option<String>,
     },
+    /// This tab shows the page of sign-in `flow` of extension `id`
+    /// ([`WebViewEvent::ExtensionSignIn`]), over the page used last or out
+    /// of sight: to extensions it is no tab, and its closing turns the
+    /// sign-in down.
+    ExtensionSignInPanel {
+        id: String,
+        flow: u32,
+    },
     /// The person clicked an extension's toolbar button over this page: the
     /// extension hears of it (`action.onClicked`) and may script the page.
     ExtensionClick {
@@ -661,6 +669,19 @@ pub enum WebViewEvent {
     ExtensionDownloadOpen {
         id: u32,
         reveal: bool,
+    },
+    /// An extension asks the person to sign in on the web page `url`
+    /// (`identity.launchWebAuthFlow`), over this tab's page: show it where
+    /// its popup shows, or when it may not ask the person (`interactive`
+    /// false) load it out of sight, in a tab marked with
+    /// [`WebViewCommand::ExtensionSignInPanel`] for sign-in `flow`. The
+    /// engine ends the sign-in, and closes that tab, once the page goes to
+    /// the extension's own address.
+    ExtensionSignIn {
+        id: String,
+        url: String,
+        interactive: bool,
+        flow: u32,
     },
     SiteStatus(SiteStatus),
     SiteResult {

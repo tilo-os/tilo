@@ -3087,7 +3087,8 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionExecuteAction { .. }
                 | WebViewEvent::ExtensionNotification { .. }
                 | WebViewEvent::ExtensionPermissionRequest { .. }
-                | WebViewEvent::ExtensionPermissions { .. }) => {
+                | WebViewEvent::ExtensionPermissions { .. }
+                | WebViewEvent::ExtensionSignIn { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 WebViewEvent::CredentialResult(reply) => {

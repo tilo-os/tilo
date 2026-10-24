@@ -3,11 +3,11 @@
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
 // click, keyboard shortcuts, a tab's capture, context menu items,
-// notifications, scripts on a tab, what network rules did in a tab and
-// downloads from the host's tabs instead, over a request the host answers
-// itself. A page of the extension is known by its address; its worker,
-// which has none, by a token the Browser wrote with this script into the
-// worker it runs first (extensions.rs).
+// notifications, signing in, scripts on a tab, what network rules did in a
+// tab and downloads from the host's tabs instead, over a request the host
+// answers itself. A page of the extension is known by its address; its
+// worker, which has none, by a token the Browser wrote with this script into
+// the worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -590,6 +590,52 @@
     replace(permissions, 'remove', (given) => call('permissions.remove', setOf(given)));
     event(permissions, 'onAdded', 'permissions.onAdded');
     event(permissions, 'onRemoved', 'permissions.onRemoved');
+  }
+
+  // Signing in (`identity`). Chrome shows the page an extension names in a
+  // window of its own and ends the call once that page goes to the
+  // extension's own address; here the Browser shows it in a panel over the
+  // page in front, or loads it out of sight when the extension may not ask
+  // the person, and the host watches where it goes (extension_sign_in.h).
+  // The outcome is asked for in turns the host holds a while, and between
+  // them a call to Chromium keeps a worker awake, as Chrome keeps it awake
+  // while the call is under way. No one signs in to the Browser itself, so
+  // getAuthToken, which asks the Browser's account, says so.
+  if (!chrome.identity && (manifest.permissions || []).includes('identity')) chrome.identity = {};
+  const identity = chrome.identity;
+  if (identity) {
+    if (typeof identity.getRedirectURL !== 'function') {
+      identity.getRedirectURL = (path) => {
+        let own = path === undefined || path === null ? '/' : String(path);
+        if (!own.startsWith('/')) own = '/' + own;
+        return `https://${runtime.id}.chromiumapp.org${own}`;
+      };
+    }
+    const awake = () => {
+      try {
+        runtime.getPlatformInfo(() => void runtime.lastError);
+      } catch (ignored) {
+        // A page needs no keeping awake.
+      }
+    };
+    replace(identity, 'launchWebAuthFlow', async (details) => {
+      if (!details || typeof details.url !== 'string') throw new Error('identity.launchWebAuthFlow needs the url of the page to sign in on');
+      const timeout = details.timeoutMsForNonInteractive;
+      const flow = await call('identity.launchWebAuthFlow', {
+        url: details.url,
+        interactive: details.interactive === true,
+        abortOnLoad: details.abortOnLoadForNonInteractive !== false,
+        timeout: Number.isFinite(timeout) ? Math.max(0, Math.round(timeout)) : null,
+      });
+      for (;;) {
+        const url = await call('identity.wait', {flow});
+        if (typeof url === 'string') return url;
+        awake();
+      }
+    });
+    replace(identity, 'getAuthToken', async () => {
+      throw new Error('The user is not signed in.');
+    });
   }
 
   // Context menu items: the host keeps them and shows them in the page's

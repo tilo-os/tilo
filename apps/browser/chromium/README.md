@@ -609,6 +609,30 @@ content scripts (with `sender.tab`) work without help.
   page; `onRuleMatchedDebug` reports what Chromium reports, tab id -1.
   Rules that only change a request (headers, an upgrade to https) and a
   blocked page itself are not counted.
+- An extension signs in to its service with `identity.launchWebAuthFlow`.
+  Chrome shows the page in a window of its own; here the host asks the
+  Browser to show it in a panel over the page in front
+  (`extension_sign_in`), as a popup shows, under the name of the site it is
+  on. The Browser marks the panel's tab as that sign-in's
+  (`extension_sign_in_panel`), and the host watches where it goes
+  (`src/extension_sign_in.h`): once the page goes to the extension's own
+  address, `https://<id>.chromiumapp.org/`, by a redirect, a link or a
+  script, the navigation is turned away, the call ends with that address
+  and the panel closes. Closing the panel turns the sign-in down ("The user
+  did not approve access.", as in Chrome), and so does a second sign-in of
+  the same extension for the first. A sign-in that may not ask the person
+  (`interactive` false) is loaded out of sight in a tab of its own, as
+  Chrome loads it: the site sending the person straight back ends it with
+  the address; its page loading without doing so ends it as needing them
+  ("User interaction required."), or with `abortOnLoadForNonInteractive`
+  false, for a site whose script sends them back later, its time running
+  out (`timeoutMsForNonInteractive`, a minute at most). The extension asks
+  for the outcome in turns the host holds 20 seconds each, and calls
+  Chromium between them, which keeps its worker awake as Chrome keeps it
+  awake during the call.
+  `getRedirectURL` names the extension's address; `getAuthToken`, which
+  signs in with the Browser's own Google account, answers that no one is
+  signed in.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.
