@@ -987,10 +987,6 @@ impl RelayClient {
         .await
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     async fn connect_version(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
