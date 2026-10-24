@@ -62,7 +62,7 @@ impl ShellOverlayHost {
             committed.extend(
                 row.groups
                     .iter_mut()
-                    .filter_map(|group| group.take_tab_rename()),
+                    .filter_map(ui::widget::WindowGroup::take_tab_rename),
             );
         }
         for (tab, name) in committed {

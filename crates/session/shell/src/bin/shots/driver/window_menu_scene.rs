@@ -2,6 +2,8 @@
 //! shortcut, at the focused window's tab.
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
+use ui::Widget as _;
+
 use super::ShellDriver;
 
 impl ShellDriver {

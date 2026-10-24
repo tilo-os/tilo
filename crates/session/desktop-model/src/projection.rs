@@ -2031,7 +2031,7 @@ mod tests {
             project_owned_contents(doc, &a.workspaces[0].strips, A, None, EmptyStrips::Skip)
                 .expect("projected");
         };
-        let tab_in = |tree: &crate::tree::DesktopTree| {
+        let find_tab = |tree: &crate::tree::DesktopTree| {
             tree.workspaces[0]
                 .strips
                 .iter()
@@ -2051,7 +2051,7 @@ mod tests {
         assert_eq!(replicated.title, "Build");
         assert_eq!(replicated.app_title.as_deref(), Some("~/src"));
         merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
-        let arrived = tab_in(&b);
+        let arrived = find_tab(&b);
         assert_eq!(arrived.title, "Build");
         assert_eq!(arrived.app_title.as_deref(), Some("~/src"));
 
@@ -2060,8 +2060,8 @@ mod tests {
         tab.set_window_title("cargo test");
         project(&mut doc, &a);
         merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
-        assert_eq!(tab_in(&b).title, "Build");
-        assert_eq!(tab_in(&b).app_title.as_deref(), Some("cargo test"));
+        assert_eq!(find_tab(&b).title, "Build");
+        assert_eq!(find_tab(&b).app_title.as_deref(), Some("cargo test"));
 
         let tab = &mut a.workspaces[0].strips[0].window_groups[0].tabs[0];
         tab.rename("");
@@ -2075,7 +2075,7 @@ mod tests {
             "a cleared name leaves nothing behind in the room"
         );
         merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
-        let cleared = tab_in(&b);
+        let cleared = find_tab(&b);
         assert_eq!(cleared.title, "cargo test");
         assert_eq!(cleared.app_title, None);
     }
