@@ -224,6 +224,53 @@ pub(super) fn answer_of<T: serde::de::DeserializeOwned>(
 }
 
 /// What an invocation's receipt comes to.
+/// Why a host asked on a room's session gave no result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HostAskError {
+    /// The host could not be reached: no session with it and none being
+    /// established, the session closed before it answered, or the network
+    /// could not take the ask. Worth asking again once a room's state
+    /// changes.
+    Unreachable(String),
+    /// The host answered, and refused.
+    Refused(String),
+}
+
+impl From<HostAskError> for String {
+    fn from(error: HostAskError) -> Self {
+        match error {
+            HostAskError::Unreachable(reason) | HostAskError::Refused(reason) => reason,
+        }
+    }
+}
+
+/// What a host answered on `answer`, or that it could not be reached: the
+/// actor fails what waits on a workspace that has no session left.
+fn held_answer(
+    answer: &std::sync::mpsc::Receiver<Result<ReceiptStatus, String>>,
+) -> Result<serde_json::Value, HostAskError> {
+    let status = answer
+        .recv()
+        .map_err(|_| HostAskError::Unreachable(SESSIONS_CLOSED.into()))?
+        .map_err(HostAskError::Unreachable)?;
+    receipt_value(status).map_err(HostAskError::Refused)
+}
+
+/// Why a host's answer that was waited for never came.
+const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
+
+/// The arguments of the member's own `RECORD_EFFECT_RECEIPT` for `receipt`:
+/// its invocation and its exact encoding, which the host checks.
+pub(super) fn receipt_arguments(
+    receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let redacted = serde_json::to_string(receipt).map_err(|error| error.to_string())?;
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("invocation".into(), receipt.invocation.0.to_string().into());
+    arguments.insert("redacted".into(), redacted.into());
+    Ok(arguments)
+}
+
 pub(super) fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
     match status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
@@ -338,6 +385,50 @@ impl ShellNetwork {
             invoke,
             ADMIN_TIMEOUT,
         )
+    }
+
+    /// [`Self::govern`], answered whenever the host answers: while the
+    /// room's sessions last, never on a clock. For a caller whose own wait
+    /// ends with the room's sessions too, on a worker.
+    pub(super) fn govern_held(
+        &self,
+        target: &HeldRoom,
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, HostAskError> {
+        let invoke = invocation(
+            ROOM_GOVERNANCE_PROVIDER,
+            room_governance_resource(&target.room.to_string()),
+            action,
+            arguments,
+        );
+        let answer = self
+            .ask_relay(
+                room_topic_id(target.room),
+                Addressee::Device(target.host),
+                invoke,
+            )
+            .map_err(HostAskError::Unreachable)?;
+        held_answer(&answer)
+    }
+
+    /// Have the host governing `room` record `receipt`, the member's own
+    /// terminal receipt, answered whenever the host answers: while the
+    /// room's sessions last. For a worker.
+    pub(super) fn record_receipt_held(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> Result<(), HostAskError> {
+        let host = self
+            .host_governor(room)
+            .map_err(HostAskError::Refused)?
+            .ok_or_else(|| HostAskError::Refused("no host governs the room".into()))?;
+        let arguments = receipt_arguments(receipt).map_err(HostAskError::Refused)?;
+        let answer = self
+            .ask_as_member(room, host, RECORD_EFFECT_RECEIPT, arguments)
+            .map_err(HostAskError::Unreachable)?;
+        held_answer(&answer).map(drop)
     }
 
     /// Invoke the host operation `action` with `arguments` at the host at

@@ -154,6 +154,22 @@ pub trait ChannelDirectory: Send {
     /// The device key of `room`'s governor, when this device does not govern
     /// it and knows who does.
     fn steward_of(&self, room: RoomId) -> Option<Ed25519PublicKey>;
+    /// `channel`'s content keys from the steward of the room host this
+    /// device runs, when that host governs `room`. The steward's leaf is
+    /// this device's own, so this device takes its keys there: it is neither
+    /// a second steward nor a member of the group. `route` is the channel's
+    /// record when the endpoint named it; `create` opens the channel when it
+    /// has none yet. `None` for a room no host in this process governs.
+    fn hosted_channel_keys(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        route: Option<&ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<ChannelContentKeys, String>> {
+        let _ = (room, channel, route, create);
+        None
+    }
     /// Every device that may read `channel`, one of `room`'s channels, at
     /// wall-clock `now` (seconds since the Unix epoch). A channel is one
     /// record's, so a Read Deny on that record, on its app or on any pattern
@@ -308,6 +324,10 @@ pub struct ChannelEncryption {
     queued: bool,
     /// Channels asked about that could not be opened; see [`Unopened`].
     unopened: HashMap<ChannelId, Unopened>,
+    /// Channels of rooms this device's own room host stewards, and the
+    /// epoch of the keys last taken from it
+    /// ([`ChannelDirectory::hosted_channel_keys`]).
+    hosted: HashMap<ChannelId, (RoomId, u64)>,
 }
 
 impl ChannelEncryption {
@@ -338,6 +358,7 @@ impl ChannelEncryption {
             changes: tokio::sync::watch::Sender::new(0),
             queued: false,
             unopened: HashMap::new(),
+            hosted: HashMap::new(),
         };
         for room_dir in std::fs::read_dir(&service.config.root)? {
             let room_dir = room_dir?.path();
@@ -383,6 +404,22 @@ impl ChannelEncryption {
     /// governs the room) or starts asking the steward for access. The caller
     /// has already decided the endpoint may read the route.
     pub fn access(&mut self, room: RoomId, channel: ChannelId, now: Instant) -> ChannelAccess {
+        self.access_routed(room, channel, None, now)
+    }
+
+    fn access_routed(
+        &mut self,
+        room: RoomId,
+        channel: ChannelId,
+        route: Option<&ChannelRoute>,
+        now: Instant,
+    ) -> ChannelAccess {
+        if let Some(keys) = self
+            .directory
+            .hosted_channel_keys(room, channel, route, true)
+        {
+            return self.hosted_access(room, channel, keys, now);
+        }
         if self.directory.governs(room) {
             if !self.stewards.contains_key(&channel) {
                 if let Err(error) = self.open_steward(room, channel) {
@@ -454,7 +491,8 @@ impl ChannelEncryption {
         now: Instant,
     ) -> (ChannelId, ChannelAccess) {
         let channel = route.channel(&room.to_string());
-        let access = self.access(room, channel, now);
+        let proven = route.proves(&room.to_string(), channel);
+        let access = self.access_routed(room, channel, proven.then_some(route), now);
         self.learn_route(room, channel, route);
         (channel, access)
     }
@@ -544,6 +582,12 @@ impl ChannelEncryption {
     /// Observe a current key without opening a channel, requesting access or
     /// changing a removed member's rejoin state.
     fn existing_keys(&self, room: RoomId, channel: ChannelId) -> Option<ChannelContentKeys> {
+        if let Some(keys) = self
+            .directory
+            .hosted_channel_keys(room, channel, None, false)
+        {
+            return keys.ok();
+        }
         if self.directory.governs(room) {
             return self
                 .stewards
@@ -712,6 +756,20 @@ impl ChannelEncryption {
 
     fn receive_frame(&mut self, room: RoomId, frame: MlsGovernanceFrameV1, now: Instant) {
         let channel = frame.channel;
+        if self
+            .hosted
+            .get(&channel)
+            .is_some_and(|(hosted, _)| *hosted == room)
+        {
+            // The steward of this device's own host changed the channel.
+            if let Some(keys) = self
+                .directory
+                .hosted_channel_keys(room, channel, None, false)
+            {
+                self.hosted_access(room, channel, keys, now);
+            }
+            return;
+        }
         let Some(entry) = self.members.get_mut(&channel) else {
             return;
         };
@@ -1060,6 +1118,38 @@ impl ChannelEncryption {
         );
         self.register_gate(channel, gate);
         Ok(true)
+    }
+
+    /// What an endpoint may do with `channel`, given the keys this device's
+    /// own host's steward answered: its gate holds at their epoch, and a new
+    /// epoch is announced as any channel change is.
+    fn hosted_access(
+        &mut self,
+        room: RoomId,
+        channel: ChannelId,
+        keys: Result<ChannelContentKeys, String>,
+        now: Instant,
+    ) -> ChannelAccess {
+        let keys = match keys {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(%error, %room, "the hosted channel's keys are unavailable");
+                self.note_unopened(channel, Unopened::failed(room, now));
+                return ChannelAccess::Unavailable;
+            }
+        };
+        self.unopened.remove(&channel);
+        self.register_gate(
+            channel,
+            channel_crypto::ChannelGate {
+                encryption_required: true,
+                head_epoch: Some(keys.epoch()),
+            },
+        );
+        if self.hosted.insert(channel, (room, keys.epoch())) != Some((room, keys.epoch())) {
+            self.bump(channel);
+        }
+        ChannelAccess::Ready(keys)
     }
 
     fn register_gate(&self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
