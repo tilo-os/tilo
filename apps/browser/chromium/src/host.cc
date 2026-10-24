@@ -250,6 +250,9 @@ int last_focused_tab=0;
 // Host-originated calls on the DevTools pipe, answered on the UI thread.
 std::map<int,tilo::ExtensionTabs::PipeDone> pipe_calls;
 int next_pipe_call=0;
+// The contexts a session the host attached on the pipe reports, by session:
+// only Runtime.executionContextCreated, and only for sessions listened to.
+std::map<std::string,tilo::ExtensionTabs::PipeListener> pipe_listeners;
 void PipeCall(const std::string& method,CefRefPtr<CefDictionaryValue> params,const std::string& session,tilo::ExtensionTabs::PipeDone done);
 CefRefPtr<tilo::Downloads> downloads;
 tilo::DownloadOwnerReservations download_owners;
@@ -1576,6 +1579,9 @@ void StartExtensionTabs() {
   hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
   hooks.event=[](int tab,const std::string& name,CefRefPtr<CefDictionaryValue> fields) {if(auto client=ClientOf(tab))client->Event(name,fields);};
+  hooks.pipe_listen=[](const std::string& session,tilo::ExtensionTabs::PipeListener listener) {
+    if(listener)pipe_listeners[session]=std::move(listener);else pipe_listeners.erase(session);
+  };
   hooks.private_mode=private_mode;
   if(!private_mode && !extension_menus_file.empty())
     hooks.save_menus=[](std::string json) {
@@ -1820,8 +1826,14 @@ void PipeCall(const std::string& method,CefRefPtr<CefDictionaryValue> params,con
   if(!session.empty()) message->SetString("sessionId",session);
   auto value=CefValue::Create();value->SetDictionary(message);
   std::string text=CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString();
-  if(text.size()>tilo::kMaxDevToolsMessage || !WritePipe(std::move(text))) {devtools_pending.Forget(*id);fail(std::move(done));return;}
+  if(text.size()>tilo::kMaxPipeMessage || !WritePipe(std::move(text))) {devtools_pending.Forget(*id);fail(std::move(done));return;}
   pipe_calls[handle]=std::move(done);
+}
+void PipeContext(const std::string& session,const std::string& json) {
+  auto found=pipe_listeners.find(session);
+  if(found==pipe_listeners.end()) return;
+  auto parsed=CefParseJSON(json,JSON_PARSER_RFC);
+  if(parsed && parsed->GetType()==VTYPE_DICTIONARY) found->second(parsed->GetDictionary());
 }
 void PipeResult(int handle,bool ok,const std::string& json) {
   auto found=pipe_calls.find(handle);
@@ -1843,8 +1855,15 @@ void ReadDevToolsReplies(std::atomic<bool>& stop) {
         auto parsed=CefParseJSON(messages[i],JSON_PARSER_RFC);
         if(!parsed || parsed->GetType()!=VTYPE_DICTIONARY) continue;
         auto reply=parsed->GetDictionary();
-        // Notifications carry no id; only commands this host sent are answered.
-        if(reply->GetType("id")!=VTYPE_INT) continue;
+        // Notifications carry no id; only commands this host sent are
+        // answered, and only the contexts of a session it attached heard.
+        if(reply->GetType("id")!=VTYPE_INT) {
+          if(reply->GetType("sessionId")==VTYPE_STRING && reply->GetString("method")=="Runtime.executionContextCreated" && reply->GetType("params")==VTYPE_DICTIONARY) {
+            auto context=reply->GetDictionary("params")->GetDictionary("context");
+            if(context) {auto value=CefValue::Create();value->SetDictionary(context->Copy(false));CefPostTask(TID_UI,base::BindOnce(&PipeContext,reply->GetString("sessionId").ToString(),CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString()));}
+          }
+          continue;
+        }
         auto owner=devtools_pending.Take(reply->GetInt("id"));if(!owner) continue;
         const bool ok=reply->HasKey("result");
         auto payload=ok ? reply->GetValue("result") : reply->GetValue("error");

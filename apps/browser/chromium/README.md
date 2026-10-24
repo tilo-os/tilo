@@ -455,8 +455,9 @@ content scripts (with `sender.tab`) work without help.
   Bitwarden injects its form filler into each frame that asks. Chromium
   knows a frame by an id the inspector does not show, so the host asks the
   extension's world in the frame with a message only the tab script answers
-  (`sender.frameId`). Frames another site's process renders are not reached
-  yet.
+  (`sender.frameId`). A frame another site's process renders is a target of
+  its own, which the host attaches to on the pipe for as long as the call
+  takes; the pipe carries a script whole, up to 16 MiB.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
   tab an extension was told of before the host learnt its id among

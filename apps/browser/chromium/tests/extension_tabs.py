@@ -51,8 +51,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   call sets runtime.lastError for its callback; it may set its button's
   badge for any tab, a blank one too.
 - A script reaches the frame of a page an extension names (Bitwarden injects
-  its form filler into each frame that asks), or every frame, and a message
-  reaches one frame's content script.
+  its form filler into each frame that asks), one of another site too, or
+  every frame, and a message reaches one frame's content script.
 """
 import base64
 import hashlib
@@ -330,8 +330,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
-            # A page with a login form in a frame of its own, as some sites have.
-            frame = '<iframe src="/inner"></iframe>' if self.path == '/framed' else ''
+            # A page with login forms in frames of their own, as some sites
+            # have: one of the same site, one of another, which another
+            # process renders.
+            port = self.server.server_port
+            frame = f'<iframe src="/inner"></iframe><iframe src="http://localhost:{port}/outer"></iframe>' if self.path == '/framed' else ''
             body = f'<!doctype html><html{lang}><title>page {self.path}</title><body>page{frame}</body></html>'.encode()
         if self.path.startswith('/tracker/'):
             kind, body = 'text/javascript', b'window.tracked = true;'
@@ -416,7 +419,9 @@ class ExtensionTabs(unittest.TestCase):
     def toolbar_reads(self, host, extension):
         """What the Browser's toolbar reads of the extension's button, from
         its running worker."""
-        return json.loads(self.in_worker(host, extension, READ_ACTION))
+        read = self.in_worker(host, extension, READ_ACTION)
+        self.assertIsNotNone(read, 'the extension has no worker running')
+        return json.loads(read)
 
     def in_worker(self, host, extension, expression):
         """`expression`'s value in the extension's running worker, read as the
@@ -435,8 +440,10 @@ class ExtensionTabs(unittest.TestCase):
             return json.loads(reply['body'])
 
         prefix = f'chrome-extension://{extension}/'
-        target = next(t['targetId'] for t in call('Target.getTargets', {})['targetInfos']
-                      if t['type'] == 'service_worker' and t['url'].startswith(prefix))
+        target = next((t['targetId'] for t in call('Target.getTargets', {})['targetInfos']
+                       if t['type'] == 'service_worker' and t['url'].startswith(prefix)), None)
+        if target is None:
+            return None
         session = call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
         try:
             read = call('Runtime.evaluate', {'expression': expression, 'awaitPromise': True, 'returnByValue': True}, session)
@@ -655,12 +662,20 @@ class ExtensionTabs(unittest.TestCase):
 
     def test_a_worker_hears_of_a_page_that_finished_loading(self):
         host, ids = self.start('watcher', access={'watcher': (['scripting'], ['http://127.0.0.1/*'])})
+        # The worker starts with the engine, in its own time, and hears of
+        # pages once it listens.
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['watcher'], 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
         host.settle(1.0)
         host.navigate(self.url + '/watched')
+        watched = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('watched:')
         try:
-            title = self.title(host, 1, 'watched:')
+            title = (next((e for e in host.seen if watched(e)), None) or host.until(watched, timeout=20))['title']
         except (TimeoutError, queue.Empty):
-            self.fail('the worker heard ' + self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)'))
+            # Read while the worker is still awake.
+            self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
         self.assertRegex(title, r'^watched:\d+$')
 
     def test_an_extension_that_may_connect_only_to_its_own_servers_finds_its_tabs(self):
@@ -686,14 +701,16 @@ class ExtensionTabs(unittest.TestCase):
         })
 
     def test_a_script_reaches_the_frame_a_message_came_from(self):
-        host, ids = self.start('framer', access={'framer': (['scripting'], ['http://127.0.0.1/*'])})
+        host, ids = self.start('framer', access={'framer': (['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'])})
         host.navigate(self.url + '/framed')
-        framed = json.loads(self.title(host, 1, 'framed:')[len('framed:'):])
+        title = self.title(host, 1, 'framed')
+        self.assertTrue(title.startswith('framed:'), title)
+        framed = json.loads(title[len('framed:'):])
         self.assertEqual(framed, {
-            'top': {'frame': 0, 'injected': '/framed', 'id': True},
-            'inner': {'frame': True, 'injected': '/inner', 'id': True},
-            'all': [['main', '/framed'], ['inner', '/inner']],
-            'where': '/inner',
+            'frames': {path: {'frame': True, 'injected': path, 'id': True} for path in ('/framed', '/inner', '/outer')},
+            'all': [['/framed', '/framed'], ['/inner', '/inner'], ['/outer', '/outer']],
+            'where': {'/inner': '/inner', '/outer': '/outer'},
+            'large': '/outer:1500000',
             'missing': True,
         })
 

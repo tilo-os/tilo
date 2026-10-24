@@ -23,7 +23,13 @@ inline bool DevToolsMethodAllowed(const std::string& method) {
     "Browser.getVersion"};
   return allowed.count(method)>0;
 }
+// The most a command the embedder sends may hold.
 inline constexpr size_t kMaxDevToolsMessage=1024*1024;
+// The most a message the host itself sends on the pipe, or reads from it,
+// may hold: a script an extension runs in a frame another site's process
+// renders goes on the pipe whole (password managers' form fillers come
+// near 2 MiB), and its answer comes back the same way.
+inline constexpr size_t kMaxPipeMessage=16*1024*1024;
 inline constexpr size_t kMaxPendingDevTools=128;
 // A tab's request, or (`internal`) one the host made itself.
 struct DevToolsOwner {int tab=0;int request_id=0;int internal=0;};
@@ -59,8 +65,8 @@ inline bool TakeDevToolsMessages(std::string& buffer,std::string* out,size_t max
   *count=0;
   for(;;) {
     auto end=buffer.find('\0');
-    if(end==std::string::npos) return buffer.size()<=kMaxDevToolsMessage;
-    if(end>kMaxDevToolsMessage) return false;
+    if(end==std::string::npos) return buffer.size()<=kMaxPipeMessage;
+    if(end>kMaxPipeMessage) return false;
     if(*count<max_out) out[(*count)++]=buffer.substr(0,end);
     buffer.erase(0,end+1);
     if(*count==max_out) return true;
