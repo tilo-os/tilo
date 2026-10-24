@@ -1400,7 +1400,7 @@ fn serve_host(
         .and_then(|key| {
             let rc = store.session_dir(&id).join("runs.bash");
             std::fs::create_dir_all(store.session_dir(&id)).ok()?;
-            std::fs::write(&rc, crate::runs::bash_rc(true)).ok()?;
+            std::fs::write(&rc, crate::runs::bash_rc()).ok()?;
             Some((key, rc))
         });
     let label = command.first().map_or_else(
@@ -2071,6 +2071,72 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 mod tests {
     use super::*;
     use tilo_environment::{DEFAULT_RECORD, PackageId};
+
+    /// A Host session's marked `bash` is the person's interactive login
+    /// shell on a real pty: it reads their `~/.bash_profile`, and Tab
+    /// completes a unique path prefix.
+    #[test]
+    fn a_marked_host_shell_is_a_login_shell_and_tab_completes() {
+        use std::io::{Read as _, Write as _};
+        let bash = std::env::var_os("PATH")
+            .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|dir| dir.join("bash"))
+            .find(|path| path.is_file())
+            .expect("bash, the shell whose completion is under test");
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(
+            home.path().join(".bash_profile"),
+            "export FROM_PROFILE=login\n",
+        )
+        .unwrap();
+        std::fs::create_dir(home.path().join("fixture-unique-directory")).unwrap();
+        let session = tempfile::tempdir().unwrap();
+        let rc = session.path().join("runs.bash");
+        std::fs::write(&rc, crate::runs::bash_rc()).unwrap();
+        let account = crate::host::LoginAccount {
+            user: "you".into(),
+            home: home.path().to_path_buf(),
+            shell: bash,
+        };
+        let mut cmd = crate::host::host_command(
+            &account,
+            "xterm-256color",
+            &[],
+            Some(("k3y0fth1ss3ss10n", &rc)),
+        );
+        cmd.env("HISTFILE", home.path().join("history"));
+        cmd.env("INPUTRC", "/dev/null");
+        let (mut master, slave) = open_pty(80, 24).unwrap();
+        let mut child = spawn_on_pty(cmd, &slave, None).unwrap();
+        drop(slave);
+        let mut reader = master.try_clone().unwrap();
+        let (seen_tx, seen) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buffer = [0_u8; 4096];
+            while let Ok(n) = reader.read(&mut buffer) {
+                if n == 0 || seen_tx.send(buffer[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        master
+            .write_all(b"echo \"[$FROM_PROFILE]\" fixture-uni\t\n")
+            .unwrap();
+        let mut output = Vec::new();
+        let expected = "[login] fixture-unique-directory/";
+        tilo_test_env::wait_for("the completed line's output", || {
+            while let Ok(chunk) = seen.try_recv() {
+                output.extend(chunk);
+            }
+            String::from_utf8_lossy(&output)
+                .contains(expected)
+                .then_some(())
+        });
+        master.write_all(b"exit\n").unwrap();
+        child.wait().unwrap();
+    }
 
     #[test]
     fn guest_exit_and_failed_handoff_reap_the_exact_child() {

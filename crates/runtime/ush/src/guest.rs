@@ -184,10 +184,7 @@ impl GuestPlan {
         }
         std::fs::create_dir_all(&self.guest_home)?;
         if self.runs.is_some() {
-            std::fs::write(
-                self.session_dir.join("runs.bash"),
-                crate::runs::bash_rc(false),
-            )?;
+            std::fs::write(self.session_dir.join("runs.bash"), crate::runs::bash_rc())?;
         }
         for dir in ENVIRONMENT_VAR_DIRS {
             std::fs::create_dir_all(self.var_dir.join(dir))?;

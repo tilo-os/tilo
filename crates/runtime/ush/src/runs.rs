@@ -5,8 +5,8 @@
 //!
 //! Terminal names a key per session (`"runs"` in `open-session`). When the
 //! session's shell is `bash`, it starts with [`bash_rc`] as its rc file: the
-//! person's own rc first, then a `DEBUG` trap and a `PROMPT_COMMAND` that
-//! write
+//! startup files an interactive login shell reads first, then a `DEBUG` trap
+//! and a `PROMPT_COMMAND` that write
 //!
 //! ```text
 //! ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown
@@ -40,21 +40,30 @@ pub fn is_bash(shell: &Path) -> bool {
     shell.file_name().is_some_and(|name| name == "bash")
 }
 
-/// The rc file of a marked `bash`: `/etc/profile` first when `profile`
-/// (the Host target's login shell, which this replaces), then the person's
-/// `~/.bashrc`, then the marks.
+/// The rc file of a marked `bash`. A marked shell is the session's
+/// interactive login shell, so it reads what `bash --login` reads, which
+/// `--rcfile` would otherwise skip: `/etc/profile` (and with it the system's
+/// completion setup in `/etc/profile.d`), then the first of the person's
+/// `~/.bash_profile`, `~/.bash_login` and `~/.profile`. A home with none of
+/// them still gets its `~/.bashrc`. The marks come last, so nothing the
+/// person's files set replaces them.
 #[must_use]
-pub fn bash_rc(profile: bool) -> String {
+pub fn bash_rc() -> String {
     let mut rc = String::from("# ush: marks each command run for Terminal\n");
-    if profile {
-        rc.push_str("[ -f /etc/profile ] && . /etc/profile\n");
-    }
+    rc.push_str(LOGIN);
     rc.push_str(MARKS);
     rc
 }
 
-const MARKS: &str = r#"[ -f ~/.bashrc ] && . ~/.bashrc
-__ush_runs_key=$TILO_USH_RUNS
+const LOGIN: &str = r"[ -f /etc/profile ] && . /etc/profile
+if [ -f ~/.bash_profile ]; then . ~/.bash_profile
+elif [ -f ~/.bash_login ]; then . ~/.bash_login
+elif [ -f ~/.profile ]; then . ~/.profile
+elif [ -f ~/.bashrc ]; then . ~/.bashrc
+fi
+";
+
+const MARKS: &str = r#"__ush_runs_key=$TILO_USH_RUNS
 unset TILO_USH_RUNS
 __ush_runs_armed=0
 __ush_runs_ran=0
@@ -117,7 +126,7 @@ mod tests {
         };
         let home = tempfile::tempdir().unwrap();
         let rc = home.path().join("runs.bash");
-        std::fs::write(&rc, bash_rc(false)).unwrap();
+        std::fs::write(&rc, bash_rc()).unwrap();
         let key = "k3y0fth1ss3ss10n";
         let output = std::process::Command::new(bash)
             .args(["--rcfile", rc.to_str().unwrap(), "-i"])
