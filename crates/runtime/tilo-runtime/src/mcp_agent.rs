@@ -1712,42 +1712,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 });
             }
         }
-        // Resources and actions inside each running app, newest instance,
-        // every app asked at once: one that does not answer costs one wait,
-        // not one wait per app, and leaves the hits of those that did.
-        let mut searched: Vec<(String, String)> = Vec::new();
-        for app_id in &seen {
-            let name = app_names(std::slice::from_ref(app_id)).join("");
-            if wanted.as_ref().is_some_and(|wanted| *wanted != name) {
-                continue;
-            }
-            if let Some(provider) = running
-                .iter()
-                .rev()
-                .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
-                .map(|(peer, _)| peer.to_string())
-            {
-                searched.push((name, provider));
-            }
-        }
-        let answers = join_all(
-            searched
-                .iter()
-                .map(|(name, provider)| self.search_app(name, provider, &words))
-                .collect(),
-        )
-        .await;
-        let answers_asked = answers.len();
-        let mut silent: Vec<String> = Vec::new();
-        for ((name, _), answer) in searched.into_iter().zip(answers) {
-            match answer {
-                Ok(found) => hits.extend(found),
-                Err(_) => silent.push(name),
-            }
-        }
+        let (found, silent, asked) = self
+            .search_running(&seen, &running, wanted.as_deref(), &words)
+            .await;
+        hits.extend(found);
         // Nothing found because no app was searched is not "nothing
         // matches": an agent would take the resource for absent.
-        if hits.is_empty() && !silent.is_empty() && silent.len() == answers_asked {
+        if hits.is_empty() && !silent.is_empty() && silent.len() == asked {
             return Ok(Reply {
                 text: format!(
                     "not searched, the app did not answer: {}; try again",
@@ -1786,6 +1757,52 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             );
         }
         Ok(Reply::ok(text))
+    }
+
+    /// The hits inside each running app in `seen` (only `wanted`, when
+    /// named), newest instance, every app asked at once: one that does not
+    /// answer costs one wait, not one wait per app, and leaves the hits of
+    /// those that did. With the hits come the apps that did not answer and
+    /// how many apps were asked.
+    async fn search_running(
+        &self,
+        seen: &[String],
+        running: &[(u64, Value)],
+        wanted: Option<&str>,
+        words: &[String],
+    ) -> (Vec<Hit>, Vec<String>, usize) {
+        let mut searched: Vec<(String, String)> = Vec::new();
+        for app_id in seen {
+            let name = app_names(std::slice::from_ref(app_id)).join("");
+            if wanted.is_some_and(|wanted| wanted != name) {
+                continue;
+            }
+            if let Some(provider) = running
+                .iter()
+                .rev()
+                .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
+                .map(|(peer, _)| peer.to_string())
+            {
+                searched.push((name, provider));
+            }
+        }
+        let answers = join_all(
+            searched
+                .iter()
+                .map(|(name, provider)| self.search_app(name, provider, words))
+                .collect(),
+        )
+        .await;
+        let asked = answers.len();
+        let mut hits: Vec<Hit> = Vec::new();
+        let mut silent: Vec<String> = Vec::new();
+        for ((name, _), answer) in searched.into_iter().zip(answers) {
+            match answer {
+                Ok(found) => hits.extend(found),
+                Err(_) => silent.push(name),
+            }
+        }
+        (hits, silent, asked)
     }
 
     /// The hits inside one running app.
