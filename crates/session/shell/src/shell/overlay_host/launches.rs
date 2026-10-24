@@ -482,6 +482,27 @@ impl ShellOverlayHost {
         retired
     }
 
+    /// Escape on the permission prompt on screen answers it as its Deny
+    /// button does: dismissed, never allowed. The prompt holds the keyboard
+    /// while it is up, so without this a person who cannot point is stuck in
+    /// front of it. Returns whether there was a prompt to answer.
+    pub(super) fn dismiss_permission_prompt(&mut self) -> bool {
+        let (Some(chrome), Some(id)) = (self.chrome.clone(), self.permission_prompt_id) else {
+            return false;
+        };
+        if self.permission_prompt.is_none() {
+            return false;
+        }
+        let _ = crate::shell::search::providers::permission_prompts::answer_pending_prompt(
+            &mut chrome.borrow_mut(),
+            id,
+            ui::widget::PromptChoice::Deny,
+        );
+        self.permission_prompt = None;
+        self.permission_prompt_id = None;
+        true
+    }
+
     pub fn pump_permission_prompt(&mut self) {
         let Some(chrome_handle) = self.chrome.clone() else {
             return;
