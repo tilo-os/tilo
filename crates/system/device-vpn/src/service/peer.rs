@@ -48,12 +48,15 @@ mod tests {
             ..shell.clone()
         };
         assert!(decide(&seat, &app).is_err(), "a sandboxed app");
-        let script = PeerFacts {
-            exe: Some(PathBuf::from("/usr/bin/bash")),
+        let other = PeerFacts {
+            uid: 1001,
             ..shell.clone()
         };
-        assert!(decide(&seat, &script).is_err(), "the person's own script");
-        let other = PeerFacts { uid: 1001, ..shell };
         assert!(decide(&seat, &other).is_err(), "another account's shell");
+        let script = PeerFacts {
+            exe: Some(PathBuf::from("/usr/bin/bash")),
+            ..shell
+        };
+        assert!(decide(&seat, &script).is_err(), "the person's own script");
     }
 }

@@ -408,6 +408,8 @@ qs-bluetooth-device-paired-a11y = Gekoppelt; zum Verbinden aktivieren
 
 # Schnelleinstellungen: VPN
 qs-vpn-empty = Keine VPN-Profile. Füge eines in den Einstellungen hinzu.
+qs-device-vpn-through = Über { $device }
+qs-device-vpn-unnamed = dein anderes Gerät
 
 # Fehler der Schnelleinstellungen als Benachrichtigungen
 qs-action-failed-refreshing = { $error }. Der aktuelle Gerätezustand wird aktualisiert.
@@ -1790,6 +1792,13 @@ search-continuity-unlock-deny = { $device } gesperrt lassen (Code { $code })
 search-continuity-unlock-subtitle = Es wurde neu gestartet und möchte seine verschlüsselte Festplatte öffnen
 search-continuity-device-remove = { $device } aus deinen Geräten entfernen
 search-continuity-device-remove-subtitle = Es kann nicht mehr für dich handeln und seine Festplatte nicht mehr über deine Geräte entsperren
+search-continuity-vpn-through = Datenverkehr dieses Geräts über { $device } leiten
+search-continuity-vpn-stop = Datenverkehr nicht mehr über { $device } leiten
+search-continuity-vpn-subtitle = Deine Geräte als VPN
+search-continuity-vpn-exit-stop = { $device } die Verbindung dieses Geräts nicht mehr nutzen lassen
+search-continuity-vpn-exit-subtitle = Die Verbindung dieses Geräts mit deinen anderen Geräten teilen
+search-continuity-vpn-share = Die Verbindung dieses Geräts mit deinen anderen Geräten teilen
+search-continuity-vpn-unshare = Die Verbindung dieses Geräts nicht mehr teilen
 device-unlock-error-not-pending = Diese Entsperranfrage wartet nicht mehr
 device-unlock-error-cannot-remove = Dieses Gerät kann jenes Gerät nicht entfernen
 device-unlock-error-no-identity = Dieses Gerät hat deine Identität nicht

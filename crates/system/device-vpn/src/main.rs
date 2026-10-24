@@ -102,7 +102,7 @@ mod linux {
     }
 
     /// Undo what an earlier helper left: at boot nothing it set up survived
-    /// but NetworkManager's global DNS, which NetworkManager keeps.
+    /// but `NetworkManager`'s global DNS, which `NetworkManager` keeps.
     fn reset() -> ExitCode {
         let backend = LinuxBackend::new(Config::default());
         let record = backend.load();

@@ -9,6 +9,13 @@
 //! both namespaces, runs the tunnel between the two descriptors.
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    reason = "in a test these are the assertion, not a hazard"
+)]
 
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
@@ -37,11 +44,13 @@ const CLIENT_ADDRESS: Ipv4Addr = Ipv4Addr::new(100, 100, 64, 2);
 /// An address on a network only the exit's namespace is attached to.
 const SERVER: SocketAddrV4 = SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 1), 7777);
 
+/// `ip` where the helper finds it.
 fn ip(args: &str) {
-    let status = Command::new("ip")
+    let program = Config::default().ip;
+    let status = Command::new(&program)
         .args(args.split_whitespace())
         .status()
-        .unwrap_or_else(|error| panic!("ip {args}: {error}"));
+        .unwrap_or_else(|error| panic!("{} {args}: {error}", program.display()));
     assert!(status.success(), "ip {args}: {status}");
 }
 
@@ -236,8 +245,35 @@ async fn endpoint() -> Endpoint {
         .unwrap()
 }
 
+/// What the test needs from the machine, or what is missing.
+fn machine_ready() -> Result<(), String> {
+    let config = Config::default();
+    for (name, path) in [("ip", &config.ip), ("nft", &config.nft)] {
+        if !path.exists() {
+            return Err(format!("no {name} at {}", path.display()));
+        }
+    }
+    if !Path::new("/dev/net/tun").exists() {
+        return Err("no /dev/net/tun".into());
+    }
+    let status = Command::new("unshare")
+        .args(["--user", "--map-root-user", "--net", "--", "true"])
+        .status()
+        .map_err(|error| format!("unshare: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("unshare --user --map-root-user --net: {status}"))
+    }
+}
+
 #[test]
 fn packets_cross_two_network_namespaces() {
+    tilo_test_env::require_capability!(
+        NetworkTunnel,
+        machine_ready(),
+        "the namespaces need TUN devices, ip and nft"
+    );
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("roles.sock");
     let listener = UnixListener::bind(&socket).unwrap();

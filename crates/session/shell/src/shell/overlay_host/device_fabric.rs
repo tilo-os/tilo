@@ -103,6 +103,9 @@ pub struct DeviceFabricView {
     pub(crate) remote_capture: crate::shell::remote_capture::runtime::RemoteCaptureView,
     /// Boots of the person's devices waiting for `device.unlock` here.
     pub device_unlocks: Vec<crate::shell::device_unlock_runtime::DeviceUnlockConsentView>,
+    /// Routing traffic through the person's devices, as this session last
+    /// published it; `None` where it does not run.
+    pub device_vpn: Option<settings_store::device_vpn::DeviceVpnStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,6 +236,22 @@ pub enum DeviceFabricUiAction {
     AuthorizeDeviceUnlock {
         request_digest: [u8; 32],
         approved: bool,
+    },
+    /// Route this device's traffic through `device` (endpoint id, hex).
+    RouteThrough {
+        device: String,
+    },
+    /// Stop routing this device's traffic through `device`.
+    StopRouteThrough {
+        device: String,
+    },
+    /// Stop `device` routing its traffic through this one.
+    StopExitUser {
+        device: String,
+    },
+    /// Let the person's other devices route through this one, or stop.
+    ShareConnection {
+        on: bool,
     },
     /// Remove a device from the person's fleet.
     RemoveDevice {

@@ -112,6 +112,21 @@ pub enum ClientState {
     Reconnecting { blocking: bool },
     /// The other device turned this one away.
     Refused { reason: Refusal },
+    /// This device could not set the route up.
+    Failed { problem: Problem },
+}
+
+/// Why this device could not set its route up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Problem {
+    /// The system part that routes traffic is not installed here.
+    NotInstalled,
+    /// The system refused the route.
+    Setup,
+    /// Only the other device's home network was asked for, and it is on
+    /// none this device can reach through it.
+    NoHomeNetwork,
 }
 
 /// Why another device turned this one away.
