@@ -743,7 +743,7 @@ impl Device {
 
     /// What `asked`, a request this device's session makes, answers, while
     /// the device's loop keeps turning as the compositor's does meanwhile.
-    fn answer<T: Send + 'static>(
+    pub(crate) fn answer<T: Send + 'static>(
         &self,
         what: &str,
         asked: impl std::future::Future<Output = T> + Send + 'static,

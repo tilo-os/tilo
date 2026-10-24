@@ -704,18 +704,15 @@ impl Door {
             saved_by: Some(bob()),
             ..shortcut.clone()
         };
-        let net = std::sync::Arc::clone(device.net());
-        let runtime = net.runtime_handle().expect("the network's runtime");
-        runtime
-            .block_on(
-                crate::shell::broker_services::NativeShortcutLibrary::commit(
-                    device.tree.clone(),
-                    Some(std::sync::Arc::clone(&net)),
-                    self.room,
-                    bob(),
-                    tilo_automation::ShortcutChange::Save(Box::new(saved)),
-                ),
-            )
+        let saving = crate::shell::broker_services::NativeShortcutLibrary::commit(
+            device.tree.clone(),
+            Some(std::sync::Arc::clone(device.net())),
+            self.room,
+            bob(),
+            tilo_automation::ShortcutChange::Save(Box::new(saved)),
+        );
+        device
+            .answer("Bob's shortcut save", saving)
             .expect("a member saves a scheduled shortcut from his device");
         let id = shortcut.id.clone();
         until(
