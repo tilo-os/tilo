@@ -95,13 +95,14 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
     });
     let status = Badge::text(format!("{} {}", data.status, data.status_text))
         .style(ChipStyle::Tinted(status_tone(data.status_class())));
-    let size = ui::format::size(u64::try_from(data.size_bytes).unwrap_or(u64::MAX));
-    let summary = Row::new()
+    let mut summary = Row::new()
         .push(Box::new(status))
         .push(caption(&human_duration(data.duration_ms)))
-        .push(caption(&size))
-        .push(Box::new(Spacer::new()))
-        .push(Box::new(switch));
+        .push(caption(&size_caption(data)));
+    if let Some(shown) = shown_caption(data) {
+        summary = summary.push(caption(&shown));
+    }
+    let summary = summary.push(Box::new(Spacer::new())).push(Box::new(switch));
     let (slot, handle) = Slot::new(body(data, view));
     let column = Column::new()
         .with_no_padding()
@@ -110,6 +111,33 @@ pub(crate) fn response(data: &ResponseData, view: ResponseView, sink: &Sink) -> 
     Built {
         element: Box::new(column),
         body: handle,
+    }
+}
+
+fn size(bytes: usize) -> String {
+    ui::format::size(u64::try_from(bytes).unwrap_or(u64::MAX))
+}
+
+/// The body's size; a lower bound when the server declared none and only
+/// its start was downloaded.
+pub(crate) fn size_caption(data: &ResponseData) -> String {
+    if data.size_exact {
+        size(data.size_bytes)
+    } else {
+        format!("More than {}", size(data.size_bytes))
+    }
+}
+
+/// How the body view shows the body, when it is not the whole of it as
+/// text: only its start, or in hex.
+pub(crate) fn shown_caption(data: &ResponseData) -> Option<String> {
+    let partial = !data.size_exact || data.shown_bytes < data.size_bytes;
+    let shown = size(data.shown_bytes);
+    match (data.binary, partial) {
+        (true, true) => Some(format!("First {shown} shown as hex")),
+        (true, false) => Some("Shown as hex".to_owned()),
+        (false, true) => Some(format!("First {shown} shown")),
+        (false, false) => None,
     }
 }
 
