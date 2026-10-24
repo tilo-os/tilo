@@ -238,9 +238,6 @@ struct GovernedRoom {
     /// Every host of the room, each its own signed address, this host's
     /// first ([`Rooms::refresh_hosts`]): what its join answers carry.
     hosts: Vec<tilo_peer_state::join::TransportHint>,
-    /// The hosts of this host's person serving the room as well, as
-    /// recorded beside it ([`hosts`]).
-    member_hosts: Vec<tilo_peer_state::join::TransportHint>,
     /// The session each of those hosts last opened here that this host
     /// answered ([`Rooms::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
@@ -347,7 +344,6 @@ impl GovernedRoom {
             keeping: false,
             rebased: false,
             hosts: Vec::new(),
-            member_hosts: Vec::new(),
             answered: HashMap::new(),
         };
         this.persist()?;
@@ -385,7 +381,6 @@ impl GovernedRoom {
         }
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
-        let member_hosts = hosts::load_hosts(&path)?;
         let stewardship = path
             .parent()
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
@@ -405,7 +400,6 @@ impl GovernedRoom {
             keeping: false,
             rebased: false,
             hosts: Vec::new(),
-            member_hosts,
             answered: HashMap::new(),
         })
     }
