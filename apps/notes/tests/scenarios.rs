@@ -184,7 +184,7 @@ fn shown_title(scenario: Option<&str>) -> Option<&'static str> {
 /// it.
 fn bar_says(text: &str, action: Option<&str>) -> bool {
     ui::window_toolbar::notice().is_some_and(|notice| {
-        notice.text == text && notice.action.map(|button| button.name).as_deref() == action
+        notice.text == text && notice.actions.first().map(|button| button.name.as_str()) == action
     })
 }
 
@@ -470,7 +470,8 @@ fn reached(
                 && ui::window_toolbar::notice().is_some_and(|notice| {
                     notice.text.starts_with("Save failed")
                         && notice
-                            .action
+                            .actions
+                            .first()
                             .is_some_and(|action| action.name == "Try again")
                 })
         }

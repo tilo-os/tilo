@@ -325,7 +325,7 @@ fn a_failed_saves_try_again_stays_in_the_window_bar_wide_and_compact() {
     app.settle();
     let held = ui::window_toolbar::notice().expect("the failure is in the bar");
     assert_eq!(
-        held.action.as_ref().map(|action| action.id.as_str()),
+        held.actions.first().map(|action| action.id.as_str()),
         Some(crate::app::notices::SAVE_RETRY_ACTION),
         "with Try again beside it: {held:?}"
     );
@@ -334,7 +334,7 @@ fn a_failed_saves_try_again_stays_in_the_window_bar_wide_and_compact() {
             .harness()
             .window_bar_notice(width)
             .expect("the failure is up in the bar");
-        let button = shown.button.as_ref().expect("Try again stands in the row");
+        let button = shown.buttons.first().expect("Try again stands in the row");
         assert_eq!(button.name, "Try again");
         assert!(
             button.bounds.x0 > shown.text_bounds.x1,

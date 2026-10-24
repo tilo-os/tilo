@@ -90,8 +90,14 @@ impl ToolbarRow {
             transform,
             (tr, theme),
             (
-                interaction.hover == Some(Slot::Notice),
-                interaction.pressed == Some(Slot::Notice),
+                match interaction.hover {
+                    Some(Slot::Notice(i)) => Some(i),
+                    _ => None,
+                },
+                match interaction.pressed {
+                    Some(Slot::Notice(i)) => Some(i),
+                    _ => None,
+                },
             ),
         );
     }
@@ -294,21 +300,20 @@ pub(super) fn paint_slots(
             overflow,
         );
     }
-    if let Some(action) = toolbar
+    let actions = toolbar
         .notice
         .as_ref()
-        .and_then(|notice| notice.action.as_ref())
-        .filter(|_| slots.notice.area() > 0.0)
-    {
-        let lifted = face(Slot::Notice, action.enabled, false);
-        if slots.notice_labelled {
-            let face = labelled_face(slots.notice, &action.name)
+        .map_or(&[][..], |notice| notice.actions.as_slice());
+    for (i, (action, rect)) in actions.iter().zip(&slots.notice).enumerate() {
+        let lifted = face(Slot::Notice(i), action.enabled, false);
+        if slots.notice_labelled.get(i).copied().unwrap_or(false) {
+            let face = labelled_face(*rect, &action.name)
                 .hovered(lifted.hovered && lifted.enabled)
                 .pressed(lifted.pressed && lifted.enabled)
                 .disabled(!lifted.enabled);
             crate::widget::Button::paint(scene, transform, tr, theme, &face);
         } else if let Some(icon) = Icon::from_name(&action.icon) {
-            paint_icon_button(scene, transform, tr, theme, (slots.notice, icon), lifted);
+            paint_icon_button(scene, transform, tr, theme, (*rect, icon), lifted);
         }
     }
     let editing = interaction.is_some_and(|i| i.editing);

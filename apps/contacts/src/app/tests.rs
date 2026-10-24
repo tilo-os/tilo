@@ -276,7 +276,7 @@ fn announced(_app: &ContactsApp, message: &str) -> bool {
 fn press_notice_button(app: &mut Live, name: &str) {
     app.settle();
     let button = ui::window_toolbar::notice()
-        .and_then(|notice| notice.action)
+        .and_then(|notice| notice.actions.into_iter().next())
         .unwrap_or_else(|| panic!("the window's bar offers {name} beside its notice"));
     assert_eq!(button.name, name);
     app.harness_mut()
