@@ -868,6 +868,14 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
     bind_workspaces_to_rooms(&mut tree);
+    let orphaned = tree.drop_orphaned_placements();
+    if !orphaned.is_empty() {
+        tracing::info!(
+            target: tilo_startup_metrics::REPAIR_TARGET,
+            ?orphaned,
+            "rooms waiting to be placed with no workspace are placed no more"
+        );
+    }
     drop_unidentifiable_windows(&mut tree);
     tree.prune_local_app_records();
     tree.prune_package_launches();
