@@ -183,11 +183,12 @@ fn gallery_cards_wrap_to_available_width_with_measured_gaps() {
 fn large_text_reflows_controls_and_the_form_without_covering_chrome() {
     let mut one = frame("editor", (480, 4000), 1.0);
     // At double text the list no longer fits beside the editor: the editor
-    // is a screen of its own, with Back in the window bar.
+    // is a screen of its own, the top-level page, and the window bar's
+    // sidebar toggle reaches the list.
     let mut two = frame("editor", (480, 4000), 2.0);
     assert!(
-        !bar(&mut two).leading.is_empty(),
-        "Back is the window bar's"
+        bar(&mut two).sidebar.is_some(),
+        "the list's toggle is the window bar's"
     );
     let preview = rect(&mut two, "theme-preview");
     assert!(
