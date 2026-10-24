@@ -767,6 +767,24 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-rollback" },
 ]
 
+# Signing in: tilo-authd checks every secret, pam_tilo asks it from every PAM
+# service, and tilo-auth signs in at boot. tilo-auth is in the rollback layer
+# so the initramfs, built after it, can carry it as it carries tilo-rollback.
+[[component]]
+name = "sign-in"
+kind = "userspace"
+scope = "vm"
+outside_sessions = true
+packages = ["tilo-auth", "pam-tilo"]
+bins = ["tilo-authd", "tilo-auth"]
+units = ["tilo-authd.service"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-authd", to = "/usr/libexec/tilo/tilo-authd", mode = "0755" },
+  { from = "tilo-auth", to = "/usr/libexec/tilo/tilo-auth", mode = "0755" },
+  { from = "libpam_tilo.so", to = "/usr/lib64/security/pam_tilo.so", mode = "0755" },
+]
+
 [[component]]
 name = "sibling-unlock"
 kind = "boot"
