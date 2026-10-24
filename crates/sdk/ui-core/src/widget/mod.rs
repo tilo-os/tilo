@@ -3262,6 +3262,8 @@ pub mod badge;
 pub use badge::{Badge, BadgeContent, BadgeFace};
 pub mod icon;
 pub use icon::{IconSize, IconWidget};
+pub mod signal_meter;
+pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace};
 pub mod chart;
 pub use chart::{
     Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,

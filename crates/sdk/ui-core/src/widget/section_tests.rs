@@ -375,3 +375,41 @@ fn status_lines_and_object_headers_sit_on_the_content_edge() {
     let node = Widget::accessibility(&head).unwrap();
     assert_eq!(node.name.as_deref(), Some("example.org"));
 }
+
+#[test]
+fn a_section_says_whether_the_pointer_is_over_it() {
+    let over = Rc::new(Cell::new(false));
+    let section = Section::new(vec![
+        Box::new(ListRow::new("a", "Ada")),
+        Box::new(ListRow::new("b", "Grace")),
+    ])
+    .pointer_over(Rc::clone(&over));
+    let mut harness = FrameHarness::new_with_theme(
+        crate::State::new(),
+        Box::new(
+            crate::widget::Column::new()
+                .with_no_padding()
+                .push(Box::new(section)),
+        ),
+        (500, 400),
+        Theme::dark(),
+    );
+    let whole = rect(&harness.inspection().root.children[0]);
+    let rows = whole;
+    assert!(whole.y1 < 380.0, "the section is shorter than the window");
+    harness.send(&crate::synthetic_input::cursor_moved(
+        rows.center().x,
+        rows.center().y,
+    ));
+    assert!(over.get(), "over a row");
+    harness.send(&crate::synthetic_input::cursor_moved(10.0, whole.y1 + 10.0));
+    assert!(!over.get(), "below the section");
+    harness.send(&crate::synthetic_input::cursor_moved(
+        rows.center().x,
+        rows.center().y,
+    ));
+    harness.send(&WindowEvent::CursorLeft {
+        device_id: winit::event::DeviceId::dummy(),
+    });
+    assert!(!over.get(), "the pointer left the window");
+}

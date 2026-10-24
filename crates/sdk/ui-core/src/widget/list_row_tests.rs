@@ -398,6 +398,7 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         RowLeading::Media(MediaArt::Placeholder, MediaAspect::Wide),
         RowLeading::Checkbox { checked: true },
         RowLeading::Swatch(theme.tokens.colors.semantic.info),
+        RowLeading::Signal(crate::widget::SignalLevel::Good),
         RowLeading::Paint(&painter),
     ];
     for kind in kinds {

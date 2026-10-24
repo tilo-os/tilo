@@ -73,6 +73,9 @@ pub enum RowLeading<'a> {
     Checkbox { checked: bool },
     /// A colour that is the row's content (a calendar's colour, a label).
     Swatch(Color),
+    /// How strong a radio signal is (a Wi-Fi network): the
+    /// [`SignalMeterFace`](crate::widget::SignalMeterFace) at icon size.
+    Signal(crate::widget::SignalLevel),
     /// A painter for a leading mark no other kind covers (a font sample, a
     /// waveform), given the leading slot.
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
@@ -91,6 +94,7 @@ impl std::fmt::Debug for RowLeading<'_> {
                 .field("checked", checked)
                 .finish(),
             Self::Swatch(colour) => f.debug_tuple("Swatch").field(colour).finish(),
+            Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
             Self::Paint(_) => f.write_str("Paint"),
         }
     }
@@ -781,9 +785,12 @@ impl<'a> ListRowFace<'a> {
         let avatar = RowMetrics::avatar(theme, extra);
         let own = match self.leading {
             None => (0.0, 0.0),
-            Some(RowLeading::Icon(_) | RowLeading::Checkbox { .. } | RowLeading::Swatch(_)) => {
-                (m.icon, m.icon)
-            }
+            Some(
+                RowLeading::Icon(_)
+                | RowLeading::Checkbox { .. }
+                | RowLeading::Swatch(_)
+                | RowLeading::Signal(_),
+            ) => (m.icon, m.icon),
             Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => {
                 (avatar, avatar)
             }
@@ -1512,6 +1519,15 @@ impl<'a> ListRowFace<'a> {
                     &Circle::new(r.center(), r.width() / 2.0 - 0.5),
                 );
             }
+            RowLeading::Signal(level) => {
+                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
+                crate::widget::SignalMeterFace::new(level).paint(
+                    ctx.scene,
+                    ctx.transform,
+                    theme,
+                    r,
+                );
+            }
             RowLeading::Paint(painter) => painter(ctx, slot),
         }
     }
@@ -1690,6 +1706,7 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
+    Signal(crate::widget::SignalLevel),
 }
 
 /// What a retained hover action runs.
@@ -2127,6 +2144,18 @@ impl ListRow {
     #[must_use]
     pub fn swatch(mut self, colour: Color) -> Self {
         self.leading = Some(Leading::Swatch(colour));
+        self
+    }
+
+    /// See [`RowLeading::Signal`]: the row leads with how strong its
+    /// signal is, and is described by the meter's name ("Strong signal")
+    /// unless a tooltip already says more.
+    #[must_use]
+    pub fn signal(mut self, level: crate::widget::SignalLevel) -> Self {
+        self.leading = Some(Leading::Signal(level));
+        if self.leading_tooltip.is_none() {
+            self.leading_tooltip = Some(level.name());
+        }
         self
     }
 
@@ -2619,6 +2648,7 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
+                Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
         if let Some((kind, id)) = &self.status {
@@ -2689,7 +2719,12 @@ impl ListRow {
         let theme = self.theme.as_ref()?;
         if !matches!(
             self.leading,
-            Some(Leading::Checkbox { .. } | Leading::Badge(_) | Leading::Icon(_))
+            Some(
+                Leading::Checkbox { .. }
+                    | Leading::Badge(_)
+                    | Leading::Icon(_)
+                    | Leading::Signal(_)
+            )
         ) {
             return None;
         }
