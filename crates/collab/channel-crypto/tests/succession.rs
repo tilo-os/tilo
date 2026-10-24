@@ -147,8 +147,8 @@ fn the_new_governor_stewards_the_channel_from_its_own_group_and_members_follow()
         .unwrap();
     deliver(&mut old, &mut successor_view, &recipient);
     deliver(&mut old, &mut writing, &writer);
-    let mut waiting = asking.member(channel, &old_host);
-    let pending = asking.ask(&mut waiting, 1);
+    let mut queued = asking.member(channel, &old_host);
+    let pending = asking.ask(&mut queued, 1);
     let before = written(&writing, artifact, b"before the move");
     let epoch = old.epoch();
     assert_eq!(successor_view.access(), Access::Ready { epoch });
@@ -171,10 +171,21 @@ fn the_new_governor_stewards_the_channel_from_its_own_group_and_members_follow()
     assert_eq!(steward.epoch(), epoch);
     assert!(steward.journal().encryption_required());
     assert!(writing.follow_steward(recipient.public()).unwrap());
-    assert!(waiting.follow_steward(recipient.public()).unwrap());
+    assert!(queued.follow_steward(recipient.public()).unwrap());
 
-    // Its first reconcile takes the old host out and answers the request
-    // the old host left pending, as the waiting device asks again.
+    // Its first frame takes the old host out, at the next epoch.
+    let outcome = steward
+        .reconcile(&allowed(&[&writer, &asking]), &BTreeMap::new(), &vault())
+        .unwrap();
+    assert_eq!(outcome.removed, vec![old_host.public()]);
+    assert_eq!(steward.epoch(), epoch + 1);
+    assert_eq!(
+        deliver(&mut steward, &mut writing, &writer),
+        [MemberEvent::Advanced { epoch: epoch + 1 }]
+    );
+
+    // The request the old host left pending is answered once the waiting
+    // device asks the new steward again.
     let outcome = steward
         .reconcile(
             &allowed(&[&writer, &asking]),
@@ -182,16 +193,13 @@ fn the_new_governor_stewards_the_channel_from_its_own_group_and_members_follow()
             &vault(),
         )
         .unwrap();
-    assert_eq!(outcome.removed, vec![old_host.public()]);
     assert_eq!(outcome.admitted, vec![asking.public()]);
-    assert!(steward.epoch() > epoch);
-    assert!(
-        deliver(&mut steward, &mut writing, &writer)
-            .iter()
-            .all(|event| matches!(event, MemberEvent::Advanced { .. }))
+    assert_eq!(
+        deliver(&mut steward, &mut writing, &writer),
+        [MemberEvent::Advanced { epoch: epoch + 2 }]
     );
     assert!(
-        deliver(&mut steward, &mut waiting, &asking)
+        deliver(&mut steward, &mut queued, &asking)
             .iter()
             .any(|event| matches!(event, MemberEvent::Joined { .. }))
     );
@@ -205,7 +213,7 @@ fn the_new_governor_stewards_the_channel_from_its_own_group_and_members_follow()
     // The new governor reads what was written before and after the move,
     // and so does the device whose request waited through it.
     let after = written(&writing, artifact, b"after the move");
-    for keys in [steward.content_keys().ok(), waiting.content_keys()] {
+    for keys in [steward.content_keys().ok(), queued.content_keys()] {
         assert!(reads(keys.clone(), artifact, &before));
         assert!(reads(keys, artifact, &after));
     }
@@ -281,10 +289,11 @@ fn a_member_follows_only_the_steward_governance_names() {
     steward
         .reconcile(&allowed(&[&writer]), &BTreeMap::new(), &vault())
         .unwrap();
-    assert!(
-        deliver(&mut steward, &mut writing, &writer)
-            .iter()
-            .all(|event| matches!(event, MemberEvent::Advanced { .. }))
+    assert_eq!(
+        deliver(&mut steward, &mut writing, &writer),
+        [MemberEvent::Advanced {
+            epoch: steward.epoch()
+        }]
     );
     assert_eq!(
         writing.access(),
