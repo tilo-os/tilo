@@ -3839,7 +3839,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 
     /// The tree, its rows shared with the last walk where nothing they are
-    /// built from changed ([`Self::access_rows`]): a walk while the tree
+    /// built from changed (`Self::access_rows`): a walk while the tree
     /// is unchanged (a keystroke in the editor beside it) builds no row.
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};

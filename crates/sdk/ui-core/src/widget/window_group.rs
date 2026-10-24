@@ -1139,7 +1139,7 @@ impl WindowGroup {
     }
 
     /// The widths this window may be resized to: the strictest minimum and
-    /// maximum any of its tabs' apps states ([`AppWidget::min_window_width`]),
+    /// maximum any of its tabs' apps states ([`crate::widget::AppWidget::min_window_width`]),
     /// never below the strip's floor. Every tab shares the window's width, so
     /// a background tab's minimum binds as much as the shown one's.
     pub fn width_limits(&self) -> WidthLimits {

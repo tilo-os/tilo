@@ -3088,7 +3088,7 @@ impl ActionPalette {
         self.refusal = Some(message);
     }
 
-    /// The refusal the palette is showing, if any ([`Self::show_refusal`]).
+    /// The refusal the palette is showing, if any (`Self::show_refusal`).
     pub fn refusal(&self) -> Option<&str> {
         self.refusal.as_deref().filter(|_| self.open)
     }

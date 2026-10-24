@@ -4,9 +4,9 @@
 //!
 //! Without `lazy-image-decode` they are linked and always there. With it,
 //! nothing in the toolkit names them: the program hands over a loader
-//! ([`defer_image_decoders`]) that fetches their code the first time
+//! (`defer_image_decoders`) that fetches their code the first time
 //! something decodes and passes back [`builtin_image_decoders`]
-//! ([`install_image_decoders`]). Until then page images are left out and an
+//! (`install_image_decoders`). Until then page images are left out and an
 //! image store holds the pictures it fetched as undecoded, loading them again
 //! once the decoders are in. The browser desktop uses this to keep the
 //! decoders out of its start module.
@@ -25,7 +25,7 @@ pub struct ImageDecoders {
     pub bounded: fn(&[u8], u32) -> Option<DecodedImage>,
 }
 
-/// Hands over the decoders, for [`install_image_decoders`].
+/// Hands over the decoders, for `install_image_decoders`.
 pub type MakeImageDecoders = fn() -> ImageDecoders;
 
 /// The `image` crate's decoders.

@@ -4,7 +4,7 @@
 //! 10-bit. Two paths bring that to the screen without the CPU touching a
 //! pixel:
 //!
-//! * **Zero-copy.** The picture never left the GPU: [`crate::dmabuf_import`]
+//! * **Zero-copy.** The picture never left the GPU: `crate::dmabuf_import`
 //!   aliases its dmabuf as textures. Reachable only for a linear buffer (see
 //!   that module for why).
 //! * **Plane upload.** The decoder produced planes in system memory — what

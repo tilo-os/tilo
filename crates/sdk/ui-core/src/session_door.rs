@@ -3,7 +3,7 @@
 //! An app offers to open another installed app as an action of its own
 //! ([`ApplicationLaunch`]). Run, that action becomes the workspace's `open`
 //! of the app ([`ApplicationLaunch::target`]), asked of the session's action
-//! door: the window never starts anything itself. [`start_application_launch`]
+//! door: the window never starts anything itself. `start_application_launch`
 //! is that step for every host; a host supplies only its door
 //! ([`SessionDoor`]). A native window's door is its session broker; a page's
 //! is the page's own session, served to it as a [`RemoteActions`] client

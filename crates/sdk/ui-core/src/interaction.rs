@@ -366,7 +366,7 @@ pub enum TouchClaim {
     Pointer,
     /// A drag moves something (a canvas item, a text selection): past the
     /// tap's slop it is a left-button drag; a tap and a hold are as for
-    /// [`Self::Pointer`] ([`Widget::drags_by_touch`](crate::widget::Widget::drags_by_touch)).
+    /// [`Self::Pointer`] ([`Widget::touch_claim`](crate::widget::Widget::touch_claim)).
     Drag,
     /// A held item can be picked up and moved (a page in a list that also
     /// scrolls): a drag scrolls as for [`Self::Pointer`], but a still hold

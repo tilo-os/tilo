@@ -146,7 +146,7 @@ thread_local! {
 /// for the duration of its resolution and dispatch on this thread.
 ///
 /// Resource collection for resolution
-/// ([`crate::widget::Widget::resources_for`]) and view operations read it,
+/// ([`crate::resources::PublishesResources::resources_for`]) and view operations read it,
 /// so an invocation is resolved against the invoker's own view, rebuilt at
 /// invoke time, never against a published snapshot. Scopes nest; dropping
 /// the guard restores the enclosing invoker.

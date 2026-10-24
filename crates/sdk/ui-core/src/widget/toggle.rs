@@ -9,7 +9,7 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 
-/// A switch: a [`BoolControl`] drawn as a pill whose knob slides to the
+/// A switch: a `BoolControl` drawn as a pill whose knob slides to the
 /// checked side.
 pub struct Toggle {
     semantic_id: String,

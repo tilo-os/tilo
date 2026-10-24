@@ -2789,7 +2789,7 @@ impl TabBar {
     }
 
     /// True if `id` is mid close-fade — already gone from the live tab list
-    /// but still rendering its the close fade ([`close_fade`]) animation. A caller that
+    /// but still rendering its the close fade (`close_fade`) animation. A caller that
     /// reconciles pills against its own model checks this before
     /// re-inserting a still-open item, so cancelling a close (e.g. answering
     /// "no" to a discard-unsaved-changes prompt) doesn't pop a duplicate

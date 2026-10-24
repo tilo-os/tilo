@@ -23,7 +23,7 @@ use super::scrollbar::{BarFade, PAGE_FRACTION, PressOutcome, ScrollMetrics, Scro
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 
-/// See the [module docs](self).
+/// See the module docs.
 #[derive(Debug)]
 pub struct ScrollRegion {
     axis: ScrollAxis,

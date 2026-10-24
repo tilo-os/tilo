@@ -12,7 +12,7 @@
 //!
 //! Answers arrive as [`LocalState`] values, so a bound view updates and an
 //! idle window wakes when one lands. A root that owns a client returns it
-//! from [`Widget::collaborative_mut`](crate::widget::Widget::collaborative_mut)
+//! as its [`Collaborative`] capability
 //! (or forwards to it), which is how its requests reach the connection and
 //! the answers come back.
 //!

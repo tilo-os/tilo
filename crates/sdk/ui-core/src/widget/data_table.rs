@@ -6,7 +6,7 @@
 //! instead delegates order and paging to [`TableModel`]. Its sparse viewport
 //! keeps memory proportional to measured/visible rows even when the logical
 //! model has hundreds of millions of entries. Keyed, variable-height row
-//! virtualization ([`DataTable::set_viewport`]/[`DataTable::visible_row_range`])
+//! virtualization ([`DataTableCore::set_viewport`]/[`DataTableCore::visible_row_range`])
 //! windows paint, hit testing, fetching, scrolling, and accessibility to the
 //! same visible rows.
 
@@ -948,7 +948,7 @@ impl<Row: 'static> DataTable<Row> {
         ))
     }
 
-    /// [`DataTableCore::tree`], reading this table's rows.
+    /// `DataTableCore::tree`, reading this table's rows.
     #[must_use]
     pub fn tree(
         self,
@@ -965,7 +965,7 @@ impl<Row: 'static> DataTable<Row> {
         ))
     }
 
-    /// [`DataTableCore::with_row_key`], reading this table's rows.
+    /// `DataTableCore::with_row_key`, reading this table's rows.
     #[must_use]
     pub fn with_row_key<F>(self, key: F) -> Self
     where
@@ -995,7 +995,7 @@ impl<Row: 'static> DataTable<Row> {
             .collect()
     }
 
-    /// [`DataTableCore::sort_by_with`], comparing this table's rows.
+    /// `DataTableCore::sort_by_with`, comparing this table's rows.
     pub fn sort_by_with<F>(&mut self, cmp: F, key: &str, ascending: bool)
     where
         F: Fn(&Row, &Row) -> Ordering + Send + Sync + 'static,
@@ -1509,10 +1509,10 @@ impl DataTableCore {
         &mut self.rows
     }
 
-    /// Reconcile edits made through [`Self::rows_mut`]: cell controls stay
+    /// Reconcile edits made through `Self::rows_mut`: cell controls stay
     /// mounted by row key (so a field being typed into keeps its focus),
     /// and only the rows named in [`TableModelChange::RowsChanged`] rebuild
-    /// theirs. Give the table a [`Self::with_row_key`] for keys that
+    /// theirs. Give the table a `Self::with_row_key` for keys that
     /// survive inserts and removals.
     pub fn apply_changes(&mut self, changes: &[TableModelChange]) {
         if self.model.is_some() {
@@ -1656,7 +1656,7 @@ impl DataTableCore {
 
     /// Run `f(row, ctrl, shift)` when a row is clicked. Every row callback
     /// names the row by its index in the rows the host set
-    /// ([`Self::set_rows`]), however the table has sorted them.
+    /// (`Self::set_rows`), however the table has sorted them.
     #[must_use]
     pub fn on_row_click<F: FnMut(usize, bool, bool) + 'static>(mut self, f: F) -> Self {
         self.on_row_click = Some(Box::new(f));
@@ -1835,7 +1835,7 @@ impl DataTableCore {
     }
 
     /// Select only the host's row `row` (an index into the rows set with
-    /// [`Self::set_rows`]), wherever sorting shows it.
+    /// `Self::set_rows`), wherever sorting shows it.
     pub fn select_row(&mut self, row: usize) {
         if let Some(display) = self.display_row(row) {
             self.select_only_index(display);
@@ -2048,7 +2048,7 @@ impl DataTableCore {
         self.reapply_sort();
     }
 
-    /// Reuses the comparator already installed via [`Self::sort_by_with`];
+    /// Reuses the comparator already installed via `Self::sort_by_with`;
     /// returns `false` when none is installed for `column_key`. Per-column
     /// comparators can't be encoded as pure `(key, direction)`, so callers
     /// install one typed comparator, then header-click/keyboard handlers flip
