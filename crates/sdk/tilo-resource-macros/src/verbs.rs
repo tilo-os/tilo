@@ -645,12 +645,16 @@ fn param_decl(param: &Param, krate: &Tokens) -> Tokens {
         (None, false) => quote!(#krate::__private::PlaceIn::Nowhere),
     };
     let content = param.role == Role::Content;
+    let schema = crate::byte_param(ty).map_or_else(
+        || quote!(<#ty as #krate::JsonSchema>::json_schema),
+        |(_, schema)| schema,
+    );
     quote! {
         #krate::__private::ParamDecl {
             name: #name,
             ty: #param_ty,
             description: #description,
-            schema: <#ty as #krate::JsonSchema>::json_schema,
+            schema: #schema,
             optional: #optional,
             place: #place,
             example: #example,
@@ -713,10 +717,14 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
                 ))
             },
         );
+        let schema = crate::byte_param(ty).map_or_else(
+            || quote!(<#ty as #krate::JsonSchema>::json_schema()),
+            |(_, schema)| quote!(#schema()),
+        );
         quote! {(
             #public,
             #krate::__private::param_schema(
-                <#ty as #krate::JsonSchema>::json_schema(),
+                #schema,
                 #description,
                 #example,
             ),
@@ -789,6 +797,9 @@ fn params_struct(verb: &Verb, self_ty: &Type, type_name: &str) -> Tokens {
             return quote!(#ident: #krate::__private::serde::Deserialize::deserialize(
                 #krate::__private::serde_json::Value::Object(args),
             )?);
+        }
+        if let Some((decode, _)) = crate::byte_param(&param.ty) {
+            return quote!(#ident: #krate::__private::bytes_arg(&mut args, #public, #decode)?);
         }
         let optional = last_ident(&param.ty).is_some_and(|(name, _)| name == "Option");
         quote!(#ident: #krate::__private::arg(&mut args, #public, #optional)?)

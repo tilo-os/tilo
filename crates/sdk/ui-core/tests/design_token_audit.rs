@@ -280,7 +280,6 @@ pub fn chrome_border_ratchet() -> Ratchet {
             "crates/sdk/ui-core/src/widget",
             "crates/sdk/ui-core/src/chrome",
             "crates/sdk/ui-core/src/surface.rs",
-            "crates/sdk/ui-core/src/status_bubble.rs",
             "crates/session/shell/src",
         ],
         patterns: vec![Pattern::new(

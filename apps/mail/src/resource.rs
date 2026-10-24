@@ -624,11 +624,9 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
             "{address:?} is not a content address: attach what another step handed over"
         ));
     }
+    let bytes = tilo_resource::content::read_hash(hash).map_err(|refusal| refusal.to_string())?;
     let store = tilo_resource::content::current()
         .ok_or("this window has no content store to attach from")?;
-    let bytes = store
-        .read(hash)
-        .ok_or("the handed-over file is not on this device; hand it over again here")?;
     let staged = crate::attachment_store::stage_bytes(&store, &bytes, &params.name)?;
     params.content = staged.content_id;
     params.name = staged.filename;

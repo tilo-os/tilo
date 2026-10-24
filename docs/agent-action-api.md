@@ -639,6 +639,33 @@ application's declared product function. The agent does not inspect a document
 and guess which bytes it represents. Missing content, the wrong resource kind,
 or more than one content result stops the sequence rather than selecting one.
 
+### Large payloads travel by reference
+
+Actions carry intent and references; bytes travel by session transport into
+the content store. Inline arguments stay small (32 KiB through an action
+directory, 1 MiB per MCP request), and no cap is raised to fit a payload.
+Instead a client puts the bytes into the device content store for the room it
+acts in, in chunks over its session, and passes the `tilo.content:<hash>` it
+gets back:
+
+- Every byte parameter (`Vec<u8>`, or a list of them) takes either its bytes
+  inline, as an array of integers, or such a reference. Its schema says both
+  (`oneOf`), the reference marked as content.
+- The app resolves the reference where the action is built, through its
+  window's content store, before the action runs. The action records the
+  bytes it was built with, so its replay reads no reference.
+- A hash is never a capability by itself. Only a store that answers for one
+  room resolves a reference: the device store reads through the window's
+  room scope and serves an address only when that room references it
+  (`tilo/media/v1/<room>/<hash>`). A reference to content from another room,
+  a file, or anywhere else on the machine is refused as not readable in this
+  room. A store that is not a room's (a page's files, a directory store)
+  resolves no reference.
+- Putting content needs the right to add content to the room, decided like
+  any action at its own node (content uploads in this room). A put is
+  invisible to everyone until an action at its own node references it; the
+  put governs storage only, never authority over a document.
+
 This hand-off is deliberately not a workflow language: there are no named
 variables, JSONPath expressions, graphs or implicit reuse of an older result.
 The narrow one-step hand-off is enough to express a cross-app operation such as

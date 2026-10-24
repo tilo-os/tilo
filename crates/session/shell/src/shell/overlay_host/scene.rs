@@ -684,7 +684,7 @@ impl ShellOverlayHost {
     pub(super) fn wake_deadline_sources(
         &self,
         now: Instant,
-    ) -> [(&'static str, Option<Instant>); 20] {
+    ) -> [(&'static str, Option<Instant>); 21] {
         // Overview and workspace-switch motion is animation demand, so the
         // frame clock paces it. A 1 ms deadline here woke the loop on every
         // millisecond and still painted nothing until cadence was due.
@@ -723,6 +723,16 @@ impl ShellOverlayHost {
                     self.notification_stack
                         .next_wake_deadline(&ChromeNotifications::new(chrome))
                 }),
+            ),
+            (
+                // Clear all's Undo goes away when its window ends, though
+                // nothing else paints meanwhile. A deadline already passed
+                // is the next update's to expire, not a reason to spin.
+                "notification-undo",
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().notification_history_clear_deadline())
+                    .filter(|deadline| *deadline > now),
             ),
             (
                 "osd",

@@ -615,6 +615,12 @@ impl ShellDriver {
         self.fb.take_backdrop()
     }
 
+    /// The ground the shell stands on, as the live compositor clears each
+    /// display to it before drawing the shell.
+    pub fn ground(&self) -> vello::peniko::Color {
+        ui::chrome::shell::desktop_ground(self.fb.theme())
+    }
+
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
             // The lock scene has no floating surfaces; drop any earlier frame's.
@@ -1519,6 +1525,28 @@ impl ShellDriver {
         // A workspace this person may invite to: the roster offers it.
         handle.borrow_mut().peer_sync_enabled = true;
         st_bump(&handle);
+    }
+
+    /// `who`'s pointer is heard at `at` in the workspace on screen, as their
+    /// device sends it a few dozen times a second.
+    pub fn peer_pointer_for_shots(&mut self, who: &str, at: Point) {
+        let room = self
+            .chrome()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map(|workspace| workspace.room().to_string());
+        let Some(room) = room else {
+            return;
+        };
+        self.fb.apply_remote_presence_for_shots(
+            who.into(),
+            ui::presence::PresenceKey::Workspace { id: room },
+            ui::collaboration::PresencePayload::Pointer {
+                x: ui::num::f32_of_f64(at.x),
+                y: ui::num::f32_of_f64(at.y),
+            },
+        );
     }
 
     /// `who` says `text` beside their pointer.

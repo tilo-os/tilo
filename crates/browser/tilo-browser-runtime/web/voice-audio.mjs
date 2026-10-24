@@ -219,6 +219,8 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
       let currentTrackCleanup;
       let source;
       let worklet;
+      /** The gain between playout and the speakers: zero while deafened. */
+      let output;
       let worker;
       let stopped = false;
       let captureMuted = Boolean(muted);
@@ -379,6 +381,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         publishers.clear();
         detachInput();
         worklet?.disconnect();
+        output?.disconnect();
         worklet?.port.close?.();
         worker?.terminate();
         try { contextClosePromise = Promise.resolve(context.close()); }
@@ -529,7 +532,11 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         });
         worklet.port.addEventListener('message', handleWorkletMessage);
         worklet.port.start?.();
-        worklet.connect(context.destination);
+        // Deafening silences what reaches the speakers while playout runs
+        // on, so undeafening plays the call as it is then, not a backlog.
+        output = context.createGain();
+        worklet.connect(output);
+        output.connect(context.destination);
         worklet.addEventListener?.('processorerror', event => {
           if (stopped) return;
           report({type: 'error', stage: 'audio-worklet', error: event.error?.message ?? 'Audio worklet processor failed'});
@@ -632,6 +639,12 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
             await context.setSinkId(sinkId ?? '');
             return true;
           },
+          /** Play nothing of the call (`true`), or play it again. */
+          setDeafened(value) {
+            if (stopped || !output) return;
+            output.gain.value = value ? 0 : 1;
+          },
+          get deafened() { return output?.gain.value === 0; },
           get captureActive() { return !stopped && !captureMuted && Boolean(currentStream); },
           get muted() { return captureMuted; },
           get inputId() { return selectedInputId; },

@@ -851,7 +851,10 @@ impl ActionArgs {
                     reason: "may not be null".into(),
                 });
             }
-            if !matches!(value, ArgValue::Null) && !value.satisfies(param.ty) {
+            if !matches!(value, ArgValue::Null)
+                && !value.satisfies(param.ty)
+                && !schema_alternative_of(param, &value)
+            {
                 return Err(ArgError::WrongType {
                     name,
                     expected: param.ty,
@@ -1205,6 +1208,32 @@ fn validate_schema_value(
     schema: &serde_json::Value,
 ) -> Result<(), String> {
     check_schema_value(value, schema).map_err(|refusal| refusal.to_string())
+}
+
+/// Whether `param`'s schema offers `value`'s JSON type as one of its
+/// alternatives (`oneOf`), beside the parameter's own type: a byte parameter
+/// takes its bytes inline, as an array, or a content reference, as a string.
+/// The schema then decides which alternative the value is.
+fn schema_alternative_of(param: &ActionParam, value: &ArgValue) -> bool {
+    let json_type = match value.to_json() {
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Number(number) if number.is_i64() || number.is_u64() => "integer",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Null => return false,
+    };
+    param
+        .schema
+        .as_deref()
+        .and_then(|schema| schema.get("oneOf"))
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|alternatives| {
+            alternatives.iter().any(|alternative| {
+                alternative.get("type").and_then(serde_json::Value::as_str) == Some(json_type)
+            })
+        })
 }
 
 fn check_schema_value(

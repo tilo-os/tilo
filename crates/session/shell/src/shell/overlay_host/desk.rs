@@ -879,9 +879,11 @@ impl ShellOverlayHost {
             .is_open()
             .then(|| self.strip_navigator.switcher().layout().bounds);
         for slot in self.desk.slots.clone() {
-            let shown = self.desk.shown.get(&slot.id).map_or(0.0, |t| {
-                shown_opacity(slot.id, t.progress(now), self.desk.motion)
-            });
+            let shown = self
+                .desk
+                .shown
+                .get(&slot.id)
+                .map_or(0.0, |t| shown_opacity(t.progress(now)));
             if shown <= f32::EPSILON || switcher_card.is_some_and(|card| card.overlaps(slot.glance))
             {
                 continue;
@@ -1117,31 +1119,20 @@ fn team_card_height(people: usize) -> f64 {
     TEAM_HEADER + TEAM_ROW * ui::num::f64_of_usize(rows) + more + 8.0
 }
 
-/// How widget `id` comes and goes. The Team widget's faces are people, and
-/// a person shown faintly reads as a ghost: it appears with the standard
-/// Appear motion, whole within its first moments, and is otherwise hidden,
-/// never resting in between; it goes at once, as the others do, so a chord
-/// that cancels a held Super leaves no face fading out behind it. The others
-/// arrive as ambient chrome does.
+/// How widget `id` comes and goes: as ambient chrome does, by opacity in
+/// place, going at once. The Team widget's faces are people, and a person
+/// shown faintly reads as a ghost, so it always arrives as if asked for, at
+/// `fast`, whole as its motion ends and otherwise hidden, never on the slow
+/// unasked fade. Its motion is exactly its fade: a frame it asks for is a
+/// frame that changes.
 fn shown_spec(id: WidgetId, asked: bool) -> ui::motion::MotionSpec {
-    match id {
-        WidgetId::Team => ui::motion::MotionSpec {
-            exit: ui::motion::Pace::Instant,
-            ..ui::motion::Appear::SPEC
-        },
-        _ => ui::motion::Ambient::spec(asked),
-    }
+    ui::motion::Ambient::spec(asked || id == WidgetId::Team)
 }
 
-/// How much of widget `id` shows at `progress` of its coming and going
+/// How much of a widget shows at `progress` of its coming and going
 /// ([`shown_spec`]).
-fn shown_opacity(id: WidgetId, progress: f64, motion: ui::tokens::EffectiveMotion) -> f32 {
-    match id {
-        WidgetId::Team => {
-            ui::motion::Appear::pose(progress, vello::kurbo::Point::ORIGIN, motion).opacity
-        }
-        _ => ui::motion::unit_opacity(progress),
-    }
+fn shown_opacity(progress: f64) -> f32 {
+    ui::motion::unit_opacity(progress)
 }
 
 /// The ground every desk card stands on: the one floating card

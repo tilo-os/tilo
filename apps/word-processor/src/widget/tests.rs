@@ -5860,6 +5860,18 @@ fn regenerating_the_toc_replaces_it_and_shows_it() {
         );
     }
 
+    // Phase: a_toc_without_headings_says_why_in_the_window_bar.
+    {
+        let (mut state, mut wp) = bound();
+        wp.apply_tool(&mut edits(&mut state.doc), ToolAction::InsertToc);
+        wp.sync(&state.doc, &state.root);
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some(t("toast-toc-empty")),
+            "the window bar says why nothing was inserted"
+        );
+    }
+
     // Phase: toc_action_scrolls_the_table_into_view.
     // The table itself is the feedback: generating it scrolls to the top
     // where it lands, with no toast repeating what is on screen.

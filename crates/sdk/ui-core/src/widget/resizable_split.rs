@@ -143,6 +143,10 @@ pub struct SplitHandle {
     label: String,
     test_id: Option<String>,
     layout_dirty: bool,
+    /// The most the first pane can use, when the host knows it: past it
+    /// the divider stands at it and the rest goes to the second pane,
+    /// while the ratio the person chose is kept for when it fits again.
+    first_max: Option<f64>,
 }
 
 impl SplitHandle {
@@ -161,6 +165,7 @@ impl SplitHandle {
             label: "Resize panes".to_string(),
             test_id: None,
             layout_dirty: false,
+            first_max: None,
         }
     }
 
@@ -188,6 +193,43 @@ impl SplitHandle {
         self.place();
     }
 
+    /// The most the first pane can use (a picture that already fills its
+    /// width); `None`: all the ratio gives it. The ratio itself is kept.
+    pub fn set_first_max(&mut self, max: Option<f64>) {
+        self.first_max = max.map(|max| max.max(0.0));
+        self.place();
+    }
+
+    /// The first pane's length on the split's extent `total`: the ratio's,
+    /// up to what the pane can use.
+    fn first_extent(&self, total: f64) -> f64 {
+        let extent = self.ratio.first_extent(total);
+        self.first_max.map_or(extent, |max| extent.min(max))
+    }
+
+    /// The share the first pane shows, which is the ratio's unless the
+    /// pane can use less.
+    fn shown_position(&self) -> f32 {
+        let total = match self.orientation {
+            SplitOrientation::Horizontal => self.rect.width(),
+            SplitOrientation::Vertical => self.rect.height(),
+        };
+        if total <= 0.0 {
+            return self.ratio.position();
+        }
+        crate::num::f32_of_f64(self.first_extent(total) / total)
+    }
+
+    /// Step the first pane smaller from where the divider stands, not from
+    /// a ratio past what the pane can use, so the step shows.
+    fn step_back(&mut self) -> bool {
+        let shown = self.shown_position();
+        if shown < self.ratio.position() {
+            self.ratio.set(shown);
+        }
+        self.ratio.step(-KEY_STEP)
+    }
+
     /// Move the split to `rect`, keeping the hit area from the last
     /// [`Self::set_rect`] (`rhythm.tight` each side by default), for a host
     /// that lays out without a theme in hand.
@@ -200,11 +242,11 @@ impl SplitHandle {
         let r = self.rect;
         self.divider = match self.orientation {
             SplitOrientation::Horizontal => {
-                let x = (r.x0 + self.ratio.first_extent(r.width())).round();
+                let x = (r.x0 + self.first_extent(r.width())).round();
                 Rect::new(x - self.hit_half, r.y0, x + self.hit_half, r.y1)
             }
             SplitOrientation::Vertical => {
-                let y = (r.y0 + self.ratio.first_extent(r.height())).round();
+                let y = (r.y0 + self.first_extent(r.height())).round();
                 Rect::new(r.x0, y - self.hit_half, r.x1, y + self.hit_half)
             }
         };
@@ -325,7 +367,7 @@ impl SplitHandle {
                     SplitOrientation::Vertical => (NamedKey::ArrowUp, NamedKey::ArrowDown),
                 };
                 let moved = match &event.logical_key {
-                    Key::Named(key) if *key == back => self.ratio.step(-KEY_STEP),
+                    Key::Named(key) if *key == back => self.step_back(),
                     Key::Named(key) if *key == forward => self.ratio.step(KEY_STEP),
                     Key::Named(NamedKey::Home) => self.ratio.set(0.0),
                     Key::Named(NamedKey::End) => self.ratio.set(1.0),
@@ -343,7 +385,7 @@ impl SplitHandle {
     pub fn perform_action(&mut self, action: &crate::a11y::Action) -> bool {
         let moved = match action {
             crate::a11y::Action::Increment => self.ratio.step(KEY_STEP),
-            crate::a11y::Action::Decrement => self.ratio.step(-KEY_STEP),
+            crate::a11y::Action::Decrement => self.step_back(),
             crate::a11y::Action::SetValue(value) => value
                 .trim_end_matches('%')
                 .trim()
@@ -395,7 +437,10 @@ impl SplitHandle {
         use crate::a11y::{AccessNode, AccessState, Role};
         AccessNode::new(Role::Separator)
             .with_name(self.label.clone())
-            .with_value(format!("{}%", self.ratio.percent()))
+            .with_value(format!(
+                "{}%",
+                SplitRatio::new(self.shown_position()).percent()
+            ))
             .with_state(AccessState::new().focusable(true).focused(self.focused))
     }
 }
@@ -2094,5 +2139,36 @@ mod tests {
         assert!(ratio.set(0.9));
         assert!((ratio.position() - 0.6).abs() < 1e-6);
         assert!(!ratio.step(0.1), "already at the bound");
+    }
+
+    #[test]
+    fn a_capped_first_pane_keeps_the_chosen_ratio() {
+        let theme = Theme::dark();
+        let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.6));
+        handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
+        handle.set_first_max(Some(200.0));
+        let (top, bottom) = handle.pane_rects();
+        assert!(
+            (top.height() - 200.0).abs() < 0.5,
+            "the divider stands at the cap"
+        );
+        assert!((bottom.height() - 300.0).abs() < 0.5, "the rest goes below");
+        assert!(
+            (handle.ratio().position() - 0.6).abs() < 1e-6,
+            "the ratio is kept"
+        );
+        handle.set_first_max(Some(1000.0));
+        let (top, _) = handle.pane_rects();
+        assert!(
+            (top.height() - 300.0).abs() < 0.5,
+            "with room, the ratio is back"
+        );
+        handle.set_first_max(Some(200.0));
+        assert!(handle.perform_action(&crate::a11y::Action::Decrement));
+        let (top, _) = handle.pane_rects();
+        assert!(
+            top.height() < 199.5,
+            "a step back moves from where the divider stands"
+        );
     }
 }

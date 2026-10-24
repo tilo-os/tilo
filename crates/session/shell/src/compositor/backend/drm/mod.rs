@@ -3967,10 +3967,7 @@ impl Backend for DrmBackend {
         self.inner.dispatch.retry_failed_outputs(reason)
     }
 
-    fn inject_wake_fault(&mut self, stage: &str) -> Result<(), String> {
-        let stage = wake_check::WakeStage::parse(stage).ok_or_else(|| {
-            format!("no wake stage {stage:?}: one of commit, link, crtc, backlight")
-        })?;
+    fn inject_wake_fault(&mut self, stage: wake_check::WakeStage) -> Result<(), String> {
         self.inner.dispatch.inject_wake_fault(stage)
     }
 

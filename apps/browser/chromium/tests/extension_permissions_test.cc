@@ -1,6 +1,7 @@
 #include "extension_permissions.h"
 #include <cassert>
 #include <string>
+#include <utility>
 #include <vector>
 
 using tilo::ExtensionPermissions;
@@ -25,6 +26,24 @@ int main() {
   assert(!PatternCovers("https://example.com", "https://example.com/*"));
   assert(!PatternCovers("<all_urls>", "chrome://settings/*"));
   assert(!PatternCovers("<all_urls>", "https://ex*ample.com/*"));
+  // A pattern naming no port covers every port, as in Chrome; one naming a
+  // port covers that port alone.
+  assert(PatternCovers("http://localhost/*", "http://localhost:8080/*"));
+  assert(PatternCovers("*://*.example.com/*", "https://a.example.com:8443/*"));
+  assert(PatternCovers("http://localhost:*/*", "http://localhost:8080/*"));
+  assert(PatternCovers("http://localhost:8080/*", "http://localhost:8080/app/*"));
+  assert(!PatternCovers("http://localhost:8080/*", "http://localhost:9090/*"));
+  assert(!PatternCovers("http://localhost:8080/*", "http://localhost/*"));
+  assert(PatternCovers("http://[::1]/*", "http://[::1]:8080/*"));
+  assert(!PatternCovers("http://localhost:80a/*", "http://localhost:80a/*"));
+  // A page is on a pattern's port: its own, or its scheme's.
+  assert(tilo::SplitPatternHost("[::1]") == std::make_pair(std::string("[::1]"), std::string()));
+  assert(tilo::SplitPatternHost("*.example.com:*") == std::make_pair(std::string("*.example.com"), std::string()));
+  assert(tilo::PortMatches("", "http", "8080"));
+  assert(tilo::PortMatches("8080", "http", "8080"));
+  assert(!tilo::PortMatches("8080", "http", "9090"));
+  assert(tilo::PortMatches("80", "http", "") && tilo::PortMatches("443", "wss", ""));
+  assert(!tilo::PortMatches("8080", "https", ""));
 
   const std::string id = "abcdefghijklmnopabcdefghijklmnop";
   ExtensionPermissions permissions;
@@ -46,6 +65,11 @@ int main() {
   PermissionSet part;
   assert(!permissions.Ask(id, PermissionSet{{}, {"https://news.example.org/*"}}, part));
   assert((part.origins == std::vector<std::string>{"https://news.example.org/*"}));
+  // A site on a port of its own is part of a site the manifest names on
+  // every port.
+  PermissionSet port;
+  assert(!permissions.Ask(id, PermissionSet{{}, {"http://127.0.0.1:8080/*"}}, port));
+  assert((port.origins == std::vector<std::string>{"http://127.0.0.1:8080/*"}));
   // Anything else is refused, as Chrome refuses it, and nothing is asked.
   for (const auto& refused : {PermissionSet{{"history"}, {}}, PermissionSet{{}, {"https://other.test/*"}}, PermissionSet{{"tabs"}, {"<all_urls>"}}}) {
     PermissionSet none;

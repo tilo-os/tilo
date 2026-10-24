@@ -149,7 +149,9 @@ id "$run_user" >/dev/null 2>&1 || useradd --create-home --shell /bin/bash "$run_
 uid=$(id -u "$run_user")
 install -d -m 0700 -o "$run_user" -g "$run_user" "/run/user/$uid"
 chmod 0666 /dev/kvm
-install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config/libvirt"
+# install -d gives -o only to the directories it names, so .config is named too: a
+# root-owned .config would leave the user unable to make tilo-vm's config and keys there.
+install -d -o "$run_user" -g "$run_user" "/home/$run_user/.config" "/home/$run_user/.config/libvirt"
 # The micro-VM's /dev has no /dev/stdin to install from.
 printf 'max_core = 0\n' > "/home/$run_user/.config/libvirt/qemu.conf"
 chown "$run_user:" "/home/$run_user/.config/libvirt/qemu.conf"

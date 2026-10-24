@@ -55,6 +55,9 @@ pub enum RowKind {
     History,
     /// A search the engine suggests.
     Suggestion,
+    /// After an extension's keyword: what Enter sends it, or one of its
+    /// suggestions (`chrome.omnibox`).
+    Extension,
 }
 
 /// One line of the dropdown.
@@ -66,7 +69,8 @@ pub struct Row {
     /// The secondary line: a page's address, or nothing.
     pub detail: String,
     /// What choosing the row opens: an address for [`RowKind::Go`] and
-    /// [`RowKind::History`], the query for the search kinds.
+    /// [`RowKind::History`], the query for the search kinds, the keyword
+    /// and what it sends for [`RowKind::Extension`].
     pub url: String,
 }
 

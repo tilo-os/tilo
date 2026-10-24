@@ -29,6 +29,9 @@ chrome.runtime.onMessage.addListener((message, sender) => {
         .then((entries) => entries.map((entry) => [named(entry), entry.result]).sort())),
       intoPanel: await settled(chrome.scripting.executeScript({target: {tabId, frameIds: [panel.frameId]}, func: () => 1})),
       both: await settled(chrome.scripting.executeScript({target: {tabId, allFrames: true, frameIds: [0]}, func: () => 1})),
+      allAndDocuments: await settled(chrome.scripting.executeScript({target: {tabId, allFrames: true, documentIds: []}, func: () => 1})),
+      idsAndDocuments: await settled(chrome.scripting.executeScript({target: {tabId, frameIds: [0], documentIds: [outer.documentId]}, func: () => 1})),
+      malformed: await settled(chrome.scripting.executeScript({target: {tabId, documentIds: ['nope']}, func: () => 1})),
       gone: await settled(chrome.scripting.executeScript({target: {tabId, documentIds: ['0123456789ABCDEF0123456789ABCDEF']}, func: () => 1})),
       ids: frames.slice(1).every((path) => Number.isInteger(at(path).frameId) && at(path).frameId > 0) && at('/framed').frameId === 0,
     };

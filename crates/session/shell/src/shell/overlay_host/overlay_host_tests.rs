@@ -3187,6 +3187,42 @@ fn people_viewport_resize_ends_a_scrollbar_drag_without_invoking_a_target() {
     assert!(h.host.followed_peer.is_none());
 }
 
+/// Clear all's Undo lasts its window on an idle desktop too: the
+/// compositor wakes when it ends, so the Undo it showed goes away.
+#[test]
+fn clear_all_wakes_the_compositor_when_its_undo_ends() {
+    let h = build_harness();
+    let undo_wake = |h: &Harness| {
+        h.host
+            .wake_deadline_sources(Instant::now())
+            .into_iter()
+            .find(|(name, _)| *name == "notification-undo")
+            .expect("the undo's end is a wake source")
+            .1
+    };
+    assert_eq!(undo_wake(&h), None, "nothing to undo, nothing to wake for");
+    let id = h
+        .chrome
+        .borrow_mut()
+        .push_notification("Build finished", "");
+    h.chrome.borrow_mut().dismiss_notification(id);
+    let cleared = Instant::now();
+    h.chrome.borrow_mut().clear_notification_history();
+    let deadline = undo_wake(&h).expect("the compositor wakes when the undo ends");
+    assert!(
+        deadline > cleared
+            && deadline <= Instant::now() + tilo_desktop::notifications::CLEAR_UNDO_WINDOW,
+        "it wakes when the window ends"
+    );
+    assert!(h.chrome.borrow().can_undo_notification_history_clear());
+    assert!(
+        !ui::time::testing::with_monotonic_time(deadline, || {
+            h.chrome.borrow().can_undo_notification_history_clear()
+        }),
+        "at its end the undo is over"
+    );
+}
+
 #[test]
 fn people_viewport_shared_scrollbar_uses_a_visible_only_idle_deadline() {
     let mut h = people_viewport_probe_fixture();

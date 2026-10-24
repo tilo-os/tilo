@@ -333,7 +333,7 @@ fn a_dialog_body_leaves_enter_and_escape_to_its_dialog() {
 }
 
 #[test]
-fn a_finger_gets_targets_of_at_least_44_px_and_the_pin_keypad() {
+fn a_finger_gets_touch_targets_and_the_pin_keypad() {
     let phone = Rect::new(0.0, 0.0, 390.0, 844.0);
     let mut prompt = focused(SecretKind::SimPin {
         attempts_left: None,
@@ -358,7 +358,7 @@ fn a_finger_gets_targets_of_at_least_44_px_and_the_pin_keypad() {
         .chain([&layout.cancel, &layout.primary])
     {
         assert!(
-            rect.height() >= TOUCH_TARGET,
+            rect.height() >= f64::from(InteractionEnvironment::TOUCH.minimum_target()),
             "{rect:?} is too short for a finger"
         );
     }

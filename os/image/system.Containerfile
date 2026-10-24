@@ -96,6 +96,7 @@ COPY \
     os/usr/lib/systemd/user/tilo-projector.service \
     os/usr/lib/systemd/user/tilo-projector.socket \
     os/usr/lib/systemd/user/tilo-cache-gc.service \
+    os/usr/lib/systemd/user/tilo-boot-fallback-notice.service \
     os/usr/lib/systemd/user/tilo-cache-gc.timer \
     os/usr/lib/systemd/user/tilo-app-update.service \
     os/usr/lib/systemd/user/tilo-app-update.timer \
@@ -572,8 +573,12 @@ RUN chmod 0755 /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-conf
 #                              not-yet-proven deployment a systemd-boot try counter
 #                              and derives the repair entry.
 #   tilo-boot-health.service    ordered before boot-complete.target, so a boot that
-#                              never reaches a login is never blessed and the
-#                              counter it spent stays spent.
+#                              never reaches a signed-in session with working input
+#                              is never blessed and the counter it spent stays spent.
+#   tilo-boot-fallback.service  after the boot loader went back from a deployment
+#                              that failed its tries, makes the running one bootc's
+#                              default and writes what failed; the session's
+#                              tilo-boot-fallback-notice tells the person.
 #   tilo-boot-mode-generator    turns `tilo.mode=repair` on the SEALED command line
 #                              into a boot that comes up at the repair console
 #                              instead of the desktop.
@@ -720,7 +725,8 @@ RUN systemctl enable greetd.service && \
     systemctl enable tilo-authd.service && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \
-    systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
+    systemctl enable tilo-boot-entries.timer tilo-boot-health.service tilo-boot-fallback.service && \
+    systemctl --global enable tilo-boot-fallback-notice.service && \
     systemctl enable tilo-deployment-status.socket && \
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.service && \

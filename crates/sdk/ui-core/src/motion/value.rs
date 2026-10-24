@@ -143,6 +143,9 @@ pub struct MotionValue<T: Animatable> {
     /// When the segment is within tolerance for good; `None` at rest.
     settles_at: Option<Instant>,
     tolerance: f64,
+    /// This motion's wish for frames on the motion clock, while it has one:
+    /// a landed motion takes it back ([`Self::snap`]).
+    wish: Option<u64>,
 }
 
 impl<T: Animatable> MotionValue<T> {
@@ -157,6 +160,7 @@ impl<T: Animatable> MotionValue<T> {
             spring: SpringSpec::settling_within(Duration::from_millis(210)),
             settles_at: None,
             tolerance: T::TOLERANCE,
+            wish: None,
         }
     }
 
@@ -213,16 +217,28 @@ impl<T: Animatable> MotionValue<T> {
         self.started = self.started.checked_add(by).unwrap_or(self.started);
         self.settles_at = self.settles_at.and_then(|at| at.checked_add(by));
         if let Some(until) = self.settles_at {
-            super::clock::want_frames_until(until);
+            self.ask_frames_until(until);
         }
     }
 
-    /// Jump to `value` and rest there.
+    /// Jump to `value` and rest there. A motion that was on its way takes
+    /// back its wish for frames: whoever landed it draws the change.
     pub fn snap(&mut self, value: T) {
         self.target = value;
         self.from = [0.0; 4];
         self.velocity = [0.0; 4];
         self.settles_at = None;
+        if let Some(key) = self.wish.take() {
+            super::clock::retract(key);
+        }
+    }
+
+    /// Ask the motion clock for frames until `until`, as this motion: a
+    /// later ask replaces it, and landing takes it back.
+    #[track_caller]
+    fn ask_frames_until(&mut self, until: Instant) {
+        let key = *self.wish.get_or_insert_with(super::clock::motion_key);
+        super::clock::ask(key, until);
     }
 
     /// Send the value to `target` with `timing`, starting at `now` from where
@@ -291,7 +307,7 @@ impl<T: Animatable> MotionValue<T> {
         match self.settles_at {
             // Every motion asks the frame pump for its frames, wherever it
             // was started and whoever draws it: a settled one asks nothing.
-            Some(until) => super::clock::want_frames_until(until),
+            Some(until) => self.ask_frames_until(until),
             None => self.snap(target),
         }
     }

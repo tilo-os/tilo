@@ -166,6 +166,66 @@ mod tests {
         }
     }
 
+    /// Invoke `effect` on the library by its address, as a headless
+    /// drive's `invoke` step does: no coordinates, no click.
+    fn drive_invoke(
+        app: &mut TestApp<VideoPlayerShell>,
+        effect: &VideoEffect,
+    ) -> Result<(), ui::tilo_actions::DoorError> {
+        use ui::tilo_resource::{Effect as _, Resource as _};
+        let address = effect.address_on(Library::KIND);
+        app.harness()
+            .invoke_action(&address, &effect.arguments(), false, None)
+            .map(drop)
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action() {
+        for scenario in SCENARIOS {
+            let mut app = TestApp::<VideoPlayerShell>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                ui::framework::testing::unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_a_scenario_shows_the_library_and_seeks_by_address() {
+        let mut app = TestApp::<VideoPlayerShell>::drive("playing").unwrap();
+        drive_invoke(
+            &mut app,
+            &VideoEffect::ShowLibrary {
+                tab: "shared".into(),
+            },
+        )
+        .expect("the drive shows the library, as the L key does");
+        app.settle();
+        assert!(surface(&mut app, |player| player.library_visible()));
+        assert_eq!(
+            surface(&mut app, |player| player.library_tab_name()),
+            "shared"
+        );
+        // Seek reaches the player: it moves the open clip, or, on a machine
+        // without the system decoder, says a video must be open first. The
+        // scenario parks the clip at two seconds and plays on from there, so
+        // the target is before it: a seek that did nothing would leave the
+        // playhead at or past where it was.
+        let before = surface(&mut app, |player| player.player().position_ms());
+        match drive_invoke(&mut app, &VideoEffect::Seek { seconds: 0.5 }) {
+            Ok(()) => {
+                let after = surface(&mut app, |player| player.player().position_ms());
+                assert!(
+                    (500..before).contains(&after),
+                    "the seek moved the playhead from {before} ms to 500 ms, not {after} ms"
+                );
+            }
+            Err(error) => assert_eq!(error.code(), "action_unavailable", "{error}"),
+        }
+    }
+
     /// Press the window bar's sidebar toggle, as the desktop hands it over.
     fn toggle_sidebar(app: &mut TestApp<VideoPlayerShell>) {
         ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::ToggleSidebar);

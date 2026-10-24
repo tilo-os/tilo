@@ -539,10 +539,6 @@ fn apply_property(c: &mut Contact, line: &ContentLine) {
     }
 }
 
-/// Empty BEGIN/END pairs are not contacts.  They occur in truncated exports
-/// and in hand-edited files; accepting them creates an untitled, unusable
-/// record and makes the import success count misleading.  Name-less cards
-/// with an actual endpoint, note, group, or organization remain valid.
 /// A `BDAY` as other clients write it. Apple writes a birthday whose year is
 /// unknown with a placeholder year it names in `X-APPLE-OMIT-YEAR`
 /// (`BDAY;X-APPLE-OMIT-YEAR=1604:1604-03-15`), and a date-and-time keeps its
@@ -564,6 +560,10 @@ fn birthday_value(line: &ContentLine) -> Option<Birthday> {
     })
 }
 
+/// Empty BEGIN/END pairs are not contacts.  They occur in truncated exports
+/// and in hand-edited files; accepting them creates an untitled, unusable
+/// record and makes the import success count misleading.  Name-less cards
+/// with an actual endpoint, note, group, or organization remain valid.
 fn has_contact_data(c: &Contact) -> bool {
     !c.first.trim().is_empty()
         || !c.last.trim().is_empty()

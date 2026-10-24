@@ -23,6 +23,10 @@ path = "src/lib.rs"
 # build has no page to ask and keeps `std::time`'s types.
 [dependencies]
 
+# Tests that pin the process-wide wall clock run in a process of their own.
+[dev-dependencies]
+tilo-test-env = { path = "../../dev/test-env" }
+
 [target.'cfg(all(target_family = "wasm", not(tilo_no_js)))'.dependencies]
 web-time = "1"
 

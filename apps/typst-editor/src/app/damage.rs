@@ -1,12 +1,11 @@
 //! What the window repaints. The editor and the preview each say what of
 //! them changed ([`crate::editor::SourceEditor::collect_damage_for`],
 //! [`crate::preview::PreviewPane::collect_damage_for`]); around them the
-//! bar's controls, the outline, the problems panel, the status bar, the
-//! divider and the bubble repaint where they changed. A frame laid out
+//! bar's controls, the outline, the problems panel, the status bar and the
+//! divider repaint where they changed. A frame laid out
 //! otherwise, or with a card or an open list floating over the window,
 //! repaints the window.
 
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
@@ -22,7 +21,6 @@ pub(super) struct WindowShown {
     divider: (Rect, bool, bool),
     status: (String, String),
     problems: u64,
-    bubble: Option<(Rect, u32, String)>,
 }
 
 /// Where everything is and what the window shows.
@@ -35,16 +33,7 @@ struct Layout {
 
 impl TypstApp {
     /// Note what this frame shows around the panes.
-    pub(super) fn note_window(&self, tr: &mut TextRenderer, theme: &Theme) {
-        let now = ui::time::now();
-        let area = self.bubble_area();
-        let bubble = self.status.is_visible(now).then(|| {
-            (
-                self.status.rect_in(area, tr, theme),
-                self.status.alpha_in(theme, now).to_bits(),
-                self.status.text().to_owned(),
-            )
-        });
+    pub(super) fn note_window(&self, theme: &Theme) {
         let colors = &theme.tokens.colors;
         self.window_shown.note(WindowShown {
             layout: Layout {
@@ -73,7 +62,6 @@ impl TypstApp {
             ),
             status: (self.status_left_label(), self.status_right_label()),
             problems: self.diagnostics.look(),
-            bubble,
         });
     }
 
@@ -97,14 +85,6 @@ impl TypstApp {
             }
             if drawing.problems != presented.problems {
                 regions.push(self.diag_rect);
-            }
-            if drawing.bubble != presented.bubble {
-                regions.extend(
-                    [&drawing.bubble, &presented.bubble]
-                        .into_iter()
-                        .flatten()
-                        .map(|(rect, _, _)| rect.inflate(2.0, 2.0)),
-                );
             }
         }
         for child in self.chrome.children() {

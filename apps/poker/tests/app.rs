@@ -324,3 +324,26 @@ fn initial_native_app_contract_is_certified() {
     let audit = app.harness().native_app_audit();
     assert!(audit.is_certified(), "{audit:#?}");
 }
+
+/// The table is the window bar's location; the window draws no title row
+/// of its own, and the blinds stand with the pot.
+#[test]
+fn the_window_bar_names_the_table_and_the_window_draws_no_title() {
+    let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
+    app.harness().present_in_window_bar();
+    let _ = app.harness().poll_frame();
+    let bar = ui::window_toolbar::declared().expect("the table declares its slots");
+    assert_eq!(
+        bar.location.map(|location| location.label).as_deref(),
+        Some("Poker table")
+    );
+    let harness = app.harness();
+    assert!(
+        harness.a11y_node_named("Poker table").is_none(),
+        "the window draws no title of its own"
+    );
+    assert!(
+        harness.a11y_node_named("Blinds 5 and 10").is_some(),
+        "the blinds stand with the pot"
+    );
+}

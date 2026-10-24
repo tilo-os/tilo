@@ -79,6 +79,12 @@ impl ShellOverlayHost {
         if repeat {
             return true;
         }
+        if action == A::ToggleFullscreen {
+            // A key lands what it changes, as Super+Up does: the window is
+            // whole at once, and the windows it covers go with it, not on a
+            // fade drawn under it.
+            self.begin_motion(source);
+        }
         if let Some(chrome) = self.chrome.clone() {
             self.run_chrome_chord(&chrome, action);
         }

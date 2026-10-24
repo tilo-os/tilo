@@ -105,10 +105,8 @@ mod window_header;
 mod window_toolbar;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
-use crate::widget::toast::ToastStack;
 use band::plan;
 use header_parts::{HeaderTitle, MoreActions};
-use notices::TOAST_ACTION;
 use sidebar_resize::AdaptiveSidebar;
 use status_action::place_status_action;
 use window_toolbar::Requests;
@@ -1081,16 +1079,32 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         usize::from(inputs.toggle_in_window_bar() && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
-    // 5. The header row.
+    // 5. The header row. A column's header stands in it only where the
+    //    column stands at the window's top: a floating drawer carries its
+    //    header in itself, so a column the row would hold nothing for
+    //    starts at the top.
+    let in_row = |column: Column| match column {
+        Column::Sidebar => g.sidebar != SidebarPlacement::Drawer,
+        Column::Inspector => g.inspector != InspectorPlacement::Drawer,
+        Column::Overview | Column::Content => true,
+    };
     let needs_header = !inputs.slots_in_bar()
         && ((inputs.has_sidebar && !inputs.toggle_in_bar)
             || inputs.has_inspector
             || inputs.history.is_some()
-            || Column::ALL.iter().any(|c| inputs.header_wanted(*c))
+            || Column::ALL
+                .iter()
+                .any(|c| in_row(*c) && inputs.header_wanted(*c))
             || (!inputs.toggle_in_bar && (inputs.content_back || drills)));
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
+    // A drawer's own header, as tall as the row and hidden with it.
+    let drawer_hh = if in_bar && !inputs.bar_revealed {
+        0.0
+    } else {
+        m.header.min(h)
+    };
     let row_h = if needs_header { m.header.min(h) } else { 0.0 };
     g.header_height = if in_bar && !inputs.bar_revealed {
         0.0
@@ -1162,8 +1176,11 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 let dw = m.drawer.min((w - m.gap - m.drawer_dismiss_band).max(0.0));
                 let x0 = m.gap - (dw + m.gap) * (1.0 - sidebar_reveal);
                 g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
-                (sidebar_header, sidebar_body) =
-                    drawer_split(g.sidebar_column, hh, inputs.header_wanted(Column::Sidebar));
+                (sidebar_header, sidebar_body) = drawer_split(
+                    g.sidebar_column,
+                    drawer_hh,
+                    inputs.header_wanted(Column::Sidebar),
+                );
             }
         }
         SidebarPlacement::Screen => {
@@ -1218,7 +1235,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.inspector_column = Rect::new(x1 - dw, drawer_top, x1, drawer_bottom);
                 (inspector_header, inspector_body) = drawer_split(
                     g.inspector_column,
-                    hh,
+                    drawer_hh,
                     inputs.header_wanted(Column::Inspector),
                 );
             }
@@ -1614,24 +1631,14 @@ pub struct NavShell {
     structure_dirty: bool,
     layout_dirty: bool,
     paint_dirty: bool,
-    /// The window's transient notices, over its bottom trailing corner.
-    toasts: ToastStack,
-    /// Every pixel the notices painted in the last draw, their shadows
-    /// included, and what they painted there.
-    toasts_painted: Option<Rect>,
-    toasts_scene: Scene,
-    /// [`Self::toasts_painted`] and [`Self::toasts_scene`] as of the last
-    /// frame the host presented ([`Widget::mark_drawn`]).
-    toasts_drawn: Option<Rect>,
-    toasts_drawn_scene: Scene,
-    /// A notice came, went or changed: the next draw paints it.
-    toasts_dirty: bool,
+    /// The window's notice, shown in its bar ([`Self::toast`]).
+    notice: crate::widget::toast::Transient<notices::ShellNotice>,
+    /// The notice whose button the person pressed, for
+    /// [`Self::take_toast_action`].
+    notice_pressed: Option<String>,
     /// The window's sync status, quiet text before the trailing controls
     /// of the row History stands in.
     sync_status: crate::widget::HeaderStatus,
-    /// The room that row leaves before the sync status, where a document
-    /// says how its save is going ([`Self::header_status_slot`]).
-    status_slot: Rect,
     /// The status changed since the last frame drawn: only where it was
     /// ([`Self::status_drawn`]) and where it is repaint, not the whole shell.
     status_dirty: bool,
@@ -1734,14 +1741,9 @@ impl NavShell {
             structure_dirty: false,
             layout_dirty: true,
             paint_dirty: true,
-            toasts: ToastStack::new().with_max(1),
-            toasts_painted: None,
-            toasts_scene: Scene::new(),
-            toasts_drawn: None,
-            toasts_drawn_scene: Scene::new(),
-            toasts_dirty: false,
+            notice: crate::widget::toast::Transient::new(),
+            notice_pressed: None,
             sync_status: crate::widget::HeaderStatus::default(),
-            status_slot: Rect::ZERO,
             status_dirty: false,
             status_drawn: Rect::ZERO,
             status_span: Rect::ZERO,
@@ -3390,7 +3392,6 @@ impl NavShell {
     /// one reaching the window's trailing edge): after its title and before
     /// its trailing controls, wherever the row has room.
     fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
-        self.status_slot = Rect::ZERO;
         self.status_span = Rect::ZERO;
         let g = &self.geometry;
         let column = g.status_column();
@@ -3440,25 +3441,6 @@ impl NavShell {
         }
         self.sync_status
             .paint(f.scene, f.transform, f.text, f.theme, row, x0, x1);
-        let said = self.sync_status.get_rect();
-        let x1 = if said.is_zero_area() {
-            x1
-        } else {
-            said.x0 - gap
-        };
-        if x1 > x0 {
-            self.status_slot = Rect::new(x0, row.y0, x1, row.y1);
-        }
-    }
-
-    /// Where a document's transient status goes in the header row that
-    /// carries the sync status: after the title and before the trailing
-    /// controls and the sync status, the row's height. Empty until the
-    /// shell paints, and when the row has no room. A save status shown
-    /// here covers none of the document.
-    #[must_use]
-    pub fn header_status_slot(&self) -> Rect {
-        self.status_slot
     }
 
     /// Whether `part` is in the host tree this frame: only those were laid
@@ -3967,6 +3949,7 @@ impl Widget for NavShell {
         self.for_each_owned_mut(|child| child.sync(state, path));
         self.sync_filter();
         self.sync_shell_bar();
+        self.publish_notice();
     }
 
     fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
@@ -3975,13 +3958,14 @@ impl Widget for NavShell {
         // still takes its writes and feeds the column on screen.
         self.for_each_owned_mut(|child| child.settle(edits, path));
         self.sync_status.settle(edits, path);
-        self.toasts.settle(edits, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         let mut changed = self.take_requests();
         self.for_each_owned_mut(|child| changed |= child.update(state, path));
         changed |= self.follow_navigation();
+        changed |= self.notice.expire();
+        self.publish_notice();
         changed || self.animating
     }
 
@@ -4130,30 +4114,9 @@ impl Widget for NavShell {
         for child in self.children_mut() {
             child.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.toasts.advance(crate::time::now());
-        let window = presence.viewport.get().unwrap_or(self.rect);
-        self.toasts
-            .place_bottom_right(window, f64::from(theme.tokens.spacing.s6));
-        let mut painted = Scene::new();
-        self.toasts
-            .draw(&mut painted, transform, text_renderer, theme, presence);
-        scene.append(&painted, None);
-        self.toasts_scene = painted;
-        self.toasts_painted = self.toasts.painted_bounds(theme);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.toasts.is_empty() {
-            let before = (self.toasts.len(), self.toasts.is_hovered());
-            self.toasts.handle_event(event, ctx);
-            // The dismiss control's hover shows too.
-            self.toasts_dirty |= *ctx.handled
-                || before != (self.toasts.len(), self.toasts.is_hovered())
-                || matches!(event, WindowEvent::CursorMoved { .. });
-            if *ctx.handled {
-                return;
-            }
-        }
         if self.handle_own_event(event, ctx) {
             *ctx.handled = true;
             return;
@@ -4175,14 +4138,9 @@ impl Widget for NavShell {
         // Always listed, with or without text: the status changes by paint
         // alone, so its coming and going must not change the tree's shape.
         children.push(&self.sync_status);
-        if !self.toasts.is_empty() {
-            children.push(&self.toasts);
-        }
         children
     }
 
-    // A showing notice is the last child, so assistive technology announces
-    // it as a live region.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for part in self.exposed_parts() {
             if let Some(widget) = self.exposed(part) {
@@ -4190,9 +4148,6 @@ impl Widget for NavShell {
             }
         }
         visitor(&self.sync_status);
-        if !self.toasts.is_empty() {
-            visitor(&self.toasts);
-        }
     }
 
     /// The parts themselves, also those of a screen not in front, which the
@@ -4204,9 +4159,6 @@ impl Widget for NavShell {
             }
         }
         visitor(&self.sync_status);
-        if !self.toasts.is_empty() {
-            visitor(&self.toasts);
-        }
         true
     }
 
@@ -4229,7 +4181,6 @@ impl Widget for NavShell {
             history_open,
             history_close,
             inert_parts,
-            toasts,
             sync_status,
             status_action,
             band,
@@ -4310,9 +4261,6 @@ impl Widget for NavShell {
             }
         }
         out.push(sync_status);
-        if !toasts.is_empty() {
-            out.push(toasts);
-        }
         out
     }
 
@@ -4368,7 +4316,7 @@ impl Widget for NavShell {
         Some(
             AccessNode::new(Role::Group)
                 .with_semantic_key(format!("{key}.window"))
-                .with_children(resize.into_iter().chain(self.toast_buttons()).collect()),
+                .with_children(resize.into_iter().collect()),
         )
     }
 
@@ -4379,16 +4327,6 @@ impl Widget for NavShell {
         _state: &mut crate::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if let Some(text) = target.strip_prefix(TOAST_ACTION) {
-            // A notice's button pressed by keyboard, a screen reader or an
-            // agent does what a click on it does.
-            if !matches!(action, crate::a11y::Action::Activate) || !self.toasts.press_action(text) {
-                return false;
-            }
-            self.toasts_dirty = true;
-            self.invalidate();
-            return true;
-        }
         if target != self.sidebar_resize_target() || self.sidebar_resize_handle().is_none() {
             return false;
         }
@@ -4408,7 +4346,7 @@ impl Widget for NavShell {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let mut earliest = self.toasts.next_wake_deadline();
+        let mut earliest = self.notice.deadline();
         self.for_each_owned(|child| {
             if let Some(deadline) = child.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -4443,8 +4381,6 @@ impl Widget for NavShell {
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
             || self.status_dirty
-            || self.toasts_dirty
-            || self.toasts_expired()
             || self.animating
             || self.settling
             || self.fade.is_moving(crate::motion::frame_now())
@@ -4458,17 +4394,12 @@ impl Widget for NavShell {
         self.paint_dirty = false;
         self.status_dirty = false;
         self.status_drawn = self.sync_status.get_rect();
-        self.toasts_dirty = false;
-        self.toasts_drawn = self.toasts_painted;
-        self.toasts_drawn_scene.clone_from(&self.toasts_scene);
         self.for_each_owned_mut(|child| child.mark_drawn());
-        // The shell paints its titles and notices itself, so they learn
-        // here what it painted: as children they would otherwise ask for
-        // a frame forever.
+        // The shell paints its titles itself, so they learn here what it
+        // painted: as children they would otherwise ask for a frame forever.
         for header in &mut self.headers {
             header.title.mark_drawn();
         }
-        self.toasts.mark_drawn();
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -4493,14 +4424,6 @@ impl Widget for NavShell {
                             .filter(|rect| !rect.is_zero_area()),
                     );
                 }
-            }
-            // The notices where they were and are, shadows included.
-            if self.toasts_changed() {
-                regions.extend(
-                    [self.toasts_drawn, self.toasts_painted]
-                        .into_iter()
-                        .flatten(),
-                );
             }
         }
     }

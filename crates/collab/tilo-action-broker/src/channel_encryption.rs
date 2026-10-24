@@ -2387,7 +2387,7 @@ mod tests {
 
         // This thread pumps both devices, so the time it reads is the time
         // the steward judges the grant by.
-        tilo_clock::testing::with_wall_time(at(start), || {
+        tilo_clock::testing::with_wall(at(start), || {
             assert!(ready_epoch(&owner.access(room_id, channel).0).is_some());
             tilo_test_env::wait_until("the laptop joined", || {
                 let _ = owner.pump_until_due(&owner_endpoint);
@@ -2412,7 +2412,7 @@ mod tests {
         });
 
         // Short of the expiry, a pass (another announcement) keeps the member.
-        tilo_clock::testing::with_wall_time(at(expiry - 1), || {
+        tilo_clock::testing::with_wall(at(expiry - 1), || {
             tilo_identity_host::policy_change::announce();
             assert!(wakes.try_recv().is_ok(), "the armed watch woke");
             parked(&owner);
@@ -2426,7 +2426,7 @@ mod tests {
         // The expiry: its announcement wakes the parked steward, whose
         // re-check (at most a reconcile interval after the last) removes the
         // member.
-        tilo_clock::testing::with_wall_time(at(expiry), || {
+        tilo_clock::testing::with_wall(at(expiry), || {
             tilo_identity_host::policy_change::announce();
             assert!(wakes.try_recv().is_ok(), "the expiry woke the steward");
             tilo_test_env::wait_until("the member applied the removal", || {

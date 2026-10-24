@@ -20,7 +20,7 @@ cat >"$work/bin/cage" <<'EOF'
 #!/bin/sh
 printf 'args=%s\n' "$*"
 printf 'umask=%s\n' "$(umask)"
-for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_METRICS_PATH TILO_CAGE_SESSION_KEEP_OUTPUT; do
+for name in WLR_RENDERER WLR_DRM_NO_ATOMIC WLR_NO_HARDWARE_CURSORS TILO_STARTUP_METRICS_PATH TILO_GREETER_INPUT_RECORD TILO_CAGE_SESSION_KEEP_OUTPUT; do
   eval "value=\${$name-unset}"
   printf '%s=%s\n' "$name" "$value"
 done
@@ -40,7 +40,7 @@ card() {
 
 mkdir -p "$work/run-greeter"
 run_program() {
-  env -u WLR_RENDERER -u WLR_DRM_NO_ATOMIC -u WLR_NO_HARDWARE_CURSORS -u TILO_STARTUP_METRICS_PATH \
+  env -u WLR_RENDERER -u WLR_DRM_NO_ATOMIC -u WLR_NO_HARDWARE_CURSORS -u TILO_STARTUP_METRICS_PATH -u TILO_GREETER_INPUT_RECORD \
     -u TILO_CAGE_SESSION_KEEP_OUTPUT TILO_JOURNAL_STDOUT_SOCKET="$work/no-journal" \
     PATH="$work/bin:$PATH" TILO_DRM_SYSFS="$work/drm" TILO_CAGE="$work/bin/cage" \
     TILO_GREETER_RECORD_DIR="$work/run-greeter" "$@" bash "$wrapper" "$program"
@@ -91,6 +91,12 @@ default_dir="$(sed -n 's/^greeter_record_dir="\${TILO_GREETER_RECORD_DIR:-\(.*\)
 [ -n "$record" ] && [ "$record" = "$default_dir/startup-metrics.json" ] \
   && ok "tilo-boot-health reads the record tilo-cage-session asks for ($record)" \
   || bad "tilo-boot-health reads '${record:-?}', tilo-cage-session writes '${default_dir:-?}/startup-metrics.json'"
+input="$(sed -n 's/^GREETER_INPUT="\${TILO_BOOT_HEALTH_GREETER_INPUT:-\(.*\)}"$/\1/p' \
+  "$repo/os/usr/libexec/tilo-boot-health")"
+grep -qx "TILO_GREETER_INPUT_RECORD=$work/run-greeter/input" <<<"$out" \
+  && [ -n "$input" ] && [ "$input" = "$default_dir/input" ] \
+  && ok "the greeter records its keyboard or touch screen where tilo-boot-health reads it ($input)" \
+  || bad "tilo-boot-health reads '${input:-?}', the greeter was given: $out"
 grep -Eq "^d +$default_dir +0755 +greetd +greetd " "$repo/os/usr/lib/tmpfiles.d/tilo.conf" \
   && ok "$default_dir exists at boot, writable by the greeter user alone" \
   || bad "tmpfiles.d/tilo.conf does not create $default_dir 0755 greetd:greetd"

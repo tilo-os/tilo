@@ -181,6 +181,9 @@ pub struct Slider {
     /// The readout was on screen at the last frame, so the frame after it
     /// goes repaints where it stood.
     readout_drawn: bool,
+    /// How far above the knob the readout reaches and how far past its chip
+    /// it paints, in the theme as last laid out: everything it may cover.
+    readout_reach: (f64, vello::kurbo::Insets),
     /// The width the shown value takes at the trailing edge, measured when
     /// drawn; the track is the rest.
     value_lane: f64,
@@ -199,13 +202,17 @@ pub struct Slider {
     thumb_placed: bool,
     /// Where the press that sent the thumb gliding was, and what pressed
     /// (the pointer or a finger): the glide gives way to the hand once it
-    /// moves past [`DRAG_SLOP`] from there.
+    /// moves past its slop from there.
     glide_from: Option<(Point, crate::tokens::MotionSource)>,
     /// A view that builds the slider anew on each change: the one built in
     /// its place goes on from its thumb (`motion::keep`).
     hand_on: crate::motion::HandOn<KeptThumb>,
     /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
+    /// How far the hand moves from a press before the drag is the hand's,
+    /// the theme's click slop as last laid out: a thumb gliding to the
+    /// press gives way to it there.
+    slop: f64,
     /// What the last presented frame painted, and what the frame being drawn
     /// paints: the slider needs a redraw only when they differ.
     painted: Option<Painted>,
@@ -216,10 +223,6 @@ pub struct Slider {
 /// live level: the value and the drawn thumb (as bits), hovered, dragging,
 /// focused and enabled.
 type Painted = (u64, u64, bool, bool, bool, bool);
-
-/// How far the hand moves from a press before the drag is the hand's: a
-/// thumb gliding to the press gives way to it there.
-const DRAG_SLOP: f64 = 3.0;
 
 /// How far toward the filled ink the fill up to the thumb stands while a
 /// live level is drawn inside it: a step softer than the level.
@@ -267,6 +270,7 @@ impl Slider {
             touch: SliderTouch::default(),
             reads_out: false,
             readout_drawn: false,
+            readout_reach: (0.0, vello::kurbo::Insets::ZERO),
             level: None,
             level_drawn: None,
             thumb: crate::motion::Thumb::default(),
@@ -274,6 +278,7 @@ impl Slider {
             glide_from: None,
             hand_on: crate::motion::HandOn::default(),
             motion: None,
+            slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
             painted: None,
             drawing: None,
         }
@@ -663,7 +668,7 @@ impl Slider {
         // hand moves off the press; from then it is welded to the hand.
         if self
             .glide_from
-            .is_some_and(|(from, _)| (point.x - from.x).abs() > DRAG_SLOP)
+            .is_some_and(|(from, _)| (point.x - from.x).abs() > self.slop)
         {
             self.glide_from = None;
         }
@@ -1064,26 +1069,32 @@ pub fn paint_held_readout(
     // finger, and inside the slider's span.
     let span = Rect::new(
         face.rect.x0 - reach,
-        knob.y0 - READOUT_ROOM,
+        knob.y0 - readout_room(theme),
         face.rect.x1 + reach,
         knob.y1,
     );
     crate::widget::tooltip::draw_hover_tooltip(scene, transform, text, theme, knob, label, span);
 }
 
-/// How far above its knob a held slider's readout may reach: a chip of the
-/// largest text scale and its gap.
-const READOUT_ROOM: f64 = 96.0;
+/// How far above its knob a held slider's readout reaches: the tooltip
+/// chip standing above it in `theme`.
+fn readout_room(theme: &Theme) -> f64 {
+    crate::widget::tooltip::chip_reach_above(theme)
+}
 
-/// Everything a held readout over a slider laid out in `rect` may cover.
-fn readout_zone(rect: Rect) -> Rect {
+/// Where a held readout may stand over a slider laid out in `rect`,
+/// `room` being [`readout_room`] in the slider's theme.
+fn readout_span(rect: Rect, room: f64) -> Rect {
     let reach = SliderFace::overhang();
-    Rect::new(
-        rect.x0 - reach,
-        rect.y0 - READOUT_ROOM,
-        rect.x1 + reach,
-        rect.y1,
-    )
+    Rect::new(rect.x0 - reach, rect.y0 - room, rect.x1 + reach, rect.y1)
+}
+
+/// How far past its rect a readout chip paints in `theme`: its edge and
+/// its floating shadow.
+fn readout_bleed(theme: &Theme) -> vello::kurbo::Insets {
+    let chip = Rect::new(0.0, 0.0, 1.0, 1.0);
+    let painted = crate::widget::tooltip::chip_paint_bounds(chip, theme);
+    painted - chip
 }
 
 /// The thumb's fill and ring over a track whose halves are `filled` and
@@ -1172,6 +1183,8 @@ impl Widget for Slider {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.layout_target = Some(self.interaction.minimum_target());
+        self.slop = f64::from(theme.tokens.metrics.click_slop);
+        self.readout_reach = (readout_room(theme), readout_bleed(theme));
         // A slider fills its row but never collapses to a knob: the track
         // keeps six knob widths of travel.
         #[allow(
@@ -1311,7 +1324,8 @@ impl Widget for Slider {
             regions.push(self.rect);
         }
         if self.readout_drawn || (self.reads_out && self.is_held()) {
-            regions.push(readout_zone(self.rect));
+            let (room, bleed) = self.readout_reach;
+            regions.push(readout_span(self.rect, room) + bleed);
         }
     }
 

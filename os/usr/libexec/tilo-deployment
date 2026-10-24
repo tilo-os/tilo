@@ -7,6 +7,7 @@
 #   tilo-deployment boot ENTRY        boot ENTRY (or booted, staged, rollback) once
 #   tilo-deployment update [--yes]    fetch and stage the current image again
 #   tilo-deployment entries           maintain the boot counters and repair entry
+#   tilo-deployment fallback          after the boot loader went back, keep it there
 #   tilo-deployment repair-entry      just the repair entry
 #
 # Root only, and deliberately not a D-Bus service: everything here is a handful of
@@ -412,6 +413,7 @@ cmd_list() {
       printf '  %s\n' "${f##*/}"
     done
   fi
+  print_last_fallback
   printf '\nStart one entry once: sudo tilo boot ENTRY, or sudo tilo boot rollback\n'
 }
 
@@ -520,7 +522,7 @@ cmd_rollback() {
     case "$a" in y|Y|yes|YES) ;; *) die "cancelled" ;; esac
   fi
 
-  if bootc rollback; then
+  if bootc_with_writable_esp rollback; then
     log "bootc rollback accepted"
   else
     warn "bootc rollback failed (bootc#2208 is the known one on this backend);
@@ -571,6 +573,235 @@ print_success_footer() {
 Reboot to take it. Nothing has been removed: the deployment you are on now stays
 on the disk and stays in the boot menu, so this is reversible from either side.
 EOT
+}
+
+# --- bootc and the ESP ----------------------------------------------------------
+# bootc mounts the ESP itself to rewrite the loader entries. A second
+# read-write mount of a FAT superblock that is mounted read-only elsewhere
+# fails with EBUSY, which is the state a dev disk's ESP is in (its entry's
+# systemd.mount-extra mounts it read-only), and bootc then reports success for
+# nothing or fails outright. So bootc runs with the superblock writable, which
+# the callers' units keep private to themselves (PrivateMounts=yes; the global
+# mount keeps its own read-only flag), and the superblock goes back to
+# read-only afterwards. On an installed system tilo-esp-mount already leaves
+# the superblock writable behind a read-only bind, and nothing is remounted.
+bootc_with_writable_esp() {
+  local m remounted="" rc
+  for m in $ESP_CANDIDATES; do
+    mountpoint -q "$m" 2>/dev/null || continue
+    [ "$(findmnt -n -o FSTYPE --mountpoint "$m" | head -1)" = vfat ] || continue
+    if findmnt -n -o FS-OPTIONS --mountpoint "$m" | head -1 | tr , '\n' | grep -qx ro; then
+      mount -o remount,rw "$m" && remounted="$remounted $m"
+    fi
+  done
+  bootc "$@"; rc=$?
+  for m in $remounted; do
+    mount -o remount,ro "$m" || warn "could not make $m read-only again"
+  done
+  return "$rc"
+}
+
+# --- after the boot loader fell back ---------------------------------------------
+#
+# A deployment that keeps failing to boot spends the tries in its entry's file
+# name, and sd-boot then starts the previous deployment instead (see
+# `entries`). That much works when nothing in userspace runs at all. What it
+# leaves behind is a machine whose bootc still queues the failed deployment as
+# the default: `bootc status` says rollbackQueued, the boot menu's own ordering
+# still names the failed entry first, and the first thing that rewrites the
+# entries (an update, a `bootc rollback`, a renumbering) hands the failed
+# deployment fresh tries. The same holds after a person picks the previous
+# entry by hand from the boot menu.
+#
+# `fallback` runs on every boot (tilo-boot-fallback.service) and settles that:
+# when bootc queues a deployment other than the running one, and that
+# deployment's entry has been tried and never confirmed (`name+LEFT-DONE.conf`
+# with DONE >= 1), the running deployment becomes bootc's default and the
+# person is told what failed, with whatever the failed tries left behind. An
+# entry that was never tried (`+N`), or one that has booted well (no counter),
+# was chosen deliberately and is left alone.
+FALLBACK_DIR="${TILO_FALLBACK_DIR:-/var/lib/tilo/boot-fallback}"
+PSTORE_ARCHIVE="${TILO_PSTORE_ARCHIVE:-/var/lib/systemd/pstore}"
+# How many earlier boots the journal is searched for the failed deployment's.
+FALLBACK_BOOTS="${TILO_FALLBACK_BOOTS:-20}"
+
+# Writes the report for one failed deployment and prints its directory. A
+# deployment is reported once: a second boot that finds it still queued (its
+# settling failed) adds nothing new.
+fallback_report() {  # STATUS DIGEST TRIES
+  local status="$1" digest="$2" tries="$3"
+  local short="${digest:0:16}" dir existing rows b n=0 logged=0 first first_epoch
+  local threshold image version built now_image now_version
+  for existing in "$FALLBACK_DIR"/*-"$short"; do
+    [ -d "$existing" ] && { printf '%s\n' "$existing"; return 0; }
+  done
+  install -d -m 0755 "$FALLBACK_DIR" || return 1
+  dir="$FALLBACK_DIR/$(date -u +%Y%m%dT%H%M%SZ)-$short"
+  install -d -m 0755 "$dir" || return 1
+
+  image="$(status_field "$status" rollback-image)"
+  version="$(status_field "$status" rollback-version)"
+  built="$(status_field "$status" rollback-timestamp)"
+  now_image="$(status_field "$status" booted-image)"
+  now_version="$(status_field "$status" booted-version)"
+
+  # The failed deployment's boots that got far enough to keep a journal: the
+  # kernel logs its command line, which names the composefs identity it boots.
+  # Tries that stopped earlier (at the disk unlock prompt, in the initrd, in a
+  # crash) leave nothing on the disk; they are counted by the boot loader.
+  # Each boot as "INDEX BOOT-ID FIRST-ENTRY-USEC"; index 0 is this boot, whose
+  # start bounds the crash records below.
+  rows="$(journalctl --list-boots --no-pager -q -o json 2>/dev/null | tr '{' '\n' \
+    | sed -n 's/.*"index":\(-\{0,1\}[0-9]*\),"boot_id":"\([0-9a-f]*\)","first_entry":\([0-9]*\).*/\1 \2 \3/p')"
+  threshold="$(awk '$1 == 0 { print int($3 / 1000000) }' <<<"$rows")"
+  [[ "$threshold" =~ ^[0-9]+$ ]] || threshold="$(date +%s)"
+  : > "$dir/boots"
+  for b in $(awk '$1 != 0 { print $2 }' <<<"$rows" | tail -n "$FALLBACK_BOOTS"); do
+    journalctl -b "$b" -k -q --no-pager -o cat --grep "composefs=$digest" -n 1 2>/dev/null | grep -q . || continue
+    n=$((n + 1)); logged=$((logged + 1))
+    first="$(journalctl -b "$b" -q --no-pager -o short-unix 2>/dev/null | head -1 | cut -d' ' -f1)"
+    first_epoch="${first%%.*}"
+    if [[ "$first_epoch" =~ ^[0-9]+$ ]] && [ "$first_epoch" -lt "$threshold" ]; then threshold="$first_epoch"; fi
+    {
+      printf 'Boot %s of the deployment that did not start\n\n' "$b"
+      printf 'Its boot health verdict:\n'
+      journalctl -b "$b" -q --no-pager -o short-iso -u tilo-boot-health.service 2>/dev/null | tail -n 40
+      printf '\nIts warnings and errors:\n'
+      journalctl -b "$b" -q --no-pager -o short-monotonic -p warning 2>/dev/null | tail -n 400
+    } > "$dir/boot-$n.log"
+    printf '%s %s boot-%s.log %s\n' "$b" "${first_epoch:-?}" "$n" \
+      "$(journalctl -b "$b" -q --no-pager -o cat -u tilo-boot-health.service 2>/dev/null | grep -E 'WARNING|good' | tail -1)" \
+      >> "$dir/boots"
+  done
+
+  # Crash records the firmware kept (pstore). systemd-pstore archives them at
+  # the first boot that reaches userspace, which for a try that crashed early
+  # is this one.
+  if [ -d "$PSTORE_ARCHIVE" ]; then
+    find "$PSTORE_ARCHIVE" -mindepth 1 -maxdepth 1 -newermt "@$threshold" 2>/dev/null | sort | while read -r f; do
+      install -d -m 0750 "$dir/pstore" && cp -a "$f" "$dir/pstore/" 2>/dev/null
+    done
+  fi
+  # Logs can name the machine's hardware and accounts: the device admins
+  # (wheel) read them, as they read the journal.
+  chgrp -R wheel "$dir" 2>/dev/null || true
+  chmod 0640 "$dir"/boot-*.log 2>/dev/null || true
+
+  {
+    printf 'image=%s\n' "$image"
+    printf 'version=%s\n' "$version"
+    printf 'built=%s\n' "$built"
+    printf 'composefs=%s\n' "$digest"
+    printf 'tries=%s\n' "$tries"
+    printf 'logged=%s\n' "$logged"
+    printf 'running_image=%s\n' "$now_image"
+    printf 'running_version=%s\n' "$now_version"
+  } > "$dir/report"
+
+  {
+    printf 'Tilo went back to the version that worked before.\n\n'
+    printf 'Did not start:  %s%s%s\n' "${image:-an unnamed image}" "${version:+ $version}" "${built:+ (built ${built%%T*})}"
+    printf '                composefs %s\n' "$short"
+    printf 'Tried:          %s times; no try reached a signed-in session with working input\n' "$tries"
+    printf 'Running now:    %s%s\n\n' "${now_image:-the previous image}" "${now_version:+ $now_version}"
+    printf 'What the failed tries left behind (in %s):\n' "$dir"
+    if [ "$logged" -gt 0 ]; then
+      while read -r b first_epoch file verdict; do
+        printf '  a try on %s started the system: %s\n' \
+          "$(date -d "@$first_epoch" '+%F %T' 2>/dev/null || echo "$first_epoch")" "$file"
+        [ -z "$verdict" ] || printf '    %s\n' "$verdict"
+      done < "$dir/boots"
+    fi
+    if [ "$tries" -gt "$logged" ]; then
+      printf '  %s tries left no log: they stopped before the system had started,\n' "$((tries - logged))"
+      printf '    for example at the disk unlock prompt, in the initrd, or in a crash\n'
+    fi
+    if [ -d "$dir/pstore" ]; then
+      printf '  crash records the firmware kept: pstore/\n'
+    fi
+  } > "$dir/summary.txt"
+  chmod 0644 "$dir/report" "$dir/summary.txt" "$dir/boots"
+  printf '%s\n' "$dir"
+}
+
+cmd_fallback() {
+  [ "$(id -u)" = 0 ] || die "fallback needs root"
+  local esp; esp="$(esp_path)" || { log "$(esp_missing); nothing to check"; return 0; }
+  local status queued digest f file="" name counter left done id report settled
+  status="$(bootc_status_json)"
+  [ -n "$status" ] || die "bootc status said nothing"
+  if [ -n "$(status_field "$status" staged-image)" ]; then
+    log "an update is staged and boots next; nothing to settle"
+    return 0
+  fi
+  queued="$(status_field "$status" rollback-queued)"
+  if [ "$queued" != true ]; then
+    log "the running deployment is the one that boots next; nothing to settle"
+    return 0
+  fi
+  digest="$(status_field "$status" rollback-composefs)"; digest="${digest#sha512:}"
+  [[ "$digest" =~ ^[[:xdigit:]]{128}$ ]] || { warn "bootc queues a deployment with no composefs identity; leaving it"; return 0; }
+  for f in "$esp"/loader/entries/*.conf; do
+    [ -f "$f" ] || continue
+    [ "$(entry_digest "$esp" "$f")" = "$digest" ] || continue
+    file="$f"; break
+  done
+  [ -n "$file" ] || { warn "bootc queues composefs ${digest:0:16}, which no boot loader entry starts; leaving it"; return 0; }
+  id="$(entry_id_of "$file")"
+  name="${file##*/}"; name="${name%.conf}"
+  case "$name" in
+    *+*-*) counter="${name##*+}" ;;
+    *+*) log "$id boots next and has not been tried yet; it was chosen, not failed"; return 0 ;;
+    *) log "$id boots next and has booted well before; it was chosen, not failed"; return 0 ;;
+  esac
+  left="${counter%%-*}"; done="${counter#*-}"
+  if ! [[ "$left" =~ ^[0-9]+$ && "$done" =~ ^[0-9]+$ ]] || [ "$done" -lt 1 ]; then
+    log "$id carries the counter $counter; nothing to settle"
+    return 0
+  fi
+
+  if [ "$left" = 0 ]; then
+    log "$id failed all $done of its tries and the boot loader went back by itself"
+  else
+    log "$id failed $done tries and the previous deployment was chosen from the boot menu"
+  fi
+  report="$(fallback_report "$status" "$digest" "$done")" || warn "could not write the report under $FALLBACK_DIR"
+
+  # bootc's own ordering is what every later rewrite of the entries starts
+  # from, so it is changed there and nowhere else: a boot loader default
+  # (LoaderEntryDefault) would pin an entry id that bootc renumbers.
+  if bootc_with_writable_esp rollback; then
+    log "bootc rollback accepted"
+  else
+    warn "bootc rollback failed"
+  fi
+  if [ "$(bootc_field rollback-queued)" = false ]; then
+    settled=yes
+    log "the running deployment is bootc's default again; $id stays on the disk"
+  else
+    settled=no
+    warn "bootc still queues $id. The boot loader keeps starting the running deployment while"
+    warn "$id has no tries left, but the next rewrite of the entries could give it new ones."
+  fi
+  [ -z "${report:-}" ] || printf 'settled=%s\n' "$settled" >> "$report/report"
+  # bootc rewrote the entries; give whatever it wrote the counters it needs.
+  ( cmd_entries ) || warn "the boot counters could not be brought up to date"
+  [ "$settled" = yes ]
+}
+
+# The newest fallback report, for `list`.
+print_last_fallback() {
+  local dir="" d version image tries when
+  for d in "$FALLBACK_DIR"/*-*; do [ -f "$d/report" ] && dir="$d"; done
+  [ -n "$dir" ] || return 0
+  image="$(sed -n 's/^image=//p' "$dir/report" | head -1)"
+  version="$(sed -n 's/^version=//p' "$dir/report" | head -1)"
+  tries="$(sed -n 's/^tries=//p' "$dir/report" | head -1)"
+  when="${dir##*/}"; when="${when%%-*}"
+  printf '\nLast fallback (%s):\n' "$when"
+  printf '  %s%s did not start after %s tries, so this machine went back.\n' \
+    "${image:-an image}" "${version:+ $version}" "${tries:-its}"
+  printf '  What it left behind: %s/summary.txt\n' "$dir"
 }
 
 # The loader entry that boots one of bootc's deployments, matched by the
@@ -1025,8 +1256,9 @@ case "${1:-}" in
   boot)         shift; cmd_boot "$@" ;;
   update)       shift; cmd_update "$@" ;;
   entries)      shift; cmd_entries "$@" ;;
+  fallback)     cmd_fallback ;;
   repair-entry) shift; cmd_repair_entry "$@" ;;
   caveats)      print_rollback_caveats ;;
-  -h|--help|"") sed -n '2,11p' "$0" ;;
+  -h|--help|"") sed -n '2,12p' "$0" ;;
   *)            die "unknown subcommand: $1 (try --help)" ;;
 esac

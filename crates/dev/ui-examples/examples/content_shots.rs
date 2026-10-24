@@ -1,7 +1,7 @@
 //! Offscreen renders of the content composites (list rows, property lists,
 //! sections, cards, media grids, stat tiles, data tables, empty states,
 //! drop zones, skeletons, progress rings, steppers) and of the status
-//! surfaces (banners with their actions, toasts, progress bars, badges,
+//! surfaces (banners with their actions, progress bars, badges,
 //! avatars with presence, charts) on the window ground, dark and light, wide
 //! and narrow, and at twice the text size.
 //!
@@ -442,8 +442,6 @@ fn marks() -> Element {
 }
 
 fn status_page() -> Element {
-    let mut toasts = tilo_ui::widget::toast::ToastStack::new();
-    toasts.push("Link copied", tilo_ui::widget::toast::ToastKind::Success);
     page(vec![
         banners(),
         Box::new(
@@ -459,7 +457,6 @@ fn status_page() -> Element {
         ),
         progress(),
         marks(),
-        Box::new(toasts),
     ])
 }
 

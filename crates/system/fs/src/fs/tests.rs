@@ -589,6 +589,86 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
+    /// A file already here when it is pinned is held before the pass that
+    /// sees the pin fetches anything: what that pass downloads counts
+    /// against a full cache budget when it lands, and must not push out a
+    /// file the same pin covers.
+    #[tokio::test]
+    async fn a_pinned_download_never_evicts_a_file_the_same_pin_already_holds() {
+        use crate::store::area::Retention;
+        let size = crate::content::FILE_BACKED_MIN + 1;
+        let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
+        let source_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let source_store = ContentStore::memory();
+        let remote = source_store
+            .write_content(&bytes(2))
+            .await
+            .unwrap()
+            .unwrap();
+        let source_router = Router::builder(source_endpoint.clone())
+            .accept(iroh_blobs::ALPN, source_store.blobs_protocol(None))
+            .spawn();
+
+        let dir = tempfile::tempdir().unwrap();
+        let client_endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let here = store.write_content(&bytes(1)).await.unwrap().unwrap();
+        // `here` came from a peer and was read in full: a cached copy.
+        store
+            .files()
+            .set_retention(here.as_bytes(), Retention::Cached)
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(client_endpoint.clone(), Arc::clone(&store)));
+        hydrator.add_peer(source_endpoint.addr());
+        let namespace = Arc::new(Mutex::new(Namespace::new("pinned-download").unwrap()));
+        let folder = {
+            let mut namespace = namespace.lock().unwrap();
+            let folder = namespace.create_dir(ROOT_INO, "trip", 1).unwrap();
+            namespace
+                .create_file(folder, "here.bin", Some(&here), size, 1)
+                .unwrap();
+            namespace
+                .create_file(folder, "remote.bin", Some(&remote), size, 1)
+                .unwrap();
+            folder
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+        let files = store.files();
+        // The cache is full: whatever lands next makes room by eviction.
+        files.set_budget(0);
+
+        fs.set_pin_policy(folder, AvailabilityPolicy::Pinned)
+            .unwrap();
+        let _ = reconcile_pinned_hydration(
+            &namespace,
+            Arc::clone(&hydrator),
+            Arc::clone(&registry),
+            None,
+            wakes,
+        )
+        .await;
+        assert!(
+            files
+                .entry(remote.as_bytes())
+                .is_some_and(|entry| entry.complete()),
+            "the pass downloads the file that is not here yet"
+        );
+        assert_eq!(
+            files.entry(here.as_bytes()).map(|entry| entry.retention),
+            Some(Retention::Pinned),
+            "the download never pushes out a file the same pin holds"
+        );
+
+        drop(fs);
+        close_pinned_test_source(source_router, source_endpoint, client_endpoint).await;
+    }
+
     /// How many times the mount's pin worker has come back to wait.
     fn worker_turns(fs: &QuickFS) -> u64 {
         fs.pinned_hydration

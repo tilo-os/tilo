@@ -895,9 +895,11 @@ fn backticks_only(line: &str) -> Option<usize> {
 /// The backticks a code block's fence takes: three, or one more than the
 /// longest line of its text that is only backticks, so a fence the code
 /// shows (Markdown about Markdown) stays code instead of ending the block.
+/// Indentation is ignored: Markdown closes a fence on a line indented up
+/// to three spaces, such as the fence of a list item the code shows.
 fn fence_length(text: &str) -> usize {
     text.split('\n')
-        .filter_map(backticks_only)
+        .filter_map(|line| backticks_only(line.trim_start()))
         .max()
         .map_or(3, |longest| longest.saturating_add(1).max(3))
 }
@@ -1858,6 +1860,23 @@ sum_(i=1)^n frac(1, i^2)
             serialize(&[BlockSpec::code_block(Some("sh".into()), "ls")]),
             "```sh\nls\n```\n"
         );
+    }
+
+    /// A fence the code shows indented, as under a list item, would close a
+    /// three-backtick fence in any Markdown reader, so the exported fence
+    /// is longer than it too.
+    #[test]
+    fn a_code_block_showing_an_indented_fence_exports_a_longer_fence() {
+        let specs = vec![
+            BlockSpec::code_block(Some("md".into()), "- step\n  ```sh\n  ls\n  ```\nmore"),
+            BlockSpec::paragraph("after"),
+        ];
+        let markdown = serialize(&specs);
+        assert!(
+            markdown.starts_with("````md\n- step\n  ```sh\n  ls\n  ```\nmore\n````\n"),
+            "markdown {markdown:?}"
+        );
+        assert_eq!(parse(&markdown), specs, "markdown {markdown:?}");
     }
 
     /// Text that reads like markup comes back as the same text, not marks.

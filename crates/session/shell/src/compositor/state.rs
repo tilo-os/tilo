@@ -3112,7 +3112,7 @@ impl State {
         }
         self.personal_keyboard_focus = None;
         self.headless_keyboard_focus = Some((peer, surface));
-        if !self.remote_input_firewall.view().chrome_captures_input() {
+        if !self.remote_input_firewall.view().captures_keyboard() {
             self.set_activated_toplevel(Some(surface));
             self.set_client_keyboard_focus(Some(surface));
             // A key can follow focus in the same packet, before the next
@@ -9344,7 +9344,7 @@ mod tick_hook_tests {
                 (CURRENT, Rect::new(400.0, 0.0, 800.0, 600.0)),
             ],
             Some(CURRENT),
-            false,
+            crate::shell::input_policy::InputCapture::NONE,
             false,
         ));
         for surface in [OLD, CURRENT] {

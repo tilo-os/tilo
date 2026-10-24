@@ -253,6 +253,26 @@ test('the camera and a shared screen turn on in a live call from a gesture, and 
   assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', ''), [{channel_id: 'standup', people: [ana, ben], cameras: [ana], screens: [ben], muted: [ben]}]);
   f.voice.calls[0].participants.push({user: ben});
   assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].muted, undefined, 'heard on another device: not muted');
+  f.voice.calls[0].participants = [{user: ana, muted: true, deafened: true}, {user: ben, muted: true}];
+  assert.deepEqual(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, [ana], 'the deafened, among the muted');
+  f.voice.calls[0].participants.push({user: ana, muted: true});
+  assert.equal(rostersOf(f.voice.calls, 'so.tilo.chat', '')[0].deafened, undefined, 'hearing on another device: not deafened');
+});
+
+test('deafening is a command of the call: it needs one, and undeafening unmutes only from a gesture', async () => {
+  const f = fixture();
+  const deafens = [];
+  f.voice.call.setDeafened = async (value, options) => { deafens.push([value, options]); f.state.deafened = value; if (value) f.state.muted = true; };
+  await assert.rejects(f.controls.execute(f.request({op: 'set_deafened', deafened: true})), /call/);
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  Object.assign(f.state, {phase: 'live', canPublish: true});
+  const deafened = await f.controls.execute(f.request({op: 'set_deafened', deafened: true}));
+  assert.deepEqual([deafened.deafened, deafened.muted], [true, true]);
+  const heard = await f.controls.execute(f.request({op: 'set_deafened', deafened: false}));
+  assert.equal(heard.deafened, undefined, 'written only when set');
+  const quiet = createVoiceControls({voice: f.voice, room: 'room-1', gesture: () => false});
+  await quiet.execute(f.request({op: 'set_deafened', deafened: false}));
+  assert.deepEqual(deafens.map(([value, {unmute}]) => [value, unmute]), [[true, true], [false, true], [false, false]]);
 });
 
 test('the app says what it shows and collects the pictures as they arrive', async () => {

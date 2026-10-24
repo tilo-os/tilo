@@ -221,7 +221,7 @@ pub enum VpnEffect {
     },
     /// The largest packet a VPN sends, in bytes; chosen automatically when
     /// omitted.
-    #[effect(job, row, idempotent, label = "MTU")]
+    #[effect(job, row, idempotent, label = "Packet size")]
     SetVpnMtu {
         #[param("The VPN's id or name")]
         connection: String,
@@ -1759,11 +1759,12 @@ impl NetworkModel {
         out
     }
 
-    /// The MTU: chosen automatically, or a size the person sets, whose
-    /// stepper shows only then.
+    /// The packet size: Automatic or Custom, and for Custom the size,
+    /// in the same row.
     fn mtu_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
         let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.clone();
+        let label = t("net-vpn-mtu-size");
         let choices = [t("net-vpn-mtu-automatic"), t("net-vpn-mtu-custom")];
         let shown = if settings.mtu.is_some() {
             t("net-vpn-mtu-custom")
@@ -1778,39 +1779,38 @@ impl NetworkModel {
                 .collect(),
             &LocalState::new(shown),
         )
-        .with_accessible_name("MTU")
+        .with_accessible_name(label.clone())
         .with_id(format!("network.vpn.mtu-choice.{uuid}"));
-        let mut out = vec![setting_row_described(
-            "MTU",
-            &t("net-vpn-mtu-caption"),
-            Box::new(self.cx.bind_on_row(
-                &live,
-                choice,
-                effect(VpnEffect::SET_VPN_MTU).map({
-                    let uuid = uuid.clone();
-                    move |index: usize| (uuid.clone(), (index == 1).then_some(custom))
-                }),
-            )),
-        )];
+        let mut controls = ui::widget::Row::new().with_align_items(taffy::AlignItems::Center);
         if let Some(mtu) = settings.mtu {
-            out.push(setting_row(
-                &t("net-vpn-mtu-size"),
-                Box::new(
-                    self.cx.bind_on_row(
-                        &live,
-                        NumberInput::new(f64::from(mtu))
-                            .with_range(f64::from(*MTU_RANGE.start()), f64::from(*MTU_RANGE.end()))
-                            .with_step(1.0)
-                            .with_precision(0)
-                            .with_id(&format!("network.vpn.mtu.{uuid}"))
-                            .with_accessible_name(t("net-vpn-mtu-size")),
-                        effect(VpnEffect::SET_VPN_MTU)
-                            .map(move |value: f64| (uuid.clone(), Some(whole(value)))),
-                    ),
+            let uuid = uuid.clone();
+            controls = controls.push(Box::new(
+                self.cx.bind_on_row(
+                    &live,
+                    NumberInput::new(f64::from(mtu))
+                        .with_range(f64::from(*MTU_RANGE.start()), f64::from(*MTU_RANGE.end()))
+                        .with_step(1.0)
+                        .with_precision(0)
+                        .with_id(&format!("network.vpn.mtu.{uuid}"))
+                        .with_accessible_name(label.clone()),
+                    effect(VpnEffect::SET_VPN_MTU)
+                        .map(move |value: f64| (uuid.clone(), Some(whole(value)))),
                 ),
             ));
         }
-        out
+        controls = controls.push(Box::new(
+            self.cx.bind_on_row(
+                &live,
+                choice,
+                effect(VpnEffect::SET_VPN_MTU)
+                    .map(move |index: usize| (uuid.clone(), (index == 1).then_some(custom))),
+            ),
+        ));
+        vec![setting_row_described(
+            &label,
+            &t("net-vpn-mtu-caption"),
+            Box::new(controls),
+        )]
     }
 
     /// The name servers the tunnel asks, each removable, and the field to

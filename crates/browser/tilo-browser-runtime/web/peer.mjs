@@ -1055,11 +1055,17 @@ async function connect({
     if (token) globalThis.navigator?.sendBeacon?.(new URL(SESSION_END_PATH, origin).href, token);
   };
   page?.addEventListener('pagehide', leavePage);
+  // Back online, the session reconnects now rather than when its backoff
+  // (up to half a minute after a long outage) runs out: a call waits on it
+  // for its fresh grant.
+  const online = () => { if (!disposed) { try { peer?.retryNow?.(); } catch {} } };
+  page?.addEventListener('online', online);
 
   let disposal;
   function dispose() {
     if (disposal) return disposal;
     page?.removeEventListener('pagehide', leavePage);
+    page?.removeEventListener('online', online);
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;

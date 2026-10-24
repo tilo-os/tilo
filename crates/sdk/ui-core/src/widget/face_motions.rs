@@ -8,7 +8,9 @@
 //! moves with a scroll). Each motion asks the frame pump for its own frames
 //! (`motion::want_frames_until`), so a host that reads the motion clock
 //! paints them with nothing more; [`FaceMotions::is_moving`] says whether
-//! any is on its way. A click or a finger moves a control; a key, an assistive action
+//! any is on its way, and [`FaceMotions::needs_redraw`] whether the host's
+//! paint is stale: one is moving, or the last pose painted was part-way and
+//! the frame at rest has not been painted yet. A click or a finger moves a control; a key, an assistive action
 //! or a value nobody just caused lands. The first value a control is seen
 //! with rests. Settled, nothing asks for frames.
 
@@ -16,7 +18,7 @@ use super::checkbox::{CheckGlyph, CheckMotion, CheckPose};
 use super::toggle::{SwitchMotion, SwitchPose};
 use crate::time::Instant;
 use crate::tokens::EffectiveMotion;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -26,6 +28,9 @@ use std::hash::{Hash, Hasher};
 pub struct FaceMotions {
     switches: RefCell<HashMap<u64, SwitchMotion>>,
     checks: RefCell<HashMap<u64, CheckMotion>>,
+    /// The last pose painted was part-way: the frame showing every control
+    /// at rest is still owed, though nothing is moving any more.
+    painted_moving: Cell<bool>,
 }
 
 fn key_of(key: impl Hash) -> u64 {
@@ -42,7 +47,11 @@ impl FaceMotions {
         let mut switches = self.switches.borrow_mut();
         let switch = switches.entry(key_of(key)).or_default();
         switch.follow_input(on, motion, now);
-        switch.pose(motion, now)
+        let pose = switch.pose(motion, now);
+        let moving = switch.is_moving(now);
+        drop(switches);
+        self.painted(moving, now);
+        pose
     }
 
     /// How to draw the box `key`, checked (or mixed: `glyph`) when
@@ -59,7 +68,28 @@ impl FaceMotions {
         let mut checks = self.checks.borrow_mut();
         let check = checks.entry(key_of(key)).or_default();
         check.follow_input(marked, glyph, motion, now);
-        check.pose(now)
+        let pose = check.pose(now);
+        let moving = check.is_moving(now);
+        drop(checks);
+        self.painted(moving, now);
+        pose
+    }
+
+    /// A pose was read for painting at `now`, part-way when `moving`. Once
+    /// a frame paints with nothing moving, the rest frame is drawn.
+    fn painted(&self, moving: bool, now: Instant) {
+        if moving {
+            self.painted_moving.set(true);
+        } else if self.painted_moving.get() && !self.is_moving(now) {
+            self.painted_moving.set(false);
+        }
+    }
+
+    /// Whether the host must paint its controls again at `now`: one is
+    /// moving, or the last frame painted one part-way and the frame showing
+    /// it at rest is owed. The host's frames come from the motion clock.
+    pub fn needs_redraw(&self, now: Instant) -> bool {
+        self.painted_moving.get() || self.is_moving(now)
     }
 
     /// Whether any control is still on its way at `now`: the host draws
@@ -113,9 +143,23 @@ mod tests {
             let check = faces.check("done", true, CheckGlyph::Check, motion);
             assert!(check.level > 0.0 && check.level < 1.0);
             assert!(faces.is_moving(at(40)));
+            assert!(
+                crate::motion::frames_wanted(at(40)),
+                "a moving control asks the motion clock for its frames"
+            );
         });
         with_monotonic_time(at(1_000), || {
             assert!(!faces.is_moving(at(1_000)), "settled: no frames");
+            assert!(
+                faces.needs_redraw(at(1_000)),
+                "the last frame painted them part-way: the rest frame is owed"
+            );
+            faces.switch("wifi", true, motion);
+            faces.check("done", true, CheckGlyph::Check, motion);
+            assert!(
+                !faces.needs_redraw(at(1_000)),
+                "painted at rest: nothing more to paint"
+            );
             crate::motion::note_source(MotionSource::Keyboard);
             assert_eq!(
                 faces.switch("wifi", false, motion),

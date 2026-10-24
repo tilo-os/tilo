@@ -22,7 +22,6 @@ pub mod game;
 pub mod locales;
 pub mod view;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 pub use game::Table;
@@ -39,11 +38,7 @@ impl ResourceApp for App {
     }
 
     fn label(table: &Table) -> String {
-        if table.hand.number == 0 {
-            I18nManager::lookup_plain("poker-title")
-        } else {
-            I18nManager::format("poker-hand-number", &[("number", table.hand.number.into())])
-        }
+        view::location(table)
     }
 
     fn view(cx: &mut ViewCx<Table>) -> Element {

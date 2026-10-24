@@ -77,6 +77,8 @@ pub mod extension_host;
 #[cfg(not(test))]
 pub mod extension_notices;
 #[cfg(not(test))]
+pub mod extension_omnibox;
+#[cfg(not(test))]
 pub mod extension_toolbar;
 #[cfg(not(test))]
 pub mod extensions;

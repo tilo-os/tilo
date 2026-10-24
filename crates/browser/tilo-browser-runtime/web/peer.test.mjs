@@ -113,7 +113,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
         const listeners = [];
         const durable = [];
         peer = {
-          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0,
+          config: JSON.parse(config), configText: config, custody, namespace, record, save, post, channelVault, disposed: false, reconnects: 0, retries: 0,
           phase,
           records: [],
           admission: 'ready',
@@ -138,6 +138,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
           takeRemoteActionEvents: () => '[]',
           sendRemoteAction: () => {},
           reconnect: () => { peer.reconnects++; },
+          retryNow: () => { peer.retries++; },
           refresh: () => { peer.refreshes++; peer.onRefresh?.(); },
           reportFailure: (surface, asset, code, message) => {
             if (!['storage-transaction-failed', 'storage-quota', 'storage-denied', 'asset-unavailable', 'gpu-unavailable', 'gpu-device-lost', 'renderer-initialization-failed'].includes(code)) throw new Error(`unknown failure code ${code}`);
@@ -843,7 +844,7 @@ test("a person's presence colour is the runtime's for who they are, whatever the
   await peer.dispose();
 });
 
-test('leaving the page leaves the live plane and its host session at once, so others take it down', async () => {
+test('leaving the page leaves the live plane and its host session at once, so others take it down; back online, the session retries now', async () => {
   const page = new EventTarget();
   globalThis.addEventListener = page.addEventListener.bind(page);
   globalThis.removeEventListener = page.removeEventListener.bind(page);
@@ -867,7 +868,12 @@ test('leaving the page leaves the live plane and its host session at once, so ot
     assert.ok(closed, 'its session closed, withdrawing its announcement');
     assert.deepEqual(beacons, [['https://host.example:8443/peer/v1/session/end', 'ce'.repeat(32)]],
       'the host hears the page went, its session token the body');
+    // Back online, the session tries again now instead of after its backoff.
+    page.dispatchEvent(new Event('online'));
+    assert.equal(runtime.peer.retries, 1);
     await peer.dispose();
+    page.dispatchEvent(new Event('online'));
+    assert.equal(runtime.peer.retries, 1, 'not once the page let the session go');
   } finally {
     delete globalThis.addEventListener;
     delete globalThis.removeEventListener;

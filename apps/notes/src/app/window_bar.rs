@@ -102,3 +102,57 @@ impl NotesApp {
         changed
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::NotesApp;
+    use ui::framework::testing::TestApp;
+
+    /// Notes in its window bar at `size`, on `scenario`'s note.
+    fn notes_at(scenario: &str, size: (u32, u32)) -> TestApp<crate::NotesShell> {
+        let mut app =
+            TestApp::<crate::NotesShell>::capture_at(Some(scenario), size).expect("Notes opens");
+        app.harness().present_in_window_bar();
+        app.settle();
+        app
+    }
+
+    /// The header row's height and the note title's top, as laid out.
+    fn top_of_note(app: &mut TestApp<crate::NotesShell>) -> (f64, f64) {
+        app.with_surface::<NotesApp, _>(|notes| {
+            (
+                notes.shell.geometry().header_height,
+                notes.main.title_rect_for_test().y0,
+            )
+        })
+        .expect("the notes surface")
+    }
+
+    /// A compact window has nothing for a header row to hold: the page
+    /// tree's header is in its drawer, the note's in the window's bar. The
+    /// note starts right under the bar, or under its notice's strip, and a
+    /// wide window keeps the row the page tree's header stands in.
+    #[test]
+    fn a_compact_note_starts_right_under_the_window_bar() {
+        let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
+        for scenario in ["status", "import_success"] {
+            let mut compact = notes_at(scenario, (420, 800));
+            let (row, title) = top_of_note(&mut compact);
+            assert!(
+                row.abs() < 1e-9,
+                "{scenario}: no header row at 420 px, got {row}"
+            );
+            assert!(
+                (title - gutter).abs() < 0.5,
+                "{scenario}: the title stands one gutter under the bar, at {title}"
+            );
+            let mut wide = notes_at(scenario, (1280, 800));
+            let (row, title) = top_of_note(&mut wide);
+            assert!(
+                row > 0.0,
+                "{scenario}: the page tree's header row stays wide"
+            );
+            assert!((title - (row + gutter)).abs() < 0.5, "{scenario}: {title}");
+        }
+    }
+}

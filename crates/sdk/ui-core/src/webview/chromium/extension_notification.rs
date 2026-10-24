@@ -50,6 +50,7 @@ pub(super) fn decode(id: &str, value: &Value) -> Option<WebViewEvent> {
             items,
             buttons,
             progress,
+            silent: value["silent"] == true,
         })
     };
     Some(WebViewEvent::ExtensionNotification {

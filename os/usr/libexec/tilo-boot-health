@@ -14,17 +14,43 @@
 #
 # ## What counts as healthy, and why it is not the same test the floor uses
 #
-# The machine reached the point where a person can log in, and stayed there:
+# Someone can sign in: the sign-in screen is drawn and stays, and a keyboard
+# or touch screen reaches it. A system that started is not that. An update
+# whose keyboard driver is broken starts, shows its greeter and is useless;
+# blessed at that point it would be the machine's default for good. Nothing
+# here waits for a person, though: a machine nobody signs in to, or one that
+# loses power at its sign-in screen, has done everything the update controls,
+# and holding the verdict for a person would leave an unattended machine on
+# trial and roll back a working update after a few power cuts. So, in order:
 #
-#   * greetd is active;
-#   * something a person can use is on the screen: the greeter running now has
-#     presented a frame (tilo-greeter's own startup record, which its first
-#     presented frame completes), or a person is already signed in through
-#     greetd (the autologin of a first boot);
-#   * and it holds: for SETTLE seconds greetd is not restarted and the greeter
-#     keeps presenting.
+#   1. The greeter is on the screen and stays there:
+#      * greetd is active;
+#      * the greeter running now has presented a frame (tilo-greeter's own
+#        startup record, which its first presented frame completes), or a
+#        person is already signed in through greetd (a first boot's autologin);
+#      * and it holds: for SETTLE seconds greetd is not restarted and the
+#        greeter keeps presenting.
+#      This part has a deadline, because a greeter that cannot draw will not
+#      start drawing later, and its verdict is worth having in the journal.
+#   2. Input reaches the sign-in screen: the kiosk compositor gave the
+#      greeter's window a keyboard or a touch screen. It advertises on its
+#      seat the keyboard and touch devices it has opened, and the greeter
+#      records the first such seat it sees (GREETER_INPUT; a mouse alone
+#      records nothing). A person signed in through greetd settles this too,
+#      whichever comes first. This part shares part 1's
+#      deadline, with at least INPUT_WAIT seconds after the greeter held: a
+#      device that is plugged in is opened when the compositor starts, or
+#      when it appears.
 #
-# `greetd is active` alone is not that point. greetd has Restart=, so it is
+# A machine whose disk asks for a passphrase reaches its greeter only after
+# someone typed it; with TPM unlock it gets there by itself. A boot that never
+# gets past the unlock prompt never runs this, keeps its decremented counter
+# and has spent its try, which is right: that is the update whose keyboard
+# does not work at unlock. The verdict blocks boot-complete.target and
+# systemd-bless-boot meanwhile, and anything that must not act on an unproven
+# boot (tilo-rollback-confirm) is ordered after the blessing.
+#
+# `greetd is active` alone is not even part 1. greetd has Restart=, so it is
 # active between restarts, and a greeter that cannot draw (a broken GPU driver,
 # cage or tilo-greeter) exits, takes greetd with it and is back a few seconds
 # later, for ever. Judged by is-active alone, such a boot was blessed on its
@@ -32,9 +58,6 @@
 # or flickering screen for good. Restarts before the greeter first presents are
 # not held against the boot (a slow display probe can cost one); restarts after
 # it are, for the whole settle window.
-#
-# That is the smallest claim that is worth anything to the user, and it is the
-# one the desktop actually depends on.
 #
 # It is deliberately NOT `systemctl is-system-running` = running, which
 # /usr/libexec/tilo-rollback-common uses for a different decision. That check gates
@@ -49,7 +72,7 @@ set -uo pipefail
 log()  { printf 'tilo-boot-health: %s\n' "$*"; }
 warn() { printf 'tilo-boot-health: WARNING: %s\n' "$*" >&2; }
 
-# How long to wait for the session. greetd starting is not instantaneous and the
+# How long part 1 waits for the greeter. greetd starting is not instantaneous and the
 # boot-complete transaction runs as soon as the default target settles, so
 # polling is the only correct shape — ordering After=greetd.service would make a
 # hung greetd hang the assessment instead of failing it.
@@ -65,6 +88,13 @@ POLL="${TILO_BOOT_HEALTH_POLL:-2}"
 # so it tells what the greeter running now has done, never what an earlier one
 # did. /run is visible here; the greeter's /tmp is not (PrivateTmp=).
 GREETER_RECORD="${TILO_BOOT_HEALTH_GREETER_RECORD:-/run/tilo-greeter/startup-metrics.json}"
+# How long part 2 waits at least, once the greeter held, for a keyboard or
+# touch screen to reach it.
+INPUT_WAIT="${TILO_BOOT_HEALTH_INPUT_WAIT:-30}"
+# The greeter's record of the keyboard or touch screen it was given
+# (crates/session/greeter/src/seat_input.rs). Like the startup record it is in
+# the greeter user's own directory and describes the greeter running now.
+GREETER_INPUT="${TILO_BOOT_HEALTH_GREETER_INPUT:-/run/tilo-greeter/input}"
 
 # A machine with no greeter is not a broken desktop, it is a different machine —
 # the probe image the boot chain is tested on, an installer medium, a headless
@@ -151,6 +181,60 @@ fi
 
 end=$(( $(date +%s) + DEADLINE ))
 
+# A person signed in through greetd.
+person_session() {
+  local session state
+  for session in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{ print $1 }'); do
+    [ "$(loginctl show-session "$session" -p Service --value 2>/dev/null)" = greetd ] || continue
+    [ "$(loginctl show-session "$session" -p Class --value 2>/dev/null)" = user ] || continue
+    state="$(loginctl show-session "$session" -p State --value 2>/dev/null)"
+    [ "$state" = active ] || [ "$state" = online ] || continue
+    signed_in="$session"
+    return 0
+  done
+  return 1
+}
+
+# Sets `input_device` to the keyboard or touch screen the greeter recorded.
+greeter_input() {
+  local kind
+  [ -r "$GREETER_INPUT" ] || return 1
+  kind="$(head -c 32 "$GREETER_INPUT" | head -1)"
+  case "$kind" in
+    keyboard|touch) ;;
+    *) return 1 ;;
+  esac
+  [ "$kind" = "touch" ] && input_device="touch screen" || input_device="keyboard"
+  return 0
+}
+
+# Part 2: exits with the verdict once input reaches the sign-in screen, or a
+# person signed in, or the wait is over.
+await_input() {
+  local input_end
+  input_end=$(( $(date +%s) + INPUT_WAIT ))
+  [ "$input_end" -ge "$end" ] || input_end="$end"
+  while :; do
+    if person_session; then
+      log "session $signed_in is signed in through greetd — this boot is good"
+      report_failed_units
+      exit 0
+    fi
+    if greeter_input; then
+      log "a $input_device reaches the sign-in screen — this boot is good"
+      report_failed_units
+      exit 0
+    fi
+    [ "$(date +%s)" -ge "$input_end" ] && break
+    sleep "$POLL"
+  done
+  warn "no keyboard or touch screen reached the sign-in screen (the greeter recorded"
+  warn "none in $GREETER_INPUT), and nobody signed in. Nobody can sign in, so this boot"
+  warn "does not count as a success. State was:"
+  final_state
+  exit 1
+}
+
 if [ "$plain" = yes ]; then
   while :; do
     if systemctl is-active --quiet "$UNIT"; then
@@ -208,9 +292,8 @@ while :; do
     generation="$(greetd_generation)"
     if [ -n "$window_start" ] && [ "$generation" = "$window_generation" ]; then
       if [ $(( now - window_start )) -ge "$SETTLE" ]; then
-        log "greetd held its greeter for ${SETTLE}s without a restart — this boot is good"
-        report_failed_units
-        exit 0
+        log "greetd held its greeter for ${SETTLE}s without a restart"
+        await_input
       fi
     else
       if [ -n "$window_start" ]; then

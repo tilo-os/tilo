@@ -11,7 +11,6 @@ nav-header-actions 1 apps/passwords/src/window.rs
 nav-header-leading 1 apps/canvas/src/lib.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
-own-back 1 apps/print-centre/src/surface/views.rs
 own-search 1 apps/browser/src/browser_widget/library.rs
 own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs

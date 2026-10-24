@@ -46,7 +46,6 @@ mod local_library;
 pub mod model;
 pub mod paginate;
 pub mod paint;
-mod reader_bubble;
 mod reader_keys;
 pub mod reader_theme;
 mod reading_settings;

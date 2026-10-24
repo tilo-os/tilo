@@ -63,7 +63,7 @@ fn every_class_reissues_an_expiring_certificate_once_it_is_due_and_not_before() 
 /// A throwaway identity in `tmp`, with its device certificate replaced by
 /// one issued `age_ns` ago, as a session that ran that long ago left it.
 #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
-fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths, DeviceCert) {
+pub(super) fn aged_throwaway(tmp: &Path, age_ns: u64) -> (PathBuf, IdentityPaths, DeviceCert) {
     let personal = tmp.join("config/tilo/identity");
     let paths = IdentityPaths::under(tmp.join("system"));
     ensure_throwaway_test_identity(&personal, &paths, FILES).expect("provision");

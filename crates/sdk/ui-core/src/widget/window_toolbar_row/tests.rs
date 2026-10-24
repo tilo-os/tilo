@@ -45,6 +45,96 @@ fn row() -> ToolbarRow {
     row
 }
 
+/// A notice takes the location's place for as long as it is up, at any
+/// width, without moving a slot; its button stands right after its text,
+/// naming itself where the row has room, and runs as a bar action; a
+/// screen reader hears it without the focus moving.
+#[test]
+fn a_notice_stands_in_the_location_and_is_read_out_politely() {
+    use crate::widget::toast::ToastKind;
+    use crate::window_toolbar::ToolbarNotice;
+    for width in [640.0, 420.0 - 40.0] {
+        let bounds = Rect::new(40.0, 0.0, 40.0 + width, 40.0);
+        let mut quiet = ToolbarRow::new();
+        quiet.show(
+            7,
+            Some(&browser()),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        quiet.lay_out(bounds);
+        let noticed = WindowToolbar {
+            notice: Some(ToolbarNotice::new("Saved report.pdf", ToastKind::Success)),
+            ..browser()
+        };
+        let mut row = ToolbarRow::new();
+        row.show(
+            7,
+            Some(&noticed),
+            Theme::dark().motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(bounds);
+        assert_eq!(
+            row.slots().location,
+            quiet.slots().location,
+            "the notice reserves no room of its own at {width}"
+        );
+        assert!(row.slots().location.width() > 0.0);
+        let nodes = row.accessibility();
+        let said = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some("Saved report.pdf"))
+            .expect("the notice is the location's text");
+        assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
+        assert!(
+            quiet.accessibility().iter().all(|node| node.live.is_none()),
+            "the location is not a live region without a notice"
+        );
+    }
+
+    let undo = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new("Deleted Groceries", ToastKind::Info).action(
+                crate::window_toolbar::ToolbarAction::new("notice-undo", "undo-2", "Undo"),
+            ),
+        ),
+        ..browser()
+    };
+    let mut row = ToolbarRow::new();
+    row.show(
+        7,
+        Some(&undo),
+        Theme::dark().motion(),
+        crate::motion::frame_now(),
+    );
+    row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
+    assert!(row.measure_views(&Theme::dark()), "the notice is measured");
+    let slots = row.slots();
+    assert!(
+        slots.notice_labelled == [true] && slots.notice[0].width() > CONTROL_PX,
+        "Undo names itself in a wide row: {slots:?}"
+    );
+    assert!(
+        (slots.notice[0].x0 - slots.location.x1 - CONTROL_GAP).abs() < 1e-9,
+        "right after the notice's text"
+    );
+    assert_eq!(row.slots().actions.len(), 1, "and is not among the actions");
+    let button = row.slots().notice[0].center();
+    assert!(row.press(button));
+    assert!(row.release(button));
+    assert_eq!(
+        row.take_events(),
+        vec![(
+            7,
+            ToolbarEvent::Action {
+                id: "notice-undo".into()
+            }
+        )],
+        "the notice's button runs as a bar action"
+    );
+}
+
 #[test]
 fn navigation_leads_actions_trail_and_the_location_fills_between() {
     let row = row();
@@ -1048,4 +1138,388 @@ fn an_unavailable_sidebar_holds_its_place_and_cannot_act() {
         unavailable.take_events().is_empty(),
         "neither a press nor assistive technology toggles it"
     );
+}
+
+/// The bars of a sync that failed (Sync again, Open Settings), a held save
+/// failure (Try again) and an undoable deletion (Undo), each with its
+/// notice up, and the names of the notice's buttons.
+fn noticed() -> [(WindowToolbar, Vec<&'static str>); 3] {
+    use crate::widget::toast::ToastKind;
+    use crate::window_toolbar::ToolbarNotice;
+    let sync = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new(
+                "Sync failed: the account needs signing in",
+                ToastKind::Error,
+            )
+            .action(ToolbarAction::new("sync-again", "refresh", "Sync again"))
+            .action(ToolbarAction::new(
+                "open-settings",
+                "settings",
+                "Open Settings",
+            )),
+        ),
+        ..calendar()
+    };
+    let failed = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new("Save failed: the disk is full", ToastKind::Error).action(
+                ToolbarAction::new("save-status-retry", "rotate-cw", "Try again"),
+            ),
+        ),
+        ..calendar()
+    };
+    let deleted = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new("Moved 3 items to the trash", ToastKind::Info)
+                .action(ToolbarAction::new("notice-undo", "undo-2", "Undo")),
+        ),
+        leading: vec![ToolbarAction::new(
+            "new-folder",
+            "folder-plus",
+            "New folder",
+        )],
+        ..file_toolbar(3)
+    };
+    [
+        (sync, vec!["Sync again", "Open Settings"]),
+        (failed, vec!["Try again"]),
+        (deleted, vec!["Undo"]),
+    ]
+}
+
+/// Every node named `name` in `nodes` and under them.
+fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>) {
+    for node in nodes {
+        if node.name.as_deref() == Some(name) {
+            out.push(node);
+        }
+        named(&node.children, name, out);
+    }
+}
+
+/// A notice's text stands whole before any action that yields to the
+/// location stands beside it, and is cut short only once they are all in
+/// the overflow menu. Its buttons stand in order right after the text at
+/// every width: each names itself where the row has room for that beside
+/// the whole text, from there on at every wider width, the last giving its
+/// label up first, and is its icon where not; none is ever in the
+/// overflow menu.
+#[test]
+fn a_notice_stands_whole_before_the_actions_and_its_buttons_stay_in_the_row() {
+    for (toolbar, names) in noticed() {
+        let mut labelled_from = vec![None; names.len()];
+        // From the row of the narrowest window that says its notice in
+        // the row (one at the compact breakpoint: its bar's row is 200 px
+        // narrower, as a 420 px window's is 220 px) to a wide one's.
+        // Narrower windows say it in a strip of their own.
+        let narrowest = f64::from(crate::tokens::Metrics::BASE.compact_breakpoint) - 200.0;
+        for width in (0..)
+            .map(|step: u32| narrowest + 4.0 * f64::from(step))
+            .take_while(|width| *width <= 1100.0)
+        {
+            let row = calendar_row_of(&toolbar, width);
+            let slots = row.slots();
+            assert_eq!(
+                slots.notice.len(),
+                names.len(),
+                "{names:?} stand in a {width} px row: {slots:?}"
+            );
+            assert!(
+                slots.location.area() > 0.0
+                    && slots.notice[0].x0 >= slots.location.x1 + CONTROL_GAP - 1e-9
+                    && slots
+                        .notice
+                        .windows(2)
+                        .all(|pair| pair[1].x0 >= pair[0].x1 + CONTROL_GAP - 1e-9),
+                "{names:?} stand in order after the notice's text at {width} px: {slots:?}"
+            );
+            let nodes = row.accessibility();
+            for name in &names {
+                let mut found = Vec::new();
+                named(&nodes, name, &mut found);
+                assert!(
+                    !found.is_empty()
+                        && found.iter().all(|node| node
+                            .action_target
+                            .as_deref()
+                            .is_some_and(|target| target.starts_with(NOTICE_TARGET_PREFIX))),
+                    "{name} is the notice's button alone, never an overflow item, at {width} px"
+                );
+            }
+            if row.notice_whole() != Some(true) {
+                assert!(
+                    slots.actions.is_empty()
+                        && slots
+                            .leading
+                            .iter()
+                            .zip(&toolbar.leading)
+                            .all(|(rect, action)| action.navigates || rect.area() <= 0.0),
+                    "the notice is cut short at {width} px only with every plain action \
+                     in the menu: {slots:?}"
+                );
+            }
+            assert!(
+                slots
+                    .notice_labelled
+                    .windows(2)
+                    .all(|pair| pair[0] || !pair[1]),
+                "the last gives its label up first at {width} px: {slots:?}"
+            );
+            for (i, name) in names.iter().enumerate() {
+                let labelled = slots.notice_labelled[i];
+                match (labelled, labelled_from[i]) {
+                    (true, None) => labelled_from[i] = Some(width),
+                    (false, Some(from)) => {
+                        panic!("{name} named itself at {from} px and not at {width} px")
+                    }
+                    _ => {}
+                }
+                if !labelled {
+                    assert!(
+                        (slots.notice[i].width() - CONTROL_PX).abs() < 1e-9,
+                        "folded, {name} is its icon"
+                    );
+                }
+            }
+        }
+        assert!(
+            labelled_from
+                .iter()
+                .all(|from| from.is_some_and(|from| from < 1100.0)),
+            "{names:?} name themselves where the row has room"
+        );
+    }
+}
+
+/// In a compact window a notice says itself in a strip of its own under
+/// the row: its whole text, read out as it arrives, and its actions as
+/// buttons that name themselves, after the text where the whole text
+/// stands beside them and on a row of their own under it where not, each
+/// run by pointer and by its semantic action alike. The row stands as it
+/// does without a notice.
+#[test]
+fn a_compact_windows_notice_has_a_strip_whose_buttons_run_by_pointer_and_semantics() {
+    use crate::widget::toast::ToastKind;
+    use crate::window_toolbar::ToolbarNotice;
+    let theme = Theme::dark();
+    let long = "Save failed: your disk is full, so the note was not written";
+    let short = "Sync failed";
+    let cases: [(&str, Vec<(&str, &str)>); 4] = [
+        (long, vec![("Try again", "save-status-retry")]),
+        (long, vec![("Undo", "notice-undo")]),
+        (
+            long,
+            vec![
+                ("Sync again", "sync-again"),
+                ("Open Settings", "open-settings"),
+            ],
+        ),
+        (
+            short,
+            vec![
+                ("Sync again", "sync-again"),
+                ("Open Settings", "open-settings"),
+            ],
+        ),
+    ];
+    for (text, actions) in cases {
+        let notice = actions.iter().fold(
+            ToolbarNotice::new(text, ToastKind::Error),
+            |notice, (name, id)| notice.action(ToolbarAction::new(*id, "rotate-cw", *name)),
+        );
+        let noticed = WindowToolbar {
+            notice: Some(notice),
+            ..file_toolbar(3)
+        };
+        let mut quiet = ToolbarRow::new();
+        quiet.show(
+            3,
+            Some(&file_toolbar(3)),
+            theme.motion(),
+            crate::motion::frame_now(),
+        );
+        quiet.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
+        let mut row = ToolbarRow::new();
+        row.set_compact(true);
+        row.show(
+            3,
+            Some(&noticed),
+            theme.motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
+        assert_eq!(
+            row.slots(),
+            quiet.slots(),
+            "the row stands as it does without a notice"
+        );
+        assert!(row.measure_strip(&theme, 404.0), "the strip is measured");
+        let height = row.strip_height();
+        assert!(height >= CONTROL_PX, "{height}");
+        let strip = Rect::new(8.0, 44.0, 412.0, 44.0 + height);
+        row.place_strip(strip);
+        let (shown, text_at, whole, buttons) = row.strip_notice().expect("the strip says it");
+        assert_eq!(shown.text, text);
+        assert!(whole, "the whole text stands, on up to two lines: {text}");
+        assert_eq!(buttons.len(), actions.len());
+        for (button, (name, _)) in buttons.iter().zip(&actions) {
+            assert!(
+                button.width() > CONTROL_PX
+                    && strip.contains(button.center())
+                    && (text_at.x1 <= button.x0 || text_at.y1 <= button.y0),
+                "{name} names itself after the text or under it: {text_at:?} {button:?}"
+            );
+        }
+        let nodes = row.accessibility();
+        let said = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some(text))
+            .expect("the strip's text is a node");
+        assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
+        for (button, (name, id)) in buttons.iter().zip(&actions) {
+            let target = format!("{NOTICE_TARGET_PREFIX}{id}");
+            assert!(
+                nodes.iter().any(|node| node.name.as_deref() == Some(*name)
+                    && node.action_target.as_deref() == Some(target.as_str())),
+                "{name} is the notice's button"
+            );
+            let pressed = vec![(3, ToolbarEvent::Action { id: (*id).into() })];
+            assert!(row.press(button.center()));
+            assert!(row.release(button.center()));
+            assert_eq!(row.take_events(), pressed, "{name} runs by pointer");
+            assert!(row.perform(&target));
+            assert_eq!(row.take_events(), pressed, "{name} runs by its action");
+        }
+    }
+}
+
+/// The browser's row once the app changed its slots to `toolbar` in the
+/// same tab, laid out and started as the next paint starts it.
+fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
+    let rect = row.row;
+    row.show(7, Some(toolbar), theme.motion(), crate::motion::frame_now());
+    row.lay_out(rect);
+    row.start_slot_change(theme);
+}
+
+/// Long after any motion of the bar has settled.
+fn later(t0: crate::time::Instant) -> crate::time::Instant {
+    t0.checked_add(crate::time::Duration::from_secs(2))
+        .unwrap_or(t0)
+}
+
+#[test]
+fn a_slot_the_app_adds_fades_in_and_the_slots_it_pushes_glide() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let back_before = row.slots().back;
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    with_monotonic_time(t0, || {
+        changed_to(&mut row, &with_sidebar, &theme);
+        let back = row.slots().back;
+        assert!(back.x0 > back_before.x0, "the sidebar pushed back along");
+        assert!(row.needs_animation_frame(t0), "the change moves");
+        let poses = row.slot_changes.poses(t0);
+        let (opacity, _) = poses[&slot_change::SlotKey::Sidebar];
+        assert!(opacity < 0.05, "the sidebar fades in from clear: {opacity}");
+        let (_, offset) = poses[&slot_change::SlotKey::Back];
+        assert!(
+            (back.x0 + offset.x - back_before.x0).abs() < 0.5,
+            "back starts where it stood"
+        );
+        assert_eq!(
+            row.slot_at(back_before.center()),
+            Some(Slot::Back),
+            "back is pressed where it is drawn"
+        );
+    });
+    let end = later(t0);
+    with_monotonic_time(end, || {
+        assert!(!row.needs_animation_frame(end), "and settles");
+        row.start_slot_change(&theme);
+        assert!(row.slot_changes.poses(end).is_empty());
+        assert_eq!(row.slot_at(row.slots().back.center()), Some(Slot::Back));
+        assert_eq!(
+            row.slot_at(row.slots().sidebar.center()),
+            Some(Slot::Sidebar)
+        );
+    });
+}
+
+#[test]
+fn a_slot_the_app_takes_away_fades_out_where_it_stood() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let reload = row.slots().actions[0];
+    let mut without_reload = browser();
+    without_reload.actions.clear();
+    with_monotonic_time(t0, || {
+        changed_to(&mut row, &without_reload, &theme);
+        let leaving = row.slot_changes.leaving();
+        assert_eq!(leaving.len(), 1, "reload fades out");
+        assert_eq!(leaving[0].rect, reload, "where it stood");
+        assert!(leaving[0].opacity(t0) > 0.95, "from whole");
+        assert_ne!(
+            row.slot_at(reload.center()),
+            Some(Slot::Action(0)),
+            "a slot that left takes no press"
+        );
+    });
+    let end = later(t0);
+    with_monotonic_time(end, || {
+        row.start_slot_change(&theme);
+        assert!(row.slot_changes.leaving().is_empty(), "and is gone");
+        assert!(!row.needs_animation_frame(end));
+    });
+}
+
+#[test]
+fn reduced_motion_lands_the_slots_and_still_fades_what_arrives() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark().with_reduce_motion(true);
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    with_monotonic_time(t0, || {
+        changed_to(&mut row, &with_sidebar, &theme);
+        let poses = row.slot_changes.poses(t0);
+        assert!(
+            !poses.contains_key(&slot_change::SlotKey::Back),
+            "back lands in its new place"
+        );
+        assert!(
+            poses[&slot_change::SlotKey::Sidebar].0 < 0.05,
+            "the sidebar fades in"
+        );
+    });
+}
+
+#[test]
+fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    with_monotonic_time(t0, || {
+        crate::motion::note_source(MotionSource::Keyboard);
+        changed_to(&mut row, &with_sidebar, &theme);
+        assert!(!row.needs_animation_frame(t0), "a key's change lands");
+        crate::motion::note_source(MotionSource::Pointer);
+        let mut opened = with_sidebar.clone();
+        opened.sidebar = Some(true);
+        changed_to(&mut row, &opened, &theme);
+        assert!(
+            !row.needs_animation_frame(t0),
+            "the sidebar opening moves no slot"
+        );
+    });
 }

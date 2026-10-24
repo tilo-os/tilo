@@ -199,6 +199,15 @@ impl LocalVoice {
                 self.snapshot.rosters = rosters;
                 self.unmute_requested = false;
             }
+            Command::SetDeafened { deafened } => {
+                // Deafening silences and mutes at once; undeafening waits
+                // for the service to say what it put back.
+                if *deafened {
+                    self.snapshot.deafened = true;
+                    self.snapshot.muted = true;
+                    self.snapshot.capture_active = false;
+                }
+            }
             Command::SetMuted { muted } => {
                 self.unmute_requested = !muted;
                 // Turning capture off is immediate. Turning it on waits for
@@ -618,10 +627,14 @@ impl crate::app::ChatApp {
             | Command::SetCamera { on: true }
             | Command::SetScreen { on: true } => CallAction::Speak,
             Command::SetMuted { muted: true }
+            | Command::SetDeafened { deafened: true }
             | Command::SetCamera { on: false }
             | Command::SetScreen { on: false }
             | Command::Leave => CallAction::Leave,
-            Command::SelectInput { .. }
+            // Hearing the call again is being in it; the microphone it puts
+            // back answers to the grant as any unmute does.
+            Command::SetDeafened { deafened: false }
+            | Command::SelectInput { .. }
             | Command::Status
             | Command::Watch { .. }
             | Command::Show { .. }
@@ -675,6 +688,7 @@ impl crate::app::ChatApp {
                     self.call.join(channel);
                 }
                 self.call.muted = snapshot.muted;
+                self.call.deafened = snapshot.deafened;
                 self.call.audio_only = !snapshot.camera;
                 self.call.sharing = snapshot.screen;
             }
@@ -883,10 +897,11 @@ impl crate::app::ChatApp {
         let snapshot = &self.native_voice.snapshot;
         // This person's own mute is known here first; the room's word on it
         // follows a moment later.
-        let own = self
-            .call
-            .active
-            .then_some((self.call.channel.as_str(), self.call.muted));
+        let own = self.call.active.then_some((
+            self.call.channel.as_str(),
+            self.call.muted,
+            self.call.deafened,
+        ));
         let me: Vec<&str> = std::iter::once(self.me.id.as_str())
             .chain(self.former_ids.iter().map(String::as_str))
             .collect();
@@ -894,17 +909,22 @@ impl crate::app::ChatApp {
             // What the room says each person shows and whether they are
             // muted: their tile reserves a picture from that moment, before
             // the first one arrives.
-            let muted = |user: &str| match own {
-                Some((channel, muted)) if channel == roster.channel_id && me.contains(&user) => {
-                    muted
+            let hearing = |user: &str| match own {
+                Some((channel, muted, deafened))
+                    if channel == roster.channel_id && me.contains(&user) =>
+                {
+                    (muted, deafened)
                 }
-                _ => roster.muted.iter().any(|person| person == user),
+                _ => (
+                    roster.muted.iter().any(|person| person == user),
+                    roster.deafened.iter().any(|person| person == user),
+                ),
             };
-            let member = |user: &str, muted: bool| crate::model::VoiceMember {
+            let member = |user: &str, (muted, deafened): (bool, bool)| crate::model::VoiceMember {
                 user: user.to_owned(),
                 talking: snapshot.speaking.iter().any(|person| person == user),
                 muted,
-                deafened: false,
+                deafened,
                 audio_only: !roster.cameras.iter().any(|person| person == user),
                 sharing: roster.screens.iter().any(|person| person == user),
                 ticket: None,
@@ -917,7 +937,7 @@ impl crate::app::ChatApp {
                 let mut members: Vec<_> = roster
                     .people
                     .iter()
-                    .map(|person| member(person, muted(person)))
+                    .map(|person| member(person, hearing(person)))
                     .collect();
                 // A person's devices are one person; the service sorted them.
                 members.dedup_by(|a, b| a.user == b.user);
@@ -926,7 +946,7 @@ impl crate::app::ChatApp {
                     roster
                         .guests
                         .iter()
-                        .map(|guest| member(&guest.id, guest.muted)),
+                        .map(|guest| member(&guest.id, (guest.muted, false))),
                 );
                 self.voice_members
                     .insert(roster.channel_id.clone(), members);

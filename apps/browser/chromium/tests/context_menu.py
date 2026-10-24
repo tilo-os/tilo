@@ -56,7 +56,7 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
         send(op='mouse_button',button='right',down=True,x=20,y=65)
         send(op='mouse_button',button='right',down=False,x=20,y=65)
         menu=until(lambda e:e['event']=='context_menu',timeout=5)
-        assert {26501,26502}.issubset({item['id'] for item in menu['items']}), menu
+        assert {26501,26502}.issubset({item.get('id') for item in menu['items']}), menu  # separators have none
         send(op='context_action',id=menu['id'],command=26501)
         until(lambda e:e['event']=='open_tab' and e['url']==base+'/modifier')
         send(op='mouse_button',button='right',down=True,x=20,y=105)
@@ -66,6 +66,23 @@ with tempfile.TemporaryDirectory(prefix='tilo-tabs-') as profile:
             assert event['event'] != 'context_menu', event
             return event['event']=='zoom'
         until(still_alive,timeout=5)
+        # A tab closed with its menu still open: the host answers the menu,
+        # and its other tab goes on.
+        send(op='create_tab',tab=2)
+        send(op='navigate',tab=2,url=base+'/two')
+        until(lambda e:e['event']=='title' and e.get('tab')==2 and e['title'].startswith('/two|'))
+        send(op='visibility',tab=1,visible=False)
+        send(op='visibility',tab=2,visible=True)
+        until(lambda e:e['event']=='frame' and e['tab']==2)
+        send(op='mouse_button',tab=2,button='right',down=True,x=300,y=300)
+        send(op='mouse_button',tab=2,button='right',down=False,x=300,y=300)
+        until(lambda e:e['event']=='context_menu' and e.get('tab')==2,timeout=5)
+        send(op='close_tab',tab=2)
+        until(lambda e:e['event']=='closed' and e.get('tab')==2,timeout=15)
+        send(op='visibility',tab=1,visible=True)
+        send(op='zoom',tab=1,level=0)
+        until(lambda e:e['event']=='zoom' and e.get('tab',1)==1,timeout=15)
+        assert p.poll() is None, f'the host exited with {p.returncode}'
         # Closed with a menu still open (a window closed over it): the host
         # answers the menu and exits cleanly.
         send(op='mouse_button',button='right',down=True,x=300,y=300)

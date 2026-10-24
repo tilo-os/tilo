@@ -35,6 +35,12 @@ pub enum Command {
     SetMuted {
         muted: bool,
     },
+    /// Hear nothing of the call and be heard by no one, or stop. Deafening
+    /// mutes the microphone too; undeafening puts it back as it was before,
+    /// and unmuting while deafened undeafens. Everyone in the call sees it.
+    SetDeafened {
+        deafened: bool,
+    },
     SelectInput {
         input_id: String,
     },
@@ -345,7 +351,7 @@ fn namespace_valid(value: &str) -> bool {
 #[serde(deny_unknown_fields)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is its own wire field of the status: muted, capturing, camera, screen"
+    reason = "each bool is its own wire field of the status: muted, capturing, camera, screen, deafened"
 )]
 pub struct Snapshot {
     pub version: u8,
@@ -378,6 +384,10 @@ pub struct Snapshot {
     /// This person shares a screen in the call.
     #[serde(default, skip_serializing_if = "is_false")]
     pub screen: bool,
+    /// This person is deafened: the call plays nothing here, and they are
+    /// muted.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub deafened: bool,
     /// Advances whenever anything above changes; what a
     /// [`Command::Watch`] waits past.
     #[serde(default)]
@@ -410,6 +420,10 @@ pub struct Roster {
     /// someone who may not speak in the call counts as muted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub muted: Vec<String>,
+    /// Those of `people` who are deafened, sorted and distinct; each of
+    /// them is muted too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deafened: Vec<String>,
     /// The people a bridge carries into the call from another service,
     /// sorted by id and distinct: each shown as themselves, reached
     /// through their service.
@@ -517,6 +531,11 @@ impl Roster {
                 .bridges
                 .windows(2)
                 .all(|pair| matches!(pair, [left, right] if left < right))
+            && among(&self.deafened)
+            && self
+                .deafened
+                .iter()
+                .all(|person| self.muted.binary_search(person).is_ok())
     }
 }
 
@@ -574,6 +593,7 @@ impl Request {
                     percent,
                 } => participant_valid(participant) && *percent <= MAX_VOLUME_PERCENT,
                 Command::SetMuted { .. }
+                | Command::SetDeafened { .. }
                 | Command::SetCamera { .. }
                 | Command::SetScreen { .. }
                 | Command::Leave
@@ -653,6 +673,7 @@ impl Snapshot {
             speaking: Vec::new(),
             camera: false,
             screen: false,
+            deafened: false,
             revision: 0,
             pictures: Vec::new(),
             pictures_cursor: 0,
@@ -675,6 +696,10 @@ impl Snapshot {
                     && self.publishers.is_empty()))
             && (!self.capture_active
                 || (!self.muted && self.state == State::Live && self.input_id.is_some()))
+            // Deafened is muted, and only in a call.
+            && (!self.deafened
+                || (self.muted
+                    && !matches!(self.state, State::Unavailable | State::Idle | State::Ended)))
             && self.input_id.as_deref().is_none_or(identifier)
             && self.rosters.iter().all(Roster::valid)
             && self.speaking.iter().all(|id| participant_valid(id))
