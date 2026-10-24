@@ -4601,7 +4601,7 @@ cargo_dev_dependencies = false
 needs = ["thin-runtime-{arch}"]
 requires = ["{node}"]
 cost = "heavy"
-requirement = { cores = 8, memory = "16GiB" }
+requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4619,7 +4619,7 @@ cargo_dev_dependencies = false
 needs = ["thin-runtime-{arch}"]
 requires = ["{node}"]
 cost = "heavy"
-requirement = { cores = 8, memory = "16GiB" }
+requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4636,7 +4636,7 @@ cargo_dev_dependencies = false
 needs = ["thin-runtime-{arch}"]
 requires = ["{node}"]
 cost = "heavy"
-requirement = { cores = 8, memory = "16GiB" }
+requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4653,7 +4653,7 @@ cargo_dev_dependencies = false
 needs = ["thin-runtime-{arch}"]
 requires = ["{node}"]
 cost = "heavy"
-requirement = { cores = 8, memory = "16GiB" }
+requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4670,7 +4670,7 @@ cargo_dev_dependencies = false
 needs = ["thin-runtime-{arch}"]
 requires = ["{node}"]
 cost = "heavy"
-requirement = { cores = 8, memory = "16GiB" }
+requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
 default = false
 
@@ -4687,7 +4687,7 @@ cargo_dev_dependencies = false
 needs = ["thin-runtime-{arch}"]
 requires = ["{node}"]
 cost = "heavy"
-requirement = { cores = 8, memory = "16GiB" }
+requirement = { cores = 8, memory = "10GiB" }
 timeout_secs = 5400
 default = false
 
