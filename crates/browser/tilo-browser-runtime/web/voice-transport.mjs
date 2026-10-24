@@ -20,7 +20,7 @@
  * one comfort-noise update per 400 ms.
  */
 import {createMediaQueue} from './voice-buffers.mjs';
-import {MOQ_PROTOCOL, MediaAdmissionError, openCarrier} from './moq-carrier.mjs';
+import {MOQ_PROTOCOL, MediaAdmissionError, carrierUnsupported, openCarrier} from './moq-carrier.mjs';
 import {decodeVoiceBundle, encodeVoiceBundle, encodeVoiceObject} from './voice-profile.mjs';
 import {publishPictures, receivePictures} from './voice-video.mjs';
 
@@ -451,5 +451,7 @@ export function createVoiceTransport({library, carrier = openCarrier, clock = {}
       authorityLost: opened.authorityLost,
     };
   }
-  return {connect};
+  /** Why this browser cannot open the carrier, or null when it can. */
+  const unsupported = () => (carrier === openCarrier ? carrierUnsupported() : null);
+  return {connect, unsupported};
 }
