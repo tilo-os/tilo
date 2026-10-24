@@ -83,6 +83,16 @@ fn tab_in_quick_settings_speaks_the_focused_control() {
     narrator.observe(&host.chrome_narration_snapshot());
     assert!(speaker.take().is_empty(), "an unchanged frame is silent");
 
+    // The volume's icon is its mute switch, one stop before the slider.
+    press(&mut host, &taffy, node, NamedKey::Tab);
+    narrator.observe(&host.chrome_narration_snapshot());
+    let spoken = speaker.take();
+    assert!(
+        spoken
+            .first()
+            .is_some_and(|u| u.text.starts_with("Mute, switch, ")),
+        "got {spoken:?}"
+    );
     press(&mut host, &taffy, node, NamedKey::Tab);
     narrator.observe(&host.chrome_narration_snapshot());
     drop(host);
