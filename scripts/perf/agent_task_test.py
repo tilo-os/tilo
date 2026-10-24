@@ -258,6 +258,8 @@ class AgentTaskTests(unittest.TestCase):
         self.assertEqual(run.turns, 9)
         results = {kpi: samples for kpi, _, samples, _ in agent_task.collect(runs)}
         self.assertEqual(results["agent.task.notes.retries"], [2.0, 2.0, 2.0])
+        meta = {kpi: meta for kpi, _, _, meta in agent_task.collect(runs)}
+        self.assertEqual(meta["agent.task.notes.retries"], {"retried_locate": 6})
         locate = sum(c.ms for c in run.calls if c.step.startswith("locate"))
         self.assertAlmostEqual(results["agent.task.notes.step.locate"][0], locate)
 

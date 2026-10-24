@@ -494,11 +494,14 @@ source = "per step: the held re-ask answers with news; only cancellation polls c
 # creates a note, finds the note by its title, looks inside it for its body,
 # appends the body and reads the note back. `tilo` is the time in the tool
 # calls (relay, door, broker, app and answer), `model` the fake's own
-# loopback overhead, `client` the loop's. A first debug run on t measured 720
-# ms of wall, 621 ms of it in Tilo, in 8 turns (one call asked again because
-# the note was not listed yet). The ceilings are the targets for a release
-# build: the whole task in a quarter of a second of Tilo time, a step in 80 ms.
-# Reported, not enforced, and compared only once three nightly records exist.
+# loopback overhead, `client` the loop's. The first release run on t (30
+# repetitions after 3, each adding a note to one notebook) measured a p50 of
+# 285 ms of wall, 278 ms of it in Tilo and 7 ms in the fake, in 7 turns with no
+# call asked again; p95 615 ms. The steps that search or read the notebook
+# grow with it: discover took 18 ms with two notes and 178 ms (p95) with
+# thirty. The ceilings are targets: the whole task in a quarter of a second of
+# Tilo time, a step in 80 ms. Reported, not enforced, and compared only once
+# three nightly records exist.
 [kpi."agent.task.notes.wall"]
 unit = "ms"
 p50 = 300.0
