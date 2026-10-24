@@ -358,7 +358,7 @@ pub use winit;
 pub use app::{App, local_surface_id};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{
-    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, TransitionVisual,
+    KeyedRowSnapshot, KeyedTransitionSet, RowGeometry, RowMotion, RowMotions, TransitionVisual,
 };
 pub use color_compat::ColorCompat;
 pub use content_layout::{FocusedContentLane, ResponsiveControlBar};

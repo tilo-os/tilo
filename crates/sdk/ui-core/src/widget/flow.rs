@@ -63,6 +63,11 @@ pub(super) struct Flow {
     /// gap) after its node was built. The retained layout tree keeps the
     /// built style, so the change reports a structure rebuild.
     pub style_dirty: bool,
+    /// The children stack vertically (a column): the widgets after a band
+    /// disclosing move with its edge ([`Widget::disclosing`]).
+    pub vertical: bool,
+    /// The gap between children the layout was built with.
+    pub laid_gap: f64,
 }
 
 /// The parts of a [`Theme`] a cached subtree's pixels depend on beyond its
@@ -113,7 +118,18 @@ impl Flow {
             cache_parts: None,
             cache_shows_secret: false,
             style_dirty: false,
+            vertical: false,
+            laid_gap: 0.0,
         }
+    }
+
+    /// The widgets after each child are drawn this much lower while a band
+    /// before them discloses; `None` at rest and in a row.
+    pub fn follower_shifts(&self) -> Option<Vec<f64>> {
+        if !self.vertical {
+            return None;
+        }
+        super::follower_shifts(self.children.iter().map(|child| &**child), self.laid_gap)
     }
 
     /// Redraw the subtree on the next frame instead of replaying the cache.
@@ -228,9 +244,35 @@ impl Flow {
             local.reset();
             crate::backdrop::nest_scene(&local);
             let secrets = crate::secret_paint::SecretPaint::begin();
+            // While a band discloses, what follows it is drawn shifted by
+            // transform and clipped to the column, laid out where it rests.
+            let shifts = self.follower_shifts();
+            let clip = self.rect;
             let mut draw_children = |local: &mut Scene| {
-                for child in &mut self.children {
-                    child.draw(local, Affine::IDENTITY, text_renderer, theme, presence);
+                if shifts.is_some() {
+                    local.push_layer(
+                        vello::peniko::Fill::NonZero,
+                        vello::peniko::BlendMode::default(),
+                        1.0,
+                        Affine::IDENTITY,
+                        &clip,
+                    );
+                }
+                for (index, child) in self.children.iter_mut().enumerate() {
+                    let dy = shifts
+                        .as_deref()
+                        .and_then(|shifts| shifts.get(index).copied())
+                        .unwrap_or(0.0);
+                    child.draw(
+                        local,
+                        Affine::translate((0.0, dy)),
+                        text_renderer,
+                        theme,
+                        presence,
+                    );
+                }
+                if shifts.is_some() {
+                    local.pop_layer();
                 }
             };
             // A tracked section compares its parts frame to frame; a part
@@ -426,9 +468,11 @@ macro_rules! flow_widget_methods {
             event: &winit::event::WindowEvent,
             ctx: &mut $crate::widget::EventCtx<'_>,
         ) {
-            $crate::widget::route_to_children(
+            let shifts = self.flow.follower_shifts();
+            $crate::widget::route_to_shifted_children(
                 &mut self.flow.children,
                 &self.flow.child_nodes,
+                shifts.as_deref(),
                 event,
                 ctx,
             );

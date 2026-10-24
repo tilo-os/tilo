@@ -1,5 +1,8 @@
 mod action_directory_identity;
+mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
+pub use disclosing::{Disclosing, event_offset};
+pub(crate) use disclosing::{follower_shifts, route_to_shifted_children};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
@@ -2236,6 +2239,16 @@ pub trait Widget {
 
     fn wants_pointer_capture(&self) -> bool {
         false
+    }
+
+    /// While this widget is a band on its way in or out
+    /// (`motion::Disclosure`: an in-window banner arriving or leaving), how
+    /// much of it is drawn against what the layout gives it. A column draws
+    /// the widgets after it that much lower, by transform, so they move
+    /// with the band's edge instead of being laid out again every frame.
+    /// `None` at rest (the default).
+    fn disclosing(&self) -> Option<Disclosing> {
+        None
     }
 
     /// Why this widget itself asks for animation frames, for diagnostics

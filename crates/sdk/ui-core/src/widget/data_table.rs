@@ -879,6 +879,12 @@ pub struct DataTableCore {
     /// The rows are windowed by a scroll the host owns
     /// ([`Self::host_scrolled`]).
     host_scrolled: bool,
+    /// Shown rows on their way after a sort or a change the person made
+    /// (`motion::ListChange`).
+    row_motion: crate::collection_transition::RowMotions<RowIdentity>,
+    /// The rows the last frame showed and their tops: where a change the
+    /// person makes moves them from.
+    drawn_rows: Vec<(RowIdentity, f64)>,
 }
 
 /// A row whose type the table no longer names: what [`DataTableCore`] holds
@@ -1267,6 +1273,8 @@ impl DataTableCore {
             hover_row: None,
             headerless: false,
             host_scrolled: false,
+            row_motion: crate::collection_transition::RowMotions::default(),
+            drawn_rows: Vec::new(),
         }
     }
 
@@ -1519,6 +1527,7 @@ impl DataTableCore {
             self.notify_model_changes(changes);
             return;
         }
+        self.capture_row_motion(changes);
         let anchor = self.capture_view_anchor();
         self.rebuild_row_keys();
         self.unsort_view();
@@ -1990,6 +1999,7 @@ impl DataTableCore {
         if changes.is_empty() {
             return;
         }
+        self.capture_row_motion(changes);
         let anchor = self
             .last_anchor
             .clone()
@@ -2658,6 +2668,10 @@ impl DataTableCore {
             return None;
         }
         let key = col.key.clone();
+        // A sort the person clicked moves the shown rows to their new
+        // places; rows coming from off-screen fade in at theirs. A sort a
+        // key asked for lands.
+        self.capture_sort_motion();
         if self.model.is_some() {
             let ascending = match &self.model_sort {
                 Some((active, ascending)) if active == &key => !ascending,
@@ -2679,6 +2693,7 @@ impl DataTableCore {
             self.sort_by_column(&key, ascending)
         };
         if !sorted {
+            self.row_motion.cancel();
             return None;
         }
         if let Some(state) = &self.sort_state {
@@ -2791,10 +2806,17 @@ impl DataTableCore {
         let band = self.columns_band();
         let ground = tokens.colors.surfaces.content;
         let pressable = self.rows_pressable();
+        let now = crate::time::now();
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
             };
+            // A row on its way after a sort or a change the person made is
+            // drawn where it is on its way, an arriving one at its opacity
+            // (`motion::ListChange`); the body clip trims what is outside.
+            let (dy, alpha) = self
+                .row_identity_at(ri)
+                .map_or((0.0, 1.0), |key| self.row_motion.pose(&key, now));
             // Internal virtualization subtracts the viewport offset; when
             // driven by an outer Scrollable, it stays zero and the whole rect is
             // translated instead — both paths render correctly.
@@ -2804,13 +2826,20 @@ impl DataTableCore {
             let Some(row_h) = self.viewport.item_height(ri) else {
                 continue;
             };
-            let y0 = self.rect.y0 + self.header_h + view_top;
+            let y0 = self.rect.y0 + self.header_h + view_top + dy;
             let y1 = y0 + row_h;
-            if y1 <= self.rect.y0 + self.header_h {
+            if y1 <= self.rect.y0 + self.header_h || y0 >= body_bottom {
                 continue;
             }
-            if y0 >= body_bottom {
-                break;
+            let faded = alpha < 1.0;
+            if faded {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    alpha,
+                    transform,
+                    &Rect::new(band.x0, y0, band.x1, y1),
+                );
             }
             let selected = self.selectable && self.is_row_selected(ri);
             let hovered = pressable && self.hover_row == Some(ri);
@@ -2943,6 +2972,9 @@ impl DataTableCore {
                         &style,
                     );
                 }
+            }
+            if faded {
+                scene.pop_layer();
             }
         }
         if let (Some(add), Some(rect)) = (&self.add_row, self.add_row_rect())
@@ -3974,11 +4006,7 @@ impl Widget for DataTableCore {
             transform,
             &body,
         );
-        self.draw_rows(scene, transform, text_renderer, theme);
-        for cell in &mut self.mounted_cells {
-            cell.widget
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
+        self.draw_moving_rows(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
 
         // Focus ring, so arrow-key navigation reads as a focused control.
@@ -4080,6 +4108,7 @@ impl Widget for DataTableCore {
 
     fn needs_animation_frame(&self) -> bool {
         self.momentum.is_active()
+            || self.row_motion.is_moving(crate::time::now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
             || self
                 .mounted_cells
@@ -4122,6 +4151,13 @@ impl Widget for DataTableCore {
             dirty |= cell.widget.take_structure_dirty();
         }
         dirty
+    }
+
+    /// Redrawn while rows are on their way after a sort or a change, as
+    /// well as whenever a cell control asks (or always, with none).
+    fn needs_redraw(&self) -> bool {
+        self.row_motion.is_moving(crate::time::now())
+            || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -4539,6 +4575,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
 
     fn needs_animation_frame(&self) -> bool {
         Widget::needs_animation_frame(&self.core)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        Widget::needs_redraw(&self.core)
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -7943,3 +7983,10 @@ mod content_edge_tests {
         assert!(scene.encoding().resources.glyph_runs.len() >= 6);
     }
 }
+
+#[path = "data_table_row_motion.rs"]
+mod row_motion;
+
+#[cfg(test)]
+#[path = "data_table_motion_tests.rs"]
+mod motion_tests;
