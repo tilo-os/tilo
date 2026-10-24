@@ -929,12 +929,15 @@ fn base64_of(bytes: &[u8]) -> String {
 pub fn generate_wireguard_keys() -> Result<(Zeroizing<String>, String), String> {
     let mut bytes = Zeroizing::new([0_u8; 32]);
     getrandom::fill(&mut *bytes).map_err(|error| format!("no randomness for a key: {error}"))?;
-    let secret = x25519_dalek::StaticSecret::from(*bytes);
-    let public = x25519_dalek::PublicKey::from(&secret);
-    Ok((
-        Zeroizing::new(base64_of(&secret.to_bytes())),
-        base64_of(public.as_bytes()),
-    ))
+    // Clamped as `wg genkey` writes it.
+    if let Some(first) = bytes.first_mut() {
+        *first &= 0xF8;
+    }
+    if let Some(last) = bytes.last_mut() {
+        *last = (*last & 0x7F) | 0x40;
+    }
+    let public = public_of(*bytes)?;
+    Ok((Zeroizing::new(base64_of(&*bytes)), public))
 }
 
 /// The public key of the `WireGuard` private key `private`.
@@ -951,8 +954,15 @@ pub fn wireguard_public_key(private: &str) -> Result<String, String> {
         .as_slice()
         .try_into()
         .map_err(|_| "a WireGuard key is 32 bytes".to_string())?;
-    let secret = x25519_dalek::StaticSecret::from(bytes);
-    Ok(base64_of(x25519_dalek::PublicKey::from(&secret).as_bytes()))
+    public_of(bytes)
+}
+
+/// The X25519 public key of the private key `bytes`, in base64.
+fn public_of(bytes: [u8; 32]) -> Result<String, String> {
+    tilo_seal::SecretKey::from_bytes(bytes)
+        .public_key()
+        .map(|public| base64_of(public.as_bytes()))
+        .map_err(|error| format!("not a WireGuard key: {error}"))
 }
 
 /// A `WireGuard` tunnel to set up.
@@ -1527,6 +1537,24 @@ mod tests {
         assert_eq!(parsed.mtu, Some(1400));
         assert!(!parsed.all_traffic);
         assert!(parse_vpn_profile_settings("connection.type:802-11-wireless\n").is_err());
+    }
+
+    /// RFC 7748's Alice: a known private key gives its known public key.
+    #[test]
+    fn a_wireguard_public_key_is_the_x25519_one() {
+        let hex = |text: &str| -> Vec<u8> {
+            (0..text.len())
+                .step_by(2)
+                .map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap())
+                .collect()
+        };
+        let private = base64_of(&hex(
+            "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+        ));
+        let public = base64_of(&hex(
+            "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+        ));
+        assert_eq!(wireguard_public_key(&private).unwrap(), public);
     }
 
     #[test]

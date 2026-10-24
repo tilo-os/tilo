@@ -10895,11 +10895,11 @@ dependencies = [
  "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-seal",
  "tilo-test-env",
  "tracing",
  "uuid",
  "workspace-hack",
- "x25519-dalek 3.0.0",
  "zbus",
  "zeroize",
 ]
