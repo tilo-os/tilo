@@ -457,7 +457,7 @@ fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
     let collaborator_root = SigningKey::from_bytes(&[49; 32]);
     let collaborator = person_of(&collaborator_root);
     let second = device_reaching(
-        second_tree.clone(),
+        second_tree,
         &dir.path().join("second"),
         &collaborator_root,
         DeviceCapabilities::member(),
