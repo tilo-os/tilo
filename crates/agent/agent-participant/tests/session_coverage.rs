@@ -781,41 +781,77 @@ fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::
 fn gated_model_endpoint(
     answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
 ) -> (String, std::sync::mpsc::Receiver<String>) {
-    use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let (sent, received) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         for (answer, gate) in answers {
             let (stream, _) = listener.accept().unwrap();
-            let mut reader = BufReader::new(stream);
-            let mut length = 0;
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-                if line == "\r\n" {
-                    break;
-                }
-            }
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            sent.send(String::from_utf8(body).unwrap()).unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            sent.send(read_request(&mut reader)).unwrap();
             if let Some(gate) = gate {
                 let _ = gate.recv();
             }
-            let answer = answer.to_string();
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{answer}",
-                answer.len()
-            );
-            reader.into_inner().write_all(reply.as_bytes()).unwrap();
+            write_answer(reader, &answer);
         }
     });
     (url, received)
+}
+
+/// An endpoint the test answers turn by turn: each request's body comes
+/// out of the receiver, and the answer the test sends next is its reply.
+fn answered_model_endpoint() -> (
+    String,
+    std::sync::mpsc::Receiver<String>,
+    std::sync::mpsc::Sender<serde_json::Value>,
+) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let (sent, received) = std::sync::mpsc::channel();
+    let (answer, answers) = std::sync::mpsc::channel::<serde_json::Value>();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { return };
+            let mut reader = std::io::BufReader::new(stream);
+            if sent.send(read_request(&mut reader)).is_err() {
+                return;
+            }
+            let Ok(answer) = answers.recv() else { return };
+            write_answer(reader, &answer);
+        }
+    });
+    (url, received, answer)
+}
+
+/// The body of the HTTP request `reader` carries.
+fn read_request(reader: &mut std::io::BufReader<std::net::TcpStream>) -> String {
+    use std::io::{BufRead as _, Read as _};
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        if line == "\r\n" {
+            break;
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    String::from_utf8(body).unwrap()
+}
+
+/// Reply `answer` as JSON and close the connection.
+fn write_answer(reader: std::io::BufReader<std::net::TcpStream>, answer: &serde_json::Value) {
+    use std::io::Write as _;
+    let answer = answer.to_string();
+    let reply = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+         Connection: close\r\n\r\n{answer}",
+        answer.len()
+    );
+    reader.into_inner().write_all(reply.as_bytes()).unwrap();
 }
 
 /// A chat-completions turn calling `name` with `input`.
@@ -2244,5 +2280,262 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
         "{told}"
     );
     assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// The id under which the planning request `body` offers `action`
+/// (`<resource>#<action>`).
+fn offered(body: &str, action: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap();
+    let text: String = request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(message_text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let marker = format!("#{action}");
+    let in_id = |c: char| c.is_alphanumeric() || ".:@-_/%".contains(c);
+    text.match_indices(&marker)
+        .find_map(|(at, _)| {
+            let end = at + marker.len();
+            let after = text.get(end..)?.chars().next();
+            if after.is_some_and(|c| c.is_alphanumeric() || c == '-') {
+                return None;
+            }
+            let start = text
+                .get(..at)?
+                .char_indices()
+                .rev()
+                .find(|(_, c)| !in_id(*c))
+                .map_or(0, |(i, c)| i + c.len_utf8());
+            text.get(start..end).map(str::to_owned)
+        })
+        .unwrap_or_else(|| panic!("{action} is offered: {text}"))
+}
+
+/// Plan steps posting each of `posts` in the chat with `post`, each with
+/// the obligation it fulfils.
+fn posts(post: &str, posts: &[(&str, Option<usize>)]) -> serde_json::Value {
+    posts
+        .iter()
+        .map(|(text, serves)| {
+            let mut step = serde_json::json!({"operation": post,
+                "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}});
+            if let Some(number) = serves {
+                step["for"] = (*number).into();
+            }
+            step
+        })
+        .collect()
+}
+
+fn plan_call(id: &str, input: &serde_json::Value) -> serde_json::Value {
+    tool_call(id, "plan", input)
+}
+
+const REMINDED: &str = "You planned nothing more, but obligations of the request are still open";
+
+/// What Ana's agent last said: a finished task's result.
+fn ana_said(room: &RelayRoom) -> String {
+    room.ana
+        .1
+        .info()
+        .conversation
+        .last()
+        .map(|message| message.text.clone())
+        .unwrap_or_default()
+}
+
+/// A re-plan for news that drops two of four planned posts does not drop
+/// what they were for: their obligations stay open, every re-plan is shown
+/// them, and before the task finishes it is planned for them again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obligations_a_news_replan_dropped_are_planned_before_the_task_finishes() {
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Alpha ready, Bravo ready, Charlie ready and Delta ready")
+        .unwrap();
+    let first = room.next_request(&sent, "the plan to be asked for").await;
+    let post = offered(&first, "post");
+    // While it is planned, Ben joins and posts.
+    room.ben_joins().await;
+    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's post", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        async move { held.then_some(()) }
+    })
+    .await;
+    let all = [
+        ("Alpha ready", Some(1)),
+        ("Bravo ready", Some(2)),
+        ("Charlie ready", Some(3)),
+        ("Delta ready", Some(4)),
+    ];
+    let obligations: Vec<String> = all.iter().map(|(text, _)| format!("post {text}")).collect();
+    answer
+        .send(plan_call(
+            "p1",
+            &serde_json::json!({"obligations": obligations, "steps": posts(&post, &all)}),
+        ))
+        .unwrap();
+
+    let told = last_turn(
+        &room
+            .next_request(&sent, "the plan again for the news")
+            .await,
+    );
+    assert!(told.contains("Standing by for LR-2042"), "{told}");
+    assert!(
+        told.contains(
+            "Still to do: 1. post Alpha ready; 2. post Bravo ready; 3. post Charlie ready; 4. \
+             post Delta ready."
+        ),
+        "{told}"
+    );
+    // The re-plan keeps only the first two posts.
+    answer
+        .send(plan_call(
+            "p2",
+            &serde_json::json!({"steps": posts(&post, &all[..2])}),
+        ))
+        .unwrap();
+
+    let told = last_turn(&room.next_request(&sent, "the reminder").await);
+    assert!(told.contains(REMINDED), "{told}");
+    assert!(
+        told.contains("1. post Alpha ready (done); 2. post Bravo ready (done); 3. post Charlie")
+            && told.contains("Still to do: 3. post Charlie ready; 4. post Delta ready."),
+        "{told}"
+    );
+    answer
+        .send(plan_call(
+            "p3",
+            &serde_json::json!({"steps": posts(&post, &all[2..])}),
+        ))
+        .unwrap();
+
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&room);
+    assert!(
+        said.starts_with("Done: 4 actions.") && !said.contains("Left undone"),
+        "{said}"
+    );
+    let held = chat_parts_text(&room.ana.0, &ours);
+    for (text, _) in all {
+        assert!(held.contains(text), "{text}: {held}");
+    }
+    assert!(sent.try_recv().is_err(), "no plan after the last");
+    Box::pin(room.close()).await;
+}
+
+/// A task about to finish with an obligation open is planned for it, and
+/// finishes once it is done; one set aside with a reason lets the task
+/// finish, its result saying why.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn obligations_left_open_are_reminded_done_or_set_aside() {
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    let three = serde_json::json!(["post Alpha ready", "post Bravo ready", "post Charlie ready"]);
+
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Alpha ready, Bravo ready and Charlie ready")
+        .unwrap();
+    let post = offered(&room.next_request(&sent, "the plan").await, "post");
+    answer
+        .send(plan_call(
+            "p1",
+            &serde_json::json!({"obligations": three,
+                "steps": posts(&post, &[("Alpha ready", Some(1))])}),
+        ))
+        .unwrap();
+    let told = last_turn(&room.next_request(&sent, "the reminder").await);
+    assert!(
+        told.contains(REMINDED) && told.contains("Still to do: 2. post Bravo ready; 3. post"),
+        "{told}"
+    );
+    answer
+        .send(plan_call(
+            "p2",
+            &serde_json::json!({"steps": posts(&post, &[("Bravo ready", Some(2))]),
+                "set_aside": [{"item": 3, "reason": "not possible: Charlie is not ours to post"}]}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    let said = ana_said(&room);
+    assert!(
+        said.starts_with("Done: 2 actions.")
+            && said.ends_with(
+                "Set aside: 3. post Charlie ready (not possible: Charlie is not ours to post)."
+            ),
+        "{said}"
+    );
+    assert!(!chat_parts_text(&room.ana.0, &ours).contains("Charlie ready"));
+
+    // Set aside without another step: a plan of nothing is an answer.
+    let task = room
+        .ana
+        .1
+        .message("In Chat, post Delta ready and Echo ready")
+        .unwrap();
+    room.next_request(&sent, "the second plan").await;
+    answer
+        .send(plan_call(
+            "p3",
+            &serde_json::json!({"obligations": ["post Delta ready", "post Echo ready"],
+                "steps": posts(&post, &[("Delta ready", Some(1))])}),
+        ))
+        .unwrap();
+    room.next_request(&sent, "the second reminder").await;
+    answer
+        .send(plan_call(
+            "p4",
+            &serde_json::json!({"steps": [], "reply": "Echo set aside.",
+                "set_aside": [{"item": 2, "reason": "already done by Rae"}]}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    assert!(
+        ana_said(&room).ends_with("Set aside: 2. post Echo ready (already done by Rae)."),
+        "{}",
+        ana_said(&room)
+    );
+    assert!(sent.try_recv().is_err(), "no plan after the last");
+    Box::pin(room.close()).await;
+}
+
+/// A plan that lists no obligations finishes as it always did: one model
+/// request, no reminder, its result as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plan_without_obligations_finishes_without_a_reminder() {
+    let (url, sent, answer) = answered_model_endpoint();
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room.ana.1.message("In Chat, post Alpha ready").unwrap();
+    let first = room.next_request(&sent, "the plan").await;
+    let request: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert!(
+        request["tools"].to_string().contains("`obligations`"),
+        "the plan tool says how to list them"
+    );
+    let post = offered(&first, "post");
+    answer
+        .send(plan_call(
+            "p1",
+            &serde_json::json!({"steps": posts(&post, &[("Alpha ready", None)])}),
+        ))
+        .unwrap();
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    assert_eq!(ana_said(&room), "Done: 1 action.");
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(sent.try_recv().is_err(), "one model request");
     Box::pin(room.close()).await;
 }

@@ -683,6 +683,7 @@ fn canned(actions: &[&str], why: &str, then: Option<&str>) -> ModelPlanner {
         then: then.map(str::to_owned),
         reply: None,
         wait: None,
+        ..Answer::default()
     })))
 }
 
@@ -901,6 +902,7 @@ impl PlanModel for Recording {
             then: None,
             reply: None,
             wait: None,
+            ..Answer::default()
         })
     }
 }
@@ -942,6 +944,53 @@ fn the_model_sees_what_was_produced_and_a_content_step_carries() {
         steps[0].carries.is_none(),
         "an operation that takes words carries nothing"
     );
+}
+
+/// A plan's obligations reach the host once, each step tagged with the
+/// one it fulfils, and a plan of the rest is shown the task's checklist
+/// after the request, as context rather than more of the request.
+#[test]
+fn a_plan_hands_on_its_obligations_and_a_replan_is_shown_the_checklist() {
+    let mut context = context();
+    let edit = offer_id(&context, "notes.page#edit");
+    let mut planner = ModelPlanner::new(Box::new(Canned(Answer {
+        actions: vec![edit.clone(), edit.clone()],
+        arguments: vec![serde_json::Map::new(); 2],
+        obligations: vec!["write the note".into(), "sign it".into()],
+        serves: vec![Some(1), None],
+        set_aside: vec![(2, "not possible: no name given".into())],
+        ..Answer::default()
+    })));
+    let steps = planner.plan("write and sign the note", &context).unwrap();
+    let serves: Vec<Option<usize>> = steps.iter().map(|step| step.serves).collect();
+    assert_eq!(serves, [Some(1), None]);
+    let declared = planner.take_obligations();
+    assert_eq!(declared.items, ["write the note", "sign it"]);
+    assert_eq!(
+        declared.set_aside,
+        [(2, "not possible: no name given".into())]
+    );
+    assert_eq!(
+        planner.take_obligations(),
+        crate::planner::Obligations::default()
+    );
+
+    let asked = std::sync::Arc::default();
+    let mut replanning = ModelPlanner::new(Box::new(Recording {
+        asked: std::sync::Arc::clone(&asked),
+        answer: edit,
+    }));
+    context.request = Some("write and sign the note".into());
+    context.obligations =
+        format!("{OBLIGATIONS_INTRO}, as you listed them: 1. write the note (done); 2. sign it.");
+    replanning.plan("sign it", &context).unwrap();
+    let asked = asked.lock().unwrap().clone();
+    assert!(
+        asked[0].ends_with("1. write the note (done); 2. sign it."),
+        "{}",
+        asked[0]
+    );
+    assert_eq!(requested(&asked[0]), "sign it");
 }
 
 #[test]
@@ -1881,6 +1930,7 @@ fn a_write_planned_after_pictures_waits_for_the_pictures_to_be_seen() {
         then: Some("post the verdict".into()),
         reply: None,
         wait: None,
+        ..Answer::default()
     };
     let plan = |sees: bool, context: &PlanContext| {
         ModelPlanner::new(Box::new(SeeingCanned(answer.clone(), sees)))
@@ -2328,6 +2378,7 @@ fn search_room_finds_a_record_and_the_plan_opens_it() {
             record: Some(found.record),
             action: StepAction::Open,
             carries: None,
+            serves: None,
         }
     );
     assert!(matches!(&steps[1].action, StepAction::Continue(rest) if rest.contains("deck")));
@@ -2658,6 +2709,19 @@ fn the_plan_tool_waits_and_says_little() {
     );
     assert!(schema["properties"].get("why").is_none());
     assert_eq!(schema["required"], serde_json::json!(["steps"]));
+    assert_eq!(schema["properties"]["obligations"]["type"], "array");
+    assert_eq!(
+        schema["properties"]["steps"]["items"]["properties"]["for"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        schema["properties"]["set_aside"]["items"]["required"],
+        serde_json::json!(["item", "reason"])
+    );
+    assert!(
+        plan.description
+            .ends_with(super::converse::OBLIGATIONS_NOTE)
+    );
     let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(names, [READ_VIEW, tilo_agent::tools::PLAN]);
     let all = planning_tools(MOST_STEPS, true, true, true);

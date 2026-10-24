@@ -140,7 +140,77 @@ pub fn read_answer(
     if let Some(wait) = &answer.wait {
         Wait::planned(wait.clone(), None)?;
     }
+    let mut answer = answer;
+    read_obligations(input, &mut answer);
     Ok(answer)
+}
+
+/// The most obligations a task keeps, and the most characters of each.
+pub const MOST_OBLIGATIONS: usize = 12;
+const MOST_OBLIGATION_CHARS: usize = 160;
+
+/// The `plan` input's checklist, which is never a reason to refuse a plan:
+/// `obligations` (the request's deliverables), each step's `for` (the one
+/// it fulfils) and `set_aside` (those the model will not do, with why). A
+/// malformed entry is left out.
+fn read_obligations(input: &serde_json::Value, answer: &mut tilo_agent::tools::Answer) {
+    let bounded = |text: &str| {
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.chars().take(MOST_OBLIGATION_CHARS).collect::<String>())
+    };
+    answer.obligations = input
+        .get("obligations")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.as_str().and_then(bounded))
+        .take(MOST_OBLIGATIONS)
+        .collect();
+    let steps = input.get("steps").and_then(serde_json::Value::as_array);
+    let serves: Vec<Option<usize>> = steps
+        .into_iter()
+        .flatten()
+        .map(|step| step.get("for").and_then(obligation_number))
+        .collect();
+    answer.serves = if serves.iter().any(Option::is_some) {
+        serves
+    } else {
+        Vec::new()
+    };
+    answer.set_aside = input
+        .get("set_aside")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            let item = entry.get("item").and_then(obligation_number)?;
+            let reason = entry
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .and_then(bounded)?;
+            Some((item, reason))
+        })
+        .take(MOST_OBLIGATIONS)
+        .collect();
+}
+
+/// An obligation's number as a model wrote it: `2`, or `"2"`.
+fn obligation_number(value: &serde_json::Value) -> Option<usize> {
+    let number = match value {
+        serde_json::Value::Number(number) => number.as_u64()?,
+        serde_json::Value::String(text) => text.trim().trim_start_matches('#').parse().ok()?,
+        _ => return None,
+    };
+    usize::try_from(number).ok().filter(|number| *number >= 1)
+}
+
+/// The checklist a plan declared ([`tilo_agent::tools::Answer::obligations`]
+/// and [`tilo_agent::tools::Answer::set_aside`]), handed to the host with
+/// the plan's steps.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Obligations {
+    pub items: Vec<String>,
+    pub set_aside: Vec<(usize, String)>,
 }
 
 /// One action to perform.
@@ -157,6 +227,9 @@ pub struct Step {
     /// never to a value the plan wrote
     /// ([`tilo_agent::plan::carried_arguments`]). `None` carries nothing.
     pub carries: Option<String>,
+    /// The obligation of the task's checklist this step fulfils, numbered
+    /// from 1: ticked when the step succeeds.
+    pub serves: Option<usize>,
 }
 
 impl Step {
@@ -288,6 +361,9 @@ pub struct PlanContext {
     pub new_documents: Vec<String>,
     /// The task's budget for asking a model call lost to the network again.
     pub retries: TurnRetries,
+    /// On a plan of the rest of a task, its checklist: each obligation,
+    /// whether it is done, and what is still to do. Empty for none.
+    pub obligations: String,
 }
 
 impl PlanContext {
@@ -558,6 +634,11 @@ pub trait Planner: Send {
     fn last_planned_by_model(&self) -> bool {
         false
     }
+
+    /// The checklist the plan this planner last made declared, taken once.
+    fn take_obligations(&mut self) -> Obligations {
+        Obligations::default()
+    }
 }
 
 /// Reads the steps from the task: one JSON object or an array of them.
@@ -624,6 +705,7 @@ fn step(item: &serde_json::Value, context: &PlanContext) -> Result<Step, String>
         record,
         action: StepAction::Invoke { address, arguments },
         carries,
+        serves: None,
     })
 }
 
@@ -675,6 +757,7 @@ mod tests {
             record: None,
             action: StepAction::Wait(anywhere),
             carries: None,
+            serves: None,
         };
         assert_eq!(step.log_names(), (String::new(), "wait".into()));
     }
@@ -711,6 +794,28 @@ mod tests {
         assert_eq!(wait_places(), ["mail", "chat", "messages"]);
         assert_eq!(message_app(" CHAT "), Some("so.tilo.chat"));
         assert_eq!(message_app("so.tilo.notes"), None);
+    }
+
+    /// A plan's checklist is read beside its steps and never refuses it:
+    /// blank items and numbers below 1 are left out, a number may be
+    /// written as text.
+    #[test]
+    fn a_plan_reads_its_obligations_and_what_each_step_fulfils() {
+        let mut revealed = tilo_agent::tools::Revealed::new();
+        revealed.reveal("a#b");
+        let input = serde_json::json!({"steps": [
+                {"operation": "a#b", "arguments": {}, "for": 2},
+                {"operation": "a#b", "arguments": {}}],
+            "obligations": ["enter the code", " ", "post it"],
+            "set_aside": [{"item": "1", "reason": " already done "}, {"item": 0, "reason": "x"},
+                {"item": 2}]});
+        let answer = read_answer(&input, &revealed, 4, &context()).expect("a plan");
+        assert_eq!(answer.obligations, ["enter the code", "post it"]);
+        assert_eq!(answer.serves, [Some(2), None]);
+        assert_eq!(answer.set_aside, [(1, "already done".to_owned())]);
+        let untagged = serde_json::json!({"steps": [{"operation": "a#b", "arguments": {}}]});
+        let answer = read_answer(&untagged, &revealed, 4, &context()).expect("a plan");
+        assert!(answer.obligations.is_empty() && answer.serves.is_empty());
     }
 
     #[test]

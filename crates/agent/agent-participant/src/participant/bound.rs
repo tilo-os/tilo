@@ -131,6 +131,7 @@ impl values::Reads for StepReads<'_> {
                     record: None,
                     action: StepAction::Open,
                     carries: None,
+                    serves: None,
                 };
                 self.participant
                     .existing_record(&finding)?
