@@ -431,11 +431,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(tmp.path());
         let device = install_fixed_device(&paths);
-        let issued_at_ns = crate::clock::unix_now_ns() + 200_000_000;
+        // The refusal is judged at the reading the certificate was dated from, so a slow
+        // node that takes longer than the margin to write it cannot make it valid already.
+        let read_at_ns = crate::clock::unix_now_ns();
+        let issued_at_ns = read_at_ns + 200_000_000;
         let cert = signed_cert(device.verifying_key().to_bytes(), issued_at_ns, None);
         write_device_cert(&paths.device_cert, &cert).unwrap();
         assert!(matches!(
-            load_certified_mount_identity(&paths, crate::clock::unix_now_ns()),
+            load_certified_mount_identity(&paths, read_at_ns),
             Err(CertifiedIdentityError::Certificate(
                 DeviceCertError::NotYetValid
             ))
