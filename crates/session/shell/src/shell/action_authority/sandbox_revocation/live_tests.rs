@@ -118,7 +118,7 @@ impl LiveTree {
                     stream.read_exact(&mut pid).unwrap();
                     let pid = u32::from_ne_bytes(pid);
                     if pid != root.0.id() {
-                        let (_, start) = super::super::super::proc_stat(pid).unwrap();
+                        let (_, start) = crate::shell::host_runtime::proc_stat(pid).unwrap();
                         descendant = Some(process_handle(pid, start).unwrap());
                     }
                     controls.push(stream);

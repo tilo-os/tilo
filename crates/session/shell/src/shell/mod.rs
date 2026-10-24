@@ -7,6 +7,7 @@
 //! and recordings with `cargo run --bin shots`. `--backend winit` (the default)
 //! runs the compositor in a window inside an existing X11/Wayland session.
 
+pub(crate) mod action_authority;
 pub mod agent_admission;
 pub(crate) mod animation_diagnostics;
 pub mod app_action_access;
@@ -99,6 +100,7 @@ pub mod heap_trim;
 pub(crate) mod held_layers;
 pub mod history_narrative;
 pub mod host_apps;
+pub(crate) mod host_runtime;
 pub mod host_shell_allow;
 pub mod hosted_inputs;
 pub mod i18n;
@@ -1246,8 +1248,8 @@ pub fn build_tilo_overlay_host_with_inputs(
     // construction; feeds only the *initial* layout, the live chrome
     // handle drives subsequent updates.
     let tree: WorkspaceTree = tree_handle.read().clone();
-    launcher::action_authority::Export::of(&tree).publish();
-    launcher::action_authority::follow_tree(&tree_handle);
+    action_authority::Export::of(&tree).publish();
+    action_authority::follow_tree(&tree_handle);
     for room in tree.rooms() {
         launcher::set_trusted_identity_projection(room, &tree.trusted_identity_projection(room));
     }

@@ -7693,7 +7693,7 @@ impl State {
 /// process.
 #[cfg(target_os = "linux")]
 fn end_unresponsive_process(pid: u32, start_time: Option<u64>) {
-    let Some((_, started)) = crate::shell::launcher::proc_stat(pid) else {
+    let Some((_, started)) = crate::shell::host_runtime::proc_stat(pid) else {
         return;
     };
     if start_time.is_some_and(|expected| started != expected) {
