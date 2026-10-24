@@ -1053,7 +1053,7 @@ pub(crate) fn data_dir_host(
     author: &UserId,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<ApplicationHost, LaunchError> {
-    let root = std::path::absolute(directory).map_err(operation)?;
+    let root = std::path::absolute(directory).map_err(super::headless::operation)?;
     ApplicationHost::new(
         root,
         "local-device".into(),
@@ -1069,11 +1069,6 @@ pub(crate) fn data_dir_host(
 /// later role change reaches the running app.
 pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(PermissionContext::member(author, role)))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn operation(error: impl std::fmt::Display) -> LaunchError {
-    LaunchError::Operation(error.to_string())
 }
 
 /// Prepare `definition` on `host`: the record a launch named, else the one
@@ -1356,7 +1351,7 @@ fn prepare_named(
         let profile = tempfile::Builder::new()
             .prefix("tilo-capture-")
             .tempdir()
-            .map_err(operation)?;
+            .map_err(super::headless::operation)?;
         let root = profile.path().join("state");
         let profile_root = profile.path().to_path_buf();
         let content = profile_content(profile.path());
@@ -1380,19 +1375,19 @@ fn prepare_named(
                 .provide_capture(Capture::new(args.scenario.clone()));
             // The theme the capture draws in is the stored choice its
             // controls show.
-            ui_core::storage::SettingsDocument::File(super::testing::profile_settings(
+            ui_core::storage::SettingsDocument::File(super::headless::profile_settings(
                 &profile_root,
             ))
             .update_section(
                 ui_core::theme::APPEARANCE_SECTION,
                 ui_core::launch::capture_appearance(args),
             )
-            .map_err(operation)?;
+            .map_err(super::headless::operation)?;
         }
         if private {
             prepared.context.provide_private();
         }
-        return Ok(super::testing::in_profile(
+        return Ok(super::headless::in_profile(
             prepared,
             &profile_root,
             definition.app_id,
@@ -1409,10 +1404,10 @@ fn prepare_named(
             |mut prepared| {
                 prepared
                     .context
-                    .provide_content(super::testing::data_dir_content(directory.as_ref()));
-                super::testing::in_profile(
+                    .provide_content(super::headless::data_dir_content(directory.as_ref()));
+                super::headless::in_profile(
                     prepared,
-                    &super::testing::data_dir_root(directory.as_ref()),
+                    &super::headless::data_dir_root(directory.as_ref()),
                     definition.app_id,
                 )
             },
@@ -1591,7 +1586,7 @@ pub fn run<A: ResourceApp>() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
-        print_surface_report(&super::testing::surface_report::<A>());
+        print_surface_report(&super::headless::surface_report::<A>());
     }
     if let Some(code) = run_helper::<A>(&args) {
         #[allow(
@@ -1604,7 +1599,7 @@ pub fn run<A: ResourceApp>() {
 }
 
 /// The flag that makes an app's binary print its
-/// [`surface_report`](super::testing::surface_report)
+/// [`surface_report`](super::headless::surface_report)
 /// instead of running: what `tilo-app surface` and `tilo-app check` read.
 pub const SURFACE_FLAG: &str = "--surface";
 
