@@ -42,6 +42,7 @@ impl ShellDriver {
         "qs-edit-drag",
         "qs-hardware-wired",
         "qs-compact",
+        "qs-muted",
         "qs-scrolled",
         "qs-wifi",
         "qs-wifi-two-displays",

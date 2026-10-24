@@ -4370,7 +4370,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             // is closed).
             fields.insert(
                 "quick_settings_volume".into(),
-                serde_json::json!(chrome.quick_settings.volume),
+                serde_json::json!(chrome.quick_settings.volume_level()),
             );
             fields.insert(
                 "screenshot_markup_strokes".into(),
@@ -10041,7 +10041,7 @@ pub fn run() {
         crate::compositor::dictation::host::VocabularyBinding::new(Arc::clone(&session_wake));
     dictation_vocabulary.refresh(&mut state);
     if let Some(bridge) = frame_builder.host().status_bridge() {
-        bridge.wake_network_changes(Arc::clone(&session_wake));
+        bridge.wake_on_changes(Arc::clone(&session_wake));
     }
     let mut retained_files = crate::onboarding_prepared::session_home()
         .map(|home| crate::retained_files::Session::open(home, Arc::clone(&session_wake)));
@@ -15274,8 +15274,11 @@ fn sync_quick_settings_from_osd(
     osd: crate::shell::osd::Osd,
 ) {
     match osd.kind {
-        crate::shell::osd::OsdKind::Volume { .. } => {
-            quick_settings.volume = osd.level;
+        crate::shell::osd::OsdKind::Volume { muted } => {
+            quick_settings.status.volume = Some(os_actions::VolumeState {
+                level: osd.level,
+                muted,
+            });
         }
         crate::shell::osd::OsdKind::Brightness { display: None } => {
             quick_settings.brightness = osd.level;

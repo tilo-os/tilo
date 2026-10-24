@@ -393,6 +393,7 @@ qs-bluetooth-use-elsewhere = Auf einem anderen Gerät nutzen
 qs-vpn-settings = VPN-Einstellungen
 qs-vpn-details = VPN-Profile
 qs-sound-output = Tonausgabe
+qs-volume-mute = Stummschalten
 qs-sound-settings = Ton-Einstellungen
 qs-devices-settings = Einstellungen für Geräte & Sync
 qs-clipboard-clear-history = Verlauf leeren

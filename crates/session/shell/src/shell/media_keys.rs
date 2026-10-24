@@ -320,6 +320,26 @@ pub(crate) fn commit_volume(
     Ok((committed, Osd::volume(level, committed.muted)))
 }
 
+/// Mute or un-mute the default sink at its current level — the path behind
+/// the volume icon in Quick Settings. The tray takes the new state only once
+/// the write succeeded, so a failure never shows a state the sink is not in.
+pub(crate) fn commit_mute(
+    audio: &dyn AudioControl,
+    status: Option<&StatusBridge>,
+    previous: os_actions::VolumeState,
+    muted: bool,
+) -> Result<(os_actions::VolumeState, Osd), String> {
+    audio.set_mute(muted)?;
+    let committed = os_actions::VolumeState {
+        level: previous.level,
+        muted,
+    };
+    if let Some(status) = status {
+        status.set_volume(committed);
+    }
+    Ok((committed, Osd::volume(committed.level, muted)))
+}
+
 fn toggle_mute(audio: &dyn AudioControl, status: Option<&StatusBridge>) -> Option<Osd> {
     // Read before actuating: a reading taken after the toggle could observe
     // the new state and invert it a second time.

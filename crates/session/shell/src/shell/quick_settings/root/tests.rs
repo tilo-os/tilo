@@ -27,11 +27,11 @@ fn laptop() -> QuickSettingsState {
         ],
         ..QuickSettingsState::default()
     };
-    state.battery = tilo_power_mgmt::BatterySnapshot {
+    state.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
         present: true,
         percent: 64,
         state: tilo_power_mgmt::BatteryState::Discharging,
-    };
+    });
     state.wifi_networks = vec![
         WifiNetwork {
             ssid: "Home".into(),
@@ -956,4 +956,56 @@ fn the_sliders_sit_on_the_panel_not_in_a_card_of_their_own() {
             "an off tile keeps its Control card, so the probe sees cards"
         );
     }
+}
+
+#[test]
+fn every_slider_track_is_one_length_with_or_without_the_sound_chevron() {
+    for outputs in [0, 2] {
+        let mut state = laptop();
+        state.status.volume = Some(os_actions::VolumeState {
+            level: 0.4,
+            muted: false,
+        });
+        state.sound_outputs = (0..outputs)
+            .map(|node| crate::shell::quick_settings::SoundOutput {
+                node,
+                name: format!("Output {node}"),
+                current: node == 0,
+            })
+            .collect();
+        let mut root = laid_out(&state);
+        root.sync_displays(&state);
+        let block = root.sliders_block();
+        let widths: Vec<f64> = (0..root.slider_count())
+            .map(|i| root.slider_geometry_for(block, i).0.width())
+            .collect();
+        assert!(widths.len() >= 2, "brightness and volume both show");
+        assert!(
+            widths.iter().all(|w| (w - widths[0]).abs() < 1e-9),
+            "with {outputs} outputs the tracks are {widths:?}"
+        );
+    }
+}
+
+#[test]
+fn the_volume_icon_is_a_mute_switch() {
+    let mut state = laptop();
+    state.status.volume = Some(os_actions::VolumeState {
+        level: 0.4,
+        muted: false,
+    });
+    let mut root = laid_out(&state);
+    root.sync_displays(&state);
+    let icon = root.stop_rect(RootStop::VolumeMute, &state);
+    let volume = root.slider_face_rect(root.sliders_block(), root.volume_slider());
+    assert!(icon.x1 <= volume.x0, "the icon sits beside the slider");
+    assert_eq!(
+        root.handle_click(icon.center(), PANEL, &mut state),
+        RootAction::ToggleMute
+    );
+    assert!(
+        root.semantic_rects(&state)
+            .into_iter()
+            .any(|(name, _)| name == "quick_settings_volume_mute")
+    );
 }

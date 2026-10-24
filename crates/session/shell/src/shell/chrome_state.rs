@@ -523,8 +523,6 @@ pub struct QuickSettingsState {
     /// spans several: what "brighter" and "dimmer" adjust. The overlay host
     /// keeps it current whenever search refreshes.
     pub focused_display: Option<String>,
-    /// 0.0..=1.0.
-    pub volume: f32,
     /// False after the audio service cannot provide a sink reading.
     pub volume_available: bool,
     pub wifi: bool,
@@ -535,11 +533,10 @@ pub struct QuickSettingsState {
     pub bluetooth_available: bool,
     /// Primary `NetworkManager` Ethernet interface. `None` means no adapter.
     pub wired: Option<os_actions::WiredInfo>,
-    /// The top bar's battery reading — same type, same sysfs parser — so
-    /// the panel and the tray cannot disagree about the charge.
-    pub battery: tilo_power_mgmt::BatterySnapshot,
-    /// Time to empty or to full, when the battery reports its rate.
-    pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
+    /// Battery, link and volume: the one copy the top bar draws too, taken
+    /// each frame from [`crate::shell::status::StatusBridge`] with no lock
+    /// held across a draw; `None` fields until a reading lands.
+    pub status: crate::shell::status::SystemStatus,
     /// `None` when fwupd is unavailable, otherwise the offered update count.
     pub firmware_updates: Option<usize>,
     pub radios: os_actions::RadioState,
@@ -564,9 +561,6 @@ pub struct QuickSettingsState {
     /// Quick Settings. Cleared whenever Quick Settings opens another way.
     pub paste_origin: Option<PasteOrigin>,
     pub wifi_networks: Vec<WifiNetwork>,
-    /// The primary link the status poller last observed: what Wi-Fi is
-    /// connected to even when discovery failed or has not answered yet.
-    pub link: Option<os_actions::LinkStatus>,
     /// True only while `NetworkManager` discovery is outstanding.
     pub wifi_scanning: bool,
     /// A typed radio mutation is admitted but has not completed.
@@ -663,14 +657,12 @@ impl Default for QuickSettingsState {
             brightness_available: false,
             displays: Vec::new(),
             focused_display: None,
-            volume: 0.4,
             volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: tilo_power_mgmt::BatterySnapshot::absent(),
-            battery_time: None,
+            status: crate::shell::status::SystemStatus::default(),
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -684,7 +676,6 @@ impl Default for QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
-            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -707,20 +698,49 @@ impl Default for QuickSettingsState {
 }
 
 impl QuickSettingsState {
+    /// The output's level, `0.0..=1.0`; `0` until it has been read.
+    pub fn volume_level(&self) -> f32 {
+        self.status.volume.map_or(0.0, |volume| volume.level)
+    }
+
+    pub fn volume_muted(&self) -> bool {
+        self.status.volume.is_some_and(|volume| volume.muted)
+    }
+
+    /// Show the output at `level`, as a slider being dragged or a readout
+    /// shows it; mute stays as it is.
+    pub fn set_volume_level(&mut self, level: f32) {
+        self.status.volume = Some(os_actions::VolumeState {
+            level,
+            muted: self.volume_muted(),
+        });
+    }
+
+    /// The battery as last read; absent until then.
+    pub fn battery(&self) -> tilo_power_mgmt::BatterySnapshot {
+        self.status
+            .battery
+            .unwrap_or_else(tilo_power_mgmt::BatterySnapshot::absent)
+    }
+
     pub(crate) fn fixture() -> Self {
         Self {
             brightness: 0.6,
             brightness_available: true,
             displays: Vec::new(),
             focused_display: None,
-            volume: 0.4,
             volume_available: true,
             wifi: true,
             bluetooth: false,
             bluetooth_available: false,
             wired: None,
-            battery: tilo_power_mgmt::BatterySnapshot::absent(),
-            battery_time: None,
+            status: crate::shell::status::SystemStatus {
+                volume: Some(os_actions::VolumeState {
+                    level: 0.4,
+                    muted: false,
+                }),
+                ..crate::shell::status::SystemStatus::default()
+            },
             firmware_updates: None,
             radios: os_actions::RadioState::default(),
             vpns: Vec::new(),
@@ -734,7 +754,6 @@ impl QuickSettingsState {
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
             wifi_networks: Vec::new(),
-            link: None,
             wifi_scanning: false,
             radio_change_pending: false,
             radio_change: None,
@@ -876,10 +895,6 @@ pub struct ChromeState {
     pub open_target: OpenTarget,
     /// What the overlay host publishes for search as it changes.
     pub search_context: SearchContextState,
-    /// Copied here once per frame from
-    /// [`crate::shell::status::StatusBridge`] with no lock held across
-    /// a draw. `None` until a poller publishes.
-    pub status: crate::shell::status::SystemStatus,
     /// Session-local projection from Clocks; schedules never enter chrome.
     pub clock_activity: Option<ClockActivity>,
     /// At most one — an OSD counts a value up, so eight volume presses
@@ -1257,7 +1272,6 @@ impl ChromeState {
             search_resource_scope: None,
             open_target: OpenTarget::default(),
             search_context: SearchContextState::default(),
-            status: crate::shell::status::SystemStatus::default(),
             clock_activity: None,
             osd: None,
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),

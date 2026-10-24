@@ -552,6 +552,7 @@ impl ShellOverlayHost {
             qs_wifi_scanned_at: None,
             qs_hosted_section: None,
             status_bridge: None,
+            status_copied: std::cell::RefCell::default(),
             session_audio_policy: None,
             room_activity: inputs.room_activity,
             history_narrator: inputs.history_narrator,
