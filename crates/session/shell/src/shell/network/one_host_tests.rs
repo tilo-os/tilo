@@ -159,7 +159,7 @@ enum Identity {
     /// The person's root certifies the device's key, with `capabilities`,
     /// each time it starts.
     Certified {
-        root: SigningKey,
+        root: Box<SigningKey>,
         capabilities: DeviceCapabilities,
     },
     /// The identity this host was set up with, under `root`: its device key
@@ -275,7 +275,7 @@ impl Device {
         tree: WorkspaceTree,
     ) -> Self {
         let identity = Identity::Certified {
-            root: person.root.clone(),
+            root: Box::new(person.root.clone()),
             capabilities,
         };
         Self::start_from(identity, label, dir, salt, wakes, tree)
@@ -342,7 +342,7 @@ impl Device {
         let peer_sync = self.dir.join("peer-sync");
         let net = match &self.identity {
             Identity::Certified { root, capabilities } => {
-                let root = root.clone();
+                let root = SigningKey::clone(root);
                 let capabilities = capabilities.clone();
                 ShellNetwork::spawn_with(
                     self.tree.clone(),
@@ -725,7 +725,7 @@ impl Device {
         let owner = net.native_owner().unwrap();
         if net.host_creates_records(&owner, room) {
             let asked = {
-                let (net, cert) = (Arc::clone(&net), cert.clone());
+                let net = Arc::clone(&net);
                 let (app, record) = (app.to_owned(), record.to_owned());
                 async move {
                     net.prepare_application_record_at_host(room, &cert, &app, &record)
