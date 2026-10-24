@@ -193,7 +193,11 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation_and_sleeps_in_betwee
 #[cfg(target_os = "linux")]
 fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation() {
     let start = tilo_clock::unix_now();
-    tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(start));
+    tilo_clock::freeze_wall(
+        std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(start))
+            .unwrap(),
+    );
     let directory = tempfile::tempdir().expect("temporary socket directory");
     super::tests::secure_socket_parent(directory.path()).expect("private socket directory");
     let socket = directory.path().join("policy.sock");
@@ -253,7 +257,11 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation() {
     // The grant ends, and the policy clock announces it: one re-check, at
     // the expiry, which registers the next one.
     let before_expiry = owner.checks().len();
-    tilo_clock::freeze_wall(std::time::UNIX_EPOCH + Duration::from_secs(expiry));
+    tilo_clock::freeze_wall(
+        std::time::UNIX_EPOCH
+            .checked_add(Duration::from_secs(expiry))
+            .unwrap(),
+    );
     tilo_identity_host::policy_change::announce();
     tilo_test_env::wait_until("the re-check at the expiry", || {
         owner.checks().len() > before_expiry
