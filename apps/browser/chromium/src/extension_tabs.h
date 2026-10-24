@@ -52,6 +52,8 @@ namespace tilo {
 
 inline constexpr char kExtensionBridge[] = "https://extension-bridge.tilo.invalid/";
 inline constexpr size_t kMaxBridgeRequest = 8 * 1024 * 1024;
+// What Chrome answers a message or a port nothing receives.
+inline constexpr char kNoReceiver[] = "Could not establish connection. Receiving end does not exist.";
 
 inline std::string ToJson(CefRefPtr<CefValue> value) {
   return CefWriteJSON(value, JSON_WRITER_DEFAULT).ToString();
@@ -296,6 +298,7 @@ class ExtensionTabs {
     listening_.erase(id);
     for (auto it = granted_.begin(); it != granted_.end();) it = it->first == id ? granted_.erase(it) : std::next(it);
     captures_.erase(id);
+    for (auto it = ports_.begin(); it != ports_.end();) it = it->second.extension == id ? ports_.erase(it) : std::next(it);
   }
 
   // A request to the bridge from `frame` of the host tab `caller`, or with
@@ -381,7 +384,7 @@ class ExtensionTabs {
       Succeed(reply, nullptr);
     } else if (method == "tabs.sendMessage") {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
-      if (!tab) { Fail(reply, "Could not establish connection. Receiving end does not exist."); return; }
+      if (!tab) { Fail(reply, kNoReceiver); return; }
       SendMessage(extension, *tab, args->GetValue("message"), reply);
     } else if (method == "scripting.executeScript" || method == "scripting.insertCSS") {
       auto target = args->GetDictionary("target");
@@ -389,9 +392,35 @@ class ExtensionTabs {
       if (!tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(target, "tabId").value_or(0))); return; }
       if (!MayScript(extension, *tab)) { Fail(reply, "Cannot access contents of the page. Extension manifest must request permission to access the respective host."); return; }
       if (method == "scripting.insertCSS") InsertCss(extension, *tab, StringOf(args, "css"), reply);
-      else ExecuteScript(extension, *tab, args, reply);
+      else ExecuteScript(extension, caller, *tab, args, reply);
     } else if (method == "tabs.captureVisibleTab") {
       Capture(extension, tabs, from, args, reply);
+    } else if (method == "ports") {
+      // What the extension's ports to scripts in pages carry, in order.
+      auto ops = args->GetList("ops");
+      for (size_t i = 0; ops && i < ops->GetSize(); ++i)
+        if (ops->GetType(i) == VTYPE_DICTIONARY) FromEnd(extension, caller, ops->GetDictionary(i));
+      Succeed(reply, nullptr);
+    } else if (method == "storage.changed") {
+      // The worker hears every change to the extension's storage; a page
+      // tells of one only for an extension without a worker, and only its
+      // first page, so each change arrives once.
+      const auto pages = Pages(extension);
+      const bool teller = !caller || (workerless_.count(extension) && !pages.empty() && pages.front() == caller);
+      auto area = CefValue::Create();
+      area->SetString(StringOf(args, "area"));
+      auto changes = args->GetType("changes") == VTYPE_DICTIONARY ? Wrap(args->GetDictionary("changes")->Copy(false)) : Wrap(CefDictionaryValue::Create());
+      bool any = false;
+      for (const auto& [key, context] : content_worlds_) {
+        if (key.second != extension) continue;
+        any = true;
+        auto inspector = hooks_.inspector(key.first);
+        if (teller && inspector)
+          Evaluate(inspector, context, "__tiloExtensionContent.changed(" + ToJson(changes) + ", " + ToJson(area) + ")", [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+      }
+      auto wanted = CefValue::Create();
+      wanted->SetBool(any);
+      Succeed(reply, wanted);
     } else if (method == "windows.get" || method == "windows.getCurrent" || method == "windows.getLastFocused") {
       const ExtensionTab* tab = nullptr;
       if (method == "windows.get") tab = ByExtensionId(tabs, IntOf(args, "windowId"));
@@ -439,8 +468,6 @@ class ExtensionTabs {
   // A tab's page changed: `status`, `url` or `title`.
   void Updated(int tab, CefRefPtr<CefDictionaryValue> change) {
     if (change->HasKey("url")) {
-      // The worlds the host made went with the page.
-      for (auto it = content_worlds_.begin(); it != content_worlds_.end();) it = it->first.first == tab ? content_worlds_.erase(it) : std::next(it);
       // Access a click gave ends with the page it was given for.
       const auto known = native_.find(tab);
       const int id = known != native_.end() ? known->second : 0;
@@ -465,6 +492,9 @@ class ExtensionTabs {
       Push(extension, "tabs.onUpdated", args, false);
     }
   }
+  // The tab's main frame committed a new document: the worlds the host made
+  // in the old one went with it, and so did the ports to them and from it.
+  void Navigated(int tab) { Drop(tab); }
   void Focused(int tab) {
     if (!Listened("tabs.onActivated") && !Listened("windows.onFocusChanged")) return;
     Ensure([this, tab] { FocusedNow(tab); });
@@ -509,7 +539,7 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     native_.erase(tab);
-    for (auto it = content_worlds_.begin(); it != content_worlds_.end();) it = it->first.first == tab ? content_worlds_.erase(it) : std::next(it);
+    Drop(tab);
     if (!found || found->panel) return;
     for (auto it = granted_.begin(); it != granted_.end();) it = it->second == found->id ? granted_.erase(it) : std::next(it);
     for (const auto& [extension, events] : listening_) {
@@ -553,6 +583,23 @@ class ExtensionTabs {
     }
   }
   using Answer = std::function<void(std::optional<std::string>, CefRefPtr<CefValue>)>;
+  // A port between a script in a world the host made in a page and the
+  // extension. The page's end is that world, which knows the port as
+  // `local`; the extension's ends are its worker (0) and its pages (their
+  // tabs), which know it by the key it has in `ports_`.
+  struct Port {
+    std::string extension, local;
+    int tab = 0, context = 0;
+    std::set<int> ends;
+    // Until the other side said whether it takes the port, what either end
+    // sends on it waits, in order.
+    bool opening = true;
+    struct Early { int from; bool disconnect; CefRefPtr<CefValue> message; };
+    std::vector<Early> early;
+  };
+  // `from` for what the page's end of a port sends.
+  static constexpr int kPageEnd = -1;
+  static constexpr size_t kMaxPorts = 4096;
   // Something to evaluate in an extension's worker, and who waits for it.
   struct Waiting { std::string expression; bool gesture; Answer answer; };
 
@@ -854,24 +901,31 @@ class ExtensionTabs {
   // content scripts run: 0 when it has none there. `then` runs with the
   // world, the main frame and whether the inspector must stop reporting.
   void World(const std::string& extension, const ExtensionTab& tab, std::function<void(int, std::string)> then) {
+    NamedWorld(extension, tab, [then](int world, std::string frame, std::string) { then(world, frame); });
+  }
+  // The same, with the name Chromium gave the world.
+  void NamedWorld(const std::string& extension, const ExtensionTab& tab, std::function<void(int, std::string, std::string)> then) {
     auto inspector = hooks_.inspector(tab.tab);
-    if (!inspector) { then(0, ""); return; }
+    if (!inspector) { then(0, "", ""); return; }
     const bool keep = hooks_.keeps_contexts(tab.tab);
     inspector->Call("Page.getFrameTree", nullptr, [this, inspector, extension, keep, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       auto tree = ok && result ? result->GetDictionary("frameTree") : nullptr;
       const std::string frame = tree ? StringOf(tree->GetDictionary("frame"), "id") : std::string();
-      if (frame.empty()) { then(0, ""); return; }
+      if (frame.empty()) { then(0, "", ""); return; }
       inspector->Collect(true);
       inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, frame, then](bool, CefRefPtr<CefDictionaryValue>) {
         int world = 0;
+        std::string name;
         for (const auto& context : inspector->contexts()) {
           auto aux = context->GetDictionary("auxData");
-          if (StringOf(context, "origin") == "chrome-extension://" + extension && aux && StringOf(aux, "type") == "isolated" && StringOf(aux, "frameId") == frame)
+          if (StringOf(context, "origin") == "chrome-extension://" + extension && aux && StringOf(aux, "type") == "isolated" && StringOf(aux, "frameId") == frame) {
             world = IntOf(context, "id").value_or(0);
+            name = StringOf(context, "name");
+          }
         }
         inspector->Collect(false);
         if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
-        then(world, frame);
+        then(world, frame, name);
       });
     });
   }
@@ -908,7 +962,7 @@ class ExtensionTabs {
     });
   }
 
-  void ExecuteScript(const std::string& extension, const ExtensionTab& tab, CefRefPtr<CefDictionaryValue> args, Reply reply) {
+  void ExecuteScript(const std::string& extension, int caller, const ExtensionTab& tab, CefRefPtr<CefDictionaryValue> args, Reply reply) {
     std::vector<std::string> sources;
     const auto func = StringOf(args, "func");
     if (!func.empty()) {
@@ -922,7 +976,7 @@ class ExtensionTabs {
     auto inspector = hooks_.inspector(tab.tab);
     if (!inspector) { Fail(reply, "No tab with id: " + std::to_string(tab.id)); return; }
     const int key = tab.tab;
-    World(extension, tab, [this, inspector, extension, key, content, sources, main_world, reply](int world, std::string frame) {
+    World(extension, tab, [this, inspector, extension, caller, key, content, sources, main_world, reply](int world, std::string frame) {
       auto run = [inspector, sources, reply](int context) {
         auto results = std::make_shared<CefRefPtr<CefValue>>();
         auto next = std::make_shared<std::function<void(size_t)>>();
@@ -948,7 +1002,7 @@ class ExtensionTabs {
       if (main_world) { run(0); return; }
       if (world) { run(world); return; }
       if (frame.empty()) { Fail(reply, "The page could not run the script"); return; }
-      ContentWorld(extension, key, inspector, frame, content, [run, reply](int context) {
+      ContentWorld(extension, caller, key, inspector, frame, content, [run, reply](int context) {
         if (!context) { Fail(reply, "The page could not run the script"); return; }
         run(context);
       });
@@ -958,33 +1012,48 @@ class ExtensionTabs {
   // scripts get a content script's `chrome` (extension_content.js): made
   // once per page, so a later script and message find the listeners an
   // earlier one added.
-  void ContentWorld(const std::string& extension, int tab, CefRefPtr<TabInspector> inspector, const std::string& frame, CefRefPtr<CefDictionaryValue> content, std::function<void(int)> then) {
+  void ContentWorld(const std::string& extension, int caller, int tab, CefRefPtr<TabInspector> inspector, const std::string& frame, CefRefPtr<CefDictionaryValue> content, std::function<void(int)> then) {
     auto known = content_worlds_.find({tab, extension});
     if (known != content_worlds_.end()) { then(known->second); return; }
-    FallbackWorld(inspector, frame, extension, [this, extension, tab, inspector, content, then](int context) {
+    // Whether messages and ports from the world can go to a worker.
+    auto manifest = content->GetDictionary("manifest");
+    auto background = manifest ? manifest->GetDictionary("background") : nullptr;
+    if (StringOf(background, "service_worker").empty()) workerless_.insert(extension); else workerless_.erase(extension);
+    FallbackWorld(inspector, frame, extension, [this, extension, caller, tab, inspector, content, then](int context) {
       if (!context) { then(0); return; }
       auto binding = CefDictionaryValue::Create();
       binding->SetString("name", "__tiloExtension");
       binding->SetString("executionContextName", "tilo-extension-" + extension);
-      inspector->Call("Runtime.addBinding", binding, [this, extension, tab, inspector, content, context, then](bool, CefRefPtr<CefDictionaryValue>) {
+      inspector->Call("Runtime.addBinding", binding, [this, extension, caller, tab, inspector, content, context, then](bool, CefRefPtr<CefDictionaryValue>) {
         inspector->Listen([this, tab](CefRefPtr<CefDictionaryValue> call) { FromContent(tab, call); });
         content->SetString("id", extension);
         Evaluate(inspector, context, "(" + std::string(kExtensionContent) + ")(" + ToJson(Wrap(content)) + ")",
-                 [this, extension, tab, context, then](std::optional<std::string> error, CefRefPtr<CefValue>) {
+                 [this, extension, caller, tab, context, then](std::optional<std::string> error, CefRefPtr<CefValue>) {
           if (error) { then(0); return; }
+          bool first = true;
+          for (const auto& [key, world] : content_worlds_) first = first && key.second != extension;
           content_worlds_[{tab, extension}] = context;
+          // The worker tells of storage changes while the extension has
+          // worlds to tell (extension_tabs.js); one asked from a page may
+          // have stopped listening when the last went.
+          if (first && caller && !workerless_.count(extension) && Has(extension, "storage"))
+            InWorker(extension, "globalThis.__tiloExtensionTabs && __tiloExtensionTabs.watch()", false, [](std::optional<std::string>, CefRefPtr<CefValue>) {});
           then(context);
         });
       });
     });
   }
-  // A call from a world the host made: a message for the extension, or its
-  // storage.
+  // A call from a world the host made: a message for the extension, a port
+  // to it, or its storage.
   void FromContent(int tab, CefRefPtr<CefDictionaryValue> call) {
     if (StringOf(call, "name") != "__tiloExtension") return;
     const int context = IntOf(call, "executionContextId").value_or(0);
     std::string extension;
     for (const auto& [key, world] : content_worlds_) if (key.first == tab && world == context) extension = key.second;
+    // An extension's declared content scripts have Chromium's `chrome`; the
+    // host gives their world only what its ports carry.
+    bool declared = false;
+    for (const auto& [key, world] : declared_worlds_) if (extension.empty() && key.first == tab && world == context) { extension = key.second; declared = true; }
     auto inspector = hooks_.inspector(tab);
     auto parsed = CefParseJSON(StringOf(call, "payload"), JSON_PARSER_RFC);
     auto request = parsed && parsed->GetType() == VTYPE_DICTIONARY ? parsed->GetDictionary() : nullptr;
@@ -1000,22 +1069,41 @@ class ExtensionTabs {
       text->SetString(message);
       settle(false, text);
     };
-    auto args = request->GetDictionary("args");
+    // Copied: it outlives the call it was read from.
+    auto args = request->GetType("args") == VTYPE_DICTIONARY ? request->GetDictionary("args")->Copy(false) : nullptr;
     const auto method = StringOf(request, "method");
-    if (method == "sendMessage" && args) {
-      const auto tabs = Tabs();
-      const auto* from = Find(tabs, tab);
-      if (!from) return;
-      auto sender = CefDictionaryValue::Create();
-      sender->SetString("id", extension);
-      sender->SetString("url", from->url);
-      sender->SetInt("frameId", 0);
-      sender->SetDictionary("tab", TabObject(extension, *from));
-      InWorker(extension, Dispatch(args->HasKey("message") ? args->GetValue("message") : nullptr, sender), false,
-               [settle, failure](std::optional<std::string> error, CefRefPtr<CefValue> value) {
-        if (error) { failure(*error); return; }
-        auto answer = value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
-        settle(true, answer && answer->HasKey("reply") ? answer->GetValue("reply")->Copy() : nullptr);
+    if (declared && method != "port") return;
+    if (method == "port" && args) {
+      const auto local = StringOf(args, "port");
+      for (const auto& [port, open] : ports_)
+        if (open.tab == tab && open.context == context && open.local == local) {
+          PortOp(std::string(port), kPageEnd, StringOf(args, "op") == "disconnect", args->GetValue("message"));
+          return;
+        }
+    } else if (method == "connect" && args) {
+      // The port exists from now: what the script posts on it waits until
+      // the extension's ends said whether they take it.
+      const auto local = StringOf(args, "port");
+      if (local.empty() || local.size() > 64 || ports_.size() >= kMaxPorts) return;
+      const std::string port = "p" + std::to_string(++port_);
+      ports_[port] = Port{extension, local, tab, context, {}, true, {}};
+      const auto name = StringOf(args, "name");
+      Ensure([this, extension, tab, port, name] {
+        const auto tabs = Tabs();
+        const auto* from = Find(tabs, tab);
+        if (!from || !ports_.count(port)) { Settled(extension, port, {}); return; }
+        Connect(extension, port, name, Sender(extension, *from));
+      });
+    } else if (method == "sendMessage" && args) {
+      Ensure([this, extension, tab, args, settle, failure] {
+        const auto tabs = Tabs();
+        const auto* from = Find(tabs, tab);
+        if (!from) { failure(kNoReceiver); return; }
+        ToExtension(extension, args->HasKey("message") ? args->GetValue("message") : nullptr, Sender(extension, *from),
+                    [settle, failure](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+          if (error) { failure(*error); return; }
+          settle(true, value);
+        });
       });
     } else if (method == "storage" && args) {
       static const std::set<std::string> areas{"local", "sync", "session"};
@@ -1024,8 +1112,11 @@ class ExtensionTabs {
       const auto op = StringOf(args, "op");
       auto values = args->GetType("args") == VTYPE_LIST ? args->GetList("args") : CefListValue::Create();
       if (!areas.count(area) || !ops.count(op)) { failure("Unknown storage call"); return; }
-      InWorker(extension, "chrome.storage." + area + "." + op + "(..." + ToJson(Wrap(values)) + ")", false,
-               [settle, failure](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+      // Its worker, or the page of an extension without one.
+      const auto ends = Ends(extension);
+      if (ends.empty()) { failure("The extension is not running"); return; }
+      AtEnd(extension, ends.front(), "chrome.storage." + area + "." + op + "(..." + ToJson(Wrap(values)) + ")",
+            [settle, failure](std::optional<std::string> error, CefRefPtr<CefValue> value) {
         if (error) failure(*error); else settle(true, value);
       });
     } else {
@@ -1033,9 +1124,11 @@ class ExtensionTabs {
     }
   }
   // Deliver a message to `chrome.runtime.onMessage` where the expression runs,
-  // answered as Chrome answers it: by the first reply, or with nothing.
+  // answered as Chrome answers it: by the first reply, or with nothing
+  // (`none` where no listener heard it).
   static std::string Dispatch(CefRefPtr<CefValue> message, CefRefPtr<CefDictionaryValue> sender) {
     return "new Promise((resolve) => {"
+           "  if (!chrome.runtime.onMessage.hasListeners()) { resolve({none: true}); return; }"
            "  let replied = false;"
            "  const send = (value) => { if (!replied) { replied = true; resolve({reply: value === undefined ? null : value}); } };"
            "  const out = chrome.runtime.onMessage.dispatch(" + ToJson(message ? message->Copy() : CefValue::Create()) + ", " + ToJson(Wrap(sender)) + ", send);"
@@ -1076,13 +1169,16 @@ class ExtensionTabs {
     // A value read from the request is valid only while the request is.
     auto message = reference ? reference->Copy() : CefValue::Create();
     auto inspector = hooks_.inspector(tab.tab);
-    if (!inspector) { Fail(reply, "Could not establish connection. Receiving end does not exist."); return; }
+    if (!inspector) { Fail(reply, kNoReceiver); return; }
     auto sender = CefDictionaryValue::Create();
     sender->SetString("id", extension);
     sender->SetString("origin", "chrome-extension://" + extension);
     auto answer = [reply](std::optional<std::string> error, CefRefPtr<CefValue> value) {
       if (error) { Fail(reply, *error); return; }
       auto result = value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
+      // No listener in the page: the extension is told, as Chrome tells it,
+      // and may inject its script then.
+      if (result && result->HasKey("none")) { Fail(reply, kNoReceiver); return; }
       Succeed(reply, result && result->HasKey("reply") ? result->GetValue("reply")->Copy() : nullptr);
     };
     const std::string expression = Dispatch(message, sender);
@@ -1091,9 +1187,260 @@ class ExtensionTabs {
       if (world) { Evaluate(inspector, world, expression, answer); return; }
       // Its script injected on demand listens in the world the host made.
       auto made = content_worlds_.find({key, extension});
-      if (made == content_worlds_.end()) { Fail(reply, "Could not establish connection. Receiving end does not exist."); return; }
+      if (made == content_worlds_.end()) { Fail(reply, kNoReceiver); return; }
       Evaluate(inspector, made->second, "__tiloExtensionContent.deliver(" + ToJson(message) + ", " + ToJson(Wrap(sender)) + ")", answer);
     });
+  }
+
+  // Who a message or a port from a script in a world the host made comes
+  // from, as Chrome tells a content script's.
+  CefRefPtr<CefDictionaryValue> Sender(const std::string& extension, const ExtensionTab& from) const {
+    auto sender = CefDictionaryValue::Create();
+    sender->SetString("id", extension);
+    sender->SetString("url", from.url);
+    sender->SetInt("frameId", 0);
+    sender->SetDictionary("tab", TabObject(extension, from));
+    return sender;
+  }
+  // The extension's own pages the host shows (its popup, its settings), by
+  // tab, in the host's order.
+  std::vector<int> Pages(const std::string& extension) const {
+    std::vector<int> pages;
+    const std::string prefix = "chrome-extension://" + extension + "/";
+    for (const auto& tab : hooks_.tabs()) if (tab.url.rfind(prefix, 0) == 0) pages.push_back(tab.tab);
+    return pages;
+  }
+  // Where a script in a page reaches the extension: its worker and its pages.
+  std::vector<int> Ends(const std::string& extension) const {
+    std::vector<int> ends;
+    if (!workerless_.count(extension)) ends.push_back(0);
+    for (int page : Pages(extension)) ends.push_back(page);
+    return ends;
+  }
+  // Evaluate `expression` at one of the extension's ends.
+  void AtEnd(const std::string& extension, int end, const std::string& expression, Answer answer) {
+    if (!end) { InWorker(extension, expression, false, std::move(answer)); return; }
+    auto inspector = hooks_.inspector(end);
+    if (!inspector) { answer(std::string("The page is gone"), nullptr); return; }
+    Evaluate(inspector, 0, expression, std::move(answer));
+  }
+  // A message from a script in a world the host made, for every listener of
+  // the extension, in its worker and its open pages alike: answered by the
+  // first reply, with nothing when none came, and refused when no listener
+  // heard it.
+  void ToExtension(const std::string& extension, CefRefPtr<CefValue> message, CefRefPtr<CefDictionaryValue> sender, Answer answer) {
+    const auto ends = Ends(extension);
+    if (ends.empty()) { answer(std::string(kNoReceiver), nullptr); return; }
+    struct Round { size_t left; bool done = false, heard = false; Answer answer; };
+    auto round = std::make_shared<Round>(Round{ends.size(), false, false, std::move(answer)});
+    const auto expression = Dispatch(message, sender);
+    for (int end : ends) AtEnd(extension, end, expression, [round](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+      if (round->done) return;
+      auto result = !error && value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
+      if (result && result->HasKey("reply")) {
+        round->done = true;
+        round->answer(std::nullopt, result->GetValue("reply")->Copy());
+        return;
+      }
+      if (result && !result->HasKey("none")) round->heard = true;
+      if (--round->left) return;
+      round->done = true;
+      if (round->heard) round->answer(std::nullopt, nullptr); else round->answer(std::string(kNoReceiver), nullptr);
+    });
+  }
+
+  // A script in a page opened `port` (runtime.connect): every end of the
+  // extension with an onConnect listener takes it.
+  void Connect(const std::string& extension, const std::string& port, const std::string& name, CefRefPtr<CefDictionaryValue> sender) {
+    const auto ends = Ends(extension);
+    if (ends.empty()) { Settled(extension, port, {}); return; }
+    auto left = std::make_shared<size_t>(ends.size());
+    auto took = std::make_shared<std::set<int>>();
+    auto id = CefValue::Create();
+    id->SetString(port);
+    auto label = CefValue::Create();
+    label->SetString(name);
+    const std::string expression = "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.connected(" + ToJson(id) + ", " + ToJson(label) + ", " + ToJson(Wrap(sender)) + ") : false";
+    for (int end : ends) AtEnd(extension, end, expression, [this, extension, port, end, left, took](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+      if (!error && value && value->GetType() == VTYPE_BOOL && value->GetBool()) took->insert(end);
+      if (--*left == 0) Settled(extension, port, *took);
+    });
+  }
+  // The extension opened `port` to the tab (tabs.connect): the script it
+  // injected there takes it if it listens for one.
+  void Open(const std::string& extension, int caller, CefRefPtr<CefDictionaryValue> request) {
+    // Copied: it outlives the request it was read from.
+    auto op = request->Copy(false);
+    const auto port = StringOf(op, "port");
+    if (port.size() < 2 || port.size() > 64 || port[0] != 'x' || ports_.count(port) || ports_.size() >= kMaxPorts) return;
+    ports_[port] = Port{extension, port, 0, 0, {caller}, true, {}};
+    const auto tabs = Tabs();
+    const auto* tab = ByExtensionId(tabs, IntOf(op, "tabId"));
+    auto inspector = tab ? hooks_.inspector(tab->tab) : nullptr;
+    if (!inspector) { Refused(port); return; }
+    ports_[port].tab = tab->tab;
+    auto made = content_worlds_.find({tab->tab, extension});
+    if (made != content_worlds_.end()) { Offer(extension, caller, made->second, op); return; }
+    // Its declared content scripts' world, which the host gives what a port
+    // needs once.
+    const int key = tab->tab;
+    NamedWorld(extension, *tab, [this, extension, caller, key, inspector, op](int world, std::string, std::string name) {
+      if (!world || name.empty() || !ports_.count(StringOf(op, "port"))) { Refused(StringOf(op, "port")); return; }
+      auto known = declared_worlds_.find({key, extension});
+      if (known != declared_worlds_.end() && known->second == world) { Offer(extension, caller, world, op); return; }
+      auto binding = CefDictionaryValue::Create();
+      binding->SetString("name", "__tiloExtension");
+      binding->SetString("executionContextName", name);
+      inspector->Call("Runtime.addBinding", binding, [this, extension, caller, key, inspector, world, op](bool, CefRefPtr<CefDictionaryValue>) {
+        inspector->Listen([this, key](CefRefPtr<CefDictionaryValue> call) { FromContent(key, call); });
+        auto content = CefDictionaryValue::Create();
+        content->SetString("id", extension);
+        content->SetBool("declared", true);
+        Evaluate(inspector, world, "(" + std::string(kExtensionContent) + ")(" + ToJson(Wrap(content)) + ")",
+                 [this, extension, caller, key, world, op](std::optional<std::string> error, CefRefPtr<CefValue>) {
+          if (error) { Refused(StringOf(op, "port")); return; }
+          declared_worlds_[{key, extension}] = world;
+          Offer(extension, caller, world, op);
+        });
+      });
+    });
+  }
+  // Offer the extension's port to the script world `context` in its tab.
+  void Offer(const std::string& extension, int caller, int context, CefRefPtr<CefDictionaryValue> op) {
+    const auto port = StringOf(op, "port");
+    auto found = ports_.find(port);
+    if (found == ports_.end()) return;
+    auto inspector = hooks_.inspector(found->second.tab);
+    if (!inspector) { Refused(port); return; }
+    found->second.context = context;
+    const auto tabs = Tabs();
+    auto sender = CefDictionaryValue::Create();
+    sender->SetString("id", extension);
+    sender->SetString("origin", "chrome-extension://" + extension);
+    if (const auto* page = Find(tabs, caller)) sender->SetString("url", page->url);
+    auto id = CefValue::Create();
+    id->SetString(port);
+    auto label = CefValue::Create();
+    label->SetString(StringOf(op, "name"));
+    Evaluate(inspector, context, "__tiloExtensionContent.connect(" + ToJson(id) + ", " + ToJson(label) + ", " + ToJson(Wrap(sender)) + ")",
+             [this, extension, port, caller](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+      if (!error && value && value->GetType() == VTYPE_BOOL && value->GetBool()) Settled(extension, port, {caller});
+      else Refused(port);
+    });
+  }
+  // Nothing in the page took the extension's port.
+  void Refused(std::string port) {
+    auto found = ports_.find(port);
+    if (found == ports_.end()) return;
+    auto open = std::move(found->second);
+    ports_.erase(found);
+    for (int end : open.ends) ToEnd(open.extension, end, port, "disconnect", nullptr, kNoReceiver);
+  }
+  // The port is open between the page and the `ends` that took it, or, with
+  // none, closed again.
+  void Settled(const std::string& extension, std::string port, std::set<int> ends) {
+    auto found = ports_.find(port);
+    if (found == ports_.end()) {
+      // Its page went meanwhile.
+      for (int end : ends) ToEnd(extension, end, port, "disconnect", nullptr, "");
+      return;
+    }
+    auto& open = found->second;
+    if (ends.empty()) {
+      ToPage(open, "disconnect", nullptr, kNoReceiver);
+      ports_.erase(found);
+      return;
+    }
+    open.ends = std::move(ends);
+    open.opening = false;
+    auto early = std::move(open.early);
+    for (auto& sent : early) PortOp(port, sent.from, sent.disconnect, sent.message);
+  }
+  // A port's message or its closing, from the page's end (kPageEnd) or one of
+  // the extension's.
+  void PortOp(std::string port, int from, bool disconnect, CefRefPtr<CefValue> reference) {
+    auto found = ports_.find(port);
+    if (found == ports_.end()) return;
+    auto& open = found->second;
+    // A value read from a request is valid only while the request is.
+    auto message = reference ? reference->Copy() : CefValue::Create();
+    if (open.opening) {
+      if (open.early.size() < 1024) open.early.push_back({from, disconnect, message});
+      return;
+    }
+    if (from == kPageEnd) {
+      if (disconnect) {
+        auto closed = std::move(open);
+        ports_.erase(found);
+        for (int end : closed.ends) ToEnd(closed.extension, end, port, "disconnect", nullptr, "");
+        return;
+      }
+      for (int end : open.ends) ToEnd(open.extension, end, port, "message", message, "");
+      return;
+    }
+    if (!open.ends.count(from)) return;
+    if (disconnect) { Gone(port, from); return; }
+    ToPage(open, "message", message, "");
+  }
+  // What an extension's page or worker sends on its ports.
+  void FromEnd(const std::string& extension, int caller, CefRefPtr<CefDictionaryValue> op) {
+    const auto kind = StringOf(op, "op");
+    if (kind == "open") { Open(extension, caller, op); return; }
+    const auto port = StringOf(op, "port");
+    auto found = ports_.find(port);
+    if (found == ports_.end() || found->second.extension != extension) return;
+    if (kind == "post" || kind == "disconnect") PortOp(port, caller, kind == "disconnect", op->GetValue("message"));
+  }
+  // One of the extension's ends no longer holds the port: the page's end
+  // closes with the last.
+  void Gone(std::string port, int end) {
+    auto found = ports_.find(port);
+    if (found == ports_.end() || !found->second.ends.erase(end) || !found->second.ends.empty()) return;
+    ToPage(found->second, "disconnect", nullptr, "");
+    ports_.erase(found);
+  }
+  void ToPage(const Port& open, const std::string& op, CefRefPtr<CefValue> message, const std::string& error) {
+    auto inspector = hooks_.inspector(open.tab);
+    if (!inspector || !open.context) return;
+    auto values = CefListValue::Create();
+    values->SetString(0, open.local);
+    values->SetString(1, op);
+    if (message) values->SetValue(2, message->Copy()); else values->SetNull(2);
+    values->SetString(3, error);
+    Evaluate(inspector, open.context, "__tiloExtensionContent.port(..." + ToJson(Wrap(values)) + ")", [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+  }
+  // An end that no longer knows the port (its worker slept since) drops it.
+  void ToEnd(const std::string& extension, int end, const std::string& port, const std::string& op, CefRefPtr<CefValue> message, const std::string& error) {
+    auto values = CefListValue::Create();
+    values->SetString(0, port);
+    values->SetString(1, op);
+    if (message) values->SetValue(2, message->Copy()); else values->SetNull(2);
+    values->SetString(3, error);
+    const bool closing = op == "disconnect";
+    AtEnd(extension, end, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.port(..." + ToJson(Wrap(values)) + ") : false",
+          [this, port, end, closing](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+      if (closing) return;
+      if (error || !value || value->GetType() != VTYPE_BOOL || !value->GetBool()) Gone(port, end);
+    });
+  }
+  // The tab's document went: the worlds the host made in it, the ports to
+  // them, and the ports its extension page held.
+  void Drop(int tab) {
+    for (auto it = content_worlds_.begin(); it != content_worlds_.end();) it = it->first.first == tab ? content_worlds_.erase(it) : std::next(it);
+    for (auto it = declared_worlds_.begin(); it != declared_worlds_.end();) it = it->first.first == tab ? declared_worlds_.erase(it) : std::next(it);
+    std::vector<std::string> held;
+    for (auto it = ports_.begin(); it != ports_.end();) {
+      if (it->second.tab != tab) {
+        if (it->second.ends.count(tab)) held.push_back(it->first);
+        ++it;
+        continue;
+      }
+      auto closed = std::move(it->second);
+      const auto port = it->first;
+      it = ports_.erase(it);
+      for (int end : closed.ends) if (end != tab) ToEnd(closed.extension, end, port, "disconnect", nullptr, "");
+    }
+    for (const auto& port : held) Gone(port, tab);
   }
 
   // Tell the extension's service worker of an event: now if it runs, after
@@ -1247,6 +1594,12 @@ class ExtensionTabs {
   std::map<std::pair<int, std::string>, int> content_worlds_;
   // When each extension last captured a tab, within the last second.
   std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> captures_;
+  // The worlds of extensions' declared content scripts the host gave ports.
+  std::map<std::pair<int, std::string>, int> declared_worlds_;
+  // Extensions whose manifest names no worker: their pages alone answer.
+  std::set<std::string> workerless_;
+  std::map<std::string, Port> ports_;
+  uint64_t port_ = 0;
   uint64_t generation_ = 0;
 };
 

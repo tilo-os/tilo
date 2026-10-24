@@ -64,6 +64,90 @@
     target.hasListener = (listener) => own.has(listener);
     target.hasListeners = () => own.size > 0;
   };
+  // Ports to the scripts the host runs in pages where the extension has no
+  // world of its own (extension_content.js): one it opens with tabs.connect,
+  // or one such a script opens with runtime.connect. What they carry goes to
+  // the host in order: while one request is under way, the next gathers all
+  // that follows.
+  const emitter = () => {
+    const own = new Set();
+    return {
+      own,
+      addListener: (listener) => { if (typeof listener === 'function') own.add(listener); },
+      removeListener: (listener) => { own.delete(listener); },
+      hasListener: (listener) => own.has(listener),
+      hasListeners: () => own.size > 0,
+    };
+  };
+  const fire = (target, ...args) => {
+    for (const listener of [...target.own]) {
+      try {
+        listener(...args);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  };
+  let outbox = [];
+  let sending = false;
+  const post = async (op) => {
+    outbox.push(op);
+    if (sending) return;
+    sending = true;
+    while (outbox.length) {
+      const ops = outbox;
+      outbox = [];
+      await call('ports', {ops}).catch((error) => console.error(error));
+    }
+    sending = false;
+  };
+  const ports = new Map();
+  const port = (id, name, sender) => {
+    const own = {onMessage: emitter(), onDisconnect: emitter()};
+    own.port = {
+      name,
+      onMessage: own.onMessage,
+      onDisconnect: own.onDisconnect,
+      postMessage(value) {
+        if (ports.get(id) !== own) throw new Error('Attempting to use a disconnected port object');
+        // Copied now, as Chrome copies it: a later change is not sent.
+        post({op: 'post', port: id, message: value === undefined ? null : JSON.parse(JSON.stringify(value))});
+      },
+      disconnect() {
+        if (ports.get(id) !== own) return;
+        ports.delete(id);
+        post({op: 'disconnect', port: id});
+      },
+    };
+    if (sender) own.port.sender = sender;
+    ports.set(id, own);
+    return own.port;
+  };
+
+  // Those scripts hear of the extension's storage changing. The worker
+  // hears of every change, also of one that wakes it, which only a listener
+  // its first script adds is in time for; a page tells of them only for an
+  // extension without a worker. Once no such script is left, the host says
+  // so and the listener goes, so a sleeping worker is not woken for them.
+  const manifest = runtime.getManifest();
+  const worker = typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope;
+  const tells = worker || !(manifest.background && manifest.background.service_worker);
+  const storageEvents = globalThis.chrome.storage && chrome.storage.onChanged;
+  let watched = 0;
+  const forward = (changes, area) => {
+    const asked = watched;
+    call('storage.changed', {changes, area}).then((wanted) => {
+      if (!wanted && asked === watched) storageEvents.removeListener(forward);
+    }, () => {});
+  };
+  const watch = () => {
+    if (!tells || !storageEvents) return false;
+    ++watched;
+    if (!storageEvents.hasListener(forward)) storageEvents.addListener(forward);
+    return true;
+  };
+  if ((manifest.permissions || []).includes('scripting')) watch();
+
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;
@@ -71,6 +155,28 @@
   Object.defineProperty(globalThis, '__tiloExtensionTabs', {
     value: Object.freeze({
       get ready() { return ready; },
+      watch,
+      // A script in a page opened a port to the extension: taken here when
+      // something listens for one.
+      connected(id, name, sender) {
+        const onConnect = runtime.onConnect;
+        if (!onConnect || !onConnect.hasListeners() || ports.has(id)) return false;
+        onConnect.dispatch(port(id, name, sender));
+        return true;
+      },
+      // A message on a port, or its other end closing: false for a port not
+      // known here (the worker slept since it opened).
+      port(id, op, value) {
+        const own = ports.get(id);
+        if (!own) return false;
+        if (op === 'message') {
+          fire(own.onMessage, value, own.port);
+        } else {
+          ports.delete(id);
+          fire(own.onDisconnect, own.port);
+        }
+        return true;
+      },
       // The host tells the extension of a tab event: every listener runs.
       dispatch(name, args) {
         for (const listener of listeners.get(name) || []) {
@@ -105,6 +211,14 @@
   });
   replace(tabs, 'sendMessage', (tabId, message, options) =>
     call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId}));
+  if (tabs) {
+    tabs.connect = (tabId, info) => {
+      const id = 'x' + crypto.randomUUID();
+      const opened = port(id, info && info.name !== undefined ? String(info.name) : '');
+      post({op: 'open', port: id, tabId, name: opened.name});
+      return opened;
+    };
+  }
   replace(windows, 'get', (windowId, query) => call('windows.get', {windowId, query}));
   replace(windows, 'getCurrent', (query) => call('windows.getCurrent', {query}));
   replace(windows, 'getLastFocused', (query) => call('windows.getLastFocused', {query}));
@@ -152,7 +266,7 @@
     };
     replace(scripting, 'executeScript', async (injection) => {
       const {target, func, args, files, world} = injection || {};
-      return call('scripting.executeScript', {
+      const results = await call('scripting.executeScript', {
         target,
         world,
         func: typeof func === 'function' ? func.toString() : undefined,
@@ -160,6 +274,9 @@
         files: await sources(files),
         content: await contentOf(),
       });
+      // The script may run in a world the host made, which hears of storage.
+      if (world !== 'MAIN') watch();
+      return results;
     });
     replace(scripting, 'insertCSS', async (injection) => {
       const {target, css, files} = injection || {};
