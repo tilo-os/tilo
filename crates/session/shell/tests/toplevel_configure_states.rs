@@ -1096,7 +1096,9 @@ fn search_over_a_full_screen_window(super_f: bool) {
             let tree = h.state.workspace_tree.read();
             let desktop = &tree.desktop;
             let strip = *desktop.active_strip.get(&desktop.active).expect("a strip");
-            desktop.active_group_for(strip)
+            let group = desktop.active_group_for(strip);
+            drop(tree);
+            group
         };
         assert!(group.is_some(), "fixture: the window's group is focused");
         h.frame
