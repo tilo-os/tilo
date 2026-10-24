@@ -21,6 +21,8 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
 mod room_members;
+use room_members::Admission;
+pub(crate) use room_members::RosterDevice;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -401,11 +403,12 @@ pub enum NetCmd {
         ws: WorkspaceId,
     },
     /// Room `ws`'s admitted roster changed: `devices` are every device its
-    /// governor admitted, by endpoint id. They alone send and receive the
-    /// room's window streams; a device that left has its connections closed.
+    /// governor admitted, by endpoint id, with its certificate's expiry.
+    /// They alone send and receive the room's window streams; a device that
+    /// left, or whose certificate expired, has its connections closed.
     SetRoomRoster {
         ws: WorkspaceId,
-        devices: Vec<EndpointId>,
+        devices: Vec<RosterDevice>,
     },
     Publish {
         ws: WorkspaceId,
@@ -1618,7 +1621,9 @@ impl ActorState {
     /// admitted roster, or, on the person's own topic, a member there.
     fn is_surface_member(&self, ws: WorkspaceId, peer: EndpointId) -> bool {
         if self.room_members.has_roster(ws) {
-            self.room_members.member(ws, peer).is_some()
+            self.room_members
+                .member(ws, peer, tilo_clock::unix_now_ns())
+                .is_some()
         } else {
             self.peers_seen.contains_key(&(ws, peer))
         }
@@ -1627,7 +1632,7 @@ impl ActorState {
     /// Every device a window of `ws` streams to ([`Self::is_surface_member`]).
     fn surface_members(&self, ws: WorkspaceId) -> Vec<EndpointId> {
         if self.room_members.has_roster(ws) {
-            return self.room_members.members(ws);
+            return self.room_members.members(ws, tilo_clock::unix_now_ns());
         }
         self.peers_seen
             .keys()
@@ -1640,7 +1645,7 @@ impl ActorState {
     /// once this device left it): the connections bound to a membership that
     /// ended close, and so does this device's own to a device no room holds
     /// any more.
-    fn set_room_roster(&mut self, ws: WorkspaceId, devices: Vec<EndpointId>, keep: bool) {
+    fn set_room_roster(&mut self, ws: WorkspaceId, devices: Vec<RosterDevice>, keep: bool) {
         let local = self.endpoint.id();
         let next = &mut self.next_membership_epoch;
         let removed = self.room_members.set_roster(
@@ -1653,12 +1658,18 @@ impl ActorState {
             },
             keep,
         );
+        self.close_removed(removed, b"membership removed");
+    }
+
+    /// Close what ended memberships removed: the connections bound to them,
+    /// and this device's own to a device no room holds any more.
+    fn close_removed(&mut self, removed: room_members::Removed, reason: &[u8]) {
         for connection in removed.connections {
-            connection.close(0_u32.into(), b"membership removed");
+            connection.close(0_u32.into(), reason);
         }
         for device in removed.devices {
             if let Some(connection) = self.surface_connections.remove(&device) {
-                connection.close(0_u32.into(), b"membership removed");
+                connection.close(0_u32.into(), reason);
             }
         }
     }
@@ -3132,7 +3143,20 @@ impl ActorState {
         // person's own topic. ShellNetwork performs the capability and
         // claimed-publisher checks before dispatch.
         let membership = if self.room_members.has_roster(ws) {
-            self.room_members.admit(ws, peer, connection_incarnation)
+            match self.room_members.admit(
+                ws,
+                peer,
+                connection_incarnation,
+                tilo_clock::unix_now_ns(),
+            ) {
+                Admission::Member(epoch) => Some(epoch),
+                Admission::Refused => None,
+                Admission::Expired(removed) => {
+                    tracing::info!(ws, peer = %peer, "surface frame from a device whose certificate expired");
+                    self.close_removed(removed, b"certificate expired");
+                    return;
+                }
+            }
         } else {
             self.touch_existing_membership(ws, peer)
         };

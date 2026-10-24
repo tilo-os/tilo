@@ -317,6 +317,12 @@ impl ShellNetwork {
         })
     }
 
+    /// Whether this device knows `room`'s governor to ask it: the room is
+    /// held here, so its host is the one its admitted state names.
+    pub(super) fn governed_by_a_reachable_host(&self, room: RoomId) -> bool {
+        self.governor_route(room).is_ok()
+    }
+
     /// Whether a device other than this one governs `room`: its windows
     /// and records are created by that governor.
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
