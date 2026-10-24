@@ -58,12 +58,16 @@ use super::scanout::{
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use super::topology;
+
+#[path = "runtime_wake.rs"]
+mod wake;
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
 use crate::shell::render::icc_lut::IccLut;
+use wake::libinput_event_kind;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -298,6 +302,10 @@ pub struct DrmDispatchState {
     /// Every libinput device currently attached — libinput has no "list
     /// your devices" call, so keeping handles (cheap refcounted clones) is the only way to re-apply a changed setting to hardware already plugged in.
     pub devices: Vec<smithay::reexports::input::Device>,
+    /// The last wake ([`Self::note_wake`]) and when it happened, until the
+    /// first input event after it: the flight record says whether input
+    /// came back with the display.
+    input_wake: Option<(&'static str, std::time::Instant)>,
     /// Libinput's optional per-touch-device output binding, keyed by its
     /// short-lived device id. Connector names, rather than [`OutputId`]s,
     /// survive an output being unplugged and later reconnected; each touch
@@ -837,6 +845,10 @@ pub enum ScanoutCommand {
         output: OutputId,
         light: f32,
     },
+    /// Take this stage as failed in every output's next wake: the
+    /// test-control fault that proves the wake's recovery
+    /// ([`super::wake_check`]).
+    WakeFault(super::wake_check::WakeStage),
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -1236,6 +1248,7 @@ impl DrmDispatchState {
             mouse_keys: MouseKeys::default(),
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
+            input_wake: None,
             devices: Vec::new(),
             touch_output_bindings: HashMap::new(),
             scale_override,
@@ -2223,7 +2236,7 @@ impl DrmDispatchState {
                 tracing::warn!(
                     connector = %key,
                     ?reason,
-                    "DRM display: the output could not be lit; it stays dark until it is replugged or the display settings change"
+                    "DRM display: the output could not be lit; it stays dark until it is replugged, the display settings change, the display wakes or the power key is pressed"
                 );
                 let mut record = LinkFailureRecord::of(snapshot, reason);
                 record.config_key.clone_from(&key);
@@ -2514,6 +2527,9 @@ impl DrmDispatchState {
             None => Vec::new(),
         };
         self.perform_all(actions);
+        // The machine was powered down: an output that could not be lit
+        // before sleep gets another attempt with the rest.
+        self.retry_failed_outputs("woke from sleep");
     }
 
     /// Run a whole sequence in order.
@@ -3299,6 +3315,14 @@ impl DrmDispatchState {
     /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
     /// of the constructor at ~160 lines on its own.
     fn handle_libinput_event(&mut self, event: InputEvent<LibinputInputBackend>) {
+        if let Some(kind) = libinput_event_kind(&event)
+            && let Some((wake, at)) = self.input_wake.take()
+        {
+            eprintln!(
+                "tilo compositor: DRM input: first event after wake={wake} after_ms={} kind={kind}",
+                at.elapsed().as_millis()
+            );
+        }
         match event {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
@@ -3699,11 +3723,19 @@ impl DrmDispatchState {
                     }
                     self.push(BackendEvent::TabletPadAdded(pad_description(&device)));
                 }
+                eprintln!(
+                    "tilo compositor: DRM input: device added name={:?} kind={:?}",
+                    device.name(),
+                    device_caps(&device).kind()
+                );
                 self.devices.push(device);
                 self.publish_input_snapshot();
             }
             InputEvent::DeviceRemoved { device } => {
-                tracing::info!(device = device.name(), "DRM input: device removed");
+                eprintln!(
+                    "tilo compositor: DRM input: device removed name={:?}",
+                    device.name()
+                );
                 // libinput cannot deliver a release after the keyboard that
                 // owned the key disappears. Never let a held editing key keep
                 // firing into whichever field receives focus next.
@@ -9453,6 +9485,39 @@ pub(super) mod tests {
         // displays: the output gets another attempt.
         state.reload_display_settings();
         assert!(state.link_failures.is_empty());
+    }
+
+    #[test]
+    fn a_wake_or_the_power_key_lights_an_output_that_could_not_be_lit_again() {
+        let (mut state, _rx) = dispatch_with_channel();
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        let panel = adopt_on(&mut state, DGPU, 43, "eDP-1", (2560, 1600), (300, 190));
+        state.connector_probes.insert(
+            DGPU,
+            vec![ConnectorSnapshot::fake(43, "eDP-1", Some(edid("A")))],
+        );
+        report_tx
+            .send(SignalReport {
+                output: panel,
+                status: OutputSignalStatus {
+                    link_failure: Some(settings_store::hardware::OutputUnavailable::LinkDown),
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report");
+        assert!(state.drain_signal_reports());
+        assert!(state.live.is_empty(), "the failed panel left the desktop");
+
+        assert!(state.retry_failed_outputs("woke from sleep"));
+        assert!(
+            state.link_failures.is_empty(),
+            "the panel is no longer held off the desktop"
+        );
+        assert!(
+            !state.retry_failed_outputs("power key"),
+            "nothing is left to light"
+        );
     }
 
     // libinput device configuration, on the production plan

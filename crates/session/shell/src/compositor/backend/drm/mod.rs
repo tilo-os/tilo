@@ -37,6 +37,7 @@ pub mod seat_diag;
 pub mod session;
 mod tablet;
 mod topology;
+pub mod wake_check;
 mod xrgb_history;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -1692,18 +1693,9 @@ fn apply_scanout_command(
             tracing::info!("DRM present: paused (the session no longer owns the CRTCs)");
         }
         ScanoutCommand::Resume { dpms_on } => {
-            for e in scanouts.iter_mut() {
-                e.scanout.restore();
-                e.set_power(dpms_on && !e.powered_off);
-                e.direct_targets = None;
-            }
+            wake_check::resume_scanouts(scanouts, dpms_on);
             *blanked = !dpms_on;
             *paused = false;
-            tracing::info!(
-                outputs = scanouts.len(),
-                dpms_on,
-                "DRM present: resumed after re-modesetting every output"
-            );
         }
         ScanoutCommand::SetCursorSize(size) => {
             for entry in scanouts.iter_mut() {
@@ -1733,6 +1725,11 @@ fn apply_scanout_command(
         ScanoutCommand::SetSoftwareDim { output, light } => {
             for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
                 entry.set_software_dim(light);
+            }
+        }
+        ScanoutCommand::WakeFault(stage) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.inject_wake_fault(stage);
             }
         }
         ScanoutCommand::SetOutputPower { output, on } => {
@@ -3960,6 +3957,21 @@ impl Backend for DrmBackend {
 
     fn reset_display(&mut self) {
         self.inner.resume_from_sleep();
+    }
+
+    fn note_wake(&mut self, reason: &'static str) {
+        self.inner.dispatch.note_wake(reason);
+    }
+
+    fn retry_failed_outputs(&mut self, reason: &'static str) -> bool {
+        self.inner.dispatch.retry_failed_outputs(reason)
+    }
+
+    fn inject_wake_fault(&mut self, stage: &str) -> Result<(), String> {
+        let stage = wake_check::WakeStage::parse(stage).ok_or_else(|| {
+            format!("no wake stage {stage:?}: one of commit, link, crtc, backlight")
+        })?;
+        self.inner.dispatch.inject_wake_fault(stage)
     }
 
     fn set_fullscreen_output(&mut self, output: Option<OutputId>) {

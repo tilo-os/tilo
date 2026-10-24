@@ -440,6 +440,20 @@ impl SessionManager {
         out
     }
 
+    /// Turn the display off now, as the idle timeout would: the power key on
+    /// a session that is already locked. The lock and timers stay as they
+    /// are; input wakes the display again. Nothing changes when it is off.
+    pub fn blank_now(&mut self, now: Instant) -> Vec<SessionTransition> {
+        self.last_activity = now;
+        if self.is_blanked() {
+            return Vec::new();
+        }
+        self.panel = Panel::Off {
+            dimmed: self.panel == Panel::Dimmed,
+        };
+        vec![SessionTransition::Blanked]
+    }
+
     /// Enter the secure pre-sleep state. This is deliberately separate from
     /// ordinary activity: suspend always leaves the session locked, even when
     /// automatic idle locking is disabled.
@@ -487,6 +501,22 @@ impl SessionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blanking_now_turns_the_display_off_once_and_input_wakes_it_still_locked() {
+        let start = Instant::now();
+        let mut session = SessionManager::new(cfg(Some(600), None), start);
+        session.request_lock(start);
+        let now = start + Duration::from_secs(1);
+        assert_eq!(session.blank_now(now), vec![SessionTransition::Blanked]);
+        assert!(session.is_blanked() && session.is_locked());
+        assert_eq!(session.blank_now(now), Vec::new(), "already off");
+        assert_eq!(
+            session.note_activity(now + Duration::from_secs(1)),
+            vec![SessionTransition::Woke]
+        );
+        assert!(!session.is_blanked() && session.is_locked());
+    }
 
     #[test]
     fn explicit_display_wake_preserves_lock_and_input_idle() {

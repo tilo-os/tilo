@@ -4491,6 +4491,14 @@ type SnapshotOutcome = std::sync::Arc<std::sync::Mutex<Option<Result<(), String>
 
 /// Per-process state the test-control wire needs to execute
 /// [`PlannedAction`]s, mirroring `ShellDriver`'s fields: modifier snapshot, auxiliary `AutoCommit` doc, root `ObjId`, focus cursor.
+/// A control client's request of the display ([`test_control::Command::DisplayBlank`],
+/// [`test_control::Command::DisplayWakeFault`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayRequest {
+    Blank,
+    WakeFault(crate::compositor::backend::drm::wake_check::WakeStage),
+}
+
 struct TestControlCtx {
     modifiers: Modifiers,
     doc: AutoCommit,
@@ -4525,6 +4533,9 @@ struct TestControlCtx {
     input: InputEnvironment,
     /// The latest `watch` answer, for the loop to hand to the backend.
     watch_request: Option<bool>,
+    /// What control clients asked of the display, for the loop to apply to
+    /// the session and the backend.
+    display_requests: Vec<DisplayRequest>,
     /// One seat and strip per agent driving this compositor.
     agents: crate::compositor::agent_seats::AgentSeats,
     /// While an agent's command runs, the screen region its snapshots show:
@@ -4570,6 +4581,7 @@ impl TestControlCtx {
             gestures: crate::compositor::backend::drm::gestures::GestureTracker::default(),
             input: InputEnvironment::default(),
             watch_request: None,
+            display_requests: Vec::new(),
             agents: crate::compositor::agent_seats::AgentSeats::new(),
             snapshot_crop: None,
             snapshot_window: None,
@@ -6538,6 +6550,28 @@ fn dispatch_control_command(
         test_control::Command::GpuFault { fault } => {
             (test_control::inject_gpu_fault(fault), Vec::new())
         }
+        test_control::Command::DisplayBlank => {
+            ctx.display_requests.push(DisplayRequest::Blank);
+            (test_control::Response::Ok { frame: 0 }, Vec::new())
+        }
+        test_control::Command::DisplayWakeFault { stage } => {
+            match crate::compositor::backend::drm::wake_check::WakeStage::parse(&stage) {
+                Some(wake_stage) => {
+                    ctx.display_requests
+                        .push(DisplayRequest::WakeFault(wake_stage));
+                    (test_control::Response::Ok { frame: 0 }, Vec::new())
+                }
+                None => (
+                    test_control::Response::Err {
+                        code: "parse_error".into(),
+                        message: format!(
+                            "no wake stage {stage:?}: one of commit, link, crtc, backlight"
+                        ),
+                    },
+                    Vec::new(),
+                ),
+            }
+        }
         cmd => {
             let state = FrameBuilderControlState {
                 fb: frame_builder,
@@ -7102,10 +7136,25 @@ fn apply_session_transition(
             if let Some(p) = pipe {
                 p.set_dpms(true);
             }
+            backend.note_wake("woke");
         }
         // Lock/Unlock are reflected via `SessionManager::is_locked`; Suspend is
         // gated by the inhibitor registry + issued through the power service, never here.
         SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
+    }
+    // And what it left behind. A panel lights asynchronously: each output's
+    // own record (`DRM wake check`) says when, and whether, it came back.
+    if matches!(
+        transition,
+        SessionTransition::Dimmed
+            | SessionTransition::Undimmed
+            | SessionTransition::Blanked
+            | SessionTransition::Woke
+    ) {
+        eprintln!(
+            "tilo compositor: session power {transition:?} applied backlight={}",
+            os_actions::display::backlight_state().unwrap_or_else(|| "none".into())
+        );
     }
 }
 
@@ -7174,6 +7223,48 @@ fn install_native_session_lifecycle(
 fn close_native_session_authority(local_session: Option<&LocalSessionLifecycle>) {
     if let Some(local_session) = local_session {
         local_session.close();
+    }
+}
+
+/// What one press of the hardware power key does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PowerKeyEffect {
+    /// A display that could not be lit is modeset again.
+    RelitOutputs,
+    /// The press woke the blanked display; that is all it does.
+    WokeDisplay,
+    /// The machine suspends (the power settings' action).
+    Suspend,
+    /// The session locks (the power settings' action).
+    Lock,
+    /// The session is already locked: the display turns off.
+    Blank,
+    /// The power settings say to do nothing.
+    Nothing,
+}
+
+/// What a power key press does: first what the person can see is wrong (a
+/// display that could not be lit, a blanked one), then the power settings'
+/// action. Locking a locked session would change nothing on screen, so the
+/// display turns off instead.
+fn power_key_effect(
+    relit_outputs: bool,
+    was_blanked: bool,
+    locked: bool,
+    action: Option<tilo_power_mgmt::PowerAction>,
+) -> PowerKeyEffect {
+    use tilo_power_mgmt::PowerAction;
+    if relit_outputs {
+        return PowerKeyEffect::RelitOutputs;
+    }
+    if was_blanked {
+        return PowerKeyEffect::WokeDisplay;
+    }
+    match action {
+        Some(PowerAction::Suspend) => PowerKeyEffect::Suspend,
+        Some(PowerAction::Lock) if locked => PowerKeyEffect::Blank,
+        Some(PowerAction::Lock) => PowerKeyEffect::Lock,
+        Some(PowerAction::Ignore) | None => PowerKeyEffect::Nothing,
     }
 }
 
@@ -8098,25 +8189,29 @@ enum PriorityRoute {
 /// The compositor's fixed input priority order, pure so it can be checked
 /// without a seat.
 ///
-/// Media keys are the one exception to the lock capturing everything:
-/// volume, mute, brightness and playback belong to the machine, not the
-/// session, so they keep working on the lock screen. They reveal nothing
-/// behind it and their feedback is drawn on the lock surface itself.
+/// The power key and media keys are the exceptions to the lock capturing
+/// everything. The power key belongs to the machine: on a locked session it
+/// still wakes a dark display or does what the power settings say
+/// ([`power_key_effect`]), where the lock's password field would drop it.
+/// Volume, mute, brightness and playback belong to the machine too, so they
+/// keep working on the lock screen. None of them reveals anything behind the
+/// lock, and media feedback is drawn on the lock surface itself.
 fn priority_route(
     event: &WindowEvent,
     modifiers: Modifiers,
     locked: bool,
     shortcuts: &settings_store::hardware::ShortcutConfig,
 ) -> PriorityRoute {
+    if is_power_key(event) {
+        return PriorityRoute::PowerKey;
+    }
     let media_key = crate::shell::media_keys::classify(event);
     if locked {
         return media_key
             .filter(|key| key.acts_while_locked())
             .map_or(PriorityRoute::LockScreen, PriorityRoute::MediaKey);
     }
-    if is_power_key(event) {
-        PriorityRoute::PowerKey
-    } else if let Some(vt) = vt_switch_chord(event, modifiers) {
+    if let Some(vt) = vt_switch_chord(event, modifiers) {
         PriorityRoute::VtSwitch(vt)
     } else if is_remote_input_kill_switch(event, modifiers) {
         PriorityRoute::RemoteInputKillSwitch
@@ -10299,6 +10394,9 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
+    // A signal (a resume, a sleep about to start) wakes this loop at once,
+    // however long it would have parked.
+    power_bridge.set_signal_wake(Arc::clone(&session_wake));
     // The source the session started on: the service's first look compares
     // with it, and a settings reload before then resolves its timer.
     let _ = power_bridge.note_on_battery(started_on_battery);
@@ -10901,6 +10999,9 @@ pub fn run() {
         // Keys a control client queued as a physical keyboard's arrive here, with the
         // backend's own events.
         pending_events.extend(test_control_ctx.seat_events.drain(..));
+        // Whether this batch's input found the display blanked: the power key
+        // in it then has done its visible part already, by waking it.
+        let blanked_before_input = session.is_blanked();
         // Any input is activity, whoever it is routed to below (a pen or a
         // pinch can go straight to an app): reset the idle timer and wake the
         // display if it was dimmed or blanked.
@@ -11378,20 +11479,38 @@ pub fn run() {
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
                     } else if route == PriorityRoute::PowerKey {
-                        // Hardware power key resolves per the power policy (logind delegates via
-                        // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
-                        match power_policy.on_power_key() {
-                            Some(tilo_power_mgmt::PowerAction::Suspend) => {
-                                tracing::info!(target: "tilo::power", "power key: requesting suspend");
+                        // The hardware power key always does something visible, locked or
+                        // not (logind delegates it via the service's block inhibitor): it
+                        // lights a display that could not be lit, wakes a blanked one, or
+                        // does what the power settings say. A deliberate press bypasses the
+                        // idle inhibitor.
+                        let relit = backend.retry_failed_outputs("power key");
+                        let effect = power_key_effect(
+                            relit,
+                            blanked_before_input,
+                            session.is_locked(),
+                            power_policy.on_power_key(),
+                        );
+                        eprintln!(
+                            "tilo compositor: power key: locked={} blanked={blanked_before_input} effect={effect:?}",
+                            session.is_locked()
+                        );
+                        session_changed = true;
+                        match effect {
+                            PowerKeyEffect::RelitOutputs
+                            | PowerKeyEffect::WokeDisplay
+                            | PowerKeyEffect::Nothing => {}
+                            PowerKeyEffect::Suspend => {
                                 sleep_lock_was_locked = session.is_locked();
                                 sleep_requested_by_idle = false;
-                                session_changed = true;
                                 power_bridge.request_suspend();
                             }
-                            Some(tilo_power_mgmt::PowerAction::Lock) => {
+                            PowerKeyEffect::Lock => {
                                 apply_session_transitions!(session.request_lock(Instant::now()));
                             }
-                            Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
+                            PowerKeyEffect::Blank => {
+                                apply_session_transitions!(session.blank_now(Instant::now()));
+                            }
                         }
                     } else if let PriorityRoute::VtSwitch(vt) = route {
                         // Ahead of every other chord, never offered to a client: leaving the
@@ -12361,6 +12480,7 @@ pub fn run() {
                     // Put the display back — a suspend doesn't pause the seat, so the DRM device
                     // returns with no mode/framebuffer/cursor plane; without this, lid close/open is an unrecoverable black screen.
                     backend.reset_display();
+                    backend.note_wake("resume");
                     sleep_lock_frame_pending = false;
                     sleep_lock_frame_serial = None;
                     sleep_lock_frame_failed = false;
@@ -14901,6 +15021,18 @@ pub fn run() {
             // without this it locks under its agents after the idle timeout.
             if injected && conn.agent {
                 apply_session_transitions!(session.note_activity(Instant::now()));
+            }
+        }
+        for request in std::mem::take(&mut test_control_ctx.display_requests) {
+            match request {
+                DisplayRequest::Blank => {
+                    apply_session_transitions!(session.blank_now(Instant::now()));
+                }
+                DisplayRequest::WakeFault(wake_stage) => {
+                    if let Err(error) = backend.inject_wake_fault(wake_stage.name()) {
+                        eprintln!("tilo compositor: test control: wake fault refused: {error}");
+                    }
+                }
             }
         }
         if let Some(watching) = test_control_ctx.watch_request.take() {

@@ -157,6 +157,14 @@ pub enum Command {
     GpuFault {
         fault: crate::shell::render::paint::InjectedGpuFault,
     },
+    /// Turn the display off now, as the idle timeout does; input wakes it
+    /// again. Answered by the native test transport.
+    DisplayBlank,
+    /// Take the wake stage `stage` (`commit`, `link`, `crtc` or `backlight`)
+    /// as failed in every output's next wake, whatever it observes, so a test
+    /// proves on hardware that never fails that the wake check sees it and
+    /// redoes the modeset. Answered by the native test transport.
+    DisplayWakeFault { stage: String },
     /// Move the pointer to `(x, y)` without pressing anything. [`Command::ClickAt`]/[`Command::Drag`] bundle press+release, which can't express drag-and-drop: the source must be *holding* the button when it calls `start_drag`, with the drop on a release after the pointer has moved over another client. These ops decompose that.
     PointerMove { x: f64, y: f64 },
     /// Give every window group in the active strip the same share of it, in permille. A group defaults to about three quarters of its strip, so two never fit together without this.
@@ -1157,6 +1165,13 @@ pub fn dispatch_command<S: ControlState>(
             Response::Err {
                 code: "test_transport_required".to_string(),
                 message: "a GPU fault is injected by the native test transport".to_string(),
+            },
+            Vec::new(),
+        ),
+        Command::DisplayBlank | Command::DisplayWakeFault { .. } => (
+            Response::Err {
+                code: "test_transport_required".to_string(),
+                message: "the display is driven by the native test transport".to_string(),
             },
             Vec::new(),
         ),
