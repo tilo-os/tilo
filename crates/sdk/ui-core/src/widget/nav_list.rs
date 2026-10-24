@@ -57,6 +57,10 @@ pub struct NavSection {
     pub pending: u8,
     /// The window's filter narrows this section's items.
     pub filterable: bool,
+    /// The title can be renamed in place ([`NavList::on_rename`]).
+    pub editable_title: bool,
+    /// The header has a menu ([`NavList::on_context_menu`]).
+    pub menu: bool,
     pub items: Vec<NavItem>,
 }
 
@@ -72,6 +76,8 @@ impl NavSection {
             empty_caption: None,
             pending: 0,
             filterable: false,
+            editable_title: false,
+            menu: false,
             items,
         }
     }
@@ -129,6 +135,23 @@ impl NavSection {
     #[must_use]
     pub fn filterable(mut self) -> Self {
         self.filterable = true;
+        self
+    }
+
+    /// The person can rename the section in place: F2 on its header, or
+    /// [`NavFeed::begin_rename`] from its menu.
+    #[must_use]
+    pub fn editable_title(mut self) -> Self {
+        self.editable_title = true;
+        self
+    }
+
+    /// The header asks for its menu as an item's row does: a right click, a
+    /// long press, the Menu key ([`NavList::on_context_menu`], with the
+    /// section's id).
+    #[must_use]
+    pub fn with_menu(mut self) -> Self {
+        self.menu = true;
         self
     }
 }
@@ -258,6 +281,10 @@ pub struct NavItem {
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
+    /// The person the row stands for, as their avatar in the icon's place.
+    pub person: Option<NavPerson>,
+    /// Something new waits behind the row (an unread conversation).
+    pub unread: bool,
     /// The key assistive technology and tests address the row by; the
     /// default is `nav:item:{id}`.
     pub semantic_key: Option<String>,
@@ -274,6 +301,17 @@ pub struct NavArt {
     /// What the picture is of; its initials stand in while there is none.
     pub name: String,
     pub image: Option<vello::peniko::ImageData>,
+}
+
+/// The person a row stands for ([`NavItem::person`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavPerson {
+    /// Who they are; their initials stand in for a picture.
+    pub identity: String,
+    /// Their colour in the room, ringing the avatar.
+    pub colour: Color,
+    /// They are speaking now.
+    pub speaking: bool,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -309,6 +347,8 @@ impl NavItem {
             badge: None,
             swatch: None,
             art: None,
+            person: None,
+            unread: false,
             checked: None,
             level: None,
             presence: Vec::new(),
@@ -470,6 +510,25 @@ impl NavItem {
         self
     }
 
+    /// The row stands for a person (someone in a call): their avatar, in
+    /// `colour`, in the icon's place, ringed while `speaking`.
+    #[must_use]
+    pub fn person(mut self, identity: impl Into<String>, colour: Color, speaking: bool) -> Self {
+        self.person = Some(NavPerson {
+            identity: identity.into(),
+            colour,
+            speaking,
+        });
+        self
+    }
+
+    /// Something new waits behind the row: its label stands out at rest.
+    #[must_use]
+    pub fn unread(mut self, unread: bool) -> Self {
+        self.unread = unread;
+        self
+    }
+
     /// The key assistive technology, agents and tests address the row by.
     #[must_use]
     pub fn semantic_key(mut self, key: impl Into<String>) -> Self {
@@ -496,6 +555,8 @@ enum NavNodeKind {
         collapsible: bool,
         action: Option<(Icon, String)>,
         first: bool,
+        editable: bool,
+        menu: bool,
     },
     Item {
         spec: Box<NavItemSpec>,
@@ -659,6 +720,8 @@ impl NavModel {
                                 .as_ref()
                                 .map(|action| (action.icon, action.label.clone())),
                             first: first_row,
+                            editable: section.editable_title,
+                            menu: section.menu,
                         },
                         parent: Some(ROOT),
                         children: Vec::new(),
@@ -752,6 +815,8 @@ impl NavModel {
             checked: item.checked,
             level: item.level,
             presence: item.presence.clone(),
+            person: item.person.clone(),
+            unread: item.unread,
         };
         self.attach(
             parent,
@@ -838,12 +903,15 @@ impl NavModel {
                 collapsible,
                 action,
                 first,
+                menu,
+                ..
             } => Some(NavRowSpec::Section {
                 title: node.label.clone(),
                 collapsible: *collapsible,
                 action: action.as_ref().map(|(icon, _)| *icon),
                 action_label: action.as_ref().map(|(_, label)| label.clone()),
                 first: *first,
+                menu: *menu,
             }),
             NavNodeKind::Item { spec, .. } => Some(NavRowSpec::Item(spec.clone())),
             NavNodeKind::Caption => Some(NavRowSpec::Caption),
@@ -935,9 +1003,13 @@ impl TreeModel for NavModel {
     }
 
     fn is_renamable(&self, id: NodeId) -> bool {
-        self.nodes
-            .get(&id)
-            .is_some_and(|node| matches!(node.kind, NavNodeKind::Item { editable: true, .. }))
+        self.nodes.get(&id).is_some_and(|node| {
+            matches!(
+                node.kind,
+                NavNodeKind::Item { editable: true, .. }
+                    | NavNodeKind::Section { editable: true, .. }
+            )
+        })
     }
 
     fn shows_row_actions(&self, id: NodeId) -> bool {
@@ -1507,6 +1579,31 @@ impl NavList {
         self.select_quietly(selected.as_deref());
     }
 
+    /// Do what the app asked through its feed: open or fold rows
+    /// ([`NavFeed::set_open`]) and open a rename field
+    /// ([`NavFeed::begin_rename`]). Whether anything changed.
+    fn take_asks(&mut self) -> bool {
+        let Some(feed) = self.feed.clone() else {
+            return false;
+        };
+        let mut changed = false;
+        for (key, open) in feed.take_openings() {
+            if self.is_expanded(&key) != open {
+                self.set_expanded(&key, open);
+                changed = true;
+            }
+        }
+        let Some(key) = feed.take_rename_request() else {
+            return changed;
+        };
+        let model = self.tree.model();
+        let Some(node) = model.item_id(&key).or_else(|| model.section_id(&key)) else {
+            return changed;
+        };
+        self.tree.reveal(node);
+        self.tree.begin_rename(node) || changed
+    }
+
     fn keys_seen(&self, id: NodeId) -> bool {
         self.shared.borrow().keys.contains_key(&id)
     }
@@ -1567,11 +1664,12 @@ impl NavList {
             .is_some_and(|node| self.tree.is_expanded(node))
     }
 
-    /// The painted rect of item `id`'s row, edge to edge of the list, when
-    /// it is in view.
+    /// The painted rect of item or section `id`'s row, edge to edge of the
+    /// list, when it is in view.
     #[must_use]
     pub fn row_rect(&self, id: &str) -> Option<Rect> {
-        let node = self.tree.model().item_id(id)?;
+        let model = self.tree.model();
+        let node = model.item_id(id).or_else(|| model.section_id(id))?;
         self.tree.row_rect(node)
     }
 
@@ -1946,6 +2044,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
         // The published owner is NavList, so host lookup and synthetic
         // accessibility routing must identify this same retained wrapper.
         node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        if let Some(feed) = &self.feed {
+            feed.publish_node(node);
+        }
         node
     }
 
@@ -1960,11 +2061,12 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             self.set_selected(next.as_deref());
         }
         self.pull();
+        self.take_asks();
         crate::widget::Widget::sync(&mut self.tree, state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let pulled = self.pull();
+        let pulled = self.pull() | self.take_asks();
         crate::widget::Widget::update(&mut self.tree, state, path) || pulled
     }
 
@@ -2010,7 +2112,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
                     Some((key.to_owned(), rect))
                 })
                 .collect();
-            feed.publish_rows(rows);
+            feed.publish_rows(crate::widget::Widget::get_rect(&self.tree), rows);
         }
     }
 

@@ -2434,6 +2434,17 @@ impl FrameHarness {
             && !self.has_pending_owner_models()
     }
 
+    /// The update pass, with the room's presence lent as the frame's
+    /// ([`crate::presence::frame`]) under the window's authority, as the
+    /// live App lends it.
+    fn update_root(&mut self) -> bool {
+        let (root, state) = (&mut self.root, &self.state);
+        let permissions = self.permissions.clone();
+        self.presence.with_permissions(permissions, || {
+            crate::presence::frame::lend(&self.presence, || root.update(&state.doc, &state.root))
+        })
+    }
+
     /// The frame's sync: what the widgets took up is written, the document
     /// read, and what that sync took up written and shown in the same frame.
     fn sync_frame(&mut self) {
@@ -2461,7 +2472,7 @@ impl FrameHarness {
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
         if settled || submitted {
             self.idle_control_tick();
-            self.root.update(&self.state.doc, &self.state.root);
+            self.update_root();
             self.root.sync(&self.state.doc, &self.state.root);
         }
     }
@@ -3456,7 +3467,7 @@ impl FrameHarness {
         // Select the current record before update, then observe a first
         // asynchronous open before sync can accidentally edit the room index.
         self.tick_records();
-        let updated = self.root.update(&self.state.doc, &self.state.root);
+        let updated = self.update_root();
         self.tick_records();
         // As the live App syncs only when something set `needs_sync`: a
         // frame whose widgets noticed nothing of their own, after nothing

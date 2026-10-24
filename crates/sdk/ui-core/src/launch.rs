@@ -103,6 +103,9 @@ pub struct LaunchArgs {
     /// `--history`: a capture shows History open, where the app has
     /// History.
     pub history: bool,
+    /// `--window-bar`: a capture is drawn as a desktop window shows the app,
+    /// under the window's bar with the app's slots in it.
+    pub window_bar: bool,
     /// `--search QUERY`: a capture shows this window's search open with
     /// `QUERY` typed, as the app's search launcher opens it.
     pub search: Option<String>,
@@ -952,8 +955,7 @@ fn run_parsed(
         }
         DefinitionDispatch::Rendered(mut driver) => {
             if let Some(out) = &args.shots {
-                driver.prepare_component_output();
-                driver.render_png(out);
+                driver.write_shot(out, args.window_bar);
             } else if let Some(directory) = &args.responsive_matrix {
                 for (name, viewport) in RESPONSIVE_VIEWPORTS {
                     driver.resize_component_capture(viewport);
@@ -1637,6 +1639,12 @@ fn parse_args_extended(
                 }
                 parsed.history = true;
             }
+            "--window-bar" if inline.is_none() => {
+                if parsed.window_bar {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.window_bar = true;
+            }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
@@ -1702,6 +1710,9 @@ fn parse_args_extended(
         && parsed.responsive_matrix.is_none()
     {
         return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
+    if parsed.window_bar && parsed.shots.is_none() {
+        return Err(LaunchError::ShotsOnly("--window-bar".to_owned()));
     }
     if parsed.search.is_some()
         && parsed.shots.is_none()
@@ -2128,6 +2139,12 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--history"]), &[], &[]),
                 Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
+            ));
+            let framed = strings(&["app", "--shots", "/tmp/a.png", "--window-bar"]);
+            assert!(parse_args(&framed, &[], &[]).unwrap().window_bar);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
             ));
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
