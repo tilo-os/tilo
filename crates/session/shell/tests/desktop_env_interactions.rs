@@ -1199,17 +1199,16 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
     // view — `adopt_toplevel` creates and focuses a group before it has a
     // rect.
     {
-        // One group as wide as the strip's usable width fills it, so a second
-        // starts past the right edge — the geometry a newly launched app
-        // lands in. (`Wide` is half of it; it filled the strip only while a
-        // workspace wheel took a quarter of the display beside it.)
-        let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
-        tree.desktop.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Fraction(2000);
+        // Two windows fill the display, so a third opened after the second
+        // starts past the right edge. It lands beside the second, and the
+        // strip pans to show the two whole. (A window opened beside a lone
+        // one shares the display with it, so nothing would pan.)
+        let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         let layout = lay_out_host(&mut host);
         let _ = &layout;
 
-        // Splice in a second group and focus it the way adoption does, before
+        // Splice in a third group and focus it the way adoption does, before
         // any layout pass has given it a rect.
         let new_group = {
             let st = chrome.borrow();
@@ -1244,7 +1243,8 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
         let _ = Widget::take_structure_dirty(&mut host);
         host.tick_scroll_active_into_view_for_tests();
         let _layout = lay_out_host(&mut host);
-        // Frame two: the group now has a rect, so the pan must happen.
+        // Frame two: the group now has its place, though its slot is still
+        // growing from nothing, so the pan must happen.
         host.tick_scroll_active_into_view_for_tests();
         // The pan is eased on the snap curve, not teleported — advance the
         // per-frame tick past the curve's duration so the motion settles before
