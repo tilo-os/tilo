@@ -82,6 +82,7 @@ mod enrollment_resume_tests;
 mod grant_in_force;
 #[cfg(test)]
 mod grant_in_force_tests;
+mod home_relay_hosting;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
@@ -728,6 +729,8 @@ fn decode_lower_hex_32(value: &str) -> Option<[u8; 32]> {
 struct RegisteredHomePeer {
     addr: iroh::EndpointAddr,
     expectation: crate::network::actor::HomePeerExpectation,
+    /// The name it was paired with.
+    label: String,
 }
 
 /// The registrations in the home-peer registry, read from disk. Not for the
@@ -815,6 +818,7 @@ fn home_peers_from_registrations(
                 user_public_key: local_user,
                 device_public_key,
             },
+            label: registration.label,
         });
     }
     addrs.sort_by_key(|host| host.addr.id.to_string());
