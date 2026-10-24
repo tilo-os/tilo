@@ -3,7 +3,7 @@
 //! Permission prompts and portal sheets are painted by the shell, above any
 //! client. Each one carries a seal band in that shell-owned region. The band
 //! follows the active theme's accent and spacing so high contrast can recolour
-//! it, but it is not a [`Theme`](ui::theme::Theme) token and
+//! it, but it is not a [`Theme`] token and
 //! [`ThemeDocument`](ui::theme::ThemeDocument) cannot name it.
 //!
 //! Automation tells a real surface from an app fake by the target name. That

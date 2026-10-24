@@ -558,7 +558,7 @@ impl ShellOverlayHost {
         self.latch_overview_transition_from(ui::motion::input_source());
     }
 
-    /// [`Self::latch_overview_transition`] for a change whose input is known:
+    /// `Self::latch_overview_transition` for a change whose input is known:
     /// Super+Tab, a pinch, a click on "Overview".
     pub fn latch_overview_transition_from(&mut self, source: ui::tokens::MotionSource) {
         // Do not read `ui::host::environment()` here: that is a process

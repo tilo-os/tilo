@@ -553,7 +553,7 @@ impl RetainedGpuTarget {
     /// first frame of the next strip pan copies and composites instead of
     /// rasterising every layer. Rasterises only the layers that differ from
     /// what the textures hold, a whole one in bands
-    /// ([`strip_layers::warm_bands`]), and stops between two renders
+    /// (`strip_layers::warm_bands`), and stops between two renders
     /// as soon as `keep_going` says a frame waits, keeping what it finished.
     /// The output target is left alone. Returns the pixels rasterised, or
     /// `None` when the layers cannot present `cache`.

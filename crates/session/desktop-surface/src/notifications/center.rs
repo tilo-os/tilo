@@ -169,7 +169,7 @@ impl Default for RowShape {
 }
 
 impl RowShape {
-    /// A row whose body wraps to `body_lines` (at most [`BODY_LINES`]).
+    /// A row whose body wraps to `body_lines` (at most `BODY_LINES`).
     #[must_use]
     pub fn new(body_lines: usize) -> Self {
         Self {
@@ -493,7 +493,7 @@ impl CenterLayout {
         self.panel.y0 + self.header_height() + qs::RELATED_GAP
     }
     /// One row with the full preview: source/time, title and
-    /// [`BODY_LINES`] lines of body on the control padding.
+    /// `BODY_LINES` lines of body on the control padding.
     pub fn row_h(&self) -> f64 {
         self.text_extent(&RowShape::default())
     }
@@ -531,7 +531,7 @@ impl CenterLayout {
             |text| f(theme, text),
         ))
     }
-    /// The lines `body` wraps to in a row, at most [`BODY_LINES`]. Before
+    /// The lines `body` wraps to in a row, at most `BODY_LINES`. Before
     /// the panel has a width, or without a theme, the full preview.
     pub fn body_lines(&self, body: &str, grouped: bool) -> usize {
         let line = body.split_whitespace().collect::<Vec<_>>().join(" ");
