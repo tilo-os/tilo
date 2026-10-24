@@ -35,6 +35,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   the page and closes at once, and the page loads its trackers.
 - A popup that starts a script on the page and closes at once still starts
   it, as uBlock Origin Lite's element zapper does.
+- A click lets an extension read the page's language and zoom, and give its
+  button a badge, title, popup and state for that tab alone, which the
+  toolbar shows and the next page does not keep.
 - A worker that runs the tab script keeps its address, which extensions read
   and load their helpers against, and its strictness.
 """
@@ -44,6 +47,7 @@ import http.server
 import itertools
 import json
 from pathlib import Path
+import re
 import secrets
 import shutil
 import sys
@@ -59,6 +63,11 @@ FIXTURES = Path(__file__).parent.joinpath('extension-tabs').resolve()
 # a page is.
 MANAGER = Path(__file__).parents[3].joinpath('browser-parts/assets/extension-manager').resolve()
 SCRIPT = Path(__file__).parents[1].joinpath('src/extension_tabs.js').read_text()
+# What the Browser's toolbar evaluates in an extension's worker to show its
+# button (extension_toolbar.rs), as Rust spells the string.
+READ_ACTION = re.sub(r'\\\n\s*', '', re.search(
+    r'const READ_ACTION: &str = "(.*?)";\n', MANAGER.parent.parent.joinpath('src/extension_toolbar.rs').read_text(),
+    re.S).group(1))
 
 
 def prologue_end(text):
@@ -254,7 +263,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path == '/image.svg':
             body, kind = IMAGE, 'image/svg+xml'
         else:
-            body = f'<!doctype html><title>page {self.path}</title><body>page</body>'.encode()
+            # A page under /de says it is in Austrian German.
+            lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
+            body = f'<!doctype html><html{lang}><title>page {self.path}</title><body>page</body></html>'.encode()
         if self.path.startswith('/tracker/'):
             kind, body = 'text/javascript', b'window.tracked = true;'
         elif self.path.startswith('/shielded'):
@@ -329,6 +340,33 @@ class ExtensionTabs(unittest.TestCase):
         seen = next((e for e in host.seen if match(e)), None)
         return (seen or host.until(match))['title']
 
+    def toolbar_reads(self, host, extension):
+        """What the Browser's toolbar reads of the extension's button, from
+        its running worker."""
+        self.calls = getattr(self, 'calls', 0)
+
+        def call(method, params, session=None):
+            self.calls += 1
+            request = self.calls
+            command = {'op': 'devtools_call', 'request_id': request, 'method': method, 'params': params}
+            if session:
+                command['session'] = session
+            host.send(**command)
+            reply = host.until(lambda e: e['event'] == 'devtools_result' and e['request_id'] == request)
+            self.assertTrue(reply['ok'], reply)
+            return json.loads(reply['body'])
+
+        prefix = f'chrome-extension://{extension}/'
+        target = next(t['targetId'] for t in call('Target.getTargets', {})['targetInfos']
+                      if t['type'] == 'service_worker' and t['url'].startswith(prefix))
+        session = call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
+        try:
+            read = call('Runtime.evaluate', {'expression': READ_ACTION, 'awaitPromise': True, 'returnByValue': True}, session)
+        finally:
+            call('Target.detachFromTarget', {'sessionId': session})
+        self.assertNotIn('exceptionDetails', read)
+        return json.loads(read['result']['value'])
+
     def panel(self, host, tab, url):
         """An extension page shown in a panel over tab 1, as the Browser
         shows a popup."""
@@ -354,6 +392,28 @@ class ExtensionTabs(unittest.TestCase):
         found = json.loads(self.title(host, 1, 'located:')[len('located:'):])
         self.assertEqual(found, {'background': True, 'path': '/background/worker.js',
                                  'manifest': 'background/worker.js', 'helper': True, 'strict': True})
+
+    def test_a_click_lets_an_extension_read_the_page_and_mark_its_button_for_it(self):
+        host, ids = self.start('badger', access={'badger': (['activeTab', 'scripting'], [])})
+        host.navigate(self.url + '/de/clip')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['badger'])
+        report = json.loads(self.title(host, 1, 'marked:')[len('marked:'):])
+        popup = f'chrome-extension://{ids["badger"]}/clipped.html'
+        self.assertEqual(report, {
+            'clicks': 1, 'language': 'de', 'zoom': 1, 'missing': 'No tab with id: 987654.',
+            'badge': '7', 'global': '', 'title': 'Clipped', 'popup': popup, 'enabled': False, 'callback': '7'})
+        # The toolbar shows the badge and title set for the page the person
+        # is on.
+        self.assertEqual(self.toolbar_reads(host, ids['badger']), {'text': '7', 'title': 'Clipped'})
+        # A new page has the button as the extension set it for every tab.
+        host.navigate(self.url + '/next')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['badger'])
+        report = json.loads(self.title(host, 1, 'marked:{"clicks":2')[len('marked:'):])
+        self.assertEqual(report, {'clicks': 2, 'badge': '', 'global': '', 'title': 'Clip this page',
+                                  'popup': '', 'enabled': True, 'callback': ''})
+        self.assertEqual(self.toolbar_reads(host, ids['badger']), {'text': '', 'title': 'Clip this page'})
 
     def test_a_popup_finds_the_page_it_was_opened_over(self):
         host, ids = self.start('asker', 'plain', access={'asker': (['tabs'], [])})

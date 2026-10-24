@@ -246,6 +246,9 @@
       return opened;
     };
   }
+  replace(tabs, 'detectLanguage', (tabId) => call('tabs.detectLanguage', {tabId}));
+  replace(tabs, 'getZoom', (tabId) => call('tabs.getZoom', {tabId}));
+  replace(tabs, 'getZoomSettings', (tabId) => call('tabs.getZoomSettings', {tabId}));
   replace(windows, 'get', (windowId, query) => call('windows.get', {windowId, query}));
   replace(windows, 'getCurrent', (query) => call('windows.getCurrent', {query}));
   replace(windows, 'getLastFocused', (query) => call('windows.getLastFocused', {query}));
@@ -297,6 +300,60 @@
     replace(menus, 'remove', (id) => inOrder('contextMenus.remove', {id}));
     replace(menus, 'removeAll', () => inOrder('contextMenus.removeAll'));
     event(menus, 'onClicked', 'contextMenus.onClicked');
+  }
+
+  // The button's look for one tab, which Chromium refuses ("No tab with
+  // id") as it knows none of these tabs: the host keeps it. Colours and
+  // icons for one tab are taken and not shown, as the Browser's toolbar
+  // shows the extension's own icon.
+  if (action) {
+    const forTab = (details) => details !== null && typeof details === 'object' && Number.isInteger(details.tabId);
+    const absent = (value) => value === undefined || value === null;
+    const store = {
+      text: (details) => details.text,
+      title: (details) => details.title,
+      // A popup is named from the extension's root, wherever it is set from.
+      popup: (details) => (details.popup && !String(details.popup).startsWith('chrome-extension:')
+        ? runtime.getURL(String(details.popup).replace(/^\//, '')) : details.popup),
+    };
+    for (const [name, key] of [['setBadgeText', 'text'], ['setTitle', 'title'], ['setPopup', 'popup']]) {
+      const own = action[name];
+      if (typeof own !== 'function') continue;
+      replace(action, name, (details) => (forTab(details)
+        ? call('action.set', {tabId: details.tabId, key, value: store[key](details) ?? null}).then(() => undefined)
+        : own.call(action, details)));
+    }
+    for (const [name, key] of [['getBadgeText', 'text'], ['getTitle', 'title'], ['getPopup', 'popup']]) {
+      const own = action[name];
+      if (typeof own !== 'function') continue;
+      replace(action, name, async (details) => {
+        if (!forTab(details)) return own.call(action, details);
+        const value = await call('action.get', {tabId: details.tabId, key});
+        return absent(value) ? own.call(action, {}) : value;
+      });
+    }
+    for (const name of ['setBadgeBackgroundColor', 'setBadgeTextColor', 'setIcon']) {
+      const own = action[name];
+      if (typeof own !== 'function') continue;
+      replace(action, name, (details) => (forTab(details)
+        ? call('tabs.get', {tabId: details.tabId}).then(() => undefined)
+        : own.call(action, details)));
+    }
+    for (const [name, value] of [['enable', true], ['disable', false]]) {
+      const own = action[name];
+      if (typeof own !== 'function') continue;
+      replace(action, name, (tabId) => (Number.isInteger(tabId)
+        ? call('action.set', {tabId, key: 'enabled', value}).then(() => undefined)
+        : own.call(action)));
+    }
+    const isEnabled = action.isEnabled;
+    if (typeof isEnabled === 'function') {
+      replace(action, 'isEnabled', async (tabId) => {
+        if (!Number.isInteger(tabId)) return isEnabled.call(action);
+        const value = await call('action.get', {tabId, key: 'enabled'});
+        return typeof value === 'boolean' ? value : isEnabled.call(action);
+      });
+    }
   }
 
   if (scripting) {

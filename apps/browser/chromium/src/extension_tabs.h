@@ -180,6 +180,7 @@ struct ExtensionTab {
   std::string url, title, favicon;
   bool loading = false;
   int width = 0, height = 0;
+  double zoom = 1;
   // An extension's popup or settings page shown in a panel: no tab of its
   // own. Its "current window" is the page it was opened over.
   bool panel = false;
@@ -268,6 +269,7 @@ class ExtensionTabs {
     // Removed: its menu items go with it, as in Chrome.
     menus_.RemoveAll(id);
     MenusChanged();
+    for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.first == id ? action_states_.erase(it) : std::next(it);
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
@@ -418,6 +420,51 @@ class ExtensionTabs {
       if (error) { Fail(reply, *error); return; }
       MenusChanged();
       Succeed(reply, nullptr);
+    } else if (method == "tabs.detectLanguage" || method == "tabs.getZoom" || method == "tabs.getZoomSettings") {
+      const auto* tab = IntOf(args, "tabId") ? ByExtensionId(tabs, IntOf(args, "tabId")) : Current(tabs, from);
+      if (!tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(args, "tabId").value_or(0)) + "."); return; }
+      if (method == "tabs.detectLanguage") { DetectLanguage(*tab, reply); return; }
+      if (method == "tabs.getZoom") {
+        auto zoom = CefValue::Create();
+        zoom->SetDouble(tab->zoom);
+        Succeed(reply, zoom);
+        return;
+      }
+      // Chromium's zoom belongs to the site (host.cc), in Chrome's terms.
+      auto settings = CefDictionaryValue::Create();
+      settings->SetString("mode", "automatic");
+      settings->SetString("scope", "per-origin");
+      settings->SetDouble("defaultZoomFactor", 1);
+      Succeed(reply, Wrap(settings));
+    } else if (method == "action.set" || method == "action.get") {
+      // The button's look for one tab. Chromium finds no such tab, so the
+      // host keeps it, until the tab navigates or closes, as Chrome does.
+      const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
+      if (!tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(args, "tabId").value_or(0)) + "."); return; }
+      const auto key = StringOf(args, "key");
+      if (key != "text" && key != "title" && key != "popup" && key != "enabled") { Fail(reply, "Unknown action property"); return; }
+      const std::pair<std::string, int> owner{extension, tab->id};
+      auto found = action_states_.find(owner);
+      if (method == "action.get") {
+        CefRefPtr<CefValue> result;
+        if (found != action_states_.end()) if (auto entry = found->second.find(key); entry != found->second.end()) result = entry->second->Copy();
+        Succeed(reply, result);
+        return;
+      }
+      auto value = args->GetValue("value");
+      const auto type = value ? value->GetType() : VTYPE_NULL;
+      if (type == VTYPE_NULL || type == VTYPE_INVALID) {
+        if (found != action_states_.end()) {
+          found->second.erase(key);
+          if (found->second.empty()) action_states_.erase(found);
+        }
+      } else if ((type == VTYPE_STRING && key != "enabled" && value->GetString().length() <= 4096) || (type == VTYPE_BOOL && key == "enabled")) {
+        action_states_[owner][key] = value->Copy();
+      } else {
+        Fail(reply, "Invalid value for " + key);
+        return;
+      }
+      Succeed(reply, nullptr);
     } else {
       Fail(reply, "Tilo does not support " + method + " yet");
     }
@@ -490,6 +537,8 @@ class ExtensionTabs {
       const auto known = native_.find(tab);
       const int id = known != native_.end() ? known->second : 0;
       for (auto it = granted_.begin(); it != granted_.end();) it = it->second == id ? granted_.erase(it) : std::next(it);
+      // So does the look an extension gave its button for the page.
+      for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == id ? action_states_.erase(it) : std::next(it);
     }
     if (!Listened("tabs.onUpdated")) return;
     Ensure([this, tab, change] { UpdatedNow(tab, change); });
@@ -560,6 +609,7 @@ class ExtensionTabs {
     Drop(tab);
     if (!found || found->panel) return;
     for (auto it = granted_.begin(); it != granted_.end();) it = it->second == found->id ? granted_.erase(it) : std::next(it);
+    for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == found->id ? action_states_.erase(it) : std::next(it);
     for (const auto& [extension, events] : listening_) {
       if (!events.count("tabs.onRemoved")) continue;
       auto info = CefDictionaryValue::Create();
@@ -963,13 +1013,15 @@ class ExtensionTabs {
   }
   // Run `expression` in `context` (the page's own world when 0) and answer
   // with its value.
-  static void Evaluate(CefRefPtr<TabInspector> inspector, int context, const std::string& expression, std::function<void(std::optional<std::string>, CefRefPtr<CefValue>)> then) {
+  // A script an extension runs counts as the person's doing (`gesture`), as
+  // after the click that let it; the host's own reads do not.
+  static void Evaluate(CefRefPtr<TabInspector> inspector, int context, const std::string& expression, std::function<void(std::optional<std::string>, CefRefPtr<CefValue>)> then, bool gesture = true) {
     auto params = CefDictionaryValue::Create();
     params->SetString("expression", expression);
     if (context) params->SetInt("contextId", context);
     params->SetBool("awaitPromise", true);
     params->SetBool("returnByValue", true);
-    params->SetBool("userGesture", true);
+    params->SetBool("userGesture", gesture);
     inspector->Call("Runtime.evaluate", params, [then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       if (!ok || !result) { then(std::string("The page could not run the script"), nullptr); return; }
       if (auto thrown = result->GetDictionary("exceptionDetails")) {
@@ -1173,6 +1225,27 @@ class ExtensionTabs {
            "  }"
            "  if (!waits) resolve({});"
            "})";
+  }
+  // The language the page says it is in, as Chrome names languages.
+  void DetectLanguage(const ExtensionTab& tab, Reply reply) {
+    auto inspector = hooks_.inspector(tab.tab);
+    if (!inspector) { Fail(reply, "No tab with id: " + std::to_string(tab.id) + "."); return; }
+    Evaluate(inspector, 0, "document.documentElement ? document.documentElement.lang : ''", [reply](std::optional<std::string>, CefRefPtr<CefValue> value) {
+      auto code = CefValue::Create();
+      code->SetString(LanguageCode(value && value->GetType() == VTYPE_STRING ? value->GetString().ToString() : std::string()));
+      Succeed(reply, code);
+    }, false);
+  }
+  // Chrome's code for a language tag: the language alone ("de" for "de-AT"),
+  // Chinese with its region ("zh-CN", "zh-TW"), and "und" for none.
+  static std::string LanguageCode(std::string tag) {
+    for (auto& c : tag) c = c == '_' ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    const auto primary = tag.substr(0, tag.find('-'));
+    if (primary.size() < 2 || primary.size() > 3) return "und";
+    for (char c : primary) if (c < 'a' || c > 'z') return "und";
+    if (primary != "zh") return primary;
+    for (const char* traditional : {"-hant", "-tw", "-hk", "-mo"}) if (tag.find(traditional) != std::string::npos) return "zh-TW";
+    return "zh-CN";
   }
   void InsertCss(const std::string& extension, const ExtensionTab& tab, const std::string& css, Reply reply) {
     auto inspector = hooks_.inspector(tab.tab);
@@ -1610,6 +1683,8 @@ class ExtensionTabs {
   std::map<std::string, Access> access_;
   std::map<std::string, std::set<std::string>> listening_;
   std::set<std::pair<std::string, int>> granted_;
+  // Each button's look for one tab, by extension and tab id.
+  std::map<std::pair<std::string, int>, std::map<std::string, CefRefPtr<CefValue>>> action_states_;
   std::map<std::string, std::vector<Waiting>> waiting_;
   std::vector<Creating> creating_;
   std::vector<Held> held_;
