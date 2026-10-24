@@ -641,14 +641,18 @@ impl ShellOverlayHost {
             || self.workspace_slide_moving(now)
     }
 
-    /// Give `by` back to a running overview. Call with the park spent on a
-    /// full presenter, before the next sample of the clock. A workspace
-    /// switch owes a frame, not a duration, so a wait takes nothing from it.
+    /// Give `by` back to a running overview or workspace slide. Call with
+    /// the park spent on a full presenter, before the next sample of the
+    /// clock. A workspace switch owes a frame, not a duration, so a wait
+    /// takes nothing from it.
     pub(crate) fn defer_running_transitions(&mut self, by: Duration) {
         if by.is_zero() {
             return;
         }
         self.overview_zoom.defer(by);
+        if let Some(slide) = self.workspace_slide.as_mut() {
+            slide.defer(by);
+        }
     }
 
     pub(super) fn request_compositor_transition_paints(&self) {

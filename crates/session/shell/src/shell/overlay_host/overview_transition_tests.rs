@@ -352,6 +352,39 @@ fn a_full_presenter_does_not_finish_the_transition() {
     );
 }
 
+/// A pointer switch's slide is held like the overview's zoom while the
+/// presenter is full: the windows resume where they stood instead of
+/// jumping to where the clock says they should be by now.
+#[test]
+fn a_full_presenter_does_not_finish_a_workspace_slide() {
+    let mut host = host();
+    let now = ui::motion::frame_now();
+    host.workspace_slide = workspace_slide::WorkspaceSlide::start(
+        7,
+        true,
+        ui::tokens::EffectiveMotion::default(),
+        ui::tokens::MotionSource::Pointer,
+        now,
+    );
+    assert!(host.workspace_slide_moving(now), "a pointer switch slides");
+    // Far past any slide's length.
+    let later = now + std::time::Duration::from_secs(5);
+    assert!(
+        !host.workspace_slide_moving(later),
+        "test setup: the slide ends within five seconds"
+    );
+    let held = std::time::Duration::from_secs(10);
+    host.defer_running_transitions(held);
+    assert!(
+        host.workspace_slide_moving(later),
+        "time spent waiting on a full presenter is not slide progress"
+    );
+    assert!(
+        !host.workspace_slide_moving(later + held),
+        "a held slide still comes to rest"
+    );
+}
+
 #[test]
 fn a_key_flies_the_windows_briefly_and_input_acts_on_the_new_state_at_once() {
     use crate::shell::chrome_state::ChromeState;
