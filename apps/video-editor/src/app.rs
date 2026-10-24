@@ -1736,14 +1736,24 @@ impl VideoEditorApp {
     }
 
     /// Where the timeline starts in the room between the header row and
-    /// the window's bottom edge: the divider the person drags.
+    /// the window's bottom edge: the divider the person drags, held where
+    /// the picture fills the preview's width so the room past it goes to
+    /// the timeline (the ratio stays for a wider window).
     fn timeline_top(&self, below_header: f64, bottom: f64) -> f64 {
-        (below_header
-            + self
-                .timeline_split
-                .ratio()
-                .first_extent((bottom - below_header).max(0.0)))
-        .round()
+        let extent = self
+            .timeline_split
+            .ratio()
+            .first_extent((bottom - below_header).max(0.0))
+            .min(self.preview_fill_height());
+        (below_header + extent).round()
+    }
+
+    /// Hand the divider its room and the most the preview can use.
+    fn place_timeline_split(&mut self) {
+        let bounds = self.timeline_split_bounds();
+        let most = self.preview_fill_height();
+        self.timeline_split.set_first_max(Some(most));
+        self.timeline_split.set_rect(bounds, &self.chrome_theme);
     }
 
     /// The room the divider moves in: the whole editor.
@@ -1758,8 +1768,7 @@ impl VideoEditorApp {
         event: &WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, &self.chrome_theme);
+        self.place_timeline_split();
         self.timeline_split.handle_event(event, ctx)
     }
 
@@ -6111,8 +6120,7 @@ impl VideoEditorApp {
         #[cfg(feature = "decode")]
         self.pump_preview_decode();
 
-        let bounds = self.timeline_split_bounds();
-        self.timeline_split.set_rect(bounds, theme);
+        self.place_timeline_split();
         let mut regions = self.regions();
         if !self.shot_lifecycle.interaction_applied
             && self.shot_scenario.is_interaction()
