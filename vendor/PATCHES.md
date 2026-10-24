@@ -701,6 +701,18 @@ every token a native app asks for. The press is recorded per window from the
 input handlers; releases, motion and focus changes are not presses and are
 not recorded. A token still proves only what the compositor checks.
 
+## `vendor/winit`: chords on a non-Latin source keep the Latin letter
+
+Under Ctrl, Alt or Super, a key whose active layout types a letter outside the
+Latin script reports as its logical key the Latin character another layout of
+the keymap puts on that key at the base level, as GTK does. With Russian or
+Arabic active, Ctrl+C copies; with French or German as the Latin source, the
+chord keeps that arrangement's letter rather than a US position's, so the key
+labelled Z stays undo instead of closing a tab. Text, `key_without_modifiers`,
+Latin letters with diacritics and keys no other layout gives a Latin
+character are unchanged. Tilo's shell wire test
+`non_latin_chord_wire` covers it against the real compositor keymap.
+
 ## Build-script-generated protobuf descriptors
 
 `buffa-build` 0.9.2 is carried as verified registry source with a small
