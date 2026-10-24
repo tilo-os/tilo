@@ -379,10 +379,17 @@ def image(url, kind):
     prefix = f'data:image/{kind};base64,'
     assert url.startswith(prefix), url[:40]
     return base64.b64decode(url[len(prefix):])
-# A page with a tracker, which says whether the tracker ran.
-SHIELDED = (b'<!doctype html><title>loading</title><script src="/tracker/t.js"></script>'
+# A page with a tracker, which says whether the tracker ran. It asks for the
+# tracker once it has loaded: Chromium learns that a site's pages are
+# allowed everything (a blocker turned off for the site) as the browser
+# hears the page committed, and a request the page makes as it starts to
+# parse can come before that, on another pipe, and be blocked still.
+SHIELDED = (b'<!doctype html><title>loading</title>'
             b"<script>addEventListener('load', () => {"
-            b"document.title = 'page:' + (window.tracked ? 'tracked' : 'untracked'); });</script>")
+            b"const tracker = document.createElement('script'); tracker.src = '/tracker/t.js';"
+            b"tracker.onload = tracker.onerror = () => {"
+            b"document.title = 'page:' + (window.tracked ? 'tracked' : 'untracked'); };"
+            b"document.head.append(tracker); });</script>")
 # A page with two trackers, two scripts an ad blocker puts its own in place
 # of (one at its address for the session), and a beacon, which says what
 # loaded.
@@ -1226,7 +1233,11 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(closed['event'], 'closed', closed)
         reloaded = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('page:')
         title = next((e for e in host.seen[mark:] if reloaded(e)), None) or host.until(reloaded)
-        self.assertEqual(title['title'], 'page:tracked', 'the page reloaded without the blocker')
+        if title['title'] != 'page:tracked':
+            # What the blocker counted in each tab, and its rules for the site.
+            blocked = self.in_worker(host, ids['shield'], "typeof blocked == 'object' ? JSON.stringify([...blocked]) : null")
+            rules = self.in_worker(host, ids['shield'], "typeof globalThis.chrome == 'object' ? chrome.declarativeNetRequest.getDynamicRules().then(JSON.stringify) : null")
+            self.fail(f"the page reloaded with the blocker: {title['title']}; blocked {blocked}, rules {rules}")
 
     def test_a_popup_that_starts_a_script_and_closes_at_once_still_starts_it(self):
         host, ids = self.start('shield', access={'shield': SHIELD})
