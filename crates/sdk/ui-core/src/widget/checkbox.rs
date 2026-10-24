@@ -1499,7 +1499,8 @@ mod tests {
             "first rests"
         );
         boxed.follow(true, CheckGlyph::Check, motion, MotionSource::Pointer, now);
-        let pose = boxed.pose(later);
+        // Early on: the old glyph is gone by 60 % of the fade.
+        let pose = boxed.pose(now + crate::time::Duration::from_millis(12));
         assert_eq!(pose.glyph, CheckGlyph::Check);
         assert_eq!(pose.level, 1.0, "the box stays filled");
         assert!(pose.incoming > 0.0 && pose.incoming < 1.0);
