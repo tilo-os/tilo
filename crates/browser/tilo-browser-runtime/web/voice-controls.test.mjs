@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createVoiceControls, createMediaPump, endedIssue, rostersOf, revisionOf} from './voice-controls.mjs';
+import {callIdOf, createVoiceControls, createMediaPump, endedIssue, rostersOf, revisionOf, speakingOf} from './voice-controls.mjs';
 const CALL = 'c'.repeat(64);
 function fixture() {
   const operations = [];
@@ -275,6 +275,64 @@ test('the app says what it shows and collects the pictures as they arrive', asyn
   assert.equal(answer.pictures.length, 1);
   assert.equal(answer.pictures_cursor, 1);
   assert.equal(answer.state, 'live');
+});
+
+test('a bridged call names the people it carries in as guests, never as the bridge\'s person', async () => {
+  const f = fixture();
+  const ana = 'a'.repeat(64);
+  const bridge = 'b'.repeat(64);
+  const own = {service: 'discord', account: null, name: 'Tilo', avatar: null, linked: null};
+  const dana = {service: 'discord', account: '80351110224678912', name: 'Dana', avatar: 'd'.repeat(64), linked: null};
+  const ben = {service: 'discord', account: '90351110224678912', name: 'Ben', avatar: null, linked: ana};
+  f.voice.calls = [
+    {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true, participants: [
+      {user: ana, device: '1'},
+      {user: bridge, device: '2', bridged: dana},
+      // Muted in Discord: everyone sees it.
+      {user: bridge, device: '2', bridged: ben, muted: true},
+      {user: bridge, device: '2', bridged: own},
+    ]},
+    // The bridge listening on its own, before anyone joins.
+    {app: 'so.tilo.chat', record: '', channel: 'lounge', call: CALL, active: true, participants: [{user: bridge, device: '2', bridged: own}]},
+  ];
+  const status = await f.controls.execute(f.request({op: 'status'}));
+  assert.deepEqual(status.rosters, [
+    {channel_id: 'lounge', people: [], bridges: ['discord']},
+    {channel_id: 'voice', people: [ana], bridges: ['discord'], guests: [
+      {id: 'discord:80351110224678912', name: 'Dana', service: 'discord', avatar: 'd'.repeat(64)},
+      {id: 'discord:90351110224678912', name: 'Ben', service: 'discord', linked: ana, muted: true},
+    ]},
+  ]);
+  assert.equal(callIdOf({user: bridge, bridged: own}), null, 'the bridge itself is nobody in the call');
+});
+
+test('the status names who the call hears talking, people and guests by id', async () => {
+  const f = fixture();
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  const ana = 'a'.repeat(64);
+  const bridge = 'b'.repeat(64);
+  const participants = [
+    {user: ana, self: true, speaking: true},
+    {user: ana, speaking: true},
+    {user: bridge, speaking: true, bridged: {service: 'discord', account: '7', name: 'Dana'}},
+    {user: bridge, speaking: true, bridged: {service: 'discord', account: null, name: 'Tilo'}},
+    {user: 'c'.repeat(64), speaking: false},
+  ];
+  assert.deepEqual(speakingOf(participants), [ana, 'discord:7']);
+  Object.assign(f.state, {phase: 'live', canPublish: true, participants});
+  assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [ana, 'discord:7']);
+  Object.assign(f.state, {phase: 'idle'});
+  assert.deepEqual((await f.controls.execute(f.request({op: 'status'}))).speaking, [], 'nobody talks outside a call');
+});
+
+test('a participant\'s volume reaches this device\'s playback only', async () => {
+  const f = fixture();
+  const volumes = [];
+  f.voice.call.setVolume = (id, gain) => volumes.push([id, gain]);
+  await f.controls.execute(f.request({op: 'join', channel_id: 'standup'}));
+  await f.controls.execute(f.request({op: 'set_volume', participant: 'discord:7', percent: 0}));
+  await f.controls.execute(f.request({op: 'set_volume', participant: 'a'.repeat(64), percent: 150}));
+  assert.deepEqual(volumes, [['discord:7', 0], ['a'.repeat(64), 1.5]]);
 });
 
 test('the status names who the call hears talking, so the app can ring them', async () => {

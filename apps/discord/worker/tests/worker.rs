@@ -135,7 +135,8 @@ impl Host {
                             rate_limited_total,
                             ..
                         } => Seen::Metrics(queue_depth, rate_limited_total),
-                        FromWorker::Ready { .. } => continue,
+                        // Ready, and the voice side, which tests/voice.rs covers.
+                        _ => continue,
                     };
                     seen.lock().unwrap().push(entry);
                 }
@@ -312,7 +313,7 @@ fn message_id(outcome: &Outcome) -> String {
 async fn identifies_with_the_bridge_intents_and_reports_messages() {
     let host = Host::start(false).await;
     host.connected().await;
-    assert_eq!(host.fake.intents(), Some(34_311));
+    assert_eq!(host.fake.intents(), Some(34_439));
     let ada = User::new("3001", "ada");
     let id = host.fake.post(CHANNEL_GENERAL, &ada, "hello from Discord");
     let payload = host

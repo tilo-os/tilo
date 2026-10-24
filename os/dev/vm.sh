@@ -296,9 +296,11 @@ installer_answers() {
 }
 
 cmd_wait() {
-  msg "waiting for greeter (greetd) ..."
-  local i early_reported=0 greetd=0 start=$SECONDS
-  for i in $(seq 1 "$TILO_BOOT_WAIT_ATTEMPTS"); do
+  msg "waiting for greeter (greetd), at most ${TILO_BOOT_WAIT_SECS}s ..."
+  local i=0 early_reported=0 greetd=0 start=$SECONDS
+  local deadline=$((SECONDS + TILO_BOOT_WAIT_SECS))
+  while :; do
+    i=$((i + 1))
     # The console is authoritative, including on a quiet production boot with
     # no development SSH service. Neither a serial log nor SSH is a prerequisite
     # for observing the actual application's readiness.
@@ -313,7 +315,7 @@ cmd_wait() {
     # use it as an independent readiness signal when available.
     elif [ "$greetd" = 0 ] && (( i % 5 == 0 )) && command -v sshpass >/dev/null 2>&1 \
        && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ] \
-       && gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
+       && TILO_SSH_BOUND=15 gssh 'systemctl is-active --quiet greetd.service' >/dev/null 2>&1; then
       msg "greetd up via SSH (~$((SECONDS - start))s); waiting for the greeter to accept input"; greetd=1; continue
     fi
     if [ "$early_reported" = 0 ] && grep -aq 'TILO_VALIDATION_DIAGNOSTICS_END early' "$TILO_SERIAL" 2>/dev/null; then
@@ -330,16 +332,18 @@ cmd_wait() {
         warn "last lines of $TILO_QEMU_LOG:"; tail -n 40 "$TILO_QEMU_LOG" >&2
       fi
       die "qemu exited during boot; see $TILO_QEMU_LOG / $TILO_SERIAL"; }
+    [ "$SECONDS" -lt "$deadline" ] || break
     sleep 2
   done
+  warn "no greeter accepted input within ${TILO_BOOT_WAIT_SECS}s of booting"
   if command -v sshpass >/dev/null 2>&1 \
      && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ]; then
     local ssh_diagnostic
-    ssh_diagnostic="$(gssh 'systemctl status greetd.service tilo-validation-ssh.service --no-pager --lines=20; systemctl --failed --no-pager' 2>&1)" \
+    ssh_diagnostic="$(TILO_SSH_BOUND=30 gssh 'systemctl status greetd.service tilo-validation-ssh.service --no-pager --lines=20; systemctl --failed --no-pager; systemctl list-jobs --no-pager; journalctl -b --no-pager -o short-monotonic -n 80' 2>&1)" \
       || warn "validation SSH diagnostic probe failed"
     if [ -n "$ssh_diagnostic" ]; then
       warn "validation SSH diagnostic output:"
-      printf '%s\n' "$ssh_diagnostic" | tail -n 100 >&2
+      printf '%s\n' "$ssh_diagnostic" | tail -n 200 >&2
     fi
   fi
   if [ "$greetd" = 1 ]; then
@@ -533,6 +537,7 @@ GUEST_TESTS=(
   "os/tests/input-hotplug-check.sh input-hotplug-check.sh"
   "os/tests/installed-admin-actions.sh installed-admin-actions.sh"
   "os/tests/projection-boot-check.sh projection-boot-check.sh"
+  "os/tests/live-update-check.sh live-update-check.sh"
 )
 
 # Each call copies GUEST_TESTS from this checkout into a private directory in

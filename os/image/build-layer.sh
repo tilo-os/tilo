@@ -21,14 +21,26 @@
 # given as images (TILO_LAYER_ARGS) instead of built again: a layer action reruns when
 # its piece or what it reads changes, or a layer below it does, and never otherwise.
 #
-# What the actions it builds on left is under /target/os/ARCH, as their checks' outputs:
+# What the actions it builds on left is under /target/os/ARCH (TILO_OS_ROOT/ARCH, for a build of
+# them all in one step), as their checks' outputs:
 #   base/oci                     the base
 #   builder/<target>/oci         the OS builder;  tools/<target>/oci  the side builds
-#   compiled/                    the compiled tree (os/image/compile.sh)
-#   layers/<layer>/              the fragment of the layers that layer action added
+#   compiled/                    the compiled tree (os/image/compile.sh); a release's in
+#                                compiled-release/
+#   layers/<layer>/              the fragment of the layers that layer action added; a
+#                                release's own layers in release-layers/<layer>/, a board
+#                                release's in board-layers/<board>/<layer>/
 #
-# The image is a development image, as Build / OS dev made it: no LTO, the development
-# owner key, its UKI sealing a placeholder composefs digest.
+# The image is a development image: no LTO, the development owner key, its UKI sealing a
+# placeholder composefs digest. With TILO_OS_FLAVOUR=release it is the image a release seals and
+# signs (tools/ci/publish/os-release.sh): thin LTO from compiled-release/, the registry owner's
+# key (os/publication.env); the layers marked `release` in os/image/layers.toml, which those
+# change, are built again into release-layers/, the others are the development image's. With
+# TILO_OS_BOARD=<board> as well it is that board's release image: the layers marked `board`,
+# which read the hardware profile, are built again with it into board-layers/<board>/, with the
+# board's firmware (os/publication.env), its update origin (the tag of this commit's board release,
+# code.tilo.so/tilo/tilo:<board>-<commit>) and the generation of its series
+# (os/dev/board-generation.sh).
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
 cd "$repo_root"
@@ -62,8 +74,18 @@ for kind in ("layer", "image"):
 ' os/image/layers.toml "$1" "$2"
 }
 
+board_layer() {
+  [[ -n $board && $(layer_field "$1" board) == true ]]
+}
+
 fragment_dir() {
-  echo "$os/layers/$1"
+  if board_layer "$1"; then
+    echo "$os/board-layers/$board/$1"
+  elif [[ $flavour == release && $(layer_field "$1" release) == true ]]; then
+    echo "$os/release-layers/$1"
+  else
+    echo "$os/layers/$1"
+  fi
 }
 
 # The guest's devices for podman: fuse for its storage, loop for the disk steps.
@@ -110,9 +132,24 @@ build_env() {
   TILO_GENERATION=$(TILO_ALLOW_EMPTY_SERIES=1 bash os/dev/next-generation.sh)
   export SOURCE_DATE_EPOCH TILO_GENERATION
   export TILO_IMAGE_ONLY=1 TILO_WITH_BROWSER=${TILO_WITH_BROWSER:-1} TILO_OUTPUT=$scratch/os-output TMPDIR=/var/tmp
-  export TILO_RUST_LTO=off TILO_REQUIRE_PCR_PREDICTION=0 TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$dev_owner_key
+  export TILO_REQUIRE_PCR_PREDICTION=0
+  if [[ $flavour == release ]]; then
+    export TILO_RUST_LTO=thin TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$(publication TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY)
+  else
+    export TILO_RUST_LTO=off TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=$dev_owner_key
+  fi
   # The pinned external assets are os-assets' outputs, which the action needs.
   export TILO_ASSET_OFFLINE=1
+}
+
+# What a board layer builds with besides: the board's firmware, staged where the pieces bind it
+# from, its profile, its update origin and the generation of its own series.
+board_env() {
+  stage_board_firmware "$board"
+  TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:$board-$(git rev-parse --verify HEAD) \
+    || die 'a board release names its commit: git = true'
+  TILO_GENERATION=$(bash os/dev/board-generation.sh)
+  export TILO_HARDWARE_PROFILE=$board TILO_TARGET_IMGREF TILO_GENERATION
 }
 
 # An image layout into podman's storage; its id.
@@ -201,12 +238,13 @@ cmd_layer() {
   piece=$(layer_field "$name" piece)
   guest_devices
   build_env
+  if board_layer "$name"; then board_env; fi
   phase load-given
   # What the piece is given as images: other actions' images, and compositions of layers.
   for entry in $(layer_field "$name" given); do
     case $entry in
       compiled)
-        export TILO_COMPILED=$os/compiled
+        export TILO_COMPILED=$os/$compiled
         continue ;;
       *:*) what=${entry%%:*} stage=${entry#*:} ;;
     esac
@@ -285,11 +323,23 @@ cmd_compose() {
 }
 
 layer_args=()
+flavour=${TILO_OS_FLAVOUR:-dev}
+case $flavour in
+  dev) compiled=compiled ;;
+  release) compiled=compiled-release ;;
+  *) die "TILO_OS_FLAVOUR is dev or release, not $flavour" ;;
+esac
+board=${TILO_OS_BOARD:-}
+if [[ -n $board ]]; then
+  [[ $flavour == release ]] || die "a board's image is built only for its release: TILO_OS_FLAVOUR=release"
+  python3 -I -c 'import tomllib,sys; sys.exit(sys.argv[2] not in tomllib.load(open(sys.argv[1],"rb"))["release_boards"])' \
+    os/image/layers.toml "$board" || die "$board is not among release_boards in os/image/layers.toml"
+fi
 case ${1:-} in
   assets) cmd_assets ;;
-  base) arch=${2:?} out=${3:?} os=/target/os/$arch; cmd_base ;;
-  image) arch=${3:?} out=${4:?} os=/target/os/$arch; cmd_image "${2:?}" ;;
-  layer) arch=${3:?} out=${4:?} os=/target/os/$arch; [[ $(uname -m) == "$arch" ]] || die "the $arch layers build natively"; cmd_layer "${2:?}" ;;
-  compose) arch=${2:?} out=${3:?} os=/target/os/$arch; cmd_compose ;;
+  base) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_base ;;
+  image) arch=${3:?} out=${4:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_image "${2:?}" ;;
+  layer) arch=${3:?} out=${4:?} os=${TILO_OS_ROOT:-/target/os}/$arch; [[ $(uname -m) == "$arch" ]] || die "the $arch layers build natively"; cmd_layer "${2:?}" ;;
+  compose) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_compose ;;
   *) die "usage: build-layer.sh assets | base ARCH OUT | image NAME ARCH OUT | layer NAME ARCH OUT | compose ARCH OUT" ;;
 esac

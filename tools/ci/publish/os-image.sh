@@ -13,7 +13,8 @@
 #   os-image.sh board BOARD IN OUT the board's sealed dev image (os/Containerfile.board: firmware,
 #                                  device tree, initramfs, a UKI) FROM the aarch64 dev image `dev`
 #                                  left in IN, into OUT/image.oci.tar, with OUT/digest, OUT/revision
-#                                  and OUT/board
+#                                  and OUT/board; the Lenovo's audio stack checked inside it; and
+#                                  its flashable disk in OUT/disk
 #
 # They run in the OS assembler image (os/image/assembler.Containerfile), which has podman and
 # the tools build-image.sh verifies its inputs with; a guest without them installs them first.
@@ -65,30 +66,6 @@ save_image() {
   archive_digest "$out/image.oci.tar" > "$out/digest"
   printf '%s\n' "$revision" > "$out/revision"
   printf 'built %s of %s\n' "$(cat "$out/digest")" "$revision"
-}
-
-# A value of os/publication.env, the public configuration of OS publication.
-publication() {
-  local value
-  value=$(sed -n "s/^$1=//p" "$repo_root/os/publication.env")
-  [[ -n $value ]] || die "os/publication.env sets no $1"
-  printf '%s' "$value"
-}
-
-# The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where
-# os/Containerfile.board takes it from: the Lenovo's from its pinned artifact, the Orange Pi's
-# Wi-Fi files from their pinned public copies.
-stage_board_firmware() {
-  case $1 in
-    lenovo-83ed)
-      python3 os/dev/hardware-firmware-artifact.py import \
-        --reference "$(publication TILO_LENOVO_FIRMWARE_REF)" \
-        --manifest-sha256 "$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)" \
-        --profile lenovo-83ed --architecture aarch64 --repo "$repo_root" >/dev/null ;;
-    orangepi-3b-v2-1)
-      TILO_ASSET_OFFLINE=1 bash os/dev/fetch-orangepi-wifi-firmware.sh ;;
-    *) die "no firmware source for the board $1" ;;
-  esac
 }
 
 # The resealing bootc the board image computes its composefs digest with
@@ -169,6 +146,36 @@ rpms_snapshot() {
   esac
 }
 
+# The flashable disk of the sealed board image NAME, into DIR/disk.qcow2, never
+# booted: installed as build-image.sh installs a dev disk, following tilo-vm:BOARD-ci, which
+# os-board-publish.sh moves. The Orange Pi's disk carries the loader its mask ROM reads in front
+# of the ESP (build-image.sh builds it with os/dev/build-orangepi-uboot.sh) and is 16 GB, for an
+# SD card (its root grows on first boot); the Lenovo's 64 GB.
+install_board_disk() {
+  local board=$1 name=$2 dir=$3 id size=64G loader=
+  id=$(podman image inspect --format '{{.Id}}' "$name")
+  if [[ $board == orangepi-3b-v2-1 ]]; then
+    size=16G loader=$scratch/rockchip-loader
+    rpm -q bc bison flex gcc make dtc swig python3-devel python3-pyelftools python3-setuptools \
+      gnutls-devel openssl-devel-engine >/dev/null 2>&1 \
+      || dnf install -y --setopt=install_weak_deps=False bc bison flex gcc make dtc swig python3-devel \
+        python3-pyelftools python3-setuptools gnutls-devel openssl-devel-engine >/dev/null
+  fi
+  rpm -q dosfstools btrfs-progs systemd-container binutils qemu-img >/dev/null 2>&1 \
+    || dnf install -y --setopt=install_weak_deps=False dosfstools btrfs-progs systemd-container binutils qemu-img >/dev/null
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  TILO_IMAGE=$name TILO_SKIP_BUILD=1 TILO_DISTROBOX= TILO_OUTPUT=$scratch/board-disk \
+    TILO_RUN=$scratch/board-disk-run TILO_TARGET_IMGREF=registry.tilo.so/tilo/tilo-vm:$board-ci \
+    TILO_DISK_SIZE=$size TILO_ROCKCHIP_LOADER=$loader TILO_QCOW2_COMPRESS=1 \
+    TMPDIR=/var/tmp bash os/dev/build-image.sh
+  # The image was sealed with the digest install computes: an install that resealed it would
+  # leave a disk of another image than the one published.
+  [[ $(podman image inspect --format '{{.Id}}' "$name") == "$id" ]] \
+    || die "$board: install computed another composefs digest than the build sealed"
+  mv "$scratch/board-disk/qcow2/disk.qcow2" "$dir/disk.qcow2"
+}
+
 # How long each part took, for finding what a build spends its time on.
 phase_started=$SECONDS phase_name=start
 phase() {
@@ -235,6 +242,16 @@ case ${1:-} in
     phase save
     save_image localhost/tilo-board:ci "$out" "$revision"
     printf '%s\n' "$board" > "$out/board"
+    if [[ $board == lenovo-83ed ]]; then
+      # Its sound card needs the topology, DSP firmware and UCM profile in the image; booting
+      # it on the laptop is the only test of the sound itself.
+      phase audio
+      podman run --rm --network none --entrypoint bash \
+        -v "$repo_root/os/tests/board_audio_contract.sh:/run/board_audio_contract.sh:ro" \
+        localhost/tilo-board:ci /run/board_audio_contract.sh --root /
+    fi
+    phase disk
+    install_board_disk "$board" localhost/tilo-board:ci "$out/disk"
     ;;
   *) die 'usage: os-image.sh dev ARCH IN OUT COMPILED | board BOARD IN OUT' ;;
 esac

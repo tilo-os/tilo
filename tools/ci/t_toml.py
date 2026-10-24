@@ -452,7 +452,7 @@ CARGO_CHECKS: dict[str, dict] = {
         "inputs": ["os/tests/tilo-session-lifecycle.sh", "os/usr/libexec/tilo-session",
                    "os/usr/lib/systemd/user/**", "os/usr/share/tilo/selinux/tilo-base.cil",
                    "os/usr/share/wayland-sessions/**", "os/dev-image/usr/lib/systemd/user/**",
-                   "os/Containerfile", "dist/session/**", ".forgejo/workflows/build-image.yml",
+                   "os/Containerfile", "dist/session/**",
                    "tools/desktop-isolation.sh", "scripts/ci-fuse-preflight.sh", "tools/font-catalog.py"],
     },
     # The credential vault's wasm build linted, and its storage probe example built

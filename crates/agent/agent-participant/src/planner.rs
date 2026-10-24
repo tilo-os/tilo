@@ -177,6 +177,49 @@ impl Step {
     }
 }
 
+/// How many model calls a task's plans may still ask again after losing
+/// them to the network ([`MOST_TURN_RETRIES`]). Every plan of one task
+/// shares it, so a flaky network costs a task a few calls, not one per
+/// turn of every plan.
+#[derive(Clone, Debug)]
+pub struct TurnRetries(std::sync::Arc<std::sync::atomic::AtomicU32>);
+
+/// The most lost calls one task asks again.
+pub const MOST_TURN_RETRIES: u32 = 3;
+
+impl Default for TurnRetries {
+    fn default() -> Self {
+        Self(std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            MOST_TURN_RETRIES,
+        )))
+    }
+}
+
+/// Budgets are equal when as much is left of them.
+impl PartialEq for TurnRetries {
+    fn eq(&self, other: &Self) -> bool {
+        self.left() == other.left()
+    }
+}
+
+impl Eq for TurnRetries {}
+
+impl TurnRetries {
+    /// How many calls may still be asked again.
+    #[must_use]
+    pub fn left(&self) -> u32 {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Spend one retry; `false` when none is left.
+    pub fn take(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.0
+            .fetch_update(Relaxed, Relaxed, |left| left.checked_sub(1))
+            .is_ok()
+    }
+}
+
 /// What a planner may look at.
 #[derive(Default)]
 pub struct PlanContext {
@@ -243,6 +286,8 @@ pub struct PlanContext {
     /// one is open (`app.<app>#open`): an import into the open one was
     /// refused for the content it holds, and only a new document takes it.
     pub new_documents: Vec<String>,
+    /// The task's budget for asking a model call lost to the network again.
+    pub retries: TurnRetries,
 }
 
 impl PlanContext {

@@ -371,6 +371,26 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
     },
+    /// Answer the page's question
+    ///
+    /// What its Close, Allow, Send, Leave or Reload button does: the page
+    /// waits on its question until it is answered.
+    #[effect(row, returns)]
+    AcceptPageDialog {
+        #[param("The question's id")]
+        dialog: u32,
+        #[param("The answer to a prompt; what its field holds when absent")]
+        text: Option<String>,
+    },
+    /// Cancel the page's question
+    ///
+    /// What its Cancel button does: a confirm answers no, a prompt nothing,
+    /// and a page asking to be left stays.
+    #[effect(row, returns)]
+    DismissPageDialog {
+        #[param("The question's id")]
+        dialog: u32,
+    },
     /// Bookmark this page personally
     #[effect(row, returns, idempotent)]
     BookmarkPersonalPage {
@@ -498,6 +518,16 @@ impl BrowserEffect {
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },
             Self::OpenDownload { id } => BrowserOperation::OpenDownload { id },
             Self::RevealDownload { id } => BrowserOperation::RevealDownload { id },
+            Self::AcceptPageDialog { dialog, text } => BrowserOperation::AnswerPageDialog {
+                dialog,
+                accept: true,
+                text,
+            },
+            Self::DismissPageDialog { dialog } => BrowserOperation::AnswerPageDialog {
+                dialog,
+                accept: false,
+                text: None,
+            },
             Self::ReadPage => page(PageRequest::Outline),
             Self::ReadPageChanges => page(PageRequest::Changes),
             Self::ReadPageElementAt { x, y } => page(PageRequest::At { x, y }),
@@ -640,6 +670,13 @@ pub enum BrowserOperation {
         id: String,
     },
     Page(PageRequest),
+    /// Answer the page's question `dialog`: OK, Leave or Reload when
+    /// `accept`, else Cancel, with a prompt's `text`.
+    AnswerPageDialog {
+        dialog: u32,
+        accept: bool,
+        text: Option<String>,
+    },
     Extension(ExtensionRequest),
     /// Offer the Web Store item on the page, as Add to Tilo Browser does.
     AddExtension,

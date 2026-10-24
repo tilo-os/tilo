@@ -1083,7 +1083,7 @@ def frame_work(ctx, res):
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
 
 
-# -- the installed-desktop gates of build-image.yml, on this run's VM -------------
+# -- the installed-desktop gates of os-acceptance-{arch}, on this run's VM ---------
 
 # Test tooling the image does not ship: the run copies it from the checkout into the guest.
 BOOT_GATE = Path(__file__).resolve().parents[4] / "os/tests/boot_performance_gate.sh"
@@ -1287,7 +1287,7 @@ RENDER_UNOBSERVABLE = ("no session flight record", "the compositor logged no DRM
 def render_gate(ctx, res):
     """The release gate's render check on this run's session: direct GPU scanout where
     the renderer shares the scanout GPU, and every DRM render phase and the painted
-    frames' main-thread work within the budgets build-image.yml holds a KVM guest to."""
+    frames' main-thread work within the budgets os-acceptance-{arch} holds a KVM guest to."""
     b = ctx.config["budgets"]
     text = ctx.vm.exec(f"{RENDER_REPORT} --render-gate --render-budget-ms {b['render_frame_ms']} "
                        f"--frame-work-budget-ms {b['render_frame_work_ms']} 2>&1; echo GATE-EXIT=$?",

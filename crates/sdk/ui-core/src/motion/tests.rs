@@ -716,8 +716,80 @@ fn a_started_motion_asks_for_frames_until_it_settles_and_no_longer() {
     assert!(frames_wanted(start), "the arrival asks for frames");
     let until = frames_until().expect("a motion is moving");
     assert!(frames_wanted(until - Duration::from_millis(1)));
+    frame_drawn(until);
     assert!(!frames_wanted(until), "a settled motion asks for nothing");
     assert!(frames_until().is_none(), "and holds nothing");
+}
+
+/// The last frame of a motion is the one showing it at rest. A frame drawn
+/// a hair before the motion ended leaves that hair on screen, so the clock
+/// keeps asking until a frame was drawn at or after the end, and then stops.
+#[test]
+fn the_frame_at_rest_is_owed_until_one_is_drawn_after_the_motion_ends() {
+    let start = crate::time::now();
+    let mut v = MotionValue::new(0.0_f64);
+    v.set(100.0, base_timing(), start);
+    let until = v.settles_at().expect("it moves");
+    let just_before = until - Duration::from_millis(1);
+    frame_drawn(just_before);
+    let after = until + Duration::from_millis(5);
+    assert!(
+        frames_wanted(after),
+        "the last frame drawn showed it short of rest: one more is owed"
+    );
+    frame_drawn(after);
+    assert!(
+        !frames_wanted(after + Duration::from_millis(1)),
+        "drawn at rest, nothing more is asked"
+    );
+}
+
+/// Every motion asks for its frames, whoever started it and whoever draws
+/// it: a host only has to read the clock to paint every motion it shows.
+#[test]
+fn any_motion_value_started_asks_the_clock_for_its_frames() {
+    let start = crate::time::now();
+    let mut v = MotionValue::new(Point::ZERO);
+    assert!(!frames_wanted(start), "nothing moving, nothing asked");
+    v.set(Point::new(40.0, 0.0), base_timing(), start);
+    assert_eq!(frames_until(), v.settles_at(), "asks until it settles");
+    assert!(frames_wanted(start));
+    let mut idle = MotionValue::new(1.0_f64);
+    idle.set(1.0, base_timing(), start);
+    assert_eq!(
+        frames_until(),
+        v.settles_at(),
+        "a value already where it is going asks nothing more"
+    );
+}
+
+/// A motion that asks the clock for frames is named while it moves: the
+/// place that started it, so a frame nobody can see in the widget tree
+/// (a menu an owner draws in its own pass) is still attributed.
+#[test]
+fn a_motion_asking_for_frames_is_named_while_it_moves() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut menu = Appearing::closed();
+    let line = line!() + 3;
+    with_monotonic_time(start, || {
+        note_source(MotionSource::Pointer);
+        menu.follow(true, on());
+    });
+    let owners = frames_wanted_by(start);
+    assert!(
+        owners
+            .iter()
+            .any(|owner| owner.ends_with(&format!("tests.rs:{line}"))),
+        "the menu's opening names where it started: {owners:?}"
+    );
+    let until = frames_until().expect("a motion is moving");
+    frame_drawn(until);
+    assert!(
+        frames_wanted_by(until).is_empty(),
+        "a settled motion drawn at rest is named by nobody"
+    );
+    assert!(!frames_wanted(until));
 }
 
 #[test]
@@ -874,14 +946,15 @@ fn a_settled_control_wants_no_frames() {
         .max()
         .expect("moving");
     assert!(frames_wanted(ms(now, 10)));
-    assert!(!frames_wanted(rest));
+    assert!(frames_wanted(rest), "the frame showing it at rest is owed");
+    frame_drawn(rest);
+    assert!(!frames_wanted(rest), "and once drawn, not one after");
     assert!(!thumb.is_moving(rest) && !mark.is_moving(rest));
 }
 
 /// The frame wish of an earlier test on this thread is cleared.
 fn testing_clean_frames() {
-    let far = crate::time::now() + Duration::from_secs(3600);
-    let _ = frames_wanted(far);
+    super::clock::forget_frames_for_tests();
 }
 
 #[test]

@@ -66,6 +66,11 @@ title = "Network: a WireGuard tunnel"
 scenario = "network-vpn-profile"
 
 [[situation]]
+name = "network-vpn-openvpn"
+title = "Network: an OpenVPN profile with its own MTU and name servers"
+scenario = "network-vpn-openvpn"
+
+[[situation]]
 name = "network-vpn-add"
 title = "Network: adding a VPN"
 scenario = "network-vpn-add"
@@ -79,3 +84,18 @@ scenario = "network-vpn-devices"
 name = "network-mobile"
 title = "Network: with a modem"
 scenario = "network-mobile"
+
+[[situation]]
+name = "network-mobile-roaming"
+title = "Network: the modem's page, abroad"
+scenario = "network-mobile-roaming"
+
+[[situation]]
+name = "network-mobile-locked"
+title = "Network: a SIM asking for its PIN"
+scenario = "network-mobile-locked"
+
+[[situation]]
+name = "network-mobile-puk"
+title = "Network: a blocked SIM asking for its PUK"
+scenario = "network-mobile-puk"

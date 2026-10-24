@@ -114,8 +114,25 @@ callbacks to a new action.
 Every tab starts on `about:blank` before its first address. That first entry is
 no page the person visited: `history` reports no `back` while it is all that is
 behind the page, `back` does not go to it, and `navigation_history` leaves it
-out. A page's `beforeunload` request to stay is let go, as closing its tab lets
-it go; there is no prompt to answer it.
+out.
+
+A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
+from a `beforeunload` handler) are the embedder's to show. `ready` /
+`tab_ready` advertise `js_dialogs: true`; a tab that then receives
+`js_dialogs` with a boolean `enabled` gets each question as a `js_dialog` event:
+a positive `id`, `kind` (`alert`, `confirm`, `prompt` or `beforeunload`), the
+asking page's http(s) `origin` (empty for any other page), its `message` and a
+prompt's `default_text` (each at most 16 KiB), and for `beforeunload` whether
+it is a `reload`. The page waits until `js_dialog_reply` with that `id`, a
+boolean `accept` (OK, or Leave) and a prompt's `text` (at most 64 KiB) answers
+it. `js_dialog_closed` with the `id` says the page no longer waits, answered or
+not (it navigated, or asked another question). A navigation the embedder sends
+declines the open question first, as Chromium holds it back while the page
+waits. Staying on a page cancels the
+navigation that asked to leave it: an owned navigation fails with "The page
+asked to stay". A tab that never asked for questions has each declined at once
+(a confirm is false, a prompt null) and its page left when it asks to stay, as
+closing a tab always leaves it; no page waits on a question nobody sees.
 
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only each tab's newest pending frame is kept, and tabs take turns, so a page
@@ -438,7 +455,23 @@ content scripts (with `sender.tab`) work without help.
   no tab API counts the second: as in Chrome, content scripts on every page
   let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
-  `tabs.getZoom` the page's zoom.
+  `tabs.getZoom` the page's zoom. `tabs.onZoomChange` fires when a tab's
+  zoom changes from its first page on: the Browser zoomed it or another
+  page of its site, or it went to a site zoomed otherwise.
+- Tab events: `onCreated`, `onUpdated`, `onRemoved`, and on focus
+  `onActivated` with `onHighlighted` (the tab alone, being its window's only
+  one) and `windows.onFocusChanged`. A tab never moves to another window and
+  is never replaced, so `onAttached`, `onDetached`, `onMoved` and
+  `onReplaced` never fire.
+- `webNavigation` is Chromium's own: its events, `getFrame` and
+  `getAllFrames` know each tab by the id the tab APIs give it. Chromium does
+  not see a page open a tab here (the Browser opens it), so the host tells
+  of it: when the tab the page asked for (a link to a new tab,
+  `window.open`) shows its address, it is given the page's tab as
+  `openerTabId`, and `webNavigation.onCreatedNavigationTarget` fires to
+  extensions with `webNavigation`, after the new tab's first navigation
+  events rather than before them. The tab script reads the opening frame's
+  id and process from the page's frames, by the frame's address.
 - The toolbar button's look for every tab is Chromium's, and so are its
   getters; the script tells the host of each change Chromium accepted. For
   one tab (an ad blocker's count for the page) Chromium finds no tab and
@@ -462,6 +495,18 @@ content scripts (with `sender.tab`) work without help.
   answers when the worker does not. A port's messages go to the host in
   order, batched while a request is under way, and on from the host to the
   worker or page the same way, so a burst wakes the worker once.
+- An offscreen document (`chrome.offscreen`, which MV3 extensions make to
+  parse HTML, copy to the clipboard or play sound) is Chromium's own: made,
+  found (`hasDocument`, `runtime.getContexts`) and closed as in Chrome, it
+  has Chrome's one API there, `runtime`, and asks its worker for whatever
+  needs a tab. A message from a script the host runs in a page reaches it
+  as well: Chromium keeps the document with no tab, so for an extension
+  with the `offscreen` permission the host finds it among the pipe's
+  targets and delivers the message there, attached for as long as that
+  takes. A port such a script opens does not reach it. Its sound plays
+  through Chromium's own output, not the audio bridge, which CEF feeds only
+  with its browsers' sound: a governed Browser, which has no audio device,
+  plays none of it.
 - `scripting.executeScript` reaches the frames an extension names
   (`frameIds`, `documentIds`, `allFrames`) and `tabs.sendMessage` one frame
   (`frameId`, `documentId`), as Bitwarden injects its form filler into each
@@ -546,6 +591,40 @@ content scripts (with `sender.tab`) work without help.
   sleeps, hears `onClicked` or `onButtonClicked`, then `onClosed` by the
   person, since Tilo takes a chosen notification away; `clear` is heard as
   `onClosed` not by the person.
+- `chrome.permissions` (`src/extension_permissions.h`): Chromium asks the
+  person for an extension's optional access in a dialog of its own window,
+  and answers "Could not find an active window." here. The Browser tells
+  the host what each extension's manifest offers for later
+  (`optional_permissions`, `optional_host_permissions`) and what of it the
+  person granted (`extension_grants`); `request`, made in answer to
+  something the person did and only for what the manifest offers, asks the
+  Browser (`extension_permission_request`), which asks the person in its
+  shared prompt, granting at once what Chrome asks nobody about, and
+  answers (`extension_permission_decision`). What the extension holds then
+  counts for its tabs, scripting, capture and menu items at once, it hears
+  of it (`onAdded`, `onRemoved`) in its worker and pages, and the Browser
+  keeps it with the extension (`extension_permissions`). `contains`,
+  `getAll` and `remove` (never of what the manifest requires) answer from
+  the same. An API Chromium itself gives only an extension that holds it
+  in Chromium's own records (`chrome.bookmarks`) stays missing when the
+  person grants it here: what the host answers follows the grant.
+- `downloads.download` goes through the Browser's own downloads
+  (`src/capabilities.h`): Chromium cancels a download an extension starts
+  on none of its windows' tabs, so the host starts it on the page the call
+  came from or the one in front, and the person is asked as for any
+  download, which also answers `saveAs`. The extension gets the download's
+  id once it started (the first download on that page from the address it
+  asked for), and it is saved under the last part of `filename`, in a
+  folder of its own like every download here. An address is a web one,
+  `data:` or a blob of the extension's own pages; a request body or headers
+  of its own are refused. Everything else (`search`, `pause`, `resume`,
+  `cancel`, `erase`, `onCreated`, `onChanged`) is Chromium's, which sees
+  every download of the profile. `open` and `show` ask the Browser showing
+  the page (`extension_download_open`), which opens a complete download, or
+  shows it in its folder, as its own Open and Show in Files do; `open`
+  needs `downloads.open` and, as in Chrome, the person's click or key in
+  the extension's page, or on its button, menu item or shortcut, in the
+  last five seconds.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -575,6 +654,30 @@ content scripts (with `sender.tab`) work without help.
   page; `onRuleMatchedDebug` reports what Chromium reports, tab id -1.
   Rules that only change a request (headers, an upgrade to https) and a
   blocked page itself are not counted.
+- An extension signs in to its service with `identity.launchWebAuthFlow`.
+  Chrome shows the page in a window of its own; here the host asks the
+  Browser to show it in a panel over the page in front
+  (`extension_sign_in`), as a popup shows, under the name of the site it is
+  on. The Browser marks the panel's tab as that sign-in's
+  (`extension_sign_in_panel`), and the host watches where it goes
+  (`src/extension_sign_in.h`): once the page goes to the extension's own
+  address, `https://<id>.chromiumapp.org/`, by a redirect, a link or a
+  script, the navigation is turned away, the call ends with that address
+  and the panel closes. Closing the panel turns the sign-in down ("The user
+  did not approve access.", as in Chrome), and so does a second sign-in of
+  the same extension for the first. A sign-in that may not ask the person
+  (`interactive` false) is loaded out of sight in a tab of its own, as
+  Chrome loads it: the site sending the person straight back ends it with
+  the address; its page loading without doing so ends it as needing them
+  ("User interaction required."), or with `abortOnLoadForNonInteractive`
+  false, for a site whose script sends them back later, its time running
+  out (`timeoutMsForNonInteractive`, a minute at most). The extension asks
+  for the outcome in turns the host holds 20 seconds each, and calls
+  Chromium between them, which keeps its worker awake as Chrome keeps it
+  awake during the call.
+  `getRedirectURL` names the extension's address; `getAuthToken`, which
+  signs in with the Browser's own Google account, answers that no one is
+  signed in.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.

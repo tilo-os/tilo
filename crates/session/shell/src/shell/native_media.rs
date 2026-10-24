@@ -123,6 +123,9 @@ pub(crate) trait MediaSession: Send {
     }
     /// The pictures the app shows of the others now.
     fn show(&mut self, _shown: Vec<Shown>) {}
+    /// Play `participant` (a person or guest id) at `percent` of as they
+    /// arrive, on this device only.
+    fn set_volume(&mut self, _participant: String, _percent: u16) {}
     /// The pictures received after `after`, up to `budget` bytes but at
     /// least one, and where the next collection continues.
     fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
@@ -498,6 +501,23 @@ impl NativeMediaService {
                 };
                 if let Some(backend) = &entry.backend {
                     backend.lock_recover().show(pictures);
+                }
+                Ok(self.0.snapshot(entry))
+            }
+            Command::SetVolume {
+                participant,
+                percent,
+            } => {
+                let calls = self
+                    .0
+                    .calls
+                    .lock()
+                    .map_err(|_| "native media unavailable")?;
+                let Some(entry) = calls.entries.get(&key) else {
+                    return Ok(idle());
+                };
+                if let Some(backend) = &entry.backend {
+                    backend.lock_recover().set_volume(participant, percent);
                 }
                 Ok(self.0.snapshot(entry))
             }
@@ -1003,6 +1023,7 @@ impl NativeMediaServices for NativeMediaService {
             Command::SetScreen { on: true } => "screen_on",
             Command::SetScreen { on: false } => "screen_off",
             Command::Show { .. } => "show",
+            Command::SetVolume { .. } => "set_volume",
             Command::Pictures { .. } => "pictures",
         };
         let route = (

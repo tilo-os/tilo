@@ -58,6 +58,12 @@ impl WorkspaceSlide {
         self.progress.is_moving(now)
     }
 
+    /// Hold the slide for `by`: time spent waiting on a full presenter is
+    /// not progress, so the windows resume where they stood.
+    pub(super) fn defer(&mut self, by: ui::time::Duration) {
+        self.progress.defer(by);
+    }
+
     /// The poses of the leaving and the arriving workspace in a view
     /// `width` wide.
     pub(super) fn poses(&self, width: f64, motion: EffectiveMotion, now: Instant) -> (Pose, Pose) {

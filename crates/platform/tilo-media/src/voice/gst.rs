@@ -64,6 +64,9 @@ pub struct VoiceAudio {
     closed: bool,
     jitter: JitterBuffer,
     decoders: BTreeMap<PublicationId, Decoder>,
+    /// How loud each publication plays here, in percent, by namespace;
+    /// one not named plays as it arrives.
+    volumes: BTreeMap<String, u16>,
     last_output: Option<Instant>,
     timeline: CaptureTimeline,
     /// The microphone's speech: contiguous transmitted frames up to the
@@ -142,6 +145,7 @@ impl VoiceAudio {
             closed: false,
             jitter: JitterBuffer::default(),
             decoders: BTreeMap::new(),
+            volumes: BTreeMap::new(),
             last_output: None,
             timeline: CaptureTimeline::default(),
             capture_run: 0,
@@ -480,8 +484,14 @@ impl VoiceAudio {
         };
         let frames: Vec<Vec<i16>> = self
             .decoders
-            .values_mut()
-            .filter_map(|decoder| decoder.render(now))
+            .iter_mut()
+            .filter_map(|(publisher, decoder)| {
+                let frame = decoder.render(now)?;
+                Some(match self.volumes.get(&publisher.namespace) {
+                    Some(&percent) => louder(frame, percent),
+                    None => frame,
+                })
+            })
             .collect();
         // Keep the playback graph clocked while listening or waiting for remote audio.
         // An idle live appsrc can leave a shared PipeWire graph waiting for its first
@@ -504,6 +514,12 @@ impl VoiceAudio {
             .map_err(|_| AudioError::DeviceLost)?;
         self.last_output = Some(output_at);
         Ok(())
+    }
+    /// Play each publication named in `volumes` (by namespace) at its
+    /// percent of as it arrives, the rest as they arrive. Who is heard
+    /// talking stays as they speak.
+    pub fn set_volumes(&mut self, volumes: BTreeMap<String, u16>) {
+        self.volumes = volumes;
     }
     /// The publishers heard talking at `now`.
     pub fn heard(&self, now: Instant) -> Vec<PublicationId> {
@@ -863,6 +879,18 @@ fn configure_pipewire(
         element.set_property_from_value("on-disconnect", &error);
     }
     Ok(())
+}
+
+/// `frame` at `percent` of its level, clipped.
+fn louder(frame: Vec<i16>, percent: u16) -> Vec<i16> {
+    let percent = i32::from(percent);
+    frame
+        .into_iter()
+        .map(|sample| {
+            let scaled = i32::from(sample).saturating_mul(percent) / 100;
+            i16::try_from(scaled).unwrap_or(if scaled < 0 { i16::MIN } else { i16::MAX })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2035,6 +2063,16 @@ mod tests {
         assert_eq!(
             audio.receive(frame("alice", 2), now),
             Err(AudioError::Closed)
+        );
+    }
+
+    #[test]
+    fn a_publication_plays_at_its_volume_clipped() {
+        assert_eq!(super::louder(vec![1000, -1000, 0], 0), vec![0, 0, 0]);
+        assert_eq!(super::louder(vec![1000, -1000], 50), vec![500, -500]);
+        assert_eq!(
+            super::louder(vec![i16::MAX, i16::MIN], 200),
+            vec![i16::MAX, i16::MIN]
         );
     }
 }

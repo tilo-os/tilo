@@ -419,6 +419,22 @@ fn route(state: &mut State, request: &Recorded) -> Answer {
             state.webhooks.push(webhook);
             Answer::json(200, &answer)
         }
+        ("PUT", ["channels", channel, "voice-status"]) => {
+            // Discord wants the bot in the channel (or Manage Channels).
+            if state.voice.bot_channel.as_deref() != Some(*channel) {
+                return Answer::error(403, 50013, "Missing Permissions");
+            }
+            let status = body["status"].as_str().map(str::to_owned);
+            state.voice.statuses.insert((*channel).to_owned(), status);
+            Answer::json(204, &Value::Null)
+        }
+        ("PATCH", ["guilds", GUILD, "members", "@me"]) => {
+            state.voice.nick = body["nick"].as_str().map(str::to_owned);
+            Answer::json(
+                200,
+                &json!({"nick": state.voice.nick, "roles": state.voice.bot_roles}),
+            )
+        }
         ("PATCH", ["channels", channel]) => {
             let Some(stored) = state.channel_mut(channel) else {
                 return Answer::error(404, 10003, "Unknown Channel");

@@ -89,9 +89,8 @@ They need:
   into matrices come from `runner_labels.py`.
 - **Images.** `images.toml` pins the CI images by digest. They are public, so
   a fork can pull them as they are. To build its own, publish
-  `os/Containerfile.ci-fast`, `os/Containerfile.ci-control` and
-  `os/Containerfile.builder` (t's `image-ci-fast` and `image-ci-control`
-  and `image-ci-builder` checks in `t.toml`), change the pins, and set
+  `os/Containerfile.ci-fast` and `os/Containerfile.builder` (t's
+  `image-ci-fast` and `image-ci-builder` checks in `t.toml`), change the pins, and set
   `TILO_CI_REGISTRY`, `TILO_CI_BUILDER_REPOSITORY` and
   `TILO_CI_REGISTRY_TOKEN_REALM` for the builder lookup.
 - **Artifact actions.** The `actions/upload-artifact` and
@@ -113,6 +112,4 @@ Jobs that need more than an unprivileged container:
 
 | Job | Needs |
 |---|---|
-| `dev-disk.yml` | `/dev/fuse`, loop devices and, for speed, `/dev/kvm` |
 | `release-imager.yml` | `/dev/kvm` |
-| `build-image.yml` | Docker with Buildx |

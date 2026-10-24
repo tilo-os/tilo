@@ -158,6 +158,11 @@ fn a_header_click_moves_the_shown_rows_to_their_new_places_and_nothing_else() {
         "rows that arrived are forgotten"
     );
     let until = crate::motion::frames_until().expect("the sort asked for frames");
+    assert!(
+        crate::motion::frames_wanted(until),
+        "the frame showing the rows at rest is still owed"
+    );
+    crate::motion::frame_drawn(until);
     assert!(!crate::motion::frames_wanted(until));
 }
 

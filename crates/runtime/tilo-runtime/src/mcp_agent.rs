@@ -852,6 +852,10 @@ struct Resolved {
     children: Vec<Node>,
     /// The nodes this resolution passed through, root first.
     chain: Vec<Node>,
+    /// The directory levels the resolution read, which what the call does
+    /// next (finding the action that reads the target) reads again from
+    /// here rather than asking the app twice.
+    levels: Levels,
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -1111,12 +1115,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Resolve a whole path.
     async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
-        let (app_id, provider) = match self.app_ref(&parsed.app).await? {
-            AppRef::Running { app_id, provider } => (app_id, provider),
-            AppRef::Installed { .. } => {
-                return Ok(Err(Self::not_running_note(&parsed.app)));
+        match self.app_ref(&parsed.app).await? {
+            AppRef::Running { app_id, provider } => {
+                Ok(Ok(self.resolve_in(parsed, app_id, provider).await?))
             }
-        };
+            AppRef::Installed { .. } => Ok(Err(Self::not_running_note(&parsed.app))),
+        }
+    }
+
+    /// Resolve the segments of `parsed` in the running app `app_id`, whose
+    /// instance is `provider`.
+    async fn resolve_in(
+        &self,
+        parsed: &ParsedPath,
+        app_id: String,
+        provider: String,
+    ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
         let mut levels = Levels::new();
         let (chain, here) = self
@@ -1152,7 +1166,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             siblings = self.level(&provider, &node.id, &mut levels).await?.children;
             previous = Some(node.clone());
         }
-        Ok(Ok(Resolved {
+        Ok(Resolved {
             app_id,
             provider,
             path: written,
@@ -1169,7 +1183,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             children: here.children,
             chain,
-        }))
+            levels,
+        })
     }
 
     fn not_running_note(name: &str) -> String {
@@ -1360,12 +1375,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
         }
-        let resolved = match self.resolve(&parsed).await? {
+        let mut resolved = match self.resolve(&parsed).await? {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
         let provider = resolved.provider.clone();
-        let mut levels = Levels::new();
+        let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
             let mut text = format!(
                 "{} has no read action; its actions: {}",
@@ -1563,15 +1578,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let action = parsed.action.clone().ok_or_else(|| {
             format!("name the action: {path}#<action>; tilo_ls {path} lists them")
         })?;
-        if let AppRef::Installed { app_id } = self.app_ref(&parsed.app).await? {
-            return self
-                .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                .await;
-        }
-        let resolved = match self.resolve(&parsed).await? {
-            Ok(resolved) => resolved,
-            Err(note) => return Err(note),
+        // The app is looked up once: resolving the path in it does not ask
+        // again which apps run.
+        let (app_id, provider) = match self.app_ref(&parsed.app).await? {
+            AppRef::Installed { app_id } => {
+                return self
+                    .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
+                    .await;
+            }
+            AppRef::Running { app_id, provider } => (app_id, provider),
         };
+        let resolved = self.resolve_in(&parsed, app_id, provider).await?;
         let descriptor = pick_action(&action, &resolved.actions, &resolved.path)
             .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?
             .clone();
@@ -1695,21 +1712,37 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 });
             }
         }
-        // Resources and actions inside each running app, newest instance.
+        // Resources and actions inside each running app, newest instance,
+        // every app asked at once: one that does not answer costs one wait,
+        // not one wait per app, and leaves the hits of those that did.
+        let mut searched: Vec<(String, String)> = Vec::new();
         for app_id in &seen {
             let name = app_names(std::slice::from_ref(app_id)).join("");
             if wanted.as_ref().is_some_and(|wanted| *wanted != name) {
                 continue;
             }
-            let Some(provider) = running
+            if let Some(provider) = running
                 .iter()
                 .rev()
                 .find(|(_, app)| app["app_id"].as_str() == Some(app_id.as_str()))
                 .map(|(peer, _)| peer.to_string())
-            else {
-                continue;
-            };
-            hits.extend(self.search_app(&name, &provider, &words).await?);
+            {
+                searched.push((name, provider));
+            }
+        }
+        let answers = join_all(
+            searched
+                .iter()
+                .map(|(name, provider)| self.search_app(name, provider, &words))
+                .collect(),
+        )
+        .await;
+        let mut silent: Vec<String> = Vec::new();
+        for ((name, _), answer) in searched.into_iter().zip(answers) {
+            match answer {
+                Ok(found) => hits.extend(found),
+                Err(_) => silent.push(name),
+            }
         }
         hits.sort_by_key(|hit| hit.tier);
         let total = hits.len();
@@ -1731,6 +1764,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             text = format!(
                 "nothing matches {}; tilo_ls shows the apps and what is in them",
                 args.query.trim()
+            );
+        }
+        if !silent.is_empty() {
+            let _ = write!(
+                text,
+                "\nnot searched, the app did not answer: {}",
+                list_names(&silent)
             );
         }
         Ok(Reply::ok(text))
@@ -1821,6 +1861,31 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(hits)
     }
+}
+
+/// Every one of `futures`, run together, their outputs in their order.
+async fn join_all<F: std::future::Future>(futures: Vec<F>) -> Vec<F::Output> {
+    let mut running: Vec<std::pin::Pin<Box<F>>> = futures.into_iter().map(Box::pin).collect();
+    let mut outputs: Vec<Option<F::Output>> = running.iter().map(|_| None).collect();
+    std::future::poll_fn(|context| {
+        let mut finished = true;
+        for (future, output) in running.iter_mut().zip(outputs.iter_mut()) {
+            if output.is_some() {
+                continue;
+            }
+            match future.as_mut().poll(context) {
+                std::task::Poll::Ready(answer) => *output = Some(answer),
+                std::task::Poll::Pending => finished = false,
+            }
+        }
+        if finished {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
+    outputs.into_iter().flatten().collect()
 }
 
 /// One line of a search, with how well it matched: 0 an app, 1 a resource,

@@ -82,6 +82,9 @@ pub struct Briefing {
     /// The pictures the first turn shows after its text: on a re-plan, the
     /// newest the task's steps looked at ([`PlanContext::pictures`]).
     pub pictures: Vec<Picture>,
+    /// The task's budget for asking a call lost to the network again
+    /// ([`PlanContext::retries`]).
+    pub retries: crate::planner::TurnRetries,
 }
 
 impl Briefing {
@@ -724,6 +727,7 @@ fn briefing(context: &PlanContext, catalogue: &Catalogue) -> Briefing {
         searchable: context.searchable.clone(),
         may_plan_nothing: context.may_plan_nothing,
         pictures: Vec::new(),
+        retries: context.retries.clone(),
     }
 }
 

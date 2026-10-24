@@ -684,9 +684,18 @@ fn v120_component(value: f64) -> i32 {
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
 }
 
+/// Whether the shell chrome is currently claiming the keyboard: whenever it
+/// takes all input ([`chrome_takes_all_input`]), and while a file chooser's
+/// sheet types for the focused window that asked for it. That sheet takes
+/// the pointer only over its own window ([`chrome_captures_pointer`]): a
+/// click on another window reaches that window, as with no chooser up.
+pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+    chrome_takes_all_input(fb) || fb.host().file_picker_takes_keyboard()
+}
+
 /// Whether the shell chrome is currently claiming all input: an overlay,
 /// the command palette, the peer-sync card, the workspace-name editor, or a permission prompt — in any of those a client must not receive keys or pointer focus.
-pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
+fn chrome_takes_all_input(fb: &FrameBuilder) -> bool {
     // First-login chrome is a compositor-owned security boundary. It hides the
     // entire desktop and must mute both the local Wayland seat and the remote
     // input firewall, just like the session lock does.
@@ -704,14 +713,6 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     // The emoji picker types into its own search field; the field it will
     // insert into gets the keyboard back when it closes.
     if fb.host().emoji_picker_open() {
-        return true;
-    }
-    // The portal's file chooser is modal for the window that asked: while
-    // that window has the keyboard its sheet types, and another window
-    // focused keeps its keys (the sheet takes the pointer only over its own
-    // window, `chrome_band_captures_pointer_at`). A chooser no window asked
-    // for holds everything.
-    if fb.host().file_picker_takes_keyboard() {
         return true;
     }
     // Permission and other portal sheets are the same kind of modal. Without
@@ -775,8 +776,10 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
 /// also while the pointer is on the bar a maximized window shows over its
 /// client, or on a notification banner over a window. That bar takes only the pointer — the client keeps the keyboard,
 /// so typing never stops because the pointer rests near the window's top.
+/// A file chooser's sheet takes it over the sheet and the window waiting on
+/// it, never over another window, whichever window has the keyboard.
 pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
-    chrome_captures_input(fb) || fb.host().chrome_band_captures_pointer()
+    chrome_takes_all_input(fb) || fb.host().chrome_band_captures_pointer()
 }
 
 /// Whether the shell takes a finger landing at `point` (global, as drawn):
@@ -784,7 +787,7 @@ pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
 /// ([`chrome_captures_pointer`]). Touch equals pointer: a contact on an
 /// overlay is the overlay's, never also the window's beneath.
 pub fn chrome_captures_touch_at(fb: &FrameBuilder, point: vello::kurbo::Point) -> bool {
-    chrome_captures_input(fb) || fb.host().chrome_band_captures_pointer_at(Some(point))
+    chrome_takes_all_input(fb) || fb.host().chrome_band_captures_pointer_at(Some(point))
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.

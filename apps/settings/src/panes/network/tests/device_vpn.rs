@@ -181,3 +181,150 @@ fn without_a_session_the_vpn_list_offers_no_devices() {
             .is_err()
     );
 }
+
+/// Two tunnels carrying everything: "Home", up, and "Work"; and "Split",
+/// up, which carries only its own networks.
+fn tunnels(fake: &FakeNetwork) {
+    let tunnel = |name: &str, uuid: &str, active: bool, all_traffic: bool| {
+        fake.vpn_settings.lock().unwrap().insert(
+            uuid.into(),
+            os_actions::network_settings::VpnProfileSettings {
+                name: name.into(),
+                kind: "wireguard".into(),
+                all_traffic,
+                ..os_actions::network_settings::VpnProfileSettings::default()
+            },
+        );
+        super::super::VpnInfo {
+            name: name.into(),
+            uuid: uuid.into(),
+            kind: "wireguard".into(),
+            service: None,
+            active,
+        }
+    };
+    *fake.vpns.lock().unwrap() = vec![
+        tunnel("Home", "11111111-1111-4111-8111-111111111111", true, true),
+        tunnel("Work", "22222222-2222-4222-8222-222222222222", false, true),
+        tunnel("Split", "33333333-3333-4333-8333-333333333333", true, false),
+    ];
+}
+
+/// The window over `fake`, on the VPN list.
+fn on_the_vpn_list(
+    fake: &Arc<FakeNetwork>,
+) -> ui::framework::testing::TestApp<crate::SettingsShell> {
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    let observed = hosted_model(&mut app, Arc::clone(fake) as Arc<dyn NetworkService>);
+    mount_network(&mut app, observed).unwrap();
+    app.harness().resize((1600, 6000)).unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.call("show-vpns", serde_json::json!({})).unwrap();
+    app.settle();
+    app
+}
+
+/// One tunnel carries everything at a time: turning one on turns off the
+/// other that does, and the route through a device; a tunnel carrying only
+/// its own networks stays.
+#[test]
+fn a_vpn_carrying_everything_turns_off_the_other_that_does() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.device_vpn.lock().unwrap() = Some(status());
+    tunnels(&fake);
+    let mut app = on_the_vpn_list(&fake);
+    let document = document(&mut app);
+    let mut through = serde_json::Map::new();
+    through.insert(
+        THROUGH.name().into(),
+        serde_json::to_value(Some(Through::device(DESK))).unwrap(),
+    );
+    document
+        .update_section(device_vpn::SECTION, through)
+        .unwrap();
+
+    app.harness()
+        .click_named("settings.network.vpn.switch.22222222-2222-4222-8222-222222222222")
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(
+        fake.changes.lock().unwrap().as_slice(),
+        ["vpn Home false", "vpn Work true"]
+    );
+    let active: Vec<String> = fake
+        .vpns
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|vpn| vpn.active)
+        .map(|vpn| vpn.name.clone())
+        .collect();
+    assert_eq!(active, ["Work", "Split"]);
+    assert_eq!(
+        THROUGH.from_section(&document.section(device_vpn::SECTION)),
+        None,
+        "the route through the desk PC stopped"
+    );
+}
+
+/// Routing everything through one of the person's devices turns off the
+/// tunnel that carries everything; the kill switch then blocks traffic
+/// while the route is down.
+#[test]
+fn routing_through_a_device_turns_off_the_vpn_carrying_everything() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.device_vpn.lock().unwrap() = Some(status());
+    tunnels(&fake);
+    let mut app = on_the_vpn_list(&fake);
+    let document = document(&mut app);
+    app.harness()
+        .click_named(&format!("settings.network.vpn.device.switch.{DESK}"))
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(fake.changes.lock().unwrap().as_slice(), ["vpn Home false"]);
+
+    // The session publishes the route it now keeps.
+    if let Some(status) = fake.device_vpn.lock().unwrap().as_mut() {
+        status.client = Some(device_vpn::ClientStatus {
+            device: DESK.into(),
+            label: "Desk PC".into(),
+            state: ClientState::Connecting,
+            ..device_vpn::ClientStatus::default()
+        });
+    }
+    app.with_surface::<SettingsApp, _>(|settings| {
+        super::super::area(settings)
+            .unwrap()
+            .model()
+            .borrow_mut()
+            .start_snapshot();
+    })
+    .unwrap();
+    settle_until(&mut app, |model| {
+        model.snapshot.is_none()
+            && model
+                .vpn
+                .devices
+                .status
+                .as_ref()
+                .is_some_and(|status| status.client.is_some())
+    });
+    app.settle();
+    assert_eq!(
+        rendered_enabled(
+            app.harness().root_widget(),
+            "settings.network.vpn.device.kill-switch"
+        ),
+        Some(true)
+    );
+    app.harness()
+        .click_named("settings.network.vpn.device.kill-switch")
+        .unwrap();
+    app.settle();
+    assert!(
+        THROUGH
+            .from_section(&document.section(device_vpn::SECTION))
+            .is_some_and(|through| through.kill_switch && through.device == DESK)
+    );
+}

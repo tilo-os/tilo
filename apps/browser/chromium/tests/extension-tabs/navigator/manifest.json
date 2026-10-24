@@ -1,0 +1,3 @@
+{"manifest_version": 3, "name": "Navigator", "version": "1.0",
+ "permissions": ["webNavigation", "tabs"],
+ "background": {"service_worker": "worker.js"}}

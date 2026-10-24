@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,8 +27,7 @@ class BoardSeries(unittest.TestCase):
             "buildDefinition": {"buildType": "https://tilo.sh/buildtypes/bootc-os/v1",
             "internalParameters": {"expectedReleaseDigest": self.digest},
             "externalParameters": {"generation": 1, "hardwareProfile": "lenovo-83ed",
-                "architecture": "aarch64", "firmwareManifestSha256": "b" * 64,
-                "hardwareDefinitionSha256": "d" * 64},
+                "architecture": "aarch64", "firmwareManifestSha256": "b" * 64},
             "resolvedDependencies": [
                 {"uri": "git+ssh://code.tilo.so/tilo/tilo@" + "a" * 40},
                 {"uri": "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:" + "c" * 64}],
@@ -75,51 +73,45 @@ else:
     def write_predicate(self):
         (self.path / "predicate").write_text(json.dumps({"predicate": self.predicate}))
 
-    def run_allocator(self):
-        return subprocess.run([str(ROOT / "os/dev/board-generation.sh")], cwd=self.path,
+    def run_allocator(self, *args):
+        return subprocess.run([str(ROOT / "os/dev/board-generation.sh"), *args], cwd=self.path,
                               env=self.env, capture_output=True, text=True)
 
     def test_verified_seed_creates_dense_board_history_without_generic_mutation(self):
         result = self.run_allocator()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "2")
+        self.assertFalse((self.path / "copies").exists())
+        result = self.run_allocator("--retain")
+        self.assertEqual(result.returncode, 0, result.stderr)
         rows = json.loads((self.path / "registry.json").read_text())
         self.assertEqual(rows, {"gen9": self.digest, "lenovo-83ed-gen1": self.digest,
                                 "lenovo-83ed-latest": self.digest})
         # Existing initialized state needs no continuing genesis input.
-        self.env.pop("TILO_BOARD_SERIES_SEED")
+        self.env["TILO_BOARD_SERIES_SEED"] = ""
         self.assertEqual(self.run_allocator().stdout.strip(), "2")
+        self.assertEqual(self.run_allocator("--retain").returncode, 0)
+        self.assertEqual((self.path / "copies").read_text().split(),
+                         ["lenovo-83ed-gen1", "lenovo-83ed-latest"])
 
-    def test_actual_lenovo_workflow_allocates_verified_successor_generation(self):
-        dev = self.path / "os/dev"
-        dev.mkdir(parents=True)
-        for name in ("board-generation.sh", "next-generation.sh", "_common.sh"):
-            (dev / name).symlink_to(ROOT / "os/dev" / name)
-        workflow = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
-        block = workflow.split("- name: Resolve the image generation from the published series\n", 1)[1]
-        block = block.split("        run: |\n", 1)[1]
-        lines = []
-        for line in block.splitlines():
-            if line and not line.startswith("          "):
-                break
-            lines.append(line)
-        output = self.path / "generation-env"
-        env = self.env | {"HARDWARE_PROFILE": "lenovo-83ed", "GITHUB_ENV": str(output)}
-        result = subprocess.run(["bash", "-c", textwrap.dedent("\n".join(lines))],
-                                cwd=self.path, env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.read_text(), "TILO_GENERATION=2\n")
+    def test_pinned_seed_is_a_verified_historical_generation_one(self):
+        self.env.pop("TILO_BOARD_SERIES_SEED")
+        pinned = (ROOT / "os/publication.env").read_text().split("TILO_LENOVO_SERIES_SEED=")[1].split()[0]
+        self.assertRegex(pinned, r"^code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$")
+        # The fixture registry serves another digest than the pinned one, so the provenance's
+        # expected digest cannot bind it: the pinned seed is what gets verified.
+        self.assertNotEqual(self.run_allocator().returncode, 0)
 
     def test_missing_or_mutable_seed_refuses_before_publication(self):
         for seed in ["", "code.tilo.so/tilo/tilo:lenovo-83ed-latest"]:
             with self.subTest(seed=seed):
                 self.env["TILO_BOARD_SERIES_SEED"] = seed
-                self.assertNotEqual(self.run_allocator().returncode, 0)
+                self.assertNotEqual(self.run_allocator("--retain").returncode, 0)
                 self.assertFalse((self.path / "copies").exists())
 
     def test_seed_signature_refusal_is_not_a_series_reset(self):
         self.env["BAD_SIGNATURE"] = "1"
-        self.assertNotEqual(self.run_allocator().returncode, 0)
+        self.assertNotEqual(self.run_allocator("--retain").returncode, 0)
         self.assertFalse((self.path / "copies").exists())
 
     def test_wrong_board_architecture_generation_or_digest_refuses_before_copy(self):
@@ -130,7 +122,7 @@ else:
                 original = external[key]
                 external[key] = wrong
                 self.write_predicate()
-                self.assertNotEqual(self.run_allocator().returncode, 0)
+                self.assertNotEqual(self.run_allocator("--retain").returncode, 0)
                 self.assertFalse((self.path / "copies").exists())
                 external[key] = original
         self.predicate["buildDefinition"]["internalParameters"]["expectedReleaseDigest"] = "sha256:" + "f" * 64

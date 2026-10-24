@@ -33,6 +33,7 @@ import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createPictureInbox, openSource} from './voice-video.mjs';
 import {createVoiceTransport} from './voice-transport.mjs';
 import {CarrierUnsupportedError, MediaAdmissionError} from './moq-carrier.mjs';
+import {callIdOf} from './voice-controls.mjs';
 
 /** RMS above which a participant counts as speaking, and how long it stays so. */
 const SPEAKING_LEVEL = 0.015;
@@ -104,6 +105,11 @@ export function createVoiceCall({
   /** Whether the host was last told this person is muted. */
   let toldMuted;
   const speaking = new Map();
+  /** How loud each participant plays here, by id (`callIdOf`), and that
+   * as a gain per publication of the grant it was worked out for. */
+  const volumes = new Map();
+  let gains = new Map();
+  let gainsOf;
   /** The camera and screen streams this person shows, by source. */
   const streams = new Map();
   /** Their publishers on the current carrier, by source. */
@@ -139,6 +145,7 @@ export function createVoiceCall({
       camera: participant.camera === true,
       screen: participant.screen === true,
       muted: participant.muted === true,
+      ...(participant.bridged ? {bridged: participant.bridged} : {}),
       self: participant.namespace === own,
       speaking: (speaking.get(participant.namespace.split('/')[1]) ?? -Infinity) > at - SPEAKING_HOLD_MS,
     }));
@@ -159,6 +166,17 @@ export function createVoiceCall({
     const next = participants();
     changed ||= next.some((participant, index) => participant.speaking !== state.participants[index]?.speaking);
     if (changed) update({participants: next});
+  }
+
+  function gainOf(publisher) {
+    if (gainsOf !== grant) {
+      gainsOf = grant;
+      gains = new Map((grant?.participants ?? []).flatMap(participant => {
+        const gain = volumes.get(callIdOf(participant));
+        return gain === undefined ? [] : [[participant.namespace.split('/')[1], gain]];
+      }));
+    }
+    return gains.get(publisher) ?? 1;
   }
 
   function onFrame(frame) {
@@ -356,7 +374,7 @@ export function createVoiceCall({
       carrierKey = keyOf(opening);
       attempt = 0;
       session.subscribe({
-        onFrame: frame => audioSession?.play({publisherId: frame.publisher, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload}),
+        onFrame: frame => audioSession?.play({publisherId: frame.publisher, timestamp: frame.timestamp, duration: frame.duration, payload: frame.payload, gain: gainOf(frame.publisher)}),
         onPublisher: (publisher, active) => { if (!active) audioSession?.removePublisher(publisher); },
       });
       update({phase: 'live', carrier: 'open', reason: null});
@@ -497,6 +515,8 @@ export function createVoiceCall({
     grant = undefined;
     toldMuted = undefined;
     speaking.clear();
+    volumes.clear();
+    gainsOf = undefined;
     stopVideo();
     const session = audioSession;
     audioSession = undefined;
@@ -571,6 +591,13 @@ export function createVoiceCall({
     },
     /** Turn the camera or a shared screen on or off in the call. */
     setVideo,
+    /** Play participant `id` (a person or `<service>:<account>`) at `gain`
+     * (0 silences, 1 as they arrive, at most 2) on this device only. */
+    setVolume(id, gain) {
+      if (typeof id !== 'string' || !Number.isFinite(gain) || gain < 0 || gain > 2) return;
+      if (gain === 1) volumes.delete(id); else volumes.set(id, gain);
+      gainsOf = undefined;
+    },
     /** The pictures the app shows: `[{person, source, layer}]`. */
     showPictures(pictures) {
       shown = pictures.filter(item => !participants().some(participant => participant.self && participant.user === item.person));

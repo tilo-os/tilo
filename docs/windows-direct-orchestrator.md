@@ -1,8 +1,9 @@
 # Paired CI Windows direct install
 
 `os/dev/windows-direct-install.py` resumes the Windows ARM64 path from one
-reviewed allocation plan. It downloads only the exact Forgejo run artifacts,
-verifies signed CI medium identities and OCI provenance, runs the paired WHPX
+reviewed allocation plan. It downloads only the exact imager run artifacts,
+verifies signed CI medium identities and the OS releases they install (each
+image's signature and SLSA provenance), runs the paired WHPX
 scenarios, and calls the existing guarded source finalizer and receipt writer.
 Physical copy and BootNext are separate explicit commands.
 
@@ -35,11 +36,9 @@ Create a new empty work directory and an input JSON file outside it:
 
 ```json
 {
-  "schema": "tilo.windows-direct-install.v1",
+  "schema": "tilo.windows-direct-install.v2",
   "source_revision": "<full lowercase source commit>",
   "imager_run": 12345,
-  "generic_os_run": 12340,
-  "lenovo_os_run": 12341,
   "generic_image": "registry.tilo.so/tilo/tilo@sha256:<signed index digest>",
   "lenovo_image": "code.tilo.so/tilo/tilo@sha256:<signed Lenovo child digest>",
   "realized_plan": "C:\\tilo\\realized-plan.json",
@@ -55,9 +54,15 @@ Create a new empty work directory and an input JSON file outside it:
 }
 ```
 
-The run numbers identify a successful paired `release-imager.yml` run and the
-two successful `build-image.yml` runs. The wrapper checks their source commits
-and binds the signed OCI provenance invocation IDs to the selected OS runs.
+`imager_run` identifies a successful paired `release-imager.yml` run. The OS
+images are releases t published (`publish-os-release`, tools/ci/products.toml):
+the wrapper verifies each image's signature with `keys/cosign.pub` and its SLSA
+provenance, which must name t's OS release builder
+(`https://code.tilo.so/tilo/t/os-release-v1`), the pinned source commit, an
+independent rebuild of the same bytes and, for the generic index and its ARM64
+child, one generation and invocation (the source commit's time). t publishes no
+signed Lenovo board release yet, so `lenovo_image` must be a board release
+signed with the release key and attested the same way.
 The imager identities bind both medium archives, their verified qcow2 bytes,
 native CI guest proofs, exact source revision, live base, and one imager run
 attempt. The verified qcow2 and signed sidecars are retained in the work
@@ -69,7 +74,7 @@ The v2 signed medium identity records the installer checkout as
 can use a newer main checkout with installer fixes while consuming an older
 signed OS image; its workflow requires that OS source to be an ancestor. The
 wrapper checks the installer revision against the selected imager run and the
-OS revision against both signed OS runs. Legacy v1 media require the same
+OS revision against both signed OS images' provenance. Legacy v1 media require the same
 revision for both. Both media must still share one installer checkout and run.
 
 Run `prepare` only after the realized plan has been reviewed and allocation

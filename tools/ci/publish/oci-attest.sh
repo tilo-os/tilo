@@ -18,11 +18,18 @@
 # With TILO_PUBLISH_DRY_RUN set, the throwaway key oci-sign.sh's dry run made signs instead,
 # with no identity token and no transparency log.
 #
-# usage: oci-attest.sh REPOSITORY OUT (after oci-sign.sh REPOSITORY OUT)
+# With PREDICATE and TYPE, OUT/PREDICATE is attested as TYPE instead, into
+# OUT/<PREDICATE without .json>.attestation.json (the OS release's freshness statement).
+#
+# usage: oci-attest.sh REPOSITORY OUT [PREDICATE TYPE] (after oci-sign.sh REPOSITORY OUT)
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
-repository=${1:?usage: oci-attest.sh REPOSITORY OUT}
+repository=${1:?usage: oci-attest.sh REPOSITORY OUT [PREDICATE TYPE]}
 out=${2:?}
+name=${3:-provenance.json}
+type=${4:-slsaprovenance1}
+envelope=$out/attestation.json
+[[ $name == provenance.json ]] || envelope=$out/${name%.json}.attestation.json
 run_channel=$(channel)
 if [[ ${TILO_DEV_SIGNING:-} == 1 ]]; then
   [[ $run_channel == dev ]] || die "the development key attests main's candidates only; this run is for $T_REF"
@@ -34,24 +41,28 @@ fi
 require_commit
 expected=$(cat "$out/digest")
 [[ $(archive_digest "$out/image.oci.tar") == "$expected" ]] || die 'the archive is not the build'
-[[ -s $out/provenance.json ]] || die "no provenance predicate in $out"
-grep -q "\"expectedReleaseDigest\": *\"$expected\"" "$out/provenance.json" \
-  || die "the provenance predicate is not for $expected"
+[[ -s $out/$name ]] || die "no predicate $name in $out"
+if [[ $name == provenance.json ]]; then
+  grep -q "\"expectedReleaseDigest\": *\"$expected\"" "$out/$name" \
+    || die "the provenance predicate is not for $expected"
+else
+  grep -q "\"$expected\"" "$out/$name" || die "$name does not name $expected"
+fi
 use_cosign
-predicate=$scratch/provenance-$(basename -- "$out").json
-sed "s/{commit}/$T_COMMIT/g" "$out/provenance.json" > "$predicate"
-args=(--yes --type slsaprovenance1 --predicate "$predicate" --hash "${expected#sha256:}")
+predicate=$scratch/${name%.json}-$(basename -- "$out").json
+sed "s/{commit}/$T_COMMIT/g" "$out/$name" > "$predicate"
+args=(--yes --type "$type" --predicate "$predicate" --hash "${expected#sha256:}")
 if [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
   [[ -e $scratch/dry-run-signing/cosign.key ]] || die 'no dry-run key: run oci-sign.sh first'
   COSIGN_PASSWORD= cosign attest-blob "${args[@]}" --tlog-upload=false \
-    --key "$scratch/dry-run-signing/cosign.key" "$repository" > "$out/attestation.json"
+    --key "$scratch/dry-run-signing/cosign.key" "$repository" > "$envelope"
 else
   . "$repo_root/os/dev/configure-cosign-kms.sh"
   tlog=(--tlog-upload=false)
-  rm -f "$out/attestation.bundle.json"
-  [[ ${TILO_SIGN_TLOG:-} == 1 ]] && tlog=(--tlog-upload=true --bundle "$out/attestation.bundle.json")
-  cosign attest-blob "${args[@]}" "${tlog[@]}" --key "$COSIGN_KEY_REF" "$repository" > "$out/attestation.json"
+  rm -f "${envelope%.json}.bundle.json"
+  [[ ${TILO_SIGN_TLOG:-} == 1 ]] && tlog=(--tlog-upload=true --bundle "${envelope%.json}.bundle.json")
+  cosign attest-blob "${args[@]}" "${tlog[@]}" --key "$COSIGN_KEY_REF" "$repository" > "$envelope"
 fi
-grep -q '"payloadType":"application/vnd.in-toto+json"' "$out/attestation.json" \
+grep -q '"payloadType":"application/vnd.in-toto+json"' "$envelope" \
   || die 'cosign wrote no attestation envelope'
 printf 'attested %s@%s\n' "$repository" "$expected"

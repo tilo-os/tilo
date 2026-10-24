@@ -69,7 +69,19 @@ pub enum Command {
     Pictures {
         after: u64,
     },
+    /// How loud this device plays one participant (a person id or a
+    /// [`Guest::id`]), in percent of as they arrive: `0` silences them,
+    /// up to [`MAX_VOLUME_PERCENT`]. Only what this device hears changes;
+    /// nobody else's call does, so it carries no intent.
+    SetVolume {
+        participant: String,
+        percent: u16,
+    },
 }
+
+/// The loudest a participant is played ([`Command::SetVolume`]): twice as
+/// they arrive.
+pub const MAX_VOLUME_PERCENT: u16 = 200;
 
 /// What a picture shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -353,9 +365,9 @@ pub struct Snapshot {
     /// and while this device takes part: what a voice channel shows.
     #[serde(default)]
     pub rosters: Vec<Roster>,
-    /// The people this device's call hears talking now (person ids, sorted
-    /// and distinct), this person among them while their microphone is
-    /// heard: what the speaking rings show.
+    /// Who this device's call hears talking now (person ids and
+    /// [`Guest::id`]s, sorted and distinct), this person among them while
+    /// their microphone is heard: what the speaking rings show.
     #[serde(default)]
     pub speaking: Vec<String>,
     /// This person's camera is on in the call. Like every field added
@@ -385,7 +397,9 @@ pub struct Snapshot {
 pub struct Roster {
     pub channel_id: String,
     /// Person ids (a user root key in lowercase hex), sorted and distinct:
-    /// a person on two devices is in the call once.
+    /// a person on two devices is in the call once. A bridge's
+    /// participations are never among them: their person is the bridge's,
+    /// not the one they carry.
     pub people: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cameras: Vec<String>,
@@ -396,6 +410,84 @@ pub struct Roster {
     /// someone who may not speak in the call counts as muted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub muted: Vec<String>,
+    /// The people a bridge carries into the call from another service,
+    /// sorted by id and distinct: each shown as themselves, reached
+    /// through their service.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guests: Vec<Guest>,
+    /// The services bridging the call (lowercase, sorted and distinct):
+    /// what the call's people say reaches them too, so the call says so.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bridges: Vec<String>,
+}
+
+/// A person a bridge carries into a call from another service.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Guest {
+    /// `<service>:<account>`: how `speaking` and [`Command::SetVolume`]
+    /// name them.
+    pub id: String,
+    /// Their name on that service: trimmed, 1..=80 characters.
+    pub name: String,
+    /// BLAKE3 hex of their picture in the room's content store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    /// The service, lowercase: `discord`.
+    pub service: String,
+    /// The room member the account is linked to (a person id): shown as
+    /// that member, reached through `service`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<String>,
+    /// Muted on that service: everyone sees it, as a member's microphone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
+}
+
+impl Guest {
+    /// The id of `account` on `service`.
+    #[must_use]
+    pub fn id_of(service: &str, account: &str) -> String {
+        format!("{service}:{account}")
+    }
+
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        let name = self.name.chars().count();
+        guest_valid(&self.id)
+            && self
+                .id
+                .split_once(':')
+                .is_some_and(|(service, _)| service == self.service)
+            && (1..=80).contains(&name)
+            && self.name.trim() == self.name
+            && !self.name.chars().any(char::is_control)
+            && self.avatar.as_deref().is_none_or(hex32)
+            && self.linked.as_deref().is_none_or(person_valid)
+    }
+}
+
+/// A service a bridge reaches: lowercase letters, digits and `-`.
+fn service_valid(service: &str) -> bool {
+    (1..=32).contains(&service.len())
+        && service
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// A guest id: `<service>:<account>`.
+fn guest_valid(id: &str) -> bool {
+    id.split_once(':').is_some_and(|(service, account)| {
+        service_valid(service)
+            && !account.is_empty()
+            && account.len() <= 128
+            && !account.chars().any(|c| c.is_control() || c.is_whitespace())
+    })
+}
+
+/// Who a call names: a person id or a guest id.
+fn participant_valid(id: &str) -> bool {
+    person_valid(id) || guest_valid(id)
 }
 
 impl Roster {
@@ -412,13 +504,31 @@ impl Roster {
             && among(&self.cameras)
             && among(&self.screens)
             && among(&self.muted)
+            && self
+                .guests
+                .iter()
+                .all(|guest| guest.valid() && self.bridges.binary_search(&guest.service).is_ok())
+            && self
+                .guests
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left.id < right.id))
+            && self.bridges.iter().all(|service| service_valid(service))
+            && self
+                .bridges
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
     }
 }
 
 /// A person id: a user root key in lowercase hex.
 fn person_valid(person: &str) -> bool {
-    person.len() == 64
-        && person
+    hex32(person)
+}
+
+/// 32 bytes in lowercase hex: a key or a BLAKE3 hash.
+fn hex32(value: &str) -> bool {
+    value.len() == 64
+        && value
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
@@ -459,6 +569,10 @@ impl Request {
                                 if (&left.person, left.source) < (&right.person, right.source))
                         })
                 }
+                Command::SetVolume {
+                    participant,
+                    percent,
+                } => participant_valid(participant) && *percent <= MAX_VOLUME_PERCENT,
                 Command::SetMuted { .. }
                 | Command::SetCamera { .. }
                 | Command::SetScreen { .. }
@@ -471,7 +585,8 @@ impl Request {
 
     /// Whether this command carries a route intent: everything that changes
     /// the call. A status, a watch and collecting pictures only read, and
-    /// saying which pictures are shown changes nothing of the call itself.
+    /// saying which pictures are shown or how loud someone plays changes
+    /// nothing of the call itself.
     #[must_use]
     pub const fn carries_intent(&self) -> bool {
         !matches!(
@@ -480,6 +595,7 @@ impl Request {
                 | Command::Watch { .. }
                 | Command::Pictures { .. }
                 | Command::Show { .. }
+                | Command::SetVolume { .. }
         )
     }
 
@@ -489,7 +605,8 @@ impl Request {
                 Command::Status
                 | Command::Watch { .. }
                 | Command::Pictures { .. }
-                | Command::Show { .. } => self.intent == 0,
+                | Command::Show { .. }
+                | Command::SetVolume { .. } => self.intent == 0,
                 Command::Leave => self.intent > 0,
                 _ => self.intent > 0 && self.intent < u64::MAX,
             }
@@ -560,7 +677,11 @@ impl Snapshot {
                 || (!self.muted && self.state == State::Live && self.input_id.is_some()))
             && self.input_id.as_deref().is_none_or(identifier)
             && self.rosters.iter().all(Roster::valid)
-            && people_valid(&self.speaking)
+            && self.speaking.iter().all(|id| participant_valid(id))
+            && self
+                .speaking
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
             // Nothing shows outside a call.
             && (!matches!(self.state, State::Unavailable | State::Idle | State::Ended)
                 || (!self.camera && !self.screen))

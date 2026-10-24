@@ -301,9 +301,42 @@ cpu_steal() {
       printf "cpu steal since boot: %.3fs over %d CPUs (%.0f%% of %.3fs)\n",
         s, cpus, 100 * s / (cpus * up_us / 1e6), up_us / 1e6 }' "$stat"
 }
+# The time the boot spent waiting on its host, not on the image: its disk reads
+# queued behind other VMs and builds on the same disk (the kernel's I/O
+# pressure, "full": every runnable task of the guest waiting on I/O), and its
+# vCPUs not run (steal, averaged over the CPUs). Kernel time, which reads no
+# disk, stays the same on a loaded host while every phase that reads the disk
+# grows, so it is the host's and not part of the budget. TILO_BOOT_HOST_SAMPLES
+# names samples the guest took of both while it booted, one a line: uptime in
+# seconds, the I/O "full" total in microseconds, steal ticks of /proc/stat. The
+# wait at the greeter is that of the last sample before it, or of the first after
+# it less the time since (a wait grows no faster than the clock), so it is never
+# counted larger than it was. Without samples the whole boot counts.
+host_wait_us=0
+host_wait() {
+  local samples="${TILO_BOOT_HOST_SAMPLES:-}" stat="${TILO_PROC_STAT:-/proc/stat}" hz cpus
+  [ -n "$samples" ] && [ -s "$samples" ] || return 0
+  hz="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+  cpus="$(awk '$1 ~ /^cpu[0-9]+$/ { n++ } END { print n + 0 }' "$stat" 2>/dev/null || echo 0)"
+  [ "$cpus" -gt 0 ] || return 0
+  awk -v e="$entered_us" -v hz="$hz" -v cpus="$cpus" '
+    NF < 3 || $1 !~ /^[0-9.]+$/ || $2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ { next }
+    { t = $1 * 1e6; w = $2 + $3 * 1e6 / hz / cpus }
+    t <= e { best = w; found = 1; next }
+    !found { best = w - (t - e); found = 1; exit }
+    END { if (best < 0) best = 0; printf "%d\n", best }' "$samples"
+}
+host_wait_us="$(host_wait)"
+case "$host_wait_us" in ''|*[!0-9]*) host_wait_us=0 ;; esac
+judged_us=$((entered_us - host_wait_us))
+host_wait_note() {
+  [ "$host_wait_us" -gt 0 ] || return 0
+  awk -v w="$host_wait_us" -v j="$judged_us" 'BEGIN {
+    printf "of it %.3fs waiting on the host (I/O pressure and CPU steal), %.3fs the image'"'"'s\n", w / 1e6, j / 1e6 }'
+}
 # Within half the budget the total is enough; a closer or failing boot also
 # names where its time went.
-if [ "$entered_us" -gt $((budget_us / 2)) ] && [ "$entered_us" -le "$budget_us" ]; then
+if [ "$judged_us" -gt $((budget_us / 2)) ] && [ "$judged_us" -le "$budget_us" ]; then
   cpu_steal
   kernel_gaps
   initrd_gaps
@@ -311,9 +344,10 @@ if [ "$entered_us" -gt $((budget_us / 2)) ] && [ "$entered_us" -le "$budget_us" 
   first_boot_update_check
   systemd-analyze critical-chain graphical.target 2>/dev/null | head -14 || true
 fi
-if [ "$entered_us" -gt "$budget_us" ]; then
+if [ "$judged_us" -gt "$budget_us" ]; then
   printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
     "$seconds" "$milliseconds" "$budget_seconds" >&2
+  host_wait_note >&2
   boot_phases >&2
   cpu_steal >&2
   kernel_gaps >&2
@@ -327,6 +361,7 @@ fi
 boot_phases
 printf 'kernel+userspace reached usable greeter in %d.%03ds (budget: %ss)\n' \
   "$seconds" "$milliseconds" "$budget_seconds"
+host_wait_note
 rebuilt="$(rebuilt_image_caches)"
 if [ -n "$rebuilt" ]; then
   printf 'this boot rebuilt caches the image already carries: %s\n' "$(tr '\n' ' ' <<<"$rebuilt")" >&2

@@ -35,6 +35,67 @@ pub enum ToWorker {
         bytes: Option<Bytes>,
     },
     Stop,
+    /// The outside call the worker is to be in from now on (a voice
+    /// channel id of the service), carrying the room's call into it, and
+    /// the line it shows there about who is on the room's side; `call:
+    /// None` leaves. It replaces the last one whole, and the host sends it
+    /// again whenever the worker restarts. The worker answers with
+    /// [`FromWorker::Calls`].
+    Call {
+        call: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+    },
+    /// One Opus frame (48 kHz, 20 ms) the room's call heard from `speaker`
+    /// (an id stable while they speak), for the outside call the worker is
+    /// in. Several speakers at once are mixed by the worker; the host never
+    /// sends a frame the outside call itself said.
+    Audio {
+        speaker: String,
+        opus: Bytes,
+    },
+}
+
+/// Who is in one outside call (a voice channel of the service).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutsideCall {
+    /// The service's id of the call: its voice channel.
+    pub call: String,
+    /// Who is in it, the worker's own account left out, sorted by account.
+    pub people: Vec<OutsidePerson>,
+}
+
+/// One person in an outside call.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutsidePerson {
+    /// Their account on the service.
+    pub account: String,
+    /// The name the service shows for them there.
+    pub name: String,
+    /// Where the service serves their avatar, if they have one.
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    /// Muted, by themselves or by the service's moderators: nothing of
+    /// theirs is heard.
+    #[serde(default)]
+    pub muted: bool,
+}
+
+/// The worker's own place in the outside calls.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "link", rename_all = "kebab-case")]
+pub enum CallLink {
+    /// In no call.
+    #[default]
+    Idle,
+    /// Joining `call`.
+    Joining { call: String },
+    /// In `call`, carrying audio both ways.
+    Joined { call: String },
+    /// The service will not let it into `call`, for `reason` (a missing
+    /// permission names it): said as it is, never retried until asked
+    /// again.
+    Refused { call: String, reason: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -79,6 +140,19 @@ pub enum FromWorker {
         queue_depth: u64,
         lag_seconds: f64,
         rate_limited_total: u64,
+    },
+    /// The service's calls as the worker sees them now, and its own place
+    /// in them: whenever either changes, and once after [`ToWorker::Call`].
+    /// Replaces the last report whole; live state, never logged.
+    Calls {
+        calls: Vec<OutsideCall>,
+        link: CallLink,
+    },
+    /// One Opus frame (48 kHz, 20 ms) `speaker` (their account) said in the
+    /// outside call the worker is in, as the service delivered it.
+    Audio {
+        speaker: String,
+        opus: Bytes,
     },
 }
 
