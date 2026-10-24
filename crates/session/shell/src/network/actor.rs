@@ -58,7 +58,7 @@ static DEDICATED_SURFACE_FRAMES_RECEIVED: std::sync::atomic::AtomicUsize =
 /// converged, idle desktop sends nothing on it. Armed only while there is something to retry
 /// or someone to tell ([`ActorState::needs_upkeep`]): a desktop alone with
 /// its rooms never wakes for it.
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+pub(crate) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// Peer liveness, kept by the transport rather than by messages. A gossip
 /// neighbour is a member while its link is up: iroh sends a QUIC keep-alive
 /// after 5 s without traffic, and a connection that hears nothing for this
@@ -672,6 +672,9 @@ enum InternalEvent {
         ws: u64,
         serial: u64,
         hint: Box<tilo_peer_state::join::TransportHint>,
+        /// The host dialled: the governor `hint` names, or a host of the
+        /// room while the governor is out of reach.
+        via: Box<tilo_peer_state::join::TransportHint>,
         certificate: DeviceCert,
         result: Box<Result<RelayCoeditSession, tilo_joined_room::session::DialError>>,
     },
@@ -2752,7 +2755,7 @@ impl ActorState {
         let mut sessions: Vec<_> = self
             .host_sessions
             .iter()
-            .filter(|((session_ws, _), _)| *session_ws == ws)
+            .filter(|((session_ws, _), runtime)| *session_ws == ws && reaches_governor(runtime))
             .map(|(_, runtime)| &runtime.session)
             .collect();
         sessions.sort_by_key(|session| session.relay_device_public_key() != device);
@@ -3036,9 +3039,10 @@ impl ActorState {
                 ws,
                 serial,
                 hint,
+                via,
                 certificate,
                 result,
-            }) => self.native_host_connected(ws, serial, *hint, certificate, result),
+            }) => self.native_host_connected(ws, serial, (*hint, *via), certificate, result),
             Some(InternalEvent::Host {
                 ws,
                 peer,
@@ -3744,18 +3748,7 @@ impl ActorState {
                     msg,
                 })
             }
-            HostEvent::Closed => {
-                tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
-                if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
-                    runtime.pump.abort();
-                }
-                Some(NetEvent::PeerLeft {
-                    ws,
-                    peer,
-                    cause: PeerDepartureCause::HostSessionClosed,
-                    membership_epoch: None,
-                })
-            }
+            HostEvent::Closed => Some(self.host_session_closed(ws, peer)),
         };
         if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
             let legacy = matches!(
@@ -3773,6 +3766,23 @@ impl ActorState {
             if legacy && let Some(wake) = &self.wake {
                 wake();
             }
+        }
+    }
+
+    /// The session of `ws` with the host at `peer` ended.
+    fn host_session_closed(&mut self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+        tracing::info!(ws, host = %peer, "workspace host session ended; the next heartbeat dials it again");
+        if let Some(runtime) = self.host_sessions.remove(&(ws, peer)) {
+            runtime.pump.abort();
+            if let Some(scope) = runtime.native_scope.clone() {
+                self.native_session_closed(ws, &scope);
+            }
+        }
+        NetEvent::PeerLeft {
+            ws,
+            peer,
+            cause: PeerDepartureCause::HostSessionClosed,
+            membership_epoch: None,
         }
     }
 
@@ -3906,10 +3916,12 @@ impl ActorState {
     /// Where workspace `ws` stands with its hosts, this device's own
     /// included: a session up, one being established, or neither.
     fn sessions_of(&self, ws: u64) -> room_governance::Sessions {
+        // A session with a host standing in for a room's governor carries
+        // none of its governance: only the governor's own counts.
         if self
             .host_sessions
-            .keys()
-            .any(|(session_ws, _)| *session_ws == ws)
+            .iter()
+            .any(|((session_ws, _), runtime)| *session_ws == ws && reaches_governor(runtime))
         {
             room_governance::Sessions::Open
         } else if self.native_routes.establishing(ws)
@@ -4294,6 +4306,15 @@ impl ActorState {
             }
         }
     }
+}
+
+/// Whether `runtime` may carry its room's governance: any session but one
+/// with a host standing in for the room's governor.
+fn reaches_governor(runtime: &HostRuntime) -> bool {
+    runtime
+        .native_scope
+        .as_ref()
+        .is_none_or(|scope| scope.reaches_governor())
 }
 
 async fn send_nearby_transfer_frame(

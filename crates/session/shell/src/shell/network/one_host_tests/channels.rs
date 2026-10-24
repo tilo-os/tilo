@@ -123,7 +123,7 @@ fn a_sealed_channel_is_read_by_members_through_a_device_host_that_keeps_only_cip
     );
     collab_types::sign_op(&mut op, &p.key()).unwrap();
     p.net()
-        .publish_document(NOTES.into(), workspace.clone(), RECORD, op);
+        .publish_document(NOTES.into(), workspace, RECORD, op);
 
     // Grace's device is admitted to the channel and reads it.
     let q_keys = keys_on(
