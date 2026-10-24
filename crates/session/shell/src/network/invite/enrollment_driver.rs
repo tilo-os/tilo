@@ -65,6 +65,7 @@ impl Attempt {
                 .wait(result)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
+        drop(result);
     }
     pub(crate) fn finish<T>(
         &self,

@@ -101,7 +101,7 @@ fn a_workspace_not_placed_stays_waiting_for_the_next_pass() {
 
 #[test]
 fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
-    let root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
+    let person_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
     let other = ed25519_dalek::SigningKey::from_bytes(&[0xB0; 32])
         .verifying_key()
         .to_bytes();
@@ -112,10 +112,12 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     env.set("TILO_HOME_PEERS_PATH", &peers);
     // A device keeping its workspaces on disk, as every session does: its
     // native owner opens beside them.
-    let mut tree = WorkspaceTree::default();
-    tree.persist_path = Some(dir.path().join("state.json"));
+    let tree = WorkspaceTree {
+        persist_path: Some(dir.path().join("state.json")),
+        ..WorkspaceTree::default()
+    };
     let (network, mut commands) = personal_workspaces_network_for_test(
-        &root,
+        &person_root,
         &iroh::SecretKey::from_bytes(&[0x52; 32]),
         tree,
     );
@@ -125,7 +127,7 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     let host = std::thread::spawn(move || {
         while let Some(command) = commands.blocking_recv() {
             if let NetCmd::OwnDeviceHost(asked) = command {
-                let request = &asked.request;
+                let request = &asked.governance;
                 let answer = (
                     asked.device,
                     *asked.addr.id.as_bytes(),

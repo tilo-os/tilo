@@ -419,7 +419,7 @@ impl ShellNetwork {
                         crate::network::actor::own_device_host::Request {
                             addr: addr.clone(),
                             device: *device,
-                            request: Request {
+                            governance: Request {
                                 ws,
                                 to: Addressee::Host(addr.id),
                                 invoke,
