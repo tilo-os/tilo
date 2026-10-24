@@ -2893,6 +2893,9 @@ default = false
 [[check]]
 name = "weekly-release"
 requires = ["disk-100g"]
+# Fat LTO with one codegen unit links each release binary in a single LLVM module; up to
+# four such links at once (the shell, apps, services) peak past 16 GiB.
+requirement = { cores = 4, memory = "32GiB" }
 run = """
 export TILO_TEST_ASSET_CACHE=$CARGO_TARGET_DIR/test-assets TILO_NTFS_SOURCE_CACHE=$CARGO_TARGET_DIR/ntfs-source
 cargo build --release --workspace --locked
