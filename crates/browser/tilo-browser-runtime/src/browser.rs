@@ -1822,7 +1822,21 @@ async fn watch_first_frame(id: u64) {
                 let visible = page_visible() && !m.hidden && !m.viewport.suspended();
                 let wants_frame = m.pending || m.viewport.needs_present();
                 match driver.tick(m.redraws, m.frames, visible, wants_frame) {
-                    first_frame::Drive::Done => return Ok(false),
+                    first_frame::Drive::Done => {
+                        // The pipelines the first frame did not need compile
+                        // one at a time (vello's deferred pipelines), each
+                        // started by the poll after the one before it is in,
+                        // and only while the page is shown.
+                        if !visible {
+                            return Ok(true);
+                        }
+                        let pending = m.gpu.as_ref().map_or(0, |gpu| {
+                            gpu.shared.try_borrow_mut().map_or(1, |mut shared| {
+                                shared.renderer.deferred_pipelines().pending
+                            })
+                        });
+                        return Ok(pending > 0);
+                    }
                     first_frame::Drive::Wait => {}
                     first_frame::Drive::Draw => {
                         if let Err(e) = m.draw() {
