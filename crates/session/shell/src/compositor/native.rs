@@ -10916,7 +10916,6 @@ pub fn run() {
             break;
         }
         let iter_t0 = Instant::now();
-        crate::shell::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics::profile::expire(iter_t0);
         metrics.begin_tick(iter_t0);
@@ -15266,10 +15265,6 @@ pub fn run() {
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
                 ("profile-end", metrics::profile::deadline()),
-                (
-                    "app-action-authority",
-                    crate::shell::action_authority::next_deadline(),
-                ),
                 ("controller-nav", controller_nav.next_deadline(park_now)),
                 ("backend-service", backend.next_service_deadline()),
                 (
