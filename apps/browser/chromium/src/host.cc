@@ -560,6 +560,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    // A sign-in panel going to its extension's own address ends the sign-in
+    // there: the page goes no further, and the panel closes.
+    if(extension_panel_ && frame->IsMain() && extension_tabs && extension_tabs->SignInNavigating(id_,request->GetURL().ToString())) return true;
     if(sealed_documents && !SealedDocumentUrl(request->GetURL().ToString())) {
       // A link the person followed opens with the embedder; a refresh, a
       // redirect or a frame goes nowhere.
@@ -632,6 +635,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
     CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    // A sign-in out of sight ends once its page loaded.
+    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,browser->GetMainFrame()->GetURL().ToString());
     // Not at OnLoadEnd: the browser still counts as loading there, and an
     // action's reply waiting on the load would say it is still loading.
     if(page_automation_)page_automation_->NavigationFinished();
@@ -981,6 +986,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       extension_panel_=true;panel_opener_=last_focused_tab;
       // Opened by its toolbar button: like a click, it may script the page.
       if(d->HasKey("action") && extension_tabs)extension_tabs->Grant(d->GetString("action"),panel_opener_);
+    }
+    // The page an extension asked the person to sign in on, shown in a
+    // panel over the page used last or loaded out of sight: the host
+    // watches where it goes. One for no sign-in going on closes.
+    else if(op=="extension_sign_in_panel") {
+      extension_panel_=true;panel_opener_=last_focused_tab;
+      if(!extension_tabs || !extension_tabs->SignInPanel(d->GetString("id"),d->GetInt("flow"),id_))
+        CefPostTask(TID_UI,base::BindOnce([](int tab){auto found=clients.find(tab);if(found!=clients.end())found->second->CloseNative();},id_));
     }
     // A click on an extension's toolbar button over this page.
     else if(op=="extension_click") {if(extension_tabs)extension_tabs->Clicked(d->GetString("id"),id_);}
@@ -1887,6 +1900,11 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && set("optional") && set("granted");
   }
   if(op=="extension_permission_decision") return type("request",VTYPE_INT) && d->GetInt("request")>0 && type("allow",VTYPE_BOOL);
+  if(op=="extension_sign_in_panel") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="flow")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("flow",VTYPE_INT) && d->GetInt("flow")>0;
+  }
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;

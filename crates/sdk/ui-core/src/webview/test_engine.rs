@@ -615,6 +615,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionForget { .. }
             | WebViewCommand::ExtensionIdentity { .. }
             | WebViewCommand::ExtensionPanel { .. }
+            | WebViewCommand::ExtensionSignInPanel { .. }
             | WebViewCommand::ExtensionClick { .. }
             | WebViewCommand::ExtensionMenuChoice { .. }
             | WebViewCommand::ExtensionNotificationChosen { .. }

@@ -6,6 +6,7 @@
 mod audio;
 mod extension_notification;
 mod extension_permissions;
+mod extension_sign_in;
 pub mod install;
 mod menus;
 mod protocol;
@@ -1921,10 +1922,10 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         }
 }
 
-/// An `extension_action`, `extension_open_popup`, `extension_execute_action`
-/// or `extension_notification` event, when every part of it is what the host
-/// sends: the extension's id, its own pages, bounded text and an icon of at
-/// most 128 pixels a side.
+/// An `extension_action`, `extension_open_popup`, `extension_execute_action`,
+/// `extension_notification` or `extension_sign_in` event, when every part of
+/// it is what the host sends: the extension's id, its own pages or a web page
+/// to sign in on, bounded text and an icon of at most 128 pixels a side.
 fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
     // or the event is refused.
@@ -1950,6 +1951,9 @@ fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     }
     if value["event"] == "extension_notification" {
         return extension_notification::decode(id, value);
+    }
+    if value["event"] == "extension_sign_in" {
+        return extension_sign_in::decode(id, value);
     }
     if value["event"] == "extension_open_popup" {
         let url = value["url"].as_str().filter(|url| own(url))?;
@@ -2126,7 +2130,8 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "extension_action"
         | "extension_open_popup"
         | "extension_execute_action"
-        | "extension_notification" => decode_extension_event(value).is_some(),
+        | "extension_notification"
+        | "extension_sign_in" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value).is_some()
@@ -2433,6 +2438,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         } => {
             extension_id(id) && notification.len() <= 500 && button.is_none_or(|button| button < 2)
         }
+        WebViewCommand::ExtensionSignInPanel { id, flow } => {
+            extension_id(id) && *flow > 0 && i32::try_from(*flow).is_ok()
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2585,7 +2593,8 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "extension_action"
         | "extension_open_popup"
         | "extension_execute_action"
-        | "extension_notification" => decode_extension_event(value)?,
+        | "extension_notification"
+        | "extension_sign_in" => decode_extension_event(value)?,
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value)?
         }
@@ -2895,6 +2904,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
                 json!({"op":"extension_notification_chosen","id":id,"notification":notification})
             }
         },
+        WebViewCommand::ExtensionSignInPanel { id, flow } => {
+            json!({"op":"extension_sign_in_panel","id":id,"flow":flow})
+        }
         WebViewCommand::DevTools {
             request_id,
             method,
