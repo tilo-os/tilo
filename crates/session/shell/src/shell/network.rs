@@ -75,6 +75,8 @@ pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
 mod embedded_host;
+#[cfg(test)]
+mod enrollment_resume_tests;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
