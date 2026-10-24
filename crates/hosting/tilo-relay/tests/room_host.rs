@@ -15,7 +15,7 @@ use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::host::{HostConfig, HostIdentity, HostMode, RoomHost};
 use tilo_relay::rooms::{
     ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssueInvitationRequest,
-    LIST_ROOMS, RoomListing,
+    LIST_ROOMS, RoomListing, RoomSummary,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::workspace_join::WorkspaceJoinClient;
@@ -187,7 +187,54 @@ async fn own_session(user: &TestUser, device: &TestDevice, hosted: &Hosted) -> R
     .unwrap()
 }
 
+/// `phone`, a device of `alice`'s own, lists the rooms `laptop` hosts and
+/// enters `room` on a session of its own.
+async fn own_device_enters(
+    alice: &TestUser,
+    (laptop, phone): (&TestDevice, &TestDevice),
+    hosted: &Hosted,
+    room: &RoomSummary,
+) -> RelayClient {
+    let session = own_session(alice, phone, hosted).await;
+    subscribe(&session, HOME).await;
+    let listed: Vec<RoomListing> =
+        host_action(&session, laptop, HOME, LIST_ROOMS, serde_json::json!({})).await;
+    assert!(listed.iter().any(|listed| listed.room == room.room));
+    let entered: EnteredRoom = host_action(
+        &session,
+        laptop,
+        HOME,
+        ENTER_ROOM,
+        serde_json::json!({ "room": room.room }),
+    )
+    .await;
+    let own = entered.invitation.decode().unwrap();
+    let verified = decode_and_verify_invitation(
+        &own.signed_invitation,
+        Some(alice.user_pk),
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap();
+    WorkspaceJoinClient::new(device_endpoint(phone).await)
+        .redeem_hint(
+            &verified.grant().transport[0],
+            own.signed_invitation,
+            phone.cert.clone(),
+            &phone.sk,
+            [5; 32],
+        )
+        .await
+        .unwrap();
+    subscribe(&session, room.workspace_id).await;
+    session
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes the host after the assertions; the suggested earlier drop would use a moved value"
+)]
 async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_through_it() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
@@ -273,38 +320,7 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
 
     // Alice's phone, her own device, lists the laptop's rooms and enters
     // one on a session of its own: neither device is a certified host.
-    let session = own_session(&alice, &phone, &hosted).await;
-    subscribe(&session, HOME).await;
-    let listed: Vec<RoomListing> =
-        host_action(&session, &laptop, HOME, LIST_ROOMS, serde_json::json!({})).await;
-    assert!(listed.iter().any(|listed| listed.room == room.room));
-    let entered: EnteredRoom = host_action(
-        &session,
-        &laptop,
-        HOME,
-        ENTER_ROOM,
-        serde_json::json!({ "room": room.room }),
-    )
-    .await;
-    let own = entered.invitation.decode().unwrap();
-    let verified = decode_and_verify_invitation(
-        &own.signed_invitation,
-        Some(alice.user_pk),
-        &RevocationList::new(),
-        tilo_clock::unix_now_ns(),
-    )
-    .unwrap();
-    WorkspaceJoinClient::new(device_endpoint(&phone).await)
-        .redeem_hint(
-            &verified.grant().transport[0],
-            own.signed_invitation,
-            phone.cert.clone(),
-            &phone.sk,
-            [5; 32],
-        )
-        .await
-        .unwrap();
-    subscribe(&session, room.workspace_id).await;
+    let session = own_device_enters(&alice, (&laptop, &phone), &hosted, &room).await;
     let members = hosted
         .host
         .rooms()
@@ -325,6 +341,10 @@ async fn a_device_host_admits_an_invited_person_and_its_own_devices_enter_throug
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "Hosted::stop consumes the host after the assertions; the suggested earlier drop would use a moved value"
+)]
 async fn an_in_process_member_shares_deltas_with_a_remote_one() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
