@@ -211,7 +211,7 @@ impl CellValue {
             CellValue::Number(n) => Some(*n),
             CellValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
             CellValue::Empty => Some(0.0),
-            CellValue::Text(t) => t.trim().parse::<f64>().ok(),
+            CellValue::Text(t) => parse_number(t.trim()),
             CellValue::Error(_) => None,
         }
     }
@@ -435,6 +435,13 @@ pub fn format_value(value: &CellValue, fmt: CellFormat) -> String {
             }
         },
     }
+}
+
+/// Read text as a spreadsheet number. Only finite numbers count: Rust's float
+/// parser also accepts "inf", "Infinity", "NaN" and overflows like "1e400" to
+/// an infinity, and a person who types those means text, not a number.
+pub fn parse_number(s: &str) -> Option<f64> {
+    s.parse::<f64>().ok().filter(|n| n.is_finite())
 }
 
 /// "General"-style number rendering: integers print without a decimal
