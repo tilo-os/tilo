@@ -116,6 +116,46 @@ pub enum BrowserEffect {
     /// Show extensions
     #[effect(view, row)]
     ShowExtensions,
+    /// Turn extension on
+    #[effect(row, returns)]
+    TurnOnExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Turn extension off
+    ///
+    /// It keeps what it stored, such as its settings and logins.
+    #[effect(row, returns)]
+    TurnOffExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Pin extension to the toolbar
+    #[effect(row, returns)]
+    PinExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Unpin extension from the toolbar
+    #[effect(row, returns)]
+    UnpinExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Open extension settings
+    #[effect(row, returns)]
+    OpenExtensionSettings {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Remove extension
+    ///
+    /// Removes it from this device with everything it stored.
+    #[effect(row, returns, destructive)]
+    RemoveExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
     /// Show browser settings
     #[effect(view, row)]
     ShowSettings,
@@ -390,6 +430,24 @@ impl BrowserEffect {
             Self::ShowExtensions => BrowserOperation::ShowLibrary {
                 section: LibrarySection::Extensions,
             },
+            Self::TurnOnExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::TurnOn(id))
+            }
+            Self::TurnOffExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::TurnOff(id))
+            }
+            Self::PinExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Pin(id, true))
+            }
+            Self::UnpinExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Pin(id, false))
+            }
+            Self::OpenExtensionSettings { id } => {
+                BrowserOperation::Extension(ExtensionRequest::OpenSettings(id))
+            }
+            Self::RemoveExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Remove(id))
+            }
             Self::ShowSettings => BrowserOperation::ShowSettings,
             Self::SetLibraryFilter { query } => BrowserOperation::SetLibraryFilter { query },
             Self::ClearLibraryFilter => BrowserOperation::ClearLibraryFilter,
@@ -456,6 +514,18 @@ pub enum LibrarySection {
     Bookmarks,
     Downloads,
     Extensions,
+}
+
+/// What the person asks of an installed extension, by the id Chromium
+/// gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExtensionRequest {
+    TurnOn(String),
+    TurnOff(String),
+    /// Pin its button to the toolbar (`true`) or take it off.
+    Pin(String, bool),
+    OpenSettings(String),
+    Remove(String),
 }
 
 /// What Browser does for an effect, once decoded.
@@ -531,4 +601,5 @@ pub enum BrowserOperation {
         id: String,
     },
     Page(PageRequest),
+    Extension(ExtensionRequest),
 }

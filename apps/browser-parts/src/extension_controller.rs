@@ -24,7 +24,10 @@ use ui::widget::{
 };
 use ui::window_toolbar::ToolbarAction;
 
+use ui::tilo_actions::{Resource, ResourcePresentation};
+
 use crate::CATALOG;
+use crate::effects::ExtensionRequest;
 use crate::extension_host::{ExtensionHost, Wanted};
 use crate::extension_toolbar::{self as toolbar, Installed};
 use crate::extensions::{self, ExtensionInfo, StagedPackage};
@@ -987,16 +990,7 @@ impl ExtensionController {
 
     fn library_row(&self, info: &ExtensionInfo, extension: &Installed) -> Element {
         let id = &extension.id;
-        let running = self.host.is_loaded(id);
-        let status = if info.manifest_version != 3 {
-            "Not supported: only Manifest V3 extensions run"
-        } else if running {
-            "Running"
-        } else if extension.enabled {
-            "Starting\u{2026}"
-        } else {
-            "Off"
-        };
+        let status = self.status(info, extension);
         // Its broadest access, the line Chrome lists first.
         let permissions = extensions::permission_summary(info).map_or_else(
             |e| e.to_string(),
@@ -1047,6 +1041,108 @@ impl ExtensionController {
                 .meta(info.version.clone()),
             buttons,
         ))
+    }
+
+    /// Whether an extension runs, as its Library row and its resource say.
+    fn status(&self, info: &ExtensionInfo, extension: &Installed) -> &'static str {
+        if info.manifest_version != 3 {
+            "Not supported: only Manifest V3 extensions run"
+        } else if self.host.is_loaded(&extension.id) {
+            "Running"
+        } else if extension.enabled {
+            "Starting\u{2026}"
+        } else {
+            "Off"
+        }
+    }
+
+    /// The installed extensions as resources, each with what its Library
+    /// row offers, so a screen reader, a script or an agent manages them as
+    /// the person does.
+    pub fn resources(&self) -> Vec<Resource> {
+        use crate::effects::BrowserEffect as E;
+        use ui::tilo_resource::Effect as _;
+        self.infos
+            .iter()
+            .zip(&self.installed)
+            .map(|(info, extension)| {
+                let id = extension.id.clone();
+                let mut resource = Resource::new(
+                    extensions::resource_id(&info.id),
+                    "browser.extension",
+                    info.name.clone(),
+                )
+                .with_presentation(ResourcePresentation {
+                    detail: Some(self.status(info, extension).to_owned()),
+                    ..ResourcePresentation::default()
+                })
+                .with_action(E::ShowExtensions.bound());
+                if info.manifest_version == 3 {
+                    resource = resource.with_action(if extension.enabled {
+                        E::TurnOffExtension { id: id.clone() }.bound()
+                    } else {
+                        E::TurnOnExtension { id: id.clone() }.bound()
+                    });
+                }
+                if extension.enabled && extension.options.is_some() {
+                    resource =
+                        resource.with_action(E::OpenExtensionSettings { id: id.clone() }.bound());
+                }
+                if extension.enabled && extension.action.is_some() {
+                    resource = resource.with_action(if extension.pinned {
+                        E::UnpinExtension { id: id.clone() }.bound()
+                    } else {
+                        E::PinExtension { id: id.clone() }.bound()
+                    });
+                }
+                resource.with_action(E::RemoveExtension { id }.bound())
+            })
+            .collect()
+    }
+
+    /// Do what an extension's action asks, on the next `sync`, as its
+    /// Library row's button does.
+    ///
+    /// # Errors
+    /// When this window has no extensions, no extension has the id, or the
+    /// extension cannot do it now (a settings page while it is off).
+    pub fn request(&mut self, request: &ExtensionRequest) -> Result<(), String> {
+        if !self.active {
+            return Err("This window has no extensions".into());
+        }
+        let id = match request {
+            ExtensionRequest::TurnOn(id)
+            | ExtensionRequest::TurnOff(id)
+            | ExtensionRequest::Pin(id, _)
+            | ExtensionRequest::OpenSettings(id)
+            | ExtensionRequest::Remove(id) => id.clone(),
+        };
+        let (info, extension) = self
+            .infos
+            .iter()
+            .zip(&self.installed)
+            .find(|(_, extension)| extension.id == id)
+            .ok_or("No extension has this id")?;
+        let command = match request {
+            ExtensionRequest::TurnOn(_) if info.manifest_version != 3 => {
+                return Err("Only Manifest V3 extensions run".into());
+            }
+            ExtensionRequest::TurnOn(_) => Command::Enable(id),
+            ExtensionRequest::TurnOff(_) => Command::Disable(id),
+            ExtensionRequest::Pin(..) if !extension.enabled || extension.action.is_none() => {
+                return Err("This extension is off or has no toolbar button".into());
+            }
+            ExtensionRequest::Pin(_, pinned) => Command::Pin(id, *pinned),
+            ExtensionRequest::OpenSettings(_)
+                if !extension.enabled || extension.options.is_none() =>
+            {
+                return Err("This extension is off or has no settings page".into());
+            }
+            ExtensionRequest::OpenSettings(_) => Command::OpenSettings(id),
+            ExtensionRequest::Remove(_) => Command::Remove(id),
+        };
+        (self.queue(command))();
+        Ok(())
     }
 
     /// The header of the Extensions section: how to add one.
@@ -1318,6 +1414,123 @@ mod tests {
             Some(&WebViewCommand::ExtensionForget {
                 id: "reader".into()
             })
+        );
+    }
+
+    /// Invoke the action `action` of `resource` as a caller of the door
+    /// does: its bound payload, decoded as the window decodes it.
+    fn invoke(
+        controller: &mut ExtensionController,
+        resource: &Resource,
+        action: &str,
+    ) -> Result<(), String> {
+        use ui::tilo_resource::Effect as _;
+        let spec = resource
+            .actions
+            .iter()
+            .find(|spec| spec.id == action)
+            .ok_or_else(|| format!("{action} is not offered"))?;
+        let encoded = spec
+            .build_json(&serde_json::Map::new())
+            .map_err(|error| format!("{error:?}"))?;
+        let effect = crate::effects::BrowserEffect::from_payload(&encoded.payload)?;
+        match effect.operation() {
+            crate::effects::BrowserOperation::Extension(request) => controller.request(&request),
+            other => Err(format!("{other:?} is no extension request")),
+        }
+    }
+
+    #[test]
+    fn a_script_or_an_agent_manages_extensions_as_the_library_does() {
+        let profile = tempfile::tempdir().unwrap();
+        let path = profile.path().join("lite");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("manifest.json"),
+            r#"{"manifest_version":3,"name":"Lite","version":"1",
+            "action":{"default_popup":"popup.html"},"options_page":"options.html"}"#,
+        )
+        .unwrap();
+        let info = ExtensionInfo {
+            id: "lite".into(),
+            name: "Lite".into(),
+            version: "1".into(),
+            manifest_version: 3,
+            description: String::new(),
+            permissions: Vec::new(),
+            path,
+        };
+        let on = Installed::read(&info, true, false).unwrap();
+        let id = on.id.clone();
+        let mut controller = ExtensionController::new(true);
+        controller.infos = vec![info];
+        controller.installed = vec![on.clone()];
+        let actions = |controller: &ExtensionController| {
+            let resources = controller.resources();
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].id.0, "browser.extension:lite");
+            resources[0]
+                .actions
+                .iter()
+                .map(|spec| spec.id.clone())
+                .collect::<Vec<_>>()
+        };
+        // On: what its Library row offers.
+        assert_eq!(
+            actions(&controller),
+            [
+                "show-extensions",
+                "turn-off-extension",
+                "open-extension-settings",
+                "pin-extension",
+                "remove-extension"
+            ]
+        );
+        let resource = controller.resources().remove(0);
+        for action in [
+            "turn-off-extension",
+            "pin-extension",
+            "open-extension-settings",
+            "remove-extension",
+        ] {
+            invoke(&mut controller, &resource, action).unwrap();
+        }
+        assert_eq!(
+            queued(&controller),
+            [
+                format!("Disable({id:?})"),
+                format!("Pin({id:?}, true)"),
+                format!("OpenSettings({id:?})"),
+                format!("Remove({id:?})"),
+            ]
+        );
+
+        // Off: it can be turned on, and has no settings or button meanwhile.
+        controller.installed = vec![Installed {
+            enabled: false,
+            ..on
+        }];
+        assert_eq!(
+            actions(&controller),
+            ["show-extensions", "turn-on-extension", "remove-extension"]
+        );
+        let off = controller.resources().remove(0);
+        invoke(&mut controller, &off, "turn-on-extension").unwrap();
+        assert_eq!(queued(&controller).last(), Some(&format!("Enable({id:?})")));
+        assert!(
+            invoke(&mut controller, &resource, "open-extension-settings").is_err(),
+            "no settings page while it is off"
+        );
+        assert!(
+            controller
+                .request(&ExtensionRequest::Remove("unknown".into()))
+                .is_err()
+        );
+        assert!(
+            ExtensionController::new(false)
+                .request(&ExtensionRequest::TurnOn(id))
+                .is_err(),
+            "a private window has no extensions"
         );
     }
 

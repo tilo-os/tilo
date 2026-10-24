@@ -1976,6 +1976,10 @@ impl BrowserWidget {
                     .thread_name("browser-open-download")
                     .send();
             }
+            BrowserOperation::Extension(request) => {
+                self.extensions.request(&request)?;
+                self.structure_dirty = true;
+            }
             BrowserOperation::RevealDownload { id } => {
                 let path = self.completed_download_path(&id)?;
                 let _ = ui::portal::LaunchRequest::reveal(path)
@@ -5648,20 +5652,9 @@ impl BrowserWidget {
         let mut extensions =
             Resource::new("browser.extensions", "browser.extensions", "Extensions");
         extensions.actions.push(E::ShowExtensions.bound());
-        // Installed add-ons are durable local profile entities even while the
-        // engine's activation API is unavailable. Publish each bounded,
-        // address-safe inventory item so the action directory, invocation
-        // history and agents use the same identity as the extension manager.
-        for extension in crate::extensions::list_installed() {
-            extensions.children.push(
-                Resource::new(
-                    crate::extensions::resource_id(&extension.id),
-                    "browser.extension",
-                    extension.name,
-                )
-                .with_action(E::ShowExtensions.bound()),
-            );
-        }
+        // Each installed extension, as the window last read the profile,
+        // with what its Library row offers: no disk read per publication.
+        extensions.children.extend(self.extensions.resources());
 
         // Library is a first-class presentation resource rather than an
         // unaddressable collection of tabs.  This lets keyboard users,
