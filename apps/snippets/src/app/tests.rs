@@ -215,14 +215,13 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
         Some(made.clone()),
         "the new snippet opens"
     );
-    // The new snippet is the one open, so the bar's Delete deletes it, once
-    // the person confirms what the host asks.
+    // The new snippet is the one open, so the bar's Delete deletes it. Undo
+    // takes a deletion back, so it runs at once and nobody is asked.
     press_bar(&mut app, window_bar::DELETE);
-    assert_eq!(app.state().snippets.len(), 3, "deleting waits for consent");
-    assert!(app.confirm_asked().is_some(), "the host asks");
+    assert!(app.asking().is_none(), "the host asks nothing");
     assert!(
         app.state().snippets.get(&made).is_none(),
-        "the confirmed delete applied: {:?}",
+        "the delete applied: {:?}",
         app.harness().control_failures()
     );
     assert_eq!(titles(&app), ["Plain", "Templated"]);
@@ -769,10 +768,9 @@ fn an_agent_edits_and_opens_snippets_one_call_each() {
     .unwrap();
     assert!(by_title(&app, "Deploy").1.tags.is_empty());
 
+    // Undo takes a deletion back, so it runs at once.
     app.call_on(&item, "delete", serde_json::json!({}))
-        .expect_err("deleting asks for confirmation");
-    app.call_confirmed_on(&item, "delete", serde_json::json!({}))
-        .unwrap();
+        .expect("an undoable delete runs at once");
     assert_eq!(app.state().snippets.len(), 2);
 }
 
