@@ -32,8 +32,8 @@ struct GovernorRoute {
     source: [u8; 32],
     target: [u8; 32],
     governor_user: [u8; 32],
-    /// The governor is a host (a relay governing the room as a service),
-    /// which runs no apps.
+    /// The governor is a host, which runs no apps: a relay governing the
+    /// room as a service, or the room host of the device it is placed on.
     governor_hosts: bool,
 }
 
@@ -312,7 +312,9 @@ impl ShellNetwork {
                 source: view.device().device_public_key,
                 target: view.governor().device_public_key,
                 governor_user: view.governor().user_public_key,
-                governor_hosts: view.governor().capabilities.can_act_as_host,
+                governor_hosts: view.governor().capabilities.can_act_as_host
+                    || super::relay_rooms::hosting_governor(view, room)
+                        .is_ok_and(|host| host.is_some()),
             })
         })
     }
@@ -334,19 +336,6 @@ impl ShellNetwork {
                     Ok(view.governor().capabilities.can_act_as_host)
                 })
                 .unwrap_or(false)
-    }
-
-    /// Whether `owner`, already open, holds `room` governed by a device
-    /// other than the one it enrolled there: for the frame loop, which
-    /// never opens an owner and never reads the disk, so it reads the
-    /// committed enrollment alone. What then goes to the governor goes by
-    /// [`Self::governor_route`], which checks this device's current custody.
-    pub(crate) fn governed_elsewhere_by(owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
-        owner
-            .with_current(room, |view| {
-                Ok(view.governor().device_public_key != view.device().device_public_key)
-            })
-            .unwrap_or(false)
     }
 
     /// Whether `room`'s governor opens the apps launched in it, creating
