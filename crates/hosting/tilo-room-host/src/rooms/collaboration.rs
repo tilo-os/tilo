@@ -913,7 +913,7 @@ impl Rooms {
         Ok(GovernanceCompletion { generation })
     }
 
-    async fn administer(
+    pub(super) async fn administer(
         &self,
         room: &mut GovernedRoom,
         request_id: [u8; 32],

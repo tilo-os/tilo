@@ -202,8 +202,8 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let granted = offered(&host, workspace, &caller(&ada)).await;
     assert_eq!(granted, INVITE_FAMILY.map(str::to_owned).to_vec());
 
-    // A Moderator is offered the moderation of members below them, but no
-    // roles to hand out and no invitations.
+    // A Moderator is offered the moderation of members below them and
+    // naming the workspace, but no roles to hand out and no invitations.
     rooms
         .set_member_role(
             &room,
@@ -222,7 +222,8 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
         [
             governance::RESTRICT,
             governance::UNRESTRICT,
-            governance::UNBAN
+            governance::UNBAN,
+            super::owner::RENAME,
         ]
         .map(str::to_owned)
     );
