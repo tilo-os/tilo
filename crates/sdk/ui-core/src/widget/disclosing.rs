@@ -197,48 +197,53 @@ pub fn event_offset(
     }
 }
 
-/// Where a band stands in its column, as the column a rebuild makes in its
-/// place can recognise it: the column (its width and the kinds of the other
-/// widgets in it, in order) and how many of those come before the band.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a band stands in its container, as the container a rebuild makes
+/// in its place can recognise it: the container (its kind, its width and
+/// the kinds of the other widgets in it, in order), how many of those come
+/// before the band, and the space the container keeps above it.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Placement {
     pub parent: u64,
     pub index: usize,
+    pub gap: f64,
 }
 
 /// What a band leaves when it is dropped (`motion::keep`): for the band a
 /// rebuild puts in its place to go on from, or, when none does, for its
-/// column to draw it leaving.
+/// container to draw it leaving.
 pub(crate) struct KeptBand {
     pub disclosure: crate::motion::Disclosure,
     /// Where it was laid out or drawn, at its full height.
     pub laid_rect: vello::kurbo::Rect,
-    /// Where it stood in its column, if a column placed it.
+    /// Where it stood in its container, if a container placed it.
     pub placement: Option<Placement>,
-    /// Its last paint at rest, where it was laid out.
+    /// Its last paint at its full height (at rest, or on its way and
+    /// clipped as it was drawn), where it was laid out.
     pub painted: vello::Scene,
-    /// It was shown in the layout when dropped (or already leaving).
+    /// It was shown when dropped (or already leaving).
     pub shown: bool,
 }
 
 /// A band its view stopped building, leaving: its last paint collapsing
-/// from the top with `motion::Disclose`'s exit while what follows moves up
-/// by transform. It takes no input and is drawn until it has gone.
-pub(crate) struct Ghost {
-    /// The column's child it stands before (its followers start here).
-    pub index: usize,
-    pub kept: KeptBand,
+/// from the top with `motion::Disclose`'s exit (from where it was drawn)
+/// while what follows moves up by transform. It takes no input and is drawn
+/// until it has gone.
+struct Ghost {
+    /// The container's child it stands before (its followers start here).
+    index: usize,
+    kept: KeptBand,
     /// Where it is drawn: its slot, at its full height.
-    pub rect: vello::kurbo::Rect,
+    rect: vello::kurbo::Rect,
 }
 
 impl Ghost {
     /// How far the widgets after it are drawn below their laid-out places.
-    pub fn offset(&self, gap: f64) -> f64 {
+    fn offset(&self) -> f64 {
         if !self.kept.disclosure.is_sliding() {
             return 0.0;
         }
         let extent = self.rect.height();
+        let gap = self.kept.placement.map_or(0.0, |placement| placement.gap);
         Disclosing::Band {
             extent,
             drawn: self.kept.disclosure.reveal(extent).height,
@@ -247,12 +252,12 @@ impl Ghost {
     }
 
     /// Draw what is left of it, `dy` below its slot.
-    pub fn draw(&self, scene: &mut vello::Scene, dy: f64) {
+    fn draw(&self, scene: &mut vello::Scene, transform: vello::kurbo::Affine, dy: f64) {
         let reveal = self.kept.disclosure.reveal(self.rect.height());
         if reveal.height <= 0.0 || reveal.opacity <= 0.0 {
             return;
         }
-        let place = vello::kurbo::Affine::translate((0.0, dy));
+        let place = transform * vello::kurbo::Affine::translate((0.0, dy));
         scene.push_layer(
             vello::peniko::Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -278,29 +283,166 @@ impl Ghost {
         );
         scene.pop_layer();
     }
+}
 
-    /// Leave it for the column a rebuild puts in its place.
-    pub fn keep(self) {
-        let Some(placement) = self.kept.placement else {
+/// The bands a container's view stopped building, drawn leaving. Dropped
+/// with its container, they are left for the container a rebuild puts in
+/// its place.
+#[derive(Default)]
+pub(crate) struct Ghosts(Vec<Ghost>);
+
+impl Ghosts {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Forget the ones that have gone.
+    pub fn retain_drawn(&mut self) {
+        self.0.retain(|ghost| ghost.kept.disclosure.is_drawn());
+    }
+
+    /// After a container's layout: tell each band among `children` where
+    /// it stands (`gap(i)` is the space kept above child `i`), and take up
+    /// as ghosts the bands a rebuild dropped from this container that
+    /// nothing took up. None in a window's first frame, none when the view
+    /// was replaced as a whole (the container then differs). `kind` names
+    /// the container's kind.
+    pub fn find(
+        &mut self,
+        kind: &str,
+        children: &mut [Box<dyn Widget>],
+        content: vello::kurbo::Rect,
+        gap: impl Fn(usize) -> f64,
+        motion: crate::tokens::EffectiveMotion,
+    ) {
+        self.retain_drawn();
+        let parent = placement_parent(kind, content, children.iter().map(|child| &**child));
+        let mut index = 0;
+        for (position, child) in children.iter_mut().enumerate() {
+            if child.is_band() {
+                child.note_placement(Placement {
+                    parent,
+                    index,
+                    gap: gap(position),
+                });
+            } else {
+                index += 1;
+            }
+        }
+        if !crate::motion::window_has_shown() {
             return;
-        };
-        crate::motion::keep(
-            format!("leaving {} {}", placement.parent, placement.index),
-            None,
-            self.kept,
-        );
+        }
+        while let Some(mut kept) = crate::motion::take_kept_where::<KeptBand>(|kept| {
+            kept.shown
+                && kept
+                    .placement
+                    .is_some_and(|placement| placement.parent == parent)
+        }) {
+            let Some(placement) = kept.placement else {
+                continue;
+            };
+            if kept.disclosure.is_open() {
+                kept.disclosure.leave(motion);
+            }
+            // Gone by a key's result, or never painted: nothing to draw,
+            // and never a blank band.
+            if !kept.disclosure.is_drawn() || kept.painted.encoding().is_empty() {
+                continue;
+            }
+            // Its slot: before the widget that followed it, under the one
+            // before it.
+            let mut others = 0;
+            let mut at = children.len();
+            let mut bottom: Option<f64> = None;
+            for (position, child) in children.iter().enumerate() {
+                if !child.is_band() {
+                    if others == placement.index {
+                        at = position;
+                        break;
+                    }
+                    others += 1;
+                }
+                let rect = child.get_rect();
+                if rect != vello::kurbo::Rect::ZERO && child.disclosing().is_none() {
+                    bottom = Some(rect.y1);
+                }
+            }
+            let top = bottom.map_or(content.y0, |bottom| bottom + placement.gap);
+            let rect =
+                vello::kurbo::Rect::new(content.x0, top, content.x1, top + kept.laid_rect.height());
+            self.0.push(Ghost {
+                index: at,
+                kept,
+                rect,
+            });
+        }
+    }
+
+    /// `shifts` (a container's [`follower_shifts`] over `count` children)
+    /// with the ghosts' followers moving up with their edges.
+    pub fn shift(&self, shifts: Option<Vec<f64>>, count: usize) -> Option<Vec<f64>> {
+        if self.0.is_empty() {
+            return shifts;
+        }
+        let mut shifts = shifts.unwrap_or_else(|| vec![0.0; count + 1]);
+        for ghost in &self.0 {
+            let offset = ghost.offset();
+            for shift in shifts.iter_mut().skip(ghost.index) {
+                *shift += offset;
+            }
+        }
+        Some(shifts)
+    }
+
+    /// Draw them, each under what is drawn shifted before it (`shifts`
+    /// from [`Self::shift`]).
+    pub fn draw(
+        &self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        shifts: Option<&[f64]>,
+    ) {
+        for ghost in &self.0 {
+            let dy = shifts
+                .and_then(|shifts| shifts.get(ghost.index).copied())
+                .unwrap_or(0.0)
+                - ghost.offset();
+            ghost.draw(scene, transform, dy);
+        }
+    }
+
+    /// Leave them for the container a rebuild puts in place of this one.
+    pub fn keep(&mut self) {
+        for ghost in self.0.drain(..) {
+            let Some(placement) = ghost.kept.placement else {
+                continue;
+            };
+            crate::motion::keep(
+                format!("leaving {} {}", placement.parent, placement.index),
+                None,
+                ghost.kept,
+            );
+        }
     }
 }
 
-/// A column's identity across rebuilds, for the bands in it: its content
-/// box's width and the kinds of its widgets other than bands, in order.
-pub(crate) fn placement_parent<'a>(
+impl Drop for Ghosts {
+    fn drop(&mut self) {
+        self.keep();
+    }
+}
+
+/// A container's identity across rebuilds, for the bands in it: its kind,
+/// its content box and the kinds of its widgets other than bands, in order.
+fn placement_parent<'a>(
+    kind: &str,
     content: vello::kurbo::Rect,
     children: impl IntoIterator<Item = &'a dyn Widget>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let at = |value: f64| (value * 2.0).round() as i64;
+    kind.hash(&mut hasher);
     (at(content.x0), at(content.x1), at(content.y0)).hash(&mut hasher);
     for child in children {
         if !child.is_band() {
@@ -308,71 +450,4 @@ pub(crate) fn placement_parent<'a>(
         }
     }
     hasher.finish()
-}
-
-/// After a column's layout: tell each band where it stands, and take up
-/// as ghosts the bands a rebuild dropped from this column that nothing took
-/// up (none in a window's first frame, none when the view was torn down as
-/// a whole: the column then differs). `gap` is the column's.
-pub(crate) fn place_and_find_leaving(
-    children: &mut [Box<dyn Widget>],
-    content: vello::kurbo::Rect,
-    gap: f64,
-    motion: crate::tokens::EffectiveMotion,
-    ghosts: &mut Vec<Ghost>,
-) {
-    let parent = placement_parent(content, children.iter().map(|child| &**child));
-    let mut index = 0;
-    for child in children.iter_mut() {
-        if child.is_band() {
-            child.note_placement(Placement { parent, index });
-        } else {
-            index += 1;
-        }
-    }
-    if !crate::motion::window_has_shown() {
-        return;
-    }
-    while let Some(mut kept) = crate::motion::take_kept_where::<KeptBand>(|kept| {
-        kept.shown
-            && kept
-                .placement
-                .is_some_and(|placement| placement.parent == parent)
-    }) {
-        let Some(placement) = kept.placement else {
-            continue;
-        };
-        if kept.disclosure.is_open() {
-            kept.disclosure.leave(motion);
-        }
-        if !kept.disclosure.is_drawn() {
-            continue;
-        }
-        // Its slot: before the widget that followed it, under the one
-        // before it.
-        let mut others = 0;
-        let mut at = children.len();
-        let mut bottom: Option<f64> = None;
-        for (position, child) in children.iter().enumerate() {
-            if !child.is_band() {
-                if others == placement.index {
-                    at = position;
-                    break;
-                }
-                others += 1;
-            }
-            let rect = child.get_rect();
-            if rect != vello::kurbo::Rect::ZERO && child.disclosing().is_none() {
-                bottom = Some(rect.y1);
-            }
-        }
-        let top = bottom.map_or(content.y0, |bottom| bottom + gap);
-        let rect =
-            vello::kurbo::Rect::new(content.x0, top, content.x1, top + kept.laid_rect.height());
-        ghosts.push(Ghost {
-            index: at,
-            kept,
-            rect,
-        });
-    }
 }

@@ -3,8 +3,7 @@ mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
 pub use disclosing::{Disclosing, Placement, event_offset};
 pub(crate) use disclosing::{
-    Ghost, KeptBand, content_box, follower_shifts, place_and_find_leaving, place_bands,
-    route_to_shifted_children,
+    Ghosts, KeptBand, content_box, follower_shifts, place_bands, route_to_shifted_children,
 };
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,

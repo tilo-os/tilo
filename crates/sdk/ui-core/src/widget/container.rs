@@ -23,6 +23,10 @@ use winit::event::WindowEvent;
 )]
 pub struct Container {
     child: Option<Box<dyn Widget>>,
+    /// A band its view stopped building, drawn leaving.
+    ghosts: crate::widget::Ghosts,
+    /// The motion the person allows, from the last theme seen.
+    motion: crate::tokens::EffectiveMotion,
     /// Stable graph / test identity when built from a serialized UI node.
     id: Option<String>,
     rect: Rect,
@@ -81,6 +85,8 @@ impl Default for Container {
 impl Container {
     pub fn new() -> Self {
         Self {
+            ghosts: crate::widget::Ghosts::default(),
+            motion: crate::tokens::EffectiveMotion::default(),
             child: None,
             id: None,
             rect: Rect::ZERO,
@@ -404,6 +410,7 @@ impl Widget for Container {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         let child_node = self
             .child
             .as_mut()
@@ -501,18 +508,49 @@ impl Widget for Container {
                 |_| 0.0,
             );
         }
+        // A band its view stopped building leaves where it stood.
+        let content = crate::widget::content_box(taffy, node, self.rect);
+        let children = match &mut self.child {
+            Some(child) => std::slice::from_mut(child),
+            None => &mut [],
+        };
+        self.ghosts
+            .find("Container", children, content, |_| 0.0, self.motion);
     }
 
-    /// A container sized by its content grows with a band moving in it, and
-    /// so moves what follows it.
+    /// A container sized by its content grows with a band moving in it, or
+    /// leaving it, and so moves what follows it.
     fn disclosing(&self) -> Option<crate::widget::Disclosing> {
         if self.fixed_height.is_some() || self.fill_height {
             return None;
         }
-        let moving = self.child.as_ref()?.disclosing()?;
+        let moving = self
+            .child
+            .as_ref()
+            .and_then(|child| child.disclosing())
+            .map(|moving| moving.follower_offset(0.0));
+        let leaving = self
+            .ghosts
+            .shift(None, usize::from(self.child.is_some()))
+            .and_then(|shifts| shifts.last().copied());
+        if moving.is_none() && leaving.is_none() {
+            return None;
+        }
         Some(crate::widget::Disclosing::Grows(
-            moving.follower_offset(0.0),
+            moving.unwrap_or(0.0) + leaving.unwrap_or(0.0),
         ))
+    }
+
+    /// Frames while a band its view stopped building leaves, and one more
+    /// to draw it gone.
+    fn needs_animation_frame(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+    }
+
+    fn needs_redraw(&self) -> bool {
+        !self.ghosts.is_empty()
+            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
     fn draw(
@@ -535,6 +573,10 @@ impl Widget for Container {
                 presence,
             );
         }
+
+        self.ghosts.retain_drawn();
+        let shifts = self.ghosts.shift(None, usize::from(self.child.is_some()));
+        self.ghosts.draw(scene, transform, shifts.as_deref());
 
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
     }

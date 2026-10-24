@@ -75,7 +75,7 @@ pub(super) struct Flow {
     /// The cache holds children drawn shifted: drawn again at rest.
     drawn_shifted: bool,
     /// Bands its view stopped building, drawn leaving (a column only).
-    ghosts: Vec<super::Ghost>,
+    ghosts: super::Ghosts,
     /// The motion the person allows, from the last theme seen.
     motion: crate::tokens::EffectiveMotion,
 }
@@ -132,7 +132,7 @@ impl Flow {
             laid_gap: 0.0,
             content_sized: false,
             drawn_shifted: false,
-            ghosts: Vec::new(),
+            ghosts: super::Ghosts::default(),
             motion: crate::tokens::EffectiveMotion::default(),
         }
     }
@@ -146,18 +146,8 @@ impl Flow {
         }
         let gap = self.laid_gap;
         let shifts = super::follower_shifts(self.children.iter().map(|child| &**child), |_| gap);
-        if self.ghosts.is_empty() {
-            return shifts;
-        }
         // A band leaving moves what followed it up with its edge.
-        let mut shifts = shifts.unwrap_or_else(|| vec![0.0; self.children.len() + 1]);
-        for ghost in &self.ghosts {
-            let offset = ghost.offset(gap);
-            for shift in shifts.iter_mut().skip(ghost.index) {
-                *shift += offset;
-            }
-        }
-        Some(shifts)
+        self.ghosts.shift(shifts, self.children.len())
     }
 
     /// Whether a band its view stopped building is still leaving.
@@ -167,9 +157,7 @@ impl Flow {
 
     /// Leave the bands still leaving for the column a rebuild makes.
     fn keep_ghosts(&mut self) {
-        for ghost in self.ghosts.drain(..) {
-            ghost.keep();
-        }
+        self.ghosts.keep();
     }
 
     /// While a band moves in a content-sized column, how much taller the
@@ -248,14 +236,8 @@ impl Flow {
             let content = super::content_box(taffy, node, self.rect);
             super::place_bands(&mut self.children, content, |_| gap);
             // A band its view stopped building leaves where it stood.
-            self.ghosts.retain(|ghost| ghost.kept.disclosure.is_drawn());
-            super::place_and_find_leaving(
-                &mut self.children,
-                content,
-                gap,
-                self.motion,
-                &mut self.ghosts,
-            );
+            self.ghosts
+                .find("Column", &mut self.children, content, |_| gap, self.motion);
         }
     }
 
@@ -319,10 +301,9 @@ impl Flow {
             // While a band moves, what follows it is drawn shifted by
             // transform, laid out once without the band, and clipped to a
             // column of its own height; a content-sized one grows instead.
-            self.ghosts.retain(|ghost| ghost.kept.disclosure.is_drawn());
+            self.ghosts.retain_drawn();
             let shifts = self.follower_shifts();
             self.drawn_shifted = shifts.is_some();
-            let gap = self.laid_gap;
             let ghosts = &self.ghosts;
             let clip = (shifts.is_some() && !self.content_sized).then_some(self.rect);
             let mut draw_children = |local: &mut Scene| {
@@ -348,14 +329,7 @@ impl Flow {
                         presence,
                     );
                 }
-                for ghost in ghosts {
-                    let dy = shifts
-                        .as_deref()
-                        .and_then(|shifts| shifts.get(ghost.index).copied())
-                        .unwrap_or(0.0)
-                        - ghost.offset(gap);
-                    ghost.draw(local, dy);
-                }
+                ghosts.draw(local, Affine::IDENTITY, shifts.as_deref());
                 if clip.is_some() {
                     local.pop_layer();
                 }
@@ -685,11 +659,3 @@ macro_rules! flow_capabilities {
     };
 }
 pub(super) use flow_capabilities;
-
-/// A column a rebuild drops leaves the bands still leaving in it for the
-/// one put in its place.
-impl Drop for Flow {
-    fn drop(&mut self) {
-        self.keep_ghosts();
-    }
-}
