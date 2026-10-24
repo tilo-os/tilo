@@ -2,7 +2,6 @@ reason = "features that landed since the last budgets (e681cae02b), measured by 
 run = "rb02f0dfe59"
 
 [apps."so.tilo.calendar"]
-x86_64 = 65536
 aarch64 = 131072
 
 [apps."so.tilo.code-editor"]
@@ -10,7 +9,6 @@ x86_64 = 196608
 aarch64 = 131072
 
 [apps."so.tilo.disks"]
-x86_64 = 131072
 aarch64 = 131072
 
 [apps."so.tilo.messages"]
