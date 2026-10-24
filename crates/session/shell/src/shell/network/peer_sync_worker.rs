@@ -11,7 +11,9 @@
 //! requests carry identity material read from the disk
 //! ([`ShellNetwork::publish_sync_requests`]), and peers' batches for the
 //! rooms, whose admission decodes them in a worker process and copies the
-//! room's document ([`ShellNetwork::merge_room_batch_off_loop`]). One thread
+//! room's document ([`ShellNetwork::merge_room_batch_off_loop`]), and the
+//! reconcile of the person's workspace list with the tree, which waits for
+//! the tree ([`ShellNetwork::reconcile_personal_workspaces`]). One thread
 //! runs them all, in the order they came, so enrollments are finished by
 //! one writer at a time and a room's batches merge in the order they came.
 use super::ShellNetwork;
@@ -40,6 +42,7 @@ enum Work {
     Job(Job),
     FinishSharedRooms,
     SyncRound,
+    PersonalWorkspaces,
     RoomBatch {
         peer: iroh::EndpointId,
         room: RoomId,
@@ -79,29 +82,49 @@ impl ShellNetwork {
                         break;
                     };
                     // A panicking request must not take later ones with it.
+                    // Each says whether the loop has anything to take from it.
                     let ran =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match item {
-                            Work::Job(job) => job(),
+                            Work::Job(job) => {
+                                job();
+                                true
+                            }
                             Work::FinishSharedRooms => {
                                 queued.store(false, Ordering::Release);
                                 network.finish_shared_rooms();
+                                true
                             }
                             Work::SyncRound => {
                                 sync_queued.store(false, Ordering::Release);
                                 network.publish_sync_requests_now();
+                                true
+                            }
+                            // Only a reconcile that wrote the tree has
+                            // anything to draw: an idle one wakes nothing.
+                            Work::PersonalWorkspaces => {
+                                network
+                                    .personal_reconcile
+                                    .queued
+                                    .store(false, Ordering::Release);
+                                network.reconcile_personal_workspaces()
                             }
                             Work::RoomBatch {
                                 peer,
                                 room,
                                 changes,
-                            } => network.merge_room_batch(peer, room, &changes),
+                            } => {
+                                network.merge_room_batch(peer, room, &changes);
+                                true
+                            }
                         }));
                     if ran.is_err() {
                         tracing::error!("a peer-sync request panicked on its worker");
                     }
                     drop(network);
                     // The loop applies what the request answered.
-                    if let Some(wake) = wake.get() {
+                    if ran.unwrap_or(true)
+                        && let Some(wake) = wake.get()
+                    {
                         wake();
                     }
                 }
@@ -286,7 +309,10 @@ impl ShellNetwork {
             Err(mpsc::SendError(Work::Job(job))) => Err(job),
             Ok(())
             | Err(mpsc::SendError(
-                Work::FinishSharedRooms | Work::SyncRound | Work::RoomBatch { .. },
+                Work::FinishSharedRooms
+                | Work::SyncRound
+                | Work::PersonalWorkspaces
+                | Work::RoomBatch { .. },
             )) => Ok(()),
         }
     }
@@ -408,6 +434,24 @@ impl ShellNetwork {
             return true;
         }
         if worker.send(Work::SyncRound).is_err() {
+            queued.store(false, Ordering::Release);
+            return false;
+        }
+        true
+    }
+
+    /// Queue a reconcile of the person's workspace list on the peer-sync
+    /// worker: whether there is one to run it. A reconcile already queued
+    /// covers this ask.
+    pub(super) fn reconcile_personal_workspaces_off_loop(&self) -> bool {
+        let Some(worker) = self.peer_sync_worker.worker.get() else {
+            return false;
+        };
+        let queued = &self.personal_reconcile.queued;
+        if queued.swap(true, Ordering::AcqRel) {
+            return true;
+        }
+        if worker.send(Work::PersonalWorkspaces).is_err() {
             queued.store(false, Ordering::Release);
             return false;
         }

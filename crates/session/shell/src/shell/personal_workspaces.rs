@@ -253,9 +253,9 @@ impl PersonalWorkspaces {
     /// order. Returns whether the directory changed, which is when the
     /// other devices need a new snapshot.
     ///
-    /// Called every frame tick, so when neither the tree's workspaces nor the
-    /// directory changed since the last call it only compares the tree with
-    /// what it offered then.
+    /// Called after every write to the tree, so when neither the tree's
+    /// workspaces nor the directory changed since the last call it only
+    /// compares the tree with what it offered then.
     pub fn publish_local(&mut self, tree: &WorkspaceTree, person: &str) -> bool {
         let inputs = PublishInputs::of(tree, person);
         if self.published.as_ref() == Some(&inputs) {
@@ -349,6 +349,13 @@ impl PersonalWorkspaces {
         // A write that failed is tried again on the next call.
         self.published = complete.then_some(inputs);
         changed
+    }
+
+    /// Whether the last [`Self::publish_local`] wrote everything the tree
+    /// offered, and nothing moved the directory since: running it again on
+    /// the same tree would write nothing.
+    pub fn publish_settled(&self) -> bool {
+        self.published.is_some()
     }
 
     /// Give the workspaces this tree holds positions in the directory that
