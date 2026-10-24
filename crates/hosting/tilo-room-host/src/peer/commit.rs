@@ -196,6 +196,7 @@ async fn admit_commit(
         peer.role,
         session.metrics.clone(),
         false,
+        false,
     ))
     .await?;
     Ok(CommitAdmission::Admitted(Box::new(AdmittedCommit {
