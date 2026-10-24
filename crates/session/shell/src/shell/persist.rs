@@ -469,7 +469,6 @@ pub(crate) struct DurableRest {
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     strips_to_retain: std::collections::BTreeSet<crate::shell::state::StripId>,
     continuation_tabs: std::collections::BTreeSet<TabId>,
-    continuation_rooms: std::collections::BTreeSet<RoomId>,
     continuation_owned_tabs: std::collections::HashMap<TabId, RoomId>,
     continuation_closed_tabs: std::collections::HashMap<TabId, RoomId>,
     continuation_file_references:
@@ -533,7 +532,6 @@ impl DurableTree {
                 desktop,
                 strips_to_retain: tree.strips_to_retain.clone(),
                 continuation_tabs: tree.continuation_tabs.clone(),
-                continuation_rooms: tree.continuation_rooms.clone(),
                 continuation_owned_tabs: tree.continuation_owned_tabs.clone(),
                 continuation_closed_tabs: tree.continuation_closed_tabs.clone(),
                 continuation_file_references: tree.continuation_file_references.clone(),
@@ -982,6 +980,14 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // Before the repairs below, so the seed after them records their outcome.
     attach_saved_doc(&mut tree, path);
     bind_workspaces_to_rooms(&mut tree);
+    let unentered = tree.drop_unentered_joins();
+    if !unentered.is_empty() {
+        tracing::info!(
+            target: tilo_startup_metrics::REPAIR_TARGET,
+            ?unentered,
+            "rooms marked as being joined with no enrollment into them are marked no more"
+        );
+    }
     let orphaned = tree.drop_orphaned_placements();
     if !orphaned.is_empty() {
         tracing::info!(
@@ -2428,7 +2434,6 @@ mod tests {
         tree.strips_to_retain
             .insert(crate::shell::state::StripId(93_010));
         tree.continuation_tabs.insert(93_003);
-        tree.continuation_rooms.insert(room);
         tree.continuation_owned_tabs.insert(93_003, room);
         tree.continuation_closed_tabs.insert(93_004, room);
         tree.native_document_tabs.insert(

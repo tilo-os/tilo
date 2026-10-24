@@ -430,7 +430,12 @@ impl PersonalWorkspaces {
                 name: meta.name.clone(),
                 host: meta.host_devices.first().copied(),
             };
-            if tree.has_workspace(*room) {
+            // Held here: nothing to enter. A workspace of the room is not
+            // enough (one kept from an earlier build may never have been
+            // entered), nor is a join left from the session before: entering
+            // it is how that join goes on. Entering is idempotent: one
+            // already running at the host is not started again.
+            if tree.holds_room(*room) {
                 self.agreed.insert(*room, entry);
                 continue;
             }

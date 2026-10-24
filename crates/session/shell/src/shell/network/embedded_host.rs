@@ -633,19 +633,12 @@ impl ShellNetwork {
 
     /// The workspace this device's own host operations are asked on, and
     /// the person's home relay to serve `room`.
-    fn home_relay_for(&self, room: RoomId) -> Result<(u64, super::RegisteredHomePeer), String> {
-        let identity = self
-            .host_identity
-            .as_ref()
-            .ok_or("native identity unavailable")?;
-        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
-        let user = certificate.user_public_key;
-        let topics = super::relay_topics_for_home_peers(std::iter::empty(), Some(user));
-        let relay = super::registered_home_peer_addrs(Some(user), &topics)?
-            .into_iter()
-            .next()
-            .ok_or("this person has no home relay")?;
-        Ok((personal_continuity_topic_id(&user), relay))
+    pub(super) fn home_relay_for(
+        &self,
+        room: RoomId,
+    ) -> Result<(u64, super::RegisteredHomePeer), String> {
+        self.home_relay_of(room)?
+            .ok_or_else(|| "this person has no home relay".into())
     }
 }
 

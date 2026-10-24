@@ -115,9 +115,15 @@ impl<'a> LiveFrame<'a> {
         budget: &'a LiveBudget,
         fanned: Option<FanoutStamp>,
         source: Option<&StateSource>,
+        host: bool,
     ) -> Self {
+        // The host's own change (a room's or a channel's governance) reaches
+        // every live device: a governor that rebases or rolls over sends it
+        // as checkpoints alone, which no delta before them covers.
         let payloads = &**runtime.store.payloads();
-        let checkpoint_channel = gated_checkpoint_channel(payloads, envelope, source);
+        let checkpoint_channel = (!host)
+            .then(|| gated_checkpoint_channel(payloads, envelope, source))
+            .flatten();
         let audience = live_audience(runtime, envelope);
         let reach = record_reach(runtime, envelope);
         Self {
