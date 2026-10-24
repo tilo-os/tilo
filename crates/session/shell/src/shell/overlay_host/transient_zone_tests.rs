@@ -63,6 +63,10 @@ fn settle(fb: &mut FrameBuilder) {
 }
 
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the frame builder lives for the whole scenario, which reads top to bottom"
+)]
 fn no_transient_overlaps_a_window_bar() {
     let _settled = ui::motion::testing::settled();
     let mut fb = FrameBuilder::with_tree(tree(), (1600, 900));

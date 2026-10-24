@@ -4085,6 +4085,15 @@ impl Widget for WindowGroup {
                     &self.rect,
                 );
             }
+            // Over the content it stands on its own ground, so the app's top
+            // row never shows through it.
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                self.bar.ground_color(theme),
+                None,
+                &self.bar.get_rect(),
+            );
             self.draw_bar(scene, transform, tr, theme, presence);
             if fading {
                 scene.pop_layer();
