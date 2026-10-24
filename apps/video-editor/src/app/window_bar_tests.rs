@@ -350,3 +350,119 @@ fn a_failed_saves_try_again_stays_in_the_window_bar_wide_and_compact() {
         assert!(shown.whole && button.labelled, "{width} px: {shown:?}");
     }
 }
+
+/// Press the notice's action `index` in a bar `width` wide, by pointer or
+/// through its semantic action.
+fn press_notice(app: &mut TestApp<crate::VideoEditor>, width: f64, index: usize, semantic: bool) {
+    let harness = app.harness();
+    let pressed = if semantic {
+        harness.invoke_window_notice_action(width, index)
+    } else {
+        harness.click_window_notice_action(width, index)
+    };
+    pressed.expect("the notice's action is in the bar");
+    app.settle();
+}
+
+/// The labels of the notice's buttons in a bar `width` wide.
+fn notice_buttons(app: &mut TestApp<crate::VideoEditor>, width: f64) -> Vec<String> {
+    app.harness()
+        .window_bar_notice(width)
+        .expect("the notice is up")
+        .buttons
+        .into_iter()
+        .map(|button| button.name)
+        .collect()
+}
+
+const WAYS: [(f64, bool); 4] = [
+    (1280.0, false),
+    (1280.0, true),
+    (420.0, false),
+    (420.0, true),
+];
+
+/// A failed save's Try again, pressed by pointer or through its semantic
+/// action, wide or compact, saves the project, and the failure leaves.
+#[test]
+fn a_failed_saves_try_again_saves() {
+    for (width, semantic) in WAYS {
+        let dir = std::env::temp_dir().join(format!("tilo-ve-retry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = opened();
+        app.harness().present_in_window_bar();
+        {
+            let editor = app.surface_mut::<VideoEditorApp>();
+            editor.project_path = Some(PathBuf::from("/definitely/not/a/directory/x.qvp"));
+            editor.queue_save_project();
+        }
+        app.settle();
+        assert_eq!(notice_buttons(&mut app, width), ["Try again"]);
+        let saved = dir.join("Retried.qvp");
+        app.surface_mut::<VideoEditorApp>().project_path = Some(saved.clone());
+        press_notice(&mut app, width, 0, semantic);
+        assert!(
+            saved.is_file(),
+            "Try again saved ({width}, semantic: {semantic})"
+        );
+        assert_eq!(ui::window_toolbar::notice(), None, "and the failure left");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// An import whose files were refused carries Choose media…, which opens
+/// the media chooser again.
+#[test]
+fn a_refused_imports_choose_media_opens_the_chooser() {
+    for (width, semantic) in WAYS {
+        let dir = std::env::temp_dir().join(format!("tilo-ve-refused-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("not-a-video.mp4");
+        std::fs::write(&bad, b"<!DOCTYPE html><html><body>nope</body></html>").unwrap();
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut app = opened();
+        app.harness().present_in_window_bar();
+        app.surface_mut::<VideoEditorApp>()
+            .pending_imports
+            .push(bad);
+        app.settle();
+        assert_eq!(notice_buttons(&mut app, width), ["Choose media…"]);
+        let asked = recorder.pick_requests().len();
+        press_notice(&mut app, width, 0, semantic);
+        assert_eq!(
+            recorder.pick_requests().len(),
+            asked.saturating_add(1),
+            "the media chooser was asked again ({width}, semantic: {semantic})"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// An Open that replaced the timeline says Undo to go back, and carries
+/// Undo, which brings the timeline back.
+#[test]
+fn an_opens_undo_brings_the_timeline_back() {
+    for (width, semantic) in WAYS {
+        let dir = std::env::temp_dir().join(format!("tilo-ve-undo-open-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = dir.join("Other.qvp");
+        crate::project_file::save(&other, &Project::new("Other")).unwrap();
+        let mut app = opened();
+        app.harness().present_in_window_bar();
+        let before = app.surface_mut::<VideoEditorApp>().project.clips.len();
+        assert!(before > 0, "the sample has a timeline to replace");
+        app.surface_mut::<VideoEditorApp>()
+            .load_project_file(other.clone(), None);
+        app.settle();
+        assert_eq!(app.surface_mut::<VideoEditorApp>().project.clips.len(), 0);
+        assert_eq!(notice_buttons(&mut app, width), ["Undo"]);
+        press_notice(&mut app, width, 0, semantic);
+        assert_eq!(
+            app.surface_mut::<VideoEditorApp>().project.clips.len(),
+            before,
+            "Undo brought the timeline back ({width}, semantic: {semantic})"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

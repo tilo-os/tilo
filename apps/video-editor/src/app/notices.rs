@@ -6,14 +6,45 @@
 use ui::time::Instant;
 use ui::window_toolbar::{ToolbarAction, ToolbarNotice};
 
-use super::{Notice, NoticeLevel, VideoEditorApp};
+use super::{Notice, VideoEditorApp};
 
 /// The bar action id of a failed save's "Try again".
 pub(super) const SAVE_RETRY_ACTION: &str = "video-editor.save.retry";
+/// The bar action id of a refused import's "Choose media…".
+pub(super) const CHOOSE_MEDIA_ACTION: &str = "video-editor.import.choose";
+/// The bar action id of an Open's "Undo".
+pub(super) const UNDO_OPEN_ACTION: &str = "video-editor.open.undo";
+
+/// What a notice that asks the person to act lets them do from the bar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum NoticeAction {
+    /// Save the project again, after a save that failed.
+    SaveAgain,
+    /// Choose media to import, after files were refused.
+    ChooseMedia,
+    /// Take back the Open that replaced the timeline.
+    Undo,
+}
+
+impl NoticeAction {
+    fn button(self) -> ToolbarAction {
+        match self {
+            Self::SaveAgain => ToolbarAction::new(SAVE_RETRY_ACTION, "rotate-cw", "Try again"),
+            Self::ChooseMedia => {
+                ToolbarAction::new(CHOOSE_MEDIA_ACTION, "file-plus", "Choose media…")
+            }
+            Self::Undo => ToolbarAction::new(UNDO_OPEN_ACTION, "undo-2", "Undo"),
+        }
+    }
+}
 
 impl Notice {
     fn bar_notice(&self) -> ToolbarNotice {
-        ToolbarNotice::new(self.text.clone(), self.level.toast_kind())
+        let notice = ToolbarNotice::new(self.text.clone(), self.level.toast_kind());
+        match self.action {
+            Some(action) => notice.action(action.button()),
+            None => notice,
+        }
     }
 }
 
@@ -22,7 +53,7 @@ impl VideoEditorApp {
     /// until a save succeeds.
     pub(super) fn hold_save_failure(&mut self, reason: String) {
         self.project_notice
-            .show_progress(Notice::failed(reason.clone()));
+            .show_progress(Notice::failed(reason.clone()).with_action(NoticeAction::SaveAgain));
         self.save_failure = Some(reason);
     }
 
@@ -30,19 +61,32 @@ impl VideoEditorApp {
     /// back to the failed save it held, or to saying nothing.
     pub(super) fn show_save_failure_or_nothing(&mut self) {
         match self.save_failure.clone() {
-            Some(reason) => self.project_notice.show_progress(Notice::failed(reason)),
+            Some(reason) => self
+                .project_notice
+                .show_progress(Notice::failed(reason).with_action(NoticeAction::SaveAgain)),
             None => {
                 self.project_notice.dismiss();
             }
         }
     }
 
-    /// Whether "Try again" was pressed beside a failed save's notice; the
-    /// save it asks for runs on the next sync.
-    pub(super) fn take_save_retry(&mut self) -> bool {
-        let pressed = ui::window_toolbar::take_notice_press(SAVE_RETRY_ACTION);
-        if pressed {
+    /// Run the action pressed beside a notice in the bar: a failed save's
+    /// "Try again" (the save runs on the next sync), a refused import's
+    /// "Choose media…", an Open's "Undo". Whether one was pressed.
+    pub(super) fn take_notice_actions(&mut self) -> bool {
+        let mut pressed = false;
+        if ui::window_toolbar::take_notice_press(SAVE_RETRY_ACTION) {
             self.project_sync.save_requested = true;
+            pressed = true;
+        }
+        if ui::window_toolbar::take_notice_press(CHOOSE_MEDIA_ACTION) {
+            self.trigger_import();
+            pressed = true;
+        }
+        if ui::window_toolbar::take_notice_press(UNDO_OPEN_ACTION) {
+            self.project_notice.dismiss();
+            self.undo.request(ui::UndoRequest::Undo);
+            pressed = true;
         }
         pressed
     }
@@ -66,20 +110,13 @@ impl VideoEditorApp {
         {
             self.show_save_failure_or_nothing();
         }
-        let retry = self
-            .save_failure
-            .as_deref()
-            .filter(|_| self.project_rx.is_none());
+        // A save under way is not offered again.
+        let saving = self.project_rx.is_some();
         self.project_notice.publish(|notice| {
-            let shown = notice.bar_notice();
-            if notice.level == NoticeLevel::Failed && retry == Some(notice.text.as_str()) {
-                shown.action(ToolbarAction::new(
-                    SAVE_RETRY_ACTION,
-                    "rotate-cw",
-                    "Try again",
-                ))
+            if saving && notice.action == Some(NoticeAction::SaveAgain) {
+                ToolbarNotice::new(notice.text.clone(), notice.level.toast_kind())
             } else {
-                shown
+                notice.bar_notice()
             }
         });
     }

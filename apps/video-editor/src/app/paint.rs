@@ -95,7 +95,8 @@ pub(super) fn import_report_notice(report: &ImportReport) -> Notice {
     } else {
         format!("Imported {} of {}", report.added, report.total())
     };
-    Notice::failed(format!("{head} — {why}"))
+    // A refused file is fixed by choosing another one.
+    Notice::failed(format!("{head} — {why}")).with_action(super::notices::NoticeAction::ChooseMedia)
 }
 
 /// Blit an RGBA frame into `canvas`, scaled to fit (letterboxed), centred.
