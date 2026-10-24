@@ -66,6 +66,9 @@ use ui::widget::{
 };
 use ui::window_toolbar::ToolbarNotice;
 
+/// The bar action id of "Try again" beside a book the store could not send.
+const STORE_RETRY_ACTION: &str = "ebook.store.retry";
+
 use crate::comment_overlay::{CommentAction, CommentOverlay};
 use crate::content::{self, is_shared};
 use crate::hosted_dropdown::HostedDropdown;
@@ -254,6 +257,8 @@ struct LoadingImport {
     path: PathBuf,
     kind: ImportKind,
     expected_book_id: Option<String>,
+    /// The store's book this import fetches, when it fetches one.
+    store_book: Option<u64>,
     /// The "Opening …" notice: progress, up while the import runs.
     card: Transient<()>,
 }
@@ -862,6 +867,9 @@ pub struct BooksApp {
     pending_share: Option<PendingShare>,
     /// Why the last open failed, as a toast for a notice's lifetime.
     load_error: Transient<String>,
+    /// The store's book whose fetch could not reach the store: its failure
+    /// carries "Try again", which fetches it again.
+    retry_store: Option<u64>,
     /// Why the last open failed, for as long as that stands: the empty
     /// library says it in place of its hint until a book opens or another
     /// import starts. It is state, not a toast, so it keeps no time.
@@ -1243,6 +1251,7 @@ impl BooksApp {
             import_loading: None,
             pending_share: None,
             load_error: Transient::new(),
+            retry_store: None,
             open_failure: None,
             rect: Rect::ZERO,
             dirty: true,
@@ -1912,7 +1921,11 @@ impl BooksApp {
             ImportKind::Open,
             None,
             Some(crate::store::book_url(id)),
-        )
+        )?;
+        if let Some(loading) = self.import_loading.as_mut() {
+            loading.store_book = Some(id);
+        }
+        Ok(())
     }
 
     fn begin_import_from(
@@ -1952,6 +1965,7 @@ impl BooksApp {
             path,
             kind,
             expected_book_id,
+            store_book: None,
             card: Transient::showing_progress(()),
         });
         self.clear_failure();
@@ -2116,7 +2130,10 @@ impl BooksApp {
             if !current {
                 continue;
             }
-            self.import_loading = None;
+            let store_book = self
+                .import_loading
+                .take()
+                .and_then(|loading| loading.store_book);
             match completed.result {
                 Ok(book) => {
                     let (book, entry) = content::prepare_imported_book(&completed.path, book);
@@ -2156,6 +2173,10 @@ impl BooksApp {
                         .and_then(|name| name.to_str())
                         .unwrap_or("book");
                     self.report_failure(format!("Couldn’t open {name}: {error}"));
+                    // The store could not be reached: trying again fetches
+                    // the book again.
+                    self.retry_store =
+                        store_book.filter(|_| error == crate::store::unreachable_message());
                     if let Some(invocation) = self.resource_invocation.take() {
                         self.completed_resource_invocation =
                             Some(tilo_actions::InvocationUpdate::Failed {
@@ -2211,6 +2232,7 @@ impl BooksApp {
             path: path.to_path_buf(),
             kind,
             expected_book_id: None,
+            store_book: None,
             card: Transient::showing_progress(()),
         });
         Ok((entered, release))
@@ -4473,12 +4495,30 @@ impl BooksApp {
     /// long as it stands.
     fn report_failure(&mut self, message: String) {
         self.open_failure = Some(message.clone());
+        self.retry_store = None;
         self.load_error.show(message);
+    }
+
+    /// Fetch the store's book again when "Try again" was pressed beside its
+    /// failure in the window's bar; whether it was.
+    fn take_store_retry(&mut self) -> bool {
+        if !ui::window_toolbar::take_notice_press(STORE_RETRY_ACTION) {
+            return false;
+        }
+        let Some(id) = self.retry_store.take() else {
+            return false;
+        };
+        if let Err(error) = self.begin_get_from_store(id) {
+            self.settle_import_failure(error, "ebook.importer_unavailable");
+        }
+        self.dirty = true;
+        true
     }
 
     /// What failed no longer stands: a book opened or another import began.
     fn clear_failure(&mut self) {
         self.open_failure = None;
+        self.retry_store = None;
         self.load_error.dismiss();
     }
 
@@ -4500,9 +4540,22 @@ impl BooksApp {
                 .card
                 .publish(|()| ToolbarNotice::new(text, ToastKind::Info));
         }
-        self.load_error.expire();
-        self.load_error
-            .publish(|error| ToolbarNotice::new(error.clone(), ToastKind::Error));
+        if self.load_error.expire() {
+            self.retry_store = None;
+        }
+        let retry = self.retry_store.is_some();
+        self.load_error.publish(|error| {
+            let notice = ToolbarNotice::new(error.clone(), ToastKind::Error);
+            if retry {
+                notice.action(ui::window_toolbar::ToolbarAction::new(
+                    STORE_RETRY_ACTION,
+                    "rotate-cw",
+                    "Try again",
+                ))
+            } else {
+                notice
+            }
+        });
     }
 
     /// When the import's card leaves, for the app's wake deadline.
@@ -4621,6 +4674,7 @@ impl Widget for BooksApp {
         // finally available), then pull in any book the host picker returned.
         self.ensure_library_loaded(doc);
         self.drain_opens();
+        self.take_store_retry();
         self.expire_load_toast();
         self.follow_page_line();
         self.poll_query();
@@ -5309,6 +5363,11 @@ impl Widget for BooksApp {
             || self.flaps_animating()
             || self.faces.is_moving(ui::motion::frame_now())
             || self.shelf_controls.is_moving()
+    }
+
+    /// "Try again" beside a failed fetch is pressed between events.
+    fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        self.take_store_retry()
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {

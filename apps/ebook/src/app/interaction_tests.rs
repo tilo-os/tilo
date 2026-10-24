@@ -5221,6 +5221,7 @@ fn opening_a_book_shows_until_the_import_ends() {
             path: PathBuf::from("/home/reader/Books/x.epub"),
             kind: ImportKind::Open,
             expected_book_id: None,
+            store_book: None,
             card: Transient::showing_progress(()),
         });
     });

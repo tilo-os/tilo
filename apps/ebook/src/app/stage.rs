@@ -90,6 +90,7 @@ impl BooksApp {
                     path: PathBuf::from("/home/reader/Books/Illustrated Atlas.epub"),
                     kind: ImportKind::Open,
                     expected_book_id: None,
+                    store_book: None,
                     card: Transient::showing_progress(()),
                 });
             }
