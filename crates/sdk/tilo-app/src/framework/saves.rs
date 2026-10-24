@@ -241,6 +241,7 @@ impl SaveIndicator {
         }
         self.merged()
             .is_some_and(|state| self.surface.state() != Some(&state))
+            || self.surface.needs_publish()
             || self.next_wake_deadline().is_some_and(|due| due <= now)
     }
 

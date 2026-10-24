@@ -161,9 +161,10 @@ fn note_scrolling_clamps_reveals_and_drags_through_the_real_scrollbar() {
         let (content_bottom, panel_bottom) = panel(&mut app, |panel| {
             (panel.editor().content_bottom(), panel.get_rect().y1)
         });
+        let gutter = f64::from(Theme::dark().tokens.spacing.rhythm.group);
         assert!(
-            content_bottom <= panel_bottom - 44.0,
-            "the final row must remain above the save status, not underneath it"
+            content_bottom <= panel_bottom - gutter + 1.0,
+            "the final row keeps one gutter above the window's foot: {content_bottom} of {panel_bottom}"
         );
 
         // Scroll back up past the top: clamps at 0.

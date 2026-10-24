@@ -363,6 +363,15 @@ impl SaveStatusSurface {
         }
     }
 
+    /// Whether the window's bar says something other than the save's notice
+    /// now: a passing notice whose time is over is still up until the next
+    /// [`Self::publish`]. A widget whose sync runs only on a reported
+    /// change reports one while this holds.
+    #[must_use]
+    pub fn needs_publish(&self) -> bool {
+        *self.published.borrow() != self.notice()
+    }
+
     /// When the surface next moves along by itself: a passing notice's
     /// end, or an unconfirmed save's next stage. A held notice waits for
     /// the person.

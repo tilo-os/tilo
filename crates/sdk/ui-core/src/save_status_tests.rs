@@ -68,7 +68,12 @@ fn autosave_is_silent_until_a_save_stalls() {
         .expect("Saved leaves on its own")
         + Duration::from_millis(1);
     with_monotonic_time(gone, || surface.advance(gone));
+    assert!(
+        surface.needs_publish(),
+        "the bar says Saved until the next publish"
+    );
     surface.publish();
+    assert!(!surface.needs_publish());
     assert_eq!(bar(), None);
     assert_eq!(
         surface.next_wake_deadline(),
