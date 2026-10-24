@@ -9,6 +9,7 @@ mod extension_notification;
 mod extension_omnibox;
 mod extension_permissions;
 mod extension_sign_in;
+mod frame_memory;
 pub mod install;
 mod menus;
 mod page_clipboard;
@@ -746,8 +747,14 @@ fn spawn_command_writer(
     })
 }
 
-fn spawn_frame_reader(
+/// The host's output: its events, and its frames, piped or in `memory`.
+struct HostOutput {
     stdout: std::process::ChildStdout,
+    memory: Option<frame_memory::FrameMemory>,
+}
+
+fn spawn_frame_reader(
+    output: HostOutput,
     reader_shared: Arc<Shared>,
     reader_routes: Routes,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
@@ -756,6 +763,7 @@ fn spawn_frame_reader(
     tx: Arc<CommandQueue>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     spawn_named("chromium-frames", move || {
+        let HostOutput { stdout, memory } = output;
         let mut reader = BufReader::new(stdout);
         loop {
             match protocol::read_packet(&mut reader) {
@@ -767,6 +775,16 @@ fn spawn_frame_reader(
                 }
                 Ok(Some(protocol::Packet::TabDamage(tab, damage))) => {
                     deliver_damage(&reader_routes, tab, damage, &tx);
+                }
+                Ok(Some(protocol::Packet::SharedFrame(notice))) => {
+                    let delivered = memory.as_ref().map_or_else(
+                        || Err(std::io::Error::other("no frame memory was handed over")),
+                        |memory| frame_memory::deliver(&reader_routes, memory, &notice),
+                    );
+                    if let Err(error) = delivered {
+                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                        break;
+                    }
                 }
                 Ok(Some(protocol::Packet::Json(value))) => {
                     if let Err(error) =
@@ -971,9 +989,16 @@ fn launch_host(
     extensions: &[String],
     private_root: Option<&Path>,
     mode: HostMode<'_>,
-) -> Result<std::process::Child, String> {
+) -> Result<(std::process::Child, Option<frame_memory::FrameMemory>), String> {
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
+    // Without frame memory the host pipes its frames: slower, still whole.
+    let mut memory = frame_memory::FrameMemory::create()
+        .inspect_err(|error| tracing::warn!(%error, "Chromium frame memory unavailable"))
+        .ok();
+    if let Some(memory) = &memory {
+        memory.hand_to(&mut command);
+    }
     command.args(host_audio_switches(media::audio_output::is_governed()));
     // A frame's changed rects, not the frame again (`damage`).
     command.arg("--tilo-frame-damage");
@@ -1005,6 +1030,9 @@ fn launch_host(
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| format!("Could not start Chromium at {}: {error}", host.display()))?;
+    if let Some(memory) = &mut memory {
+        memory.spawned();
+    }
     if let Some(root) = private_root
         && let Err(error) = record_private_helper(root, child.id())
     {
@@ -1014,7 +1042,7 @@ fn launch_host(
             "Could not record private Chromium process: {error}"
         ));
     }
-    Ok(child)
+    Ok((child, memory))
 }
 
 /// What a starting host's supervisor needs: it serves the profile to other
@@ -1275,7 +1303,8 @@ impl ChromiumEngine {
                 }
             }
         };
-        let mut child = launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
+        let (mut child, memory) =
+            launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -1316,7 +1345,7 @@ impl ChromiumEngine {
         let reader_shared = shared.clone();
         let reader_routes = routes;
         if let Err(error) = spawn_frame_reader(
-            stdout,
+            HostOutput { stdout, memory },
             reader_shared,
             reader_routes,
             download_events,

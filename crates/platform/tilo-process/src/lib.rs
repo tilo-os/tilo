@@ -16,6 +16,7 @@ pub use tilo_platform_caps::{Availability, availability, available};
 #[cfg(unix)]
 pub mod local_socket;
 pub mod rendezvous;
+pub mod shared_memory;
 pub mod tools;
 
 /// A capability of this crate.

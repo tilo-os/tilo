@@ -17,7 +17,30 @@ pub(super) enum Packet {
     TabFrame(u32, WireFrame),
     /// What changed of a tab's frame (`super::damage`).
     TabDamage(u32, super::damage::WireDamage),
+    /// A frame the host put into the shared frame memory (`frame_memory`).
+    SharedFrame(SharedFrame),
 }
+
+/// The host's notice that a tab's frame waits in a slot of the frame memory.
+/// Its dimensions are validated as a piped frame's are; its slot is the
+/// memory's to check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SharedFrame {
+    pub(super) tab: u32,
+    pub(super) width: u32,
+    pub(super) height: u32,
+    pub(super) slot: u32,
+}
+
+impl SharedFrame {
+    /// The frame's size in bytes, valid by construction.
+    pub(super) fn size(&self) -> usize {
+        self.width as usize * self.height as usize * 4
+    }
+}
+
+/// The frame notice's kind byte.
+const SHARED_FRAME: u8 = 5;
 
 /// A frame as the host sends it: BGRA, as it came off the wire. The owner of a
 /// shared host passes a client tab's frames on exactly so; only the process
@@ -37,14 +60,30 @@ impl WireFrame {
             bgra: mut pixels,
         } = self;
         bgra_to_rgba(&mut pixels);
-        Frame {
-            trace_id: crate::webview::frame_trace::received(tab, &pixels, width, height),
-            damage: None,
-            width,
-            height,
-            rgba: Arc::new(pixels),
-        }
+        rgba_frame(tab, width, height, pixels)
     }
+}
+
+/// The frame to draw from pixels already in RGBA.
+pub(super) fn rgba_frame(tab: u32, width: u32, height: u32, rgba: Vec<u8>) -> Frame {
+    Frame {
+        trace_id: crate::webview::frame_trace::received(tab, &rgba, width, height),
+        damage: None,
+        width,
+        height,
+        rgba: Arc::new(rgba),
+    }
+}
+
+/// A frame's size in bytes, when its dimensions are ones the host may send.
+fn frame_size(width: u32, height: u32) -> Option<u32> {
+    if width == 0 || height == 0 || width > 8192 || height > 8192 {
+        return None;
+    }
+    width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .filter(|size| *size < MAX_PACKET)
 }
 
 pub(super) fn invalid(message: &str) -> io::Error {
@@ -68,6 +107,33 @@ pub(super) fn bgra_to_rgba(pixels: &mut [u8]) {
     for pixel in pairs.into_remainder().chunks_exact_mut(4) {
         pixel.swap(0, 2);
     }
+}
+
+/// `bgra`'s pixels in RGBA, converted as they are copied: one pass over the
+/// pixels, where a copy and then an in-place swap took two.
+pub(super) fn rgba_from_bgra(bgra: &[u8]) -> Vec<u8> {
+    const BLUE_AND_RED: u64 = 0x0000_00FF_0000_00FF;
+    // Zeroed by the allocator's fresh pages, not by a pass of its own.
+    let mut rgba = vec![0; bgra.len()];
+    let mut from = bgra.chunks_exact(8);
+    let mut to = rgba.chunks_exact_mut(8);
+    for (source, target) in (&mut from).zip(&mut to) {
+        let mut word = [0; 8];
+        word.copy_from_slice(source);
+        let word = u64::from_le_bytes(word);
+        let word = (word & !(BLUE_AND_RED | (BLUE_AND_RED << 16)))
+            | ((word >> 16) & BLUE_AND_RED)
+            | ((word & BLUE_AND_RED) << 16);
+        target.copy_from_slice(&word.to_le_bytes());
+    }
+    for (source, target) in from
+        .remainder()
+        .chunks_exact(4)
+        .zip(to.into_remainder().chunks_exact_mut(4))
+    {
+        target.copy_from_slice(&[source[2], source[1], source[0], source[3]]);
+    }
+    rgba
 }
 
 pub(super) fn write_json(writer: &mut impl Write, value: &serde_json::Value) -> io::Result<()> {
@@ -112,6 +178,17 @@ pub(super) fn write_tab_frame(
     writer.flush()
 }
 
+/// Writes `frame`'s notice as the host would.
+#[cfg(test)]
+pub(super) fn write_shared_frame(writer: &mut impl Write, frame: &SharedFrame) -> io::Result<()> {
+    writer.write_all(&17u32.to_le_bytes())?;
+    writer.write_all(&[SHARED_FRAME])?;
+    for field in [frame.tab, frame.width, frame.height, frame.slot] {
+        writer.write_all(&field.to_le_bytes())?;
+    }
+    writer.flush()
+}
+
 pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> {
     let Some(length) = FRAMING.read_len(reader)? else {
         return Ok(None);
@@ -127,6 +204,29 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
             let mut bytes = zeroize::Zeroizing::new(vec![0; payload_size as usize]);
             reader.read_exact(&mut bytes)?;
             Ok(Some(Packet::Json(serde_json::from_slice(&bytes)?)))
+        }
+        SHARED_FRAME => {
+            if length != 17 {
+                return Err(invalid("Invalid Chromium frame notice"));
+            }
+            let mut fields = [0; 16];
+            reader.read_exact(&mut fields)?;
+            let field = |at: usize| {
+                u32::from_le_bytes([fields[at], fields[at + 1], fields[at + 2], fields[at + 3]])
+            };
+            let frame = SharedFrame {
+                tab: field(0),
+                width: field(4),
+                height: field(8),
+                slot: field(12),
+            };
+            if frame.tab == 0 || frame.tab > i32::MAX as u32 {
+                return Err(invalid("Invalid tab ID"));
+            }
+            if frame_size(frame.width, frame.height).is_none() {
+                return Err(invalid("Invalid Chromium frame dimensions"));
+            }
+            Ok(Some(Packet::SharedFrame(frame)))
         }
         2 | 3 => {
             let header_size = if kind[0] == 3 { 13 } else { 9 };
@@ -150,13 +250,7 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
                 u32::from_le_bytes(dimensions[..4].try_into().map_err(|_| invalid("width"))?);
             let height =
                 u32::from_le_bytes(dimensions[4..].try_into().map_err(|_| invalid("height"))?);
-            let size = width.checked_mul(height).and_then(|n| n.checked_mul(4));
-            if width == 0
-                || height == 0
-                || width > 8192
-                || height > 8192
-                || size != Some(payload_size)
-            {
+            if frame_size(width, height) != Some(payload_size) {
                 return Err(invalid("Invalid Chromium frame dimensions"));
             }
             let mut bgra = vec![0; payload_size as usize];
@@ -241,6 +335,59 @@ mod tests {
             assert_eq!(&*frame.rgba, &[30, 20, 10, 255]);
             bytes[5..9].copy_from_slice(&8193u32.to_le_bytes());
             assert!(read_packet(&mut Cursor::new(bytes)).is_err());
+        }
+        // phase: frame_notice_is_pinned_and_validated
+        {
+            let notice = SharedFrame {
+                tab: 7,
+                width: 3,
+                height: 2,
+                slot: 1,
+            };
+            let mut bytes = Vec::new();
+            write_shared_frame(&mut bytes, &notice).unwrap();
+            assert_eq!(
+                bytes,
+                b"\x11\0\0\0\x05\x07\0\0\0\x03\0\0\0\x02\0\0\0\x01\0\0\0"
+            );
+            let Some(Packet::SharedFrame(read)) = read_packet(&mut Cursor::new(&bytes)).unwrap()
+            else {
+                panic!("expected a frame notice")
+            };
+            assert_eq!((read, read.size()), (notice, 24));
+            for bad in [
+                SharedFrame { tab: 0, ..notice },
+                SharedFrame {
+                    tab: 1 << 31,
+                    ..notice
+                },
+                SharedFrame { width: 0, ..notice },
+                SharedFrame {
+                    height: 8193,
+                    ..notice
+                },
+                SharedFrame {
+                    width: 8192,
+                    height: 8192,
+                    ..notice
+                },
+            ] {
+                let mut bytes = Vec::new();
+                write_shared_frame(&mut bytes, &bad).unwrap();
+                assert!(read_packet(&mut Cursor::new(bytes)).is_err(), "{bad:?}");
+            }
+            let mut long = bytes.clone();
+            long[0] = 18;
+            long.push(0);
+            assert!(read_packet(&mut Cursor::new(long)).is_err());
+        }
+        // phase: a_copied_frame_is_converted_like_one_swapped_in_place
+        {
+            let bgra: Vec<u8> = (0..44).collect();
+            let mut swapped = bgra.clone();
+            bgra_to_rgba(&mut swapped);
+            assert_eq!(rgba_from_bgra(&bgra), swapped);
+            assert_eq!(rgba_from_bgra(&bgra[..12]), swapped[..12]);
         }
         // phase: every_pixel_of_an_odd_width_frame_is_converted
         {
