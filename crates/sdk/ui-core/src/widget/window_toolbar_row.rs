@@ -143,6 +143,10 @@ pub(crate) struct ViewsMeasure {
     /// The views menu's width: as wide as its widest label needs, so
     /// choosing another view never moves the row.
     pub menu: f64,
+    /// The least width of the location as the views' picker: its narrowest
+    /// form whole, beside the picker's chevron (none: the location cannot
+    /// pick the views, [`picks_views`]).
+    pub location: Option<f64>,
 }
 
 /// Where the views stand in one layout of the row.
@@ -152,8 +156,30 @@ enum ViewsPlace {
     Strip(f64, f64),
     /// The views menu, this wide.
     Menu(f64),
+    /// The location as the views' picker, at least this wide.
+    InLocation(f64),
     /// The overflow menu's first rows (or there are no views).
     Overflow,
+}
+
+/// Where the views go once the switcher has no room: into the location,
+/// as its picker, where it can be one ([`picks_views`]), else into a views
+/// menu of their own.
+fn folded_views(measured: ViewsMeasure) -> ViewsPlace {
+    measured
+        .location
+        .map_or(ViewsPlace::Menu(measured.menu), ViewsPlace::InLocation)
+}
+
+/// Whether `toolbar`'s location can be the views' picker: a plain label,
+/// neither edited, nor a picker of its own places, nor a breadcrumb.
+fn picks_views(toolbar: &WindowToolbar) -> bool {
+    toolbar.location.as_ref().is_some_and(|location| {
+        !location.editable
+            && location.choices.is_empty()
+            && location.segments.is_empty()
+            && !location.label.is_empty()
+    })
 }
 
 /// What one layout keeps in the row: the first `plain` leading actions
@@ -221,12 +247,17 @@ impl Slots {
         let row_actions = toolbar
             .row_actions()
             .min(crate::window_toolbar::MAX_ACTIONS);
-        let measured = views.filter(|_| {
-            toolbar
-                .views
-                .as_ref()
-                .is_some_and(|views| !views.choices.is_empty())
-        });
+        let measured = views
+            .filter(|_| {
+                toolbar
+                    .views
+                    .as_ref()
+                    .is_some_and(|views| !views.choices.is_empty())
+            })
+            .map(|m| ViewsMeasure {
+                location: m.location.filter(|_| picks_views(toolbar)),
+                ..m
+            });
         // A menu holding one action alone saves no width: its button takes
         // the action's place and hides it.
         let lone = |inline: usize, place: ViewsPlace| {
@@ -235,10 +266,7 @@ impl Slots {
                 && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
         };
         let places = match measured {
-            Some(m) => vec![
-                ViewsPlace::Strip(m.strip.0, m.strip.1),
-                ViewsPlace::Menu(m.menu),
-            ],
+            Some(m) => vec![ViewsPlace::Strip(m.strip.0, m.strip.1), folded_views(m)],
             None => vec![ViewsPlace::Overflow],
         };
         let all = Kept::all(toolbar, row_actions);
@@ -251,7 +279,9 @@ impl Slots {
                 } else {
                     slots.fits(row)
                 };
-                if room && !lone(inline, place) {
+                let placed =
+                    !matches!(place, ViewsPlace::InLocation(_)) || slots.views_menu.area() > 0.0;
+                if room && placed && !lone(inline, place) {
                     return slots;
                 }
                 if inline == 0 {
@@ -269,7 +299,10 @@ impl Slots {
                     0
                 };
             let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place);
-            let located = toolbar.location.is_none() || slots.location.area() > 0.0;
+            let located = match place {
+                ViewsPlace::InLocation(least) => slots.location.width() >= least,
+                _ => toolbar.location.is_none() || slots.location.area() > 0.0,
+            };
             if slots.fits(row) && located {
                 return slots;
             }
@@ -285,7 +318,7 @@ impl Slots {
     /// first. The location yields to none of them: it stays, elided.
     fn yielding(toolbar: &WindowToolbar, measured: ViewsSize) -> Vec<(Kept, ViewsPlace)> {
         let all = Kept::all(toolbar, 0);
-        let views = measured.map_or(ViewsPlace::Overflow, |m| ViewsPlace::Menu(m.menu));
+        let views = measured.map_or(ViewsPlace::Overflow, folded_views);
         let plain = (0..=all.plain)
             .rev()
             .map(|plain| (Kept { plain, ..all }, views));
@@ -379,6 +412,12 @@ impl Slots {
         if toolbar.location.is_some() && x1 - x0 >= MIN_LOCATION_PX {
             slots.location = Rect::new(x0, y0, x1, y0 + CONTROL_PX);
         }
+        if let ViewsPlace::InLocation(least) = place
+            && choices > 0
+            && slots.location.width() >= least
+        {
+            slots.views_menu = slots.location;
+        }
         slots
     }
 
@@ -395,6 +434,11 @@ impl Slots {
             .chain((self.views_menu.area() > 0.0).then_some(&self.views_menu))
             .chain((self.overflow.area() > 0.0).then_some(&self.overflow))
             .all(|rect| rect.x0 >= lead)
+    }
+
+    /// Whether the location is the views' picker.
+    pub(crate) fn views_in_location(&self) -> bool {
+        self.views_menu.area() > 0.0 && self.views_menu == self.location
     }
 
     /// The leading actions the row has no room for, in their order.
@@ -521,7 +565,7 @@ pub(crate) struct ToolbarRow {
     menu_slot: Option<Slot>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
-    views_size: Option<((Vec<String>, u32), ViewsMeasure, Vec<f64>)>,
+    views_size: Option<((Vec<String>, Vec<String>, u32), ViewsMeasure, Vec<f64>)>,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -726,7 +770,17 @@ impl ToolbarRow {
             }
             return had;
         }
-        let key = (labels, theme.text_scale.to_bits());
+        let forms: Vec<String> = self
+            .toolbar()
+            .filter(|toolbar| picks_views(toolbar))
+            .and_then(|toolbar| toolbar.location.as_ref())
+            .map(|location| {
+                std::iter::once(location.label.clone())
+                    .chain(location.shorter.iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let key = (labels, forms, theme.text_scale.to_bits());
         if self
             .views_size
             .as_ref()
@@ -738,16 +792,16 @@ impl ToolbarRow {
             let labels: Vec<&str> = key.0.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
             let style = theme.text(TextRole::Body);
-            let widest = labels
-                .iter()
-                .map(|label| f64::from(text.measure_style(label, None, &style).0))
-                .fold(0.0, f64::max);
+            let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
+            let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
+            let narrowest = key.1.last().map(|form| width(form));
             let measure = ViewsMeasure {
                 strip: (
                     tabs.iter().sum::<f64>().ceil(),
                     SegmentedFace::height(VIEWS_SIZE, theme).min(CONTROL_PX),
                 ),
                 menu: picker_width(widest, theme),
+                location: narrowest.map(|form| picker_width(form, theme)),
             };
             (measure, tabs)
         });
@@ -1099,14 +1153,10 @@ impl ToolbarRow {
         };
         let mut items = Vec::new();
         let mut entries = Vec::new();
-        if self.views_in_overflow()
-            && let Some(views) = toolbar.views.as_ref()
-        {
-            for (i, view) in views.choices.iter().enumerate() {
-                items.push(
-                    MenuItem::selection(view.label.clone()).with_checked(view.id == views.chosen),
-                );
-                entries.push(Some(MenuEntry::View(i)));
+        if self.views_in_overflow() {
+            for (item, entry) in self.view_items() {
+                items.push(item);
+                entries.push(Some(entry));
             }
         }
         let folded: Vec<usize> = self.slots.folded_leading().collect();
@@ -1160,22 +1210,36 @@ impl ToolbarRow {
         self.slots.views.is_empty() && self.slots.views_menu.area() <= 0.0
     }
 
+    /// The views as a menu lists them, wherever it opens (the views menu,
+    /// the location as their picker, the overflow menu): every view by its
+    /// label, in order, the chosen one checked.
+    fn view_items(&self) -> Vec<(MenuItem, MenuEntry)> {
+        let Some(views) = self.toolbar().and_then(|toolbar| toolbar.views.as_ref()) else {
+            return Vec::new();
+        };
+        views
+            .choices
+            .iter()
+            .enumerate()
+            .map(|(i, view)| {
+                let item =
+                    MenuItem::selection(view.label.clone()).with_checked(view.id == views.chosen);
+                (item, MenuEntry::View(i))
+            })
+            .collect()
+    }
+
     /// Open the views menu under it: every view by its label, the chosen
     /// one checked.
     fn open_views_menu(&mut self) -> bool {
-        let Some(views) = self.toolbar().and_then(|toolbar| toolbar.views.as_ref()) else {
+        let (items, entries): (Vec<MenuItem>, Vec<Option<MenuEntry>>) = self
+            .view_items()
+            .into_iter()
+            .map(|(item, entry)| (item, Some(entry)))
+            .unzip();
+        if items.is_empty() {
             return false;
-        };
-        let items = views
-            .choices
-            .iter()
-            .map(|view| {
-                MenuItem::selection(view.label.clone()).with_checked(view.id == views.chosen)
-            })
-            .collect();
-        let entries = (0..views.choices.len())
-            .map(|i| Some(MenuEntry::View(i)))
-            .collect();
+        }
         let anchor = self.slots.views_menu;
         if anchor.area() <= 0.0 {
             return false;
@@ -1827,6 +1891,7 @@ impl ToolbarRow {
         }
         if let Some(location) = toolbar.location.as_ref()
             && self.slots.location.area() > 0.0
+            && !self.slots.views_in_location()
         {
             if let Some(field) = self.field.as_ref().and_then(Widget::accessibility) {
                 nodes.push(field);
@@ -1919,11 +1984,18 @@ impl ToolbarRow {
             // items run while it is closed, as the overflow menu's do.
             if self.slots.views_menu.area() > 0.0 {
                 let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
-                let name = if views.name.is_empty() {
+                let views_name = if views.name.is_empty() {
                     crate::i18n::I18nManager::lookup_plain("window-toolbar-views")
                 } else {
                     views.name.clone()
                 };
+                // As the views' picker the location is named by what it
+                // shows, its period, and says it picks the view.
+                let in_location = toolbar
+                    .location
+                    .as_ref()
+                    .filter(|_| self.slots.views_in_location());
+                let name = in_location.map_or_else(|| views_name.clone(), |l| l.label.clone());
                 let mut menu = button(
                     name.clone(),
                     VIEWS_MENU_TARGET.into(),
@@ -1931,6 +2003,9 @@ impl ToolbarRow {
                     true,
                 )
                 .with_optional_value(chosen.map(|view| view.label.clone()));
+                if in_location.is_some() {
+                    menu = menu.with_description(views_name);
+                }
                 menu.state.expanded = Some(self.menu_open_for(&Slot::ViewsMenu));
                 menu = menu.with_children(vec![self.menu_node(
                     name,
@@ -2408,21 +2483,26 @@ fn paint_slots(
     if let Some(views) = toolbar.views.as_ref()
         && slots.views_menu.area() > 0.0
     {
-        let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
-        let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
         let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::ViewsMenu));
-        paint_picker(
-            scene,
-            transform,
-            (tr, theme),
-            PickerText::new(label, theme.tokens.colors.text_primary),
-            slots.views_menu,
-            LocationLift {
-                hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
-                pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
-                focused: false,
-            },
-        );
+        let lift = LocationLift {
+            hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
+            pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
+            focused: false,
+        };
+        // As the views' picker the location names its period, not the view.
+        let picker = match toolbar.location.as_ref() {
+            Some(location) if slots.views_in_location() => {
+                let room = slots.views_menu.width() - picker_width(0.0, theme);
+                let (shown, ink) = location_shown(location, (tr, theme), room);
+                PickerText::new(shown, ink).edited(location.edited)
+            }
+            _ => {
+                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
+                let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
+                PickerText::new(label, theme.tokens.colors.text_primary)
+            }
+        };
+        paint_picker(scene, transform, (tr, theme), picker, slots.views_menu, lift);
     }
     for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
         let Some(icon) = Icon::from_name(&action.icon) else {
@@ -2453,7 +2533,7 @@ fn paint_slots(
     }
     let editing = interaction.is_some_and(|i| i.editing);
     let location = toolbar.location.as_ref()?;
-    if slots.location.area() <= 0.0 || editing {
+    if slots.location.area() <= 0.0 || editing || slots.views_in_location() {
         return None;
     }
     let lifted = LocationLift {
