@@ -433,10 +433,11 @@ function shareCard({title, body, link}) {
 const addedAt = atMs => new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'short'}).format(new Date(atMs));
 
 /** The people waiting to join, each to let in or turn away, and the
- * addresses on the room's wait list, each to invite (`invite(person)`
- * makes and shares an invitation for it) or take off the list; read again
- * after every decision. Resolves when closed. */
-function waitingCard({load, admit, decline, invite}) {
+ * addresses on the room's wait list, each to invite (`invite(entry)` makes
+ * and shares an invitation for it) or take off the list (`unlist`), as
+ * `load()` resolves them (`{people, waitList}`); read again after every
+ * decision. Resolves when closed. */
+function waitingCard({load, admit, decline, invite, unlist}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card tilo-waiting';
@@ -458,10 +459,9 @@ function waitingCard({load, admit, decline, invite}) {
       return made;
     };
     const show = async () => {
-      let everyone = [];
-      try { everyone = await load(); } catch (refusal) { said(refusal); }
-      const people = everyone.filter(person => !person.contact);
-      const contacts = everyone.filter(person => person.contact);
+      let people = [];
+      let contacts = [];
+      try { ({people, waitList: contacts} = await load()); } catch (refusal) { said(refusal); }
       list.replaceChildren(...people.map(person => {
         const item = document.createElement('li');
         const who = Object.assign(document.createElement('span'), {className: 'tilo-waiting-who', textContent: `${person.name} (${person.role})`});
@@ -478,14 +478,14 @@ function waitingCard({load, admit, decline, invite}) {
       const about = Object.assign(document.createElement('p'), {className: 'tilo-waiting-note',
         textContent: 'They asked to join without an invitation. Invite makes a link for you to email them.'});
       const rows = document.createElement('ul');
-      rows.append(...contacts.map(person => {
+      rows.append(...contacts.map(entry => {
         const item = document.createElement('li');
         const who = document.createElement('span');
         who.className = 'tilo-waiting-who';
-        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: person.contact, title: person.contact}),
-          Object.assign(document.createElement('time'), {dateTime: new Date(person.requestedAtMs).toISOString(), textContent: addedAt(person.requestedAtMs)}));
-        item.append(who, button('Invite', () => decide(() => invite(person), person.requestId)),
-          button('Remove', () => decide(decline, person.requestId)));
+        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: entry.contact, title: entry.contact}),
+          Object.assign(document.createElement('time'), {dateTime: new Date(entry.addedAtMs).toISOString(), textContent: addedAt(entry.addedAtMs)}));
+        item.append(who, button('Invite', () => decide(() => invite(entry), entry.requestId)),
+          button('Remove', () => decide(unlist, entry.requestId)));
         return item;
       }));
       listed.append(title, about, rows);
