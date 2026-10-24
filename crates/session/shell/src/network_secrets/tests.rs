@@ -235,7 +235,7 @@ async fn networkmanager_cancelling_takes_the_sheet_down() {
     );
     assert!(controller.pump(), "the withdrawn sheet is let go");
     assert!(controller.state_json().is_null());
-    assert!(controller.secret_fields().is_empty());
+    assert!(controller.prompt().is_none(), "nothing typed is kept");
 }
 
 #[tokio::test]

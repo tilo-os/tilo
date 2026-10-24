@@ -571,7 +571,7 @@ impl ShellOverlayHost {
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
-            wifi_password_input: Self::new_wifi_password_input(),
+            wifi_prompt: Self::new_wifi_prompt(),
             wifi_password_prompt: None,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             window_previews: crate::shell::window_previews::WindowPreviews::default(),

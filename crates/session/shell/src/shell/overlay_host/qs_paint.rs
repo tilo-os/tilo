@@ -230,11 +230,6 @@ impl ShellOverlayHost {
         // Bluetooth levels replace the body with a header + list.
         if !self.draw_quick_settings_drill_in(scene, transform, text_renderer, theme, &qs) {
             self.sync_wifi_password_input();
-            let ready = qs
-                .wifi_password
-                .as_ref()
-                .is_some_and(|prompt| prompt.can_submit(self.wifi_password_input.value()));
-            self.qs_root.set_wifi_password_ready(ready);
             self.qs_root.draw(
                 scene,
                 transform,
@@ -244,10 +239,10 @@ impl ShellOverlayHost {
                 self.last_cursor,
                 &qs,
             );
-            // The inline password's field is the host's secret input, drawn
-            // where the Wi-Fi section leaves room for it.
-            if let Some(prompt) = qs.wifi_password.as_ref()
-                && let Some(field) = self.qs_root.wifi_password_field_rect(&qs)
+            // The inline password prompt is the host's, drawn where the
+            // Wi-Fi section leaves room for it.
+            if qs.wifi_password.is_some()
+                && let Some(prompt) = self.qs_root.wifi_password_rect(&qs)
             {
                 scene.push_layer(
                     Fill::NonZero,
@@ -256,12 +251,7 @@ impl ShellOverlayHost {
                     transform,
                     &self.qs_root.shown_rect(),
                 );
-                self.draw_qs_wifi_password_field(scene, transform, text_renderer, theme, field);
-                if prompt.error.is_some() {
-                    // A rejected password outlines its field in the danger
-                    // colour, over the field's own edge.
-                    ui::widget::paint_invalid_edge(scene, transform, field, theme);
-                }
+                self.draw_qs_wifi_prompt(scene, transform, text_renderer, theme, prompt);
                 scene.pop_layer();
             }
         }

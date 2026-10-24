@@ -94,8 +94,6 @@ impl ShellOverlayHost {
                 // without asking.
                 let _ = self.try_connect_with_shared_wifi_password();
             }
-            WifiIntent::SubmitPassword => self.submit_wifi_password(),
-            WifiIntent::CancelPassword => self.cancel_wifi_password(),
         }
     }
 

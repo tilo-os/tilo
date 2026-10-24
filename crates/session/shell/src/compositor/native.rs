@@ -12836,8 +12836,12 @@ pub fn run() {
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
+        // A shell password prompt takes the keyboard over any window: its
+        // field takes the input method even while an application keeps
+        // focus beneath.
         let shell_field = (!session.is_locked()
-            && state.client_input.keyboard_focus().is_none()
+            && (state.client_input.keyboard_focus().is_none()
+                || frame_builder.host().shell_prompt_up())
             && (!receipts_only || speech_field_needed))
             .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
             .flatten();
@@ -12852,6 +12856,8 @@ pub fn run() {
         if let Some(proxy) = shell_text_input.as_mut() {
             let identity = if frame_builder.host().palette_visible() {
                 Some(crate::compositor::shell_text_input::NativeFieldId::Palette)
+            } else if frame_builder.host().shell_prompt_up() {
+                Some(crate::compositor::shell_text_input::NativeFieldId::Prompt)
             } else {
                 test_control_ctx.focus.map(|node| {
                     crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
