@@ -2099,6 +2099,7 @@ pub fn native_services(
             .chain([
                 super::settings_records::broker_door(),
                 super::activity_provider::broker_door(),
+                super::crash_records::broker_door(),
             ])
             .collect(),
         legacy_workspace: membership.map(|tree| {

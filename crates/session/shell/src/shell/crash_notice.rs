@@ -35,6 +35,9 @@ pub enum Ended {
     Froze,
     /// It panicked outside a boundary that restarts the failing part.
     Crashed,
+    /// The whole computer stopped and started again: the kernel's record
+    /// from before the reset (`crate::shell::crash_records`).
+    Stopped,
 }
 
 /// A record that ended the desktop, written since the last look.
@@ -62,6 +65,9 @@ const FILE_TIMESTAMP_LEN: usize = 17;
 pub fn ended_by(name: &str, body: impl FnOnce() -> Option<String>) -> Option<Ended> {
     if name.ends_with(FREEZE_SUFFIX) {
         return Some(Ended::Froze);
+    }
+    if name.ends_with(crate::shell::crash_records::STOPPED_SUFFIX) {
+        return Some(Ended::Stopped);
     }
     let body = body()?;
     let contained = body
@@ -130,16 +136,14 @@ pub fn notice_for(news: &News, today: chrono::NaiveDate) -> Notification {
     } else {
         ui::format::timestamp(&news.at)
     };
-    let body = match news.ended {
-        Ended::Froze => "crash-notice-froze-body",
-        Ended::Crashed => "crash-notice-crashed-body",
+    let (title, body) = match news.ended {
+        Ended::Froze => ("crash-notice-title", "crash-notice-froze-body"),
+        Ended::Crashed => ("crash-notice-title", "crash-notice-crashed-body"),
+        Ended::Stopped => ("crash-notice-stopped-title", "crash-notice-stopped-body"),
     };
-    Notification::new(
-        t("crash-notice-title"),
-        t_args(body, &[("time", time.into())]),
-    )
-    .with_severity(NotificationSeverity::Warning)
-    .with_app_name(t("crash-notice-app-name"))
+    Notification::new(t(title), t_args(body, &[("time", time.into())]))
+        .with_severity(NotificationSeverity::Warning)
+        .with_app_name(t("crash-notice-app-name"))
 }
 
 static QUEUE: Mutex<Vec<Notification>> = Mutex::new(Vec::new());
@@ -153,8 +157,13 @@ pub(crate) fn start(wake: crate::session_runtime::Wake) {
         let spawned = std::thread::Builder::new()
             .name("crash-notice".into())
             .spawn(move || {
-                let Some(news) = crate::crash_log::directory().and_then(|dir| take_news(&dir))
-                else {
+                let Some(dir) = crate::crash_log::directory() else {
+                    return;
+                };
+                // What the kernel kept of the computer stopping becomes a
+                // record first, so it is news like the desktop's own.
+                crate::shell::crash_records::take_in(&dir);
+                let Some(news) = take_news(&dir) else {
                     return;
                 };
                 let today = ui::clock::local_now().date_naive();
