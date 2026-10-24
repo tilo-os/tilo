@@ -48,9 +48,13 @@ use side_panel::SidePanel;
 const POPUP_SIZE: (f32, f32) = (360.0, 120.0);
 /// The largest popup, as in Chrome.
 const POPUP_MAX: (f32, f32) = (800.0, 600.0);
-/// An extension's side panel beside the page, in logical pixels: about as
-/// wide as Chrome's, which extensions lay their panels out for.
-pub const SIDE_PANEL_WIDTH: f32 = 360.0;
+/// How wide an extension's side panel beside the page stands in `theme`: a
+/// list panel's width, about as wide as Chrome's, which extensions lay their
+/// panels out for.
+#[must_use]
+pub fn side_panel_width(theme: &ui::theme::Theme) -> f32 {
+    theme.tokens.metrics.panel_width_list
+}
 
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
