@@ -169,10 +169,21 @@ impl Daemon {
     }
 }
 
+/// The module as libpam loads it. Cargo leaves the cdylib beside the test
+/// binary's directory; where the test binaries run from an archive,
+/// `TILO_PAM_TILO_MODULE` names the one built for them.
 fn module() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap();
-    let module = dir.join("libpam_tilo.so");
+    let module = std::env::var_os("TILO_PAM_TILO_MODULE").map_or_else(
+        || {
+            let exe = std::env::current_exe().unwrap();
+            exe.parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("libpam_tilo.so")
+        },
+        PathBuf::from,
+    );
     assert!(module.exists(), "{} was not built", module.display());
     module
 }
