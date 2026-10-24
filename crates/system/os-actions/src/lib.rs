@@ -35,6 +35,7 @@
 )]
 
 pub mod audio;
+pub mod backlight_events;
 pub mod battery;
 pub mod bluetooth;
 pub mod bluez;

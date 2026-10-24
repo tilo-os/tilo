@@ -11457,20 +11457,6 @@ pub fn run() {
                                 },
                             },
                         );
-                        if brightness_key {
-                            // Quick Settings' per-display sliders follow the
-                            // levels the key just set.
-                            let levels = os_actions::BrightnessService::global().levels();
-                            frame_builder.with_chrome(|st| {
-                                for display in &mut st.quick_settings.displays {
-                                    if let Some(level) =
-                                        levels.iter().find(|l| l.connector == display.connector)
-                                    {
-                                        display.level = level.level;
-                                    }
-                                }
-                            });
-                        }
                         match response {
                             Some(crate::shell::media_keys::Response::Osd(osd)) => {
                                 frame_builder.with_chrome(|st| publish_media_osd(st, osd));
@@ -13485,7 +13471,19 @@ pub fn run() {
             frame_builder.with_chrome(|st| publish_media_osd(st, osd));
             session_changed = true;
         }
-        software_dim.sync(backend.as_mut(), &session_wake);
+        if software_dim.sync(backend.as_mut(), &session_wake) {
+            // The sliders follow every level the service announces: keys,
+            // Quick Settings, Settings, a firmware hotkey, another program.
+            let levels = os_actions::BrightnessService::global().levels();
+            frame_builder.with_chrome(|st| {
+                if crate::shell::quick_settings::follow_brightness_levels(
+                    &mut st.quick_settings,
+                    &levels,
+                ) {
+                    st.bump();
+                }
+            });
+        }
         let markers_suppressed = session.is_locked() || frame_builder.host().onboarding_active();
         let markers_retired =
             revalidate_native_agent_markers(&mut state, &mut frame_builder, markers_suppressed);
@@ -15437,24 +15435,28 @@ struct SoftwareDimSync {
     /// The outputs it was applied to, by id: a new one is dimmed as it
     /// appears.
     outputs: Vec<u32>,
+    /// The software dims last applied.
+    dims: Vec<(String, f32)>,
 }
 
 impl SoftwareDimSync {
-    /// Apply what changed since the last call. Costs a comparison when
-    /// nothing did; the service wakes the loop through `wake` when a level
-    /// changes on another thread.
-    fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) {
+    /// Apply what changed since the last call, and say whether the
+    /// service's levels did. Costs a comparison when nothing did; the
+    /// service wakes the loop through `wake` when a level changes on another
+    /// thread.
+    fn sync(&mut self, backend: &mut dyn Backend, wake: &crate::session_runtime::Wake) -> bool {
         // Only a backend that drives the machine's displays (DRM) dims in
         // software and speaks for its connectors; nested and headless ones
         // leave the brightness service alone.
         if !backend.software_dim_supported() {
-            return;
+            return false;
         }
         let service = os_actions::BrightnessService::global();
         if !self.started {
             self.started = true;
             service.on_change(Arc::clone(wake));
             service.follow_memory();
+            service.follow_backlight();
         }
         let generation = service.generation();
         let same_outputs = backend
@@ -15463,7 +15465,7 @@ impl SoftwareDimSync {
             .map(|output| output.id.0)
             .eq(self.outputs.iter().copied());
         if same_outputs && self.generation == Some(generation) {
-            return;
+            return false;
         }
         if !same_outputs {
             self.outputs = backend.outputs().iter().map(|output| output.id.0).collect();
@@ -15480,7 +15482,13 @@ impl SoftwareDimSync {
             .into_iter()
             .map(|(connector, level)| (connector, os_actions::software_luminance(level)))
             .collect();
-        backend.set_software_dim(&dims);
+        // A hardware level moves the generation too; the gamma is left
+        // alone unless a software level or the outputs changed.
+        if !same_outputs || dims != self.dims {
+            backend.set_software_dim(&dims);
+            self.dims = dims;
+        }
+        true
     }
 }
 

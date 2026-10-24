@@ -174,9 +174,84 @@ impl PowerProfile {
     }
 }
 
+/// Take the brightness service's levels into the sliders, by connector, as
+/// the service announces a change, whoever made it. Without per-display
+/// sliders the built-in panel's level is the one slider's. Returns whether
+/// a slider moved.
+pub fn follow_brightness_levels(
+    state: &mut crate::shell::chrome_state::QuickSettingsState,
+    levels: &[os_actions::MonitorLevel],
+) -> bool {
+    let before = (state.brightness.to_bits(), state.displays.clone());
+    for display in &mut state.displays {
+        if let Some(level) = levels.iter().find(|l| l.connector == display.connector) {
+            display.level = level.level;
+        }
+    }
+    let first = match state.displays.first() {
+        Some(display) => Some(display.level),
+        None => levels
+            .iter()
+            .find(|l| l.kind == os_actions::BrightnessKind::Backlight)
+            .map(|l| l.level),
+    };
+    if let Some(level) = first {
+        state.brightness = level;
+    }
+    before != (state.brightness.to_bits(), state.displays.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn level(
+        connector: &str,
+        level: f32,
+        kind: os_actions::BrightnessKind,
+    ) -> os_actions::MonitorLevel {
+        os_actions::MonitorLevel {
+            connector: connector.into(),
+            level,
+            kind,
+        }
+    }
+
+    #[test]
+    fn a_backlight_change_moves_its_slider_and_nothing_else() {
+        use os_actions::BrightnessKind::{Backlight, Ddc};
+        let mut state = crate::shell::chrome_state::QuickSettingsState::default();
+        assert!(follow_brightness_levels(
+            &mut state,
+            &[level("eDP-1", 0.7, Backlight)]
+        ));
+        assert!(
+            (state.brightness - 0.7).abs() < f32::EPSILON,
+            "the one slider"
+        );
+
+        state.displays = vec![
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: "eDP-1".into(),
+                name: "Built-in display".into(),
+                level: 0.7,
+            },
+            crate::shell::chrome_state::DisplayBrightness {
+                connector: "DP-2".into(),
+                name: "Dell U2720Q".into(),
+                level: 0.5,
+            },
+        ];
+        let levels = [level("eDP-1", 0.25, Backlight), level("DP-2", 0.5, Ddc)];
+        assert!(follow_brightness_levels(&mut state, &levels));
+        assert!((state.displays[0].level - 0.25).abs() < f32::EPSILON);
+        assert!((state.displays[1].level - 0.5).abs() < f32::EPSILON);
+        assert!((state.brightness - 0.25).abs() < f32::EPSILON);
+        assert!(
+            !follow_brightness_levels(&mut state, &levels),
+            "already shown"
+        );
+    }
 
     #[test]
     fn power_profile_label_matches_variant() {
