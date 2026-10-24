@@ -2586,6 +2586,7 @@ impl App {
     /// ([`crate::widget::StructureChange::Children`]) in the retained tree,
     /// admitting what they mounted, and sync them. Returns `false` when it
     /// could not be carried out in place, and the caller rebuilds the tree.
+    #[cfg(feature = "native")]
     pub(crate) fn remount_in_place(&mut self) -> bool {
         self.layout.remount = false;
         if self.layout.structure_dirty
