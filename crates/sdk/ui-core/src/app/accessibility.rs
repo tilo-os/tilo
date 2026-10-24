@@ -576,6 +576,7 @@ impl App {
     /// pan): nothing in it can ask for undo or redo, so the history sweep,
     /// which visits every mapped widget, is left to the next input that can
     /// (what earlier input queued, its own sweep took).
+    #[cfg(feature = "native")]
     pub(super) fn commit_view_change(&mut self) {
         self.commit_action_with(CommitKind::ViewOnly);
     }
@@ -1731,5 +1732,6 @@ enum CommitKind {
     /// invalidate what the input may have changed.
     Action,
     /// An input that only moved the view.
+    #[cfg(feature = "native")]
     ViewOnly,
 }
