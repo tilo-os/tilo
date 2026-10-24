@@ -32,7 +32,7 @@ pub(super) const ACTION_SHORTCUTS: &[(&str, &str)] = &[
         "move-group-to-previous-display",
     ),
     ("group.move-to-display-next", "move-group-to-next-display"),
-    ("group.maximize", "toggle-maximize"),
+    ("group.maximize", "maximize-window"),
     ("group.restore", "restore-window"),
     ("group.fullscreen", "toggle-fullscreen"),
     ("group.narrower", "resize-narrower"),

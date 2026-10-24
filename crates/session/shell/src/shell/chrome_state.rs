@@ -1100,10 +1100,11 @@ pub struct ChromeState {
     /// (W16). The host's crossfade demand still clears when the curve
     /// settles — this count is not `needs_animation_frame`.
     transition_paints_remaining: u32,
-    /// Window-management operations an action asked for. The overlay host
-    /// drains them on its next update and runs each exactly as its chord
-    /// would, since the focused group's widgets live there.
-    shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
+    /// Window-management operations an action asked for, each with where
+    /// its outcome goes when its caller waits for one. The overlay host
+    /// drains them on its next update and runs each exactly as its chord or
+    /// menu entry would, since the focused group's widgets live there.
+    shortcut_action_requests: Vec<(WindowRequest, Option<WindowOutcome>)>,
     /// What private windows offer this device's automation, as the overlay
     /// host last read it ([`crate::shell::device_local_actions`]).
     pub(crate) device_local_windows: Vec<crate::shell::device_local_actions::DeviceLocalWindow>,
@@ -1676,27 +1677,6 @@ impl ChromeState {
             self.bump();
         }
         armed
-    }
-
-    /// Run `action` as if its chord had been pressed once, on the overlay
-    /// host's next update.
-    #[track_caller]
-    pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
-        tracing::info!(
-            target: "tilo::shortcut",
-            ?action,
-            queued = self.shortcut_action_requests.len(),
-            from = %std::panic::Location::caller(),
-            "shortcut action requested"
-        );
-        self.shortcut_action_requests.push(action);
-        self.bump();
-    }
-
-    pub fn take_shortcut_action_requests(
-        &mut self,
-    ) -> Vec<settings_store::hardware::ShortcutAction> {
-        std::mem::take(&mut self.shortcut_action_requests)
     }
 
     /// Cancel the shell's pending tab gesture through the same path as Escape.
@@ -3448,15 +3428,19 @@ impl ChromeState {
     /// The strip an agent works in: `current` while it is still in the active
     /// workspace, else an empty strip nobody `claimed` yet, else a new strip
     /// named `label` at the bottom. `None` without an active workspace.
+    ///
+    /// A new strip is made as every strip is, through the room's document,
+    /// so a window moved onto it lands there too. Focus stays where it was;
+    /// the caller decides what the agent looks at.
     pub fn agent_strip(
         &mut self,
         current: Option<crate::shell::state::StripId>,
         claimed: impl Fn(crate::shell::state::StripId) -> bool,
         label: &str,
     ) -> Option<crate::shell::state::StripId> {
-        let strip = {
-            let mut tree = self.tree_mut();
-            let ws = tree.desktop.active_workspace_mut()?;
+        let (workspace, focused) = {
+            let tree = self.tree();
+            let ws = tree.desktop.active_workspace()?;
             if let Some(current) = current.filter(|id| ws.strips.iter().any(|s| s.id == *id)) {
                 return Some(current);
             }
@@ -3468,14 +3452,24 @@ impl ChromeState {
             if let Some(free) = free {
                 return Some(free);
             }
-            let strip = crate::shell::state::Strip::new(
-                <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
-                label.to_owned(),
-            );
-            let id = strip.id;
-            ws.strips.push(strip);
-            tree.queue_save();
-            id
+            let found = (ws.id, tree.desktop.active_strip.get(&ws.id).copied());
+            drop(tree);
+            found
+        };
+        let name = crate::shell::search::providers::actions::valid_strip_name(label).map_or_else(
+            || crate::shell::i18n::t("search-action-strip-create-default-name"),
+            str::to_owned,
+        );
+        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip { name };
+        let strip = {
+            let mut tree = self.tree_mut();
+            let strip = tree.commit_strip_command(&command).ok()?;
+            match focused {
+                Some(focused) => tree.desktop.active_strip.insert(workspace, focused),
+                None => tree.desktop.active_strip.remove(&workspace),
+            };
+            drop(tree);
+            strip
         };
         self.bump();
         Some(strip)
@@ -4796,6 +4790,10 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
+
+#[path = "chrome_state_window_requests.rs"]
+mod window_requests;
+pub use window_requests::{WindowOutcome, WindowRequest};
 
 #[cfg(test)]
 mod panel_exclusion_tests {

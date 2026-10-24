@@ -73,7 +73,8 @@ the flag, or given a descriptor of any other size, pipes its frames.
 
 JSON commands use `op`; events use `event`. Supported operations are navigate,
 back, forward, reload, stop, resize, focus, mouse_move, mouse_button, scroll,
-key, scripts, filter_rules, clear_data, devtools, page, shutdown. `filter_rules` takes
+key, ime_composition, ime_commit, ime_cancel, ime_finish, scripts,
+filter_rules, clear_data, devtools, page, shutdown. `filter_rules` takes
 `rules` text and `enabled`: a boolean replaces the toggle, while null preserves
 the current toggle. Compilation failure retains the previous rules and reports
 an error. The shared protocol specification is in the browser implementation
@@ -105,6 +106,62 @@ view to its content (Mail's reader) enables it; it is off by default.
 host answers with a `selection_text` event carrying the same `request_id` and
 the frame's selection as `text` (empty when nothing is selected, at most 1 MiB).
 An offscreen engine cannot reach the system clipboard; the embedder copies it.
+
+### Keys and input methods
+
+`key` carries the key's logical name or text in `key` and, optionally, its
+place on the keyboard in `code`, a DOM `KeyboardEvent.code` for the keys a
+layout changes (`KeyA`–`KeyZ`, `Digit0`–`Digit9`, the US punctuation keys,
+`IntlBackslash`, `Space`; another key's code, at most 32 letters and digits,
+leaves the key to its name). The place decides the
+native key code, so a page's `code` is the key pressed: German z arrives as
+`z` on `KeyY`. A Latin letter or digit keeps its own key code, as Chromium
+gives it on each layout; a key whose text has no US key (Cyrillic, Greek, an
+umlaut) takes the key code of the US key in its place, so Ctrl+С on a Russian
+layout is the page's Ctrl+C, and Command+С copies on macOS. Extension
+shortcuts name the same Latin letter.
+
+`ready` / `tab_ready` advertise `ime_composition: true`. Such a host takes the
+platform input method's composition into the page's focused field as a native
+field does:
+
+- `ime_composition` with `text` (at most 4096 UTF-8 bytes) and
+  `selection_start` ≤ `selection_end`, the composition's caret in UTF-16 units
+  within `text`, sets the text being composed (`ImeSetComposition`). The page
+  sees `compositionstart`, then one `compositionupdate` per preedit.
+- `ime_commit` with nonempty `text` (at most 64 KiB) replaces the composition
+  with it (`ImeCommitText`): `compositionend` carries the committed text. With
+  nothing composed it goes in at the caret, as typed.
+- `ime_cancel` withdraws the composition (`ImeCancelComposition`);
+  `ime_finish` keeps it as it stands (`ImeFinishComposingText`).
+
+The host reports where the person types, so the window places the input
+method's candidates beside the text instead of at the view's corner:
+
+- `text_field` says whether the focused node takes text (`editable`), and when
+  it does its `purpose` (`text`, `password`, `email`, `url`, `phone`, `number`,
+  `search`), `multiline` (text areas and editable documents) and, when the main
+  frame's widget can place it, its box: `x`, `y`, `width`, `height` in physical
+  pixels. The renderer reports it on each focus change
+  (`CefRenderProcessHandler::OnFocusedNodeChanged`, `CefDOMNode` bounds); the
+  host asks again when the selection changes and once a scroll or resize has
+  settled, and sends it only when it changes. A field in a frame of another
+  site goes without a box; read-only fields do not take text.
+- `ime_composition_bounds` carries the box of the composition's first line, in
+  the same pixels, from `CefRenderHandler::OnImeCompositionRangeChanged`, and
+  no box once the composition ends.
+
+The WebView reads them as the field's input purpose and caret: the
+composition's box while composing, else the field's first line. Password
+fields never reach the input method; their keys go to the page as typed. With
+a host that takes compositions, ordinary input method commits reach the page;
+the guarded dictation path below is unchanged. The real-host regression sends
+a composition to a page input and checks its events, its committed text, both
+boxes and the physical key codes:
+
+```sh
+python3 apps/browser/chromium/tests/ime_composition.py target/chromium/tilo-chromium-host
+```
 
 `--tilo-sealed-documents` starts a host for sealed documents (Mail's reader;
 `ready` says `sealed_documents: true`). Its pages never navigate: a main-frame
@@ -397,8 +454,9 @@ operation ACKs accompany standard text-input-v3 final delivery. Preparation
 enables the original deferred field for voice only; consent waits for the
 renderer start ACK before recording. The marked final is consumed before public
 app event dispatch, and focus changes or late cancellations cannot redirect it
-to a successor. Ordinary composition and OSK remain closed outside this voice
-session. Real Wayland protocol and bound native App dispatch tests qualify those
+to a successor. With a host that does not take compositions
+(`ime_composition`), ordinary composition and OSK remain closed outside this
+voice session. Real Wayland protocol and bound native App dispatch tests qualify those
 separate production boundaries; a complete standalone-window/microphone journey
 remains an acceptance gate.
 
@@ -907,9 +965,11 @@ content scripts (with `sender.tab`) work without help.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
   the full clear-data integration.
-- Keyboard input covers single UTF-16 characters and common named keys with
-  macOS native and Linux X11 key mappings. Physical codes use a US layout because
-  IPC carries logical names; IME, composed text, other layouts and full native
-  shortcut handling need platform integration.
+- Keyboard input covers single UTF-16 characters, common named keys and input
+  method compositions, with macOS native and Linux X11 key mappings from the
+  key's physical place. Outside a composition the input method is placed by
+  the focused field's first line, not its caret: CEF reports a caret only for
+  composed text. A field in a frame of another site has no box, and its
+  candidates open at the view's corner until the composition reports its own.
 - The isolated Linux ARM64 native navigation receipt regression is verified.
   Packaged hardware acceptance and macOS release signing/notarization remain separate checks.

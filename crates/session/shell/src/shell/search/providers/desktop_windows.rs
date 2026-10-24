@@ -120,34 +120,14 @@ fn transfer_tab(
 /// Closes every tab and remembers the group as one close, so a single
 /// reopen brings the whole group back.
 pub(crate) fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
-    let (tabs, closed) = {
-        let state = chrome.borrow();
-        let tree = state.tree();
-        let tabs = tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .find(|group| group.id == group_id)
-            .map(|group| group.tabs.iter().map(|tab| tab.id).collect::<Vec<_>>())
-            .ok_or_else(|| {
-                ActionError::Refused(format!("window group {group_id} is no longer present"))
-            })?;
-        let closed = crate::shell::closed_tabs::capture_group(&tree, group_id);
-        drop(tree);
-        drop(state);
-        (tabs, closed)
-    };
-    for tab in tabs {
-        tab_in_group(chrome, group_id, tab)?;
-        crate::shell::window_actions::close_tab_unrecorded(&mut chrome.borrow_mut(), tab)
-            .map_err(|_| refused(tab))?;
-    }
-    if let Some(entry) = closed {
-        chrome.borrow_mut().remember_closed_tab_after_removal(entry);
-    }
-    Ok(())
+    crate::shell::window_actions::close_group(&mut chrome.borrow_mut(), group_id).map_err(|err| {
+        ActionError::Refused(match err {
+            crate::shell::window_actions::TabActionError::UnknownTab => {
+                format!("window group {group_id} is no longer present")
+            }
+            _ => format!("window group {group_id} could not be closed"),
+        })
+    })
 }
 
 fn contract(action: WindowAction) -> tilo_actions::ActionContract {

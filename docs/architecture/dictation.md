@@ -439,7 +439,9 @@ stamps now come from the shared host input contract described above.
    and consumes the marked standard final before public app event dispatch.
    Focus changes cancel the original grant; a stale final is consumed without
    successor dispatch. Ordinary composition/OSK remains closed outside this
-   voice session. Five real protocol tests, six bound native-dispatch tests and
+   voice session for a page whose engine does not take compositions; a
+   Chromium host that advertises `ime_composition` takes them as a native
+   field does (`apps/browser/chromium/README.md`, "Keys and input methods"). Five real protocol tests, six bound native-dispatch tests and
    mounted renderer journeys qualify
    separate boundaries; a complete standalone native-window journey remains an
    acceptance gate. Search, telephone, URL and plaintext-only editable fields

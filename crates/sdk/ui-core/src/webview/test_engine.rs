@@ -62,6 +62,10 @@ struct Inner {
     marks_page_end: bool,
     /// Addresses that fail to load, and the network error each fails with.
     failing: std::collections::HashMap<String, String>,
+    /// A test reported the page's focused field: the engine then takes an
+    /// input method's composition, as a ready host does.
+    composition: bool,
+    text_field: Option<super::TextField>,
 }
 
 pub struct TestEngine {
@@ -159,6 +163,14 @@ impl TestEngine {
     /// [`WebViewCommand::CopySelection`] answers with it.
     pub fn set_selection(&self, text: impl Into<String>) {
         self.lock_inner().selection = text.into();
+    }
+
+    /// Report the page's focused field (`None`: nothing editable has the
+    /// focus), as a host that takes compositions does.
+    pub fn set_text_field(&self, field: Option<super::TextField>) {
+        let mut inner = self.lock_inner();
+        inner.composition = true;
+        inner.text_field = field;
     }
 
     /// Hold back every frame, as a renderer still laying out a page does,
@@ -457,6 +469,14 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().measures_document
     }
 
+    fn supports_composition(&self) -> bool {
+        self.lock_inner().composition
+    }
+
+    fn text_field(&self) -> Option<super::TextField> {
+        self.lock_inner().text_field
+    }
+
     fn take_new_tab_requests(&self) -> Vec<(String, bool)> {
         std::mem::take(&mut self.lock_inner().new_tabs)
     }
@@ -662,7 +682,11 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::CancelNativeDownload { .. }
             | WebViewCommand::RetryDownload { .. }
             | WebViewCommand::CancelAllDownloads
-            | WebViewCommand::AnswerClipboardRead { .. } => {}
+            | WebViewCommand::AnswerClipboardRead { .. }
+            | WebViewCommand::ImeComposition { .. }
+            | WebViewCommand::ImeCommit(_)
+            | WebViewCommand::ImeCancel
+            | WebViewCommand::ImeFinish => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
                 inner

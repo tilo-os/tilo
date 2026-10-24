@@ -34,6 +34,51 @@ class SelectionReader final : public CefDOMVisitor {
   std::string* text_;
   IMPLEMENT_REFCOUNTING(SelectionReader);
 };
+// What the focused node takes, for the input method: 0 nothing, then text,
+// multiline text, a password, an email address, an address, a telephone
+// number, a number and a search (the browser's purposes, host.cc).
+int TextFieldKind(CefRefPtr<CefDOMNode> node) {
+  if(!node || !node->IsEditable() || node->HasElementAttribute("readonly") || node->HasElementAttribute("disabled")) return 0;
+  // An editable node that is no form control is an editable document.
+  if(!node->IsFormControlElement()) return 2;
+  switch(node->GetFormControlElementType()) {
+    case DOM_FORM_CONTROL_TYPE_TEXT_AREA: return 2;
+    case DOM_FORM_CONTROL_TYPE_INPUT_PASSWORD: return 3;
+    case DOM_FORM_CONTROL_TYPE_INPUT_EMAIL: return 4;
+    case DOM_FORM_CONTROL_TYPE_INPUT_URL: return 5;
+    case DOM_FORM_CONTROL_TYPE_INPUT_TELEPHONE: return 6;
+    case DOM_FORM_CONTROL_TYPE_INPUT_NUMBER: return 7;
+    case DOM_FORM_CONTROL_TYPE_INPUT_SEARCH: return 8;
+    default: return 1;
+  }
+}
+// Tells the browser what the focused node in `frame` takes and where it is,
+// in the widget's device pixels. A box is given only for a frame whose
+// ancestors are all in this process, so the widget places it: a field in a
+// frame of another site goes without one. `probe` marks an answer to the
+// browser's question rather than a focus change.
+void ReportTextField(CefRefPtr<CefFrame> frame,CefRefPtr<CefDOMNode> node,bool probe) {
+  if(!frame || !frame->IsValid()) return;
+  auto message=CefProcessMessage::Create("tilo.text_field");auto args=message->GetArgumentList();
+  const int kind=TextFieldKind(node);
+  args->SetBool(0,probe);args->SetInt(1,kind);
+  bool placed=false;
+  for(auto ancestor=frame;ancestor;ancestor=ancestor->GetParent()) if(ancestor->IsMain()) {placed=true;break;}
+  if(kind && placed) {
+    const CefRect box=node->GetElementBounds();
+    const auto bounded=[](int value){return std::clamp(value,-65536,65536);};
+    args->SetInt(2,bounded(box.x));args->SetInt(3,bounded(box.y));args->SetInt(4,bounded(box.width));args->SetInt(5,bounded(box.height));
+  }
+  frame->SendProcessMessage(PID_BROWSER,message);
+}
+class FocusedFieldReader final : public CefDOMVisitor {
+ public:
+  explicit FocusedFieldReader(CefRefPtr<CefFrame> frame):frame_(frame) {}
+  void Visit(CefRefPtr<CefDOMDocument> document) override { ReportTextField(frame_,document?document->GetFocusedNode():nullptr,true); }
+ private:
+  CefRefPtr<CefFrame> frame_;
+  IMPLEMENT_REFCOUNTING(FocusedFieldReader);
+};
 void TraceCredential(const char* stage,int browser=0) {
   static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
   static unsigned count=0;
@@ -144,6 +189,9 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
       context->Eval("(()=>{let playing=null;const update=()=>{const next=[...document.querySelectorAll('audio,video')].some(e=>!e.paused&&!e.ended&&e.readyState>1);if(next!==playing){playing=next;__tiloMediaState(next)}};for(const event of ['play','playing','canplay','pause','ended','emptied'])addEventListener(event,update,true);update()})()",frame->GetURL(),0,result,exception);context->Exit();
     }
   }
+  void OnFocusedNodeChanged(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefRefPtr<CefDOMNode> node) override {
+    ReportTextField(frame,node,false);
+  }
   void OnBrowserDestroyed(CefRefPtr<CefBrowser> browser) override {
     TraceCredential("browser-destroyed",browser->GetIdentifier());
     // CEF can create a replacement handle with the same numeric ID before
@@ -184,6 +232,10 @@ class Renderer final : public CefApp, public CefRenderProcessHandler {
     if(source!=PID_BROWSER) return false;
     if(message->GetName()=="tilo.credential_action") {
       CredentialAction(browser,frame,message->GetArgumentList());return true;
+    }
+    if(message->GetName()=="tilo.text_field_probe") {
+      if(frame && frame->IsValid()) frame->VisitDOM(new FocusedFieldReader(frame));
+      return true;
     }
     if(message->GetName()=="tilo.credential_probe") {
       TraceCredential("probe-received",browser->GetIdentifier());
