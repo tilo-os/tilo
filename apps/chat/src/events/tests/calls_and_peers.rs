@@ -793,6 +793,70 @@ fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
 }
 
 #[test]
+fn deafen_is_in_the_bar_and_asks_the_service() {
+    let (mut app, mut doc, mut live) = connected_call();
+    render_frame(&mut app, 1280.0, 720.0);
+    let deafen = || {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .find(|action| action.id == "call-deafen")
+            })
+            .expect("deafen is at hand while in a call")
+    };
+    assert_eq!(deafen().icon, "headphones");
+    app.on_hit(Hit::CallDeafen, &mut ui::widget::Edits::lend(&mut doc));
+    assert!(
+        app.call.deafened && app.call.muted,
+        "deafened and muted at once"
+    );
+    live.deafened = true;
+    let sent = answer_voice(&mut app, &live);
+    assert!(sent.contains(&ui::native_media::Command::SetDeafened { deafened: true }));
+    assert!(app.call.deafened);
+    render_frame(&mut app, 1280.0, 720.0);
+    assert_eq!(
+        deafen().icon,
+        "headphone-off",
+        "the bar says how to hear again"
+    );
+    app.on_hit(Hit::CallDeafen, &mut ui::widget::Edits::lend(&mut doc));
+    live.deafened = false;
+    let sent = answer_voice(&mut app, &live);
+    assert!(sent.contains(&ui::native_media::Command::SetDeafened { deafened: false }));
+    assert!(!app.call.deafened);
+}
+
+#[test]
+fn everyone_sees_who_is_deafened() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 2);
+    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+    let roster = &mut app.native_voice.snapshot.rosters[0];
+    roster.muted = vec![first.clone(), second.clone()];
+    roster.deafened = vec![second.clone()];
+    app.refresh_native_streams();
+    let member = |app: &ChatApp, person: &str| {
+        let member = app
+            .voice_in("c_huddle")
+            .iter()
+            .find(|member| member.user == person)
+            .expect("in the call");
+        (member.muted, member.deafened)
+    };
+    assert_eq!(
+        member(&app, &second),
+        (true, true),
+        "the room says they hear nothing"
+    );
+    assert_eq!(member(&app, &first), (true, false));
+    render_frame(&mut app, 1280.0, 800.0);
+}
+
+#[test]
 fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 2);

@@ -253,6 +253,8 @@ icons! {
     ListMusic => "list-music",
     Speaker => "speaker",
     Headphones => "headphones",
+    /// Lucide `headphone-off`: someone who hears nothing of a call.
+    HeadphoneOff => "headphone-off",
     Gauge => "gauge",
     LocateFixed => "locate-fixed",
     Navigation => "navigation",
@@ -1469,6 +1471,15 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::Headphones => vec![path_from_d(
             "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 18 0v7a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3",
         )],
+        Icon::HeadphoneOff => vec![
+            path_from_d("M21 14h-1.343"),
+            path_from_d("M9.128 3.47A9 9 0 0 1 21 12v3.343"),
+            line_path(2.0, 2.0, 22.0, 22.0),
+            path_from_d("M20.414 20.414A2 2 0 0 1 19 21h-1a2 2 0 0 1-2-2v-3"),
+            path_from_d(
+                "M3 14h3a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a9 9 0 0 1 2.636-6.364",
+            ),
+        ],
         Icon::Gauge => vec![
             path_from_d("m12 14 4-4"),
             path_from_d("M3.34 19a10 10 0 1 1 17.32 0"),
@@ -2718,6 +2729,7 @@ mod tests {
             (Icon::ListMusic, 5),
             (Icon::Speaker, 4),
             (Icon::Headphones, 1),
+            (Icon::HeadphoneOff, 5),
             (Icon::Gauge, 2),
             (Icon::LocateFixed, 6),
             (Icon::Navigation, 1),

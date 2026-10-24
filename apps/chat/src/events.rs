@@ -295,6 +295,7 @@ impl ChatApp {
                     hit,
                     Hit::CallParticipantsToggle
                         | Hit::CallMute
+                        | Hit::CallDeafen
                         | Hit::CallCamera
                         | Hit::CallScreen
                         | Hit::CallExpand
@@ -837,6 +838,21 @@ impl ChatApp {
                     &channel,
                     ui::native_media::Command::SetMuted {
                         muted: !self.call.muted,
+                    },
+                ) {
+                    self.media_error = Some(error);
+                }
+            }
+            Hit::CallDeafen => {
+                let channel = self
+                    .native_voice
+                    .channel
+                    .clone()
+                    .unwrap_or_else(|| self.call.channel.clone());
+                if let Err(error) = self.native_voice_command(
+                    &channel,
+                    ui::native_media::Command::SetDeafened {
+                        deafened: !self.call.deafened,
                     },
                 ) {
                     self.media_error = Some(error);

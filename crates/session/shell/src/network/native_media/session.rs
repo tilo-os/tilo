@@ -829,6 +829,7 @@ impl Session {
             camera: self.video.camera.is_some(),
             screen: self.video.screen.is_some(),
             muted: self.capture.is_none(),
+            deafened: self.audio.deafened(),
         }
     }
     /// Tell the governor when this device was muted or unmuted.
@@ -1302,6 +1303,12 @@ impl MediaSession for Session {
             return Some(PictureSource::Camera);
         }
         None
+    }
+    fn set_deafened(&mut self, deafened: bool) {
+        if self.audio.deafened() != deafened {
+            self.audio.set_deafened(deafened);
+            self.say_showing();
+        }
     }
     fn show(&mut self, shown: Vec<Shown>) {
         if self.video.shown != shown {

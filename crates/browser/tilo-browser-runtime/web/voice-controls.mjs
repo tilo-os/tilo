@@ -10,8 +10,8 @@
  *
  * The camera and a shared screen work as on a Tilo device: the person turns
  * them on in the call (the browser asks for them), everyone learns who shows
- * what and who is muted from the room's call list (`cameras`, `screens`,
- * `muted` in each roster), the
+ * what and who is muted or deafened from the room's call list (`cameras`,
+ * `screens`, `muted`, `deafened` in each roster), the
  * app says which pictures it shows (`show`) and collects them (`pictures`),
  * coded, to decode itself.
  */
@@ -74,14 +74,14 @@ export function callIdOf(participant) {
 
 /** Who is in each active call of `app`'s `record`, one roster per voice
  * channel with anyone in it or a bridge on it, sorted by channel; each
- * person once, muted when muted on every device they are in the call on.
- * People a bridge carries in are its guests, by id, and the services
- * bridging it its `bridges`. */
+ * person once, muted (deafened) when muted (deafened) on every device they
+ * are in the call on. People a bridge carries in are its guests, by id, and
+ * the services bridging it its `bridges`. */
 export function rostersOf(calls, app, record) {
   const channels = new Map();
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
-    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set(), guests: new Map(), bridges: new Set()};
+    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set(), hearing: new Set(), guests: new Map(), bridges: new Set()};
     for (const participant of call.participants ?? []) {
       const bridged = participant.bridged;
       if (bridged) {
@@ -102,6 +102,7 @@ export function rostersOf(calls, app, record) {
       if (participant.screen) roster.screens.add(participant.user);
       // Heard on any of their devices: not muted.
       if (!participant.muted) roster.unmuted.add(participant.user);
+      if (!participant.deafened) roster.hearing.add(participant.user);
     }
     channels.set(call.channel, roster);
   }
@@ -118,6 +119,9 @@ export function rostersOf(calls, app, record) {
       if (roster.bridges.size) out.bridges = sorted(roster.bridges);
       const muted = [...roster.people].filter(person => !roster.unmuted.has(person));
       if (muted.length) out.muted = muted.sort();
+      // Deafened is muted too: someone heard on another device is neither.
+      const deafened = muted.filter(person => !roster.hearing.has(person));
+      if (deafened.length) out.deafened = deafened;
       return out;
     });
 }
@@ -153,6 +157,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: live ? speakingOf(state.participants) : [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
+    if (live && state.deafened) status.deafened = true;
     if (live && state.micIssue) status.issue = state.micIssue;
     if (live && state.videoIssue) status.issue = state.videoIssue;
     return status;
@@ -165,8 +170,8 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       const route = key(request);
       const rosters = () => rostersOf(voice.calls, request.app, request.record);
       const status = () => {
-        if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
-        if (refusal?.route === route && ['idle', 'ended'].includes(voice.call.state.phase)) return stamped({...snapshot(), state: 'ended', muted: true, capture_active: false, input_id: null, issue: refusal.issue, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
+        if (owner && owner !== route) return stamped({...snapshot(), state: 'idle', muted: true, deafened: undefined, capture_active: false, input_id: null, issue: null, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
+        if (refusal?.route === route && ['idle', 'ended'].includes(voice.call.state.phase)) return stamped({...snapshot(), state: 'ended', muted: true, deafened: undefined, capture_active: false, input_id: null, issue: refusal.issue, inventory_revision: null, publication: null, publishers: [], rosters: rosters()});
         return stamped({...snapshot(), rosters: rosters()});
       };
       if (command.op === 'status') {
@@ -237,6 +242,11 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         if (!command.muted && (voice.call.state.phase !== 'live' || !voice.call.state.canPublish)) throw new Error('microphone requires a live publishing grant');
         if (command.muted) generation++;
         await voice.call.setMuted(command.muted);
+      } else if (command.op === 'set_deafened') {
+        if (command.deafened && ['idle', 'ended'].includes(voice.call.state.phase)) throw new Error('deafening requires a call');
+        // Undeafening unmutes again only from the person's gesture, which
+        // the browser asks for the microphone in.
+        await voice.call.setDeafened(command.deafened, {unmute: gesture()});
       } else if (command.op === 'select_input') {
         await voice.call.selectInput(command.input_id);
       } else if (command.op === 'set_camera' || command.op === 'set_screen') {
