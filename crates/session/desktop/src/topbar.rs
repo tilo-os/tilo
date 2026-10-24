@@ -1298,6 +1298,12 @@ impl TopBarChrome {
         self.control_rect(Self::CONTROL_PROFILE)
     }
 
+    /// Where the others' faces (or the sharing indicator) were last drawn,
+    /// for anchoring who is here; zero when neither is shown.
+    pub fn collaborators_rect(&self) -> Rect {
+        self.control_rect(Self::CONTROL_COLLABORATORS)
+    }
+
     /// What the own avatar is called to assistive technology.
     fn profile_control_name(&self) -> String {
         let name = self.own_chip().map(|own| own.name).unwrap_or_default();
