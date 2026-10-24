@@ -255,6 +255,41 @@ export function refusedByHost(error) {
   return error?.name === 'HostAdmissionError' && ['cooling-down', 'removed', 'invitation-only'].includes(error.code);
 }
 
+/**
+ * The words of the door a page turned away for coming without an
+ * invitation shows (index.html, `#arrival-door`), in `messages`' language.
+ * A door whose host keeps a wait list (`waitList`) is the product's own
+ * front door: it apologises, says why, and asks for an address. Without
+ * one, it names the workspace and how to get an invite.
+ */
+export function doorCopy({workspace = null, waitList = false, messages = null} = {}) {
+  const say = (key, english, args) => localized(messages, key, english, args);
+  if (waitList) {
+    return {
+      heading: say('arrival-door-wait-heading', 'Sorry, Tilo is invite-only right now'),
+      body: say('arrival-door-wait-body', 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.'),
+    };
+  }
+  return {
+    heading: workspace
+      ? say('arrival-door-heading', '{ $workspace } is invite-only for now', {workspace})
+      : say('arrival-door-heading-unnamed', 'This workspace is invite-only for now'),
+    body: say('arrival-door-body', 'Ask someone in it for an invite link, then paste it here.'),
+  };
+}
+
+/** What the door says when it kept no address, by `HostAdmissionError`
+ * code (`leaveOnWaitList`), in `messages`' language. */
+export function waitListFailure(code, messages = null) {
+  const say = (key, english) => localized(messages, key, english);
+  switch (code) {
+    case 'invalid-email': return say('arrival-wait-invalid', 'That doesn’t look like an email address.');
+    case 'too-many': return say('arrival-wait-too-many', 'Too many sign-ups from your network just now. Try again later.');
+    case 'wait-list-full': return say('arrival-wait-full', 'The wait list is full for now. Please try again in a few days.');
+    default: return say('arrival-wait-failed', 'That didn’t go through. Try again in a moment.');
+  }
+}
+
 /** The page to open for `text`, an invite link a person pasted, or `null`
  * when it is not one: a web address carrying an invitation. */
 export function inviteLinkTarget(text, base = globalThis.location?.href) {

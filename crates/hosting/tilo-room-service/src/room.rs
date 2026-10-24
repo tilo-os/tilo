@@ -363,13 +363,16 @@ impl Room {
                 pairing_code,
                 reason,
             }) => self.settle(&pairing_code, Err(reason)),
-            // A short-lived room never pre-admits, spectates or removes.
+            // A short-lived room never pre-admits, spectates, removes or
+            // keeps a wait list.
             Ok(
                 event @ (RoomEvent::PreAdmitted { .. }
                 | RoomEvent::PreAdmitRefused { .. }
                 | RoomEvent::SpectatorCertified { .. }
                 | RoomEvent::SpectateRefused { .. }
-                | RoomEvent::MemberRemoved { .. }),
+                | RoomEvent::MemberRemoved { .. }
+                | RoomEvent::WaitListed { .. }
+                | RoomEvent::WaitListRefused { .. }),
             ) => bail!("a short-lived room relay reported {event:?}"),
         }
         Ok(())
