@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use super::capability::{capability, capability_mut};
 use super::{
     ControlBindingKind, ControlBindingMetadata, ResourceOperationStart, Widget,
-    semantic_action_bindings,
+    semantic_action_bindings_into,
 };
 
 /// How the host answered a control's invocation: started (done at once with
@@ -194,7 +194,16 @@ pub(crate) fn value_control_bindings<I>(
 }
 
 fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
-    let mut bindings = semantic_action_bindings(widget.accessibility());
+    // Read a widget's kept rows where it keeps them, not a copy of each.
+    let mut bindings = Vec::new();
+    if let Some(shared) = widget.accessibility_shared() {
+        semantic_action_bindings_into(&shared.node, &mut bindings);
+        for child in &shared.children {
+            semantic_action_bindings_into(child, &mut bindings);
+        }
+    } else if let Some(node) = widget.accessibility() {
+        semantic_action_bindings_into(&node, &mut bindings);
+    }
     widget.for_each_child(&mut |child| bindings.extend(control_action_bindings(child)));
     bindings
 }

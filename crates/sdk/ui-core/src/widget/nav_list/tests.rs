@@ -1455,3 +1455,368 @@ fn an_unread_row_stands_out_and_a_persons_row_shows_them() {
         Some((colour, true))
     );
 }
+
+/// `count` destinations as a mail sidebar lists them: icons, counts,
+/// account badges and secondary lines, in two sections, the second with a
+/// "New folder" action, and a calendar section of checkable rows.
+fn destinations(count: usize) -> Vec<NavSection> {
+    let items = |range: std::ops::Range<usize>| -> Vec<NavItem> {
+        range
+            .map(|index| {
+                let item = NavItem::new(format!("item-{index}"), format!("Folder {index}"))
+                    .icon(Icon::Folder);
+                match index % 4 {
+                    0 => item.count(u32::try_from(index).unwrap_or(u32::MAX)),
+                    1 => item.badge(if index % 8 == 1 { "W" } else { "HOME" }),
+                    2 => item.secondary(format!("{index} unread")),
+                    _ => item,
+                }
+            })
+            .collect()
+    };
+    let half = count / 2;
+    vec![
+        NavSection::untitled("top", items(0..half)),
+        NavSection::new("folders", "Folders", items(half..count)).trailing_action(NavAction::new(
+            "new-folder",
+            Icon::Plus,
+            "New folder",
+        )),
+        NavSection::new(
+            "calendars",
+            "Calendars",
+            vec![
+                NavItem::new("home", "Home").checked(true),
+                NavItem::new("work", "Work").checked(false),
+            ],
+        ),
+    ]
+}
+
+const TALL: (u32, u32) = (280, 2800);
+
+/// The list laid out tall enough to show every row.
+fn tall(list: NavList) -> FrameHarness {
+    let mut h = FrameHarness::for_root(State::new(), list, TALL, Theme::dark());
+    h.relayout_at(TALL).expect("layout");
+    h
+}
+
+/// The list as a walk that kept no row would publish it now.
+fn published_afresh(list: &NavList) -> Option<crate::a11y::AccessNode> {
+    list.tree
+        .walk_keeping_nothing(|| Widget::accessibility(list))
+}
+
+/// The rows of `list`'s published tree.
+fn rows_of(list: &NavList) -> Vec<std::sync::Arc<crate::a11y::AccessNode>> {
+    Widget::accessibility_shared(list)
+        .expect("the list's node")
+        .children
+}
+
+/// A walk that finds the list as it was (a keystroke in the pane beside
+/// it) builds none of its rows and hands each over as the very node of the
+/// last walk, however many destinations it lists, and publishes what a
+/// walk keeping nothing publishes. Its root and whether it is hidden are
+/// read without building a row.
+#[test]
+fn an_unchanged_list_builds_no_row_and_hands_each_over_as_it_was() {
+    for count in [3_usize, 60] {
+        let h = tall(NavList::new(destinations(count)));
+        let list = h.root::<NavList>();
+        let first = rows_of(list);
+        assert!(
+            first.len() > count,
+            "every destination and header is on screen: {} rows for {count}",
+            first.len()
+        );
+        let builds = list.tree.access_row_builds_for_test();
+        let again = rows_of(list);
+        assert_eq!(
+            list.tree.access_row_builds_for_test(),
+            builds,
+            "a walk of {count} unchanged destinations built a row"
+        );
+        assert_eq!(first.len(), again.len());
+        assert!(
+            first
+                .iter()
+                .zip(&again)
+                .all(|(before, after)| std::sync::Arc::ptr_eq(before, after)),
+            "an unchanged row is handed over as the very node it was"
+        );
+        assert!(
+            !Widget::accessibility_hidden(list),
+            "a list is never hidden"
+        );
+        let root = Widget::accessibility_root(list);
+        assert_eq!(
+            list.tree.access_row_builds_for_test(),
+            builds,
+            "the root and hidden state are read without building rows"
+        );
+        let mut published = Widget::accessibility(list).expect("the list's node");
+        assert_eq!(Some(&published), published_afresh(list).as_ref());
+        published.children.clear();
+        assert_eq!(
+            root,
+            Some(published),
+            "the root is the published node without its rows"
+        );
+    }
+}
+
+/// What changes a row builds it again, and every walk publishes what a walk
+/// keeping nothing publishes: a selection moved, a check toggled before the
+/// app confirms it, a destination renamed, the theme changed.
+#[test]
+fn a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk() {
+    let mut h = tall(NavList::new(destinations(12)));
+    let rows = rows_of(h.root::<NavList>()).len();
+    let builds = h.root::<NavList>().tree.access_row_builds_for_test();
+
+    h.root_mut::<NavList>().set_selected(Some("item-5"));
+    h.relayout_at(TALL).expect("layout");
+    let list = h.root::<NavList>();
+    let _ = rows_of(list);
+    let after_select = list.tree.access_row_builds_for_test();
+    assert!(
+        after_select > builds && after_select <= builds + 2,
+        "choosing a destination builds the rows it selected and left: {builds} -> {after_select}"
+    );
+    assert_eq!(Widget::accessibility(list), published_afresh(list));
+
+    // A check shows at once, before the app's next sections confirm it.
+    let work = list.row_rect("work").expect("work");
+    point(&mut h, work.center().x, work.center().y);
+    h.relayout_at(TALL).expect("layout");
+    press(&mut h, winit::event::MouseButton::Left);
+    h.relayout_at(TALL).expect("layout");
+    let list = h.root::<NavList>();
+    let published = Widget::accessibility(list).expect("the list's node");
+    let work = published
+        .children
+        .iter()
+        .find(|row| row.name.as_deref() == Some("Work"))
+        .expect("the work calendar's row");
+    assert_eq!(work.state.checked, Some(true), "the toggled check");
+    assert_eq!(Some(published), published_afresh(list));
+
+    // Sections handed over again with a destination renamed.
+    let mut renamed = destinations(12);
+    renamed[0].items[1].label = "Renamed".to_owned();
+    h.root_mut::<NavList>().set_sections(renamed);
+    h.relayout_at(TALL).expect("layout");
+    let list = h.root::<NavList>();
+    let published = Widget::accessibility(list).expect("the list's node");
+    assert!(
+        published
+            .children
+            .iter()
+            .any(|row| row.name.as_deref() == Some("Renamed")),
+        "the renamed destination is published by its new name"
+    );
+    assert_eq!(Some(published), published_afresh(list));
+
+    // Another theme lays the section's action out anew.
+    h.relayout_themed(TALL, Theme::light()).expect("layout");
+    let list = h.root::<NavList>();
+    assert_eq!(Widget::accessibility(list), published_afresh(list));
+    assert_eq!(rows_of(list).len(), rows);
+}
+
+/// A destination whose selection action is unavailable is published
+/// disabled on every walk, however its row is kept; the rows of other
+/// destinations are still handed over as they were.
+#[test]
+fn an_unavailable_destination_is_published_disabled_and_the_rest_kept() {
+    let resource = tilo_actions::Resource::new("navigation", "test", "Navigation").with_action(
+        tilo_actions::ActionSpec::operation(
+            "open",
+            "Open destination",
+            tilo_actions::OperationKind::View,
+            "test.open",
+            &(),
+        )
+        .expect("an action"),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
+    let list = NavList::new(destinations(8))
+        .selection_actions((0..4).map(|index| (format!("item-{index}"), binding.clone())));
+    let mut h = tall(list);
+    crate::widget::controls::ActionControls::refresh_control_action_availability(
+        h.root_mut::<NavList>(),
+        &HashSet::new(),
+    );
+    let list = h.root::<NavList>();
+    let first = rows_of(list);
+    let again = rows_of(list);
+    for (before, after) in first.iter().zip(&again) {
+        let name = before.name.as_deref().unwrap_or_default();
+        let gated = (0..4).any(|index| name == format!("Folder {index}"));
+        assert_eq!(
+            after.state.disabled, gated,
+            "{name} is disabled exactly when its action is unavailable"
+        );
+        assert_eq!(
+            std::sync::Arc::ptr_eq(before, after),
+            !gated,
+            "{name}: only the rows the list disables are copied"
+        );
+    }
+    assert_eq!(Widget::accessibility(list), published_afresh(list));
+}
+
+/// Whether a list holds an action binding, which the host asks on every
+/// frame, is what its full binding inventory says, answered without
+/// building a row: the visible destinations' selection actions, and nothing
+/// for a list without them.
+#[test]
+fn whether_a_list_binds_actions_is_answered_without_building_rows() {
+    use crate::widget::controls::ActionControls;
+    fn binds_an_action(list: &NavList) -> bool {
+        list.control_action_bindings()
+            .iter()
+            .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
+    }
+    let resource = tilo_actions::Resource::new("navigation", "test", "Navigation").with_action(
+        tilo_actions::ActionSpec::operation(
+            "open",
+            "Open destination",
+            tilo_actions::OperationKind::View,
+            "test.open",
+            &(),
+        )
+        .expect("an action"),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
+    let lists = [
+        NavList::new(destinations(8)),
+        NavList::new(destinations(8)).selection_actions([("item-2".to_owned(), binding.clone())]),
+        // A destination that is not in the list binds nothing.
+        NavList::new(destinations(8)).selection_actions([("elsewhere".to_owned(), binding)]),
+    ];
+    for (index, list) in lists.into_iter().enumerate() {
+        let h = tall(list);
+        let list = h.root::<NavList>();
+        let _ = rows_of(list);
+        let builds = list.tree.access_row_builds_for_test();
+        assert_eq!(
+            list.has_action_control_bindings(),
+            index == 1,
+            "list {index}: only a visible destination's selection action is an action binding"
+        );
+        assert_eq!(
+            list.tree.access_row_builds_for_test(),
+            builds,
+            "list {index}: answered without building rows"
+        );
+        assert_eq!(
+            list.has_action_control_bindings(),
+            binds_an_action(list),
+            "list {index}: the answer is the inventory's"
+        );
+    }
+}
+
+/// The app's region of a host's scene.
+#[cfg(feature = "native")]
+struct Region;
+
+#[cfg(feature = "native")]
+impl crate::app::AppSurface for Region {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        winit::dpi::PhysicalSize::new(1280, TALL.1)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+}
+
+/// One host frame: app frames until the app is at rest, then the walk.
+#[cfg(feature = "native")]
+fn host_frame(app: &mut crate::app::App, damage: &mut crate::app::SurfaceDamage) {
+    let mut scene = vello::Scene::new();
+    for _ in 0..3 {
+        scene.reset();
+        if !app.surface_frame_with_damage(&Region, &mut scene, damage) || !app.unsettled() {
+            break;
+        }
+    }
+    let _ = app.refresh_semantic_tree();
+}
+
+/// What the walk of a keystroke's frame costs in a field beside a list of
+/// `count` destinations: the nodes it built, and the subtrees it compared
+/// or built. Also the rows the list publishes.
+#[cfg(feature = "native")]
+fn keystroke_walk_beside(count: usize) -> (usize, usize, usize) {
+    use crate::a11y::Role;
+    let shell = crate::widget::NavShell::new()
+        .sidebar(Box::new(NavList::new(destinations(count))))
+        .content(Box::new(
+            crate::widget::TextInput::local().with_accessible_name("Note"),
+        ));
+    let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
+    let mut damage = crate::app::SurfaceDamage::default();
+    app.init_layout();
+    for _ in 0..4 {
+        host_frame(&mut app, &mut damage);
+    }
+    let field = app
+        .semantic_tree()
+        .iter()
+        .find(|node| node.role == Role::TextInput && node.name.as_deref() == Some("Note"))
+        .map(|node| node.id.clone())
+        .expect("the field is published");
+    assert_eq!(app.invoke_semantic_action(&field, "focus", None), Ok(true));
+    for _ in 0..4 {
+        host_frame(&mut app, &mut damage);
+    }
+    let key = Key::Character("s".into());
+    app.surface_input(
+        &Region,
+        crate::synthetic_input::key_input(&key, ElementState::Pressed),
+        false,
+    );
+    host_frame(&mut app, &mut damage);
+    let tree = app.semantic_tree();
+    assert!(
+        tree.iter()
+            .any(|node| node.role == Role::TextInput && node.value.as_deref() == Some("s")),
+        "the frame that shows the key publishes it"
+    );
+    let rows = tree
+        .iter()
+        .filter(|node| node.role == Role::TreeItem)
+        .count();
+    (
+        tree.nodes_built_for_test(),
+        tree.subtrees_compared_for_test(),
+        rows,
+    )
+}
+
+/// A keystroke in a field beside a navigation list costs the walk what the
+/// field changed: the list hands every row over as the very node it handed
+/// over before, so the walk builds and compares the same beside a list of
+/// three destinations as beside one of sixty.
+#[cfg(feature = "native")]
+#[test]
+fn a_keystroke_beside_a_navigation_list_walks_the_same_nodes_however_long_it_is() {
+    let (few_built, few_compared, few_rows) = keystroke_walk_beside(3);
+    let (many_built, many_compared, many_rows) = keystroke_walk_beside(60);
+    assert!(
+        few_rows > 3 && many_rows > 60,
+        "the list shows every destination: {few_rows} and {many_rows} rows"
+    );
+    assert_eq!(
+        (few_built, few_compared),
+        (many_built, many_compared),
+        "a keystroke beside {few_rows} rows built and compared ({few_built}, {few_compared}); \
+         beside {many_rows}, ({many_built}, {many_compared})"
+    );
+}
