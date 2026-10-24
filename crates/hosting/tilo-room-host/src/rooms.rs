@@ -779,6 +779,10 @@ struct RoomsInner {
     /// Those waiting for their room's next write of the changes it staged,
     /// by room.
     queued_writes: std::sync::Mutex<HashMap<String, Vec<collaboration::Written>>>,
+    /// How many members' windows each room could not take in because they
+    /// build on history it no longer has
+    /// ([`topology_namespace::missing_history`]), by room.
+    unbuildable_windows: std::sync::Mutex<HashMap<String, u64>>,
     /// The rooms listed as public workspaces, and how lively each is.
     listings: listing::Listings,
     /// Each room's layout scope, as its governance says
@@ -915,6 +919,7 @@ impl Rooms {
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
                 queued_writes: std::sync::Mutex::default(),
+                unbuildable_windows: std::sync::Mutex::default(),
                 listings,
                 layouts: layout_scope::Layouts::default(),
                 #[cfg(feature = "agents")]
@@ -1657,6 +1662,13 @@ impl Rooms {
         let host = &self.inner.host;
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
+        if let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = &message {
+            let missing =
+                topology_namespace::missing_history(room.peer().admitted_room(), changes)?;
+            if missing > 0 {
+                return Err(self.unbuildable_windows(room.room(), missing));
+            }
+        }
         let now = SystemTime::now();
         let mut candidate = room.peer().clone();
         let outcome = candidate.receive_from(
