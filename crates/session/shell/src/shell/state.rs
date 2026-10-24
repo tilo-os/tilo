@@ -2482,91 +2482,63 @@ impl WorkspaceTree {
     /// Everything is invented, so it must never be reachable from a
     /// normal boot; production goes through [`Self::bootstrap_default`].
     pub fn bootstrap_demo() -> Self {
-        let ws_id = WorkspaceId::new();
-        let strip_id = StripId::new();
+        // The demo is a first boot with invented content on top, so the
+        // demo, `--shots` and tests exercise the Home a real boot makes:
+        // hosted, placed and enrolled like any other workspace.
+        let mut tree = Self::bootstrap_default();
+        let ws_id = tree.desktop.active;
         let group_id = next_id();
         let tab_notes = next_id();
         let tab_files = next_id();
         let tab_terminal = next_id();
         let tab_word = next_id();
+        let app_tab = |id: u64, title: &str, kind: AppKind| Tab {
+            id,
+            title: title.into(),
+            tile: TileContent::AppPlaceholder {
+                kind,
+                label: title.into(),
+            },
+            app_title: None,
+        };
+        let home = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == ws_id)
+            .expect("bootstrap_default makes Home active");
         // Home opens the four in-process apps at `WindowWidth::Wide` so
         // the card fills more than half the viewport on a 1600 px-wide
         // first-run desktop — matches `WindowFrame.tsx`'s behaviour.
-        let home = {
-            let mut workspace = Workspace::new(ws_id, String::new());
-            workspace.id = ws_id;
-            workspace.name = "Home".into();
-            workspace.strips = vec![Strip {
-                id: strip_id,
-                name: "Main".into(),
-                window_groups: vec![WindowGroup {
-                    id: group_id,
-                    tabs: vec![
-                        Tab {
-                            id: tab_notes,
-                            title: "Notes".into(),
-                            tile: TileContent::AppPlaceholder {
-                                kind: AppKind::Other("Notes".into()),
-                                label: "Notes".into(),
-                            },
-                            app_title: None,
-                        },
-                        Tab {
-                            id: tab_files,
-                            title: "Files".into(),
-                            tile: TileContent::AppPlaceholder {
-                                kind: AppKind::FileExplorer,
-                                label: "Files".into(),
-                            },
-                            app_title: None,
-                        },
-                        Tab {
-                            id: tab_terminal,
-                            title: "Terminal".into(),
-                            tile: TileContent::AppPlaceholder {
-                                kind: AppKind::Terminal,
-                                label: "Terminal".into(),
-                            },
-                            app_title: None,
-                        },
-                        Tab {
-                            id: tab_word,
-                            title: "Document".into(),
-                            tile: TileContent::AppPlaceholder {
-                                kind: AppKind::Other("Word".into()),
-                                label: "Document".into(),
-                            },
-                            app_title: None,
-                        },
-                    ],
-                    active_tab: tab_notes,
-                    width: WindowWidth::Wide,
-                    maximized: false,
-                    focus_history: Vec::new(),
-                }],
-            }];
-            // One invented peer so the top-bar avatar stack has something
-            // to paint. "me" is deliberately not seeded so
-            // `draw_ws_settings` synthesizes its "You" tile from the
-            // fallback path. Hex matches `tilo-concept/src/data.ts`.
-            workspace.collaborators = vec![
-                Collaborator::new("alice", "Alice")
-                    .with_cursor_color("#ec4899")
-                    .with_role("editor"),
-            ];
-            workspace
-        };
-
-        let mut tree = Self {
-            desktop: DesktopTree {
-                workspaces: vec![home],
-                active: ws_id,
-                active_strip: HashMap::from([(ws_id, strip_id)]),
-                active_group: HashMap::from([(strip_id, group_id)]),
-                ..DesktopTree::default()
-            },
-            ..Default::default()
-        };
+        let strip = home
+            .strips
+            .first_mut()
+            .expect("bootstrap_default gives Home a strip");
+        let strip_id = strip.id;
+        strip.window_groups = vec![WindowGroup {
+            id: group_id,
+            tabs: vec![
+                app_tab(tab_notes, "Notes", AppKind::Other("Notes".into())),
+                app_tab(tab_files, "Files", AppKind::FileExplorer),
+                app_tab(tab_terminal, "Terminal", AppKind::Terminal),
+                app_tab(tab_word, "Document", AppKind::Other("Word".into())),
+            ],
+            active_tab: tab_notes,
+            width: WindowWidth::Wide,
+            maximized: false,
+            focus_history: Vec::new(),
+        }];
+        // One invented peer so the top-bar avatar stack has something
+        // to paint. "me" is deliberately not seeded so
+        // `draw_ws_settings` synthesizes its "You" tile from the
+        // fallback path. Hex matches `tilo-concept/src/data.ts`.
+        home.collaborators = vec![
+            Collaborator::new("alice", "Alice")
+                .with_cursor_color("#ec4899")
+                .with_role("editor"),
+        ];
+        tree.desktop.active_strip.insert(ws_id, strip_id);
+        tree.desktop.active_group.insert(strip_id, group_id);
 
         // Research and Design add empty strips for the overview's 3-card
         // grid; Research also gets two invented collaborators to render.
@@ -2587,8 +2559,8 @@ impl WorkspaceTree {
         tree.create_hosted_workspace("Design");
 
         // Home stays active — `create_hosted_workspace` doesn't touch
-        // `tree.active`. This seeds the doc with the initial Home
-        // workspace + active pointer the cache literal set directly.
+        // `tree.active`. This writes Home's demo windows and collaborators,
+        // set on the cache above, into the doc.
         tree.seed_doc_from_cache();
         tree
     }
@@ -4386,6 +4358,16 @@ mod bootstrap_tests {
                         .any(|w| !w.collaborators.is_empty()),
                     "at least one demo workspace should carry >=1 collaborator"
                 );
+                // Every demo workspace waits for a host the way a first
+                // boot's Home does; one left device-only refuses apps'
+                // documents, so a demo would exercise a desktop nobody runs.
+                for ws in &tree.desktop.workspaces {
+                    assert!(
+                        tree.pending_placements.contains(&ws.room()),
+                        "demo workspace {:?} is not hosted",
+                        ws.name
+                    );
+                }
             }
 
             // Phase `bootstrap_demo_first_group_uses_wide_or_larger`.
