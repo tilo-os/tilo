@@ -229,7 +229,10 @@ impl Drop for LiveTree {
     }
 }
 
-fn publish_fixture(live: &LiveTree, scope: Scope) -> (WorkspaceTree, Arc<Authority>) {
+/// The published tree, its authority, and a second capture of the live
+/// sandbox kept outside the authority: it answers why the published policy
+/// would reject the sandbox, which the one the authority dropped no longer can.
+fn publish_fixture(live: &LiveTree, scope: Scope) -> (WorkspaceTree, Arc<Authority>, Sandbox) {
     let mut tree = WorkspaceTree::bootstrap_default();
     let room = tree.desktop.workspaces[0].room();
     let grant = CapOverride::grant(Subject::app("so.tilo.reader"), scope, Access::Write)
@@ -238,19 +241,22 @@ fn publish_fixture(live: &LiveTree, scope: Scope) -> (WorkspaceTree, Arc<Authori
     Export::of(&tree).publish();
     let authority = tree.native_runtime.action_authority();
     let mut published = lock(&authority.published);
-    let sandbox = Sandbox::capture(
-        live.root.0.id(),
-        (room, "so.tilo.reader".into(), "person".into()),
-        &[grant],
-    )
-    .unwrap();
-    assert!(sandbox.authorization_status(&published).is_ok());
+    let capture = || {
+        Sandbox::capture(
+            live.root.0.id(),
+            (room, "so.tilo.reader".into(), "person".into()),
+            std::slice::from_ref(&grant),
+        )
+        .unwrap()
+    };
+    let sandbox = capture();
+    assert_eq!(sandbox.authorization_status(&published), Ok(()));
     published.sandboxes.insert(live.root.0.id(), sandbox);
     drop(published);
-    (tree, authority)
+    (tree, authority, capture())
 }
 
-fn add_and_reorder(tree: &mut WorkspaceTree, authority: &Authority) {
+fn add_and_reorder(tree: &mut WorkspaceTree, authority: &Authority, witness: &Sandbox) {
     let caps = &mut tree.desktop.workspaces[0].sandbox;
     caps.push(CapOverride::grant(
         Subject::app("so.tilo.reader"),
@@ -259,10 +265,13 @@ fn add_and_reorder(tree: &mut WorkspaceTree, authority: &Authority) {
     ));
     caps.reverse();
     Export::of(tree).publish();
+    let published = lock(&authority.published);
+    let sandboxes = published.sandboxes.len();
+    let status = witness.authorization_status(&published);
+    drop(published);
     assert_eq!(
-        lock(&authority.published).sandboxes.len(),
-        1,
-        "additions are not withdrawal"
+        sandboxes, 1,
+        "additions are not withdrawal; the published policy rejects the sandbox with {status:?}"
     );
 }
 
@@ -276,8 +285,8 @@ fn network_withdrawal_closes_live_gate_fresh_connections_and_descendants() {
     let target = TcpListener::bind("127.0.0.1:0").unwrap();
     target.set_nonblocking(true).unwrap();
     let (mut held, _upstream) = live.gate_connection(&target);
-    let (mut tree, authority) = publish_fixture(&live, Scope::NetHost("localhost".into()));
-    add_and_reorder(&mut tree, &authority);
+    let (mut tree, authority, witness) = publish_fixture(&live, Scope::NetHost("localhost".into()));
+    add_and_reorder(&mut tree, &authority, &witness);
     live.readable();
     // A new connection, not just the pre-publication tunnel, still works.
     let (_fresh, _fresh_upstream) = live.gate_connection(&target);
@@ -311,7 +320,7 @@ fn directory_withdrawal_interrupts_holders_of_directory_descriptors() {
 
 fn directory_revocation(narrow: bool) {
     let mut live = LiveTree::start(false);
-    let (mut tree, authority) = publish_fixture(
+    let (mut tree, authority, witness) = publish_fixture(
         &live,
         Scope::FsPath(
             live.scratch
@@ -323,7 +332,7 @@ fn directory_revocation(narrow: bool) {
         ),
     );
     live.readable();
-    add_and_reorder(&mut tree, &authority);
+    add_and_reorder(&mut tree, &authority, &witness);
     live.readable();
     let caps = &mut tree.desktop.workspaces[0].sandbox;
     if narrow {

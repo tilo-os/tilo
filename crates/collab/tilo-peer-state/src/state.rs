@@ -52,6 +52,7 @@ mod owner_membership;
 mod topology_namespace;
 mod workspace_effects;
 mod workspace_membership;
+mod workspace_shortcuts;
 pub use local_outbox::{LocalRecoveryReservation, Reseal};
 mod held;
 mod media_governance;
