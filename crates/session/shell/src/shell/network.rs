@@ -87,6 +87,8 @@ pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
 mod node_member_tests;
+#[cfg(test)]
+mod outbox_tests;
 mod relay_rooms;
 mod room_gate;
 #[cfg(test)]
@@ -1416,13 +1418,13 @@ pub struct ShellNetwork {
     /// This device's own room host, governing the rooms placed on it
     /// ([`governance_requests::LocalGovernor`]).
     local_governor: std::sync::OnceLock<Arc<dyn governance_requests::LocalGovernor>>,
-    /// The room epoch and queue length at which every waiting governance
-    /// request found its governor out of reach: asked again only once
-    /// either moved.
-    governance_waiting: Mutex<Option<(u64, usize)>>,
-    /// The room state and count of unrecorded receipts last asked for
-    /// ([`Self::record_unrecorded_receipts_off_loop`]).
-    receipts_asked: Mutex<Option<(u64, usize)>>,
+    /// Where the outbox stood when the drain last found nothing more to
+    /// ask, or found the hosts of what is left out of reach
+    /// ([`Self::send_outbox_off_loop`]): looked at again only once it moved
+    /// or a host's session came up.
+    outbox_waiting: Mutex<Option<(u64, uuid::Uuid)>>,
+    /// The outbox entries being asked now, so a tick never asks one twice.
+    outbox_asked: Mutex<std::collections::HashSet<uuid::Uuid>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -2249,8 +2251,8 @@ impl ShellNetwork {
             joined_topics: Mutex::new(std::collections::HashSet::new()),
             room_rosters_sent: Mutex::default(),
             local_governor: std::sync::OnceLock::new(),
-            governance_waiting: Mutex::default(),
-            receipts_asked: Mutex::default(),
+            outbox_waiting: Mutex::default(),
+            outbox_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -6751,8 +6753,7 @@ impl ShellNetwork {
         });
         steps.time("network/keepalive", || self.live_keepalive());
         steps.time("network/governance", || {
-            self.send_governance_requests_off_loop();
-            self.record_unrecorded_receipts_off_loop();
+            self.send_outbox_off_loop();
         });
         steps.time("network/room-rosters", || self.send_room_rosters());
         // Hold the lock for the whole drain so a concurrent frame-tick
@@ -6856,9 +6857,9 @@ impl ShellNetwork {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
                 }
-                // A host's session is up: governance changes waiting for a
-                // host out of reach may reach it now.
-                if let Ok(mut waiting) = self.governance_waiting.lock() {
+                // A host's session is up: what the outbox holds for a host
+                // out of reach may reach it now.
+                if let Ok(mut waiting) = self.outbox_waiting.lock() {
                     *waiting = None;
                 }
                 self.record_content_sources_changed();
@@ -8236,8 +8237,8 @@ pub(crate) fn shell_network_for_test(
         joined_topics: Mutex::new(joined_topics),
         room_rosters_sent: Mutex::default(),
         local_governor: std::sync::OnceLock::new(),
-        governance_waiting: Mutex::default(),
-        receipts_asked: Mutex::default(),
+        outbox_waiting: Mutex::default(),
+        outbox_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,

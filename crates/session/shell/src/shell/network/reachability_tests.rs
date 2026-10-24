@@ -593,13 +593,13 @@ fn a_rename_of_a_room_hosted_here_applies_with_the_relays_down() {
             },
         ),
     );
-    until("the rename to reach the room's document here", || {
-        device.tick();
-        (name_of(&tree).as_deref() == Some("Design")).then_some(())
-    });
-    assert!(
-        tree.read().governance_requests.is_empty(),
-        "the rename still waits for a governor"
+    until(
+        "the rename to reach the room's document here, with nothing left to ask",
+        || {
+            device.tick();
+            (name_of(&tree).as_deref() == Some("Design") && tree.read().room_outbox.is_empty())
+                .then_some(())
+        },
     );
     drop(device);
 }

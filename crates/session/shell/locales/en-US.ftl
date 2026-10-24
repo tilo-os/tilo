@@ -1686,6 +1686,7 @@ governance-change-members = Change a member's standing
 governance-change-access = Change access to this workspace
 governance-change-presets = Change this workspace's presets
 governance-change-settings = Change this workspace's settings
+governance-change-history = Record what was done in this workspace's history
 search-action-invitation-issue = Create an invitation
 search-action-invitation-issue-subtitle = Mint an invitation to this workspace with a role and a lifetime
 search-action-invitation-list = List pending invitations

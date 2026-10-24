@@ -190,76 +190,110 @@ impl ShellNetwork {
     /// placed on it.
     pub(crate) fn install_local_governor(&self, governor: std::sync::Arc<dyn LocalGovernor>) {
         let _ = self.local_governor.set(governor);
-        // Requests waiting for a governor out of reach may reach this one.
-        if let Ok(mut waiting) = self.governance_waiting.lock() {
+        // Changes waiting for a host out of reach may reach this one.
+        if let Ok(mut waiting) = self.outbox_waiting.lock() {
             *waiting = None;
         }
     }
 
-    /// Take the governance changes made here to their governors: on the
-    /// peer-sync worker, as each waits for its governor's answer. Costs one
-    /// read of the tree when there is none, or when every waiting one is
-    /// for a governor out of reach and neither a room nor the queue changed
-    /// since.
-    pub(super) fn send_governance_requests_off_loop(&self) {
-        let queued = {
-            let tree = self.tree.read();
-            if !tree.has_governance_requests() {
-                return;
-            }
-            (tree.desktop.room_epoch, tree.governance_requests.len())
+    /// Take what the tree's outbox holds to ask
+    /// ([`crate::shell::state::Outgoing`]) to the rooms' hosts: on the
+    /// peer-sync worker, each waiting for its host's answer. An entry stays
+    /// in the tree while it is asked; it leaves once its room's document
+    /// carries it or its host refuses it.
+    ///
+    /// For the frame tick: with the outbox empty, or with nothing changed
+    /// since the last look ([`Self::outbox_state`]), it is one read of the
+    /// tree and a compare, with no scan and no allocation.
+    pub(super) fn send_outbox_off_loop(&self) {
+        let Some(state) = Self::outbox_state(&self.tree.read()) else {
+            return;
         };
-        if self
-            .governance_waiting
-            .lock()
-            .is_ok_and(|waiting| *waiting == Some(queued))
-        {
+        let Ok(mut gate) = self.outbox_waiting.lock() else {
+            return;
+        };
+        if *gate == Some(state) {
             return;
         }
-        let requests = self.tree.write().take_governance_requests();
-        if let Err(requests) = self.governance_off_loop(requests) {
-            self.send_governance_requests(requests);
+        // Nothing more to ask until a room, the outbox or a host changes.
+        *gate = Some(state);
+        drop(gate);
+        let entries: Vec<_> = {
+            let tree = self.tree.read();
+            let Ok(mut asked) = self.outbox_asked.lock() else {
+                return;
+            };
+            let entries: Vec<_> = tree
+                .outbox_to_ask()
+                .filter(|entry| !asked.contains(&entry.id))
+                .cloned()
+                .collect();
+            drop(tree);
+            asked.extend(entries.iter().map(|entry| entry.id));
+            drop(asked);
+            entries
+        };
+        if entries.is_empty() {
+            return;
+        }
+        if let Err(entries) = self.outbox_off_loop(entries) {
+            self.send_outbox(&entries);
         }
     }
 
-    /// Ask each request's governor, in order. A refused one is handed back
-    /// to the tree ([`crate::shell::state::WorkspaceTree::refuse_governance`])
-    /// for the chrome to say. A request whose governor is out of reach is
-    /// kept, saved with the tree, and asked again once a room's state
+    /// Where the outbox stands, for the drain's gate: the room epoch and
+    /// the newest entry, so a room projected or an entry made opens it.
+    /// `None` when the outbox is empty.
+    fn outbox_state(tree: &crate::shell::state::WorkspaceTree) -> Option<(u64, uuid::Uuid)> {
+        let newest = tree.room_outbox.last()?;
+        Some((tree.desktop.room_epoch, newest.id))
+    }
+
+    /// Ask each entry's host, in order, and tell the tree how each answered
+    /// ([`crate::shell::state::WorkspaceTree::outbox_answered`]): a refusal
+    /// is said by the chrome. An entry whose host is out of reach, or could
+    /// not be reached to answer, is asked again once a room's state
     /// changed, a host's session came up ([`NetEvent::HostReady`]), another
-    /// request was made, or this device's own host was installed. So is one
-    /// whose host could not be reached to answer: only a governor's own
-    /// refusal is said.
+    /// change was made, or this device's own host was installed.
     ///
     /// [`NetEvent::HostReady`]: crate::network::actor::NetEvent::HostReady
-    pub(super) fn send_governance_requests(&self, requests: Vec<(RoomId, GovernanceRequest)>) {
-        let mut waiting = Vec::new();
-        let mut refused = Vec::new();
-        for (room, request) in requests {
-            match self.ask_governor_if_reachable(room, &request) {
-                Some(Ok(())) => {}
-                Some(Err(error)) => {
-                    tracing::info!(%room, %error, "the workspace host refused a governance change");
-                    refused.push((room, request, error));
+    pub(super) fn send_outbox(&self, entries: &[crate::shell::state::Outgoing]) {
+        use crate::shell::state::{HostAnswer, RoomChange};
+        let mut answers = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let answer = match &entry.change {
+                RoomChange::Governance(request) => {
+                    match self.ask_governor_if_reachable(entry.room, request) {
+                        Some(Ok(())) => HostAnswer::Accepted,
+                        Some(Err(error)) => {
+                            tracing::info!(room = %entry.room, %error, "the workspace host refused a governance change");
+                            HostAnswer::Refused(error)
+                        }
+                        None => HostAnswer::Unreachable,
+                    }
                 }
-                None => waiting.push((room, request)),
-            }
-        }
-        if waiting.is_empty() && refused.is_empty() {
-            return;
+                RoomChange::Receipt(receipt) => self.record_receipt(entry.room, receipt),
+            };
+            answers.push((entry.id, answer));
         }
         let mut tree = self.tree.write();
-        for (room, request, error) in refused {
-            tree.refuse_governance(room, request, error);
+        let unreachable = answers
+            .iter()
+            .any(|(_, answer)| *answer == HostAnswer::Unreachable);
+        for (id, answer) in answers {
+            tree.outbox_answered(id, answer);
         }
-        if waiting.is_empty() {
-            return;
-        }
-        tree.requeue_governance(waiting);
-        let queued = (tree.desktop.room_epoch, tree.governance_requests.len());
+        let state = Self::outbox_state(&tree);
         drop(tree);
-        if let Ok(mut gate) = self.governance_waiting.lock() {
-            *gate = Some(queued);
+        if let Ok(mut asked) = self.outbox_asked.lock() {
+            for entry in entries {
+                asked.remove(&entry.id);
+            }
+        }
+        // What found its host out of reach waits for a room, the outbox or
+        // a host to change from where they stand now.
+        if unreachable && let Ok(mut gate) = self.outbox_waiting.lock() {
+            *gate = state;
         }
     }
 
@@ -586,15 +620,15 @@ mod tests {
 
         // No network and no host yet: nothing is asked, nothing is lost.
         let (network, _commands) = crate::shell::network::shell_network_for_test(handle.clone(), 1);
-        network.send_governance_requests_off_loop();
+        network.send_outbox_off_loop();
         assert_eq!(
-            handle.read().governance_requests,
+            governance_in_outbox(&handle.read()),
             vec![(room, rename.clone())],
             "a change whose host is out of reach waits"
         );
-        network.send_governance_requests_off_loop();
+        network.send_outbox_off_loop();
         assert_eq!(
-            handle.read().governance_requests.len(),
+            handle.read().room_outbox.len(),
             1,
             "and is not asked again on every tick"
         );
@@ -605,7 +639,7 @@ mod tests {
         // A restart, with this device's own host governing the room.
         let mut loaded = crate::shell::persist::load_tree_from(&path).expect("load");
         assert_eq!(
-            loaded.governance_requests,
+            governance_in_outbox(&loaded),
             vec![(room, rename)],
             "the waiting change survives the restart"
         );
@@ -616,11 +650,8 @@ mod tests {
             room,
             tree: handle.clone(),
         }));
-        network.send_governance_requests_off_loop();
-        assert!(
-            handle.read().governance_requests.is_empty(),
-            "the host took it"
-        );
+        network.send_outbox_off_loop();
+        assert!(handle.read().room_outbox.is_empty(), "the host took it");
         assert_eq!(
             handle
                 .read()
@@ -632,6 +663,21 @@ mod tests {
             Some("Design"),
             "and the rename applies"
         );
+    }
+
+    /// The governance changes `tree`'s outbox holds, in order.
+    fn governance_in_outbox(
+        tree: &crate::shell::state::WorkspaceTree,
+    ) -> Vec<(crate::shell::state::RoomId, GovernanceRequest)> {
+        tree.room_outbox
+            .iter()
+            .filter_map(|entry| match &entry.change {
+                crate::shell::state::RoomChange::Governance(request) => {
+                    Some((entry.room, request.clone()))
+                }
+                crate::shell::state::RoomChange::Receipt(_) => None,
+            })
+            .collect()
     }
 
     /// A room host that refuses everything it is asked, for `reason`.
@@ -690,7 +736,7 @@ mod tests {
             room,
             reason: "only the room's owner may do that",
         }));
-        network.send_governance_requests_off_loop();
+        network.send_outbox_off_loop();
         assert!(
             crate::shell::workspace_governance::report_governance_refusals(
                 &mut chrome.borrow_mut()
@@ -753,13 +799,13 @@ mod tests {
             "the person is still a member on screen"
         );
         assert!(
-            state.tree().governance_requests.is_empty(),
+            state.tree().room_outbox.is_empty(),
             "nothing waits to be asked again"
         );
     }
 
     #[test]
-    fn a_refused_rename_and_sandbox_narrowing_show_what_the_room_has_again() {
+    fn a_refused_rename_shows_the_rooms_name_again_and_a_refused_narrowing_stays() {
         let (chrome, _guard) =
             crate::shell::native_workspace_owner::test_chrome_governing_its_room();
         let governor = chrome.borrow().active_local_user();
@@ -800,8 +846,17 @@ mod tests {
         let shown = tree.desktop.active_workspace().expect("a workspace");
         assert_eq!(shown.name, name, "the name the room has shows again");
         assert!(
-            shown.sandbox.contains(&capability),
-            "and so does the capability the room still grants"
+            !shown.sandbox.contains(&capability),
+            "a capability taken back stays taken back here though the room still grants it"
+        );
+        assert!(
+            matches!(
+                tree.room_outbox.as_slice(),
+                [entry] if entry.takes_back.as_ref() == Some(&capability)
+                    && entry.standing == crate::shell::state::Standing::Refused
+            ),
+            "the refused narrowing is kept, and not asked again: {:?}",
+            tree.room_outbox
         );
         drop(tree);
         let titles: Vec<_> = state
