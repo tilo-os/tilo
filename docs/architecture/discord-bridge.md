@@ -273,8 +273,19 @@ it did not make, and never changes a permission it does not own.
 - **Webhooks.** Every mapped text channel gets the bridge's webhook, which
   is how Tilo messages are posted (§3). That webhook is the one change
   adoption makes in the server.
-- **Voice.** Voice channels exist on both sides with no audio bridge. Tilo's
-  voice channel and Discord's are separate rooms with the same name.
+- **Voice.** A mapped voice channel pair is one call. The room's host runs
+  the call beside the bridge bot (`tilo-relay`'s `room_bots::discord_voice`):
+  while either side has anyone in it, the bot joins the other. In Tilo each
+  Discord person is a participant of their own, shown by name and avatar
+  "via Discord" (as the linked member when the account is linked), with
+  their own speaking light and volume; the bridge's own participation only
+  listens and marks the call "bridged to Discord" for everyone in it. In
+  Discord the bot is the one voice user, carrying the Tilo speakers mixed,
+  and the voice channel's status (or the bot's nickname) names who is on the
+  Tilo side. Nobody hears themselves back, and a person removed or banned
+  from the room, blocked in the bridge or denied in the call is not
+  carried. Discord allows a bot in one voice channel per server, so one pair
+  is carried at a time.
 
 The bot's guards are in the record as well as in the bot: `apply-channel`
 and `delete-channel` are refused without `mirror_channels`, before adoption,
