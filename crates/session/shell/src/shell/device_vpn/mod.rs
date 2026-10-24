@@ -32,7 +32,7 @@ use device_vpn::protocol::{
 };
 use device_vpn::tunnel::device::TunDevice;
 use device_vpn::tunnel::dns::DnsRelay;
-use device_vpn::tunnel::{Authority, Decision, Ended, Exit, ExitDevices, client};
+use device_vpn::tunnel::{Authority, Decision, Ended, Exit, ExitDevices, Tunnel, client};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use settings_store::device_vpn::{
     self as settings, ClientState, ClientStatus, DeviceVpnStatus, ExitUser, OfferedExit, Problem,
@@ -316,6 +316,7 @@ pub fn refresh(network: &ShellNetwork) {
     });
 
     publish(vpn, &mut follow);
+    drop(follow);
 }
 
 fn stop_peer(exit: &Exit<ShellAuthority, HelperExit>, device: &str) {
@@ -601,14 +602,58 @@ async fn settle(
     }
     set_state(shared, want, after.state);
     match after.retry {
-        Some(wait) => {
+        Some(delay) => {
             tokio::select! {
-                () = tokio::time::sleep(wait) => {}
+                () = tokio::time::sleep(delay) => {}
                 () = choice_changes(inputs, want, endpoint) => {}
             }
         }
         None => choice_changes(inputs, want, endpoint).await,
     }
+}
+
+/// The helper's link for `tunnel`: the one held when it still fits, else a
+/// new one. On failure, what to do instead.
+async fn link_up(
+    tunnel: &Tunnel,
+    endpoint: &Endpoint,
+    want: &Want,
+    held: &mut Option<Held>,
+    attempt: u32,
+) -> Result<Arc<TunDevice>, AfterEnd> {
+    let keep_link = held.is_some() && want.kill_switch;
+    let carrier = carrier(endpoint).await;
+    let link = controller::link_for(want, tunnel.address, tunnel.mtu(), &tunnel.offer, carrier)
+        .map_err(|reason| {
+            tracing::info!(%reason, "no route through the other device");
+            AfterEnd {
+                keep_link,
+                clear_through: false,
+                retry: Some(controller::REFUSED_RETRY),
+                state: ClientState::Failed {
+                    problem: Problem::NoHomeNetwork,
+                },
+            }
+        })?;
+    if let Some(held) = held
+        .as_ref()
+        .filter(|held| held.link == link && held.want == *want)
+    {
+        return Ok(Arc::clone(&held.device));
+    }
+    let device = open_link(&link).await.map_err(|problem| AfterEnd {
+        keep_link,
+        clear_through: false,
+        retry: Some(controller::backoff(attempt)),
+        state: ClientState::Failed { problem },
+    })?;
+    let device = Arc::new(device);
+    *held = Some(Held {
+        want: want.clone(),
+        link,
+        device: Arc::clone(&device),
+    });
+    Ok(device)
 }
 
 /// Route through the device the person chose, for as long as they choose
@@ -675,54 +720,13 @@ async fn drive_client(shared: Arc<Mutex<Shared>>, mut inputs: watch::Receiver<In
                 continue;
             }
         };
-        let carrier = carrier(&endpoint).await;
-        let link =
-            match controller::link_for(&want, tunnel.address, tunnel.mtu(), &tunnel.offer, carrier)
-            {
-                Ok(link) => link,
-                Err(reason) => {
-                    tracing::info!(%reason, "no route through the other device");
-                    tunnel.close();
-                    let after = AfterEnd {
-                        keep_link: held.is_some() && want.kill_switch,
-                        clear_through: false,
-                        retry: Some(controller::REFUSED_RETRY),
-                        state: ClientState::Failed {
-                            problem: Problem::NoHomeNetwork,
-                        },
-                    };
-                    settle(&shared, &mut held, &want, endpoint_id, after, &mut inputs).await;
-                    continue;
-                }
-            };
-        let reuse = held
-            .as_ref()
-            .filter(|held| held.link == link && held.want == want)
-            .map(|held| Arc::clone(&held.device));
-        let device = match reuse {
-            Some(device) => device,
-            None => match open_link(&link).await {
-                Ok(device) => {
-                    let device = Arc::new(device);
-                    held = Some(Held {
-                        want: want.clone(),
-                        link,
-                        device: Arc::clone(&device),
-                    });
-                    device
-                }
-                Err(problem) => {
-                    tunnel.close();
-                    let after = AfterEnd {
-                        keep_link: held.is_some() && want.kill_switch,
-                        clear_through: false,
-                        retry: Some(controller::backoff(attempt)),
-                        state: ClientState::Failed { problem },
-                    };
-                    settle(&shared, &mut held, &want, endpoint_id, after, &mut inputs).await;
-                    continue;
-                }
-            },
+        let device = match link_up(&tunnel, &endpoint, &want, &mut held, attempt).await {
+            Ok(device) => device,
+            Err(after) => {
+                tunnel.close();
+                settle(&shared, &mut held, &want, endpoint_id, after, &mut inputs).await;
+                continue;
+            }
         };
         attempt = 0;
         set_state(
