@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tilo_user_identity::DeviceCapabilities;
 
-use super::{Device, NOTE_RECORD, NOTES, Person, RoomId, Wakes, hosted_workspace, scratch, until};
+use super::{Device, Person, RoomId, Wakes, hosted_workspace, scratch, until};
 
 impl Device {
     /// Every version of the note in `room` this device holds, each with the
@@ -22,17 +22,6 @@ impl Device {
                 .map(|change| (change.hash(), change.actor_id().to_bytes().to_vec()))
                 .collect()
         };
-        if !self.seals_records(room) {
-            let Ok(owner) = self.net().native_owner() else {
-                return Vec::new();
-            };
-            return owner
-                .with_current(room, |view| Ok(view.peer().document(NOTES, NOTE_RECORD)))
-                .ok()
-                .flatten()
-                .and_then(|bytes| automerge::AutoCommit::load(&bytes).ok())
-                .map_or_else(Vec::new, |mut document| versions(&mut document));
-        }
         let Some(keys) = self.note_keys(room) else {
             return Vec::new();
         };
