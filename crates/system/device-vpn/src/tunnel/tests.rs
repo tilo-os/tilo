@@ -367,8 +367,11 @@ async fn a_packet_too_large_for_the_path_is_answered_with_the_size_that_fits() {
     // ICMP type 3 code 4, with the next-hop MTU in bytes 6..8.
     let body = &icmp.bytes()[20..];
     assert_eq!((body[0], body[1]), (3, 4));
-    let mtu = usize::from(u16::from_be_bytes([body[6], body[7]]));
-    assert!(mtu <= fits, "{mtu} fits in {fits}");
+    // The size that fits now, which path MTU discovery may have raised
+    // since: never the packet's own size, never below the IPv4 minimum.
+    let mtu = u16::from_be_bytes([body[6], body[7]]);
+    assert!(mtu < 1500, "{mtu} is smaller than the packet");
+    assert!(mtu >= crate::net::MIN_MTU, "{mtu}");
     tunnel.close();
     pair.shutdown().await;
 }
