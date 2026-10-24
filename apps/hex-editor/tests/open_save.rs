@@ -206,6 +206,39 @@ fn opening_a_file_replaces_the_buffer_and_the_chooser_answers_the_effect() {
     assert_eq!(std::fs::read(&chosen).unwrap(), [0xFF, 2, 3]);
 }
 
+/// A file larger than a host may hand the app is refused before it is read
+/// whole, through the same door a person's chooser and an agent's path use,
+/// and the open buffer stays as it was.
+#[test]
+fn a_file_too_large_to_hold_is_refused_and_the_buffer_kept() {
+    let mut app = TestApp::<HexEditorShell>::new().unwrap();
+    app.harness().relayout();
+    let (_directory, small) = file("small.bin", b"KEEP");
+    app.effect(&HexEffect::OpenFile { path: Some(small) })
+        .unwrap();
+    app.settle();
+
+    // Sparse: its length is past the limit, its blocks are never written.
+    let huge_directory = tempfile::tempdir().unwrap();
+    let huge = huge_directory.path().join("disk.img");
+    std::fs::File::create(&huge)
+        .unwrap()
+        .set_len(u64::try_from(ui::application::MAX_OPEN_FILE_BYTES).unwrap() + 1)
+        .unwrap();
+    let refused = app
+        .effect(&HexEffect::OpenFile {
+            path: Some(huge.to_str().unwrap().to_owned()),
+        })
+        .expect_err("a file past the limit does not open");
+    assert!(
+        format!("{refused:?}").contains("larger than"),
+        "the refusal says why: {refused:?}"
+    );
+    app.settle();
+    assert_eq!(app.state().name(), Some("small.bin"));
+    assert_eq!(app.state().bytes, b"KEEP");
+}
+
 #[test]
 fn captures_stage_the_sample_through_the_resource() {
     let mut sample = TestApp::<HexEditorShell>::capture(None).unwrap();
