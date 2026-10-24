@@ -190,6 +190,10 @@ pub(super) struct Runtime {
     /// and changed only with the tree held, so a snapshot and the install
     /// are ordered by the tree's lock.
     in_flight: Mutex<Option<InFlight>>,
+    /// Run before each state-file write of this writer, on whichever thread
+    /// makes it; see [`test_seam::hold_writes`].
+    #[cfg(test)]
+    before_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 /// See [`Runtime::in_flight`].
 #[derive(Default)]
@@ -212,6 +216,8 @@ impl Default for Runtime {
             document: crate::shell::persist::DocLog::default(),
             action_authority: Arc::default(),
             in_flight: Mutex::new(None),
+            #[cfg(test)]
+            before_write: Mutex::new(None),
         }
     }
 }
@@ -477,7 +483,13 @@ impl NativeStateRuntime {
             )));
         }
         #[cfg(test)]
-        test_seam::before_write();
+        {
+            test_seam::before_write();
+            let held = self.0.before_write.lock().clone();
+            if let Some(hook) = held {
+                hook();
+            }
+        }
         match tilo_files::native::atomic::replace(
             path,
             &encoded.bytes,
@@ -778,6 +790,25 @@ pub(crate) mod test_seam {
                 hook();
             }
         });
+    }
+
+    /// Call `hook` before every state-file write `runtime` makes, on any
+    /// thread, until the returned guard is dropped: a disk whose syncs take
+    /// as long as `hook` does.
+    pub(crate) fn hold_writes(
+        runtime: &super::NativeStateRuntime,
+        hook: impl Fn() + Send + Sync + 'static,
+    ) -> HeldWrites {
+        *runtime.0.before_write.lock() = Some(std::sync::Arc::new(hook));
+        HeldWrites(runtime.clone())
+    }
+
+    /// Lets the writer's state-file writes go at full speed again when dropped.
+    pub(crate) struct HeldWrites(super::NativeStateRuntime);
+    impl Drop for HeldWrites {
+        fn drop(&mut self) {
+            self.0.0.before_write.lock().take();
+        }
     }
 
     /// Run `body` with `hook` called before each state-file write this
