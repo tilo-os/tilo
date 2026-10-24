@@ -2303,6 +2303,16 @@ pub trait Widget {
         defaults::next_wake_deadline(&|visit| self.for_each_child(visit))
     }
 
+    /// Until when the frame that would show this subtree waits for data it
+    /// reads from this device ([`crate::arriving`]): a local read that has
+    /// not answered and is still inside its frame budget. The host keeps
+    /// the frame on screen until then, or until the data lands, so the
+    /// person never sees the space empty and then filled. Containers
+    /// forward (the default does).
+    fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
+        defaults::holds_frame_until(&|visit| self.for_each_child(visit), now)
+    }
+
     /// A deadline this subtree asked for ([`Self::next_wake_deadline`]) is
     /// due at `now`: do the work it was for, and say whether anything the
     /// subtree shows or publishes changed. The host syncs, and drops the
@@ -3176,6 +3186,8 @@ pub use primitives::{
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry};
+mod pacer;
+pub use pacer::Pacer;
 pub(crate) mod block_editor_table;
 pub mod data_table;
 pub mod table {
@@ -3340,9 +3352,7 @@ pub use tree_view::{
     TreeRowInfo, TreeRowKey, TreeRowTone, TreeSlot, TreeView,
 };
 pub mod virtual_list;
-pub use virtual_list::{
-    DuplicateListKey, ListModel, ListRowState, RowSelection, VecListModel, VirtualList,
-};
+pub use virtual_list::{DuplicateListKey, ListModel, RowSelection, VecListModel, VirtualList};
 mod activation;
 pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
 pub mod media_card;
@@ -3367,6 +3377,10 @@ pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
 pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
+pub mod arriving_rows;
+pub mod arriving_view;
+pub use arriving_rows::{ArrivingRows, RowFade};
+pub use arriving_view::{ArrivalFace, ArrivingView, Showing};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;

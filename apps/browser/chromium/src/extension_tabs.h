@@ -35,6 +35,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <random>
 #include <set>
 #include <string>
 #include <utility>
@@ -61,6 +62,25 @@ inline constexpr size_t kMaxBridgeRequest = 8 * 1024 * 1024;
 inline constexpr size_t kMaxFrames = 256;
 // What Chrome answers a message or a port nothing receives.
 inline constexpr char kNoReceiver[] = "Could not establish connection. Receiving end does not exist.";
+// What the extension's world in a frame evaluates to learn which frame it
+// is, as Chromium tells the extension (`sender.frameId`,
+// `sender.documentId`): a port to the extension that only the tab script
+// answers (extension_tabs.js). A port and not a message, which an extension
+// page without the tab script (its UI in a page's frame) may answer first:
+// a port carries every end's answer.
+inline constexpr char kFrameProbe[] = R"JS(new Promise((resolve) => {
+  let port;
+  try { port = chrome.runtime.connect({name: '__tiloFrame'}); } catch (error) { resolve(null); return; }
+  let late = 0;
+  const done = (value) => {
+    clearTimeout(late);
+    resolve(value);
+    try { port.disconnect(); } catch (error) {}
+  };
+  late = setTimeout(() => done(null), 5000);
+  port.onMessage.addListener((told) => { if (told && Number.isInteger(told.frameId)) done(told); });
+  port.onDisconnect.addListener(() => done(null));
+}))JS";
 
 inline std::string ToJson(CefRefPtr<CefValue> value) {
   return CefWriteJSON(value, JSON_WRITER_DEFAULT).ToString();
@@ -182,6 +202,7 @@ class TabInspector final : public CefDevToolsMessageObserver {
 struct ExtensionTab {
   int tab = 0;           // The host's tab id.
   int id = 0;            // The id Chromium's extension APIs know it by.
+  int browser = 0;       // CEF's id of its browser, the id until Chromium's is known.
   std::string url, title, favicon;
   bool loading = false;
   int width = 0, height = 0;
@@ -251,18 +272,23 @@ class ExtensionTabs {
   // A change not yet kept is kept as the host closes.
   ~ExtensionTabs() { if (saving_ && hooks_.save_menus) hooks_.save_menus(menus_.Save()); }
 
-  // The Browser's own extension, whose content script is in every page and
-  // whose worker answers which tab a page is (Identify).
+  // The Browser's own extension, whose worker answers which tab each page
+  // is (Identify).
   void SetIdentity(const std::string& id) { identity_ = id; }
 
-  // What the extension may do, from its manifest as installed.
+  // What the extension may do, from its manifest as installed: its API
+  // permissions, its host permissions (`hosts`) and, apart from those, where
+  // its declared content scripts run (`scriptable`), which as in Chrome
+  // gives no access to the tab APIs.
   // `token` is what its worker shows the bridge: the Browser wrote it with
   // the tab APIs into the extension's worker, which alone can read it.
   // `commands` are its manifest's (`commands`), keyboard shortcuts.
-  void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, const std::string& token,
-                 CefRefPtr<CefDictionaryValue> commands) {
-    access_[id] = Access{std::move(permissions), std::move(hosts)};
+  void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, std::vector<std::string> scriptable,
+                 const std::string& token, CefRefPtr<CefDictionaryValue> commands) {
+    access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable)};
     commands_.Set(id, CommandsOf(commands));
+    // The items its button's menu kept from an earlier run.
+    TellActionMenus();
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     if (token.empty()) return;
     tokens_[token] = id;
@@ -376,7 +402,7 @@ class ExtensionTabs {
     } else if (method == "tabs.sendMessage") {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
       if (!tab) { Fail(reply, kNoReceiver); return; }
-      SendMessage(extension, *tab, args->GetValue("message"), IntOf(args, "frameId"), reply);
+      SendMessage(extension, *tab, args->GetValue("message"), IntOf(args, "frameId"), StringOf(args, "documentId"), reply);
     } else if (method == "scripting.executeScript" || method == "scripting.insertCSS") {
       auto target = args->GetDictionary("target");
       const auto* tab = ByExtensionId(tabs, IntOf(target, "tabId"));
@@ -497,9 +523,21 @@ class ExtensionTabs {
     if (!web && own.empty()) return offers;
     for (const auto& [extension, access] : access_) {
       if (extension == identity_ || !access.permissions.count("contextMenus") || (!web && extension != own)) continue;
-      for (auto& offer : menus_.Offers(extension, context)) offers.push_back(std::move(offer));
+      auto mine = menus_.Offers(extension, context);
+      // Each extension's items are a group of their own.
+      if (!offers.empty() && !mine.empty()) offers.push_back(MenuOffer{extension, std::string(), std::string(), "separator"});
+      for (auto& offer : mine) offers.push_back(std::move(offer));
     }
     return offers;
+  }
+  // The person chose the item `key` in the menu of `extension`'s toolbar
+  // button over `tab`'s page: as a choice in the page's menu, with no page
+  // context, as in Chrome.
+  void ActionMenuChosen(int tab, const std::string& extension, const std::string& key) {
+    if (!Has(extension, "contextMenus")) return;
+    MenuContext context;
+    context.in_page = false;
+    MenuChosen(tab, MenuOffer{extension, key}, context);
   }
   // The person chose an extension's item in the menu of `tab`'s page: the
   // extension hears of it with the page, which it may then script until the
@@ -521,17 +559,19 @@ class ExtensionTabs {
     });
   }
 
-  // The extension's toolbar button opened its popup over `tab`, which it may
-  // now script until the page navigates, as after a click.
+  // The extension's toolbar button opened its popup over `tab`: one that
+  // asked for activeTab may now read and script it until the page
+  // navigates, as after a click.
   void Grant(const std::string& extension, int tab) {
     Ensure([this, extension, tab] {
       const auto tabs = Tabs();
-      if (const auto* found = Find(tabs, tab); found && access_.count(extension)) granted_.insert({extension, found->id});
+      if (const auto* found = Find(tabs, tab); found && Has(extension, "activeTab")) granted_.insert({extension, found->id});
     });
   }
 
   // The person clicked the extension's toolbar button over `tab`: like
-  // Chrome, it may now script that page until it navigates.
+  // Chrome, one that asked for activeTab may now read and script that page
+  // until it navigates; a click gives any other nothing.
   void Clicked(const std::string& extension, int tab) {
     Ensure([this, extension, tab] { ClickedNow(extension, tab); });
   }
@@ -539,7 +579,7 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || !access_.count(extension)) return;
-    granted_.insert({extension, found->id});
+    if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
     Push(extension, "action.onClicked", args, true);
@@ -581,6 +621,7 @@ class ExtensionTabs {
     for (const auto& [extension, values] : buttons_) {
       if (values->GetSize()) TellButton(tab, extension, true, values);
     }
+    for (const auto& [extension, items] : action_menus_) TellActionMenu(tab, extension, items);
   }
 
   // A tab's page changed: `status`, `url` or `title`.
@@ -665,6 +706,7 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     native_.erase(tab);
+    unknown_.erase(tab);
     Drop(tab);
     buttons_on_.erase(tab);
     if (!found || found->panel) return;
@@ -686,19 +728,25 @@ class ExtensionTabs {
   void Opened(int tab, const std::string& url) {
     for (auto it = creating_.begin(); it != creating_.end(); ++it) {
       if (it->url != url && !(url.rfind(it->url, 0) == 0)) continue;
-      const auto tabs = Tabs();
-      const auto* found = Find(tabs, tab);
-      if (!found) return;
+      if (!Find(hooks_.tabs(), tab)) return;
       auto pending = std::move(*it);
       creating_.erase(it);
-      auto object = TabObject(pending.extension, *found);
-      Succeed(pending.reply, pending.window ? Wrap(WindowObject(pending.extension, *found, true)) : Wrap(object));
+      // Given by the id its later pages keep.
+      Ensure([this, tab, pending] {
+        const auto tabs = Tabs();
+        const auto* found = Find(tabs, tab);
+        if (!found) { Fail(pending.reply, "The tab closed"); return; }
+        auto object = TabObject(pending.extension, *found);
+        Succeed(pending.reply, pending.window ? Wrap(WindowObject(pending.extension, *found, true)) : Wrap(object));
+      });
       return;
     }
   }
 
  private:
-  struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; };
+  // `scriptable` is kept apart from `hosts` so that no tab API counts it:
+  // Chromium runs the declared content scripts itself.
+  struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; std::vector<std::string> scriptable; };
   // A manifest's `commands`, each with the key it suggests on this
   // platform: its own (`mac`, `linux`), else its `default`, or one for all.
   static std::vector<ExtensionCommand> CommandsOf(CefRefPtr<CefDictionaryValue> commands) {
@@ -779,6 +827,7 @@ class ExtensionTabs {
   // Keep the items with the profile a moment after a change: an extension
   // makes its items in a burst, which is written once.
   void MenusChanged() {
+    TellActionMenus();
     if (!hooks_.save_menus || saving_) return;
     saving_ = true;
     // The host may close first: the destructor keeps the items then, and
@@ -795,7 +844,7 @@ class ExtensionTabs {
     return false;
   }
   // The host's tabs, each by the id Chromium's extension APIs know it by
-  // once it was identified, by the browser's until then.
+  // once it was identified, by its browser's until then.
   std::vector<ExtensionTab> Tabs() const {
     auto tabs = hooks_.tabs();
     for (auto& tab : tabs) {
@@ -804,40 +853,136 @@ class ExtensionTabs {
     }
     return tabs;
   }
-  // Learn the extension id of every page tab not yet known, then go on.
-  // Chromium gives it to a message from the page: one the Browser's own
-  // extension sends from its world there and answers itself.
+  // Learn the extension id of every tab not yet known, then go on: whatever
+  // it shows, a blank page, an extension's own, an internal one, so the id an
+  // extension is first told is the one Chromium gives it in `sender.tab` for
+  // every page the tab shows after.
   void Ensure(std::function<void()> then) {
-    std::vector<ExtensionTab> missing;
+    std::vector<int> missing;
     if (!identity_.empty())
       for (const auto& tab : hooks_.tabs()) {
-        const bool web = tab.url.rfind("http://", 0) == 0 || tab.url.rfind("https://", 0) == 0 || tab.url.rfind("file://", 0) == 0;
-        if (!tab.panel && web && !native_.count(tab.tab)) missing.push_back(tab);
+        // One that could not be identified is asked about again once it
+        // shows another page, not on every call.
+        const auto failed = unknown_.find(tab.tab);
+        if (!tab.panel && !native_.count(tab.tab) && (failed == unknown_.end() || failed->second != tab.url)) missing.push_back(tab.tab);
       }
     if (missing.empty()) { then(); return; }
     auto left = std::make_shared<size_t>(missing.size());
     auto shared = std::make_shared<std::function<void()>>(std::move(then));
-    for (const auto& tab : missing) Identify(tab, [left, shared] { if (--*left == 0) (*shared)(); });
+    std::vector<int> fresh;
+    for (int tab : missing) {
+      auto& waiting = identifying_[tab];
+      waiting.push_back([left, shared] { if (--*left == 0) (*shared)(); });
+      if (waiting.size() == 1) fresh.push_back(tab);
+    }
+    if (!fresh.empty()) Identify(fresh);
   }
-  void Identify(const ExtensionTab& tab, std::function<void()> done) {
-    auto& waiting = identifying_[tab.tab];
-    waiting.push_back(std::move(done));
-    if (waiting.size() > 1) return;
-    const int key = tab.tab;
-    auto finish = [this, key] {
-      auto callbacks = std::move(identifying_[key]);
-      identifying_.erase(key);
-      for (auto& callback : callbacks) callback();
+  // Chromium keeps a tab's id for the tab's life and lists it with the tab's
+  // DevTools target to an extension that may debug (chrome.debugger), as the
+  // Browser's own may: every tab asked about at once, by its target. An
+  // extension's own page is no page target there; it sends the Browser's
+  // extension a word only the host and the page know, and Chromium tells
+  // that extension the tab the message came from.
+  void Identify(const std::vector<int>& tabs) {
+    auto finish = [this, tabs] {
+      // An extension's page may have been between documents when asked: it
+      // is asked again on the next call.
+      const auto open = hooks_.tabs();
+      const std::string own = "chrome-extension://" + identity_ + "/";
+      for (int tab : tabs) {
+        const auto* entry = Find(open, tab);
+        const bool page = entry && entry->url.rfind("chrome-extension://", 0) == 0 && entry->url.rfind(own, 0) != 0;
+        if (entry && !page && !native_.count(tab)) unknown_[tab] = entry->url;
+        else unknown_.erase(tab);
+      }
+      for (int tab : tabs) {
+        auto callbacks = std::move(identifying_[tab]);
+        identifying_.erase(tab);
+        for (auto& callback : callbacks) callback();
+      }
     };
-    auto inspector = hooks_.inspector(tab.tab);
-    if (!inspector) { finish(); return; }
-    World(identity_, tab, [this, inspector, key, finish](int world, std::string) {
-      if (!world) { finish(); return; }
-      Evaluate(inspector, world, "chrome.runtime.sendMessage({tiloTabId: true})", [this, key, finish](std::optional<std::string> error, CefRefPtr<CefValue> value) {
-        if (!error) if (auto id = IntOf(value)) native_[key] = *id;
-        finish();
+    std::map<int, std::string> words;
+    const std::string own = "chrome-extension://" + identity_ + "/";
+    for (const auto& tab : hooks_.tabs())
+      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end() && tab.url.rfind("chrome-extension://", 0) == 0 && tab.url.rfind(own, 0) != 0)
+        words[tab.tab] = Word();
+    Tell(words, [this, tabs, words, finish] {
+      Targets(tabs, [this, words, finish](std::map<int, std::string> targets) {
+        if (targets.empty() && words.empty()) { finish(); return; }
+        auto list = CefListValue::Create();
+        for (const auto& [tab, word] : words) list->SetString(list->GetSize(), word);
+        auto value = CefValue::Create();
+        value->SetList(list);
+        InWorker(identity_, "globalThis.__tiloTabIds ? __tiloTabIds(" + ToJson(value) + ") : null", false, [this, targets, words, finish](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+          auto ids = !error && value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
+          // What a page's word answers outranks its target, which Chromium
+          // lists with no tab for an extension's page.
+          std::map<int, int> learnt;
+          for (const auto& [tab, target] : targets) if (const auto id = ids ? IntOf(ids, target.c_str()) : std::nullopt) learnt[tab] = *id;
+          for (const auto& [tab, word] : words) if (const auto id = ids ? IntOf(ids, word.c_str()) : std::nullopt) learnt[tab] = *id;
+          Learn(learnt);
+          finish();
+        });
       });
     });
+  }
+  // Keep each tab's id, but only one Chromium could have given: positive,
+  // the tab still open, and no other tab's. An extension's page that relays
+  // its word to another of its tabs gets neither tab an id it does not have.
+  void Learn(const std::map<int, int>& learnt) {
+    const auto open = hooks_.tabs();
+    std::map<int, int> uses;
+    for (const auto& [tab, id] : native_) ++uses[id];
+    for (const auto& [tab, id] : learnt) ++uses[id];
+    for (const auto& [tab, id] : learnt)
+      if (id > 0 && uses[id] == 1 && Find(open, tab)) native_[tab] = id;
+  }
+  // A word no page can guess: 128 random bits, in letters.
+  static std::string Word() {
+    static std::random_device source;
+    std::string word = "w";
+    for (int i = 0; i < 4; ++i) {
+      char part[9];
+      std::snprintf(part, sizeof(part), "%08x", static_cast<unsigned>(source()));
+      word += part;
+    }
+    return word;
+  }
+  // Each extension page's tab sends the Browser's extension its word, from
+  // the page's own scripts, where `chrome.runtime` is the extension's.
+  void Tell(const std::map<int, std::string>& words, std::function<void()> then) {
+    if (words.empty()) { then(); return; }
+    auto left = std::make_shared<size_t>(words.size());
+    auto shared = std::make_shared<std::function<void()>>(std::move(then));
+    auto done = [left, shared] { if (--*left == 0) (*shared)(); };
+    auto id = CefValue::Create();
+    id->SetString(identity_);
+    for (const auto& [tab, word] : words) {
+      auto inspector = hooks_.inspector(tab);
+      if (!inspector) { done(); continue; }
+      auto text = CefValue::Create();
+      text->SetString(word);
+      Evaluate(inspector, 0, "chrome.runtime.sendMessage(" + ToJson(id) + ", {tiloTab: " + ToJson(text) + "})", [done](std::optional<std::string>, CefRefPtr<CefValue>) { done(); }, false);
+    }
+  }
+  // Each tab's DevTools target id, from its own inspector; a tab without
+  // one is left out.
+  void Targets(const std::vector<int>& tabs, std::function<void(std::map<int, std::string>)> then) {
+    auto found = std::make_shared<std::map<int, std::string>>();
+    auto left = std::make_shared<size_t>(tabs.size());
+    auto shared = std::make_shared<std::function<void(std::map<int, std::string>)>>(std::move(then));
+    auto done = [found, left, shared](int tab, std::string target) {
+      if (!target.empty()) (*found)[tab] = std::move(target);
+      if (--*left == 0) (*shared)(std::move(*found));
+    };
+    if (tabs.empty()) { (*shared)({}); return; }
+    for (int tab : tabs) {
+      auto inspector = hooks_.inspector(tab);
+      if (!inspector) { done(tab, {}); continue; }
+      inspector->Call("Target.getTargetInfo", nullptr, [done, tab](bool ok, CefRefPtr<CefDictionaryValue> result) {
+        done(tab, ok && result ? StringOf(result->GetDictionary("targetInfo"), "targetId") : std::string());
+      });
+    }
   }
   static bool Listenable(const std::string& name) {
     static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged"};
@@ -854,10 +999,10 @@ class ExtensionTabs {
   static const ExtensionTab* ByExtensionId(const std::vector<ExtensionTab>& tabs, std::optional<int> id) {
     if (!id) return nullptr;
     for (const auto& entry : tabs) if (entry.id == *id && !entry.panel) return &entry;
-    // An extension told of a tab before the host learnt its id among
-    // Chromium's (a blank page, a page still loading) was given the host's;
-    // the tab keeps answering to it.
-    for (const auto& entry : tabs) if (entry.tab == *id && !entry.panel) return &entry;
+    // An extension told of a tab while the host could not learn its id
+    // among Chromium's (the Browser's own extension did not start) was given
+    // its browser's; the tab keeps answering to it.
+    for (const auto& entry : tabs) if (entry.browser == *id && !entry.panel) return &entry;
     return nullptr;
   }
   // The window a caller means by "current": its own tab's, the page a panel
@@ -887,6 +1032,9 @@ class ExtensionTabs {
     auto found = access_.find(extension);
     return found != access_.end() && found->second.permissions.count(permission) > 0;
   }
+  // Whether the extension's host permissions reach `url`. Where its content
+  // scripts run does not count: Chrome reads a tab and scripts it by host
+  // permissions alone.
   bool HostAccess(const std::string& extension, const std::string& url) const {
     auto found = access_.find(extension);
     if (found == access_.end()) return false;
@@ -903,8 +1051,9 @@ class ExtensionTabs {
   bool MayScript(const std::string& extension, const ExtensionTab& tab) const {
     return HostAccess(extension, tab.url) || Granted(extension, tab);
   }
-  // Access to every site (`<all_urls>`, or any host of a scheme), which
-  // with `activeTab` is what Chrome asks of an extension to capture a tab.
+  // Host permission for every site (`<all_urls>`, or any host of a scheme),
+  // which with `activeTab` is what Chrome asks of an extension to capture a
+  // tab; content scripts on every site are not.
   bool AllSites(const std::string& extension) const {
     auto found = access_.find(extension);
     if (found == access_.end()) return false;
@@ -1157,17 +1306,37 @@ class ExtensionTabs {
     });
   }
 
-  // The frames an injection asks for (`target.frameIds`, `target.allFrames`):
-  // none when it asks for the main frame alone.
-  struct FrameTarget { bool all = false; std::vector<int> ids; };
-  static FrameTarget FramesOf(CefRefPtr<CefDictionaryValue> target) {
-    FrameTarget wanted;
+  // The frames an injection or a message names: every frame
+  // (`target.allFrames`), or some, by their id among Chromium's (`frameIds`,
+  // `frameId`) or by their document's (`documentIds`, `documentId`). One
+  // that names none, or the main frame alone by its id, names the main frame.
+  struct FrameQuery {
+    bool all = false;
+    std::vector<int> ids;
+    std::vector<std::string> documents;
+    bool MainOnly() const { return !all && ids.empty() && documents.empty(); }
+  };
+  // What an injection's `target` names, or why Chrome would refuse it.
+  static std::optional<std::string> FramesOf(CefRefPtr<CefDictionaryValue> target, FrameQuery& wanted) {
     wanted.all = target && target->GetType("allFrames") == VTYPE_BOOL && target->GetBool("allFrames");
     auto ids = target && target->GetType("frameIds") == VTYPE_LIST ? target->GetList("frameIds") : nullptr;
     for (size_t i = 0; ids && i < ids->GetSize(); ++i)
       if (auto id = IntOf(ids->GetValue(i)); id && std::find(wanted.ids.begin(), wanted.ids.end(), *id) == wanted.ids.end()) wanted.ids.push_back(*id);
+    auto documents = target && target->GetType("documentIds") == VTYPE_LIST ? target->GetList("documentIds") : nullptr;
+    bool malformed = false;
+    for (size_t i = 0; documents && i < documents->GetSize(); ++i) {
+      const auto document = documents->GetType(i) == VTYPE_STRING ? documents->GetString(i).ToString() : std::string();
+      if (document.empty() || document.size() > 64 || wanted.documents.size() >= kMaxFrames) { malformed = true; continue; }
+      if (std::find(wanted.documents.begin(), wanted.documents.end(), document) == wanted.documents.end()) wanted.documents.push_back(document);
+    }
+    const bool by_id = ids && ids->GetSize();
+    const bool by_document = documents && documents->GetSize();
+    if (wanted.all && by_id) return std::string("Cannot specify both 'allFrames' and 'frameIds'.");
+    if (wanted.all && by_document) return std::string("Cannot specify both 'allFrames' and 'documentIds'.");
+    if (by_id && by_document) return std::string("Cannot specify both 'frameIds' and 'documentIds'.");
+    if (malformed) return std::string("Error at property 'documentIds': Each must be a document's id.");
     if (!wanted.all && wanted.ids.size() == 1 && wanted.ids[0] == 0) wanted.ids.clear();
-    return wanted;
+    return std::nullopt;
   }
 
   void ExecuteScript(const std::string& extension, int caller, const ExtensionTab& tab, CefRefPtr<CefDictionaryValue> args, Reply reply) {
@@ -1185,21 +1354,28 @@ class ExtensionTabs {
     if (!inspector) { Fail(reply, "No tab with id: " + std::to_string(tab.id)); return; }
     const int key = tab.tab;
     const int tab_id = tab.id;
-    const auto wanted = FramesOf(args->GetDictionary("target"));
-    Frames(extension, tab, !wanted.all && wanted.ids.empty(), wanted.all ? std::vector<int>() : wanted.ids, [this, inspector, extension, caller, key, tab_id, content, sources, main_world, wanted, reply](std::vector<Frame> frames) {
+    FrameQuery wanted;
+    if (auto refused = FramesOf(args->GetDictionary("target"), wanted)) { Fail(reply, *refused); return; }
+    Frames(extension, tab, wanted, [this, inspector, extension, caller, key, tab_id, content, sources, main_world, wanted, reply](std::vector<Frame> frames) {
       std::vector<Frame> chosen;
       for (int id : wanted.ids) {
         auto found = std::find_if(frames.begin(), frames.end(), [id](const Frame& frame) { return frame.id == id; });
         if (found == frames.end()) { Release(frames); Fail(reply, "No frame with id " + std::to_string(id) + " in tab with id " + std::to_string(tab_id) + "."); return; }
         chosen.push_back(*found);
       }
+      for (const auto& document : wanted.documents) {
+        auto found = std::find_if(frames.begin(), frames.end(), [&](const Frame& frame) { return frame.document == document; });
+        if (found == frames.end()) { Release(frames); Fail(reply, "No document with id " + document + " in tab with id " + std::to_string(tab_id) + "."); return; }
+        if (std::none_of(chosen.begin(), chosen.end(), [&](const Frame& known) { return known.devtools == found->devtools; })) chosen.push_back(*found);
+      }
       // Every frame the script can run in, as Chrome passes over those it
       // cannot reach: a frame whose page the extension's scripts left (it
-      // went to one they do not match) keeps its id but has no world.
+      // went to one they do not match) keeps its id but has no world, and
+      // a page of the extension's own takes no script.
       if (wanted.all)
         for (const auto& frame : frames)
           if (frame.id >= 0 && Runnable(frame, main_world) && std::none_of(chosen.begin(), chosen.end(), [&](const Frame& known) { return known.id == frame.id; })) chosen.push_back(frame);
-      if (!wanted.all && wanted.ids.empty() && !frames.empty()) chosen.push_back(frames.front());
+      if (wanted.MainOnly() && !frames.empty()) chosen.push_back(frames.front());
       // Sessions of frames not asked for go now.
       std::vector<Frame> unused;
       for (const auto& frame : frames)
@@ -1218,6 +1394,7 @@ class ExtensionTabs {
           if (error) { Release(chosen); Fail(reply, *error); *next = nullptr; return; }
           auto entry = CefDictionaryValue::Create();
           entry->SetInt("frameId", frame.id);
+          if (!frame.document.empty()) entry->SetString("documentId", frame.document);
           if (value) entry->SetValue("result", value); else entry->SetNull("result");
           results->SetDictionary(results->GetSize(), entry);
           (*next)(index + 1);
@@ -1250,32 +1427,63 @@ class ExtensionTabs {
   // Chromium's (0 for the main frame, -1 while unknown), the extension's
   // world in it and the page's own (0 when there is none), and the session
   // on the pipe that reaches it when another site's process renders it
-  // (empty: the tab's inspector does).
-  struct Frame { std::string devtools; int id = -1; int world = 0; int page = 0; std::string session; };
+  // (empty: the tab's inspector does). Its document is known to the
+  // inspector by the page's world (`loaded`) and to the extension by an id
+  // Chromium gives it (`sender.documentId`), once learnt. A frame that shows
+  // a page of the extension's own (`own`: the extension's UI in a page, as
+  // Evernote's clipper shows its panel) is the extension's world itself.
+  struct Frame {
+    std::string devtools;
+    int id = -1;
+    int world = 0;
+    int page = 0;
+    std::string session;
+    std::string loaded;
+    std::string document;
+    bool own = false;
+  };
+  // What the host learnt of a frame: its id, which lasts as long as the
+  // frame, and the id of the document it showed then.
+  struct KnownFrame { int id = -1; std::string loaded; std::string document; };
   // Whether a script can run in `frame`: in the page's own world (MAIN), or
   // in the extension's world there. Only the main frame has the page's own
   // world as context 0, and only there the host makes the extension a world
-  // it lacks; in any other frame, context 0 would be the main frame's.
+  // it lacks; in any other frame, context 0 would be the main frame's. A
+  // page of the extension's own takes none, as in Chrome.
   static bool Runnable(const Frame& frame, bool main_world) {
+    if (frame.own) return false;
     if (frame.id == 0 && frame.session.empty()) return true;
     return main_world ? frame.page != 0 : frame.world != 0;
   }
-  // The frames of the tab's page, the main frame first; with `main_only`,
-  // the main frame alone. Those the page's process renders the tab's
-  // inspector reaches; a frame another site's process renders is a target
-  // of its own, reached on the pipe. Chromium knows a frame by an id the
-  // inspector does not show; a message from the extension's world there
-  // tells it (extension_tabs.js answers it), and it lasts as long as the
-  // frame. The caller lets go of the frames' sessions (Release). When the
-  // frames `wanted` are all among those the tab's inspector reaches, no
-  // other site's frame is attached to: a message to one frame does not
-  // cost a session for every frame of every other site on the page.
-  void Frames(const std::string& extension, const ExtensionTab& tab, bool main_only, std::vector<int> wanted, std::function<void(std::vector<Frame>)> then) {
+  // Whether the frames `query` names are all among `frames`.
+  static bool Reached(const std::vector<Frame>& frames, const FrameQuery& query) {
+    if (query.all || (query.ids.empty() && query.documents.empty())) return false;
+    return std::all_of(query.ids.begin(), query.ids.end(), [&](int id) {
+             return std::any_of(frames.begin(), frames.end(), [id](const Frame& frame) { return frame.id == id; });
+           }) &&
+           std::all_of(query.documents.begin(), query.documents.end(), [&](const std::string& document) {
+             return std::any_of(frames.begin(), frames.end(), [&](const Frame& frame) { return frame.document == document; });
+           });
+  }
+  // The frames of the tab's page, the main frame first; for a query that
+  // names only the main frame, the main frame alone. Those the page's
+  // process renders the tab's inspector reaches; a frame another site's
+  // process renders is a target of its own, reached on the pipe. Chromium
+  // knows a frame by an id the inspector does not show; the extension's
+  // world there asks (extension_tabs.js answers), and it lasts as long as
+  // the frame. The caller lets go of the frames' sessions (Release). When
+  // the frames named are all among those the tab's inspector reaches, no
+  // other site's frame is attached to, and a frame named that the host met
+  // before on a target of its own is the only one attached to: a message to
+  // one frame does not cost a session for every frame of every other site
+  // on the page.
+  void Frames(const std::string& extension, const ExtensionTab& tab, FrameQuery query, std::function<void(std::vector<Frame>)> then) {
     auto inspector = hooks_.inspector(tab.tab);
     if (!inspector) { then({}); return; }
     const bool keep = hooks_.keeps_contexts(tab.tab);
     const int key = tab.tab;
-    inspector->Call("Page.getFrameTree", nullptr, [this, inspector, extension, keep, key, main_only, wanted, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
+    inspector->Call("Page.getFrameTree", nullptr, [this, inspector, extension, keep, key, query, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
+      const bool main_only = query.MainOnly();
       std::vector<Frame> frames;
       std::function<void(CefRefPtr<CefDictionaryValue>)> walk = [&](CefRefPtr<CefDictionaryValue> node) {
         if (!node || frames.size() >= kMaxFrames) return;
@@ -1288,17 +1496,14 @@ class ExtensionTabs {
       walk(ok && result ? result->GetDictionary("frameTree") : nullptr);
       if (frames.empty()) { then({}); return; }
       inspector->Collect(true);
-      inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, key, main_only, wanted, frames, then](bool, CefRefPtr<CefDictionaryValue>) mutable {
+      inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, key, main_only, query, frames, then](bool, CefRefPtr<CefDictionaryValue>) mutable {
         for (const auto& context : inspector->contexts()) Place(frames, context, extension, "", false);
         inspector->Collect(false);
         if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
         auto local = std::make_shared<std::vector<Frame>>(std::move(frames));
-        Identified(inspector, key, local, [this, extension, key, main_only, wanted, local, then] {
-          const bool reached = !wanted.empty() && std::all_of(wanted.begin(), wanted.end(), [&](int id) {
-            return std::any_of(local->begin(), local->end(), [id](const Frame& frame) { return frame.id == id; });
-          });
-          if (main_only || reached) { then(*local); return; }
-          RemoteFrames(extension, key, local, then);
+        Identified(inspector, key, !query.documents.empty(), local, [this, extension, key, main_only, query, local, then] {
+          if (main_only || Reached(*local, query)) { then(*local); return; }
+          RemoteFrames(extension, key, query, local, then);
         });
       });
     });
@@ -1316,36 +1521,70 @@ class ExtensionTabs {
       frames.push_back(Frame{frame, -1, 0, 0, session});
       found = std::prev(frames.end());
     }
-    if (aux->GetType("isDefault") == VTYPE_BOOL && aux->GetBool("isDefault")) found->page = IntOf(context, "id").value_or(0);
-    else if (ContentScriptWorld(context, extension)) found->world = IntOf(context, "id").value_or(0);
+    const int id = IntOf(context, "id").value_or(0);
+    if (aux->GetType("isDefault") == VTYPE_BOOL && aux->GetBool("isDefault")) {
+      found->page = id;
+      found->loaded = StringOf(context, "uniqueId");
+      // A page of the extension's own: its scripts run in the page's world.
+      if (StringOf(context, "origin") == "chrome-extension://" + extension) {
+        found->world = id;
+        found->own = true;
+      }
+    } else if (!found->own && ContentScriptWorld(context, extension)) {
+      found->world = id;
+    }
   }
   // Learn the id among Chromium's of each frame of `frames` that has none
-  // yet, where the extension has a world to tell it; then go on.
-  void Identified(CefRefPtr<TabInspector> inspector, int key, std::shared_ptr<std::vector<Frame>> frames, std::function<void()> then) {
+  // yet, and with `documents` the id of the document it shows, where the
+  // extension has a world to tell them; then go on.
+  void Identified(CefRefPtr<TabInspector> inspector, int key, bool documents, std::shared_ptr<std::vector<Frame>> frames, std::function<void()> then) {
     auto left = std::make_shared<size_t>(1);
     auto finish = [left, then] { if (--*left == 0) then(); };
     for (size_t i = 0; i < frames->size(); ++i) {
       auto& frame = (*frames)[i];
-      if (frame.id >= 0) continue;
-      if (auto cached = frame_ids_.find({key, frame.devtools}); cached != frame_ids_.end()) { frame.id = cached->second; continue; }
-      if (!frame.world) continue;
+      if (auto cached = frame_ids_.find({key, frame.devtools}); cached != frame_ids_.end()) {
+        frame.id = cached->second.id;
+        if (!frame.loaded.empty() && cached->second.loaded == frame.loaded) frame.document = cached->second.document;
+      }
+      if (!frame.world || (frame.id >= 0 && (!documents || !frame.document.empty()))) continue;
       ++*left;
-      EvaluateIn(inspector, frame.session, frame.world, "chrome.runtime.sendMessage({__tiloFrame: true})", [this, key, frames, i, finish](std::optional<std::string> error, CefRefPtr<CefValue> value) {
-        const auto id = error ? std::nullopt : IntOf(value);
-        if (id && *id > 0) {
-          (*frames)[i].id = *id;
+      EvaluateIn(inspector, frame.session, frame.world, kFrameProbe, [this, key, frames, i, finish](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+        auto told = !error && value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
+        const auto id = IntOf(told, "frameId");
+        auto& frame = (*frames)[i];
+        // Only the main frame is 0.
+        if (id && *id >= 0 && (*id > 0) == (frame.id != 0)) {
+          frame.id = *id;
+          frame.document = StringOf(told, "documentId");
           if (frame_ids_.size() >= kMaxFrames * 16) frame_ids_.clear();
-          frame_ids_[{key, (*frames)[i].devtools}] = *id;
+          frame_ids_[{key, frame.devtools}] = KnownFrame{frame.id, frame.loaded, frame.document};
         }
         finish();
       }, false);
     }
     finish();
   }
+  // The target on the pipe of each frame `query` names that the host met
+  // before on a target of its own, among `targets`; empty unless it met
+  // every one.
+  std::vector<std::string> KnownTargets(int key, const FrameQuery& query, const std::vector<std::string>& targets) const {
+    std::vector<std::string> named;
+    auto find = [&](const std::function<bool(const KnownFrame&)>& matches) {
+      for (const auto& [where, known] : frame_ids_)
+        if (where.first == key && matches(known) && std::find(targets.begin(), targets.end(), where.second) != targets.end()) {
+          if (std::find(named.begin(), named.end(), where.second) == named.end()) named.push_back(where.second);
+          return true;
+        }
+      return false;
+    };
+    for (int id : query.ids) if (!find([id](const KnownFrame& known) { return known.id == id; })) return {};
+    for (const auto& document : query.documents) if (!find([&](const KnownFrame& known) { return known.document == document; })) return {};
+    return named;
+  }
   // The frames under `local` that other sites' processes render, each a
   // target on the pipe: attached, with what runs in it, after `local`.
-  void RemoteFrames(const std::string& extension, int key, std::shared_ptr<std::vector<Frame>> local, std::function<void(std::vector<Frame>)> then) {
-    hooks_.pipe("Target.getTargets", nullptr, "", [this, extension, key, local, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
+  void RemoteFrames(const std::string& extension, int key, FrameQuery query, std::shared_ptr<std::vector<Frame>> local, std::function<void(std::vector<Frame>)> then) {
+    hooks_.pipe("Target.getTargets", nullptr, "", [this, extension, key, query, local, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       std::set<std::string> known;
       for (const auto& frame : *local) known.insert(frame.devtools);
       std::vector<std::string> targets;
@@ -1362,6 +1601,10 @@ class ExtensionTabs {
           grew = true;
         }
       }
+      if (!query.all) {
+        auto named = KnownTargets(key, query, targets);
+        if (!named.empty()) targets = std::move(named);
+      }
       if (targets.empty()) { then(*local); return; }
       auto remote = std::make_shared<std::vector<std::vector<Frame>>>(targets.size());
       auto left = std::make_shared<size_t>(targets.size());
@@ -1371,19 +1614,20 @@ class ExtensionTabs {
         for (const auto& frames : *remote) all.insert(all.end(), frames.begin(), frames.end());
         then(all);
       };
+      const bool documents = !query.documents.empty();
       for (size_t i = 0; i < targets.size(); ++i) {
         auto params = CefDictionaryValue::Create();
         params->SetString("targetId", targets[i]);
         params->SetBool("flatten", true);
-        hooks_.pipe("Target.attachToTarget", params, "", [this, extension, key, target = targets[i], remote, i, finish](bool ok, CefRefPtr<CefDictionaryValue> result) {
+        hooks_.pipe("Target.attachToTarget", params, "", [this, extension, key, documents, target = targets[i], remote, i, finish](bool ok, CefRefPtr<CefDictionaryValue> result) {
           const auto session = ok && result ? StringOf(result, "sessionId") : std::string();
           if (session.empty()) { finish(); return; }
           auto frames = std::make_shared<std::vector<Frame>>();
           frames->push_back(Frame{target, -1, 0, 0, session});
           hooks_.pipe_listen(session, [frames, extension, session](CefRefPtr<CefDictionaryValue> context) { Place(*frames, context, extension, session, true); });
-          hooks_.pipe("Runtime.enable", nullptr, session, [this, key, session, frames, remote, i, finish](bool, CefRefPtr<CefDictionaryValue>) {
+          hooks_.pipe("Runtime.enable", nullptr, session, [this, key, documents, session, frames, remote, i, finish](bool, CefRefPtr<CefDictionaryValue>) {
             hooks_.pipe_listen(session, nullptr);
-            Identified(nullptr, key, frames, [frames, remote, i, finish] {
+            Identified(nullptr, key, documents, frames, [frames, remote, i, finish] {
               (*remote)[i] = *frames;
               finish();
             });
@@ -1599,9 +1843,9 @@ class ExtensionTabs {
       });
     });
   }
-  // A message for the extension's content scripts in the tab, answered as
-  // Chrome answers it: by the first reply, or with nothing.
-  void SendMessage(const std::string& extension, const ExtensionTab& tab, CefRefPtr<CefValue> reference, std::optional<int> frame_id, Reply reply) {
+  // A message for the extension's scripts in the tab, answered as Chrome
+  // answers it: by the first reply, or with nothing.
+  void SendMessage(const std::string& extension, const ExtensionTab& tab, CefRefPtr<CefValue> reference, std::optional<int> frame_id, const std::string& document, Reply reply) {
     // A value read from the request is valid only while the request is.
     auto message = reference ? reference->Copy() : CefValue::Create();
     auto inspector = hooks_.inspector(tab.tab);
@@ -1619,12 +1863,19 @@ class ExtensionTabs {
     };
     const std::string expression = Dispatch(message, sender);
     const int key = tab.tab;
-    // One frame's content scripts, which an extension names by the id a
-    // message from there gave it (`sender.frameId`).
-    const bool subframe = frame_id && *frame_id != 0;
-    Frames(extension, tab, !subframe, subframe ? std::vector<int>{*frame_id} : std::vector<int>(), [this, inspector, extension, key, message, sender, expression, answer, frame_id, subframe, reply](std::vector<Frame> frames) {
+    // One frame: its content scripts, or the extension's own page there,
+    // which an extension names by the id or the document a message from
+    // there gave it (`sender.frameId`, `sender.documentId`).
+    FrameQuery query;
+    if (frame_id && (*frame_id != 0 || !document.empty())) query.ids.push_back(*frame_id);
+    if (!document.empty()) query.documents.push_back(document);
+    const bool main = query.MainOnly();
+    Frames(extension, tab, query, [this, inspector, extension, key, message, sender, expression, answer, frame_id, document, main, reply](std::vector<Frame> frames) {
       const Frame* frame = nullptr;
-      for (const auto& entry : frames) if (subframe ? entry.id == *frame_id : entry.id == 0) frame = &entry;
+      for (const auto& entry : frames) {
+        const bool named = main ? entry.id == 0 : (!frame_id || entry.id == *frame_id) && (document.empty() || entry.document == document);
+        if (named && !frame) frame = &entry;
+      }
       if (frame && frame->world) {
         EvaluateIn(inspector, frame->session, frame->world, expression, [this, frames, answer](std::optional<std::string> error, CefRefPtr<CefValue> value) {
           Release(frames);
@@ -1634,7 +1885,7 @@ class ExtensionTabs {
       }
       Release(frames);
       // Its script injected on demand listens in the world the host made.
-      auto made = subframe ? content_worlds_.end() : content_worlds_.find({key, extension});
+      auto made = main ? content_worlds_.find({key, extension}) : content_worlds_.end();
       if (made == content_worlds_.end()) { Fail(reply, kNoReceiver); return; }
       Evaluate(inspector, made->second, "__tiloExtensionContent.deliver(" + ToJson(message) + ", " + ToJson(Wrap(sender)) + ")", answer);
     });
@@ -2026,7 +2277,9 @@ class ExtensionTabs {
   // could not give the tab APIs is waited for no longer than a moment.
   void Ready(const std::string& session, int tries, std::function<void()> then) {
     auto params = CefDictionaryValue::Create();
-    params->SetString("expression", "!!(globalThis.__tiloExtensionTabs && __tiloExtensionTabs.ready)");
+    // The Browser's own extension runs no tab script: its worker is ready
+    // once it can tell tabs' ids.
+    params->SetString("expression", "!!(globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.ready : globalThis.__tiloTabIds)");
     params->SetBool("returnByValue", true);
     hooks_.pipe("Runtime.evaluate", params, session, [this, session, tries, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       auto remote = ok && result ? result->GetDictionary("result") : nullptr;
@@ -2127,6 +2380,53 @@ class ExtensionTabs {
     const size_t bytes = static_cast<size_t>(*width) * static_cast<size_t>(*height) * 4;
     return icon->GetString("data").ToString().size() == (bytes + 2) / 3 * 4;
   }
+  // What each extension's toolbar button menu holds, for the Browser to
+  // show: told to every page tab as it changes, and to a tab as it opens.
+  void TellActionMenus() {
+    if (!hooks_.event) return;
+    std::set<std::string> extensions;
+    for (const auto& [extension, access] : access_)
+      if (extension != identity_ && access.permissions.count("contextMenus")) extensions.insert(extension);
+    for (const auto& [extension, items] : action_menus_) extensions.insert(extension);
+    std::optional<std::vector<ExtensionTab>> tabs;
+    for (const auto& extension : extensions) {
+      size_t left = 200;
+      auto items = Has(extension, "contextMenus") ? ActionMenuItems(menus_.ActionOffers(extension), left) : CefListValue::Create();
+      auto told = action_menus_.find(extension);
+      if (told != action_menus_.end() ? told->second->IsEqual(items) : items->GetSize() == 0) continue;
+      if (items->GetSize()) action_menus_[extension] = items;
+      else action_menus_.erase(extension);
+      if (!tabs) tabs = Tabs();
+      for (const auto& each : *tabs) if (!each.panel) TellActionMenu(each.tab, extension, items);
+    }
+  }
+  void TellActionMenu(int tab, const std::string& extension, CefRefPtr<CefListValue> items) {
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetList("items", items->Copy());
+    hooks_.event(tab, "extension_menu", fields);
+  }
+  // A menu's items as the Browser reads them: each by its key, which a
+  // choice names (`extension_menu_action`); at most 24 at each level and
+  // `left` in all.
+  static CefRefPtr<CefListValue> ActionMenuItems(const std::vector<MenuOffer>& offers, size_t& left) {
+    auto list = CefListValue::Create();
+    for (const auto& offer : offers) {
+      if (list->GetSize() >= 24 || left == 0) break;
+      --left;
+      auto item = CefDictionaryValue::Create();
+      item->SetString("type", offer.type);
+      if (offer.type != "separator") {
+        item->SetString("key", offer.key);
+        item->SetString("label", offer.label);
+        item->SetBool("enabled", offer.enabled);
+        if (offer.type == "checkbox" || offer.type == "radio") item->SetBool("checked", offer.checked);
+        if (!offer.children.empty()) item->SetList("items", ActionMenuItems(offer.children, left));
+      }
+      list->SetDictionary(list->GetSize(), item);
+    }
+    return list;
+  }
   void TellButton(int tab, const std::string& extension, bool global, CefRefPtr<CefDictionaryValue> change) {
     if (!hooks_.event) return;
     auto fields = CefDictionaryValue::Create();
@@ -2157,11 +2457,14 @@ class ExtensionTabs {
   std::string identity_;
   // Each tab's id among Chromium's, once learnt; it lasts the tab's life.
   std::map<int, int> native_;
+  // Each tab the host could not identify, by the address it showed then.
+  std::map<int, std::string> unknown_;
   std::map<int, std::vector<std::function<void()>>> identifying_;
   // The worlds the host made for extensions' scripts, by tab and extension.
   std::map<std::pair<int, std::string>, int> content_worlds_;
-  // Each frame's id among Chromium's, by tab and the inspector's frame id.
-  std::map<std::pair<int, std::string>, int> frame_ids_;
+  // Each frame's id among Chromium's and its document's, by tab and the
+  // inspector's frame id.
+  std::map<std::pair<int, std::string>, KnownFrame> frame_ids_;
   // When each extension last captured a tab, within the last second.
   std::map<std::string, std::deque<std::chrono::steady_clock::time_point>> captures_;
   // The worlds of extensions' declared content scripts the host gave ports.
@@ -2180,6 +2483,8 @@ class ExtensionTabs {
   ExtensionCommands commands_{false};
 #endif
   bool saving_ = false;
+  // The toolbar button menus the Browser was told of, by extension.
+  std::map<std::string, CefRefPtr<CefListValue>> action_menus_;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };
 

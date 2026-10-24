@@ -356,10 +356,8 @@ impl ShellOverlayHost {
         fullscreen
             || flags.capture
             || LayerId::ALL.into_iter().any(|id| {
-                !matches!(
-                    id,
-                    LayerId::CommandPalette | LayerId::RoomActivity | LayerId::NowPlaying
-                ) && self.overlay_is_open(id, flags)
+                !matches!(id, LayerId::CommandPalette | LayerId::NowPlaying)
+                    && self.overlay_is_open(id, flags)
             })
     }
 

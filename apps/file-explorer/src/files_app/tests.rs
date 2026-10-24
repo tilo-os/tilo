@@ -3967,6 +3967,21 @@ mod command_path_tests {
             label == "Availability…" && *command == Some(FileCommand::ShowAvailability)
         }));
 
+        // The row says it is unavailable to an agent before anyone opens it.
+        let resource = w.entry_resource(&w.entries[0]);
+        let presentation = resource.presentation.as_ref().expect("unavailable badge");
+        assert_eq!(presentation.badge.as_deref(), Some("Unavailable"));
+        assert!(presentation.is_valid());
+        let open = resource
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("open action");
+        assert_eq!(
+            open.description.as_deref(),
+            Some("Unavailable until a device that keeps it is online")
+        );
+
         w.apply_command(FileCommand::ShowAvailability);
         let panel = w.collab_panel.as_ref().expect("availability panel");
         assert!(panel.summary.contains("Not stored"));
@@ -3975,7 +3990,17 @@ mod command_path_tests {
             panel
                 .lines
                 .iter()
-                .any(|line| line.contains("No available replica"))
+                .any(|line| line == "Unavailable until a device that keeps it is online"),
+            "{:?}",
+            panel.lines
+        );
+        assert!(
+            !panel
+                .lines
+                .iter()
+                .any(|line| line.contains("No available replica")),
+            "the daemon's own wording never reaches the person: {:?}",
+            panel.lines
         );
     }
 

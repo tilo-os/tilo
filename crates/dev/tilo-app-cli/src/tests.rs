@@ -35,8 +35,6 @@ fn assert_generated_tree_source(source: &str) {
         "pub struct ProjectTreeConfig",
         "M: TreeModel",
         "TreeView::from_model(model)",
-        ".with_slot_delegate(",
-        "TreeSlotState::Error",
         ".with_row_delegate(",
         ".reorderable()",
     ] {
@@ -1184,8 +1182,8 @@ fn component_templates_keep_their_generic_model_boundaries() {
         syn::parse_file(&source).unwrap();
         assert!(source.contains("pub struct ActivityListConfig"));
         assert!(source.contains("M: ListModel"));
-        assert!(source.contains("VirtualList::new_async"));
-        assert!(source.contains("ListRowState<'a>"));
+        assert!(source.contains("VirtualList::new(model"));
+        assert!(source.contains("FnMut(&M, usize, &M::Key) -> Element"));
         assert!(source.contains("with_selection(config.selection.clone())"));
         let registry = std::fs::read_to_string(app.join("src/components/mod.rs")).unwrap();
         assert_eq!(
@@ -1313,9 +1311,9 @@ fn component_generation_is_safe_localised_and_transactional() {
             catalog.contains("project-tree-accessible-name = { \"Project Tree\" }"),
             "{catalog}"
         );
-        assert!(catalog.contains("project-tree-loading = { \"Loading…\" }"));
         assert!(
-            catalog.contains("project-tree-load-error = { \"Could not load. Activate to retry\" }")
+            !catalog.contains("project-tree-loading"),
+            "the tree's placeholders are the framework's, not the app's"
         );
 
         add_app_artifact(AddRequest {

@@ -289,6 +289,20 @@ fn cross_fade_hands_over_without_a_pop() {
 }
 
 #[test]
+fn arriving_data_fades_in_at_fast_even_under_reduced_motion() {
+    let now = crate::time::now();
+    for motion in [on(), reduced()] {
+        let mut fade = CrossFade::new("skeleton");
+        fade.arrive("album", motion, now);
+        assert_eq!(*fade.shown(), "album");
+        assert!(fade.outgoing(now).is_some(), "the skeleton is still drawn");
+        let done = fade.settles_at().expect("it fades");
+        assert!(done <= now + Motion::default().durations.fast() + Duration::from_millis(1));
+        assert_eq!(fade.incoming(done), 1.0);
+    }
+}
+
+#[test]
 fn feedback_comes_at_once_and_goes_over_fast() {
     let now = crate::time::now();
     let mut f = Feedback::default();

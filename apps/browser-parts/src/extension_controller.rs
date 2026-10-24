@@ -16,7 +16,9 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use ui::icons::Icon;
-use ui::webview::{ExtensionActionIcon, SharedEngine, WebViewCommand, WebViewEvent};
+use ui::webview::{
+    ExtensionActionIcon, ExtensionMenuItem, SharedEngine, WebViewCommand, WebViewEvent,
+};
 use ui::widget::floating_surface::PanelAlign;
 use ui::widget::{
     Actions, Banner, Button, Column, Container, Element, ListRow, MenuButton, MenuItem, Text,
@@ -43,10 +45,14 @@ const POPUP_MAX: (f32, f32) = (800.0, 600.0);
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
 
-/// The window bar's action ids: the Web Store offer, and the prefix of an
-/// item opening one extension's popup.
+/// The window bar's action ids: the Web Store offer, the prefix of an item
+/// opening one extension's popup, and of an item of one extension's button
+/// menu (followed by the extension's id and the item's key).
 const BAR_ADD: &str = "extension-add";
 const BAR_OPEN: &str = "extension-open:";
+const BAR_MENU: &str = "extension-menu:";
+/// Chrome's extension ids: 32 letters.
+const EXTENSION_ID_LEN: usize = 32;
 
 /// Something the interface asked for.
 #[derive(Debug, Clone)]
@@ -66,6 +72,29 @@ enum Command {
     /// Show an extension's settings page.
     OpenSettings(String),
     ClosePanel,
+    /// Choose an item of an extension's button menu: (extension, key).
+    ChooseMenuItem(String, String),
+}
+
+/// The commands of a button menu, depth first, each with whether it can be
+/// chosen now: the rows of a menu one level deep. A disabled submenu's
+/// commands cannot be.
+fn menu_commands<'a>(
+    items: &'a [ExtensionMenuItem],
+    enabled: bool,
+    out: &mut Vec<(&'a ExtensionMenuItem, bool)>,
+) {
+    for item in items {
+        match item {
+            ExtensionMenuItem::Separator => {}
+            ExtensionMenuItem::Submenu {
+                enabled: open,
+                items,
+                ..
+            } => menu_commands(items, enabled && *open, out),
+            ExtensionMenuItem::Command { enabled: on, .. } => out.push((item, enabled && *on)),
+        }
+    }
 }
 
 /// The extensions whose badges the window shows, so whose state is read:
@@ -254,6 +283,9 @@ pub struct ExtensionController {
     updated_at: Option<ui::time::Instant>,
     /// Extensions an update left off until the person allows more access.
     awaiting: Vec<String>,
+    /// What each extension's button menu holds, as the engine told it: the
+    /// `chrome.contextMenus` items the extension made for its button.
+    menus: HashMap<String, Vec<ExtensionMenuItem>>,
 }
 
 /// The switches `installed` asks for that this session has not made yet,
@@ -318,6 +350,7 @@ impl ExtensionController {
             switching: Vec::new(),
             updated_at: None,
             awaiting: Vec::new(),
+            menus: HashMap::new(),
         }
     }
 
@@ -359,6 +392,16 @@ impl ExtensionController {
                     changed = true;
                 }
                 changed
+            }
+            WebViewEvent::ExtensionMenu { id, items } => {
+                if items.is_empty() {
+                    self.menus.remove(&id).is_some()
+                } else if self.menus.get(&id) == Some(&items) {
+                    false
+                } else {
+                    self.menus.insert(id, items);
+                    true
+                }
             }
             WebViewEvent::ExtensionActionReset => {
                 let before = self.action_icons.len();
@@ -793,6 +836,7 @@ impl ExtensionController {
                     id: id.clone(),
                     permissions: access.permissions.clone(),
                     hosts: access.hosts.clone(),
+                    scriptable: access.scriptable.clone(),
                     token: access.token.clone(),
                     commands: access.commands.clone(),
                 });
@@ -918,6 +962,11 @@ impl ExtensionController {
             }
             Command::OpenAction(id) => self.open_action(&id, engine),
             Command::OpenSettings(id) => self.open_settings(&id, engine),
+            Command::ChooseMenuItem(id, key) => {
+                if self.menus.contains_key(&id) {
+                    engine.send(WebViewCommand::ExtensionMenuChoice { id, key });
+                }
+            }
             // Busy: ignore a second fetch until the first settles.
             Command::Fetch(_) | Command::StageFile(_) => {}
         }
@@ -1098,24 +1147,56 @@ impl ExtensionController {
     }
 
     /// The bar's Extensions items: one per enabled extension with an action,
-    /// which opens its popup, as the Extensions menu's rows do.
+    /// which opens its popup, as the Extensions menu's rows do, each followed
+    /// by what its button menu offers, as far as the bar's menu has room
+    /// beside its last item. The bar's menu is one level deep: a submenu's
+    /// items stand in its place.
     pub fn bar_items(&self) -> Vec<ToolbarAction> {
         if !self.active {
             return Vec::new();
         }
-        self.model()
-            .menu
-            .into_iter()
-            .map(|entry| {
-                let name = if entry.button.badge.is_empty() {
-                    entry.button.label
-                } else {
-                    format!("{} ({})", entry.button.label, entry.button.badge)
+        let entries = self.model().menu;
+        let mut room = ui::window_toolbar::MAX_ITEMS
+            .saturating_sub(1)
+            .saturating_sub(entries.len());
+        let mut items = Vec::new();
+        for entry in entries {
+            let name = if entry.button.badge.is_empty() {
+                entry.button.label
+            } else {
+                format!("{} ({})", entry.button.label, entry.button.badge)
+            };
+            let id = entry.button.id;
+            items.push(
+                ToolbarAction::new(format!("{BAR_OPEN}{id}"), "box", name)
+                    .enabled(entry.button.enabled),
+            );
+            let mut commands = Vec::new();
+            menu_commands(
+                self.menus.get(&id).map_or(&[][..], Vec::as_slice),
+                true,
+                &mut commands,
+            );
+            for (command, enabled) in commands.into_iter().take(room) {
+                let ExtensionMenuItem::Command {
+                    key,
+                    label,
+                    checked,
+                    ..
+                } = command
+                else {
+                    continue;
                 };
-                ToolbarAction::new(format!("{BAR_OPEN}{}", entry.button.id), "box", name)
-                    .enabled(entry.button.enabled)
-            })
-            .collect()
+                room -= 1;
+                let item = ToolbarAction::new(format!("{BAR_MENU}{id}{key}"), "", label.clone())
+                    .enabled(enabled);
+                items.push(match checked {
+                    Some(on) => item.on(*on),
+                    None => item,
+                });
+            }
+        }
+        items
     }
 
     /// Run a bar action from [`Self::bar_offer`] or [`Self::bar_items`] on
@@ -1128,6 +1209,11 @@ impl ExtensionController {
             }
         } else if let Some(extension) = id.strip_prefix(BAR_OPEN) {
             Command::OpenAction(extension.to_owned())
+        } else if let Some((extension, key)) = id
+            .strip_prefix(BAR_MENU)
+            .and_then(|rest| rest.split_at_checked(EXTENSION_ID_LEN))
+        {
+            Command::ChooseMenuItem(extension.to_owned(), key.to_owned())
         } else {
             return false;
         };
@@ -1158,11 +1244,51 @@ impl ExtensionController {
                 )
                 .with_checked(entry.pinned),
             );
+            // What the extension made for its button's menu.
+            if let Some(menu) = self.menus.get(&entry.button.id) {
+                items.push(MenuItem::submenu(
+                    format!("More from {}", entry.button.label),
+                    self.menu_rows(&entry.button.id, menu),
+                ));
+            }
         }
         Button::icon_only(MENU_BUTTON, Icon::Box, "Extensions")
             .tooltip("Extensions")
             .with_menu(items)
             .aligned(PanelAlign::Trailing)
+    }
+
+    /// An extension's button menu as rows: check marks on its checkbox and
+    /// radio items, its submenus nested, its disabled items greyed.
+    fn menu_rows(&self, extension: &str, items: &[ExtensionMenuItem]) -> Vec<MenuItem> {
+        items
+            .iter()
+            .map(|item| match item {
+                ExtensionMenuItem::Separator => MenuItem::separator(),
+                ExtensionMenuItem::Submenu {
+                    label,
+                    enabled,
+                    items,
+                } => MenuItem::submenu(label, self.menu_rows(extension, items))
+                    .with_enabled(*enabled),
+                ExtensionMenuItem::Command {
+                    key,
+                    label,
+                    checked,
+                    enabled,
+                } => {
+                    let choose = std::cell::RefCell::new(
+                        self.queue(Command::ChooseMenuItem(extension.to_owned(), key.clone())),
+                    );
+                    let row = MenuItem::action(label, move || (choose.borrow_mut())())
+                        .with_enabled(*enabled);
+                    match checked {
+                        Some(checked) => row.with_checked(*checked),
+                        None => row,
+                    }
+                }
+            })
+            .collect()
     }
 
     /// The anchored panel: what to show, and the controls to open beside,
@@ -1654,6 +1780,101 @@ mod tests {
     }
 
     #[test]
+    fn an_extensions_button_menu_shows_its_items_and_a_choice_reaches_it() {
+        let window = ui::webview::test_engine::TestEngine::new();
+        let shared: SharedEngine = window.clone();
+        let mut controller = ExtensionController::new(true);
+        let id = "a".repeat(32);
+        controller.installed = vec![installed(&id, None, toolbar::Access::default())];
+        let command =
+            |key: &str, label: &str, checked: Option<bool>, enabled| ExtensionMenuItem::Command {
+                key: key.into(),
+                label: label.into(),
+                checked,
+                enabled,
+            };
+        let items = vec![
+            command("\"dark\"", "Dark pages", Some(true), true),
+            ExtensionMenuItem::Separator,
+            ExtensionMenuItem::Submenu {
+                label: "Lists".into(),
+                enabled: true,
+                items: vec![
+                    command("1", "Easy", Some(false), true),
+                    command("2", "Strict", Some(true), false),
+                ],
+            },
+        ];
+        let told = WebViewEvent::ExtensionMenu {
+            id: id.clone(),
+            items,
+        };
+        assert!(controller.on_engine_event(told.clone(), &shared));
+        assert!(!controller.on_engine_event(told, &shared), "nothing new");
+
+        // The Extensions menu: its own rows, then the extension's.
+        let mut menu = controller.extensions_menu(&controller.model());
+        let rows = menu.menu_mut().items().to_vec();
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert_eq!(rows[2].label(), Some(format!("More from {id}").as_str()));
+        let nested = rows[2].submenu_items().expect("its items open beside it");
+        assert_eq!(
+            nested[0].checked(),
+            Some(true),
+            "a check mark on a checked item"
+        );
+        assert!(matches!(nested[1], MenuItem::Separator));
+        let lists = nested[2].submenu_items().expect("a submenu of its own");
+        assert_eq!(lists[0].checked(), Some(false));
+        assert!(!lists[1].is_enabled(), "a disabled item is greyed");
+        let MenuItem::Action { action, .. } = &lists[0] else {
+            panic!("a command row");
+        };
+        action();
+        assert_eq!(
+            queued(&controller).last().map(String::as_str),
+            Some(format!(r#"ChooseMenuItem("{id}", "1")"#).as_str())
+        );
+        let commands = std::mem::take(&mut *controller.commands.lock().unwrap());
+        for command in commands {
+            controller.run(command, &shared);
+        }
+        assert!(
+            window
+                .commands()
+                .contains(&WebViewCommand::ExtensionMenuChoice {
+                    id: id.clone(),
+                    key: "1".into()
+                })
+        );
+
+        // The window bar's menu is one level deep: the submenu's items stand
+        // in its place, after the extension's own item.
+        let bar = controller.bar_items();
+        let names: Vec<_> = bar.iter().map(|item| item.name.as_str()).collect();
+        assert_eq!(names, [id.as_str(), "Dark pages", "Easy", "Strict"]);
+        assert!(bar[1].on && bar[1].toggles);
+        assert!(!bar[3].enabled);
+        assert!(controller.bar_action(&bar[2].id));
+        assert_eq!(
+            queued(&controller).last().map(String::as_str),
+            Some(format!(r#"ChooseMenuItem("{id}", "1")"#).as_str())
+        );
+
+        // Taken away: the menu row goes.
+        assert!(controller.on_engine_event(
+            WebViewEvent::ExtensionMenu {
+                id,
+                items: Vec::new()
+            },
+            &shared
+        ));
+        let mut menu = controller.extensions_menu(&controller.model());
+        assert_eq!(menu.menu_mut().items().len(), 2);
+        assert_eq!(controller.bar_items().len(), 1);
+    }
+
+    #[test]
     fn a_button_without_a_popup_tells_the_extension_of_the_click() {
         let window = ui::webview::test_engine::TestEngine::new();
         let shared: SharedEngine = window.clone();
@@ -1923,6 +2144,7 @@ mod tests {
         let tabs = toolbar::Access {
             permissions: vec!["tabs".into()],
             hosts: vec!["https://*/*".into()],
+            scriptable: vec!["<all_urls>".into()],
             token: Some("a".repeat(48)),
             commands: Some(shortcuts.clone()),
         };
@@ -1947,6 +2169,7 @@ mod tests {
                 id: "reader".into(),
                 permissions: vec!["tabs".into()],
                 hosts: vec!["https://*/*".into()],
+                scriptable: vec!["<all_urls>".into()],
                 token: Some("a".repeat(48)),
                 commands: Some(shortcuts),
             }]

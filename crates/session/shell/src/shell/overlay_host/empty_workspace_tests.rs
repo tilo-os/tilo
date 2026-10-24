@@ -151,12 +151,12 @@ fn empty_workspace_cards_offer_accessible_collaboration_entry_points() {
         host.settle(&mut ui::widget::Edits::lend(&mut doc), &root);
 
         assert!(
-            crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
-                .is_some()
+            chrome.borrow_mut().take_activity_open_request().is_some(),
+            "the card opens the Activity app"
         );
         assert!(
             !chrome.borrow().overlays.room_activity,
-            "the recap is a tiled window, not transient overlay state"
+            "Activity is an app's window, not transient overlay state"
         );
         assert!(matches!(
             doc.get(&root, crate::shell::EMPTY_WORKSPACE_ACTIVITY),

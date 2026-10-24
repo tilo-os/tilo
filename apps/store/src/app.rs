@@ -493,6 +493,9 @@ pub struct StoreApp {
     /// bubble, when the operation settles.
     status_line: String,
     worker_busy: bool,
+    /// The catalogue's read while the worker brings it and nothing shows
+    /// yet: what its placeholder is timed from.
+    catalogue_read: ui::Arriving<()>,
     /// The one app mutation currently accepted by the serialized worker.
     /// Keeping its stable app id and offered action locally lets the matching
     /// card communicate progress and reject a second activation; it is a
@@ -598,6 +601,7 @@ impl StoreApp {
             remote_url_state: ui::LocalState::new(String::new()),
             status_line: String::new(),
             worker_busy: false,
+            catalogue_read: ui::Arriving::ready(()),
             active_operation: None,
             operation_error: None,
             local_refusal: None,
@@ -1253,6 +1257,25 @@ impl StoreApp {
                 self.active_operation = None;
             }
             self.structure_dirty = true;
+        }
+        // An empty catalogue the worker is bringing is a read on its way
+        // from the configured sources; it lands when the worker is done.
+        let waiting = busy && self.items.is_empty();
+        let pending = self.catalogue_read.with(ui::Arrival::is_pending);
+        if waiting && !pending {
+            let from = self.remotes.iter().find(|remote| !remote.disabled).map_or(
+                ui::arriving::Source::Local,
+                |remote| {
+                    ui::arriving::Source::host(if remote.title.is_empty() {
+                        remote.name.clone()
+                    } else {
+                        remote.title.clone()
+                    })
+                },
+            );
+            self.catalogue_read.writer().pending(from);
+        } else if !waiting && pending {
+            self.catalogue_read.writer().ready(());
         }
     }
 
@@ -3545,7 +3568,10 @@ mod tests {
         })
         .unwrap();
         let visible = app.harness().inspection_json().unwrap();
-        assert!(visible.contains("Loading apps"));
+        assert!(
+            visible.contains("\"Loading\""),
+            "the catalogue on its way reads as loading: {visible}"
+        );
         assert!(!visible.contains("No apps found"));
         app.with_surface(|store: &mut StoreApp| {
             store.set_worker_busy(false);
@@ -5249,7 +5275,11 @@ mod tests {
             let mut app = StoreApp::new();
             app.set_worker_busy(true);
             let tree = app.compose(&Theme::dark());
-            assert_eq!(accessible_name_count(tree.as_ref(), "Loading apps"), 1);
+            assert_eq!(
+                accessible_name_count(tree.as_ref(), "Loading"),
+                1,
+                "the catalogue on its way reads as loading"
+            );
         }
 
         {

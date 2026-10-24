@@ -67,7 +67,6 @@ pub(crate) enum LayerId {
     Overview,
     WorkspaceSettings,
     Collaborators,
-    RoomActivity,
     QuickSettings,
     /// The now-playing card beside the Quick Settings root page.
     NowPlaying,
@@ -75,7 +74,7 @@ pub(crate) enum LayerId {
 }
 
 impl LayerId {
-    pub(crate) const ALL: [Self; 16] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::DisplayConfirmation,
         Self::WindowSwitcher,
         Self::Dictation,
@@ -88,7 +87,6 @@ impl LayerId {
         Self::Overview,
         Self::WorkspaceSettings,
         Self::Collaborators,
-        Self::RoomActivity,
         Self::QuickSettings,
         Self::NowPlaying,
         Self::ShortcutHelp,

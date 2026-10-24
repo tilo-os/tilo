@@ -1299,9 +1299,10 @@ impl RoomActivityPane {
             .as_ref()
             .is_some_and(|broker| broker.agent_is_live_task_capable(room, agent))
     }
+    /// Offer what `focus` names to the Activity app.
     pub fn apply_deep_link(&mut self, focus: crate::shell::chrome_state::ActivityFocus) {
         self.0
-            .apply_deep_link(tilo_desktop::activity::ActivityDeepLink {
+            .focus_deep_link(&tilo_desktop::activity::ActivityDeepLink {
                 author: focus.author,
                 group_id: focus.group_id,
                 entry_id: focus.entry_id,

@@ -1047,7 +1047,7 @@ fn result_bytes(result: &SearchResult) -> usize {
         .id
         .len()
         .saturating_add(result.title.len())
-        .saturating_add(result.subtitle.as_ref().map_or(0, String::len))
+        .saturating_add(result.secondary_len())
         .saturating_add(result.provider_id.len())
 }
 

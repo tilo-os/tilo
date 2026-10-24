@@ -32,9 +32,7 @@ impl ShellOverlayHost {
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_moving(now),
                 power_menu: self.layers.power_menu.is_animating(now),
-                room_activity: self.room_activity.needs_animation_frame(now),
                 follow: self.follow_transition.is_moving(now),
-                room_replay: self.room_activity.replay_is_playing(),
                 projection: self.projection_overlay.needs_animation_frame(now),
                 content: self.content.needs_animation_frame(),
                 strip_switcher: self.strip_navigator.labels_need_animation_frame(now),
@@ -339,22 +337,7 @@ impl ShellOverlayHost {
                 None
             },
         );
-        overlay_part(
-            above_quick_settings,
-            "shell.room-activity",
-            desktop,
-            |scene| {
-                self.draw_room_activity_sheet(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    presence,
-                    flags,
-                );
-                None
-            },
-        );
+        self.room_activity.observe_replay_presence(presence);
         overlay_part(above_quick_settings, "shell.projection", desktop, |scene| {
             self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
             None
@@ -528,10 +511,6 @@ impl ShellOverlayHost {
             LayerId::Overview => flags.overview,
             LayerId::WorkspaceSettings => flags.ws_settings,
             LayerId::Collaborators => flags.collaborators,
-            LayerId::RoomActivity => self.chrome.as_ref().is_some_and(|chrome| {
-                crate::shell::tab_binding::active_workspace_activity_tab(&chrome.borrow().tree())
-                    .is_some()
-            }),
             // Every page publishes: the root, each drill-in, and the Wi-Fi
             // password prompt that replaces the network list.
             LayerId::QuickSettings => flags.quick_settings && self.chrome.is_some(),
@@ -834,10 +813,8 @@ impl ShellOverlayHost {
         let ws_settings_in_flight = self.workspace_settings_overlay.is_animating(now);
         let palette_in_flight = self.palette_transition.is_moving(now);
         let layers_in_flight = self.layers.is_animating(now);
-        let room_activity_in_flight = self.room_activity.needs_animation_frame(now);
         let follow_in_flight = self.follow_transition.is_moving(now);
         let cursor_chat_in_flight = self.cursor_chat_animating(now);
-        let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
         let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
             || self.display_identify.needs_frame(now);
@@ -873,10 +850,8 @@ impl ShellOverlayHost {
             || ws_settings_in_flight
             || palette_in_flight
             || layers_in_flight
-            || room_activity_in_flight
             || follow_in_flight
             || cursor_chat_in_flight
-            || room_replay_in_flight
             || capture_in_flight
             // The projection component includes both its transition and the
             // bounded worker-response frame pump in this signal.
