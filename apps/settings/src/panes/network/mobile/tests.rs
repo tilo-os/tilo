@@ -40,7 +40,8 @@ fn without_a_modem_there_is_no_section_and_no_mobile_setting_is_tried() {
     let (device, mut model) = scripted(None);
     assert!(model.loaded);
     assert!(!model.present());
-    assert!(model.sections().is_empty(), "nothing is shown");
+    assert!(model.page_sections().is_empty(), "nothing is shown");
+    assert!(model.card().is_empty());
     for effect in [
         MobileEffect::SetMobileBroadband { on: true },
         MobileEffect::SetDataRoaming { on: true },
@@ -166,12 +167,7 @@ fn a_registered_modem_shows_operator_technology_signal_and_data() {
     assert!(model.present());
     assert!(model.data_on());
     let said = said(&model);
-    for expected in [
-        "Telekom.de",
-        "LTE, good signal, connected",
-        "Data roaming",
-        "Data used",
-    ] {
+    for expected in ["Telekom.de", "LTE, connected", "Data roaming", "Data used"] {
         assert!(
             said.iter().any(|text| text.contains(expected)),
             "`{expected}` in {said:?}"
@@ -208,135 +204,295 @@ fn roaming_is_said_and_switched_on_the_profile() {
     );
 }
 
-#[test]
-fn a_locked_sim_asks_for_its_pin_counts_wrong_tries_and_unlocks() {
-    let (_, mut model) = scripted(Some(MobileSample::Locked));
-    assert!(says(&model, "SIM locked"));
-    assert!(says(&model, "2 tries left."));
-    assert!(
-        !says(&model, "Data roaming"),
-        "nothing else until it is unlocked"
-    );
-
-    *model.pin.lock().unwrap() = "0000".into();
-    let wrong = run(
-        &mut model,
-        MobileEffect::UnlockSim {
-            sim: None,
-            pin: None,
-        },
-    );
-    assert_eq!(wrong.unwrap_err(), "Wrong PIN");
-    assert!(model.pin.lock().unwrap().is_empty(), "the code is not kept");
-    assert!(says(&model, "One try left."));
-    assert!(says(&model, "Wrong PIN"));
-
-    *model.pin.lock().unwrap() = PIN.into();
-    run(
-        &mut model,
-        MobileEffect::UnlockSim {
-            sim: None,
-            pin: None,
-        },
-    )
+/// The window over a scripted modem standing as `sample`, its Network
+/// pane open on the first page.
+fn hosted(sample: MobileSample) -> (Arc<ScriptedModem>, App) {
+    let mut app = App::new().unwrap();
+    let device = Arc::new(ScriptedModem::new(Some(sample)));
+    let service = Arc::clone(&device) as Arc<dyn MobileService>;
+    app.with_surface::<SettingsApp, _>(|settings| {
+        let area = area(settings).unwrap();
+        let model = MobileModel::loaded_from(area.cx.clone(), service);
+        *area.model().borrow_mut() = model;
+    })
     .unwrap();
-    assert_eq!(model.modem().unwrap().lock, SimLock::None);
-    assert!(says(&model, "SIM unlocked."));
-    assert!(!says(&model, "Wrong PIN"));
-    assert!(says(&model, "Data roaming"));
+    app.harness().resize((1280, 900)).unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.settle();
+    (device, app)
 }
 
-#[test]
-fn the_last_wrong_pin_blocks_the_sim_and_the_puk_unblocks_it() {
-    let (_, mut model) = scripted(Some(MobileSample::Locked));
-    for _ in 0..2 {
-        let _ = run(
-            &mut model,
-            MobileEffect::UnlockSim {
-                sim: None,
-                pin: Some("9999".into()),
-            },
+/// Settle `app` until `done` says the modem's model is where the test
+/// waits for it.
+fn settle_until(app: &mut App, done: impl Fn(&MobileModel) -> bool) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        app.settle();
+        let reached = app
+            .surface::<SettingsApp, _>(|settings| done(&area(settings).unwrap().model().borrow()))
+            .unwrap();
+        if reached {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the modem work never landed"
         );
+        std::thread::yield_now();
     }
-    assert_eq!(model.modem().unwrap().lock, SimLock::Puk);
-    assert!(says(&model, "SIM blocked"));
-    assert!(says(&model, "PUK"));
-    assert!(
-        !model.modems.iter().any(|modem| modem.lock == SimLock::Pin),
-        "the PIN alone no longer unlocks"
-    );
-
-    let wrong = run(
-        &mut model,
-        MobileEffect::UnblockSim {
-            sim: None,
-            puk: Some("00000000".into()),
-            pin: Some("4321".into()),
-        },
-    );
-    assert_eq!(wrong.unwrap_err(), "Wrong PUK");
-    *model.puk.lock().unwrap() = PUK.into();
-    *model.new_pin.lock().unwrap() = "4321".into();
-    run(
-        &mut model,
-        MobileEffect::UnblockSim {
-            sim: None,
-            puk: None,
-            pin: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(model.modem().unwrap().lock, SimLock::None);
-    assert!(model.puk.lock().unwrap().is_empty());
-    assert!(model.new_pin.lock().unwrap().is_empty());
 }
 
+/// What the window shows, in reading order.
+fn shown(app: &mut App) -> Vec<String> {
+    crate::widgets::announced_text(app.harness().root_widget())
+}
+
+fn lock(app: &mut App) -> Option<SimLock> {
+    app.surface::<SettingsApp, _>(|settings| {
+        area(settings)
+            .unwrap()
+            .model()
+            .borrow()
+            .modem()
+            .map(|modem| modem.lock)
+    })
+    .unwrap()
+}
+
+/// Answer the open prompt: `codes` typed into its fields in order.
+fn answer(app: &mut App, codes: &[&str]) {
+    for (at, code) in codes.iter().enumerate() {
+        if at > 0 {
+            app.harness().key("Tab");
+        }
+        app.harness().type_text(code);
+    }
+    app.harness().key("Return");
+}
+
+/// The first page shows the modem next to Wi-Fi: how it stands with the
+/// signal meter, its data switch, and the way to its page; a device
+/// without a modem shows no Mobile card.
+#[test]
+fn the_first_page_shows_the_modem_next_to_wifi() {
+    let (_, mut app) = hosted(MobileSample::Registered);
+    let said = shown(&mut app);
+    let at = |text: &str| said.iter().position(|said| said.contains(text));
+    let mobile = at("Telekom.de").unwrap_or_else(|| panic!("the modem in {said:?}"));
+    assert!(at("Wi-Fi").is_some_and(|wifi| wifi < mobile), "{said:?}");
+    assert!(
+        !said.iter().any(|text| text.contains("Data roaming")),
+        "the rest is on its page"
+    );
+
+    app.call("show-mobile", serde_json::json!({})).unwrap();
+    app.settle();
+    let said = shown(&mut app);
+    assert!(
+        said.iter().any(|text| text.contains("Data roaming")),
+        "{said:?}"
+    );
+
+    let mut app = App::new().unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.settle();
+    assert!(!shown(&mut app).iter().any(|text| text == "Mobile"));
+}
+
+/// A locked SIM asks for its PIN with the window's password prompt: a
+/// wrong PIN is said there with one try fewer, the right one unlocks it
+/// and closes the prompt. No code is drawn, inspected or recorded.
+#[test]
+fn a_locked_sim_is_unlocked_from_the_password_prompt() {
+    let (device, mut app) = hosted(MobileSample::Locked);
+    assert!(
+        shown(&mut app)
+            .iter()
+            .any(|text| text.contains("2 tries left."))
+    );
+    app.call("unlock-sim", serde_json::json!({})).unwrap();
+    settle_until(&mut app, |model| {
+        model.asked() == Some(&codes::CodeAsk::Unlock(None))
+    });
+
+    answer(&mut app, &["0000"]);
+    settle_until(&mut app, |model| {
+        model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.pin) == Some(1)
+    });
+    assert!(
+        app.surface::<SettingsApp, _>(|settings| area(settings)
+            .unwrap()
+            .model()
+            .borrow()
+            .asking
+            .is_some())
+            .unwrap(),
+        "a wrong PIN asks again"
+    );
+    assert_eq!(lock(&mut app), Some(SimLock::Pin));
+
+    answer(&mut app, &[PIN]);
+    settle_until(&mut app, |model| {
+        model.asking.is_none() && model.in_flight == 0
+    });
+    assert_eq!(lock(&mut app), Some(SimLock::None));
+    let said = shown(&mut app);
+    assert!(
+        said.iter().any(|text| text.contains("SIM unlocked.")),
+        "{said:?}"
+    );
+    for code in ["0000", PIN] {
+        assert!(!said.iter().any(|text| text.contains(code)));
+        assert!(!device.changes().iter().any(|change| change.contains(code)));
+        let inspection = app
+            .surface::<SettingsApp, _>(|settings| {
+                area(settings)
+                    .unwrap()
+                    .model()
+                    .borrow()
+                    .inspection()
+                    .to_string()
+            })
+            .unwrap();
+        assert!(!inspection.contains(code));
+    }
+}
+
+/// The last wrong PIN blocks the SIM, and the prompt asks for its PUK and
+/// a new PIN next; they unblock it.
+#[test]
+fn the_last_wrong_pin_asks_for_the_puk_and_a_new_pin() {
+    let (_, mut app) = hosted(MobileSample::Locked);
+    app.call("unlock-sim", serde_json::json!({})).unwrap();
+    settle_until(&mut app, |model| model.asking.is_some());
+    for tried in 1..=2 {
+        answer(&mut app, &["9999"]);
+        settle_until(&mut app, |model| {
+            model.in_flight == 0
+                && model.modem().and_then(|modem| modem.retries.pin) == Some(2 - tried)
+        });
+    }
+    settle_until(&mut app, |model| {
+        model.asked() == Some(&codes::CodeAsk::Unblock(None))
+    });
+    assert_eq!(lock(&mut app), Some(SimLock::Puk));
+
+    answer(&mut app, &["00000000", "4321", "4321"]);
+    settle_until(&mut app, |model| {
+        model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.puk) == Some(9)
+    });
+    assert_eq!(
+        lock(&mut app),
+        Some(SimLock::Puk),
+        "a wrong PUK unblocks nothing"
+    );
+
+    answer(&mut app, &[PUK, "4321", "4321"]);
+    settle_until(&mut app, |model| {
+        model.asking.is_none() && model.in_flight == 0
+    });
+    assert_eq!(lock(&mut app), Some(SimLock::None));
+}
+
+/// The PUK sample opens on the modem's page with the prompt asking for the
+/// PUK, as the capture shows it.
 #[test]
 fn the_puk_sample_starts_blocked() {
     let (_, model) = scripted(Some(MobileSample::Puk));
     assert_eq!(model.modem().unwrap().lock, SimLock::Puk);
     assert!(says(&model, "SIM blocked"));
-    assert!(says(&model, "New PIN"));
+    assert!(says(&model, "Unblock SIM…"));
 }
 
+/// Turning the PIN lock off asks for the PIN first; nothing is sent until
+/// it is given, and Cancel leaves the lock as it was.
 #[test]
 fn turning_the_pin_lock_off_asks_for_the_pin_first() {
-    let (device, mut model) = scripted(Some(MobileSample::Registered));
-    run(
-        &mut model,
-        MobileEffect::SetSimPinLock {
-            sim: None,
-            on: false,
-            pin: None,
-        },
-    )
-    .unwrap();
-    assert_eq!(model.sim_form, Some(SimForm::PinLock(false)));
+    let (device, mut app) = hosted(MobileSample::Registered);
+    let ask = |app: &mut App| {
+        app.call("set-sim-pin-lock", serde_json::json!({"on": false}))
+            .unwrap();
+        settle_until(app, |model| {
+            model.asked()
+                == Some(&codes::CodeAsk::PinLock {
+                    sim: None,
+                    on: false,
+                })
+        });
+    };
+    ask(&mut app);
     assert!(
         device.changes().is_empty(),
         "nothing is sent without the PIN"
     );
-    assert!(says(&model, "Enter the SIM's PIN to stop asking for it."));
+    app.harness().key("Escape");
+    settle_until(&mut app, |model| model.asking.is_none());
+    assert!(device.changes().is_empty(), "a cancel sends nothing");
 
-    *model.pin.lock().unwrap() = PIN.into();
+    ask(&mut app);
+    answer(&mut app, &[PIN]);
+    settle_until(&mut app, |model| {
+        model.asking.is_none() && model.modem().unwrap().pin_enabled == Some(false)
+    });
+}
+
+/// Changing the PIN asks for the current and a new one; a wrong current
+/// PIN is said and asked again.
+#[test]
+fn changing_the_pin_asks_for_the_current_one_and_a_new_one() {
+    let (_, mut app) = hosted(MobileSample::Registered);
+    app.call("change-sim-pin", serde_json::json!({})).unwrap();
+    settle_until(&mut app, |model| {
+        model.asked() == Some(&codes::CodeAsk::ChangePin(None))
+    });
+    answer(&mut app, &["0000", "5678"]);
+    settle_until(&mut app, |model| {
+        model.in_flight == 0 && model.modem().and_then(|modem| modem.retries.pin) == Some(2)
+    });
+    assert!(
+        app.surface::<SettingsApp, _>(|settings| area(settings)
+            .unwrap()
+            .model()
+            .borrow()
+            .asking
+            .is_some())
+            .unwrap()
+    );
+    answer(&mut app, &[PIN, "5678"]);
+    settle_until(&mut app, |model| {
+        model.asking.is_none() && model.in_flight == 0
+    });
+    assert!(
+        shown(&mut app)
+            .iter()
+            .any(|text| text.contains("PIN changed."))
+    );
+}
+
+/// Codes given to the effects change the SIM at once, as an agent gives
+/// them; a wrong one is refused with what went wrong.
+#[test]
+fn codes_given_to_the_effects_change_the_sim_directly() {
+    let (_, mut model) = scripted(Some(MobileSample::Locked));
+    let wrong = run(
+        &mut model,
+        MobileEffect::UnlockSim {
+            sim: None,
+            pin: Some("0000".into()),
+        },
+    );
+    assert_eq!(wrong.unwrap_err(), "Wrong PIN");
     run(
         &mut model,
-        MobileEffect::SetSimPinLock {
+        MobileEffect::UnlockSim {
             sim: None,
-            on: false,
-            pin: None,
+            pin: Some(PIN.into()),
         },
     )
     .unwrap();
-    assert_eq!(model.sim_form, None);
-    assert_eq!(model.modem().unwrap().pin_enabled, Some(false));
-}
-
-#[test]
-fn changing_the_pin_takes_the_current_one() {
-    let (_, mut model) = scripted(Some(MobileSample::Registered));
-    run(&mut model, MobileEffect::ShowSimPinChange).unwrap();
-    assert!(says(&model, "Current PIN"));
+    assert_eq!(model.modem().unwrap().lock, SimLock::None);
     let wrong = run(
         &mut model,
         MobileEffect::ChangeSimPin {
@@ -356,28 +512,7 @@ fn changing_the_pin_takes_the_current_one() {
     )
     .unwrap();
     assert!(says(&model, "PIN changed."));
-}
-
-#[test]
-fn codes_never_reach_the_inspection_the_log_or_the_screen() {
-    let (device, mut model) = scripted(Some(MobileSample::Locked));
-    *model.pin.lock().unwrap() = "8642".into();
-    let _ = run(
-        &mut model,
-        MobileEffect::UnlockSim {
-            sim: None,
-            pin: None,
-        },
-    );
-    *model.pin.lock().unwrap() = "97531".into();
-    assert!(!model.inspection().to_string().contains("97531"));
-    assert!(!said(&model).iter().any(|text| text.contains("97531")));
-    assert!(
-        !device
-            .changes()
-            .iter()
-            .any(|change| change.contains("8642"))
-    );
+    assert!(model.asking.is_none(), "nothing was asked");
 }
 
 #[test]

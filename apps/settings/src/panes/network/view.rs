@@ -1,7 +1,7 @@
 //! The pane's first page — the Wi-Fi list, the wired connection and the
 //! controls under them — and the pages those controls open that are not a
-//! network's: the hotspot and the advanced settings. Mobile data is its
-//! own section under the first page (`network/mobile.rs`).
+//! network's: the hotspot and the advanced settings. The modem's card and
+//! page are composed by its own model (`network/mobile.rs`).
 
 use std::sync::{Arc, Mutex};
 
@@ -9,14 +9,13 @@ use os_actions::{ConnectivityState, SavedNetworkProfile, WifiNetworkInfo};
 use ui::LocalState;
 use ui::icons::Icon;
 use ui::widget::{
-    Button, ButtonRole, DisclosureRow, Dropdown, ListRow, QrWidget, Row, SignalLevel, Spacer,
-    TextInput, Toggle, Widget,
+    Button, ButtonRole, Dropdown, ListRow, QrWidget, Row, SignalLevel, Spacer, TextInput, Toggle,
+    Widget,
 };
-use zeroize::Zeroizing;
 
 use super::{
-    HOTSPOT_BANDS, NetworkEffect, NetworkModel, PAGE_ADVANCED, PAGE_ALL, PAGE_HIDDEN, PAGE_HOTSPOT,
-    PAGE_KNOWN, PAGE_WIFI, band_shown, connectivity_shown, network_detail, order, profile_label,
+    HOTSPOT_BANDS, NetworkEffect, NetworkModel, PAGE_ADVANCED, PAGE_ALL, PAGE_HOTSPOT, PAGE_KNOWN,
+    PAGE_MOBILE, PAGE_WIFI, band_shown, connectivity_shown, network_detail, order, profile_label,
     wake_description,
 };
 use crate::effects::effect;
@@ -41,9 +40,11 @@ impl NetworkModel {
             None => self.first_page(),
             Some(PAGE_ALL) => self.all_page(),
             Some(PAGE_KNOWN) => self.known_page(),
-            Some(PAGE_HIDDEN) => self.hidden_page(),
             Some(PAGE_HOTSPOT) => vec![self.hotspot_card()],
             Some(PAGE_ADVANCED) => self.advanced_page(),
+            Some(PAGE_MOBILE) => self
+                .mobile_sections(super::mobile::MobileModel::page_sections)
+                .unwrap_or_else(|| self.first_page()),
             Some(key) => match key.strip_prefix(PAGE_WIFI) {
                 Some(ssid) => self.network_page(ssid),
                 None => self.vpn_pages(key).unwrap_or_else(|| self.first_page()),
@@ -127,11 +128,26 @@ impl NetworkModel {
         }
     }
 
-    /// The first page: Wi-Fi, the wired connection, and the controls.
+    /// What the modem's model composes, when the device has a modem.
+    fn mobile_sections(
+        &self,
+        compose: impl FnOnce(&super::mobile::MobileModel) -> Vec<SettingsSection>,
+    ) -> Option<Vec<SettingsSection>> {
+        let mobile = self.mobile.as_ref()?.try_borrow().ok()?;
+        Some(compose(&mobile)).filter(|sections| !sections.is_empty())
+    }
+
+    /// The first page: Wi-Fi and mobile data, the controls, and the wired
+    /// connection.
     fn first_page(&self) -> Vec<SettingsSection> {
-        // The controls follow the list at once, so they stay in view on a
+        // The controls follow the radios at once, so they stay in view on a
         // normal window; the wired connection comes after them.
-        let mut cards = vec![self.wifi_card(), self.controls_card()];
+        let mut cards = vec![self.wifi_card()];
+        cards.extend(
+            self.mobile_sections(super::mobile::MobileModel::card)
+                .unwrap_or_default(),
+        );
+        cards.push(self.controls_card());
         if self.wired.device.is_some() || self.read_errors.wired.is_some() {
             cards.push(self.wired_card());
         }
@@ -217,7 +233,6 @@ impl NetworkModel {
         networks: &[WifiNetworkInfo],
         held: &std::rc::Rc<std::cell::Cell<bool>>,
     ) -> Item {
-        self.open_rows();
         let lines: Vec<El> = networks.iter().map(|net| self.network_row(net)).collect();
         block(Box::new(
             ui::widget::Section::new(lines).pointer_over(std::rc::Rc::clone(held)),
@@ -246,20 +261,6 @@ impl NetworkModel {
                 ssid: net.ssid.clone(),
             },
         );
-        if self.prompt_shown.borrow().as_deref() == Some(net.ssid.as_str())
-            || self.prompts.open_key().as_deref() == Some(net.ssid.as_str())
-        {
-            return Box::new(
-                DisclosureRow::keyed(
-                    net.ssid.clone(),
-                    self.password_prompt(net),
-                    &self.prompts,
-                    &net.ssid,
-                )
-                .signal(level)
-                .secondary(detail),
-            );
-        }
         let mut line = ListRow::new(
             format!("settings.network.connect.{}", net.ssid),
             net.ssid.clone(),
@@ -291,46 +292,6 @@ impl NetworkModel {
             Some(binding) => line.on_action(binding),
             None => line.with_enabled(false),
         })
-    }
-
-    /// The password prompt under a secure network: a masked, process-local
-    /// field and Join beside it. Closing the row cancels the join.
-    fn password_prompt(&self, net: &WifiNetworkInfo) -> Box<dyn Widget> {
-        let ssid = &net.ssid;
-        let buffer = self
-            .join_passwords
-            .get(ssid)
-            .cloned()
-            .unwrap_or_else(|| Arc::new(Mutex::new(String::new())));
-        let field = TextInput::local()
-            .with_id(&format!("settings.network.password.{ssid}"))
-            .with_external_buffer(buffer)
-            .with_secret(true)
-            .with_placeholder(t("net-password"));
-        // Joining is the network row's own action.
-        let join = self.cx.bind_row(
-            Button::new(&format!("settings.network.join.{ssid}"), &t("net-join"))
-                .role(ButtonRole::Primary),
-            &self.wifi_live(ssid).into_resource(),
-            NetworkEffect::ConnectNetwork {
-                ssid: ssid.clone(),
-                password: None,
-            },
-        );
-        Box::new(
-            Row::new()
-                .no_wrap()
-                .with_align_items(ui::taffy::AlignItems::Center)
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .with_padding(0.0, crate::widgets::spacing().s2)
-                .push(Box::new(
-                    ui::widget::Container::new()
-                        .with_no_padding()
-                        .with_flex_grow()
-                        .with_child(Box::new(field)),
-                ))
-                .push(Box::new(join)),
-        )
     }
 
     /// How the network in use stands: connected, or connected but without
@@ -602,23 +563,36 @@ impl NetworkModel {
         }
     }
 
-    /// A masked field over `buffer`, which never leaves this process.
-    pub(super) fn secret_field(buffer: &Arc<Mutex<String>>, id: &str, placeholder: &str) -> Item {
-        let initial = buffer.lock().map_or_else(
-            |_| Zeroizing::new(String::new()),
-            |value| Zeroizing::new(value.clone()),
-        );
-        field_row(
-            placeholder,
-            Box::new(
-                TextInput::local()
-                    .with_id(id)
-                    .with_external_buffer(Arc::clone(buffer))
-                    .with_initial_value(&initial)
-                    .with_secret(true)
-                    .with_placeholder(placeholder),
+    /// A secret held in `buffer`, which never leaves this process: whether
+    /// it is given, and a button asking for it with the password prompt.
+    pub(super) fn secret_row(
+        &self,
+        id: &str,
+        label: &str,
+        buffer: &Arc<Mutex<String>>,
+        ask: impl Into<crate::effects::SettingsEffect>,
+    ) -> Item {
+        let given = buffer.lock().is_ok_and(|held| !held.is_empty());
+        let button = self.cx.bind_invocation(
+            Button::new(
+                id,
+                &t(if given {
+                    "net-secret-change"
+                } else {
+                    "net-secret-enter"
+                }),
             ),
-        )
+            ask,
+        );
+        row(Box::new(
+            ListRow::new(format!("{id}.row"), label.to_owned())
+                .value(t(if given {
+                    "net-secret-given"
+                } else {
+                    "net-secret-none"
+                }))
+                .trailing(Box::new(button)),
+        ))
     }
 
     /// A text field over `state`.
@@ -653,10 +627,6 @@ impl NetworkModel {
     /// The hotspot's page: its switch, name, password and band, the QR
     /// code that shares it and (while it runs) the devices on it.
     fn hotspot_card(&self) -> SettingsSection {
-        let hotspot_secret = self.hotspot_password.lock().map_or_else(
-            |_| Zeroizing::new(String::new()),
-            |value| Zeroizing::new(value.clone()),
-        );
         let mut hotspot_rows: Vec<Item> = vec![
             self.hotspot_status_row(),
             field_row(
@@ -667,16 +637,11 @@ impl NetworkModel {
                         .with_placeholder(t("net-hotspot-name")),
                 ),
             ),
-            field_row(
+            self.secret_row(
+                "network.hotspot.password",
                 &t("net-hotspot-password"),
-                Box::new(
-                    TextInput::local()
-                        .with_id("network.hotspot.password")
-                        .with_external_buffer(Arc::clone(&self.hotspot_password))
-                        .with_initial_value(&hotspot_secret)
-                        .with_secret(true)
-                        .with_placeholder(t("net-hotspot-password")),
-                ),
+                &self.hotspot_password,
+                NetworkEffect::AskHotspotPassword,
             ),
             setting_row(
                 &t("net-band"),
@@ -883,11 +848,6 @@ impl NetworkModel {
                 &t("net-choose-ca"),
                 NetworkEffect::ChooseCaCertificate,
             ),
-            Self::secret_field(
-                &form.password,
-                "network.enterprise.password",
-                &t("net-password"),
-            ),
             self.button_row(
                 "settings.network.enterprise.connect",
                 &t("net-save-connect"),
@@ -905,33 +865,5 @@ impl NetworkModel {
                 },
             ),
         ]
-    }
-
-    /// Open the password prompt the model asks for, once each time it asks.
-    pub(super) fn open_rows(&self) {
-        let mut shown = self.prompt_shown.borrow_mut();
-        if *shown != self.expanded {
-            match &self.expanded {
-                Some(ssid) => self.prompts.open(ssid),
-                None => {
-                    if let Some(old) = shown.as_deref() {
-                        self.prompts.close(old);
-                    }
-                }
-            }
-            shown.clone_from(&self.expanded);
-        }
-    }
-
-    /// Follow what the person closed in place: closing a network's password
-    /// prompt cancels joining it.
-    pub(super) fn follow_rows(&mut self) {
-        if let Some(ssid) = self.expanded.clone()
-            && self.prompt_shown.borrow().as_deref() == Some(ssid.as_str())
-            && self.prompts.open_key().as_deref() != Some(ssid.as_str())
-        {
-            *self.prompt_shown.borrow_mut() = None;
-            self.set_expanded(None);
-        }
     }
 }

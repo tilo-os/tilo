@@ -101,6 +101,10 @@ pub enum VpnEffect {
     /// Pick a `WireGuard` or `OpenVPN` file and set it up.
     #[effect(attended, label = "Import from file")]
     ImportVpnFile,
+    /// Ask for the private key of a new `WireGuard` tunnel with the password
+    /// prompt.
+    #[effect(view, label = "Private key")]
+    AskWireguardPrivateKey,
     /// Make a key pair for a new `WireGuard` tunnel: the public key is the
     /// one to give the server.
     #[effect(label = "Generate keys")]
@@ -431,6 +435,18 @@ fn kind_shown(kind: &str, plugin: Option<&str>) -> String {
 )]
 fn whole(value: f64) -> u32 {
     value.clamp(0.0, 65_535.0).round() as u32
+}
+
+impl VpnState {
+    /// Where a new `WireGuard` tunnel's private key is kept.
+    pub(super) fn wireguard_private_key(&self) -> Arc<Mutex<String>> {
+        Arc::clone(&self.wireguard.private_key)
+    }
+
+    /// The public key of the private key given for a new tunnel.
+    pub(super) fn set_wireguard_public_key(&mut self, public: String) {
+        self.wireguard.public_key = Some(public);
+    }
 }
 
 impl NetworkModel {
@@ -903,6 +919,10 @@ impl NetworkModel {
                 }
                 Ok(Begun::Done)
             }
+            VpnEffect::AskWireguardPrivateKey => {
+                self.ask_private_key();
+                Ok(Begun::Done)
+            }
             VpnEffect::SetDeviceVpn { device, on } => self.route_through_device(&device, on),
             VpnEffect::SetDeviceExit { on } => self.share_device(on),
             VpnEffect::StopDeviceExit { device } => self.stop_exit_user(&device),
@@ -1297,10 +1317,11 @@ impl NetworkModel {
             tunnel.push(value_row(&t("net-vpn-public-key"), public));
         }
         tunnel.extend([
-            Self::secret_field(
-                &form.private_key,
+            self.secret_row(
                 "network.vpn.wireguard.private",
                 &t("net-vpn-private-key"),
+                &form.private_key,
+                VpnEffect::AskWireguardPrivateKey,
             ),
             Self::text_field(
                 &form.address,

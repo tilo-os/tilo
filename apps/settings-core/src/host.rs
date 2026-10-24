@@ -101,6 +101,8 @@ pub struct PaneCx {
     radios: crate::radios::Radios,
     /// The pages the panes drilled into, shared with the window.
     pages: crate::pages::PanePages,
+    /// The password prompt the window shows for the panes.
+    secrets: crate::secrets::SecretAsks,
     pub provider_admin: ui::models::ProviderAdministration,
     /// The person's accounts with the services the room is connected to,
     /// when the host lent them.
@@ -156,6 +158,7 @@ impl PaneCx {
             scene: None,
             radios: crate::radios::Radios::unread(),
             pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
             provider_admin: ui::models::ProviderAdministration::default(),
             linked: ui::linked_accounts::LinkedAccounts::default(),
         }
@@ -173,6 +176,12 @@ impl PaneCx {
     #[must_use]
     pub fn pages(&self) -> &crate::pages::PanePages {
         &self.pages
+    }
+
+    /// The password prompt the window shows ([`crate::secrets`]).
+    #[must_use]
+    pub fn secrets(&self) -> &crate::secrets::SecretAsks {
+        &self.secrets
     }
 
     /// This pane reaching `linked` for the person's linked accounts.
@@ -230,6 +239,7 @@ impl PaneCx {
             linked,
             radios: crate::radios::Radios::unread(),
             pages: crate::pages::PanePages::new(),
+            secrets: crate::secrets::SecretAsks::new(),
         };
         if attached.reaches_devices() {
             attached.radios = crate::radios::Radios::of_device();
