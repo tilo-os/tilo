@@ -62,6 +62,17 @@ impl FakeDiscord {
         });
     }
 
+    /// `account` mutes or unmutes in Discord.
+    fn mute(&self, account: &str, muted: bool) {
+        self.calls.send_modify(|report| {
+            for person in report.calls.iter_mut().flat_map(|call| &mut call.people) {
+                if person.account == account {
+                    person.muted = muted;
+                }
+            }
+        });
+    }
+
     fn sent(&self) -> Vec<(String, Vec<u8>)> {
         self.sent.lock().unwrap().clone()
     }
@@ -397,7 +408,7 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
     let bo = Member::admitted(&rooms, &cert, &room, 50).await;
     // Ada shows in the room's Chat as Ada: Discord is told that name.
     let catalogue = AppCatalogue::native();
-    let ada_id = hex::encode(ada.user_public_key);
+    let ada_person = hex::encode(ada.user_public_key);
     rooms
         .author_application(
             &room,
@@ -408,7 +419,7 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
             |doc| {
                 chat::demo::apply_as(
                     doc,
-                    &ada_id,
+                    &ada_person,
                     chat::Chat::INTRODUCE.with(chat::record::chat::Introduce {
                         name: "Ada".into(),
                         initials: "A".into(),
@@ -559,6 +570,29 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
         !discord.sent().iter().any(|(_, opus)| *opus == grace_says),
         "nothing Discord said goes back to it"
     );
+
+    // Grace mutes herself in Discord: everyone in the call sees her muted,
+    // and unmuted again when she unmutes.
+    let grace_shows_muted = |muted: bool| {
+        let (rooms, room, ada, voice) = (&rooms, &room, &ada, &voice);
+        async move {
+            in_call(rooms, room, ada, voice)
+                .await
+                .iter()
+                .any(|participant| {
+                    participant
+                        .bridged
+                        .as_ref()
+                        .is_some_and(|bridged| bridged.account.as_deref() == Some("200"))
+                        && participant.showing.muted == muted
+                })
+                .then_some(())
+        }
+    };
+    discord.mute("200", true);
+    until("Grace shows muted", || grace_shows_muted(true)).await;
+    discord.mute("200", false);
+    until("Grace shows unmuted", || grace_shows_muted(false)).await;
 
     // Grace leaves Discord: Ada keeps the bridge in; once she leaves too,
     // the bridge leaves both sides.

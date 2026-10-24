@@ -409,6 +409,7 @@ fn guest(account: &str, name: &str) -> Guest {
         avatar: Some("ab".repeat(32)),
         service: "discord".into(),
         linked: None,
+        muted: false,
     }
 }
 
@@ -427,6 +428,7 @@ fn a_bridged_call_names_its_guests_and_bridges_apart_from_its_people() {
             guest("80351110224678912", "Dana"),
             Guest {
                 linked: Some(person(1)),
+                muted: true,
                 avatar: None,
                 ..guest("90351110224678912", "Ben")
             },

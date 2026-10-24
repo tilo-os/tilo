@@ -2444,6 +2444,7 @@ fn a_bridged_calls_guests_get_their_own_tiles_and_volume() {
             avatar: None,
             service: "discord".into(),
             linked: None,
+            muted: false,
         }],
         bridges: vec!["discord".into()],
         ..Default::default()

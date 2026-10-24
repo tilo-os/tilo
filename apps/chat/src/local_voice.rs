@@ -922,7 +922,12 @@ impl crate::app::ChatApp {
                 // A person's devices are one person; the service sorted them.
                 members.dedup_by(|a, b| a.user == b.user);
                 // The people a bridge carries in, each as themselves.
-                members.extend(roster.guests.iter().map(|guest| member(&guest.id, false)));
+                members.extend(
+                    roster
+                        .guests
+                        .iter()
+                        .map(|guest| member(&guest.id, guest.muted)),
+                );
                 self.voice_members
                     .insert(roster.channel_id.clone(), members);
             }
@@ -1963,6 +1968,7 @@ mod tests {
                     avatar: Some("ab".repeat(32)),
                     service: "discord".into(),
                     linked: None,
+                    muted: false,
                 },
                 Guest {
                     id: "discord:2".into(),
@@ -1970,6 +1976,7 @@ mod tests {
                     avatar: None,
                     service: "discord".into(),
                     linked: Some("u_milo".into()),
+                    muted: false,
                 },
             ],
             bridges: vec!["discord".into()],

@@ -3558,6 +3558,7 @@ impl ChatApp {
             avatar: avatar.map(str::to_owned),
             service: "discord".into(),
             linked: None,
+            muted: false,
         };
         if let Some(huddle) = self
             .native_voice

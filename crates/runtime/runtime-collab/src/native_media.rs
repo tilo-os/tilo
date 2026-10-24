@@ -439,6 +439,9 @@ pub struct Guest {
     /// that member, reached through `service`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked: Option<String>,
+    /// Muted on that service: everyone sees it, as a member's microphone.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub muted: bool,
 }
 
 impl Guest {

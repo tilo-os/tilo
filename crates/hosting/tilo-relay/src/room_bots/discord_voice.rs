@@ -34,7 +34,7 @@ use tilo_moq::client::{
 use tilo_moq::relay::Direction;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{
-    Bridged, CallOperation, CallSummary, HEARTBEAT, VoiceGrant, VoiceParticipant,
+    Bridged, CallOperation, CallSummary, HEARTBEAT, Showing, VoiceGrant, VoiceParticipant,
 };
 use tilo_user_identity::DeviceCert;
 use tokio::sync::{broadcast, mpsc, watch};
@@ -200,6 +200,9 @@ struct Seat {
     /// joined.
     started: Instant,
     next_timestamp: u64,
+    /// Whether the person is muted on the other side, as everyone in the
+    /// call is shown.
+    muted: bool,
 }
 
 impl Seat {
@@ -216,6 +219,7 @@ impl Seat {
             failures: 0,
             started: Instant::now(),
             next_timestamp: 0,
+            muted: false,
         }
     }
 
@@ -874,7 +878,37 @@ impl<C: CallLane> VoiceBridge<C> {
                     }
                 },
             }
+            if let Some(seat) = self
+                .carried
+                .as_mut()
+                .and_then(|carried| carried.guests.get_mut(&person.account))
+            {
+                seat.muted = person.muted;
+            }
+            self.show(call, &person.account);
         }
+    }
+
+    /// Show everyone in the call whether the guest `account` is muted in
+    /// Discord (self-, server-muted or suppressed), as any participant
+    /// shows their microphone; the relay ignores a repeat.
+    fn show(&self, call: [u8; 32], account: &str) {
+        let Some(seat) = self
+            .carried
+            .as_ref()
+            .and_then(|carried| carried.guests.get(account))
+        else {
+            return;
+        };
+        self.rooms.voice_show_bridged(
+            &self.bot,
+            call,
+            seat.grant.participation,
+            Showing {
+                muted: seat.muted,
+                ..Showing::default()
+            },
+        );
     }
 
     /// The avatar at `url` as stored in the room: what the bridge already
@@ -964,6 +998,10 @@ impl<C: CallLane> VoiceBridge<C> {
                     };
                     if let Some(seat) = seat {
                         seat.granted(grant);
+                    }
+                    // A participation joined afresh shows nothing yet.
+                    if let Some(account) = &account {
+                        self.show(call, account);
                     }
                 }
                 Err(reason) => {
