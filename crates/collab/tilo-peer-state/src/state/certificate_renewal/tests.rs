@@ -254,7 +254,6 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
             workspace_id: 7,
             generation: 1,
             governance_messages: &messages,
-            hosts: &[],
         };
         ledger
             .membership_challenge(
@@ -280,7 +279,6 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
             workspace_id: 7,
             generation: 1,
             governance_messages: &messages,
-            hosts: &[],
         };
         ledger
             .membership_renewal(&room, renewed.device_public_key, &request, now_ns)
@@ -295,7 +293,6 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         workspace_id: 7,
         generation: 2,
         governance_messages: &messages,
-        hosts: &[],
     };
     assert_eq!(
         ledger

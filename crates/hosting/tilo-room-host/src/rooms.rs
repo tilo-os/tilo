@@ -235,9 +235,6 @@ struct GovernedRoom {
     /// what the relay retains of it from before is still to be archived,
     /// ahead of the base's publication ([`Rooms::settle`]).
     rebased: bool,
-    /// Every host of the room, each its own signed address, this host's
-    /// first ([`Rooms::refresh_hosts`]): what its join answers carry.
-    hosts: Vec<tilo_peer_state::join::TransportHint>,
     /// The session each of those hosts last opened here that this host
     /// answered ([`Rooms::answer_host`]), by the host's device.
     answered: HashMap<[u8; 32], hosts::Answer>,
@@ -343,7 +340,6 @@ impl GovernedRoom {
             unkept: false,
             keeping: false,
             rebased: false,
-            hosts: Vec::new(),
             answered: HashMap::new(),
         };
         this.persist()?;
@@ -399,7 +395,6 @@ impl GovernedRoom {
             unkept: false,
             keeping: false,
             rebased: false,
-            hosts: Vec::new(),
             answered: HashMap::new(),
         })
     }
@@ -929,8 +924,6 @@ impl Rooms {
         for room in rooms {
             let mut room = room.lock().await;
             this.bind(&room).await?;
-            this.refresh_hosts(&mut room)
-                .map_err(|error| error.to_string())?;
             this.settle(&mut room).await?;
             this.recall(&mut room).await?;
             // What the relay's log revoked while the room was closed.
@@ -986,10 +979,7 @@ impl Rooms {
                 SystemTime::now(),
             )?,
         };
-        let mut room = room;
         self.bind(&room).await?;
-        self.refresh_hosts(&mut room)
-            .map_err(|error| error.to_string())?;
         let summary = room.summary();
         let room = Arc::new(AsyncMutex::new(room));
         self.inner
