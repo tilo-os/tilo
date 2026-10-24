@@ -660,6 +660,8 @@ file-explorer-import-mounted = Created independent editable copies in { $folder 
 ## Notices
 files-notice-undo = Undo
 files-notice-open-with = Open With…
+files-notice-try-again = Try again
+files-notice-open-history = Open Version history
 files-menu-undo = Undo
 files-open-failed = Couldn’t open “{ $name }”
 files-open-unavailable = Files can’t open documents in this window.

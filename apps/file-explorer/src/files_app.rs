@@ -887,6 +887,8 @@ pub struct FileExplorerWidget {
     share_pending_path: Option<PathBuf>,
     /// Admission of a received bearer link, run on the app runtime.
     received_share: ui::LatestRequest<Result<fs_protocol::RecipientSubscriptionStatusV1, String>>,
+    /// The shared-file link last handed to the received-file service.
+    received_share_link: Option<String>,
     /// Host-projected names keyed by certified human roots. Labels affect
     /// presentation only; every command and request continues to carry the
     /// root key.
@@ -1308,6 +1310,14 @@ impl FileExplorerWidget {
                     self.selection.select_only(i);
                     self.retain_shown_selection();
                     self.open_app_chooser();
+                }
+            }
+            NoticeAction::ReceiveAgain(uri) => self.admit_received_share(uri),
+            NoticeAction::OpenHistory(path) => {
+                if let Some(i) = self.displayed_entries().iter().position(|e| e.path == path) {
+                    self.selection.select_only(i);
+                    self.retain_shown_selection();
+                    self.apply_command(FileCommand::ShowHistory);
                 }
             }
         }
@@ -1934,6 +1944,7 @@ impl FileExplorerWidget {
             share_result: ui::LatestRequest::new(),
             share_pending_path: None,
             received_share: ui::LatestRequest::new(),
+            received_share_link: None,
             trusted_humans,
             framework_history: ui::history_mode::checked_files::FileHistorySource::default(),
             framework_history_binding: None,
@@ -8689,6 +8700,7 @@ impl FileExplorerWidget {
     /// runs on the app runtime; when it finishes, Files opens the received
     /// mount or reports why it could not.
     pub fn admit_received_share(&mut self, uri: String) {
+        self.received_share_link = Some(uri.clone());
         if !self
             .received_share
             .spawn(crate::received_shares::admit_link(uri))
@@ -8714,7 +8726,17 @@ impl FileExplorerWidget {
                     self.set_external_status(t("files-received-admitted"));
                 }
             }
-            Err(error) => self.set_external_status(error),
+            Err(error) => {
+                // Said with Try again, which hands the service the link again.
+                let again = self
+                    .received_share_link
+                    .clone()
+                    .map(NoticeAction::ReceiveAgain);
+                self.status = None;
+                self.notice
+                    .show(error, "", ui::widget::toast::ToastKind::Error, again);
+                self.structure_dirty = true;
+            }
         }
         true
     }
@@ -8881,8 +8903,13 @@ impl FileExplorerWidget {
                 }
             }
             Err(error) => {
+                // Said with the file's Version history, where the change can
+                // be made again.
                 self.history_pending_success = None;
-                self.status = Some(error);
+                self.status = None;
+                let action = path.map(NoticeAction::OpenHistory);
+                self.notice
+                    .show(error, "", ui::widget::toast::ToastKind::Error, action);
             }
         }
         self.close_collab_panel();
@@ -9952,6 +9979,7 @@ impl Widget for FileExplorerWidget {
             | self.open_read_members();
         self.structure_dirty |= notice_expired | counted;
         self.poll_share_result()
+            | self.poll_history_result()
             | received
             | notice_expired
             | transfers
@@ -10657,6 +10685,10 @@ mod open_with_recent;
 #[cfg(test)]
 #[path = "files_app/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "files_app/notice_action_tests.rs"]
+mod notice_action_tests;
 
 /// What the palette, agents and scripts reach of a Files window, for the
 /// tests that drive the widget without a framework host: the resource's
