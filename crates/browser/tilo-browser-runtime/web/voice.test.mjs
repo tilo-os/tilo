@@ -24,10 +24,12 @@ function grantFor({participation = ME, token = '01', publish = true, others = [B
 
 function fixture() {
   const sent = [];
+  const shows = [];
   let listener;
   const signalling = {
     join: call => sent.push(['join', call]),
     leave: () => sent.push(['leave']),
+    show: (camera, screen, muted) => shows.push({camera, screen, muted}),
     onEvent(next) { listener = next; return () => { listener = undefined; }; },
   };
   const audio = {started: 0, played: [], removed: [], mutes: [], stopped: 0};
@@ -74,7 +76,7 @@ function fixture() {
   const environment = new EventTarget();
   const call = createVoiceCall({signalling, audio, transport, environment, clock});
   const event = value => listener?.(value);
-  return {sent, audio, carriers, transport, timers, clock, environment, call, event};
+  return {sent, shows, audio, carriers, transport, timers, clock, environment, call, event};
 }
 
 /** Run the grant deadline's looks on a page that runs, each one look
@@ -270,6 +272,7 @@ test('peer.voice lists, governs and signals through the wasm peer', async () => 
     voiceCall: (room, operation, request) => calls.push(['call', room, JSON.parse(operation), request]),
     voiceJoin: (room, call) => calls.push(['join', room, call]),
     voiceLeave: room => calls.push(['leave', room]),
+    voiceShow: (room, camera, screen, muted) => calls.push(['show', room, camera, screen, muted]),
   };
   let signalling;
   const voice = createPeerVoice({
@@ -292,10 +295,12 @@ test('peer.voice lists, governs and signals through the wasm peer', async () => 
   const events = [];
   signalling.onEvent(event => events.push(event.kind));
   signalling.join(CALL);
+  signalling.show(true, false, true);
+  assert.deepEqual(calls.at(-1), ['show', 'room-1', true, false, true]);
   signalling.leave();
   voice.pump(JSON.stringify([{kind: 'granted', room: 'room-1', grant: grantFor()}, {kind: 'ended', room: 'room-1', call: CALL, reason: 'x'}]));
   assert.deepEqual(events, ['granted', 'ended']);
-  assert.deepEqual(calls.slice(-2), [['join', 'room-1', CALL], ['leave', 'room-1']]);
+  assert.deepEqual(calls.slice(-3), [['join', 'room-1', CALL], ['show', 'room-1', true, false, true], ['leave', 'room-1']]);
   voice.dispose();
 });
 
@@ -409,6 +414,30 @@ test('a microphone refused on reconnect keeps the call, muted, and says why', as
   assert.equal(f.call.state.micIssue, 'permission_denied');
   assert.equal(f.call.stats().captureActive, false);
   assert.notDeepEqual(f.sent.at(-1), ['leave']);
+  f.call.dispose();
+});
+
+test('the host hears whenever this person is muted: on join, muting, a lost microphone and a grant that may not publish', async () => {
+  const f = fixture();
+  f.call.join(CALL, {muted: true}); await drain();
+  assert.deepEqual(f.shows, [{camera: false, screen: false, muted: true}], 'a muted joiner says so before its grant');
+  const others = {...grantFor(), participants: grantFor().participants.map(p => (p.user === BOB ? {...p, muted: true} : p))};
+  f.event({kind: 'granted', grant: others}); await drain();
+  assert.deepEqual(f.call.state.participants.map(p => [p.user, p.muted]), [[ME, false], [BOB, true]], 'each participant carries whether it is muted');
+  assert.equal(f.shows.length, 1, 'a grant that changes nothing says nothing');
+  await f.call.setMuted(false);
+  assert.deepEqual(f.shows.at(-1), {camera: false, screen: false, muted: false});
+  f.audio.onCaptureLost(new DOMException('Requested device not found', 'NotFoundError'));
+  await drain();
+  assert.deepEqual(f.shows.at(-1), {camera: false, screen: false, muted: true}, 'a lost microphone mutes for everyone');
+  await f.call.setMuted(false);
+  assert.equal(f.shows.at(-1).muted, false);
+  f.event({kind: 'granted', grant: grantFor({publish: false, token: '02'})}); await drain();
+  assert.equal(f.shows.at(-1).muted, true, 'a grant that may not publish mutes for everyone');
+  const told = f.shows.length;
+  f.call.leave();
+  await f.call.setMuted(false);
+  assert.equal(f.shows.length, told, 'out of the call, nothing is said');
   f.call.dispose();
 });
 

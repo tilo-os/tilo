@@ -116,7 +116,8 @@ struct Watcher {
 }
 
 impl Participation {
-    /// What it shows that the others see: nothing while it may not publish.
+    /// What it shows that the others see: nothing, and muted, while it may
+    /// not publish.
     const fn shown(&self) -> Showing {
         if self.directions.publish {
             self.showing
@@ -124,6 +125,7 @@ impl Participation {
             Showing {
                 camera: false,
                 screen: false,
+                muted: true,
             }
         }
     }

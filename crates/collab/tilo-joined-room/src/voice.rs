@@ -135,7 +135,13 @@ impl Participation {
             getrandom::fill(&mut request).map_err(|error| error.to_string())?;
             Phase::Starting(request)
         };
-        let participation = Self::joining(owner, room, workspace, device, phase, call);
+        // A call starts muted: the microphone opens only when the person
+        // unmutes, and everyone sees it muted until then.
+        let muted = Showing {
+            muted: true,
+            ..Showing::default()
+        };
+        let participation = Self::joining(owner, room, workspace, device, phase, call, muted);
         match (phase, call) {
             (Phase::Starting(request), _) => session.voice_call(
                 request,
@@ -174,15 +180,23 @@ impl Participation {
             return Err("the session belongs to another room".into());
         }
         let call = tilo_relay_protocol::voice::windows_call(&room.to_string());
-        let participation =
-            Self::joining(owner, room, workspace, device, Phase::Joining, Some(call));
+        let participation = Self::joining(
+            owner,
+            room,
+            workspace,
+            device,
+            Phase::Joining,
+            Some(call),
+            Showing::default(),
+        );
         session
             .voice_join(call, None)
             .map_err(|_| "the room's relay session is gone")?;
         Ok(participation)
     }
 
-    /// A participation in `phase`, fenced by its room's custody.
+    /// A participation in `phase` showing `showing`, fenced by its room's
+    /// custody.
     fn joining(
         owner: NativeWorkspaceOwner,
         room: RoomId,
@@ -190,6 +204,7 @@ impl Participation {
         device: [u8; 32],
         phase: Phase,
         call: Option<[u8; 32]>,
+        showing: Showing,
     ) -> Arc<Self> {
         let participation = Arc::new(Self {
             owner,
@@ -208,7 +223,7 @@ impl Participation {
                 refused: None,
                 carrier: None,
                 generation: 0,
-                showing: Showing::default(),
+                showing,
             }),
             changed: tokio::sync::Notify::new(),
             stops: Mutex::new(Stops::default()),
@@ -361,7 +376,7 @@ impl Participation {
     }
 
     /// Show `showing` besides this participation's voice from now on (its
-    /// camera, a shared screen), and tell the governor over `session` when
+    /// camera, a shared screen, whether it is muted), and tell the governor over `session` when
     /// granted; without a session the next heartbeat or rejoin tells it.
     pub fn show(
         &self,

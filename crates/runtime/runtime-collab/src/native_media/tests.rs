@@ -333,18 +333,33 @@ fn a_pictures_answer_carries_whole_objects_in_base64_and_nothing_shows_outside_a
 }
 
 #[test]
-fn a_roster_names_cameras_and_screens_only_of_its_people() {
+fn a_roster_names_cameras_screens_and_the_muted_only_of_its_people() {
     let mut roster = Roster {
         channel_id: "voice".into(),
         people: vec![person(1), person(2)],
         cameras: vec![person(2)],
         screens: vec![person(1)],
+        muted: vec![person(1), person(2)],
     };
     assert!(roster.valid());
     roster.cameras = vec![person(3)];
     assert!(!roster.valid(), "someone not in the call shows no camera");
     roster.cameras = vec![person(2), person(1)];
     assert!(!roster.valid(), "sorted");
+    roster.cameras.clear();
+    roster.muted = vec![person(3)];
+    assert!(
+        !roster.valid(),
+        "someone not in the call is not muted in it"
+    );
+    roster.muted = vec![person(2), person(2)];
+    assert!(!roster.valid(), "distinct");
+    roster.muted.clear();
+    let json = serde_json::to_string(&roster).unwrap();
+    assert!(
+        !json.contains("muted"),
+        "written only when someone is muted"
+    );
 }
 
 #[test]

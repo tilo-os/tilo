@@ -1668,6 +1668,7 @@ impl ChatApp {
                         people: huddle,
                         cameras: cameras.clone(),
                         screens: screens.clone(),
+                        muted: Vec::new(),
                     },
                     ui::native_media::Roster {
                         channel_id: "c_standup".into(),
