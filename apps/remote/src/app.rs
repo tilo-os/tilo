@@ -968,17 +968,26 @@ impl RemoteApp {
         // Asked already, in this window's own dialog.
         let saved = crate::model::Remote::paths().connections;
         self.submit(Invoke::edit(&saved.remove(&crate::model::Remote::item(id))));
-        // The connection's credentials go with it.
-        if let Some(secrets) = &self.secrets {
-            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
-                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
-            }
-        }
+        self.forget_credentials(id);
         if self.selected == Some(id) {
             self.selected = None;
         }
         if matches!(self.screen, Screen::Form { editing: Some(editing) } if editing == id) {
             self.screen = Screen::List;
+        }
+    }
+
+    /// Forget the passwords and passphrase this device saved for a
+    /// connection that is gone, whichever door or device deleted it. A
+    /// capture never forgets one.
+    fn forget_credentials(&self, id: ConnectionId) {
+        if self.capture {
+            return;
+        }
+        if let Some(secrets) = &self.secrets {
+            for purpose in [SSH_PASSWORD, KEY_PASSPHRASE, VNC_PASSWORD] {
+                let _ = secrets.item(purpose, &id.to_string()).delete_blocking();
+            }
         }
     }
 
@@ -1530,6 +1539,19 @@ impl RemoteApp {
     pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Connection]) {
         if self.workspace.connections() == state {
             return;
+        }
+        // A connection deleted elsewhere (the palette, an agent, another
+        // device) takes this device's credentials with it, as deleting it
+        // here does.
+        let gone: Vec<ConnectionId> = self
+            .workspace
+            .connections()
+            .iter()
+            .filter(|old| state.iter().all(|now| now.id != old.id))
+            .map(|old| old.id)
+            .collect();
+        for id in gone {
+            self.forget_credentials(id);
         }
         self.workspace.connections = state.to_vec();
         self.forget_vanished();

@@ -368,12 +368,18 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
     {
         let mut app = hosted_sample();
         let id = sample_id(5);
-        app.invoke_confirmed(Remote::DELETE_CONNECTION.with(
-            crate::resource::remote::DeleteConnection {
+        let password = || ui::storage::secrets(RemoteShell::ID).item(SSH_PASSWORD, &id.to_string());
+        password().put_blocking(b"hunter2").unwrap();
+        let delete = || {
+            Remote::DELETE_CONNECTION.with(crate::resource::remote::DeleteConnection {
                 connection: Remote::item(id),
-            },
-        ))
-        .unwrap();
+            })
+        };
+        assert!(
+            app.invoke(delete()).is_err(),
+            "Undo cannot bring the password back, so deleting asks first"
+        );
+        app.invoke_confirmed(delete()).unwrap();
         app.settle();
         assert!(
             app.state()
@@ -384,6 +390,10 @@ fn hosted_controls_change_the_resource_and_keep_credentials_on_the_device() {
         assert!(
             find_node(&mut app, &format!("remote.connection:{id}")).is_none(),
             "a deleted connection leaves no row behind"
+        );
+        assert!(
+            password().get_blocking().unwrap().is_none(),
+            "a connection deleted through any door takes this device's password with it"
         );
     }
 
