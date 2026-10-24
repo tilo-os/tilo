@@ -14,7 +14,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, Section, SectionHeader, Segment, ToggleGroup};
 
-use crate::{Filter, Nav, Provider, ago, page, tr, trf, unanswered};
+use crate::{Filter, Nav, Provider, ago, page, tr, trf};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
@@ -52,11 +52,7 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
 fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery) -> Element {
     let read = Provider::of(cx).follow::<wire::Feed>(wire::FEED, Some(query));
     let nav = nav.clone();
-    cx.switch(&read.answer(), move |cx, answer| {
-        let Answer::Ready(feed) = answer else {
-            return unanswered(answer, "activity-history-unread")
-                .unwrap_or_else(|| page(Vec::new()));
-        };
+    Box::new(cx.arriving(&read.answer(), move |cx, feed| {
         let mut parts = vec![filters(cx, &nav, feed)];
         if feed.entries.is_empty() {
             parts.push(empty(feed));
@@ -80,7 +76,7 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery) -> Element {
             ));
         }
         page(parts)
-    })
+    }))
 }
 
 fn empty(feed: &wire::Feed) -> Element {

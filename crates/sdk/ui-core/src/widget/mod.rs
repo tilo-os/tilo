@@ -3406,7 +3406,7 @@ pub use skeleton::{Skeleton, SkeletonFace, SkeletonShape, skeleton_tone};
 pub mod arriving_rows;
 pub mod arriving_view;
 pub use arriving_rows::{ArrivingRows, RowFade};
-pub use arriving_view::{ArrivalFace, ArrivingView, Showing};
+pub use arriving_view::{ArrivalFace, ArrivingView, NamedOnce, ReservedShape, Showing};
 pub mod stepper;
 pub use stepper::{Stepper, StepperFace};
 pub mod property_list;
@@ -3416,8 +3416,8 @@ pub use property_list::{
 };
 pub mod list_row;
 pub use list_row::{
-    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowStatus, RowValue, SwipeAction,
-    badge_column_width,
+    ControlRow, ListRow, ListRowFace, RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus,
+    RowValue, SwipeAction, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{

@@ -676,6 +676,9 @@ enum Action {
     SetQuery(ui::framework::views::QuerySpec),
     /// Open the values of a filter over its chip.
     OpenFacet(String),
+    /// Ask the remote source with this id again for the open query, after
+    /// it could not answer.
+    RetryRemote(String),
     /// Close the search, back to where it began.
     CloseSearch,
 }
@@ -2282,6 +2285,13 @@ impl BooksApp {
 
     // --- Action dispatch (event side — has the document) --------------------
 
+    /// Ask a remote source that failed again.
+    fn retry_remote(&mut self, source: &str) {
+        if self.query.engine.retry(source) {
+            self.dirty = true;
+        }
+    }
+
     fn dispatch(&mut self, action: Action, doc: &mut ui::widget::Edits<'_>) {
         match action {
             Action::OpenBook(i) if i >= self.library.len() => {
@@ -2299,6 +2309,7 @@ impl BooksApp {
             Action::GetBook(id) => self.get_from_store(id),
             Action::SetQuery(query) => self.on_set_query(&query),
             Action::OpenFacet(key) => self.open_facet(&key),
+            Action::RetryRemote(source) => self.retry_remote(&source),
             Action::CloseSearch => self.close_query(),
             Action::Back => self.on_back(),
             Action::NextPage => self.on_next_page(),
@@ -4169,6 +4180,7 @@ impl BooksApp {
             Action::BeginRenameFont(id) => format!("settings.font.rename:{id}"),
             Action::OpenHit(anchor) => format!("search.open:{anchor}"),
             Action::GetBook(id) => format!("search.get:{id}"),
+            Action::RetryRemote(source) => format!("search.retry:{}", ui::a11y::hash_key(source)),
             Action::CloseSearch => "search.back".into(),
             Action::DismissOverlay
             | Action::Swallow
@@ -4297,6 +4309,7 @@ impl BooksApp {
                 .query
                 .label_of(&format!("gutenberg:{id}"))
                 .map_or_else(|| "Get book".into(), str::to_owned),
+            Action::RetryRemote(_) => ui::i18n::I18nManager::lookup_plain("arriving-retry"),
             Action::CloseSearch => "Back".into(),
             Action::DismissOverlay
             | Action::Swallow

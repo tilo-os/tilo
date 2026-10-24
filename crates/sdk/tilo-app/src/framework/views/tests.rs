@@ -484,6 +484,22 @@ fn an_unreachable_source_says_so_in_its_section() {
         Some(&RemoteError("No connection".into()))
     );
     assert!(!engine.results().pending());
+
+    // Asked again, it waits again and answers.
+    *source.fail.lock().unwrap() = None;
+    source.answer(
+        "aurora",
+        vec![vec![song("r1", "Cure For Me", "Aurora", false)]],
+    );
+    assert!(!engine.retry("elsewhere"), "only a source that failed");
+    assert!(engine.retry("catalogue"));
+    assert!(engine.results().remote[0].is_waiting());
+    pumped.advance(THROTTLE);
+    engine.poll();
+    pumped.run_pending();
+    engine.poll();
+    assert!(engine.results().remote[0].is_answered());
+    assert_eq!(remote_ids(engine.results()), ["r1"]);
 }
 
 #[test]

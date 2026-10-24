@@ -10,7 +10,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, ObjectHeader, Property, PropertyList, Section};
 
-use crate::{Filter, Nav, Provider, tr, unanswered};
+use crate::{Filter, Nav, Provider, tr};
 
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
     let nav = nav.clone();
@@ -31,11 +31,9 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> Element {
             };
             let read = Provider::of(cx).follow::<wire::Detail>(wire::DETAIL, Some(&query));
             let (nav, range) = (nav.clone(), range.clone());
-            cx.switch(&read.answer(), move |cx, answer| match answer {
-                Answer::Ready(detail) => content(cx, &nav, &range, detail),
-                unread => unanswered(unread, "activity-detail-unread")
-                    .unwrap_or_else(|| crate::page(Vec::new())),
-            })
+            Box::new(cx.arriving(&read.answer(), move |cx, detail| {
+                content(cx, &nav, &range, detail)
+            }))
         })
     })
 }

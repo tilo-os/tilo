@@ -11,7 +11,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{ListRow, Section};
 
-use crate::{Filter, Nav, Provider, ago, page, tr, trf, unanswered};
+use crate::{Filter, Nav, Provider, ago, page, tr, trf};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
@@ -22,7 +22,7 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
     let mark = Button::new("activity-mark-viewed", "activity-mark-viewed")
         .with_icon(Icon::Check)
         .on_view(move || {
-            let Answer::Ready(summary) = marked.get() else {
+            let Arrival::Ready(summary) = marked.get() else {
                 return;
             };
             provider.ask(
@@ -38,13 +38,8 @@ pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
             );
         });
     let nav = nav.clone();
-    let content = cx.switch(&answer, move |cx, answer| match answer {
-        Answer::Ready(summary) => page(parts(cx, &nav, summary)),
-        unread => {
-            unanswered(unread, "activity-whats-new-unread").unwrap_or_else(|| page(Vec::new()))
-        }
-    });
-    (content, vec![Box::new(mark)])
+    let content = cx.arriving(&answer, move |cx, summary| page(parts(cx, &nav, summary)));
+    (Box::new(content), vec![Box::new(mark)])
 }
 
 fn parts(cx: &ViewCx<Filter>, nav: &Nav, summary: &wire::Summary) -> Vec<Element> {

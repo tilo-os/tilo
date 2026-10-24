@@ -1528,7 +1528,11 @@ fn content_blocks() -> Vec<Block> {
                 Column::new()
                     .with_no_padding()
                     .with_gap(16.0)
-                    .push(Box::new(Skeleton::row()))
+                    .push(Box::new(Skeleton::row(
+                        tilo_ui::widget::RowShape::TITLE
+                            .led_by(tilo_ui::widget::RowLeadingShape::Avatar)
+                            .with_secondary(1),
+                    )))
                     .push(Box::new(Skeleton::text(3)))
                     .push(Box::new(Spinner::new())),
             )

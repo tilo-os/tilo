@@ -4,9 +4,6 @@ activity-place-whats-new = What's new
 activity-place-history = History
 activity-place-replay = Replay
 
-activity-reading = Reading the workspace's history
-activity-denied = You can't read this workspace's history
-activity-unreadable = The history couldn't be read
 
 activity-mark-viewed = Mark as viewed
 activity-title-catch-up = While you were away

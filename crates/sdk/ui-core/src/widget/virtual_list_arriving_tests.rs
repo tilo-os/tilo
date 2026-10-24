@@ -95,7 +95,11 @@ fn a_pending_row_keeps_its_slot_and_the_list_paints_its_placeholder() {
     let skeleton = t0 + GRACE;
     assert_eq!(
         list.arrivals
-            .face(&0, SkeletonShape::Row, skeleton)
+            .face(
+                &0,
+                SkeletonShape::Row(crate::widget::RowShape::TITLE),
+                skeleton
+            )
             .map(|face| face.step()),
         Some(Step::Skeleton)
     );

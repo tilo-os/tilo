@@ -10,8 +10,10 @@ use tilo_resource::{
     Settable,
 };
 use ui_core::LocalState;
+use ui_core::arriving::Arriving;
 use ui_core::i18n::LabelKey;
 use ui_core::record::RecordSaveStatus;
+use ui_core::widget::ArrivingView;
 use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
 
 use super::controls::{ActionControl, Actions};
@@ -558,6 +560,43 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     where
         K: Clone + PartialEq + 'static,
     {
+        let scope = self.part_scope();
+        Switch::keyed(
+            key.clone(),
+            Box::new(move |value: &K, alive: &Rc<()>| part(&mut scope(alive), value)),
+        )
+    }
+
+    /// A part of the view showing data that arrives later: a resource read
+    /// that is not here yet, a query of another app, a file read on a
+    /// worker ([`Arriving`]). `part` builds what shows once the data is
+    /// there, with its own bindings, again whenever a newer answer lands;
+    /// until then, and when the read fails, the framework shows the
+    /// placeholder and the failure ([`ArrivingView`]), with every timing.
+    /// Say what the content looks like with [`ArrivingView::shaped`].
+    pub fn arriving<V, E>(
+        &self,
+        arriving: &Arriving<V, E>,
+        part: impl Fn(&mut ViewCx<R, T>, &V) -> Element + 'static,
+    ) -> ArrivingView
+    where
+        V: Clone + 'static,
+        E: std::fmt::Display + 'static,
+    {
+        let scope = Rc::new(self.part_scope());
+        let part = Rc::new(part);
+        ArrivingView::new(arriving, move |value: &V| {
+            let (scope, part, value) = (Rc::clone(&scope), Rc::clone(&part), value.clone());
+            Switch::keyed(
+                LocalState::new(()),
+                Box::new(move |(), alive: &Rc<()>| part(&mut scope(alive), &value)),
+            )
+        })
+    }
+
+    /// What builds a part of this scope with its own bindings, retired
+    /// with the part (`alive`).
+    fn part_scope(&self) -> impl Fn(&Rc<()>) -> ViewCx<R, T> + 'static {
         let env = self.env.clone();
         let focus = Rc::clone(&self.focus);
         let updaters = self.updaters.clone();
@@ -568,27 +607,21 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         let stages = self.stages.clone();
         let feeds = self.feeds.clone();
         let bindings = self.bindings.clone();
-        Switch::keyed(
-            key.clone(),
-            Box::new(move |value: &K, alive: &Rc<()>| {
-                let mut cx = ViewCx {
-                    env: env.living(alive),
-                    focus: Rc::clone(&focus),
-                    updaters: updaters.clone(),
-                    gate: gate.clone(),
-                    action_bindings: action_bindings.clone(),
-                    item: item.clone(),
-                    path: path.clone(),
-                    // Each build of the part names its controls afresh.
-                    controls: Rc::default(),
-                    forms: Forms::default(),
-                    stages: stages.clone(),
-                    feeds: feeds.clone(),
-                    bindings: bindings.clone(),
-                };
-                part(&mut cx, value)
-            }),
-        )
+        move |alive: &Rc<()>| ViewCx {
+            env: env.living(alive),
+            focus: Rc::clone(&focus),
+            updaters: updaters.clone(),
+            gate: gate.clone(),
+            action_bindings: action_bindings.clone(),
+            item: item.clone(),
+            path: path.clone(),
+            // Each build of the part names its controls afresh.
+            controls: Rc::default(),
+            forms: Forms::default(),
+            stages: stages.clone(),
+            feeds: feeds.clone(),
+            bindings: bindings.clone(),
+        }
     }
 
     /// Host a custom widget or renderer that takes part through the

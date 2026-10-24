@@ -443,7 +443,13 @@ fn a_shelf_of_grids_lays_out_at_every_width() {
             .push(Box::new(Section::titled("Picked", vec![Box::new(mixed)])))
             .push(Box::new(Section::titled(
                 "Loading",
-                vec![Box::new(MediaGrid::loading(3, MediaAspect::Wide))],
+                vec![Box::new(MediaGrid::arriving(
+                    3,
+                    MediaAspect::Wide,
+                    &crate::arriving::Source::host("Lounge"),
+                    // Asked a while ago: the skeleton shows.
+                    crate::time::now() - crate::time::Duration::from_secs(1),
+                ))],
             )));
         let page = Column::new()
             .with_intrinsic_height()

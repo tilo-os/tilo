@@ -73,8 +73,11 @@ struct Geometry {
 /// partition") reports through `on_select`.
 pub struct PartitionMap {
     entries: Vec<MapEntry>,
-    /// The drive is still being read: the map's shape stands in.
-    pending: bool,
+    /// The drive is still being read, since then: the map's shape stands
+    /// in, stepping through the framework's placeholder.
+    pending: Option<ui::arriving::ArrivalClock>,
+    /// The placeholder step the last frame painted.
+    drawn_step: Option<ui::arriving::Step>,
     selected: Option<usize>,
     on_select: Box<dyn FnMut(Option<usize>)>,
     theme: Theme,
@@ -92,7 +95,8 @@ impl PartitionMap {
     ) -> Self {
         Self {
             entries,
-            pending: false,
+            pending: None,
+            drawn_step: None,
             selected,
             on_select: Box::new(on_select),
             theme: Theme::dark(),
@@ -103,11 +107,16 @@ impl PartitionMap {
         }
     }
 
-    /// The map of a drive still being read: its chip, its bar and a line of
-    /// legend in the skeleton tone, at the sizes the map will take.
-    pub fn pending() -> Self {
+    /// The map of a drive this device began reading at `since`: its space
+    /// at the size the map will take, empty while the read is inside its
+    /// frame budget, then its chip, its bar and a line of legend in the
+    /// skeleton tone ([`ui::arriving`]).
+    pub fn pending(since: ui::time::Instant) -> Self {
         Self {
-            pending: true,
+            pending: Some(ui::arriving::ArrivalClock::new(
+                since,
+                ui::arriving::Source::Local,
+            )),
             ..Self::new(Vec::new(), None, |_| {})
         }
     }
@@ -166,7 +175,7 @@ impl PartitionMap {
             .collect();
 
         let legend_top = track.y1 + gap;
-        let legend = if self.pending {
+        let legend = if self.pending.is_some() {
             let stand_in = legend::measure(text, theme, PENDING_LEGEND);
             legend::wrap(&stand_in, 0.0, width, legend_top, theme)
         } else {
@@ -265,7 +274,7 @@ impl PartitionMap {
     }
 
     fn hit(&self, p: Point) -> Option<Hover> {
-        if self.pending {
+        if self.pending.is_some() {
             return None;
         }
         let g = &self.geometry;
@@ -336,6 +345,26 @@ impl Widget for PartitionMap {
 
     ui::rect_geometry!();
 
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        let now = ui::time::now();
+        let clock = self.pending.as_ref()?;
+        // A read inside its budget holds the frame until then; past it,
+        // the placeholder steps on at its deadlines.
+        clock
+            .holds_frame_until(now)
+            .or_else(|| clock.next_step_at(now))
+    }
+
+    fn holds_frame_until(&self, now: ui::time::Instant) -> Option<ui::time::Instant> {
+        self.pending.as_ref()?.holds_frame_until(now)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|clock| self.drawn_step != Some(clock.step(ui::motion::frame_now())))
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -350,8 +379,13 @@ impl Widget for PartitionMap {
         let at = |r: Rect| r + origin;
         let colors = &theme.tokens.colors;
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        if self.pending {
-            Self::paint_pending(&mut ctx, &geometry, origin);
+        if let Some(clock) = &self.pending {
+            use ui::arriving::Step;
+            let step = clock.step(ui::motion::frame_now());
+            if matches!(step, Step::Skeleton | Step::Named) {
+                Self::paint_pending(&mut ctx, &geometry, origin);
+            }
+            self.drawn_step = Some(step);
             return;
         }
 
@@ -425,7 +459,7 @@ impl Widget for PartitionMap {
             .with_name("Partition map")
             .with_hashed_key("disks.partition-map")
             .with_bounds(self.rect);
-        if self.pending {
+        if self.pending.is_some() {
             return Some(group.with_description("Loading"));
         }
         group.children.push(

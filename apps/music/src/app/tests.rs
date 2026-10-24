@@ -1043,7 +1043,7 @@ fn request_identities_keep_stale_responses_from_winning() {
         app.use_worker(crate::stream::StreamWorker::spawn_offline());
         app.catalogue_connected = true;
         app.ensure_home();
-        assert!(app.home_requested);
+        assert!(app.home_asked.is_some());
         assert!(
             app.home_is_loading(),
             "a Home request in flight reads as loading"
@@ -1078,7 +1078,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     let mut doc = AutoCommit::new();
     draw_once(&mut app, &mut doc);
     assert!(
-        !app.home_requested && app.home.is_none(),
+        app.home_asked.is_none() && app.home.is_none(),
         "opening Home asked no provider for anything"
     );
     if !super::ONLINE_CATALOGUE {
@@ -1120,7 +1120,7 @@ fn home_fetches_nothing_until_a_source_is_connected() {
     // Once the person has connected one, Home comes from it.
     app.catalogue_connected = true;
     draw_once(&mut app, &mut doc);
-    assert!(app.home_requested, "a connected source fills Home");
+    assert!(app.home_asked.is_some(), "a connected source fills Home");
 }
 
 #[test]

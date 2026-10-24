@@ -783,6 +783,8 @@ impl MusicApp {
             y = Self::remote_heading(ctx, look, body, y, &section.label);
             if let Some(clock) = section.placeholder() {
                 y = Self::remote_placeholder(ctx, look, body, y, clock, now) + look.section;
+            } else if let Some(text) = remote_failure(section) {
+                y = self.remote_failed(ctx, span, y, &section.source, text) + look.section;
             } else if let Some(text) = remote_note(section) {
                 y = Self::note(ctx, look, body, y, &text) + look.section;
             }
@@ -809,7 +811,11 @@ impl MusicApp {
         clock: &ui::arriving::ArrivalClock,
         now: Instant,
     ) -> f64 {
-        let face = ui::widget::ArrivalFace::new(ui::widget::SkeletonShape::Row, clock, now);
+        let face = ui::widget::ArrivalFace::new(
+            ui::widget::SkeletonShape::Row(super::TRACK_ROW),
+            clock,
+            now,
+        );
         let width = body.width() - 2.0 * look.gutter;
         let h = face.height(ctx.text, ctx.theme, width);
         face.paint(
@@ -817,6 +823,31 @@ impl MusicApp {
             Rect::new(body.x0 + look.gutter, y, body.x1 - look.gutter, y + h),
         );
         y + h
+    }
+
+    /// A remote section that could not answer: its space turned into the
+    /// failure, with a way to ask again.
+    fn remote_failed(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        span: (f64, f64),
+        y: f64,
+        source: &str,
+        text: String,
+    ) -> f64 {
+        let retry = Action::RetryRemote(source.to_owned());
+        let key = format!("remote-failed:{source}:{text}");
+        let id = format!("music.retry.{source}");
+        self.page_part(ctx, span, y, key, move |asked| {
+            Box::new(
+                ui::widget::Banner::error(ui::i18n::I18nManager::lookup_plain("arriving-failed"))
+                    .with_message(text)
+                    .with_action(
+                        Button::new(&id, &ui::i18n::I18nManager::lookup_plain("arriving-retry"))
+                            .on_click(super::super::page_part::asking(asked, retry)),
+                    ),
+            )
+        })
     }
 
     /// A remote source's section heading: set apart from the library's
@@ -1433,17 +1464,20 @@ impl ui::widget::Queryable for MusicApp {
     }
 }
 
+/// Why a remote section could not answer, in words, once it could not.
+fn remote_failure(section: &ui::framework::views::RemoteSection) -> Option<String> {
+    let RemoteError(text) = section.failure()?;
+    Some(if text.is_empty() {
+        format!("{} can\u{2019}t be reached right now.", section.label)
+    } else {
+        text.clone()
+    })
+}
+
 /// What a remote section says in place of rows, once its answer is in and
 /// gave none: that it cannot be reached, or that it found nothing. While the
 /// answer is on the way its placeholder stands there instead.
 fn remote_note(section: &ui::framework::views::RemoteSection) -> Option<String> {
-    if let Some(RemoteError(text)) = section.failure() {
-        return Some(if text.is_empty() {
-            format!("{} can\u{2019}t be reached right now.", section.label)
-        } else {
-            text.clone()
-        });
-    }
     (section.is_answered() && section.groups.is_empty())
         .then(|| format!("No matches in {}.", section.label))
 }
