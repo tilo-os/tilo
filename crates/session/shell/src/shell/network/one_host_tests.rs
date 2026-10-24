@@ -35,13 +35,13 @@ use crate::shell::state::{
     WorkspaceTree, WorkspaceTreeHandle,
 };
 
-// `home_relay` and `live_frames` add a relay to a room's hosting members
-// and take it away again, which the network has no call for yet, and
-// `channels` reads a relay's retained state through `home_relay`: they join
-// the suite with that call.
+mod channels;
+mod failover;
+mod home_relay;
 #[cfg(target_os = "linux")]
 mod idle_host;
 mod invite_join;
+mod live_frames;
 mod old_rooms;
 mod own_devices;
 mod sealed_records;
@@ -117,10 +117,6 @@ impl Person {
     }
 
     /// A certificate from this person's root for `key`.
-    #[allow(
-        dead_code,
-        reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
-    )]
     pub(crate) fn certify(
         &self,
         key: &SigningKey,
@@ -333,19 +329,7 @@ impl Device {
         // served again.
         net.open_hosted_rooms();
         let net = Arc::new(net);
-        let mut vault = [0x5A; 32];
-        vault[..2].copy_from_slice(&self.salt.to_le_bytes());
-        let channels = crate::shell::collab_broker::channel_key_access(
-            ChannelEncryptionConfig {
-                root: self.dir.join("channels"),
-                vault: channel_crypto::VaultKey::new(vault),
-                device_key: self.key(),
-            },
-            self.tree.clone(),
-            Some(Arc::clone(&net)),
-            Arc::new(Mutex::new(BrokerChannels::default())),
-        )
-        .expect("the device's channel state opens");
+        let channels = self.open_channels(&net);
         let drain = Drain::start(&net, channels.clone(), &self.wakes);
         self.channels = Some((channels, drain));
         self.net = Some(net);
@@ -383,10 +367,6 @@ impl Device {
 
     /// Hold `keys` for every channel of this device's rooms, as its channel
     /// membership would give them, so it seals and opens live frames.
-    #[allow(
-        dead_code,
-        reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
-    )]
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the drain stops before the network changes and starts again after"
@@ -395,14 +375,33 @@ impl Device {
         &mut self,
         keys: fn(collab_types::ChannelId) -> channel_crypto::ChannelContentKeys,
     ) {
-        let (channels, drain) = self.channels.take().expect("the device is online");
-        drop(drain);
+        drop(self.channels.take().expect("the device is online"));
         let net = self.net.as_mut().expect("the device is online");
         Arc::get_mut(net)
             .expect("nothing else holds the device's network")
             .live_keys = Box::new(move |_, channel| Some(keys(channel)));
-        let drain = Drain::start(net, channels.clone(), &self.wakes);
+        let net = Arc::clone(net);
+        let channels = self.open_channels(&net);
+        let drain = Drain::start(&net, channels.clone(), &self.wakes);
         self.channels = Some((channels, drain));
+    }
+
+    /// This device's channel state, opened from its directory, as its
+    /// session opens it.
+    fn open_channels(&self, net: &Arc<ShellNetwork>) -> ChannelKeyAccess {
+        let mut vault = [0x5A; 32];
+        vault[..2].copy_from_slice(&self.salt.to_le_bytes());
+        crate::shell::collab_broker::channel_key_access(
+            ChannelEncryptionConfig {
+                root: self.dir.join("channels"),
+                vault: channel_crypto::VaultKey::new(vault),
+                device_key: self.key(),
+            },
+            self.tree.clone(),
+            Some(Arc::clone(net)),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+        )
+        .expect("the device's channel state opens")
     }
 
     pub(crate) fn net(&self) -> &Arc<ShellNetwork> {
@@ -1000,10 +999,6 @@ impl Device {
     }
 
     /// Where this device's own host keeps what it retains of its rooms.
-    #[allow(
-        dead_code,
-        reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
-    )]
     pub(crate) fn host_state_root(&self) -> PathBuf {
         assert!(self.net().room_host().is_some(), "the device runs its host");
         super::embedded_host::host_state_root(&self.dir.join("state.json"))

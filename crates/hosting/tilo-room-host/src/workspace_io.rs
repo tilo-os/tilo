@@ -481,6 +481,25 @@ async fn open_runtime(
     .map_err(|error| error.to_string())
 }
 
+/// Take room `workspace_id` out of `workspaces`: its files stay on disk,
+/// whatever still holds its runtime writes them no more, and once this
+/// returns its persistence owner has finished what was queued. Opening the
+/// room again ([`get_or_initialize`]) starts from those files.
+pub(crate) async fn evict(workspaces: &WorkspaceRegistry, workspace_id: u64) {
+    let Some(workspace) = workspaces.lock().await.remove(&workspace_id) else {
+        return;
+    };
+    let persistence = {
+        let mut runtime = workspace.lock().await;
+        runtime.evicted = true;
+        runtime.persistence.take()
+    };
+    drop(workspace);
+    if let Some(persistence) = persistence {
+        persistence.close().await;
+    }
+}
+
 /// One reserved initialization per registry/ID; reservations count against the
 /// room cap. The owner retains the registry Arc (and therefore its identity)
 /// until publication, even when every initial waiter disconnects.

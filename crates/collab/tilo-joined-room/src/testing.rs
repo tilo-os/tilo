@@ -296,7 +296,6 @@ pub fn raw_fixture_at(
         records: peer.rows(),
         governance_messages: vec![postcard::to_stdvec(&messages[0]).unwrap()],
         generation: 1,
-        hosts: Vec::new(),
     };
     let intent = VerifiedNativeEnrollmentIntent::from_proof(
         verified,

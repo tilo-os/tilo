@@ -992,6 +992,30 @@ async fn ordered_checkpoint_is_marked_served_only_after_successful_enqueue() {
 }
 
 #[tokio::test]
+async fn a_change_a_peer_relay_carries_is_decided_as_its_author_and_never_as_this_hosts() {
+    let mut fixture = Fixture::new();
+    let own = [0xA5; 32];
+    let member = [0x3C; 32];
+    let carrier = fixture.recipient.device_public_key;
+    assert_eq!(
+        super::state::deciding_author(&fixture.recipient, &own, &carrier),
+        carrier,
+        "a device's session writes its own"
+    );
+    fixture.recipient.role = PeerRole::PeerRelay;
+    assert_eq!(
+        super::state::deciding_author(&fixture.recipient, &own, &member),
+        member,
+        "a peer relay's carried change is its member's"
+    );
+    assert_eq!(
+        super::state::deciding_author(&fixture.recipient, &own, &own),
+        carrier,
+        "a change claiming this host's own device is the carrier's"
+    );
+}
+
+#[tokio::test]
 async fn ordered_checkpoints_remain_live_for_peer_relays() {
     let mut fixture = Fixture::new();
     fixture.recipient.role = PeerRole::PeerRelay;
