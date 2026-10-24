@@ -81,7 +81,8 @@ pub fn action_manifest(manifest: &Value) -> Option<ActionManifest> {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Access {
     pub permissions: Vec<String>,
-    /// Its host permissions (MV2: the sites among its permissions).
+    /// Its host permissions: `host_permissions`, and in MV2 the sites among
+    /// its `permissions`.
     pub hosts: Vec<String>,
     /// Where its declared content scripts run.
     pub scriptable: Vec<String>,
@@ -108,15 +109,26 @@ pub fn access(manifest: &Value) -> Access {
             .map(str::to_owned)
             .collect()
     };
+    // Manifest V2 lists sites among its permissions and optional
+    // permissions. From V3 on Chrome grants none it finds there (it warns of
+    // each and drops it): sites are asked for in `host_permissions` and
+    // `optional_host_permissions` alone. A manifest without a version is
+    // read as V2, as the Library reads it ([`crate::extensions`]).
+    let before_v3 = manifest
+        .get("manifest_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(2)
+        < 3;
     let site = |entry: &String| entry == "<all_urls>" || entry.contains("://");
-    // Manifest V2 lists optional sites among its optional permissions too.
     let mut optional = ExtensionPermissionSet {
         permissions: Vec::new(),
         origins: strings(manifest.get("optional_host_permissions")),
     };
     for entry in strings(manifest.get("optional_permissions")) {
         if site(&entry) {
-            optional.origins.push(entry);
+            if before_v3 {
+                optional.origins.push(entry);
+            }
         } else {
             optional.permissions.push(entry);
         }
@@ -124,10 +136,11 @@ pub fn access(manifest: &Value) -> Access {
     let mut permissions = Vec::new();
     let mut hosts = strings(manifest.get("host_permissions"));
     let mut scriptable = Vec::new();
-    // Manifest V2 lists sites among its permissions.
     for entry in strings(manifest.get("permissions")) {
         if site(&entry) {
-            hosts.push(entry);
+            if before_v3 {
+                hosts.push(entry);
+            }
         } else {
             permissions.push(entry);
         }
@@ -608,6 +621,24 @@ mod tests {
                     "https://*.example.org/*".into(),
                     "http://old.example/*".into()
                 ],
+            }
+        );
+        // From V3 on, a site among its permissions or optional permissions
+        // is no host permission, as in Chrome: one asking for every site
+        // there reads, scripts and captures no tab.
+        let v3 = access(&serde_json::json!({
+            "manifest_version": 3,
+            "permissions": ["tabs", "<all_urls>", "https://old.example/*"],
+            "optional_permissions": ["bookmarks", "*://*/*"],
+            "host_permissions": ["https://*.example.com/*"],
+        }));
+        assert_eq!(v3.permissions, vec!["tabs".to_owned()]);
+        assert_eq!(v3.hosts, vec!["https://*.example.com/*".to_owned()]);
+        assert_eq!(
+            v3.optional,
+            ExtensionPermissionSet {
+                permissions: vec!["bookmarks".into()],
+                origins: Vec::new(),
             }
         );
         // Its keyboard shortcuts go to the engine as the manifest has them.
