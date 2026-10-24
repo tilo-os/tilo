@@ -67,7 +67,6 @@ use crate::compositor::backend::{
     TabletPhase, TouchEvent as TiloTouchEvent,
 };
 use crate::shell::render::icc_lut::IccLut;
-use wake::libinput_event_kind;
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
 /// deterministic and unit-testable without a seat or keyboard device.
@@ -3315,14 +3314,7 @@ impl DrmDispatchState {
     /// reason as [`Self::handle_session_event`]; this one dwarfed the rest
     /// of the constructor at ~160 lines on its own.
     fn handle_libinput_event(&mut self, event: InputEvent<LibinputInputBackend>) {
-        if let Some(kind) = libinput_event_kind(&event)
-            && let Some((wake, at)) = self.input_wake.take()
-        {
-            eprintln!(
-                "tilo compositor: DRM input: first event after wake={wake} after_ms={} kind={kind}",
-                at.elapsed().as_millis()
-            );
-        }
+        self.note_input_after_wake(&event);
         match event {
             InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => {
                 self.handle_libinput_device_event(event);
@@ -7355,7 +7347,7 @@ pub(super) mod tests {
     }
 
     /// A dispatch state with a command channel attached, plus the receiving end so a test can assert on what was sent.
-    fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
+    pub(super) fn dispatch_with_channel() -> (DrmDispatchState, Receiver<ScanoutCommand>) {
         let (tx, rx) = channel();
         let state = DrmDispatchState {
             commands: Some(tx),
@@ -7729,11 +7721,11 @@ pub(super) mod tests {
     const IGPU: u64 = 0xe201;
     /// The discrete GPU's. Card ranking puts it first whenever it has more
     /// connected outputs, so its outputs are adopted (and numbered) first.
-    const DGPU: u64 = 0xe200;
+    pub(super) const DGPU: u64 = 0xe200;
 
     /// Adopt one output the way `adopt_builds` does: the id is interned
     /// from its card-scoped key, so a replug gets its old id back.
-    fn adopt_on(
+    pub(super) fn adopt_on(
         state: &mut DrmDispatchState,
         device: u64,
         connector: u32,
@@ -9398,7 +9390,7 @@ pub(super) mod tests {
         )));
     }
 
-    fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
+    pub(super) fn edid(serial: &str) -> settings_store::hardware::MonitorIdentity {
         settings_store::hardware::MonitorIdentity {
             serial: serial.into(),
             ..settings_store::hardware::MonitorIdentity::default()
@@ -9485,39 +9477,6 @@ pub(super) mod tests {
         // displays: the output gets another attempt.
         state.reload_display_settings();
         assert!(state.link_failures.is_empty());
-    }
-
-    #[test]
-    fn a_wake_or_the_power_key_lights_an_output_that_could_not_be_lit_again() {
-        let (mut state, _rx) = dispatch_with_channel();
-        let (report_tx, report_rx) = channel();
-        state.signal_reports = Some(report_rx);
-        let panel = adopt_on(&mut state, DGPU, 43, "eDP-1", (2560, 1600), (300, 190));
-        state.connector_probes.insert(
-            DGPU,
-            vec![ConnectorSnapshot::fake(43, "eDP-1", Some(edid("A")))],
-        );
-        report_tx
-            .send(SignalReport {
-                output: panel,
-                status: OutputSignalStatus {
-                    link_failure: Some(settings_store::hardware::OutputUnavailable::LinkDown),
-                    ..OutputSignalStatus::default()
-                },
-            })
-            .expect("report");
-        assert!(state.drain_signal_reports());
-        assert!(state.live.is_empty(), "the failed panel left the desktop");
-
-        assert!(state.retry_failed_outputs("woke from sleep"));
-        assert!(
-            state.link_failures.is_empty(),
-            "the panel is no longer held off the desktop"
-        );
-        assert!(
-            !state.retry_failed_outputs("power key"),
-            "nothing is left to light"
-        );
     }
 
     // libinput device configuration, on the production plan
