@@ -240,6 +240,46 @@ pub enum ExtensionActionIcon {
     },
 }
 
+/// A row of a page's context menu, as the engine offers it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContextMenuItem {
+    /// A command, chosen by `id` ([`WebViewCommand::ContextMenuAction`]).
+    /// `checked` is `Some` for a checkbox or radio item.
+    Command {
+        id: u32,
+        label: String,
+        checked: Option<bool>,
+        enabled: bool,
+    },
+    /// A row that opens a nested menu of `items`.
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<ContextMenuItem>,
+    },
+    Separator,
+}
+
+/// A row of an extension's toolbar button menu (`chrome.contextMenus` items
+/// made for its button), chosen by `key`
+/// ([`WebViewCommand::ExtensionMenuChoice`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExtensionMenuItem {
+    Command {
+        key: String,
+        label: String,
+        /// `Some` for a checkbox or radio item.
+        checked: Option<bool>,
+        enabled: bool,
+    },
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<ExtensionMenuItem>,
+    },
+    Separator,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -463,6 +503,13 @@ pub enum WebViewCommand {
     ExtensionClick {
         id: String,
     },
+    /// The person chose the item `key` of extension `id`'s toolbar button
+    /// menu over this page: the extension hears of it
+    /// (`contextMenus.onClicked`).
+    ExtensionMenuChoice {
+        id: String,
+        key: String,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -527,6 +574,12 @@ pub enum WebViewEvent {
     ExtensionExecuteAction {
         id: String,
     },
+    /// What extension `id`'s toolbar button menu holds now; empty when it
+    /// holds nothing.
+    ExtensionMenu {
+        id: String,
+        items: Vec<ExtensionMenuItem>,
+    },
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,
@@ -546,7 +599,7 @@ pub enum WebViewEvent {
         x: f64,
         y: f64,
         link: String,
-        items: Vec<(u32, String)>,
+        items: Vec<ContextMenuItem>,
     },
     ContextMenuClosed {
         id: u32,

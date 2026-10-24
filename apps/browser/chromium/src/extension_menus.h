@@ -8,10 +8,14 @@
 // host's page menu shows the items whose contexts match where the person
 // clicked, and choosing one tells the extension (contextMenus.onClicked).
 //
+// The toolbar button's menu shows the items made for it (the "action"
+// context), which the host tells the Browser of as they change.
+//
 // As in Chrome, the items outlast the extension's worker and a restart: a
 // worker creates them once, when it is installed, so they are kept with the
 // profile.
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -30,12 +34,17 @@ struct MenuContext {
   std::string page, frame, link, src, selection, media;  // media: "image", "video", "audio" or empty
   bool editable = false;
   bool main_frame = true;
+  // False for the toolbar button's menu, which is no page's.
+  bool in_page = true;
 };
 
-// One item an extension's menu shows, flattened: Tilo's page menu has no
-// submenus, so a parent with items under it gives way to them.
+// One item an extension's menu shows: a command, a checkbox or radio item
+// with its state, a separator, or an item with a submenu of `children`.
 struct MenuOffer {
   std::string extension, key, label;
+  std::string type = "normal";  // "normal", "checkbox", "radio" or "separator"
+  bool checked = false, enabled = true;
+  std::vector<MenuOffer> children;
 };
 
 class ExtensionMenus {
@@ -44,8 +53,13 @@ class ExtensionMenus {
   static constexpr size_t kMaxItems = 1000;
   static constexpr size_t kMaxTitle = 4096;
   static constexpr size_t kMaxPatterns = 100;
+  static constexpr size_t kMaxId = 1024;
   // Chrome's longest item title in a menu, in characters.
   static constexpr size_t kMaxLabel = 75;
+  // How deep submenus go, and Chrome's limit on the items at the top of a
+  // toolbar button's menu (contextMenus.ACTION_MENU_TOP_LEVEL_LIMIT).
+  static constexpr size_t kMaxDepth = 4;
+  static constexpr size_t kMaxActionItems = 6;
 
   // Add an item; an error says why it was not.
   std::optional<std::string> Create(const std::string& extension, CefRefPtr<CefDictionaryValue> properties) {
@@ -53,6 +67,7 @@ class ExtensionMenus {
     const auto id = properties->GetValue("id");
     if (id->GetType() != VTYPE_STRING && id->GetType() != VTYPE_INT && id->GetType() != VTYPE_DOUBLE) return std::string("Invalid id");
     const std::string key = Key(id);
+    if (key.size() > kMaxId) return std::string("The id is too long");
     auto& items = items_[extension];
     if (Index(items, key)) return "Cannot create item with duplicate id " + Display(id);
     if (items.size() >= kMaxItems) return std::string("Too many menu items");
@@ -62,6 +77,7 @@ class ExtensionMenus {
     if (auto error = Apply(extension, item, properties, true)) return error;
     if (item.type != "separator" && item.title.empty()) return std::string("All menu items except for separators must have a title.");
     items.push_back(std::move(item));
+    SanitizeRadios(items);
     return std::nullopt;
   }
   std::optional<std::string> Update(const std::string& extension, CefRefPtr<CefValue> id, CefRefPtr<CefDictionaryValue> properties) {
@@ -69,8 +85,20 @@ class ExtensionMenus {
     auto index = id ? Index(items, Key(id)) : std::nullopt;
     if (!index) return "Cannot find menu item with id " + (id ? Display(id) : std::string("undefined"));
     Item item = items[*index];
-    if (auto error = Apply(extension, item, properties ? properties : CefDictionaryValue::Create(), false)) return error;
+    if (!properties) properties = CefDictionaryValue::Create();
+    if (auto error = Apply(extension, item, properties, false)) return error;
+    if (item.type != "separator" && item.title.empty()) return std::string("All menu items except for separators must have a title.");
+    // Moved under another item: it comes last there, as in Chrome.
+    const bool moved = item.parent != items[*index].parent;
     items[*index] = std::move(item);
+    size_t at = *index;
+    if (moved) {
+      std::rotate(items.begin() + static_cast<std::ptrdiff_t>(at), items.begin() + static_cast<std::ptrdiff_t>(at) + 1, items.end());
+      at = items.size() - 1;
+    }
+    // A radio item checked by an update is the one chosen in its group.
+    if (items[at].type == "radio" && items[at].checked && properties->GetType("checked") == VTYPE_BOOL) CheckRadio(items, at);
+    SanitizeRadios(items);
     return std::nullopt;
   }
   // Remove an item and everything under it.
@@ -85,16 +113,33 @@ class ExtensionMenus {
         if (!item.parent.empty() && gone.count(item.parent) && gone.insert(item.key).second) more = true;
     }
     items.erase(std::remove_if(items.begin(), items.end(), [&](const Item& item) { return gone.count(item.key) > 0; }), items.end());
+    SanitizeRadios(items);
     return std::nullopt;
   }
   void RemoveAll(const std::string& extension) { items_.erase(extension); }
 
-  // The items of `extension` that apply where the menu opened, in order.
+  // The items of `extension` that apply where the menu opened, in order,
+  // each with its submenu.
   std::vector<MenuOffer> Offers(const std::string& extension, const MenuContext& context) const {
     std::vector<MenuOffer> offers;
     auto found = items_.find(extension);
     if (found == items_.end()) return offers;
-    Collect(extension, found->second, std::string(), context, offers);
+    Collect(extension, found->second, std::string(), &context, offers, 1);
+    return offers;
+  }
+  // The items of `extension`'s toolbar button menu: at most six at its top.
+  std::vector<MenuOffer> ActionOffers(const std::string& extension) const {
+    std::vector<MenuOffer> offers;
+    auto found = items_.find(extension);
+    if (found == items_.end()) return offers;
+    Collect(extension, found->second, std::string(), nullptr, offers, 1);
+    size_t shown = 0;
+    for (size_t i = 0; i < offers.size(); ++i) {
+      if (offers[i].type == "separator" || ++shown <= kMaxActionItems) continue;
+      offers.resize(i);
+      break;
+    }
+    while (!offers.empty() && offers.back().type == "separator") offers.pop_back();
     return offers;
   }
 
@@ -106,7 +151,8 @@ class ExtensionMenus {
     auto index = Index(items, key);
     if (!index) return nullptr;
     Item& item = items[*index];
-    if (!item.enabled || !item.visible) return nullptr;
+    if (!item.enabled || !item.visible || item.type == "separator") return nullptr;
+    if (!context.in_page && !ForAction(item)) return nullptr;
     auto info = CefDictionaryValue::Create();
     info->SetValue("menuItemId", item.id->Copy());
     if (!item.parent.empty()) if (auto parent = Index(items, item.parent)) info->SetValue("parentMenuItemId", items[*parent].id->Copy());
@@ -115,22 +161,13 @@ class ExtensionMenus {
     if (!context.src.empty()) info->SetString("srcUrl", context.src);
     if (!context.page.empty()) info->SetString("pageUrl", context.page);
     if (!context.main_frame && !context.frame.empty()) info->SetString("frameUrl", context.frame);
-    if (context.main_frame) info->SetInt("frameId", 0);
+    if (context.in_page && context.main_frame) info->SetInt("frameId", 0);
     if (!context.selection.empty()) info->SetString("selectionText", context.selection);
     info->SetBool("editable", context.editable);
     if (item.type == "checkbox" || item.type == "radio") {
       info->SetBool("wasChecked", item.checked);
-      if (item.type == "checkbox") {
-        item.checked = !item.checked;
-      } else {
-        // A radio group is a run of radio items among one parent's items.
-        std::vector<size_t> siblings;
-        for (size_t i = 0; i < items.size(); ++i) if (items[i].parent == item.parent) siblings.push_back(i);
-        const size_t at = static_cast<size_t>(std::find(siblings.begin(), siblings.end(), *index) - siblings.begin());
-        for (size_t i = at; i > 0 && items[siblings[i - 1]].type == "radio"; --i) items[siblings[i - 1]].checked = false;
-        for (size_t i = at + 1; i < siblings.size() && items[siblings[i]].type == "radio"; ++i) items[siblings[i]].checked = false;
-        item.checked = true;
-      }
+      if (item.type == "checkbox") item.checked = !item.checked;
+      else CheckRadio(items, *index);
       info->SetBool("checked", item.checked);
     }
     return info;
@@ -169,6 +206,7 @@ class ExtensionMenus {
           return true;
         }), left.end());
       }
+      if (items_[name.ToString()].empty()) items_.erase(name.ToString());
     }
   }
 
@@ -235,7 +273,9 @@ class ExtensionMenus {
     if (properties->HasKey("parentId") && properties->GetType("parentId") != VTYPE_NULL) {
       const std::string parent = Key(properties->GetValue("parentId"));
       const auto& items = items_[extension];
-      if (!Index(items, parent)) return "Cannot find menu item with id " + Display(properties->GetValue("parentId"));
+      const auto parent_index = Index(items, parent);
+      if (!parent_index) return "Cannot find menu item with id " + Display(properties->GetValue("parentId"));
+      if (items[*parent_index].type != "normal") return std::string("Parent items must have type \"normal\"");
       // An item may not end up under itself.
       for (std::string at = parent; !at.empty();) {
         if (at == item.key) return std::string("Cannot set an item to be its own ancestor");
@@ -246,13 +286,41 @@ class ExtensionMenus {
     } else if (!creating && properties->GetType("parentId") == VTYPE_NULL) {
       item.parent.clear();
     }
-    // Chrome checks the first of a run of radio items when none is.
-    if (creating && item.type == "radio" && !properties->HasKey("checked")) {
-      const auto& items = items_[extension];
-      auto last = std::find_if(items.rbegin(), items.rend(), [&](const Item& other) { return other.parent == item.parent; });
-      item.checked = last == items.rend() || last->type != "radio";
-    }
+    if (item.type != "checkbox" && item.type != "radio") item.checked = false;
+    // Items under this one need it to stay a normal item.
+    if (!creating && item.type != "normal")
+      for (const auto& other : items_[extension])
+        if (other.parent == item.key) return std::string("Parent items must have type \"normal\"");
     return std::nullopt;
+  }
+
+  // The radio item at `index` is chosen: the others of its group, the run of
+  // radio items it is in among its parent's items, are not.
+  static void CheckRadio(std::vector<Item>& items, size_t index) {
+    std::vector<size_t> siblings;
+    for (size_t i = 0; i < items.size(); ++i) if (items[i].parent == items[index].parent) siblings.push_back(i);
+    const size_t at = static_cast<size_t>(std::find(siblings.begin(), siblings.end(), index) - siblings.begin());
+    for (size_t i = at; i > 0 && items[siblings[i - 1]].type == "radio"; --i) items[siblings[i - 1]].checked = false;
+    for (size_t i = at + 1; i < siblings.size() && items[siblings[i]].type == "radio"; ++i) items[siblings[i]].checked = false;
+    items[index].checked = true;
+  }
+  // Chrome's `SanitizeRadioList`: each group has exactly one item checked,
+  // the last checked one, else its first.
+  static void SanitizeRadios(std::vector<Item>& items) {
+    std::map<std::string, std::vector<size_t>> by_parent;
+    for (size_t i = 0; i < items.size(); ++i) by_parent[items[i].parent].push_back(i);
+    for (const auto& [parent, siblings] : by_parent) {
+      for (size_t start = 0; start < siblings.size();) {
+        if (items[siblings[start]].type != "radio") { ++start; continue; }
+        size_t end = start, last = siblings.size();
+        for (; end < siblings.size() && items[siblings[end]].type == "radio"; ++end) {
+          if (items[siblings[end]].checked) last = end;
+          items[siblings[end]].checked = false;
+        }
+        items[siblings[last == siblings.size() ? start : last]].checked = true;
+        start = end;
+      }
+    }
   }
   static CefRefPtr<CefDictionaryValue> Properties(const std::vector<Item>& items, const Item& item) {
     auto properties = CefDictionaryValue::Create();
@@ -281,6 +349,7 @@ class ExtensionMenus {
   // contexts it names, and "page" only where no other applies.
   static bool Applies(const Item& item, const MenuContext& context) {
     if (!item.visible) return false;
+    if (!context.in_page) return ForAction(item);
     if (!item.documents.empty()) {
       const std::string& document = !context.main_frame && !context.frame.empty() ? context.frame : context.page;
       if (!AnyMatch(item.documents, document)) return false;
@@ -294,18 +363,36 @@ class ExtensionMenus {
     if (!context.media.empty() && Has(contexts, context.media.c_str()) && (item.targets.empty() || AnyMatch(item.targets, context.src))) return true;
     return !link && !selection && !context.editable && context.media.empty() && Has(contexts, "page");
   }
+  // Chrome's `MenuItemMatchesAction`: an item made for the toolbar button.
+  static bool ForAction(const Item& item) {
+    const auto& contexts = item.contexts;
+    return item.visible && (Has(contexts, "all") || Has(contexts, "action") || Has(contexts, "browser_action") || Has(contexts, "page_action"));
+  }
   static bool AnyMatch(const std::vector<std::string>& patterns, const std::string& url) {
     for (const auto& pattern : patterns) if (MatchPattern(pattern, url)) return true;
     return false;
   }
 
-  void Collect(const std::string& extension, const std::vector<Item>& items, const std::string& parent, const MenuContext& context, std::vector<MenuOffer>& offers) const {
+  // The items under `parent` that apply, as Chrome's
+  // `RecursivelyAppendExtensionItems` lays them out: a disabled item shows
+  // greyed, a run of radio items is set apart by separators, and a normal
+  // item with items under it that apply opens a submenu of them. `context`
+  // is null for the toolbar button's menu.
+  void Collect(const std::string& extension, const std::vector<Item>& items, const std::string& parent, const MenuContext* context, std::vector<MenuOffer>& offers, size_t depth) const {
+    static const std::string none;
+    const std::string& selection = context ? context->selection : none;
+    auto separate = [&] { if (!offers.empty() && offers.back().type != "separator") offers.push_back(MenuOffer{extension, std::string(), std::string(), "separator"}); };
     for (const auto& item : items) {
-      if (item.parent != parent || item.type == "separator" || !item.enabled || !Applies(item, context)) continue;
-      const size_t before = offers.size();
-      Collect(extension, items, item.key, context, offers);
-      if (offers.size() == before) offers.push_back(MenuOffer{extension, item.key, Label(item.title, context.selection)});
+      if (item.parent != parent || !(context ? Applies(item, *context) : ForAction(item))) continue;
+      if (item.type == "separator") { separate(); continue; }
+      if ((item.type == "radio") != (!offers.empty() && offers.back().type == "radio")) {
+        if (!offers.empty()) separate();
+      }
+      MenuOffer offer{extension, item.key, Label(item.title, selection), item.type, item.checked, item.enabled};
+      if (item.type == "normal" && depth < kMaxDepth) Collect(extension, items, item.key, context, offer.children, depth + 1);
+      offers.push_back(std::move(offer));
     }
+    while (!offers.empty() && offers.back().type == "separator") offers.pop_back();
   }
   // The title as the menu shows it: `%s` stands for the selected text, and
   // a long one is cut short as Chrome cuts it.

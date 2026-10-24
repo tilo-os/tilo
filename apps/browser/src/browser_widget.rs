@@ -3082,6 +3082,7 @@ impl BrowserWidget {
                 }
                 event @ (WebViewEvent::ExtensionAction { .. }
                 | WebViewEvent::ExtensionActionReset
+                | WebViewEvent::ExtensionMenu { .. }
                 | WebViewEvent::ExtensionOpenPopup { .. }
                 | WebViewEvent::ExtensionExecuteAction { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
@@ -4927,11 +4928,7 @@ impl Widget for BrowserWidget {
         }
         if self.page_menu.menu.is_open() {
             self.page_menu.menu.handle_event(event, ctx);
-            if let Some(index) = self.page_menu.menu.take_selection() {
-                self.page_menu.choose(index, &self.engine);
-            } else if !self.page_menu.menu.is_open() {
-                self.page_menu.cancel(&self.engine);
-            }
+            self.page_menu.settle(&self.engine);
             if matches!(
                 event,
                 WindowEvent::KeyboardInput { .. }
