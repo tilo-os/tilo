@@ -2,15 +2,16 @@
 //! values only.
 //!
 //! Every argument is either a constant of this module or the text of a value
-//! [`ClientLink::check`] or [`ExitLink::check`] bounded: an IPv4/IPv6
-//! address, a canonical network, a port, an MTU, a uid. Nothing a request
-//! carries is ever an interface name, a program, a path or a rule.
+//! [`ClientLink::check`], [`ExitLink::check`] or [`ProfileBlock::check`]
+//! bounded: an IPv4/IPv6 address, a canonical network, a port, an MTU, a
+//! uid. Nothing a request carries is ever an interface name, a program, a
+//! path or a rule.
 
 use std::fmt::Write as _;
 use std::net::IpAddr;
 
 use crate::net::{CLIENT_INTERFACE, EXIT_INTERFACE, GATEWAY, TUNNEL_NETWORK};
-use crate::protocol::{ClientLink, ExitLink, Routes};
+use crate::protocol::{ClientLink, ExitLink, ProfileBlock, Routes};
 
 /// The routing table a client's tunnel routes live in.
 pub const TABLE: &str = "5270";
@@ -24,6 +25,8 @@ const PRIORITY_TUNNEL: &str = "5263";
 pub const CLIENT_TABLE: &str = "tilo_device_vpn_client";
 /// The nftables table of an exit's forwarding and masquerade.
 pub const EXIT_TABLE: &str = "tilo_device_vpn_exit";
+/// The nftables table of the block of the person's VPN profiles.
+pub const PROFILE_TABLE: &str = "tilo_device_vpn_profile";
 
 /// The private and link-local networks the kill switch leaves reachable, as
 /// the all-traffic routes leave the local network.
@@ -388,6 +391,87 @@ pub fn open_exit(link: &ExitLink, guard: bool) -> Vec<Command> {
     ]
 }
 
+/// The kinds of interface a `NetworkManager` VPN's tunnel is: `WireGuard`,
+/// TUN (`OpenVPN`, `OpenConnect`, vpnc and most plugins) and PPP (PPTP,
+/// L2TP, SSTP). Only a privileged process can make one.
+const TUNNEL_KINDS: &str = "\"tun\", \"wireguard\", \"ppp\"";
+
+/// Multicast and broadcast on the local network: discovery of printers and
+/// shares, which "the local network" includes.
+const LOCAL_MULTICAST_V4: &str = "224.0.0.0/4, 255.255.255.255";
+const LOCAL_MULTICAST_V6: &str = "ff02::/16";
+
+/// The block of the person's VPN profiles: whatever this computer sends or
+/// forwards is refused, but through a tunnel interface or an `IPsec` policy,
+/// to the profiles' servers, loopback, DHCP and neighbour discovery, and
+/// (with `allow_local`) the local network.
+fn profile_block_script(block: &ProfileBlock) -> String {
+    let mut hold = String::new();
+    let _ = writeln!(hold, "    oifname \"lo\" return");
+    let _ = writeln!(hold, "    meta oifkind {{ {TUNNEL_KINDS} }} return");
+    let _ = writeln!(hold, "    rt ipsec exists return");
+    // Address configuration: DHCP both ways (this computer as a client, or
+    // serving a hotspot), DHCPv6, and neighbour and router discovery with
+    // the multicast listener reports they depend on.
+    let _ = writeln!(hold, "    udp sport 68 udp dport 67 return");
+    let _ = writeln!(hold, "    udp sport 67 udp dport 68 return");
+    let _ = writeln!(hold, "    udp sport 546 udp dport 547 return");
+    let _ = writeln!(hold, "    udp sport 547 udp dport 546 return");
+    let _ = writeln!(
+        hold,
+        "    icmpv6 type {{ nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert, nd-redirect, mld-listener-report, mld2-listener-report }} return"
+    );
+    let (v4, v6): (Vec<IpAddr>, Vec<IpAddr>) =
+        block.servers.iter().partition(|server| server.is_ipv4());
+    if !v4.is_empty() {
+        let _ = writeln!(hold, "    ip daddr {{ {} }} return", joined(v4));
+    }
+    if !v6.is_empty() {
+        let _ = writeln!(hold, "    ip6 daddr {{ {} }} return", joined(v6));
+    }
+    if block.allow_local {
+        let _ = writeln!(
+            hold,
+            "    ip daddr {{ {LOCAL_V4}, {LOCAL_MULTICAST_V4} }} return"
+        );
+        let _ = writeln!(
+            hold,
+            "    ip6 daddr {{ {LOCAL_V6}, {LOCAL_MULTICAST_V6} }} return"
+        );
+    }
+    let _ = writeln!(hold, "    reject with icmpx admin-prohibited");
+    format!(
+        "table inet {PROFILE_TABLE}\n\
+         delete table inet {PROFILE_TABLE}\n\
+         table inet {PROFILE_TABLE} {{\n\
+         \x20 chain output {{\n\
+         \x20   type filter hook output priority filter; policy accept;\n\
+         \x20   jump hold\n\
+         \x20 }}\n\
+         \x20 chain forward {{\n\
+         \x20   type filter hook forward priority filter; policy accept;\n\
+         \x20   jump hold\n\
+         \x20 }}\n\
+         \x20 chain hold {{\n\
+         {hold}\
+         \x20 }}\n\
+         }}\n"
+    )
+}
+
+/// Put up (or replace, in one nftables transaction) the block of the
+/// person's VPN profiles.
+#[must_use]
+pub fn hold_profile_block(block: &ProfileBlock) -> Vec<Command> {
+    vec![Command::nft_script(profile_block_script(block))]
+}
+
+/// Lift the block of the person's VPN profiles.
+#[must_use]
+pub fn release_profile_block() -> Vec<Command> {
+    vec![delete_table(PROFILE_TABLE)]
+}
+
 /// Undo an exit's rules and interface. Forwarding is the caller's to put
 /// back.
 #[must_use]
@@ -577,5 +661,68 @@ mod tests {
                 .contains("iifname != ")
         );
         assert!(lines(&commands).contains(&"address add 100.100.64.1/24 dev tiloexit0".to_owned()));
+    }
+
+    #[test]
+    fn a_profile_block_lets_through_only_tunnels_servers_and_address_configuration() {
+        let block = ProfileBlock {
+            servers: vec![
+                "198.51.100.7".parse().unwrap(),
+                "2001:db8::7".parse().unwrap(),
+            ],
+            allow_local: false,
+        };
+        let commands = hold_profile_block(&block);
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].required);
+        let script = commands[0].input.clone().unwrap();
+        // Everything this computer sends or forwards, whoever sends it.
+        assert!(script.contains("type filter hook output priority filter; policy accept;"));
+        assert!(script.contains("type filter hook forward priority filter; policy accept;"));
+        assert!(!script.contains("skuid"));
+        for allowed in [
+            "oifname \"lo\" return",
+            "meta oifkind { \"tun\", \"wireguard\", \"ppp\" } return",
+            "rt ipsec exists return",
+            "udp sport 68 udp dport 67 return",
+            "udp sport 546 udp dport 547 return",
+            "nd-neighbor-solicit",
+            "ip daddr { 198.51.100.7 } return",
+            "ip6 daddr { 2001:db8::7 } return",
+        ] {
+            assert!(script.contains(allowed), "missing {allowed}\n{script}");
+        }
+        assert!(
+            !script.contains("192.168.0.0/16"),
+            "the local network is blocked"
+        );
+        assert!(
+            script
+                .trim_end()
+                .ends_with("reject with icmpx admin-prohibited\n  }\n}"),
+            "what nothing let through is refused\n{script}"
+        );
+        // Replacing a block never leaves a moment without one.
+        assert!(script.starts_with(
+            "table inet tilo_device_vpn_profile\ndelete table inet tilo_device_vpn_profile\n"
+        ));
+    }
+
+    #[test]
+    fn allowing_the_local_network_lets_it_through_and_nothing_more() {
+        let block = ProfileBlock {
+            servers: vec![],
+            allow_local: true,
+        };
+        let script = hold_profile_block(&block)[0].input.clone().unwrap();
+        assert!(script.contains("ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 224.0.0.0/4, 255.255.255.255 } return"));
+        assert!(script.contains("ip6 daddr { fe80::/10, fc00::/7, ff02::/16 } return"));
+        // No servers named, no empty set nftables would refuse.
+        assert!(!script.contains("{  }"));
+        assert_eq!(
+            release_profile_block()[0].args,
+            ["delete", "table", "inet", PROFILE_TABLE]
+        );
+        assert!(!release_profile_block()[0].required);
     }
 }
