@@ -714,12 +714,20 @@ class ExtensionTabs(unittest.TestCase):
         title = self.title(host, 1, 'framed')
         self.assertTrue(title.startswith('framed:'), title)
         framed = json.loads(title[len('framed:'):])
+        # After the frame of the same site went to a page the extension's
+        # content script does not match, a script into every frame still
+        # runs in the page and in the frame of the other site.
+        after = framed.pop('after')
+        self.assertIsInstance(after, list, after)
+        self.assertIn(['/framed', '/framed'], after)
+        self.assertIn(['/outer', '/outer'], after)
         self.assertEqual(framed, {
             'frames': {path: {'frame': True, 'injected': path, 'id': True} for path in ('/framed', '/inner', '/outer')},
             'all': [['/framed', '/framed'], ['/inner', '/inner'], ['/outer', '/outer']],
             'where': {'/inner': '/inner', '/outer': '/outer'},
             'large': '/outer:1500000',
             'missing': True,
+            'moved': True,
         })
 
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):
