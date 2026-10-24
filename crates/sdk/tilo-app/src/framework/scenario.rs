@@ -27,7 +27,7 @@ use ui_core::history_mode::checked_files::FileHistorySource;
 
 use super::surface::ResourceSelection;
 
-/// What a view is built for. See the [module docs](self).
+/// What a view is built for. See the module docs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunMode {
     /// A window someone uses: real sources, and the work that keeps them

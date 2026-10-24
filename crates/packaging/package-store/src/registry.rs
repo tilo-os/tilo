@@ -9,7 +9,7 @@
 //!
 //! Rows written before payloads moved into the content store have the same
 //! shape with the tree under `payloads/<app-id>`; they stay readable, and
-//! [`crate::PackageStore`] moves them into the content-addressed layout once.
+//! `PackageStore` moves them into the content-addressed layout once.
 
 use std::path::{Path, PathBuf};
 

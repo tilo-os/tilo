@@ -1,5 +1,5 @@
 //! The route record a published operation acts on. The admission itself is
-//! [`BrokerActor::admit_published_in`](crate::collab_broker_capnp::BrokerActor::admit_published_in).
+//! `BrokerActor::admit_published_in`.
 
 /// Spelling of the package-primary record (route record `""`).
 const PRIMARY_RECORD_ALIAS: &str = "@tilo:package-primary";

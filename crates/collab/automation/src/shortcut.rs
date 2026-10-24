@@ -1,8 +1,8 @@
 //! The serialisable shortcut program.
 //!
 //! Everything here is inert data: it can be stored, synced, diffed and shown
-//! in an editor without a host. Meaning comes from [`check`](crate::check),
-//! which types it against live descriptors, and [`run`](crate::run), which
+//! in an editor without a host. Meaning comes from [`check`](fn@crate::check),
+//! which types it against live descriptors, and [`run`](fn@crate::run), which
 //! executes it.
 
 use std::collections::BTreeMap;

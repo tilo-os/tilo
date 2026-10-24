@@ -30,7 +30,7 @@ pub fn child_resource_id<R: Resource>(name: &str) -> String {
 
 /// The child resource `C` at `id`, inside a resource `R`, for
 /// [`Resource::children`]: `C`'s whole published tree (its declared actions,
-/// [`APPLY`], [`GROUP`](crate::GROUP), and given its `state` its views and
+/// [`APPLY`](crate::resource::APPLY), [`GROUP`](crate::GROUP), and given its `state` its views and
 /// its own children), each document action building `R`'s action
 /// `wrap(edit)` instead of `C`'s. A group of `C`'s edits becomes one group
 /// of `R`'s, so it is still one step. A parent that does not keep the
@@ -223,7 +223,7 @@ pub(crate) fn nested_children(
     children
 }
 
-/// The children [`nested_children`] publishes for the record itself
+/// The children `nested_children` publishes for the record itself
 /// (`#[model(resource)]` fields of `R`, not of its items).
 #[must_use]
 pub fn record_nested_children<R: Resource>() -> Vec<tilo_actions::Resource> {

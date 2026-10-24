@@ -93,7 +93,7 @@ impl Briefing {
     }
 
     /// Whether `search_room` is offered: only when the room holds more
-    /// records than the briefing names ([`KNOWN_OFFERED`]). Where every
+    /// records than the briefing names (`KNOWN_OFFERED`). Where every
     /// record is shown, a search only costs a turn.
     #[must_use]
     pub fn searches(&self) -> bool {

@@ -448,7 +448,7 @@ impl AgentParticipant {
 
     /// Take in what the session delivered, answer remote actions, then take
     /// the current task's steps: local ones back to back for up to
-    /// [`STEP_SLICE`], at most one that plans. Says when to pump again.
+    /// `STEP_SLICE`, at most one that plans. Says when to pump again.
     pub fn pump(&mut self) -> Next {
         let now = tilo_clock::unix_now_ms();
         for event in self.events.drain() {
