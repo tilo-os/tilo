@@ -182,6 +182,7 @@ impl ShellOverlayHost {
                 || self.strip_switcher_captures_pointer_at(p)
                 || self.top_bar_captures_pointer_at(p)
                 || self.capture_studio.takes_pointer_at(p)
+                || self.file_picker_takes_pointer_at(p)
         }) || self.notification_banner_captures_pointer_at(p)
             || self.presence_notice_captures_pointer_at(p)
     }
