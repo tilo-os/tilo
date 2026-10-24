@@ -114,9 +114,6 @@ pub struct Governed<'a> {
     pub generation: u64,
     /// The signed governance a joining member admits, oldest first.
     pub governance_messages: &'a dyn GovernanceMessages,
-    /// Every host of the room, each its own signed address, the governor's
-    /// first ([`JoinBootstrap::hosts`]).
-    pub hosts: &'a [TransportHint],
 }
 
 /// Where a governor keeps the signed governance a joining member admits.
@@ -153,7 +150,6 @@ impl Governed<'_> {
             records: self.peer.rows(),
             governance_messages: self.governance_messages.governance_messages(),
             generation: self.generation,
-            hosts: self.hosts.to_vec(),
         }
     }
 
@@ -227,63 +223,7 @@ struct JoinCompletionRecord {
     /// The delivered bootstrap with the room's state it carried left out and
     /// its governance messages replaced by one digest entry (see
     /// [`JoinCompletionRecord::receipt`]).
-    bootstrap: StoredBootstrap,
-}
-
-/// A delivered bootstrap as a completion receipt keeps it: every field but
-/// the room's hosts, which are the room's present state like its roster,
-/// and which a replay answers as they are then.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-struct StoredBootstrap {
-    version: u32,
-    invite_id: [u8; 32],
-    device_cert: DeviceCert,
-    role: MemberRole,
-    room: String,
-    workspace_id: u64,
-    authority: DeviceCert,
-    certified_roster: Vec<DeviceCert>,
-    revocations: Vec<tilo_user_identity::RevocationEntry>,
-    records: Vec<crate::join::DocumentRow>,
-    governance_messages: Vec<Vec<u8>>,
-    generation: u64,
-}
-
-impl StoredBootstrap {
-    fn of(bootstrap: &JoinBootstrap) -> Self {
-        Self {
-            version: bootstrap.version,
-            invite_id: bootstrap.invite_id,
-            device_cert: bootstrap.device_cert.clone(),
-            role: bootstrap.role,
-            room: bootstrap.room.clone(),
-            workspace_id: bootstrap.workspace_id,
-            authority: bootstrap.authority.clone(),
-            certified_roster: bootstrap.certified_roster.clone(),
-            revocations: bootstrap.revocations.clone(),
-            records: bootstrap.records.clone(),
-            governance_messages: bootstrap.governance_messages.clone(),
-            generation: bootstrap.generation,
-        }
-    }
-
-    fn bootstrap(self, hosts: Vec<TransportHint>) -> JoinBootstrap {
-        JoinBootstrap {
-            version: self.version,
-            invite_id: self.invite_id,
-            device_cert: self.device_cert,
-            role: self.role,
-            room: self.room,
-            workspace_id: self.workspace_id,
-            authority: self.authority,
-            certified_roster: self.certified_roster,
-            revocations: self.revocations,
-            records: self.records,
-            governance_messages: self.governance_messages,
-            generation: self.generation,
-            hosts,
-        }
-    }
+    bootstrap: JoinBootstrap,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -324,12 +264,12 @@ impl JoinCompletionRecord {
             remote_endpoint,
             request_id,
             proof_digest,
-            bootstrap: StoredBootstrap {
+            bootstrap: JoinBootstrap {
                 certified_roster: Vec::new(),
                 revocations: Vec::new(),
                 records: Vec::new(),
                 governance_messages: vec![marker],
-                ..StoredBootstrap::of(delivered)
+                ..delivered.clone()
             },
         })
     }
@@ -350,14 +290,13 @@ impl JoinCompletionRecord {
         let delivered = self
             .delivered_digest()
             .ok_or_else(|| JoinError::new("join completion receipt is malformed"))?;
-        let rebuilt = StoredBootstrap {
+        let rebuilt = JoinBootstrap {
             certified_roster: room.peer.certificates(),
             revocations: room.peer.revocations(),
             records: room.peer.rows(),
             governance_messages: room.governance_messages.governance_messages(),
             ..self.bootstrap.clone()
-        }
-        .bootstrap(room.hosts.to_vec());
+        };
         if bootstrap_digest(&rebuilt)?.as_slice() != delivered {
             return Err(JoinError::refresh());
         }
@@ -365,11 +304,9 @@ impl JoinCompletionRecord {
     }
 }
 
-/// The digest a completion receipt keeps of a delivered bootstrap: over all
-/// of it but its hosts ([`StoredBootstrap`]).
 fn bootstrap_digest(bootstrap: &JoinBootstrap) -> Result<[u8; 32], JoinError> {
     let hasher = postcard::to_io(
-        &StoredBootstrap::of(bootstrap),
+        bootstrap,
         blake3::Hasher::new_derive_key("tilo join completion receipt v1"),
     )
     .map_err(|error| JoinError::new(error.to_string()))?;

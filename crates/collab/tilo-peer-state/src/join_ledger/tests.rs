@@ -57,7 +57,6 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         workspace_id: 7,
         generation: 1,
         governance_messages: &messages,
-        hosts: &[],
     };
     let (guest_key, guest_cert) = guest();
     let mut ledger = JoinLedger::default();
@@ -132,7 +131,6 @@ fn a_join_through_the_ledger_admits_once_and_replays_its_answer() {
         workspace_id: 7,
         generation: 2,
         governance_messages: &messages,
-        hosts: &[],
     };
     let delivered = ledger.complete(&committed, &joins, &refusals).unwrap();
     let bootstrap = delivered.into_iter().next().unwrap().unwrap();
@@ -200,7 +198,6 @@ fn a_cancelled_invitation_is_not_redeemable_and_cancelling_again_changes_nothing
         workspace_id: 7,
         generation: 1,
         governance_messages: &messages,
-        hosts: &[],
     };
     let mut ledger = JoinLedger::default();
     let issued = ledger
@@ -262,7 +259,6 @@ fn a_join_receipt_keeps_none_of_the_rooms_state_and_replays_while_it_is_unchange
         workspace_id: 7,
         generation: 1,
         governance_messages: &messages,
-        hosts: &[],
     };
     let (_, cert) = guest();
     let delivered = room.bootstrap([9; 32], cert, MemberRole::Editor);
