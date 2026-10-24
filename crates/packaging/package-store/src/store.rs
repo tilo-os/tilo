@@ -840,7 +840,7 @@ impl PackageStore {
         )?;
         let previous = registry.find(&meta.manifest.package.id).cloned();
         let pinned = admission.pinned || previous.as_ref().is_some_and(|row| row.pinned);
-        let package = self.row_for(
+        let mut package = self.row_for(
             meta,
             Admission {
                 pinned,
@@ -848,6 +848,13 @@ impl PackageStore {
             },
             now,
         );
+        // An update is not a use: the size sweep evicts the app the person
+        // opened least recently, and a background update of an app they
+        // never open must not make it look freshly used. A row that never
+        // recorded one (`0`) dates from the install as before.
+        if let Some(previous) = previous.as_ref().filter(|row| row.last_used != 0) {
+            package.last_used = previous.last_used;
+        }
         let replaced = registry.upsert(package.clone());
         registry.save(&self.layout.registry())?;
         if let Some(old) = &replaced

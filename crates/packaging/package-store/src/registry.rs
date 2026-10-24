@@ -62,7 +62,8 @@ pub struct InstalledPackage {
     pub pinned: bool,
     #[serde(default)]
     pub installed_at: u64,
-    /// Unix seconds of the last launch (or install); orders eviction.
+    /// Unix seconds of the last launch (or the first install; an update
+    /// keeps it); orders eviction.
     #[serde(default)]
     pub last_used: u64,
     /// Attestor id when an attestor chain vouched for the package; empty
