@@ -1,6 +1,7 @@
 use super::*;
 use automerge::ReadDoc;
 use serde::{Deserialize, Serialize};
+use taffy::TaffyTree;
 use tilo_actions::{Action, ActionError, ActionTransport};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
