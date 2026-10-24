@@ -10,7 +10,7 @@ homepage.workspace = true
 description = "The sanctioned monotonic and wall clocks on every target, Unix-time helpers, and an injectable millisecond Clock with fixed and manual test clocks."
 
 [features]
-# Scoped monotonic readings for deterministic input and deadline tests only.
+# Scoped monotonic and wall readings for deterministic tests only.
 test-support = []
 
 [lib]
