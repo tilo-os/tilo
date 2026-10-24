@@ -45,8 +45,8 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-collab     = "optional@9"
-tilo-fs     = "optional@9"
+collab     = "optional@10"
+tilo-fs     = "optional@10"
 shell-ui   = "optional@15"
 
 [entrypoint]
