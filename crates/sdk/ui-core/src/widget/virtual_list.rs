@@ -1806,7 +1806,7 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                 &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 slot,
                 now,
-                |ctx| {
+                &mut |ctx| {
                     row.widget
                         .draw(ctx.scene, row_transform, ctx.text, theme, presence);
                 },

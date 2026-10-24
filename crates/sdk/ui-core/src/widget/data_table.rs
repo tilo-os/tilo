@@ -2977,7 +2977,7 @@ impl DataTableCore {
             // A row on its way paints its placeholder in its slot; one that
             // landed fades in over it.
             let slot = Rect::new(band.x0 + self.bleed, y0, band.x1 - self.bleed, y1);
-            let paint_row = |ctx: &mut PaintCtx<'_>| {
+            let mut paint_row = |ctx: &mut PaintCtx<'_>| {
                 let scene = &mut *ctx.scene;
                 let text_renderer = &mut *ctx.text;
                 match row_state {
@@ -3089,7 +3089,7 @@ impl DataTableCore {
                     &mut ctx,
                     slot,
                     now,
-                    paint_row,
+                    &mut paint_row,
                 ),
                 None => paint_row(&mut ctx),
             }
