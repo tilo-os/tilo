@@ -2,9 +2,18 @@
 //! drawn over its content when the person reaches for it, so the content
 //! keeps its whole size and nothing moves.
 
-use super::*;
+use taffy::{Dimension, NodeId, TaffyTree};
+use vello::Scene;
+use vello::kurbo::Affine;
+
+use super::WindowGroup;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
 
 /// A fullscreen window's bar as the person reached for it.
+#[derive(Default)]
 pub(super) struct FullscreenBar {
     /// Shown over the window: drawn over the content, which keeps its whole
     /// size.
@@ -14,16 +23,6 @@ pub(super) struct FullscreenBar {
     /// The last layout stood it over the content; once its fade-out ends
     /// the next one drops it, so nothing takes input where it was.
     pub(super) laid_out: bool,
-}
-
-impl Default for FullscreenBar {
-    fn default() -> Self {
-        Self {
-            revealed: false,
-            fade: crate::motion::Presence::closed(),
-            laid_out: false,
-        }
-    }
 }
 
 impl WindowGroup {
