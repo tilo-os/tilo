@@ -58,19 +58,16 @@ fn tiles() -> Rc<[Tile]> {
     })
 }
 
-/// A tile's narrowest picture at the default text size, and the width it
-/// asks for when nothing bounds it; its height is a share of its width.
-const TILE_MIN_WIDTH: f64 = 104.0;
-const TILE_PREFERRED_WIDTH: f64 = 168.0;
+/// A tile's height as a share of its width.
 const TILE_ASPECT: f64 = 0.66;
 
 /// How the tiles lay out across `width`, by the card grid's reflow: as many
 /// on a line as fit at their narrowest, rounded down to a count that fills
 /// every line alike, the columns sharing the whole line. `(columns, width,
 /// height)`.
-fn tile_geometry(width: f64, tiles: usize, gap: f64, scale: f64) -> (usize, f64, f64) {
+fn tile_geometry(width: f64, tiles: usize, gap: f64, narrowest: f64) -> (usize, f64, f64) {
     let tiles = tiles.max(1);
-    let fit = card_columns(width, TILE_MIN_WIDTH * scale, gap).min(tiles);
+    let fit = card_columns(width, narrowest, gap).min(tiles);
     let columns = (1..=fit)
         .rev()
         .find(|c| tiles.is_multiple_of(*c))
@@ -90,8 +87,10 @@ pub struct ThemeTiles {
     last_cursor: Point,
     action: Option<ui::widget::ActionEmitter<String>>,
     rect: Rect,
-    /// The theme's scale, gap between tiles and room for a name.
-    scale: f64,
+    /// The theme's narrowest and asked-for tile widths, gap between tiles
+    /// and room for a name.
+    narrowest: f64,
+    preferred: f64,
     gap: f64,
     label: f64,
 }
@@ -114,14 +113,20 @@ impl ThemeTiles {
             last_cursor: Point::ZERO,
             action: None,
             rect: Rect::ZERO,
-            scale: 1.0,
+            narrowest: f64::from(ui::tokens::Metrics::BASE.picture_tile_min_width),
+            preferred: f64::from(ui::tokens::Metrics::BASE.picture_tile_width),
             gap: 12.0,
             label: 24.0,
         }
     }
 
     fn geometry(&self) -> (usize, f64, f64) {
-        tile_geometry(self.rect.width(), self.tiles.len(), self.gap, self.scale)
+        tile_geometry(
+            self.rect.width(),
+            self.tiles.len(),
+            self.gap,
+            self.narrowest,
+        )
     }
 
     /// How many tiles stand on a line at the laid-out width.
@@ -398,9 +403,8 @@ impl Widget for ThemeTiles {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.scale = f64::from(
-            theme.tokens.metrics.min_pointer_target / ui::tokens::Metrics::BASE.min_pointer_target,
-        );
+        self.narrowest = f64::from(theme.tokens.metrics.picture_tile_min_width);
+        self.preferred = f64::from(theme.tokens.metrics.picture_tile_width);
         self.gap = f64::from(theme.tokens.spacing.rhythm.sibling);
         self.label = f64::from(theme.text(ui::TextRole::Caption).line_height_px())
             + f64::from(theme.tokens.spacing.s2);
@@ -410,7 +414,7 @@ impl Widget for ThemeTiles {
                 height: Dimension::auto(),
             },
             min_size: Size {
-                width: Dimension::length((TILE_MIN_WIDTH * self.scale) as f32),
+                width: Dimension::length(self.narrowest as f32),
                 height: Dimension::auto(),
             },
             ..Default::default()
@@ -426,10 +430,10 @@ impl Widget for ThemeTiles {
     ) -> Size<f32> {
         let width = known.width.unwrap_or_else(|| match available.width {
             taffy::AvailableSpace::Definite(width) => width,
-            _ => ((TILE_PREFERRED_WIDTH * self.scale + self.gap) * self.tiles.len() as f64) as f32,
+            _ => ((self.preferred + self.gap) * self.tiles.len() as f64) as f32,
         });
         let (columns, _, height) =
-            tile_geometry(f64::from(width), self.tiles.len(), self.gap, self.scale);
+            tile_geometry(f64::from(width), self.tiles.len(), self.gap, self.narrowest);
         let lines = self.tiles.len().div_ceil(columns);
         Size {
             width,
