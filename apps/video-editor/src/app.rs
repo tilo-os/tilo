@@ -9137,7 +9137,7 @@ impl VideoEditorApp {
                     bar.x0 + bar.width() * progress.max(0.04),
                     bar.y1,
                 );
-                fill_round(scene, tf, f, radius, c.intent.neutral_fill);
+                fill_round(scene, tf, f, radius, c.intent.value_fill);
                 text(scene, tr, tf, "Rendering…", &ty.xs, dim, x0, bar.y1 + s1);
             }
             ExportStatus::Done { path } => {
