@@ -84,7 +84,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const SHEETS: &str = "so.tilo.sheets";
-const SLIDES: &str = "so.tilo.slides";
+const EBOOK: &str = "so.tilo.ebook";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_existing_native_chat_reference_discovers_local_views_over_the_governed_https_host() {
@@ -1110,10 +1110,10 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let host_key = host.cert.device_public_key;
 
     let sheets = browser.create(SHEETS);
-    let slides = browser.create(SLIDES);
+    let books = browser.create(EBOOK);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     let sheets_provider = record_provider(&sheets);
-    let slides_provider = record_provider(&slides);
+    let books_provider = record_provider(&books);
 
     // 1. The catalogue: every record of the room is a provider, and with no
     // provider named the recent records' actions are listed with the room's
@@ -1125,7 +1125,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         "{providers:?}"
     );
     assert!(
-        providers.contains(&slides_provider.as_str()),
+        providers.contains(&books_provider.as_str()),
         "{providers:?}"
     );
     assert!(
@@ -1199,29 +1199,41 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     );
     assert!(!names.contains(&"Other".to_owned()));
 
-    // 4. Confirmation: a destructive action is refused without the caller's
-    // explicit confirmation, and nothing ran; confirmed, it runs.
-    let slides_page = browser
+    // 4. Confirmation: an action Undo cannot take back is refused without
+    // the caller's explicit confirmation, and nothing ran; confirmed, it
+    // runs. Removing a book asks first: Undo puts the row back but not the
+    // device's access to the book's file.
+    let books_page = browser
         .catalogue(CatalogueQuery {
-            provider: Some(slides_provider.clone()),
+            provider: Some(books_provider.clone()),
             max_results: 200,
             ..CatalogueQuery::default()
         })
         .await
         .unwrap();
-    let destructive = slides_page
+    let destructive = books_page
         .rows
         .iter()
         .filter_map(|row| row.action.as_ref())
-        .find(|action| {
-            action.contract.confirmation == ConfirmationPolicy::Confirm
-                && action.params.is_empty()
-                && matches!(action.input, tilo_actions::InputSpec::None)
-        })
-        .expect("Slides offers a destructive action")
-        .address
+        .find(|action| action.address.action == "remove-from-library")
+        .expect("Books offers Remove from library")
         .clone();
-    let unconfirmed = request(&slides_provider, destructive.clone(), InvokeArgument::None);
+    assert_eq!(
+        destructive.contract.confirmation,
+        ConfirmationPolicy::Confirm,
+        "{destructive:?}"
+    );
+    let destructive = destructive.address;
+    let unconfirmed = request(
+        &books_provider,
+        destructive.clone(),
+        InvokeArgument::Json(
+            serde_json::json!({"book": "book:dusk"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        ),
+    );
     let refused = browser.invoke(unconfirmed.clone()).await;
     assert_eq!(
         refused.status,
