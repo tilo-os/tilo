@@ -5403,18 +5403,9 @@ impl WorkspaceTree {
     pub fn reconcile_strip_topology(
         &mut self,
         strip_id: StripId,
-        topology: &[ui::widget::GroupTopology],
+        topology: &[tilo_desktop_model::GroupShape],
     ) -> bool {
-        let shape: Vec<tilo_desktop_model::GroupShape> = topology
-            .iter()
-            .map(|group| tilo_desktop_model::GroupShape {
-                id: group.id,
-                tab_ids: group.tab_ids.clone(),
-                active_tab: group.active_tab,
-                width: group.width,
-            })
-            .collect();
-        let Some(persisted) = self.desktop.reconcile_strip_topology(strip_id, &shape) else {
+        let Some(persisted) = self.desktop.reconcile_strip_topology(strip_id, topology) else {
             return false;
         };
         self.doc_rewrite_strip_groups(strip_id, &persisted);
@@ -5956,7 +5947,7 @@ mod bootstrap_tests {
                 // share on every monitor.
                 let share = first_group.width.permille();
                 assert!(
-                    share >= ui::widget::WIDTH_NORMAL_PERMILLE,
+                    share >= tilo_desktop_model::width::WIDTH_NORMAL_PERMILLE,
                     "the demo group should fill at least the Normal share of the \
                      strip so the white card dominates the viewport; got {:?} \
                      ({share}/1000)",
@@ -9022,17 +9013,17 @@ mod active_group_tests {
             tree.seed_doc_from_cache();
 
             let topology = vec![
-                ui::widget::GroupTopology {
+                tilo_desktop_model::GroupShape {
                     id: source_group,
                     tab_ids: vec![10, 12],
                     active_tab: 10,
-                    width: ui::widget::WindowWidth::Fraction(700),
+                    width: tilo_desktop_model::WindowWidth::Fraction(700),
                 },
-                ui::widget::GroupTopology {
+                tilo_desktop_model::GroupShape {
                     id: 99,
                     tab_ids: vec![11],
                     active_tab: 11,
-                    width: ui::widget::WindowWidth::Normal,
+                    width: tilo_desktop_model::WindowWidth::Normal,
                 },
             ];
             assert!(tree.reconcile_strip_topology(strip_id, &topology));
@@ -9096,11 +9087,11 @@ mod active_group_tests {
                 app_title: None,
             });
             group.active_tab = before;
-            let invalid = [ui::widget::GroupTopology {
+            let invalid = [tilo_desktop_model::GroupShape {
                 id: ids[0],
                 tab_ids: vec![],
                 active_tab: before,
-                width: ui::widget::WindowWidth::Normal,
+                width: tilo_desktop_model::WindowWidth::Normal,
             }];
 
             assert!(!tree.reconcile_strip_topology(strip_id, &invalid));
