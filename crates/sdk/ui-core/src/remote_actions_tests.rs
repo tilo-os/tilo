@@ -836,3 +836,68 @@ fn an_old_host_is_observed_on_the_interval() {
     ));
     assert!(running.get().is_settled());
 }
+
+/// A followed live result shows each new item the host sends, keeps a
+/// waiting observe out for the next, and is cancelled once dropped.
+#[test]
+fn a_followed_result_shows_each_item_and_stops_when_dropped() {
+    let mut actions = RemoteActions::session();
+    let followed = actions.follow(target("live"), InvokeArgument::None);
+    let invocation = followed.invocation();
+    let requests = actions.take_collab_requests();
+    let [
+        CollabRequest::RemoteAction {
+            message: RemoteActionMessage::Invoke(request),
+        },
+    ] = requests.as_slice()
+    else {
+        panic!("one invocation: {requests:?}");
+    };
+    assert_eq!(request.wait_ms, None, "the receipt is the admission");
+    actions.handle_collab_event(&CollabEvent::RemoteAction {
+        message: RemoteActionMessage::Receipt(InvocationReceipt {
+            invocation,
+            status: ReceiptStatus::Accepted,
+        }),
+    });
+    for (sequence, count) in [(1, 0), (2, 3)] {
+        let requests = actions.take_collab_requests();
+        assert!(
+            matches!(
+                requests.as_slice(),
+                [CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Observe {
+                        wait_ms: Some(_),
+                        seen: Some(_),
+                        ..
+                    },
+                }]
+            ),
+            "a waiting observe follows each update: {requests:?}"
+        );
+        let item = InvocationUpdate::Item {
+            invocation,
+            sequence,
+            value: serde_json::json!({ "count": count }),
+        };
+        actions.handle_collab_event(&CollabEvent::RemoteAction {
+            message: RemoteActionMessage::Update {
+                invocation,
+                state: Some(InvocationState::new(invocation, item.clone())),
+            },
+        });
+        assert_eq!(followed.call().get(), RemoteCall::Done(item));
+    }
+    let _observe = actions.take_collab_requests();
+    drop(followed);
+    let requests = actions.take_collab_requests();
+    assert!(
+        matches!(
+            requests.as_slice(),
+            [CollabRequest::RemoteAction {
+                message: RemoteActionMessage::Cancel { invocation: id },
+            }] if *id == invocation
+        ),
+        "dropping it cancels the invocation: {requests:?}"
+    );
+}

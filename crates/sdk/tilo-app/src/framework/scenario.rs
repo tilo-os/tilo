@@ -209,6 +209,28 @@ impl Run {
     }
 }
 
+/// What other providers' actions answer in a capture
+/// ([`Fixture::answer`]), by the action.
+#[derive(Clone, Default)]
+pub(crate) struct Answers(HashMap<String, serde_json::Value>);
+
+impl Answers {
+    fn key(target: &tilo_actions::remote::RemoteActionTarget) -> String {
+        format!(
+            "{}/{}/{}",
+            target.provider, target.address.resource, target.address.action
+        )
+    }
+
+    /// What the action at `target` answers in this capture.
+    pub(crate) fn get(
+        &self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+    ) -> Option<&serde_json::Value> {
+        self.0.get(&Self::key(target))
+    }
+}
+
 /// A version of the resource another person wrote before the capture.
 struct Version<R: Resource> {
     author: String,
@@ -256,6 +278,27 @@ impl<R: Resource> Fixture<R> {
     /// second replaces the first.
     pub fn provide<T: 'static>(&mut self, value: T) {
         self.values.insert(TypeId::of::<T>(), Rc::new(value));
+    }
+
+    /// Stand `value` in for what another provider's action at `target`
+    /// answers: a view's [`RecordEnv::query`](super::RecordEnv::query) of
+    /// it reads `value`, as the action's result, in this capture.
+    pub fn answer(
+        &mut self,
+        target: &tilo_actions::remote::RemoteActionTarget,
+        value: &impl serde::Serialize,
+    ) {
+        let mut answers = self
+            .values
+            .remove(&TypeId::of::<Answers>())
+            .and_then(|answers| answers.downcast::<Answers>().ok())
+            .map(|answers| (*answers).clone())
+            .unwrap_or_default();
+        answers.0.insert(
+            Answers::key(target),
+            serde_json::to_value(value).unwrap_or_default(),
+        );
+        self.provide(answers);
     }
 
     /// A private scratch directory for files the scene shows (a folder to

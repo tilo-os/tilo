@@ -6263,9 +6263,10 @@ mod tests {
                 .find(|r| r.id == "room.activity.open")
                 .expect("typing 'activity' must surface the room-activity action");
             assert_eq!(action.title, "Show workspace activity");
-            let activity_tab =
-                || crate::shell::tab_binding::active_workspace_activity_tab(&c.borrow().tree());
-            assert!(activity_tab().is_none(), "starts closed");
+            assert!(
+                c.borrow_mut().take_activity_open_request().is_none(),
+                "starts closed"
+            );
             (action.on_open)(
                 &mut ui::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
@@ -6274,12 +6275,12 @@ mod tests {
             )
             .expect("a nullary chrome action must run");
             assert!(
-                activity_tab().is_some(),
-                "invoking the exported action opens the workspace's Activity tab"
+                c.borrow_mut().take_activity_open_request().is_some(),
+                "invoking the exported action opens the Activity app"
             );
             assert!(
                 !c.borrow().overlays.room_activity,
-                "Activity is a tab, not a modal that captures input"
+                "Activity is an app's window, not a modal that captures input"
             );
             assert!(
                 !c.borrow().overlays.collaborators,

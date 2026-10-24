@@ -393,7 +393,7 @@ pub use record::{
     RecordCheckout, RecordId, RecordKind, RecordRef, RecordRefusal, RecordSet, RecordStore,
 };
 pub use remote_actions::{
-    CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
+    CatalogueCall, Followed, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
 };
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,

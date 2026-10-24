@@ -97,6 +97,7 @@ mod header_parts;
 pub(crate) mod memory;
 mod nothing_listed;
 mod notices;
+mod open_states;
 mod parts;
 mod sidebar_resize;
 mod status_action;
@@ -1944,32 +1945,6 @@ impl NavShell {
     #[must_use]
     pub fn with_inspector_hidden(self) -> Self {
         self.inputs.borrow_mut().inspector.snap(false);
-        self
-    }
-
-    /// Keep whether the sidebar shows in `state`: the shell writes where it
-    /// stands once laid out and every choice the person makes; setting the
-    /// state shows or hides the sidebar (opens the drawer in a narrow
-    /// window, from `ViewCx::on_stage` for a capture).
-    #[must_use]
-    pub fn with_sidebar_state(mut self, state: &LocalState<bool>) -> Self {
-        let (_, binding) = LocalBinding::new(state);
-        self.sidebar_state = Some(OpenBinding {
-            binding,
-            wanted: None,
-        });
-        self
-    }
-
-    /// Keep whether the inspector shows in `state`, as
-    /// [`Self::with_sidebar_state`].
-    #[must_use]
-    pub fn with_inspector_state(mut self, state: &LocalState<bool>) -> Self {
-        let (_, binding) = LocalBinding::new(state);
-        self.inspector_state = Some(OpenBinding {
-            binding,
-            wanted: None,
-        });
         self
     }
 

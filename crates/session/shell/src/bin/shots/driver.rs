@@ -1829,7 +1829,6 @@ impl ShellDriver {
             };
             if changed {
                 self.with_chrome(|state| {
-                    state.overlays.room_activity = false;
                     state.overlays.collaborators = false;
                     state.bump();
                     state.push_notification(
@@ -1837,7 +1836,6 @@ impl ShellDriver {
                         "Written forward: the version you reverted from is still in the history.",
                     );
                 });
-                self.host_mut().force_room_activity_closed_for_shots();
                 // Prime the notification host. It drains newly queued chrome
                 // notifications during paint, so the named recovery frame
                 // must be the frame that displays the result, not the next
@@ -2114,9 +2112,6 @@ impl ShellDriver {
                 #[cfg(not(debug_assertions))]
                 return Err("agent composer shots require a debug build".into());
             }
-            "room-activity" => self.scene_room_activity(),
-            "room-activity-named" => self.scene_room_activity_named(),
-            "room-activity-all" => self.scene_room_activity_all(),
             "ws-settings-permissions" => self.scene_ws_settings_permissions(),
             "notifications" => self.scene_notifications(),
             "notifications-one" => self.scene_notifications_one(),
@@ -3209,10 +3204,10 @@ impl ShellDriver {
         self.step_frames(20);
     }
 
-    /// Drives the room through the production mirrors, not a seeded
-    /// `HistoryEntry` — these are the same calls the portal, permission
-    /// prompt, drop handler and settings modal make.
-    fn scene_room_activity(&mut self) {
+    /// A room with a history: changes made through the production mirrors,
+    /// not a seeded `HistoryEntry` — the same calls the portal, permission
+    /// prompt, drop handler and settings modal make — and a second person's.
+    pub fn seed_room_history_for_shots(&mut self) {
         use shell::shell::state::{Access, CapOverride, Scope, Subject};
         let handle = self.chrome_handle();
         let owner = {
@@ -3302,328 +3297,10 @@ impl ShellDriver {
                 let _ = tree.apply_changes(&changes);
             }
         }
-        self.with_chrome(|st| st.open_room_activity(None));
-        self.fb.host_mut().force_room_activity_settled();
-    }
-
-    /// Deterministic scenario entry point for the two history zoom levels.
-    /// It seeds the same collaborative changes as the legacy visual scene,
-    /// then switches through the pane's public API rather than reaching into
-    /// drawing state.
-    pub fn seed_room_activity_for_shots(&mut self, explore: bool) {
-        self.scene_room_activity();
-        if !explore {
-            use collab_types::ArtifactKind;
-            use ui::tilo_actions::ActionContext;
-            use ui::widget::history::{HistoryEntry, HistoryEntryId};
-
-            let local = shell::shell::state::local_user_id();
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .open_external_entry(HistoryEntry {
-                    id: HistoryEntryId([0x51; 16]),
-                    author: ui::history_source::author_for_identity(local.clone(), &local),
-                    entry_kind: ui::widget::EntryKind::Text,
-                    artifact_kind: ArtifactKind::File,
-                    timestamp: std::time::SystemTime::now(),
-                    summary: "Updated revenue assumptions".into(),
-                    text_delta: Some((18, 4)),
-                    diff_payload: None,
-                    redaction: None,
-                    context: Some(
-                        ActionContext::for_resource(
-                            "sheets:q2-finance",
-                            "spreadsheet",
-                            "Q2 finance report",
-                        )
-                        .with_app("org.tilo.Sheets", "Sheets")
-                        .with_purpose("Preparing the board review"),
-                    ),
-                });
-
-            // Catch up needs two adjacent, shared work sessions so expanding
-            // either card proves the editable seam in the rendered product.
-            // These names go through the same document write path as the UI;
-            // the external resume hint above is deliberately not grouped.
-            let handle = self.chrome_handle();
-            let state = handle.borrow();
-            let mut tree = state.tree_mut();
-            let entries = self.fb.host().room_activity().entries().to_vec();
-            #[expect(
-                clippy::indexing_slicing,
-                reason = "entries.len() >= 4, so 0 <= first_end < split <= last < entries.len()"
-            )]
-            if entries.len() >= 4 {
-                let split = entries.len() / 2;
-                if split >= 2 && entries.len().saturating_sub(split) >= 2 {
-                    let first_end = split.saturating_sub(1);
-                    let last = entries.len().saturating_sub(1);
-                    let pane = self.fb.host_mut().room_activity_mut();
-                    pane.apply_name(
-                        &mut *tree,
-                        &ui::GroupNameRequest {
-                            record_id: None,
-                            start: entries[0].id,
-                            end: entries[first_end].id,
-                            label: "Write Q3 financial report".to_string(),
-                        },
-                    );
-                    pane.apply_name(
-                        &mut *tree,
-                        &ui::GroupNameRequest {
-                            record_id: None,
-                            start: entries[split].id,
-                            end: entries[last].id,
-                            label: "Onboard Sarah".to_string(),
-                        },
-                    );
-                }
-            }
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .prepare_away_recap_for_shots(&mut *tree);
-            drop(tree);
-            drop(state);
-        }
-        self.fb.host_mut().room_activity_mut().set_view(if explore {
-            shell::shell::room_activity::ActivityView::Explore
-        } else {
-            shell::shell::room_activity::ActivityView::CatchUp
-        });
-        self.fb.host_mut().force_room_activity_settled();
-        // Headless snapshots do not render, while this immediate-mode sheet
-        // derives its keyboard order from the controls it actually paints.
-        // Build one CPU-side scene (no adapter/GPU involved) so keyboard
-        // actions exercise the same rendered control set in every mode.
-        let _ = self.fb.paint();
-    }
-
-    pub fn seed_automatic_work_sessions_for_shots(&mut self) {
-        let handle = self.chrome_handle();
-        {
-            let state = handle.borrow();
-            let mut tree = state.tree_mut();
-            let workspace = tree.desktop.active;
-            for (actor, group_id, group_label, action) in [
-                (
-                    "bob",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Draft totals",
-                ),
-                (
-                    "ada",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Check forecast",
-                ),
-                (
-                    "Sarah",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Reconcile actuals",
-                ),
-                (
-                    "Ada",
-                    "finance",
-                    "Write Q3 financial report",
-                    "Review variance",
-                ),
-                ("Sarah", "onboarding", "Onboard Sarah", "Open welcome notes"),
-                ("Ada", "onboarding", "Onboard Sarah", "Assign mentor"),
-            ] {
-                let context = tilo_actions::ActionContext::for_resource(
-                    format!("shots:{group_id}"),
-                    "document",
-                    group_label,
-                )
-                .with_app("org.tilo.Writer", "Writer")
-                .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-                    tilo_actions::ActionKey::new(
-                        "org.tilo.Writer",
-                        "document",
-                        tilo_actions::entry::kebab(action),
-                    ),
-                    [],
-                )))
-                .with_group(group_id, group_label, "work-session");
-                let _ = tree.append_workspace_effect_receipt_for_shots(
-                    workspace,
-                    tilo_actions::InvocationId::new(),
-                    actor,
-                    context,
-                    tilo_actions::EffectReceiptStatus::Succeeded,
-                );
-            }
-        }
-        self.with_chrome(|state| state.open_room_activity(None));
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_view(shell::shell::room_activity::ActivityView::CatchUp);
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-    }
-
-    pub fn expand_automatic_work_session_for_shots(&mut self) -> bool {
-        let expanded = self
-            .fb
-            .host_mut()
-            .room_activity_mut()
-            .expand_work_session_for_shots(0);
-        let _ = self.fb.paint();
-        expanded
-    }
-
-    pub fn focus_first_room_activity_work_session_for_shots(&mut self) -> bool {
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .focus_first_work_session_for_shots()
-    }
-
-    pub fn correct_automatic_work_session_for_shots(&mut self) -> bool {
-        let handle = self.chrome_handle();
-        let state = handle.borrow();
-        let mut tree = state.tree_mut();
-        let corrected = self
-            .fb
-            .host_mut()
-            .room_activity_mut()
-            .move_work_session_boundary_for_shots(&mut *tree, 1, 0, true);
-        drop(tree);
-        drop(state);
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-        corrected
-    }
-
-    pub fn show_room_activity_replay_for_shots(&mut self) {
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_view(shell::shell::room_activity::ActivityView::Replay);
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-    }
-
-    /// Select Ada in the contributor controls using the history surface's
-    /// public filter API. Returns false if the seeded remote replica failed
-    /// to produce an authored change, rather than emitting a misleading PNG.
-    pub fn filter_room_activity_to_ada_for_shots(&mut self) -> bool {
-        let ada = self
-            .fb
-            .host()
-            .room_activity()
-            .contributors()
-            .iter()
-            .find(|name| name.eq_ignore_ascii_case("ada"))
-            .cloned();
-        let Some(ada) = ada else {
-            return false;
-        };
-        self.fb
-            .host_mut()
-            .room_activity_mut()
-            .set_author_filter(Some(ada));
-        self.fb.host_mut().force_room_activity_settled();
-        let _ = self.fb.paint();
-        true
-    }
-
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the shell fixture owns long-lived permits by design and lives for the whole run"
-    )]
-    pub fn select_room_activity_entry(&mut self, index: usize) {
-        let (start, len) = {
-            let activity = self.fb.host().room_activity();
-            let entries = activity.timeline().entries();
-            let start = activity
-                .visible_entry(index)
-                .and_then(|visible| entries.iter().position(|entry| entry.id == visible.id))
-                .unwrap_or(index);
-            (start, entries.len())
-        };
-        for candidate in start..len {
-            self.fb
-                .host_mut()
-                .room_activity_mut()
-                .timeline_mut()
-                .set_selection(Some((candidate, candidate)));
-            let handle = self.chrome_handle();
-            let state = handle.borrow();
-            let mut tree = state.tree_mut();
-            if self
-                .fb
-                .host()
-                .room_activity()
-                .compare_selection(&mut *tree, None)
-                .is_some()
-            {
-                break;
-            }
-        }
-        let _ = self.fb.paint();
-    }
-
-    /// Two runs named, one by the peer under its own actor, so the band
-    /// reads "named by" someone other than the viewer. Both go in through
-    /// the pane's own write path (the `[Name]` chip's call).
-    fn scene_room_activity_named(&mut self) {
-        self.scene_room_activity();
         let handle = self.chrome_handle();
         let st = handle.borrow();
         let mut tree = st.tree_mut();
-        let entries = self.fb.host().room_activity().entries().to_vec();
-        if entries.len() >= 6 {
-            // The peer's own run: it named it before syncing.
-            let mut peer = tree.doc.fork();
-            peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
-            let end = entries.len().saturating_sub(1);
-            let start = entries.len().saturating_sub(3);
-            if let (Some(start_entry), Some(end_entry)) = (entries.get(start), entries.get(end)) {
-                ui::history_groups::name_range(
-                    &mut peer,
-                    &start_entry.id,
-                    Some(&end_entry.id),
-                    "Reading week",
-                );
-                tilo_resource::history::commit_stamped(&mut peer);
-                let _ = tree.doc.merge_incoming(&mut peer);
-            }
-
-            if let (Some(first), Some(fourth)) = (entries.first(), entries.get(3)) {
-                let pane = self.fb.host_mut().room_activity_mut();
-                pane.apply_name(
-                    &mut *tree,
-                    &ui::GroupNameRequest {
-                        record_id: None,
-                        start: first.id,
-                        end: fourth.id,
-                        label: "Set up the room".to_string(),
-                    },
-                );
-            }
-        }
-        drop(tree);
-        drop(st);
-        self.fb.host_mut().force_room_activity_settled();
-    }
-
-    /// Widened to the whole tree; every row now says which workspace it
-    /// happened in.
-    fn scene_room_activity_all(&mut self) {
-        self.scene_room_activity();
-        let handle = self.chrome_handle();
-        let st = handle.borrow();
-        let tree = st.tree();
-        self.fb.host_mut().room_activity_mut().set_scope(
-            shell::shell::room_activity::RoomScope::AllWorkspaces,
-            &*tree,
-        );
+        self.fb.host_mut().room_activity_mut().refresh(&mut *tree);
     }
 
     fn scene_ws_settings_permissions(&mut self) {

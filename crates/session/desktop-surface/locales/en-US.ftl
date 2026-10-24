@@ -242,6 +242,7 @@ activity-replay-checkpoints-unavailable = { $count } { $count ->
 activity-latest = Latest · { $headline }
 activity-history-pending = History is waiting for current edits to finish
 activity-caught-up = You're caught up
+activity-history-gone = These changes are no longer in the history.
 activity-summary-on-device = On-device summary
 activity-session-move-newer = 1 action newer
 activity-session-move-older = 1 action older

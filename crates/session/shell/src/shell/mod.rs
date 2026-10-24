@@ -26,6 +26,7 @@ pub mod automation_records;
 pub mod automation_triggers;
 pub(crate) mod broker_services;
 pub use broker_services::decide_receipt_against_surfaces;
+pub(crate) mod activity_provider;
 pub mod add_app_sheet;
 pub(crate) mod agent_quick_composer;
 pub mod arrival_line;
@@ -319,8 +320,6 @@ pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
         | ShellTile::PeerWindow { app_id, .. }
         | ShellTile::HostedWindow { app_id, .. }
         | ShellTile::LocalApp { app_id, .. } => UiKind::App(ui::icons::app_glyph(app_id, None)),
-        // The device-local activity tile has no app of its own.
-        ShellTile::WorkspaceActivity => UiKind::Settings,
     }
 }
 
@@ -373,14 +372,6 @@ fn try_to_ui_tile_for_tab(
     tab: Option<state::TabId>,
 ) -> Result<UiTile, hosted_inputs::HostedTileError> {
     Ok(match t {
-        // The retained activity controller is painted into this ordinary
-        // tile by `ShellOverlayHost`, which also owns the workspace-history
-        // index. The neutral body exists only for the first reconciliation
-        // frame before that controller has its content rect.
-        ShellTile::WorkspaceActivity => UiTile::Notice {
-            title: crate::shell::i18n::t("shell-activity-title"),
-            detail: crate::shell::i18n::t("shell-activity-loading"),
-        },
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
             label: label.clone(),

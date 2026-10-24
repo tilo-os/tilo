@@ -125,8 +125,5 @@ impl ShellDriver {
         "notifications-dnd",
         "notifications-graphics",
         "notifications-call",
-        "room-activity",
-        "room-activity-all",
-        "room-activity-named",
     ];
 }

@@ -2028,6 +2028,13 @@ impl FrameHarness {
         self.relayout();
     }
 
+    /// What the widget tree asked of the transport since the last call, as
+    /// a live window's host takes it: the other half of
+    /// [`Self::handle_collaboration_event`].
+    pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
+        crate::widget::take_collab_requests(self.root.as_mut())
+    }
+
     /// The live document, read-only.
     #[must_use]
     pub fn state(&self) -> &State {
