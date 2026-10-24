@@ -43,7 +43,7 @@ mod layout_scope;
 mod owner_commands;
 pub use owner_commands::{AppAction, OwnerCommand, app_action_lifetime};
 mod ownership;
-pub use ownership::OwnershipError;
+pub use ownership::{HeldChannels, OwnershipError};
 mod pages;
 mod peer_parts;
 mod private;
@@ -373,8 +373,10 @@ impl GovernedRoom {
         }
         // Parts an interrupted write left behind.
         parts.collect(&record.peer);
+        // A room handed on is stewarded by its new governor.
         let stewardship = path
             .parent()
+            .filter(|_| peer.governance().handed_on().is_none())
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,

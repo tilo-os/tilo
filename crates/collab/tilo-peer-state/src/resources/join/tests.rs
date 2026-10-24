@@ -149,6 +149,10 @@ fn responses() -> Vec<JoinTransportResponse> {
             message: "request already completed — retry status".into(),
         },
         JoinTransportResponse::OwnerMembershipComplete(owner),
+        JoinTransportResponse::Moved(RoomMoved {
+            room: "room".into(),
+            handoffs: vec![vec![7; 512]],
+        }),
     ]
 }
 fn limits() -> OuterLimits {
@@ -159,7 +163,7 @@ fn limits() -> OuterLimits {
 }
 
 #[test]
-fn bounded_join_response_all_seven_real_variants_preserve_exact_original_bytes() {
+fn bounded_join_response_every_real_variant_preserves_exact_original_bytes() {
     for response in responses() {
         let bytes = postcard::to_allocvec(&response).unwrap();
         let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
@@ -265,7 +269,7 @@ fn owner_bootstrap_wire_keeps_response_tags_and_role_bytes() {
     ] {
         assert_eq!(postcard::to_allocvec(&role).unwrap(), wire);
     }
-    let response = responses().pop().unwrap();
+    let response = responses().remove(6);
     let bytes = postcard::to_allocvec(&response).unwrap();
     let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
     assert_eq!(held.response(), &response);

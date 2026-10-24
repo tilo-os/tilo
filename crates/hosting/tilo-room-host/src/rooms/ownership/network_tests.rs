@@ -155,7 +155,7 @@ impl Member {
     async fn receive_until(
         &self,
         what: &str,
-        done: impl Fn(&tilo_joined_room::NativeCommittedView) -> bool,
+        done: impl Fn(&tilo_joined_room::NativeCommittedView) -> bool + Sync,
     ) {
         tilo_test_env::within(what, async {
             while !self.view(&done) {
@@ -173,8 +173,8 @@ impl Member {
     }
 
     /// Write `value` into the chat record, durably on this device, and hand
-    /// it to the session if it may still send.
-    fn write(&self, value: &str) -> Result<(), String> {
+    /// it to the session if it may still send: whether it did.
+    fn write(&self, value: &str) -> bool {
         let now = std::time::SystemTime::now();
         let message = self.view(|view| {
             let mut doc = view
@@ -212,7 +212,7 @@ impl Member {
                 now,
             )
             .unwrap();
-        self.scope.publish(&self.session, &self.identity)
+        self.scope.publish(&self.session, &self.identity).is_ok()
     }
 
     /// How many writes wait on this device to be sent.
@@ -322,7 +322,7 @@ async fn a_write_made_while_the_room_moves_reaches_the_new_host_once_it_is_up() 
 
     // Moving: the member's session is pinned to the old host, which takes
     // nothing more, so the write waits on the member's device.
-    assert!(member.write("while it moves").is_err());
+    assert!(!member.write("while it moves"));
     assert!(member.waiting() > 0);
     assert_eq!(
         member.view(|view| view.transport_hint().unwrap().host.clone()),
@@ -333,7 +333,11 @@ async fn a_write_made_while_the_room_moves_reaches_the_new_host_once_it_is_up() 
     // the member's write reaches it there.
     let durable = recipient.view(|view| view.peer().durable().unwrap());
     let mut writes = recipients.rooms().record_writes();
-    recipients.rooms().adopt(&room, &durable).await.unwrap();
+    recipients
+        .rooms()
+        .adopt(&room, &durable, crate::rooms::HeldChannels::default())
+        .await
+        .unwrap();
     let mut member = member;
     member.reconnect().await;
     member

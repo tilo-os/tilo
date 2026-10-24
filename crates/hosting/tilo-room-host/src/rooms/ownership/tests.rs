@@ -12,7 +12,7 @@ use tilo_relay_session::rooms::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::SystemTime;
 
-use super::OwnershipError;
+use super::{HeldChannels, OwnershipError};
 use crate::rooms::Rooms;
 use crate::rooms::actions::tests::admit_device;
 use crate::rooms::fixtures::TestHost;
@@ -180,7 +180,7 @@ pub(super) async fn write_record(
 
 /// A copy of `room` as `rooms` governs it now, as a member's device holds
 /// it: restored under the governor its host's copy names.
-async fn replica(rooms: &Rooms, room: &str) -> (StatePeer, usize) {
+pub(super) async fn replica(rooms: &Rooms, room: &str) -> (StatePeer, usize) {
     let state = rooms.room(room).await.unwrap();
     let governed = state.lock().await;
     let peer = StatePeer::restore(
@@ -198,7 +198,12 @@ async fn replica(rooms: &Rooms, room: &str) -> (StatePeer, usize) {
 /// Hand `replica` what `rooms` published of `room` from publication `from`
 /// on, as its host delivers it, following every handoff it carries. The
 /// publications the replica has now.
-async fn deliver(rooms: &Rooms, room: &str, replica: &mut StatePeer, from: usize) -> usize {
+pub(super) async fn deliver(
+    rooms: &Rooms,
+    room: &str,
+    replica: &mut StatePeer,
+    from: usize,
+) -> usize {
     let state = rooms.room(room).await.unwrap();
     let governed = state.lock().await;
     let publisher = governed.record.authority.device_public_key;
@@ -271,7 +276,11 @@ async fn ownership_moves_to_the_recipients_device_and_members_follow_its_commits
     let recipients = test_host(new.path(), &moving.recipient.key, &moving.recipient.cert).await;
     let adopted = recipients
         .rooms()
-        .adopt(&room, &recipients_copy.durable().unwrap())
+        .adopt(
+            &room,
+            &recipients_copy.durable().unwrap(),
+            HeldChannels::default(),
+        )
         .await
         .unwrap();
     assert_eq!(adopted.room, room, "the room keeps its id");
@@ -344,7 +353,11 @@ async fn a_crash_before_the_handoff_commit_leaves_the_old_host_governing() {
     assert!(matches!(
         recipients
             .rooms()
-            .adopt(&room, &recipients_copy.durable().unwrap())
+            .adopt(
+                &room,
+                &recipients_copy.durable().unwrap(),
+                HeldChannels::default()
+            )
             .await,
         Err(OwnershipError::NotHandedHere)
     ));
@@ -393,7 +406,11 @@ async fn a_crash_after_the_handoff_commit_leaves_only_the_new_governor() {
     let recipients = test_host(new.path(), &recipient.key, &recipient.cert).await;
     recipients
         .rooms()
-        .adopt(&room, &recipients_copy.durable().unwrap())
+        .adopt(
+            &room,
+            &recipients_copy.durable().unwrap(),
+            HeldChannels::default(),
+        )
         .await
         .unwrap();
     recipients.shutdown().await;
@@ -416,8 +433,7 @@ async fn moved_here(host: &TestHost, workspace_id: u64) -> bool {
         .get(&workspace_id)
         .cloned()
         .unwrap();
-    let moved = workspace.lock().await.moved;
-    moved
+    workspace.lock().await.moved
 }
 
 #[tokio::test]
@@ -434,7 +450,11 @@ async fn an_offline_member_catches_up_with_the_handoff_on_its_next_connect() {
     let recipients = test_host(new.path(), &moving.recipient.key, &moving.recipient.cert).await;
     recipients
         .rooms()
-        .adopt(&room, &recipients_copy.durable().unwrap())
+        .adopt(
+            &room,
+            &recipients_copy.durable().unwrap(),
+            HeldChannels::default(),
+        )
         .await
         .unwrap();
     recipients.rooms().rename(&room, "Moved on").await.unwrap();
@@ -501,11 +521,15 @@ async fn a_cancelled_offer_changes_nothing() {
         .await
         .unwrap();
     let state = moving.rooms().room(&moving.room).await.unwrap();
-    {
+    let (open, owner_now) = {
         let governed = state.lock().await;
-        assert_eq!(governed.peer().governance().ownership_offer(), None);
-        assert_eq!(owner_of(governed.peer(), &moving.room), Some(owner.clone()));
-    }
+        (
+            governed.peer().governance().ownership_offer(),
+            owner_of(governed.peer(), &moving.room),
+        )
+    };
+    assert_eq!(open, None);
+    assert_eq!(owner_now, Some(owner.clone()));
     // Taking it back again changes nothing either.
     let at = generation(moving.rooms(), &moving.room).await;
     assert_eq!(
@@ -747,7 +771,10 @@ async fn a_copy_that_does_not_hand_the_room_here_is_not_taken_up() {
     let other = HostDevice::new();
     let others = test_host(elsewhere.path(), &other.key, &other.cert).await;
     assert!(matches!(
-        others.rooms().adopt(&room, &copy.durable().unwrap()).await,
+        others
+            .rooms()
+            .adopt(&room, &copy.durable().unwrap(), HeldChannels::default())
+            .await,
         Err(OwnershipError::NotHandedHere)
     ));
     others.shutdown().await;
@@ -759,7 +786,7 @@ async fn a_copy_that_does_not_hand_the_room_here_is_not_taken_up() {
     std::fs::write(rooms_dir.join(format!("{room}.room")), b"an earlier copy").unwrap();
     recipients
         .rooms()
-        .adopt(&room, &copy.durable().unwrap())
+        .adopt(&room, &copy.durable().unwrap(), HeldChannels::default())
         .await
         .unwrap();
     let aside = std::fs::read_dir(&rooms_dir)
@@ -802,4 +829,76 @@ async fn a_room_handed_on_leaves_its_old_hosts_directory() {
     moving.hand_off(&offer).await;
     assert!(moving.rooms().directory(&online).await.is_empty());
     moving.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_invitation_to_a_room_handed_on_is_answered_with_where_it_went() {
+    let dir = tempfile::tempdir().unwrap();
+    let moving = Moving::new(dir.path()).await;
+    let (_, guest) = crate::rooms::tests::guest_device();
+    let invitation = moving
+        .rooms()
+        .issue(
+            &moving.room,
+            &moving.owner,
+            tilo_relay_session::rooms::IssueInvitationRequest {
+                request_id: [9; 32],
+                role: tilo_peer_state::join::MemberRole::Editor,
+                recipient_user_public_key: Some(guest.user_public_key),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns()
+                    .checked_add(600_000_000_000)
+                    .unwrap(),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let authority = invitation_authority(&invitation);
+    let offer = moving.offer(1).await;
+    let acceptance = moving.hand_off(&offer).await;
+
+    let answer = moving
+        .rooms()
+        .join_service()
+        .answer(
+            guest.device_public_key,
+            tilo_peer_state::join::JoinTransportRequest::Inspect {
+                signed_invitation: invitation.signed_invitation,
+            },
+            tilo_clock::unix_now_ns(),
+        )
+        .await;
+    let tilo_peer_state::join::JoinTransportResponse::Moved(moved) = answer else {
+        panic!("the old host says where the room went: {answer:?}");
+    };
+    // Followed from the governor the invitation names, the handoffs lead
+    // to the recipient's host and where it is reached.
+    assert_eq!(
+        tilo_peer_state::handoff::moved_to(&moving.room, &authority, &moved).unwrap(),
+        (
+            acceptance.successor.clone(),
+            acceptance.successor_hint.clone()
+        )
+    );
+    // Taken from anyone else's word, they lead nowhere.
+    assert_eq!(
+        tilo_peer_state::handoff::moved_to(&moving.room, &moving.member, &moved),
+        Err(HandoffError::NotCurrentGovernor)
+    );
+    moving.host.shutdown().await;
+}
+
+/// The governor `invitation` names.
+fn invitation_authority(invitation: &tilo_relay_session::rooms::IssuedInvitation) -> DeviceCert {
+    tilo_peer_state::join::decode_and_verify_invitation(
+        &invitation.signed_invitation,
+        None,
+        &RevocationList::new(),
+        tilo_clock::unix_now_ns(),
+    )
+    .unwrap()
+    .grant()
+    .authority
+    .clone()
 }

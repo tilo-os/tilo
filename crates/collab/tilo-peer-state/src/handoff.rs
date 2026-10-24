@@ -513,6 +513,37 @@ pub fn pending_steps(room: &str, doc: &AutoCommit, authority: &DeviceCert) -> Ve
     follow(room, authority, &logged(doc))
 }
 
+/// Where a host's [`RoomMoved`](crate::join::RoomMoved) answer says `room`
+/// went from `authority`, the governor the asker knew it under: the device
+/// its handoffs hand it to last, and the hint that device is reached at.
+/// Nothing is taken on the answering host's word: the handoffs are followed
+/// from `authority` as a member follows them ([`follow`]), and no clock is
+/// read.
+///
+/// # Errors
+///
+/// The answer is about another room, a handoff does not decode, or none
+/// hands the room on from `authority`.
+pub fn moved_to(
+    room: &str,
+    authority: &DeviceCert,
+    moved: &crate::join::RoomMoved,
+) -> Result<(DeviceCert, TransportHint), HandoffError> {
+    if moved.room != room {
+        return Err(HandoffError::RoomMismatch);
+    }
+    let handoffs = moved
+        .handoffs
+        .iter()
+        .map(|bytes| postcard::from_bytes::<GovernorHandoff>(bytes))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| HandoffError::Encoding(error.to_string()))?;
+    let last = follow(room, authority, &handoffs)
+        .pop()
+        .ok_or(HandoffError::NotCurrentGovernor)?;
+    Ok((last.acceptance.successor, last.acceptance.successor_hint))
+}
+
 /// Whether `doc`'s handoff log moves the room's governance from the device
 /// `from` on to the device `to`, through one handoff or several: `to` then
 /// covers the room's records in `from`'s place, under its own sequence.

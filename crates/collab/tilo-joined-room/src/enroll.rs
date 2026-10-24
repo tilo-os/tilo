@@ -37,6 +37,22 @@ fn active(
     }
     Ok(())
 }
+/// Why an invitation is not redeemed at the host it names, which answered
+/// that the room moved: where to, when its handoffs hand the room on from the
+/// governor the invitation names, or that they do not.
+fn moved_away(join: &join::VerifiedJoin, moved: &join::RoomMoved) -> String {
+    let grant = join.grant();
+    match tilo_peer_state::handoff::moved_to(&grant.room, &grant.authority, moved) {
+        Ok((successor, _)) => format!(
+            "the room moved to its new owner's device ({}); ask them for a new invitation",
+            successor.device_label
+        ),
+        Err(error) => {
+            format!("the host says the room moved, but its handoffs do not hold: {error}")
+        }
+    }
+}
+
 /// Redeem `invitation` for `local`, the workspace slot the room will show
 /// in where the host has slots. The signed Complete proof is durable before
 /// it is sent, and a retry resends exactly that proof.
@@ -136,6 +152,9 @@ pub async fn prepare_and_complete(
             JoinTransportResponse::Inspection(value)
                 if value.invite_id == join.invite_id() && value.grant == *join.grant() => {}
             JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
+            JoinTransportResponse::Moved(moved) => {
+                return Err(moved_away(&join, &moved));
+            }
             _ => return Err("pinned host inspection changed invitation scope".into()),
         }
         current(&identity, identity_topic, &device)?;

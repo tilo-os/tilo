@@ -168,9 +168,12 @@ impl<S: GovernorStore> Governor<S> {
     ) -> JoinTransportResponse {
         self.decide(remote_endpoint, request, now)
             .await
-            .unwrap_or_else(|error| JoinTransportResponse::Error {
-                code: error.code(),
-                message: error.to_string(),
+            .unwrap_or_else(|error| match error.moved_to() {
+                Some(moved) => JoinTransportResponse::Moved(moved.clone()),
+                None => JoinTransportResponse::Error {
+                    code: error.code(),
+                    message: error.to_string(),
+                },
             })
     }
 

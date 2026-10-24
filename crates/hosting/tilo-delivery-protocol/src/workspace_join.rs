@@ -344,6 +344,11 @@ pub enum WorkspaceJoinError {
         /// Public-safe rejection reason.
         message: String,
     },
+    /// The room's owner handed it to another person's device, which
+    /// governs it from its own host now: the host answers where, as the
+    /// handoffs it logged, for the asker to follow.
+    #[error("the room moved to its new owner's device")]
+    Moved(tilo_workspace_join::RoomMoved),
 }
 
 mod delivery_origin;

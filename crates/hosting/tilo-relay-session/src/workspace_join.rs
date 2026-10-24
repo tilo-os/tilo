@@ -384,6 +384,7 @@ fn response_error(response: JoinTransportResponse) -> WorkspaceJoinError {
         JoinTransportResponse::Error { code, message } => {
             WorkspaceJoinError::Remote { code, message }
         }
+        JoinTransportResponse::Moved(moved) => WorkspaceJoinError::Moved(moved),
         _ => WorkspaceJoinError::Protocol("workspace join response variant mismatch".into()),
     }
 }

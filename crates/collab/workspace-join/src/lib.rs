@@ -482,8 +482,25 @@ pub enum JoinTransportResponse {
     Complete(JoinBootstrap),
     MembershipChallenge(MembershipChallengeResponse),
     MembershipComplete(JoinBootstrap),
-    Error { code: u16, message: String },
+    Error {
+        code: u16,
+        message: String,
+    },
     OwnerMembershipComplete(OwnerBootstrapV1),
+    /// The room's owner handed it to another person's device, which governs
+    /// it from its own host now: whatever was asked is asked there.
+    Moved(RoomMoved),
+}
+
+/// Where a room went: the handoffs of its governance its old host logged,
+/// in order, each the encoding of a signed
+/// `tilo_peer_state::handoff::GovernorHandoff`. The asker follows them from
+/// the governor it knew to the last successor and that successor's hint;
+/// nothing here is taken on the old host's word.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomMoved {
+    pub room: String,
+    pub handoffs: Vec<Vec<u8>>,
 }
 
 /// Sign a delegation of workspace permissions from `authority` to `delegate`.

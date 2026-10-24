@@ -48,6 +48,9 @@ pub struct JoinError {
     /// refusal, [`crate::join::JOIN_PROOF_LAPSED`] for a proof this host
     /// never admitted and no longer can.
     code: u16,
+    /// Where the room went, when it is refused because its owner handed it
+    /// to another person's device ([`Self::moved`]).
+    moved: Option<crate::join::RoomMoved>,
 }
 
 impl JoinError {
@@ -56,7 +59,30 @@ impl JoinError {
         Self {
             message: message.into(),
             code: 403,
+            moved: None,
         }
+    }
+
+    /// `room` moved to another person's device through `handoffs`, the
+    /// handoffs its governance logs: whatever was asked is asked there.
+    #[must_use]
+    pub fn moved(room: &str, handoffs: &[crate::handoff::GovernorHandoff]) -> Self {
+        Self {
+            moved: Some(crate::join::RoomMoved {
+                room: room.to_owned(),
+                handoffs: handoffs
+                    .iter()
+                    .filter_map(|handoff| postcard::to_stdvec(handoff).ok())
+                    .collect(),
+            }),
+            ..Self::new(crate::handoff::HandoffError::Moved.to_string())
+        }
+    }
+
+    /// Where the room went, when it moved to another person's device.
+    #[must_use]
+    pub const fn moved_to(&self) -> Option<&crate::join::RoomMoved> {
+        self.moved.as_ref()
     }
 
     /// A Complete whose proof this host never admitted and no longer can:
@@ -66,6 +92,7 @@ impl JoinError {
         Self {
             message: message.into(),
             code: crate::join::JOIN_PROOF_LAPSED,
+            moved: None,
         }
     }
 
@@ -78,6 +105,7 @@ impl JoinError {
                 "join request ID already completed; refresh membership for the current workspace"
                     .into(),
             code: crate::join::JOIN_COMPLETED_REFRESH,
+            moved: None,
         }
     }
 

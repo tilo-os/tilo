@@ -254,10 +254,6 @@ impl Rooms {
     /// acceptance does not accept the open offer (or no offer is open), the
     /// offer has expired, its recipient left the room, the room moved
     /// already, or the handoff could not be committed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked until its handoff is committed and published"
-    )]
     pub async fn accept_ownership(
         &self,
         room: &str,
@@ -319,7 +315,9 @@ impl Rooms {
         )
         .await?;
         // Members still reach the room here until they follow the handoff:
-        // it serves them what it holds and takes in nothing more.
+        // it serves them what it holds and takes in nothing more. Its
+        // channels are stewarded by the new governor from now on.
+        governed.stewardship = None;
         self.bind(&governed).await?;
         tracing::info!(
             room = %governed.room(),
@@ -362,13 +360,23 @@ impl Rooms {
     /// aside, never deleted. Taking up a room this host governs already
     /// answers with it.
     ///
+    /// The room's channels go on from `channels`, the groups this device
+    /// held as their member: this host stewards each from its own leaf,
+    /// under the same channel and epochs, so members keep what they hold
+    /// and those who join later read the channels' history.
+    ///
     /// # Errors
     ///
     /// The copy does not restore under this host's device, does not hand the
     /// room to it ([`OwnershipError::NotHandedHere`]) or does not make this
     /// host's person its owner ([`HandoffError::NotOwner`]), or the room
     /// could not be written or bound.
-    pub async fn adopt(&self, room: &str, durable: &[u8]) -> Result<RoomSummary, OwnershipError> {
+    pub async fn adopt(
+        &self,
+        room: &str,
+        durable: &[u8],
+        channels: HeldChannels,
+    ) -> Result<RoomSummary, OwnershipError> {
         let held = self.inner.rooms.lock().await.get(room).cloned();
         if let Some(held) = held {
             let held = held.lock().await;
@@ -383,6 +391,7 @@ impl Rooms {
             (&self.inner.host.cert, &self.inner.host.key),
             SystemTime::now(),
         )?;
+        take_up_channels(&adopted, channels).await?;
         self.bind(&adopted).await?;
         let summary = adopted.summary();
         let adopted = std::sync::Arc::new(tokio::sync::Mutex::new(adopted));
@@ -395,6 +404,45 @@ impl Rooms {
         tracing::info!(room = %summary.room, generation = summary.generation, "room taken up from its handoff");
         Ok(summary)
     }
+}
+
+/// The channels of a room handed to this device, as the device held them
+/// when it took the room up ([`Rooms::adopt`]).
+#[derive(Debug, Default)]
+pub struct HeldChannels {
+    /// Each channel the device was admitted to, its group taken over from
+    /// its member state ([`channel_crypto::ChannelMember::into_succession`]).
+    pub held: Vec<channel_crypto::Succession>,
+    /// Channels the device knows the room has and holds no member state
+    /// of: each starts over with a fresh group when first asked for, and
+    /// its earlier history reaches nobody who joins it later.
+    pub unheld: Vec<collab_types::ChannelId>,
+}
+
+/// Steward `adopted`'s channels from `channels`.
+async fn take_up_channels(adopted: &GovernedRoom, channels: HeldChannels) -> Result<(), String> {
+    let HeldChannels { held, unheld } = channels;
+    let Some(steward) = adopted.stewardship.clone() else {
+        if held.is_empty() {
+            return Ok(());
+        }
+        return Err("this host stewards no channels, so it cannot take up the room's".into());
+    };
+    let mut stewardship = steward.channels.lock().await;
+    for succession in held {
+        stewardship.succeed(succession)?;
+    }
+    drop(stewardship);
+    for channel in unheld {
+        tracing::warn!(
+            event = "channel_started_over",
+            room = %adopted.room(),
+            channel = %channel.0,
+            "a channel of a room taken up here was not held by this device: it starts over, \
+             and its earlier history reaches nobody who joins it later"
+        );
+    }
+    Ok(())
 }
 
 /// Move every file of `room` under `dir` (its room file, parts, admissions,
@@ -525,6 +573,8 @@ impl GovernedRoom {
     }
 }
 
+#[cfg(test)]
+mod channel_tests;
 #[cfg(test)]
 mod network_tests;
 #[cfg(test)]

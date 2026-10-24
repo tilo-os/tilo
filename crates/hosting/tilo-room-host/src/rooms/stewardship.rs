@@ -290,6 +290,22 @@ impl Stewardship {
         }
     }
 
+    /// Steward `succession`'s channel from here on, from the group this
+    /// device held as one of its members: the room was handed to this
+    /// device. Its members follow the frames that come next.
+    pub(super) fn succeed(&mut self, succession: channel_crypto::Succession) -> Result<(), String> {
+        if self.stewards.len() >= MAX_CHANNELS {
+            return Err("the room stewards too many channels".into());
+        }
+        let channel = succession.channel_id();
+        std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
+        let steward =
+            ChannelSteward::succeed_in(&self.dir, self.key.clone(), succession, &self.vault)
+                .map_err(|error| error.to_string())?;
+        self.stewards.insert(channel, steward);
+        Ok(())
+    }
+
     /// Read keys for an existing channel, recovering its sealed state if cold.
     /// Missing channels are refused; this path never initializes a group.
     #[cfg(any(feature = "agents", feature = "web"))]
@@ -328,6 +344,36 @@ impl Stewardship {
 
     fn device(&self) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes())
+    }
+
+    /// The frames `channel`'s steward still owes `device`.
+    #[cfg(test)]
+    pub(super) fn owed(
+        &self,
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+    ) -> Vec<collab_types::MlsGovernanceFrameV1> {
+        self.stewards
+            .get(&channel)
+            .and_then(|steward| {
+                steward
+                    .outbox()
+                    .into_iter()
+                    .find(|outgoing| outgoing.recipient == device)
+            })
+            .map(|outgoing| outgoing.frames)
+            .unwrap_or_default()
+    }
+
+    /// The content keys this device holds as `channel`'s steward, and the
+    /// epoch its group is at.
+    #[cfg(test)]
+    pub(super) fn keys(
+        &self,
+        channel: ChannelId,
+    ) -> Option<(channel_crypto::ChannelContentKeys, u64)> {
+        let steward = self.stewards.get(&channel)?;
+        Some((steward.content_keys().ok()?, steward.epoch()))
     }
 
     /// The members of `channel`'s group, when this room stewards it.

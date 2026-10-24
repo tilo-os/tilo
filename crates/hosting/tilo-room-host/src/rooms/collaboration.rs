@@ -1114,6 +1114,14 @@ impl GovernorStore for Rooms {
     ) -> Result<T, CollaborationError> {
         let held = self.room(room).await?;
         let mut locked = held.lock().await;
+        // Moved: its new governor answers for it, and the asker is told
+        // where that is.
+        if locked.moved() {
+            return Err(CollaborationError::moved(
+                room,
+                &locked.peer().governance().governor_handoffs(),
+            ));
+        }
         let (answer, staged, committed) = {
             let mut held = HeldRoom::new(&self.inner.host.key, &mut locked);
             let answer = decide(&mut held);

@@ -22,7 +22,7 @@ impl BoundedJoinResponse {
     }
 }
 
-// Exactly the seven derived response variants and their audited join/identity
+// Exactly the eight derived response variants and their audited join/identity
 // fields. This does not expose the generic guard to arbitrary Deserialize code.
 impl super::outer::EncodeSchema for JoinTransportResponse {}
 impl super::outer::Schema<'_> for JoinTransportResponse {}
