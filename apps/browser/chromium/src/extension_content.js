@@ -2,9 +2,12 @@
 // no world of its own. Chromium makes one only for an extension's declared
 // content scripts; a script it injects on demand (`scripting.executeScript`
 // after a click) runs in a world the host makes, which this gives what
-// Chrome gives a content script: runtime messaging, storage and i18n. Each
-// call goes to the host through a binding only this world has, and the host
-// asks the extension's worker.
+// Chrome gives a content script: runtime messaging and ports, storage and
+// its changes, and i18n. Each call goes to the host through a binding only
+// this world has, and the host asks the extension's worker or its pages.
+// In the world of declared content scripts (`content.declared`), which has
+// Chromium's `chrome`, it adds only the ports the extension opens to it
+// (tabs.connect), which Chromium cannot deliver to a tab it does not know.
 (content) => {
   const send = globalThis.__tiloExtension;
   if (typeof send !== 'function' || globalThis.__tiloExtensionContent) return;
@@ -15,6 +18,8 @@
     pending.set(id, {resolve, reject});
     send(JSON.stringify({id, method, args}));
   });
+  // A call nothing answers (id 0): what a port carries.
+  const tell = (method, args) => send(JSON.stringify({id: 0, method, args}));
   // Chrome's APIs return a promise, or call a trailing callback instead.
   const api = (method) => (...args) => {
     const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
@@ -36,7 +41,13 @@
       hasListeners: () => listeners.size > 0,
     };
   };
+  const fire = (target, ...args) => {
+    for (const listener of [...target.listeners]) {
+      try { listener(...args); } catch (error) { console.error(error); }
+    }
+  };
   const onMessage = event();
+  const onConnect = event();
   const onChanged = event();
   const area = (name) => ({
     get: api((keys) => call('storage', {area: name, op: 'get', args: keys === undefined ? [] : [keys]})),
@@ -58,25 +69,70 @@
     }
     return text.replace(/\$(\d)/g, (_, n) => values[Number(n) - 1] || '').replace(/\$\$/g, '$');
   };
-  globalThis.chrome = {
-    runtime: {
-      id: content.id,
-      getURL: (path) => `chrome-extension://${content.id}/${String(path).replace(/^\//, '')}`,
-      getManifest: () => JSON.parse(JSON.stringify(content.manifest || {})),
-      sendMessage: api((...args) => {
-        // sendMessage([extensionId,] message [, options])
-        if (args.length > 1 && typeof args[0] === 'string' && args[0] === content.id) args.shift();
-        return call('sendMessage', {message: args[0]});
-      }),
-      onMessage,
-      lastError: undefined,
-    },
-    storage: {local: area('local'), sync: area('sync'), session: area('session'), onChanged},
-    i18n: {
-      getMessage: message,
-      getUILanguage: () => content.language || navigator.language,
-    },
+
+  // Ports, as Chrome's: each end posts JSON values to the other and is told
+  // when it closes. One this world opens is known here as `c<n>`; one the
+  // extension opens by the name the host gives it.
+  const ports = new Map();
+  let nextPort = 0;
+  const NO_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
+  const port = (id, name, sender) => {
+    const own = {onMessage: event(), onDisconnect: event()};
+    own.port = {
+      name,
+      onMessage: own.onMessage,
+      onDisconnect: own.onDisconnect,
+      postMessage(value) {
+        if (ports.get(id) !== own) throw new Error('Attempting to use a disconnected port object');
+        // Copied now, as Chrome copies it: a later change is not sent.
+        const copy = value === undefined ? null : JSON.parse(JSON.stringify(value));
+        tell('port', {port: id, op: 'post', message: copy});
+      },
+      disconnect() {
+        if (ports.get(id) !== own) return;
+        ports.delete(id);
+        tell('port', {port: id, op: 'disconnect'});
+      },
+    };
+    if (sender) own.port.sender = sender;
+    ports.set(id, own);
+    return own.port;
   };
+  const runtime = {
+    id: content.id,
+    getURL: (path) => `chrome-extension://${content.id}/${String(path).replace(/^\//, '')}`,
+    getManifest: () => JSON.parse(JSON.stringify(content.manifest || {})),
+    sendMessage: api((...args) => {
+      // sendMessage([extensionId,] message [, options])
+      if (args.length > 1 && typeof args[0] === 'string' && args[0] === content.id) args.shift();
+      return call('sendMessage', {message: args[0]});
+    }),
+    // connect([extensionId,] [connectInfo])
+    connect: (...args) => {
+      const target = typeof args[0] === 'string' ? args.shift() : content.id;
+      const info = args[0] || {};
+      const id = 'c' + ++nextPort;
+      const opened = port(id, info.name === undefined ? '' : String(info.name));
+      // Another extension takes no port from this world.
+      if (target !== content.id) setTimeout(() => globalThis.__tiloExtensionContent.port(id, 'disconnect', null, NO_RECEIVER));
+      else tell('connect', {port: id, name: opened.name});
+      return opened;
+    },
+    onMessage,
+    onConnect,
+    lastError: undefined,
+  };
+  const storage = {local: area('local'), sync: area('sync'), session: area('session'), onChanged};
+  if (!content.declared) {
+    globalThis.chrome = {
+      runtime,
+      storage,
+      i18n: {
+        getMessage: message,
+        getUILanguage: () => content.language || navigator.language,
+      },
+    };
+  }
   Object.defineProperty(globalThis, '__tiloExtensionContent', {
     value: Object.freeze({
       settle(id, ok, value) {
@@ -87,9 +143,10 @@
         else waiting.reject(new Error(String(value)));
       },
       // A message for this world's listeners, answered as Chrome answers it:
-      // by the first reply, or with nothing.
+      // by the first reply, or with nothing (`none` when none listens).
       deliver(message, sender) {
         return new Promise((resolve) => {
+          if (!onMessage.listeners.size) { resolve({none: true}); return; }
           let replied = false;
           let waits = false;
           const reply = (value) => { if (!replied) { replied = true; resolve({reply: value === undefined ? null : value}); } };
@@ -101,6 +158,35 @@
           }
           if (!replied && !waits) resolve({});
         });
+      },
+      // The extension opened a port to this world: taken where a listener
+      // waits for one.
+      connect(id, name, sender) {
+        const listening = content.declared ? chrome.runtime.onConnect.hasListeners() : onConnect.listeners.size > 0;
+        if (!listening || ports.has(id)) return false;
+        const opened = port(id, name, sender);
+        if (content.declared) chrome.runtime.onConnect.dispatch(opened);
+        else fire(onConnect, opened);
+        return true;
+      },
+      // A message on a port, or its other end closing (with why, when it
+      // never opened).
+      port(id, op, value, error) {
+        const own = ports.get(id);
+        if (!own) return false;
+        if (op === 'message') {
+          fire(own.onMessage, value, own.port);
+          return true;
+        }
+        ports.delete(id);
+        runtime.lastError = error ? {message: error} : undefined;
+        try { fire(own.onDisconnect, own.port); } finally { runtime.lastError = undefined; }
+        return true;
+      },
+      // The extension's storage changed, wherever it was changed.
+      changed(changes, name) {
+        fire(onChanged, changes, name);
+        if (storage[name]) fire(storage[name].onChanged, changes);
       },
     }),
   });

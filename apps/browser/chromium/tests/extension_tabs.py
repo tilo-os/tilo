@@ -8,7 +8,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   with the page it was clicked over, which it may then script (activeTab).
 - A popup's "current tab" is the page it was opened over, with its address
   for an extension with the tabs permission and without it for one without.
-- A worker and its content script talk both ways by the tab's id, and the id
+- A worker and its content script talk both ways by the tab's id, by
+  messages and over a port the worker opens, and the id
   a message comes from is one the tab APIs know.
 - A popup can open a tab, which the Browser is asked to open, and is given
   the tab once it opens.
@@ -16,6 +17,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A click reaches a worker that went to sleep, which wakes for it.
 - A script a click injects where the extension has no content script of its
   own gets a content script's storage, i18n and messaging, both ways.
+- Such a script and the worker open ports to each other, either way, and
+  the script hears of the extension's storage changing.
+- Such a script's message and port reach the extension's open popup when
+  its worker answers neither.
 - A tab is captured as it shows, as PNG or JPEG at the quality asked for, by
   an extension given it by a click or with access to every site, and by no
   other; at most twice a second, as Chrome allows.
@@ -258,7 +263,7 @@ class ExtensionTabs(unittest.TestCase):
         host, ids = self.start('messenger', access={'messenger': ([], ['http://127.0.0.1/*'])})
         host.navigate(self.url + '/talk')
         answer = json.loads(self.title(host, 1, 'messenger:')[len('messenger:'):])
-        self.assertEqual(answer, {'known': True, 'pong': 'pong:/talk:true'})
+        self.assertEqual(answer, {'known': True, 'pong': 'pong:/talk:true', 'ported': 'ping:declared:true'})
 
 
     def test_a_script_injected_on_a_click_works_as_a_content_script(self):
@@ -316,6 +321,30 @@ class ExtensionTabs(unittest.TestCase):
             self.assertEqual(jpeg_size(image(url, 'jpeg')), (800, 600))
         self.assertEqual([entry['value'] for entry in burst if not entry['ok']],
                          ['This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.'])
+
+    def test_a_script_injected_on_a_click_and_the_worker_talk_over_ports(self):
+        host, ids = self.start('porter', access={'porter': (['activeTab', 'scripting', 'storage'], [])})
+        host.navigate(self.url + '/ported')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['porter'])
+        seen = json.loads(self.title(host, 1, 'ported:')[len('ported:'):])
+        self.assertEqual(seen, {
+            'named': 'from-worker', 'echo': 'hello', 'pong': 'ping:true', 'unanswered': True,
+            'changed': 'green>blue', 'area': True, 'closed': True,
+        })
+
+    def test_a_script_a_popup_injects_reaches_the_popup_when_the_worker_does_not_answer(self):
+        host, ids = self.start('pager', access={'pager': (['activeTab', 'scripting'], [])})
+        host.navigate(self.url + '/paged')
+        host.settle(1.0)
+        # The Browser opens the popup over the page, which the popup may then
+        # script, as after a click.
+        host.send(op='create_tab', tab=2)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
+        host.send(op='extension_panel', tab=2, action=ids['pager'])
+        host.send(op='resize', tab=2, width=360, height=200, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=f'chrome-extension://{ids["pager"]}/popup.html')
+        self.assertEqual(self.title(host, 1, ('paged:', 'failed:')), 'paged:page:true|port:hi')
 
     def test_a_worker_hears_of_a_page_that_finished_loading(self):
         host, ids = self.start('watcher', access={'watcher': (['scripting'], ['http://127.0.0.1/*'])})
