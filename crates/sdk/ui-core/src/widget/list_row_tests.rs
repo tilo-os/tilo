@@ -843,3 +843,17 @@ fn collect<'a>(node: &'a InspectionNode, widget: &str, out: &mut Vec<&'a Inspect
         collect(child, widget, out);
     }
 }
+
+#[test]
+fn a_rows_skeleton_paints_where_the_row_does() {
+    let theme = crate::theme::Theme::dark();
+    let row = ListRow::new("task", "Water the plants").secondary("Today");
+    let h = FrameHarness::for_root(crate::State::new(), row, (480, 80), theme.clone());
+    let row = h.root::<ListRow>();
+    let skeleton = crate::widget::SkeletonFace::new(crate::widget::SkeletonShape::Row(row.shape()));
+    assert_eq!(
+        skeleton.painted_rect(row.get_rect(), &theme),
+        row.outer(),
+        "the skeleton's bars start where the row's text does"
+    );
+}

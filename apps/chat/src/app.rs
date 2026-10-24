@@ -821,6 +821,12 @@ pub struct ChatApp {
     /// Where attachment bytes live. Messages carry only content hashes; the
     /// import worker and the image fetcher each hold a clone.
     pub(crate) content: ContentStore,
+    /// The attachments' bytes as reads ([`ui::arriving`]): here, on their
+    /// way from the room, or with no device that has them.
+    pub(crate) content_reads: ui::collaboration::record_content::ContentReads,
+    /// When the next attachment on its way steps its placeholder on, as the
+    /// last frame painted them.
+    pub(crate) arriving_wake: std::cell::Cell<Option<ui::time::Instant>>,
 
     // Layout + render caches.
     pub(crate) rect: Rect,
@@ -1112,6 +1118,8 @@ impl ChatApp {
             #[cfg(test)]
             dispatched_parts: std::cell::RefCell::default(),
             images: ui::ImageStore::new(&crate::images::fetcher(content.clone())),
+            content_reads: ui::collaboration::record_content::ContentReads::new(content.clone()),
+            arriving_wake: std::cell::Cell::new(None),
             content,
             rect: Rect::ZERO,
             root_node: None,
@@ -4395,6 +4403,8 @@ impl Widget for ChatApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The attachments painted below say when they step on next.
+        self.arriving_wake.set(None);
         // Adopt this theme's chrome and advance the drawers for this frame.
         self.layout_text_scale = theme.text_scale;
         self.advance_flaps(theme);
@@ -4869,7 +4879,13 @@ impl Widget for ChatApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.native_voice.next_deadline(ui::time::now())
+        // An attachment on its way steps its placeholder on at its
+        // deadline; its bytes arriving wake the window themselves.
+        self.native_voice
+            .next_deadline(ui::time::now())
+            .into_iter()
+            .chain(self.arriving_wake.get())
+            .min()
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -4886,7 +4902,12 @@ impl Widget for ChatApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.canonical_dirty || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
+        self.canonical_dirty
+            || (self.thread_open.is_some() && self.thread_scroll.needs_redraw())
+            || self
+                .arriving_wake
+                .get()
+                .is_some_and(|at| at <= ui::motion::frame_now())
     }
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         if self.needs_redraw() || self.paint_damage.is_recorded() {

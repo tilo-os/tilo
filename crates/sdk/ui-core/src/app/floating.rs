@@ -993,6 +993,12 @@ impl App {
     }
     #[cfg(feature = "native")]
     fn reattach_after_floating_service_loss(&mut self) {
+        // A window still waiting for the shell's first word never gets
+        // it: what its room holds says it cannot arrive.
+        if crate::room_sync::shell_lost() {
+            self.layout.layout_dirty = true;
+            self.layout.request_rebuild();
+        }
         // The bar that showed the app's slots is gone with the shell; a new
         // connection is told them afresh.
         crate::window_toolbar::set_hosted(false);

@@ -27,14 +27,19 @@ pub(super) use query_view::SearchView;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{AppModel, ModelPath};
 
+use ui::arriving::{ArrivalClock, Source};
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
+
+/// A track's row: its title and the line under it. Real rows and the rows
+/// on their way take its geometry.
+pub(crate) const TRACK_ROW: ui::widget::RowShape = ui::widget::RowShape::TITLE.with_secondary(1);
 use ui::widget::data_table::DataTableFace;
 use ui::widget::{
-    Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
-    MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
+    ArrivalFace, Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent,
+    MediaArt, MediaCardFace, MediaSize, SkeletonShape,
 };
 use vello::peniko::BlendMode;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -1342,8 +1347,6 @@ impl Widget for MusicApp {
             || self.images_pending()
             || self.lyrics_pending_for.is_some()
             || self.search_edit_at.is_some()
-            || self.home_is_loading()
-            || self.detail_loading()
             // Keep frames flowing so the download spinner spins + progresses.
             || !self.downloads.is_empty()
             || !self.offline_resolves.is_empty()
@@ -1360,6 +1363,9 @@ impl Widget for MusicApp {
             .into_iter()
             .chain(self.toast.deadline())
             .chain(self.search.next_placeholder_step(ui::time::now()))
+            // What is on its way from the catalogue steps on at its
+            // deadlines; its answer wakes the window itself.
+            .chain(self.arriving_step_at(ui::time::now()))
             .chain(
                 self.children()
                     .into_iter()
@@ -2065,13 +2071,13 @@ impl MusicApp {
     /// Home skeleton *and* the animation loop, so a failed/offline fetch stops
     /// both instead of shimmering (and spinning frames) forever.
     pub(crate) fn home_is_loading(&self) -> bool {
-        self.home_requested && self.home.is_none() && !self.home_failed
+        self.home_asked.is_some() && self.home.is_none() && !self.home_failed
     }
 
-    /// Whether the current detail view is a real (live) artist/album page whose
-    /// content hasn't landed yet — so its loading skeleton must keep animating.
-    fn detail_loading(&self) -> bool {
-        match &self.view {
+    /// The real (live) artist, album or playlist page the current view
+    /// shows whose content has not landed yet.
+    fn loading_page(&self) -> Option<&str> {
+        let loading = match &self.view {
             View::Artist(id) => {
                 is_live_id(id)
                     && !self.artist_pages.contains_key(id)
@@ -2091,6 +2097,10 @@ impl MusicApp {
                     && !self.failed_pages.contains(id)
             }
             _ => false,
+        };
+        match &self.view {
+            View::Artist(id) | View::Album(id) | View::Playlist(id) if loading => Some(id),
+            _ => None,
         }
     }
 
@@ -2848,9 +2858,14 @@ impl MusicApp {
             extent,
             f64::from(theme.tokens.spacing.rhythm.section),
         );
-        let heading = SkeletonFace::new(SkeletonShape::Text { lines: 1 });
+        let now = ui::time::now();
+        let since = self.home_asked.unwrap_or(now);
+        let (named, quiet) = self.arriving_clocks(since);
         let clip = self.body_rect;
-        for _ in 0..2 {
+        for section in 0..2 {
+            // The first heading says where Home comes from, once it says it.
+            let clock = if section == 0 { &named } else { &quiet };
+            let heading = ArrivalFace::new(SkeletonShape::Text { lines: 1 }, clock, now);
             let w = (extent * 1.5).min(right - left);
             let h = heading.height(ctx.text, theme, w);
             heading.paint(ctx, Rect::new(left, y, left + w, y + h));
@@ -2862,12 +2877,33 @@ impl MusicApp {
                     .push(super::media_grid::MediaGridHost::new());
             }
             if let Some(grid) = self.media_grids.get_mut(index) {
-                grid.update_loading(columns);
+                grid.update_arriving(columns, quiet.source(), since);
                 y = grid.place(ctx, (left, right), y, clip);
             }
             y += look.gutter;
         }
         y
+    }
+
+    /// The clocks of what is on its way from the catalogue, asked at
+    /// `since`: one whose placeholder says where it comes from, and one for
+    /// the placeholders around it, which keep quiet.
+    fn arriving_clocks(&self, since: Instant) -> (ArrivalClock, ArrivalClock) {
+        (
+            ArrivalClock::new(since, Source::host(self.backend_name.as_str())),
+            ArrivalClock::new(since, Source::host("")),
+        )
+    }
+
+    /// When the placeholder of what is on its way steps on next.
+    pub(crate) fn arriving_step_at(&self, now: Instant) -> Option<Instant> {
+        let since = if self.home_is_loading() {
+            self.home_asked
+        } else {
+            self.loading_page()
+                .and_then(|id| self.pages_asked.get(id).copied())
+        }?;
+        self.arriving_clocks(since).0.next_step_at(now)
     }
 
     // ---- media grids ------------------------------------------------------
@@ -3674,7 +3710,7 @@ impl MusicApp {
             if self.failed_pages.contains(id) {
                 return self.draw_detail_error(ctx, body, y, "album");
             }
-            return Self::draw_loading_detail(ctx, look, body, y);
+            return self.draw_loading_detail(ctx, look, body, y, id);
         }
         let (title, artist, year, ids) = {
             let al = self.lib.album(id);
@@ -3761,19 +3797,37 @@ impl MusicApp {
 
     /// A detail page while it loads: the shapes of its cover, title and
     /// rows, so nothing moves when the content lands.
-    fn draw_loading_detail(ctx: &mut PaintCtx<'_>, look: &Look, body: Rect, y: f64) -> f64 {
+    /// Its space is reserved from the start; the framework's placeholder
+    /// steps through it ([`ArrivalFace`]), the first row saying where the
+    /// page comes from once it says it.
+    fn draw_loading_detail(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        look: &Look,
+        body: Rect,
+        y: f64,
+        id: &str,
+    ) -> f64 {
         let theme = ctx.theme;
+        let now = ui::time::now();
+        let since = self.pages_asked.get(id).copied().unwrap_or(now);
+        let (named, quiet) = self.arriving_clocks(since);
         let mut y = y + look.gutter;
         let left = body.x0 + look.gutter;
         let right = body.x1 - look.gutter;
         let side = MediaSize::Small.extent(theme).min(right - left);
-        let cover = SkeletonFace::new(SkeletonShape::Media(ui::widget::MediaAspect::Square));
+        let cover = ArrivalFace::new(
+            SkeletonShape::Media(ui::widget::MediaAspect::Square),
+            &quiet,
+            now,
+        );
         let cover_h = cover.height(ctx.text, theme, side);
         cover.paint(ctx, Rect::new(left, y, left + side, y + cover_h));
         y += cover_h + look.gutter;
-        let row = SkeletonFace::new(SkeletonShape::Row);
-        let row_h = row.height(ctx.text, theme, right - left);
-        for _ in 0..6 {
+        for index in 0..6 {
+            let clock = if index == 0 { &named } else { &quiet };
+            let row = ArrivalFace::new(SkeletonShape::Row(TRACK_ROW), clock, now);
+            let row_h = row.height(ctx.text, theme, right - left);
             row.paint(ctx, Rect::new(left, y, right, y + row_h));
             y += row_h;
         }
@@ -3832,7 +3886,7 @@ impl MusicApp {
             if self.failed_pages.contains(id) {
                 return self.draw_detail_error(ctx, body, y, "artist");
             }
-            return Self::draw_loading_detail(ctx, look, body, y);
+            return self.draw_loading_detail(ctx, look, body, y, id);
         }
         let (name, genre, listeners, top_ids, albums) = {
             let ar = self.lib.artist(id);
@@ -4082,7 +4136,7 @@ impl MusicApp {
             if self.failed_pages.contains(id) {
                 return self.draw_detail_error(ctx, body, y, "playlist");
             }
-            return Self::draw_loading_detail(ctx, look, body, y);
+            return self.draw_loading_detail(ctx, look, body, y, id);
         }
 
         let (name, desc, ids) = {
@@ -4116,9 +4170,7 @@ impl MusicApp {
             && playlist == id
         {
             if let Some(index) = ids.iter().position(|candidate| candidate == track) {
-                let row_h = ui::widget::ListRowFace::new("")
-                    .secondary("")
-                    .height(ctx.text, ctx.theme);
+                let row_h = TRACK_ROW.height(ctx.text, ctx.theme);
                 let scrolled = self.scroll_y();
                 let row_document_y = y + scrolled + index as f64 * row_h;
                 let content_document_end = y + scrolled + ids.len() as f64 * row_h + look.gutter;

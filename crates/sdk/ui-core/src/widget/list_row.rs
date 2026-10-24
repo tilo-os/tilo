@@ -2875,11 +2875,18 @@ impl ListRow {
     }
 }
 
+impl crate::widget::ReservedShape for ListRow {
+    fn reserved_shape(&self) -> crate::widget::SkeletonShape {
+        crate::widget::SkeletonShape::Row(self.shape())
+    }
+}
+
 impl Widget for ListRow {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+        dyn crate::widget::ResourceOperations,
+        dyn crate::widget::ReservedShape
     );
 
     fn set_interaction_environment(
@@ -3808,6 +3815,10 @@ impl crate::widget::Decorator for ControlRow {
         }
     }
 }
+
+#[path = "list_row_shape.rs"]
+mod shape;
+pub use shape::{RowLeadingShape, RowShape};
 
 #[cfg(test)]
 #[path = "list_row_tests.rs"]

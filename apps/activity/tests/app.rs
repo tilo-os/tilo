@@ -22,6 +22,15 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
+/// Whether the window says `text`, as a name or description a screen
+/// reader reads.
+fn says(app: &mut TestApp<App>, text: &str) -> bool {
+    app.harness().a11y_nodes().iter().any(|(_, node)| {
+        node.label().is_some_and(|label| label.contains(text))
+            || node.description().is_some_and(|said| said.contains(text))
+    })
+}
+
 #[test]
 fn every_scenario_shows_its_place_built_from_components() {
     english();
@@ -189,7 +198,10 @@ fn a_refused_read_says_so_instead_of_showing_history() {
             },
         });
     app.frame();
-    assert!(shows(&mut app, "activity-whats-new-unread"));
+    assert!(
+        says(&mut app, "Only members read this workspace's history"),
+        "the refusal says why"
+    );
     assert!(!shows(&mut app, "activity-brief-0"));
 }
 

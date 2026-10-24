@@ -142,6 +142,22 @@ where
         self
     }
 
+    /// The subtree showing now.
+    pub(crate) fn child(&self) -> &dyn Widget {
+        self.child.as_ref()
+    }
+
+    /// The subtree showing now, mutably.
+    pub(crate) fn child_mut(&mut self) -> &mut dyn Widget {
+        self.child.as_mut()
+    }
+
+    /// Take the subtree showing now out of the view, `with` standing in it.
+    pub(crate) fn replace_child(&mut self, with: Element) -> Element {
+        self.structure_dirty = true;
+        std::mem::replace(&mut self.child, with)
+    }
+
     /// Reconcile a time-sensitive projection through the host's existing wake
     /// scheduler, including while the window is idle. Return None once the
     /// projection no longer needs a deadline; this never starts a polling loop.

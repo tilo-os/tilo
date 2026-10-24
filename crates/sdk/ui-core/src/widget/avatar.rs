@@ -191,6 +191,12 @@ impl<'a> AvatarFace<'a> {
         self
     }
 
+    /// Whether it is the rounded square rather than the circle.
+    #[must_use]
+    pub fn is_square(&self) -> bool {
+        self.square
+    }
+
     /// Paint a separator ring of `ground` around the avatar, for avatars that
     /// overlap in a cluster. `ground` is the surface the cluster sits on.
     #[must_use]

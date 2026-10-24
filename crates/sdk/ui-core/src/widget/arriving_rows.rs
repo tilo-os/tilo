@@ -232,6 +232,10 @@ struct RowArrivals {
     free: Vec<usize>,
     /// When the widget last drew what these rows show.
     drawn_at: Option<Instant>,
+    /// The sources named in the frame painted at the instant it holds: the
+    /// rows are one region, so each source is named on its first pending
+    /// row painted, not on every row.
+    named: std::cell::RefCell<(Option<Instant>, crate::widget::NamedOnce)>,
 }
 
 impl RowArrivals {
@@ -321,8 +325,19 @@ impl RowArrivals {
                 Step::Shown => row.clock.replaced_step(),
                 step => step,
             };
-            ArrivalFace::at_step(shape, step, row.clock.source())
+            self.named_once(ArrivalFace::at_step(shape, step, row.clock.source()), now)
         })
+    }
+
+    /// `face`, naming its source if no row painted before it at `now` did:
+    /// a placeholder or the face an answer fades out, so the line that
+    /// named the source stays as the answer lands.
+    fn named_once<'a>(&self, face: ArrivalFace<'a>, now: Instant) -> ArrivalFace<'a> {
+        let mut named = self.named.borrow_mut();
+        if named.0 != Some(now) {
+            *named = (Some(now), crate::widget::NamedOnce::default());
+        }
+        face.named_once(&mut named.1)
     }
 
     fn fade(&self, slot: usize, now: Instant) -> Option<RowFade> {
@@ -348,7 +363,7 @@ impl RowArrivals {
         let (step, opacity) = self.fade(slot, now)?.outgoing?;
         let row = self.row(slot)?;
         Some((
-            ArrivalFace::at_step(shape, step, row.clock.source()),
+            self.named_once(ArrivalFace::at_step(shape, step, row.clock.source()), now),
             opacity,
         ))
     }

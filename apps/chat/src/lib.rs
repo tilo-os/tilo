@@ -64,6 +64,7 @@ pub mod geometry;
 mod host_model;
 pub mod i18n;
 pub mod identity;
+mod image_arrival;
 pub mod images;
 mod live_context;
 mod local_voice;

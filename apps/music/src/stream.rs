@@ -14,7 +14,7 @@
 //! search) — never during `--shots` or layout — so the screenshot path stays
 //! hermetic and no thread or socket is created for a headless render.
 
-use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
 
 use crate::backend::{
     AlbumPage, ArtistPage, HomeContent, MusicBackend, PlaylistPage, ResolvedStream, SearchBundle,
@@ -150,7 +150,7 @@ pub struct StreamWorker {
 struct Tasks {
     backend: std::sync::Arc<dyn MusicBackend>,
     requests: std::sync::Arc<std::sync::Mutex<Receiver<StreamRequest>>>,
-    updates: Sender<StreamUpdate>,
+    updates: ui::wake::WakingSender<StreamUpdate>,
 }
 
 impl StreamWorker {
@@ -176,7 +176,9 @@ impl StreamWorker {
 
     fn spawn_inner(force_offline: bool) -> Self {
         let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
-        let (up_tx, up_rx) = std::sync::mpsc::channel::<StreamUpdate>();
+        // Every update wakes the app, which drains them in its next sync:
+        // nothing pumps frames to poll the worker.
+        let (up_tx, up_rx) = ui::wake::waking_channel::<StreamUpdate>();
 
         if !ui::rt::available(ui::rt::Feature::Threads) {
             let backend: std::sync::Arc<dyn MusicBackend> =
@@ -248,7 +250,7 @@ impl StreamWorker {
     #[cfg(test)]
     fn unavailable_for_test() -> Self {
         let (tx, _request_rx) = std::sync::mpsc::sync_channel::<StreamRequest>(REQUEST_QUEUE_LIMIT);
-        let (_update_tx, rx) = std::sync::mpsc::channel::<StreamUpdate>();
+        let (_update_tx, rx) = ui::wake::waking_channel::<StreamUpdate>();
         Self {
             tx,
             rx,
@@ -311,14 +313,21 @@ fn validate_request(request: &StreamRequest) -> Result<(), String> {
     Ok(())
 }
 
-fn run_worker(req_rx: &Receiver<StreamRequest>, up_tx: &Sender<StreamUpdate>, force_offline: bool) {
+fn run_worker(
+    req_rx: &Receiver<StreamRequest>,
+    up_tx: &ui::wake::WakingSender<StreamUpdate>,
+    force_offline: bool,
+) {
     let backend = open_backend(up_tx, force_offline);
     while let Ok(request) = req_rx.recv() {
         handle_request(backend.as_ref(), up_tx, request);
     }
 }
 
-fn open_backend(up_tx: &Sender<StreamUpdate>, force_offline: bool) -> Box<dyn MusicBackend> {
+fn open_backend(
+    up_tx: &ui::wake::WakingSender<StreamUpdate>,
+    force_offline: bool,
+) -> Box<dyn MusicBackend> {
     // Build the data source once. `preferred_backend` picks live rustypipe if
     // compiled + reachable, else the offline sample.
     let backend = if force_offline {
@@ -344,7 +353,7 @@ fn open_backend(up_tx: &Sender<StreamUpdate>, force_offline: bool) -> Box<dyn Mu
 )]
 fn handle_request(
     backend: &dyn MusicBackend,
-    up_tx: &Sender<StreamUpdate>,
+    up_tx: &ui::wake::WakingSender<StreamUpdate>,
     request: StreamRequest,
 ) {
     match request {

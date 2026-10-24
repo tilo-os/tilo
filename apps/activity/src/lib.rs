@@ -190,23 +190,6 @@ pub(crate) fn ago(at_ms: i64) -> String {
     ui::format_relative_time(at, SystemTime::now())
 }
 
-/// Why a read shows nothing: still reading, refused, or failed.
-pub(crate) fn unanswered<T>(answer: &Answer<T>, id: &str) -> Option<Element> {
-    let state = match answer {
-        Answer::Ready(_) => return None,
-        Answer::Loading => {
-            EmptyState::new(tr("activity-reading")).with_icon(ui::icons::Icon::Clock)
-        }
-        Answer::Denied(why) => EmptyState::new(tr("activity-denied"))
-            .with_message(why.clone())
-            .with_icon(ui::icons::Icon::Lock),
-        Answer::Failed(why) => EmptyState::new(tr("activity-unreadable"))
-            .with_message(why.clone())
-            .with_icon(ui::icons::Icon::CircleAlert),
-    };
-    Some(Box::new(state.with_id(id)))
-}
-
 /// A page of the window: its content in a readable column that scrolls.
 pub(crate) fn page(content: Vec<Element>) -> Element {
     let mut column = Column::new()
@@ -274,8 +257,8 @@ impl ResourceApp for App {
         let provider = Provider::of(cx);
         let focus = provider.follow::<Option<wire::Focus>>(wire::FOCUS, None::<&()>);
         let shown = nav;
-        cx.switch(&focus.answer(), move |cx, answer| {
-            if let Answer::Ready(Some(focus)) = answer {
+        cx.switch(&focus.answer().state(), move |cx, answer| {
+            if let Arrival::Ready(Some(focus)) = answer {
                 show_focus(cx, &shown, focus);
             }
             let nav = shown.clone();

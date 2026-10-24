@@ -1638,25 +1638,15 @@ impl ChatApp {
             }
             Attachment::Image { blob, .. } => {
                 let image = self.images.get(&crate::images::blob_key(blob));
-                let status = if image.is_some() {
-                    None
-                } else if blob.starts_with(crate::images::DEMO_SCHEME) {
-                    Some("Loading")
-                } else {
-                    Some(match self.content.state(blob) {
-                        tilo_content::ContentState::Pending => "Loading",
-                        tilo_content::ContentState::Waiting => "Waiting for a device that has it",
-                        tilo_content::ContentState::Unavailable => "Unavailable",
-                        tilo_content::ContentState::Resolved => "Opening",
-                    })
-                };
                 let mut meta = media_meta(att);
-                if let Some(status) = status {
-                    meta.push(status.to_owned());
-                }
-                let art = image
-                    .as_ref()
-                    .map_or(MediaArt::Placeholder, MediaArt::Image);
+                let step = (image.is_none() && !blob.starts_with(crate::images::DEMO_SCHEME))
+                    .then(|| self.image_arrival(blob, &mut meta))
+                    .flatten();
+                let art = match (&image, step) {
+                    (Some(image), _) => MediaArt::Image(image),
+                    (None, Some(step)) => MediaArt::Arriving(step),
+                    (None, None) => MediaArt::Placeholder,
+                };
                 let (w, face) = media_face(att, art, &meta, max_w, theme);
                 let h = face.height(ctx.text, theme, w);
                 face.paint(
