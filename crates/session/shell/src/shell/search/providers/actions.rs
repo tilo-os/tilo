@@ -489,12 +489,6 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.kind = ActionKind::Undoable;
             contract.reversible = true;
         }
-        // The person's list order, undone by the opposite move.
-        "workspace.move-earlier" | "workspace.move-later" => {
-            contract.kind = ActionKind::Undoable;
-            contract.retry = RetryPolicy::AtMostOnce;
-            contract.reversible = true;
-        }
         // Clearing notifications is undone by bringing them back while the
         // undo lasts.
         "notifications.clear"
@@ -528,8 +522,11 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        // Layout, undone by the opposite move.
-        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
+        // Layout, and the order of the person's workspaces, undone by the
+        // opposite move.
+        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id)
+            || matches!(id, "workspace.move-earlier" | "workspace.move-later") =>
+        {
             contract.kind = ActionKind::Undoable;
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
