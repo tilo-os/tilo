@@ -44,16 +44,17 @@ def check_password_state(reply: dict, expected: int) -> None:
         raise RuntimeError(f"the lock screen did not consume synthetic key {expected}")
 
 
-def wait_password_state(control, expected: int, timeout: float = 5) -> None:
+def wait_password_state(control, expected: int, timeout: float = 5, previous: int | None = None) -> None:
     # Seat input is queued for the input funnel; its acknowledgement is not
     # proof that the next dispatch has consumed it. Bound that asynchronous
     # handoff rather than mistaking a stale state reply for a dropped key.
     deadline = time.monotonic() + timeout
+    previous = expected - 1 if previous is None else previous
     while True:
         reply = require_success(control.send({"op": "state_dump"}))
         state = reply["state"]["chrome"]
         length = state["lock_auth"]["password_len"]
-        if not state["session_locked"] or length >= expected or time.monotonic() >= deadline:
+        if not state["session_locked"] or length != previous or time.monotonic() >= deadline:
             check_password_state(reply, expected)
             return
         threading.Event().wait(0.001)
@@ -73,6 +74,12 @@ def summarize(trace: Path, log: str, keys: int) -> dict:
     if len(frames) < keys:
         raise ValueError(f"only {len(frames)} rendered frames for {keys} keys")
     result["render_frame_us"] = latency.distribution(frames[-keys:])
+    painted = list(latency.PAINT_LINE.finditer(log))
+    if len(painted) < keys:
+        raise ValueError(f"only {len(painted)} paint-area measurements for {keys} keys")
+    typing = painted[-keys:]
+    result["raster_pixels"] = latency.pixel_distribution([int(match[2]) for match in typing])
+    result["dense_frames"] = sum(match[3] == "1" for match in typing)
     # These are CPU wall times, not GPU timestamps. In particular, the render
     # duration includes command submission and waiting for GPU completion.
     for name, pattern in (
@@ -119,9 +126,16 @@ def measure(args: argparse.Namespace) -> dict:
             require_success(control.send({"op": "actions_invoke", "provider": "session", "id": "lock"}))
             wait(args.settle)
             wait_password_state(control, 0)
+            length = 0
             for index in range(args.keys):
-                require_success(control.send({"op": "seat_key", "key": "a"}))
-                wait_password_state(control, index + 1)
+                # Every sample must visibly change the field. Repeatedly adding
+                # past its 18-dot cap would benchmark an unchanged image instead.
+                adding = index % 32 < 16
+                key = "a" if adding else "Backspace"
+                previous = length
+                length += 1 if adding else -1
+                require_success(control.send({"op": "seat_key", "key": key}))
+                wait_password_state(control, length, previous=previous)
                 wait(args.interval_ms / 1000)
             # Let the last key's owed frame retire before ending the trace.
             wait(max(1.0, 3 / args.hz))

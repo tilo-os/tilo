@@ -1531,8 +1531,13 @@ and never submits a password. It checks every key reached the locked field and
 requires both rendering and retirement samples. Results under `target/lock-bench`
 separate input-to-queue, simulated frame retirement, CPU submission and GPU
 completion waits; none is a measurement of a physical panel's photon latency.
-At HiDPI sizes, full-output lock-screen rasterisation can dominate even with an
-optimised CPU renderer; do not attribute that shared GPU cost to debug builds.
+The benchmark cycles typing and backspace below the field's dot cap so every
+sample visibly changes the image, and reports raster pixels and dense frames.
+Password-only edits should repaint the bounded password part, not the full
+output. The first lock frame, either lock edge, display changes and unproven
+scene differences remain full-frame boundaries. The nested backend retains its
+own render target and checks the same predecessor relation before sparse work;
+it never relies on a swapchain image retaining pixels.
 
 `--backend drm` is not an option from inside a running session: `libseat` will
 not hand you a seat the running desktop owns, and fails with `ENOSYS` (error
