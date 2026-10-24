@@ -737,8 +737,6 @@ fn join_json(join: &tilo_relay_protocol::rooms::JoinRequest) -> Value {
         "name": join.name,
         "role": role_name(super::pages::member_role(join.role)),
         "requested_at_ns": join.requested_at_ns,
-        // A request left at the door: the address its invitation goes to.
-        "contact": join.contact(),
     })
 }
 
