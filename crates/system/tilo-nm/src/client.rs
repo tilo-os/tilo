@@ -29,6 +29,10 @@ pub const ROOT_INTERFACE: &str = "org.freedesktop.NetworkManager";
 /// An active connection's interface.
 pub const ACTIVE_INTERFACE: &str = "org.freedesktop.NetworkManager.Connection.Active";
 const DEVICE_INTERFACE: &str = "org.freedesktop.NetworkManager.Device";
+/// The saved profiles' interface: a profile added or removed.
+const SETTINGS_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings";
+/// One saved profile's interface: it was edited or removed.
+const PROFILE_INTERFACE: &str = "org.freedesktop.NetworkManager.Settings.Connection";
 /// A Wi-Fi device's interface: `RequestScan` and the `LastScan` it advances.
 pub const WIRELESS_INTERFACE: &str = "org.freedesktop.NetworkManager.Device.Wireless";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
@@ -186,6 +190,63 @@ impl NmClient {
             sender,
         ));
         Ok(VpnWatch { receiver })
+    }
+
+    /// Follow every change a person can see in network settings: the
+    /// root's properties (radios, state, connectivity, the active
+    /// connections), a device or an active connection changing state (a
+    /// cable plugged in, a VPN coming up), a saved profile added, edited or
+    /// removed, and `NetworkManager` leaving or joining the bus. The
+    /// returned watch counts them; a reader re-reads what it shows when the
+    /// count moves. Signal strength and other access-point chatter are not
+    /// followed: they change all the time and a scan reads them.
+    ///
+    /// Must be called inside a tokio runtime; the follower runs there until
+    /// every clone of the watch is dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`NmError::Bus`] when the signal subscriptions cannot be made.
+    pub async fn watch_changes(&self) -> Result<NmChanges, NmError> {
+        let rules = [
+            (
+                Some(ROOT_PATH),
+                PROPERTIES_INTERFACE,
+                Some("PropertiesChanged"),
+                Some(ROOT_INTERFACE),
+            ),
+            (None, DEVICE_INTERFACE, Some("StateChanged"), None),
+            (None, ACTIVE_INTERFACE, Some("StateChanged"), None),
+            (None, SETTINGS_INTERFACE, None, None),
+            (None, PROFILE_INTERFACE, None, None),
+        ];
+        let mut streams = Vec::new();
+        for (path, interface, member, first) in rules {
+            let mut rule = MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .sender(BUS_NAME)?
+                .interface(interface)?;
+            if let Some(path) = path {
+                rule = rule.path(path)?;
+            }
+            if let Some(member) = member {
+                rule = rule.member(member)?;
+            }
+            if let Some(first) = first {
+                rule = rule.arg(0, first)?;
+            }
+            streams.push(
+                MessageStream::for_match_rule(rule.build(), &self.connection, Some(SIGNAL_QUEUE))
+                    .await?,
+            );
+        }
+        streams.push(name_owner_changes(&self.connection).await?);
+        let (sender, receiver) = watch::channel(0);
+        tokio::spawn(follow_changes(
+            futures_util::stream::select_all(streams),
+            sender,
+        ));
+        Ok(NmChanges { receiver })
     }
 
     /// Ask `NetworkManager` to probe its connectivity-check URI now, and
@@ -350,6 +411,28 @@ impl NmWatch {
     pub async fn changed(&mut self) -> Option<NetworkState> {
         self.receiver.changed().await.ok()?;
         Some(self.receiver.borrow_and_update().clone())
+    }
+}
+
+/// The changes [`NmClient::watch_changes`] follows, counted. Cloning shares
+/// the same follower.
+#[derive(Clone, Debug)]
+pub struct NmChanges {
+    receiver: watch::Receiver<u64>,
+}
+
+impl NmChanges {
+    /// How many changes there were so far.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        *self.receiver.borrow()
+    }
+
+    /// Wait for the next change, and return how many there were so far.
+    /// `None` once the follower has stopped (its bus connection closed).
+    pub async fn changed(&mut self) -> Option<u64> {
+        self.receiver.changed().await.ok()?;
+        Some(*self.receiver.borrow_and_update())
     }
 }
 
@@ -629,6 +712,24 @@ async fn follow(
             .await
             .unwrap_or_else(|_| NetworkState::unknown());
         publish(&sender, state);
+    }
+}
+
+/// Count each signal of `signals` until they end or nobody watches.
+async fn follow_changes(
+    mut signals: futures_util::stream::SelectAll<MessageStream>,
+    sender: watch::Sender<u64>,
+) {
+    loop {
+        let signal = tokio::select! {
+            () = sender.closed() => return,
+            signal = signals.next() => signal,
+        };
+        // Every stream ends with the connection.
+        if signal.is_none() {
+            return;
+        }
+        sender.send_modify(|count| *count = count.wrapping_add(1));
     }
 }
 
