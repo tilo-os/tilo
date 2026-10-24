@@ -70,6 +70,27 @@ const NETWORK_MOBILE: &str = "network-mobile";
 const NETWORK_MOBILE_ROAMING: &str = "network-mobile-roaming";
 const NETWORK_MOBILE_LOCKED: &str = "network-mobile-locked";
 const NETWORK_MOBILE_PUK: &str = "network-mobile-puk";
+const NETWORK_ALL: &str = "network-all";
+const NETWORK_PAGE: &str = "network-page";
+const NETWORK_VPN: &str = "network-vpn";
+const NETWORK_VPN_PROFILE: &str = "network-vpn-profile";
+const NETWORK_VPN_ADD: &str = "network-vpn-add";
+/// Every network capture.
+#[cfg(test)]
+const NETWORK_SCENARIOS: [&str; 12] = [
+    NETWORK_WIFI_OFF,
+    NETWORK_SCANNING,
+    NETWORK_KNOWN,
+    NETWORK_MOBILE,
+    NETWORK_MOBILE_ROAMING,
+    NETWORK_MOBILE_LOCKED,
+    NETWORK_MOBILE_PUK,
+    NETWORK_ALL,
+    NETWORK_PAGE,
+    NETWORK_VPN,
+    NETWORK_VPN_PROFILE,
+    NETWORK_VPN_ADD,
+];
 
 /// Devices & sync with a device's row open, asking whether to remove it.
 const DEVICES_REMOVE: &str = "devices-remove";
@@ -128,6 +149,11 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_MOBILE_ROAMING,
                 NETWORK_MOBILE_LOCKED,
                 NETWORK_MOBILE_PUK,
+                NETWORK_ALL,
+                NETWORK_PAGE,
+                NETWORK_VPN,
+                NETWORK_VPN_PROFILE,
+                NETWORK_VPN_ADD,
                 DEVICES_REMOVE,
                 SPEAKERS_LAYOUT,
                 SPEAKERS_LAYOUT_PICKED,
@@ -228,8 +254,18 @@ pub enum NetworkSample {
     WifiOff,
     /// Wi-Fi is on and looking, nothing found yet.
     Scanning,
-    /// Connected, with a known network's details open.
+    /// The known networks.
     Known,
+    /// Every network in range.
+    AllNetworks,
+    /// The page of the network in use.
+    NetworkPage,
+    /// The VPN list.
+    VpnList,
+    /// A `WireGuard` tunnel's page.
+    VpnProfile,
+    /// The kinds of VPN that can be added.
+    AddVpn,
 }
 
 /// Where the mobile captures' modem stands.
@@ -344,6 +380,11 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_WIFI_OFF) => Some(NetworkSample::WifiOff),
             Some(NETWORK_SCANNING) => Some(NetworkSample::Scanning),
             Some(NETWORK_KNOWN) => Some(NetworkSample::Known),
+            Some(NETWORK_ALL) => Some(NetworkSample::AllNetworks),
+            Some(NETWORK_PAGE) => Some(NetworkSample::NetworkPage),
+            Some(NETWORK_VPN) => Some(NetworkSample::VpnList),
+            Some(NETWORK_VPN_PROFILE) => Some(NetworkSample::VpnProfile),
+            Some(NETWORK_VPN_ADD) => Some(NetworkSample::AddVpn),
             _ => None,
         },
         mobile: match fixture.scenario() {
@@ -629,6 +670,11 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             NETWORK_WIFI_OFF
             | NETWORK_SCANNING
             | NETWORK_KNOWN
+            | NETWORK_ALL
+            | NETWORK_PAGE
+            | NETWORK_VPN
+            | NETWORK_VPN_PROFILE
+            | NETWORK_VPN_ADD
             | NETWORK_MOBILE
             | NETWORK_MOBILE_ROAMING
             | NETWORK_MOBILE_LOCKED
@@ -787,7 +833,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 34 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 39 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -801,15 +847,7 @@ mod tests {
         ] {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Displays));
         }
-        for scenario in [
-            NETWORK_WIFI_OFF,
-            NETWORK_SCANNING,
-            NETWORK_KNOWN,
-            NETWORK_MOBILE,
-            NETWORK_MOBILE_ROAMING,
-            NETWORK_MOBILE_LOCKED,
-            NETWORK_MOBILE_PUK,
-        ] {
+        for scenario in NETWORK_SCENARIOS {
             assert_eq!(staged(Some(scenario)), Staged::Pane(Category::Network));
         }
         for scenario in [

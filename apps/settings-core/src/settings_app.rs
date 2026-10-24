@@ -134,6 +134,9 @@ pub struct SettingsApp {
     /// page was opened from it.
     found_over: Option<NavPane>,
     value_follows: crate::setting::Follows,
+    /// The revision of the pages the panes drilled into
+    /// ([`crate::pages::PanePages`]) the content was last built for.
+    pages_seen: u64,
 }
 
 impl Default for SettingsApp {
@@ -195,6 +198,7 @@ impl SettingsApp {
             found_reads: Vec::new(),
             found_over: None,
             value_follows: crate::setting::Follows::default(),
+            pages_seen: 0,
         }
     }
 
@@ -284,6 +288,9 @@ impl SettingsApp {
         }
         if self.selected != category {
             self.selected = category;
+            // Another pane opens on its first page.
+            self.cx.pages().clear();
+            self.pages_seen = self.cx.pages().revision();
             self.structure_dirty = true;
             self.refresh_shell_children();
         }
@@ -433,6 +440,8 @@ impl SettingsApp {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }
         }
+        // One trail of pages for the window's header and every pane.
+        let cx = cx.with_pages(self.cx.pages().clone());
         self.areas = crate::area::Areas::of(&crate::area::AreaContext {
             cx: &cx,
             account_root: &self.account_root,
@@ -664,6 +673,10 @@ impl SettingsApp {
             &self.staged_filter,
             &self.sidebar_selection,
         );
+        // A page a pane drilled into has the shell's Back chip; Back leaves
+        // it for the page under it.
+        let can_go_back = self.cx.pages().clone();
+        let go_back = self.cx.pages().clone();
         let mut shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("settings.shell")
@@ -671,7 +684,13 @@ impl SettingsApp {
             .sidebar(nav)
             .sidebar_header("", Vec::new())
             .content(self.build_content())
-            .content_header(self.content_title(), Vec::new());
+            .content_header(self.content_title(), Vec::new())
+            .on_back(
+                move || can_go_back.can_go_back(),
+                move || {
+                    go_back.back();
+                },
+            );
         shell.show(self.narrow_screen);
         shell
     }
@@ -680,7 +699,10 @@ impl SettingsApp {
     /// search found.
     fn content_title(&self) -> String {
         if self.found.is_empty() {
-            self.selected.label()
+            self.cx
+                .pages()
+                .top(self.selected)
+                .map_or_else(|| self.selected.label(), |page| page.title)
         } else {
             crate::i18n::t("settings-found-title")
         }
@@ -967,6 +989,16 @@ impl Widget for SettingsApp {
                 && !self.areas.iter().any(crate::area::PaneArea::partial))
         {
             self.keyboard_partial.set(false);
+            self.structure_dirty = true;
+            self.refresh_shell_children();
+        }
+
+        // A pane drilled into a page or came back out of one: the page is
+        // built from its top, titled in the header.
+        let pages = self.cx.pages().revision();
+        if pages != self.pages_seen {
+            self.pages_seen = pages;
+            self.pane_scroll.borrow_mut().remove(&self.selected);
             self.structure_dirty = true;
             self.refresh_shell_children();
         }

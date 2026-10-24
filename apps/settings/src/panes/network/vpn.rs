@@ -1,0 +1,1619 @@
+//! VPN: the tunnels `NetworkManager` knows, each switched on or off from
+//! the list, opened on a page of its own to change, export or delete it, and
+//! added from a `WireGuard` form, an installed plugin's type or a file.
+//!
+//! The list takes further ways out from a [`VpnEntries`] source (the
+//! person's own devices as exits) beside the profiles; Settings has none of
+//! its own.
+//!
+//! Keys and configuration files live in process-local buffers that are
+//! zeroed once used, and reach `NetworkManager` through a private file or
+//! its standard input, never an argument.
+
+use std::collections::{HashMap, HashSet};
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use os_actions::network_settings::{
+    MAX_VPN_CONFIG_BYTES, VpnProfilePatch, VpnProfileSettings, WireGuardTunnel,
+};
+use ui::LocalState;
+use ui::framework::{EffectAnswer, EffectCx, LiveRow};
+use ui::icons::Icon;
+use ui::tilo_resource::{self, Effect};
+use ui::widget::{Button, ButtonRole, ListRow, NumberInput, TextInput, Toggle};
+use zeroize::{Zeroize, Zeroizing};
+
+use super::{
+    Begun, Landed, NetworkChange, NetworkModel, VpnInfo, VpnSetup, list_of, non_blank, take_secret,
+};
+use crate::categories::Category;
+use crate::effects::{SettingsEffect, effect};
+use crate::host::PaneCx;
+use crate::i18n::{t, t_args};
+use crate::resource::Settings;
+use crate::settings_app::SettingsApp;
+use crate::widgets::{
+    El, Item, SettingsSection, block, card, error_caption, field_row, note, row, rows, setting_row,
+    setting_row_described, value_row,
+};
+
+crate::effects::effect_family!(VpnEffect => answer);
+
+/// The VPN list.
+pub(crate) const PAGE_VPN: &str = "vpn";
+/// Adding a VPN: its kinds.
+pub(crate) const PAGE_ADD: &str = "vpn-add";
+/// A new `WireGuard` tunnel.
+const PAGE_ADD_WIREGUARD: &str = "vpn-add:wireguard";
+/// A new profile of a plugin's type: `vpn-add:<service>`.
+const PAGE_ADD_PLUGIN: &str = "vpn-add:";
+/// A VPN's page: `vpn:<uuid>`.
+const PAGE_PROFILE: &str = "vpn:";
+
+pub(crate) fn profile_page_key(uuid: &str) -> String {
+    format!("{PAGE_PROFILE}{uuid}")
+}
+
+fn plugin_page_key(service: &str) -> String {
+    format!("{PAGE_ADD_PLUGIN}{service}")
+}
+
+/// What `allowed_ips` a new tunnel routes unless told otherwise: everything.
+const ALL_ADDRESSES: &str = "0.0.0.0/0, ::/0";
+
+/// What VPN does on this device. The import, connect, disconnect and delete
+/// effects keep the ids the VPN app published, so what asked for them
+/// before finds them here.
+#[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
+#[effect(operation = "settings.effect")]
+pub enum VpnEffect {
+    /// Show the VPNs.
+    #[effect(view, label = "VPN")]
+    ShowVpns,
+    /// Show a VPN's page: its settings, Export and Delete.
+    #[effect(view, row, label = "VPN settings")]
+    ShowVpnProfile {
+        #[param("The VPN's id or name")]
+        connection: String,
+    },
+    /// Show the kinds of VPN that can be added.
+    #[effect(view, label = "Add VPN")]
+    ShowAddVpn,
+    /// Show the form of a new `WireGuard` tunnel.
+    #[effect(view, label = "Add WireGuard tunnel")]
+    ShowAddWireguard,
+    /// Show the form of a new profile of an installed VPN plugin's type.
+    #[effect(view, label = "Add VPN of a plugin's type")]
+    ShowAddPluginVpn {
+        #[param("The plugin's service type")]
+        service: String,
+    },
+    /// Pick a `WireGuard` `.conf` file and set it up.
+    #[effect(attended, label = "Import WireGuard profile")]
+    ImportWireguard,
+    /// Pick an `OpenVPN` `.ovpn` file and set it up.
+    #[effect(attended, label = "Import OpenVPN profile")]
+    ImportOpenvpn,
+    /// Pick a `WireGuard` or `OpenVPN` file and set it up.
+    #[effect(attended, label = "Import from file")]
+    ImportVpnFile,
+    /// Make a key pair for a new `WireGuard` tunnel: the public key is the
+    /// one to give the server.
+    #[effect(label = "Generate keys")]
+    GenerateWireguardKeys,
+    /// Set up a `WireGuard` tunnel; what is omitted is what its form holds.
+    #[effect(job, label = "Create tunnel")]
+    CreateWireguard {
+        name: Option<String>,
+        #[param("This device's address in the tunnel with its prefix: 10.7.0.2/32")]
+        address: Option<String>,
+        #[param("The server's public key")]
+        server_public_key: Option<String>,
+        #[param("The server: host:port")]
+        endpoint: Option<String>,
+        #[param("What goes through the tunnel, comma-separated")]
+        allowed_ips: Option<String>,
+        #[param("Name servers, comma-separated")]
+        dns: Option<String>,
+        #[param("Seconds between keepalives; 0 sends none")]
+        keepalive: Option<u32>,
+        #[param(secret, "This device's private key")]
+        private_key: Option<String>,
+    },
+    /// Set up a `WireGuard` tunnel from a pasted configuration; what is
+    /// omitted is what its form holds.
+    #[effect(job, label = "Import configuration")]
+    ImportWireguardConfig {
+        name: Option<String>,
+        #[param(secret, "The configuration file's text")]
+        config: Option<String>,
+    },
+    /// Make a profile of an installed plugin's type; what is omitted is what
+    /// its form holds.
+    #[effect(job, label = "Create VPN")]
+    CreatePluginVpn {
+        #[param("The plugin's service type")]
+        service: String,
+        name: Option<String>,
+        #[param("The server: a host name or address")]
+        server: Option<String>,
+    },
+    /// Bring a VPN up or down.
+    #[effect(job, row, idempotent, label = "VPN connection")]
+    SetVpnConnected {
+        #[param("The VPN's id or name")]
+        connection: String,
+        on: bool,
+    },
+    /// Bring a VPN up.
+    #[effect(job, row, label = "Connect")]
+    Connect {
+        #[param("The VPN's id or name")]
+        connection: String,
+    },
+    /// Bring a VPN down.
+    #[effect(job, row, label = "Disconnect")]
+    Disconnect {
+        #[param("The VPN's id or name")]
+        connection: String,
+    },
+    /// Delete a VPN from this device, with its keys.
+    #[effect(job, row, destructive, label = "Delete VPN")]
+    DeleteConnection {
+        #[param("The VPN's id or name")]
+        connection: String,
+    },
+    /// Rename a VPN.
+    #[effect(job, row, idempotent, label = "Name")]
+    SetVpnName {
+        #[param("The VPN's id or name")]
+        connection: String,
+        name: String,
+    },
+    /// Bring a VPN up by itself, or not.
+    #[effect(job, row, idempotent, label = "Connect automatically")]
+    SetVpnAutoconnect {
+        #[param("The VPN's id or name")]
+        connection: String,
+        on: bool,
+    },
+    /// Send every connection through a VPN, or only what it routes.
+    #[effect(job, row, idempotent, label = "Send all traffic")]
+    SetVpnAllTraffic {
+        #[param("The VPN's id or name")]
+        connection: String,
+        on: bool,
+    },
+    /// The name servers a VPN uses; empty for its own.
+    #[effect(job, row, idempotent, label = "DNS servers")]
+    SetVpnDns {
+        #[param("The VPN's id or name")]
+        connection: String,
+        #[param("Name servers, comma-separated")]
+        servers: String,
+    },
+    /// The largest packet a VPN sends; 0 for automatic.
+    #[effect(job, row, idempotent, label = "MTU")]
+    SetVpnMtu {
+        #[param("The VPN's id or name")]
+        connection: String,
+        mtu: u32,
+    },
+    /// Where a `WireGuard` tunnel's server is.
+    #[effect(job, row, idempotent, label = "Server")]
+    SetVpnServer {
+        #[param("The VPN's id or name")]
+        connection: String,
+        #[param("host:port")]
+        endpoint: String,
+    },
+    /// What a `WireGuard` tunnel routes.
+    #[effect(job, row, idempotent, label = "Routed addresses")]
+    SetVpnAllowedIps {
+        #[param("The VPN's id or name")]
+        connection: String,
+        #[param("Addresses with their prefix, comma-separated")]
+        addresses: String,
+    },
+    /// How often a `WireGuard` tunnel tells its server it is there; 0 never.
+    #[effect(job, row, idempotent, label = "Keepalive")]
+    SetVpnKeepalive {
+        #[param("The VPN's id or name")]
+        connection: String,
+        #[param("Seconds")]
+        seconds: u32,
+    },
+    /// Save a VPN as a file to set it up elsewhere: its keys are in it.
+    #[effect(attended, row, label = "Export")]
+    ExportVpn {
+        #[param("The VPN's id or name")]
+        connection: String,
+    },
+}
+
+/// Answer `effect`.
+pub(crate) fn answer(
+    app: &SettingsApp,
+    effect: VpnEffect,
+    cx: &mut EffectCx<Settings, SettingsApp>,
+) -> EffectAnswer {
+    let begun = super::area(app)
+        .ok_or_else(crate::area::missing)?
+        .model()
+        .borrow_mut()
+        .begin_vpn(effect)?;
+    Ok(super::answer_begun(begun, cx))
+}
+
+/// A way out the VPN list offers beside the profiles, from another source
+/// ([`VpnEntries`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct VpnEntry {
+    /// Stable, unique among the source's entries.
+    pub id: String,
+    pub name: String,
+    /// What it is ("Through Desk PC").
+    pub detail: String,
+    pub active: bool,
+}
+
+/// What else the VPN list offers: the person's own devices as exits. The
+/// source binds each entry's switch to its own effect.
+pub(crate) trait VpnEntries {
+    fn entries(&self) -> Vec<VpnEntry>;
+    /// `toggle`, bound to switching `entry`.
+    fn bind(&self, cx: &PaneCx, entry: &VpnEntry, toggle: Toggle) -> Toggle;
+}
+
+/// The form of a new `WireGuard` tunnel.
+struct WireguardForm {
+    name: LocalState<String>,
+    address: LocalState<String>,
+    server_public_key: LocalState<String>,
+    endpoint: LocalState<String>,
+    allowed_ips: LocalState<String>,
+    dns: LocalState<String>,
+    keepalive: LocalState<String>,
+    private_key: Arc<Mutex<String>>,
+    /// The public key of the private key generated here.
+    public_key: Option<String>,
+    /// A pasted configuration and its name.
+    config_name: LocalState<String>,
+    config: Arc<Mutex<String>>,
+}
+
+impl Default for WireguardForm {
+    fn default() -> Self {
+        Self {
+            name: LocalState::new(String::new()),
+            address: LocalState::new(String::new()),
+            server_public_key: LocalState::new(String::new()),
+            endpoint: LocalState::new(String::new()),
+            allowed_ips: LocalState::new(ALL_ADDRESSES.into()),
+            dns: LocalState::new(String::new()),
+            keepalive: LocalState::new("25".into()),
+            private_key: Arc::new(Mutex::new(String::new())),
+            public_key: None,
+            config_name: LocalState::new(String::new()),
+            config: Arc::new(Mutex::new(String::new())),
+        }
+    }
+}
+
+impl Drop for WireguardForm {
+    fn drop(&mut self) {
+        for buffer in [&self.private_key, &self.config] {
+            if let Ok(mut secret) = buffer.lock() {
+                secret.zeroize();
+            }
+        }
+    }
+}
+
+/// The form of a new plugin profile.
+struct PluginForm {
+    name: LocalState<String>,
+    server: LocalState<String>,
+}
+
+impl Default for PluginForm {
+    fn default() -> Self {
+        Self {
+            name: LocalState::new(String::new()),
+            server: LocalState::new(String::new()),
+        }
+    }
+}
+
+/// What the VPN part of the model keeps.
+#[derive(Default)]
+pub(crate) struct VpnState {
+    /// Each VPN's settings, read when its page opens.
+    pub(super) settings: HashMap<String, VpnProfileSettings>,
+    /// Why a VPN's settings could not be read.
+    pub(super) errors: HashMap<String, String>,
+    /// VPNs whose settings are being read.
+    reading: HashSet<String>,
+    /// VPNs being brought up or down.
+    changing: HashSet<String>,
+    wireguard: WireguardForm,
+    plugin: PluginForm,
+    /// A file being picked to import, with the kind it must be.
+    import: Option<(ui::portal::PortalChannel, Option<&'static str>)>,
+    /// Where a VPN is being exported to.
+    export: Option<(ui::portal::OpenFileChannel, String)>,
+    /// The other ways out the list offers.
+    entries: Option<Box<dyn VpnEntries>>,
+    /// The VPN whose page was asked for before the VPNs were read.
+    wanted: Option<String>,
+}
+
+/// A configuration file's text, read whole up to the size a VPN profile can
+/// be, into a buffer zeroed when dropped.
+fn read_config(path: &Path) -> Result<Zeroizing<String>, String> {
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut text = Zeroizing::new(String::new());
+    file.take(MAX_VPN_CONFIG_BYTES + 1)
+        .read_to_string(&mut text)
+        .map_err(|_| t("net-vpn-file-unreadable"))?;
+    Ok(text)
+}
+
+/// The kind of tunnel `path` sets up, by its name or, with none, `wanted`.
+fn kind_of_path(path: &Path, wanted: Option<&'static str>) -> Result<&'static str, String> {
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match (
+        os_actions::network_settings::vpn_kind_of_file(&name),
+        wanted,
+    ) {
+        (Some(kind), Some(wanted)) if kind != wanted => Err(t("net-vpn-file-wrong-kind")),
+        (Some(kind), _) => Ok(kind),
+        (None, Some(wanted)) => Ok(wanted),
+        (None, None) => Err(t("net-vpn-file-unknown")),
+    }
+}
+
+/// Check the file at `path` and set it up as a tunnel: what an import lands.
+fn import_file(
+    service: &dyn super::NetworkService,
+    path: &Path,
+    wanted: Option<&'static str>,
+) -> Result<String, String> {
+    let kind = kind_of_path(path, wanted)?;
+    let text = read_config(path)?;
+    os_actions::network_settings::validate_vpn_config(kind, &text)?;
+    drop(text);
+    service.create_vpn(&VpnSetup::File {
+        kind,
+        path: path.to_path_buf(),
+    })
+}
+
+fn kind_shown(kind: &str, plugin: Option<&str>) -> String {
+    match (kind, plugin) {
+        ("wireguard", _) => "WireGuard".into(),
+        (_, Some(name)) => name.to_owned(),
+        _ => t("net-vpn-kind-other"),
+    }
+}
+
+/// A number of seconds or bytes from a number field: whole, never negative.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "clamped to 0..=65535 and rounded first"
+)]
+fn whole(value: f64) -> u32 {
+    value.clamp(0.0, 65_535.0).round() as u32
+}
+
+impl NetworkModel {
+    /// Offer the VPN list `entries` beside the profiles.
+    #[allow(dead_code, reason = "the seam another source of exits plugs into")]
+    pub(crate) fn set_vpn_entries(&mut self, entries: Box<dyn VpnEntries>) {
+        self.vpn.entries = Some(entries);
+        self.changed = true;
+    }
+
+    /// The VPN `connection` names: by its id, else by its name.
+    fn vpn(&self, connection: &str) -> Result<VpnInfo, String> {
+        self.vpns
+            .iter()
+            .find(|vpn| vpn.uuid == connection)
+            .or_else(|| self.vpns.iter().find(|vpn| vpn.name == connection))
+            .cloned()
+            .ok_or_else(|| t_args("net-vpn-unknown", &[("name", connection.into())]))
+    }
+
+    /// The VPN in use, or Off: what the VPN row on the first page says.
+    pub(super) fn vpn_summary(&self) -> String {
+        if self.read_errors.vpns.is_some() {
+            return t("net-vpn-unread");
+        }
+        self.vpns
+            .iter()
+            .find(|vpn| vpn.active)
+            .map_or_else(|| t("net-vpn-off"), |vpn| vpn.name.clone())
+    }
+
+    /// Read `uuid`'s settings on a worker, unless they are being read.
+    fn read_vpn(&mut self, uuid: &str) {
+        if !self.vpn.reading.insert(uuid.to_owned()) {
+            return;
+        }
+        let service = Arc::clone(&self.service);
+        let uuid = uuid.to_owned();
+        self.start_job(
+            "settings-vpn-read",
+            Box::new(move || Landed::VpnRead {
+                result: service.vpn_settings(&uuid),
+                uuid,
+            }),
+        );
+    }
+
+    /// Take in `uuid`'s settings.
+    pub(super) fn adopt_vpn_settings(&mut self, uuid: &str, settings: VpnProfileSettings) {
+        self.vpn.reading.remove(uuid);
+        self.vpn.errors.remove(uuid);
+        self.vpn.settings.insert(uuid.to_owned(), settings);
+        self.changed = true;
+    }
+
+    /// Start a picker for a file of `kind` (either kind for `None`).
+    fn pick_vpn_file(&mut self, kind: Option<&'static str>) {
+        if self.vpn.import.is_some() {
+            return;
+        }
+        let mut request =
+            ui::portal::PickRequest::open(&t("net-vpn-import-title"), &t("net-vpn-import"))
+                .thread_name("settings-vpn-import");
+        if kind != Some("openvpn") {
+            request = request.filter(ui::portal::FileFilter::new("WireGuard").glob("*.conf"));
+        }
+        if kind != Some("wireguard") {
+            request = request.filter(ui::portal::FileFilter::new("OpenVPN").glob("*.ovpn"));
+        }
+        self.vpn.import = Some((request.all_files().send(), kind));
+    }
+
+    /// Set up the file at `path` on a worker: what a picked file starts.
+    pub(super) fn import_vpn_path(&mut self, path: PathBuf, wanted: Option<&'static str>) {
+        let service = Arc::clone(&self.service);
+        self.notice = Some(t("net-vpn-importing"));
+        self.start_job(
+            "settings-vpn-import",
+            Box::new(move || Landed::VpnCreated(import_file(service.as_ref(), &path, wanted))),
+        );
+    }
+
+    /// Take in a file picked to import or a place picked to export to.
+    pub(super) fn poll_vpn_pickers(&mut self) {
+        if let Some(outcome) = self
+            .vpn
+            .import
+            .as_ref()
+            .and_then(|(picker, _)| picker.try_recv().ok())
+        {
+            let wanted = self.vpn.import.take().and_then(|(_, kind)| kind);
+            match outcome {
+                ui::portal::PortalOutcome::Opened(path) => self.import_vpn_path(path, wanted),
+                ui::portal::PortalOutcome::Cancelled => {}
+                ui::portal::PortalOutcome::Failed(error) => {
+                    self.notice = Some(t_args("net-vpn-import-err", &[("error", error.into())]));
+                }
+            }
+            self.changed = true;
+        }
+        if let Some(outcome) = self
+            .vpn
+            .export
+            .as_ref()
+            .and_then(|(picker, _)| picker.try_recv().ok())
+        {
+            let uuid = self
+                .vpn
+                .export
+                .take()
+                .map(|(_, uuid)| uuid)
+                .unwrap_or_default();
+            match outcome {
+                ui::portal::OpenFileOutcome::Opened(opened) => {
+                    let service = Arc::clone(&self.service);
+                    let mut file = opened.into_file();
+                    self.start_job(
+                        "settings-vpn-export",
+                        Box::new(move || {
+                            Landed::VpnExported(service.export_vpn(&uuid).and_then(|text| {
+                                use std::io::Write as _;
+                                file.write_all(text.as_bytes())
+                                    .and_then(|()| file.sync_all())
+                                    .map_err(|error| error.to_string())
+                            }))
+                        }),
+                    );
+                }
+                ui::portal::OpenFileOutcome::Cancelled => {}
+                ui::portal::OpenFileOutcome::Failed(error) => {
+                    self.notice = Some(t_args("net-vpn-export-err", &[("error", error.into())]));
+                }
+            }
+            self.changed = true;
+        }
+        if self.loaded
+            && let Some(wanted) = self.vpn.wanted.take()
+            && let Ok(vpn) = self.vpn(&wanted)
+            && self.page_key().as_deref() == Some(PAGE_VPN)
+        {
+            self.read_vpn(&vpn.uuid);
+            self.open_page(&profile_page_key(&vpn.uuid), vpn.name);
+        }
+        // A VPN page shown before its settings were read reads them.
+        if let Some(uuid) = self
+            .page_key()
+            .and_then(|key| key.strip_prefix(PAGE_PROFILE).map(str::to_owned))
+            && !self.vpn.settings.contains_key(&uuid)
+            && !self.vpn.errors.contains_key(&uuid)
+            && self.vpns.iter().any(|vpn| vpn.uuid == uuid)
+        {
+            self.read_vpn(&uuid);
+        }
+    }
+
+    /// A change to `vpn`'s profile.
+    fn vpn_patch(&mut self, connection: &str, patch: VpnProfilePatch) -> Result<Begun, String> {
+        let vpn = self.vpn(connection)?;
+        if let Some(settings) = self.vpn.settings.get_mut(&vpn.uuid) {
+            if let Some(name) = &patch.name {
+                settings.name.clone_from(name);
+            }
+            if let Some(on) = patch.autoconnect {
+                settings.autoconnect = on;
+            }
+            if let Some(on) = patch.all_traffic {
+                settings.all_traffic = on;
+            }
+        }
+        Ok(self.change(
+            NetworkChange::VpnProfile {
+                uuid: vpn.uuid,
+                name: vpn.name,
+                patch,
+            },
+            None,
+        ))
+    }
+
+    /// Bring `connection` up or down.
+    fn vpn_switch(&mut self, connection: &str, on: bool) -> Result<Begun, String> {
+        let vpn = self.vpn(connection)?;
+        if !self.vpn.changing.insert(vpn.uuid.clone()) {
+            return Err(t_args(
+                "net-vpn-busy",
+                &[("name", vpn.name.as_str().into())],
+            ));
+        }
+        Ok(self.change(
+            NetworkChange::Vpn {
+                uuid: vpn.uuid,
+                name: vpn.name.clone(),
+                on,
+            },
+            Some(t_args(
+                if on {
+                    "net-vpn-connecting"
+                } else {
+                    "net-vpn-disconnecting"
+                },
+                &[("name", vpn.name.as_str().into())],
+            )),
+        ))
+    }
+
+    /// Begin `effect`.
+    #[expect(clippy::too_many_lines, reason = "one arm per effect")]
+    pub(super) fn begin_vpn(&mut self, effect: VpnEffect) -> Result<Begun, String> {
+        self.changed = true;
+        let service = Arc::clone(&self.service);
+        let open = |model: &mut Self, key: &str, title: String| {
+            model.open_page(key, title);
+            Ok(Begun::Done)
+        };
+        match effect {
+            VpnEffect::ShowVpns => {
+                self.cx.pages().clear();
+                open(self, PAGE_VPN, t("net-vpn"))
+            }
+            VpnEffect::ShowVpnProfile { connection } => {
+                let vpn = match self.vpn(&connection) {
+                    Ok(vpn) => vpn,
+                    // Asked for at launch: the page opens once the VPNs are
+                    // read.
+                    Err(_) if !self.loaded => {
+                        self.vpn.wanted = Some(connection);
+                        self.cx.pages().clear();
+                        return open(self, PAGE_VPN, t("net-vpn"));
+                    }
+                    Err(error) => return Err(error),
+                };
+                if self.page_key().as_deref() != Some(PAGE_VPN) {
+                    self.cx.pages().clear();
+                    self.open_page(PAGE_VPN, t("net-vpn"));
+                }
+                self.vpn.errors.remove(&vpn.uuid);
+                self.read_vpn(&vpn.uuid);
+                open(self, &profile_page_key(&vpn.uuid), vpn.name)
+            }
+            VpnEffect::ShowAddVpn => open(self, PAGE_ADD, t("net-vpn-add")),
+            VpnEffect::ShowAddWireguard => {
+                open(self, PAGE_ADD_WIREGUARD, t("net-vpn-new-wireguard"))
+            }
+            VpnEffect::ShowAddPluginVpn { service } => {
+                let plugin = self
+                    .plugins
+                    .iter()
+                    .find(|plugin| plugin.service == service)
+                    .cloned()
+                    .ok_or_else(|| t("net-vpn-no-plugin"))?;
+                open(
+                    self,
+                    &plugin_page_key(&plugin.service),
+                    t_args("net-vpn-new-plugin", &[("kind", plugin.name.into())]),
+                )
+            }
+            VpnEffect::ImportWireguard => {
+                self.pick_vpn_file(Some("wireguard"));
+                Ok(Begun::Done)
+            }
+            VpnEffect::ImportOpenvpn => {
+                self.pick_vpn_file(Some("openvpn"));
+                Ok(Begun::Done)
+            }
+            VpnEffect::ImportVpnFile => {
+                self.pick_vpn_file(None);
+                Ok(Begun::Done)
+            }
+            VpnEffect::GenerateWireguardKeys => {
+                let (private, public) = os_actions::network_settings::generate_wireguard_keys()?;
+                if let Ok(mut buffer) = self.vpn.wireguard.private_key.lock() {
+                    buffer.zeroize();
+                    buffer.push_str(&private);
+                }
+                self.vpn.wireguard.public_key = Some(public);
+                Ok(Begun::Done)
+            }
+            VpnEffect::CreateWireguard {
+                name,
+                address,
+                server_public_key,
+                endpoint,
+                allowed_ips,
+                dns,
+                keepalive,
+                private_key,
+            } => {
+                let form = &self.vpn.wireguard;
+                let name = name
+                    .or_else(|| non_blank(form.name.get()))
+                    .ok_or_else(|| t("net-vpn-needs-name"))?;
+                let typed = take_secret(&form.private_key);
+                let keepalive = match keepalive {
+                    Some(seconds) => seconds,
+                    None => form.keepalive.get().trim().parse::<u32>().unwrap_or(0),
+                };
+                let tunnel = WireGuardTunnel {
+                    private_key: private_key.map_or(typed, Zeroizing::new),
+                    address: address
+                        .unwrap_or_else(|| form.address.get())
+                        .trim()
+                        .to_owned(),
+                    dns: list_of(&dns.unwrap_or_else(|| form.dns.get())),
+                    peer_public_key: server_public_key
+                        .unwrap_or_else(|| form.server_public_key.get())
+                        .trim()
+                        .to_owned(),
+                    endpoint: endpoint
+                        .unwrap_or_else(|| form.endpoint.get())
+                        .trim()
+                        .to_owned(),
+                    allowed_ips: list_of(&allowed_ips.unwrap_or_else(|| form.allowed_ips.get())),
+                    keepalive: (keepalive > 0).then_some(keepalive),
+                };
+                let text = tunnel.config()?;
+                self.vpn.wireguard.public_key = None;
+                self.notice = Some(t("net-vpn-creating"));
+                Ok(Begun::work(move || {
+                    Landed::VpnCreated(service.create_vpn(&VpnSetup::Text {
+                        kind: "wireguard",
+                        name,
+                        text,
+                    }))
+                }))
+            }
+            VpnEffect::ImportWireguardConfig { name, config } => {
+                let form = &self.vpn.wireguard;
+                let name = name
+                    .or_else(|| non_blank(form.config_name.get()))
+                    .ok_or_else(|| t("net-vpn-needs-name"))?;
+                let typed = take_secret(&form.config);
+                let text = config.map_or(typed, Zeroizing::new);
+                os_actions::network_settings::validate_vpn_config("wireguard", &text)?;
+                self.notice = Some(t("net-vpn-creating"));
+                Ok(Begun::work(move || {
+                    Landed::VpnCreated(service.create_vpn(&VpnSetup::Text {
+                        kind: "wireguard",
+                        name,
+                        text,
+                    }))
+                }))
+            }
+            VpnEffect::CreatePluginVpn {
+                service: plugin,
+                name,
+                server,
+            } => {
+                if !self.plugins.iter().any(|known| known.service == plugin) {
+                    return Err(t("net-vpn-no-plugin"));
+                }
+                let form = &self.vpn.plugin;
+                let name = name
+                    .or_else(|| non_blank(form.name.get()))
+                    .ok_or_else(|| t("net-vpn-needs-name"))?;
+                let server = server
+                    .or_else(|| non_blank(form.server.get()))
+                    .ok_or_else(|| t("net-vpn-needs-server"))?;
+                self.notice = Some(t("net-vpn-creating"));
+                Ok(Begun::work(move || {
+                    Landed::VpnCreated(service.create_vpn(&VpnSetup::Plugin {
+                        service: plugin,
+                        name,
+                        server: server.trim().to_owned(),
+                    }))
+                }))
+            }
+            VpnEffect::SetVpnConnected { connection, on } => self.vpn_switch(&connection, on),
+            VpnEffect::Connect { connection } => self.vpn_switch(&connection, true),
+            VpnEffect::Disconnect { connection } => self.vpn_switch(&connection, false),
+            VpnEffect::DeleteConnection { connection } => {
+                let vpn = self.vpn(&connection)?;
+                Ok(self.change(
+                    NetworkChange::VpnDelete {
+                        uuid: vpn.uuid,
+                        name: vpn.name,
+                    },
+                    None,
+                ))
+            }
+            VpnEffect::SetVpnName { connection, name } => {
+                let name = non_blank(name).ok_or_else(|| t("net-vpn-needs-name"))?;
+                self.vpn_patch(
+                    &connection,
+                    VpnProfilePatch {
+                        name: Some(name.trim().to_owned()),
+                        ..VpnProfilePatch::default()
+                    },
+                )
+            }
+            VpnEffect::SetVpnAutoconnect { connection, on } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    autoconnect: Some(on),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::SetVpnAllTraffic { connection, on } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    all_traffic: Some(on),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::SetVpnDns {
+                connection,
+                servers,
+            } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    dns: Some(list_of(&servers)),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::SetVpnMtu { connection, mtu } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    mtu: Some((mtu > 0).then_some(mtu)),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::SetVpnServer {
+                connection,
+                endpoint,
+            } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    endpoint: Some(endpoint.trim().to_owned()),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::SetVpnAllowedIps {
+                connection,
+                addresses,
+            } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    allowed_ips: Some(list_of(&addresses)),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::SetVpnKeepalive {
+                connection,
+                seconds,
+            } => self.vpn_patch(
+                &connection,
+                VpnProfilePatch {
+                    keepalive: Some((seconds > 0).then_some(seconds)),
+                    ..VpnProfilePatch::default()
+                },
+            ),
+            VpnEffect::ExportVpn { connection } => {
+                let vpn = self.vpn(&connection)?;
+                if self.vpn.export.is_none() {
+                    let suggested = if vpn.kind == "wireguard" {
+                        format!(
+                            "{}.conf",
+                            os_actions::network_settings::interface_name(&vpn.name)
+                        )
+                    } else {
+                        format!("{}.ovpn", vpn.name)
+                    };
+                    let picker = ui::portal::PickRequest::save(
+                        &t("net-vpn-export-title"),
+                        &t("net-vpn-export"),
+                        &suggested,
+                    )
+                    .thread_name("settings-vpn-export")
+                    .send_save_file();
+                    self.vpn.export = Some((picker, vpn.uuid));
+                }
+                Ok(Begun::Done)
+            }
+        }
+    }
+
+    /// Report a landed VPN change.
+    pub(super) fn vpn_changed(
+        &mut self,
+        change: &NetworkChange,
+        result: Result<(), String>,
+    ) -> Result<String, String> {
+        match (change, result) {
+            (NetworkChange::Vpn { uuid, name, on }, result) => {
+                self.vpn.changing.remove(uuid);
+                match result {
+                    Ok(()) => {
+                        if let Some(vpn) = self.vpns.iter_mut().find(|vpn| &vpn.uuid == uuid) {
+                            vpn.active = *on;
+                        }
+                        Ok(t_args(
+                            if *on {
+                                "net-vpn-connected"
+                            } else {
+                                "net-vpn-disconnected"
+                            },
+                            &[("name", name.as_str().into())],
+                        ))
+                    }
+                    Err(error) => Err(t_args(
+                        "net-vpn-switch-err",
+                        &[("name", name.as_str().into()), ("error", error.into())],
+                    )),
+                }
+            }
+            (NetworkChange::VpnProfile { uuid, name, .. }, result) => match result {
+                Ok(()) => {
+                    // What `NetworkManager` made of it is read again.
+                    self.vpn.settings.remove(uuid);
+                    self.read_vpn(uuid);
+                    Ok(t_args(
+                        "net-notice-policy-ok",
+                        &[("name", name.as_str().into())],
+                    ))
+                }
+                Err(error) => {
+                    self.vpn.settings.remove(uuid);
+                    self.read_vpn(uuid);
+                    Err(t_args("net-notice-policy-err", &[("error", error.into())]))
+                }
+            },
+            (NetworkChange::VpnDelete { uuid, name }, Ok(())) => {
+                self.vpns.retain(|vpn| &vpn.uuid != uuid);
+                self.vpn.settings.remove(uuid);
+                self.cx
+                    .pages()
+                    .close(Category::Network, &profile_page_key(uuid));
+                Ok(t_args("net-vpn-deleted", &[("name", name.as_str().into())]))
+            }
+            (NetworkChange::VpnDelete { name, .. }, Err(error)) => Err(t_args(
+                "net-vpn-delete-err",
+                &[("name", name.as_str().into()), ("error", error.into())],
+            )),
+            (_, result) => result.map(|()| String::new()),
+        }
+    }
+
+    /// Take in a VPN set up: its page opens in place of the form.
+    pub(super) fn vpn_created(&mut self, result: Result<String, String>) -> Result<String, String> {
+        match result {
+            Ok(uuid) => {
+                self.vpn.wireguard = WireguardForm::default();
+                self.vpn.plugin = PluginForm::default();
+                self.start_snapshot();
+                self.read_vpn(&uuid);
+                let pages = self.cx.pages();
+                pages.clear();
+                pages.open(Category::Network, PAGE_VPN, t("net-vpn"));
+                pages.open(Category::Network, profile_page_key(&uuid), t("net-vpn"));
+                Ok(t("net-vpn-created"))
+            }
+            Err(error) => Err(t_args("net-vpn-create-err", &[("error", error.into())])),
+        }
+    }
+
+    /// The published row of `vpn`.
+    fn vpn_live(&self, vpn: &VpnInfo) -> LiveRow {
+        let offer = |effect: VpnEffect| SettingsEffect::from(effect).bound();
+        let connection = vpn.uuid.clone();
+        let mut row = LiveRow::new(
+            format!("vpn.connection:{}", vpn.uuid),
+            "vpn.connection",
+            vpn.name.clone(),
+        )
+        .operation(offer(VpnEffect::ShowVpnProfile {
+            connection: connection.clone(),
+        }))
+        .operation(offer(VpnEffect::SetVpnConnected {
+            connection: connection.clone(),
+            on: !vpn.active,
+        }))
+        .operation(offer(if vpn.active {
+            VpnEffect::Disconnect {
+                connection: connection.clone(),
+            }
+        } else {
+            VpnEffect::Connect {
+                connection: connection.clone(),
+            }
+        }))
+        .operation(offer(VpnEffect::DeleteConnection {
+            connection: connection.clone(),
+        }))
+        .operation(offer(VpnEffect::ExportVpn {
+            connection: connection.clone(),
+        }));
+        if let Some(settings) = self.vpn.settings.get(&vpn.uuid) {
+            row = row
+                .operation(offer(VpnEffect::SetVpnName {
+                    connection: connection.clone(),
+                    name: settings.name.clone(),
+                }))
+                .operation(offer(VpnEffect::SetVpnAutoconnect {
+                    connection: connection.clone(),
+                    on: !settings.autoconnect,
+                }))
+                .operation(offer(VpnEffect::SetVpnAllTraffic {
+                    connection: connection.clone(),
+                    on: !settings.all_traffic,
+                }))
+                .operation(offer(VpnEffect::SetVpnDns {
+                    connection: connection.clone(),
+                    servers: settings.dns.join(", "),
+                }))
+                .operation(offer(VpnEffect::SetVpnMtu {
+                    connection: connection.clone(),
+                    mtu: settings.mtu.unwrap_or(0),
+                }));
+            if settings.kind == "wireguard" {
+                row = row
+                    .operation(offer(VpnEffect::SetVpnServer {
+                        connection: connection.clone(),
+                        endpoint: settings.endpoint.clone().unwrap_or_default(),
+                    }))
+                    .operation(offer(VpnEffect::SetVpnAllowedIps {
+                        connection: connection.clone(),
+                        addresses: settings.allowed_ips.join(", "),
+                    }))
+                    .operation(offer(VpnEffect::SetVpnKeepalive {
+                        connection,
+                        seconds: settings.keepalive.unwrap_or(0),
+                    }));
+            }
+        }
+        row
+    }
+
+    /// One row per VPN.
+    pub(super) fn vpn_rows(&self) -> Vec<LiveRow> {
+        self.vpns.iter().map(|vpn| self.vpn_live(vpn)).collect()
+    }
+
+    /// The VPN pages, by key; `None` for a key that is not one.
+    pub(super) fn vpn_pages(&self, key: &str) -> Option<Vec<SettingsSection>> {
+        Some(match key {
+            PAGE_VPN => vec![self.vpn_list()],
+            PAGE_ADD => vec![self.add_vpn()],
+            PAGE_ADD_WIREGUARD => self.add_wireguard(),
+            _ => {
+                if let Some(service) = key.strip_prefix(PAGE_ADD_PLUGIN) {
+                    vec![self.add_plugin(service)]
+                } else {
+                    self.vpn_profile(key.strip_prefix(PAGE_PROFILE)?)
+                }
+            }
+        })
+    }
+
+    /// The switch that brings `vpn` up or down.
+    fn vpn_switch_control(&self, vpn: &VpnInfo, live: &ui::tilo_actions::Resource) -> Toggle {
+        let connection = vpn.uuid.clone();
+        let toggle = Toggle::from_state(&LocalState::new(vpn.active))
+            .with_id(&format!("settings.network.vpn.switch.{}", vpn.uuid))
+            .with_accessible_name(&vpn.name);
+        let toggle = match self.cx.row_binding(
+            live,
+            effect(VpnEffect::SET_VPN_CONNECTED).map(move |on: bool| (connection.clone(), on)),
+        ) {
+            Some(binding) => ui::framework::ActionControl::bind_action(toggle, binding),
+            None => toggle.with_enabled(false),
+        };
+        toggle.with_enabled(!self.vpn.changing.contains(&vpn.uuid))
+    }
+
+    fn vpn_state(&self, vpn: &VpnInfo) -> String {
+        if self.vpn.changing.contains(&vpn.uuid) {
+            t(if vpn.active {
+                "net-vpn-disconnecting-short"
+            } else {
+                "net-vpn-connecting-short"
+            })
+        } else {
+            t(if vpn.active {
+                "net-connected"
+            } else {
+                "net-vpn-off"
+            })
+        }
+    }
+
+    fn vpn_kind(&self, vpn: &VpnInfo) -> String {
+        let service = self
+            .vpn
+            .settings
+            .get(&vpn.uuid)
+            .and_then(|settings| settings.service.as_deref());
+        let plugin = service.and_then(|service| {
+            self.plugins
+                .iter()
+                .find(|plugin| plugin.service == service)
+                .map(|plugin| plugin.name.as_str())
+        });
+        kind_shown(&vpn.kind, plugin)
+    }
+
+    /// The VPN list: every tunnel with its switch, the other ways out, and
+    /// Add VPN.
+    fn vpn_list(&self) -> SettingsSection {
+        let mut content: Vec<Item> = Vec::new();
+        if let Some(notice) = &self.notice {
+            content.push(note(notice));
+        }
+        if let Some(error) = &self.read_errors.vpns {
+            content.push(row(error_caption(&t_args(
+                "net-vpn-error",
+                &[("error", error.as_str().into())],
+            ))));
+        }
+        let mut lines: Vec<El> = self
+            .vpns
+            .iter()
+            .map(|vpn| {
+                let resource = self.vpn_live(vpn).into_resource();
+                let line = ListRow::new(
+                    format!("settings.network.vpn.{}", vpn.uuid),
+                    vpn.name.clone(),
+                )
+                .icon(Icon::Shield)
+                .secondary(format!("{} · {}", self.vpn_kind(vpn), self.vpn_state(vpn)))
+                .trailing(Box::new(self.vpn_switch_control(vpn, &resource)))
+                .disclosure();
+                let open = VpnEffect::ShowVpnProfile {
+                    connection: vpn.uuid.clone(),
+                };
+                Box::new(match self.cx.row_invocation(&resource, open) {
+                    Some(binding) => line.on_action(binding),
+                    None => line.with_enabled(false),
+                }) as El
+            })
+            .collect();
+        if let Some(source) = &self.vpn.entries {
+            lines.extend(source.entries().into_iter().map(|entry| {
+                let toggle = source.bind(
+                    &self.cx,
+                    &entry,
+                    Toggle::from_state(&LocalState::new(entry.active))
+                        .with_id(&format!("settings.network.vpn.entry.{}", entry.id))
+                        .with_accessible_name(&entry.name),
+                );
+                Box::new(
+                    ListRow::new(
+                        format!("settings.network.vpn.entry.{}", entry.id),
+                        entry.name,
+                    )
+                    .icon(Icon::MonitorSmartphone)
+                    .secondary(entry.detail)
+                    .trailing(Box::new(toggle)),
+                ) as El
+            }));
+        }
+        if lines.is_empty() && self.read_errors.vpns.is_none() {
+            content.push(note(&t("net-vpn-none")));
+        }
+        lines.push(Box::new(self.drill_row(
+            "settings.network.vpn.add",
+            Icon::Plus,
+            &t("net-vpn-add"),
+            None,
+            VpnEffect::ShowAddVpn,
+        )));
+        content.push(block(Box::new(ui::widget::Section::new(lines))));
+        card(&t("net-vpn"), rows(content))
+    }
+
+    /// The kinds of VPN that can be added.
+    fn add_vpn(&self) -> SettingsSection {
+        let mut lines: Vec<El> = vec![Box::new(self.drill_row(
+            "settings.network.vpn.add.wireguard",
+            Icon::Shield,
+            "WireGuard",
+            None,
+            VpnEffect::ShowAddWireguard,
+        ))];
+        for plugin in &self.plugins {
+            lines.push(Box::new(self.drill_row(
+                &format!("settings.network.vpn.add.{}", plugin.service),
+                Icon::Shield,
+                &plugin.name,
+                None,
+                VpnEffect::ShowAddPluginVpn {
+                    service: plugin.service.clone(),
+                },
+            )));
+        }
+        lines.push(Box::new(
+            self.drill_row(
+                "settings.network.vpn.import",
+                Icon::Upload,
+                &t("net-vpn-import-file"),
+                None,
+                VpnEffect::ImportVpnFile,
+            )
+            .secondary(t("net-vpn-import-caption")),
+        ));
+        let mut content = Vec::new();
+        if let Some(notice) = &self.notice {
+            content.push(note(notice));
+        }
+        content.push(block(Box::new(ui::widget::Section::new(lines))));
+        card(&t("net-vpn-add"), rows(content))
+    }
+
+    /// A new `WireGuard` tunnel: from its keys and server, or from a pasted
+    /// configuration.
+    fn add_wireguard(&self) -> Vec<SettingsSection> {
+        let form = &self.vpn.wireguard;
+        let mut tunnel = vec![
+            Self::text_field(&form.name, "network.vpn.wireguard.name", &t("net-vpn-name")),
+            setting_row_described(
+                &t("net-vpn-keys"),
+                &t("net-vpn-keys-caption"),
+                Box::new(self.button(
+                    "settings.network.vpn.wireguard.keys",
+                    &t("net-vpn-generate-keys"),
+                    VpnEffect::GenerateWireguardKeys,
+                )),
+            ),
+        ];
+        if let Some(public) = &form.public_key {
+            tunnel.push(value_row(&t("net-vpn-public-key"), public));
+        }
+        tunnel.extend([
+            Self::secret_field(
+                &form.private_key,
+                "network.vpn.wireguard.private",
+                &t("net-vpn-private-key"),
+            ),
+            Self::text_field(
+                &form.address,
+                "network.vpn.wireguard.address",
+                &t("net-vpn-address"),
+            ),
+            Self::text_field(
+                &form.server_public_key,
+                "network.vpn.wireguard.peer",
+                &t("net-vpn-server-key"),
+            ),
+            Self::text_field(
+                &form.endpoint,
+                "network.vpn.wireguard.endpoint",
+                &t("net-vpn-server"),
+            ),
+            Self::text_field(
+                &form.allowed_ips,
+                "network.vpn.wireguard.allowed",
+                &t("net-vpn-allowed"),
+            ),
+            Self::text_field(
+                &form.dns,
+                "network.vpn.wireguard.dns",
+                &t("net-dns-servers"),
+            ),
+            Self::text_field(
+                &form.keepalive,
+                "network.vpn.wireguard.keepalive",
+                &t("net-vpn-keepalive"),
+            ),
+            self.button_row(
+                "settings.network.vpn.wireguard.create",
+                &t("net-vpn-create"),
+                VpnEffect::CreateWireguard {
+                    name: None,
+                    address: None,
+                    server_public_key: None,
+                    endpoint: None,
+                    allowed_ips: None,
+                    dns: None,
+                    keepalive: None,
+                    private_key: None,
+                },
+            ),
+        ]);
+        let mut first = Vec::new();
+        if let Some(notice) = &self.notice {
+            first.push(note(notice));
+        }
+        first.extend(tunnel);
+        vec![
+            card(&t("net-vpn-new-wireguard"), rows(first)),
+            self.paste_wireguard(),
+        ]
+    }
+
+    /// A `WireGuard` configuration pasted whole, kept in a secret buffer.
+    fn paste_wireguard(&self) -> SettingsSection {
+        let form = &self.vpn.wireguard;
+        let initial = form.config.lock().map_or_else(
+            |_| Zeroizing::new(String::new()),
+            |value| Zeroizing::new(value.clone()),
+        );
+        card(
+            &t("net-vpn-paste-title"),
+            rows(vec![
+                note(&t("net-vpn-paste-caption")),
+                Self::text_field(
+                    &form.config_name,
+                    "network.vpn.wireguard.config-name",
+                    &t("net-vpn-name"),
+                ),
+                field_row(
+                    &t("net-vpn-config"),
+                    Box::new(
+                        TextInput::local()
+                            .with_id("network.vpn.wireguard.config")
+                            .with_external_buffer(Arc::clone(&form.config))
+                            .with_initial_value(&initial)
+                            .with_secret(true)
+                            .multiline(true)
+                            .with_placeholder(t("net-vpn-config")),
+                    ),
+                ),
+                self.button_row(
+                    "settings.network.vpn.wireguard.import",
+                    &t("net-vpn-import"),
+                    VpnEffect::ImportWireguardConfig {
+                        name: None,
+                        config: None,
+                    },
+                ),
+            ]),
+        )
+    }
+
+    /// A new profile of a plugin's type: its name and server; the rest is
+    /// the plugin's own.
+    fn add_plugin(&self, service: &str) -> SettingsSection {
+        let form = &self.vpn.plugin;
+        let name = self
+            .plugins
+            .iter()
+            .find(|plugin| plugin.service == service)
+            .map_or_else(|| service.to_owned(), |plugin| plugin.name.clone());
+        let mut content = Vec::new();
+        if let Some(notice) = &self.notice {
+            content.push(note(notice));
+        }
+        content.extend([
+            Self::text_field(&form.name, "network.vpn.plugin.name", &t("net-vpn-name")),
+            Self::text_field(
+                &form.server,
+                "network.vpn.plugin.server",
+                &t("net-vpn-server"),
+            ),
+            self.button_row(
+                "settings.network.vpn.plugin.create",
+                &t("net-vpn-create"),
+                VpnEffect::CreatePluginVpn {
+                    service: service.to_owned(),
+                    name: None,
+                    server: None,
+                },
+            ),
+            note(&t("net-vpn-plugin-caption")),
+        ]);
+        card(&name, rows(content))
+    }
+
+    /// A VPN's page: its state, settings, Export and Delete.
+    fn vpn_profile(&self, uuid: &str) -> Vec<SettingsSection> {
+        let Some(vpn) = self.vpns.iter().find(|vpn| vpn.uuid == uuid) else {
+            return vec![card(&t("net-vpn"), rows(vec![note(&t("net-vpn-gone"))]))];
+        };
+        let live = self.vpn_live(vpn).into_resource();
+        let mut status = Vec::new();
+        if let Some(notice) = &self.notice {
+            status.push(note(notice));
+        }
+        status.push(row(Box::new(
+            ListRow::new(
+                format!("settings.network.vpn.state.{uuid}"),
+                self.vpn_state(vpn),
+            )
+            .icon(Icon::Shield)
+            .secondary(self.vpn_kind(vpn))
+            .trailing(Box::new(self.vpn_switch_control(vpn, &live))),
+        )));
+        let mut sections = vec![card(&t("net-status"), rows(status))];
+        let settings = match (self.vpn.settings.get(uuid), self.vpn.errors.get(uuid)) {
+            (Some(settings), _) => self.vpn_settings_rows(vpn, settings),
+            (None, Some(error)) => vec![row(error_caption(&t_args(
+                "net-vpn-read-err",
+                &[("error", error.as_str().into())],
+            )))],
+            (None, None) => vec![note(&t("net-pending"))],
+        };
+        sections.push(card(&t("net-settings"), rows(settings)));
+        sections.push(card(
+            &t("net-actions"),
+            rows(vec![
+                setting_row_described(
+                    &t("net-vpn-export"),
+                    &t("net-vpn-export-caption"),
+                    Box::new(
+                        self.cx.bind_row(
+                            Button::new("settings.network.vpn.export", &t("net-vpn-export"))
+                                .with_icon(Icon::Download),
+                            &live,
+                            VpnEffect::ExportVpn {
+                                connection: uuid.to_owned(),
+                            },
+                        ),
+                    ),
+                ),
+                setting_row(
+                    &t("net-vpn-delete"),
+                    Box::new(
+                        self.cx.bind_row(
+                            Button::new("settings.network.vpn.delete", &t("net-vpn-delete"))
+                                .role(ButtonRole::Destructive),
+                            &live,
+                            VpnEffect::DeleteConnection {
+                                connection: uuid.to_owned(),
+                            },
+                        ),
+                    ),
+                ),
+            ]),
+        ));
+        sections
+    }
+
+    /// The editable settings of `vpn`, each its own action.
+    fn vpn_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
+        let uuid = vpn.uuid.clone();
+        let text = |id: &str, value: String, placeholder: String| {
+            TextInput::from_state(&LocalState::new(value))
+                .with_id(&format!("network.vpn.{id}.{uuid}"))
+                .with_placeholder(placeholder)
+        };
+        let keyed = |uuid: &str| uuid.to_owned();
+        let mut out = vec![
+            field_row(
+                &t("net-vpn-name"),
+                Box::new(self.cx.bind(
+                    text("name", settings.name.clone(), t("net-vpn-name")),
+                    effect(VpnEffect::SET_VPN_NAME).map({
+                        let uuid = keyed(&uuid);
+                        move |name: String| (uuid.clone(), name)
+                    }),
+                )),
+            ),
+            setting_row(
+                &t("net-autoconnect"),
+                Box::new(
+                    self.cx.bind(
+                        Toggle::from_state(&LocalState::new(settings.autoconnect))
+                            .with_id(&format!("network.vpn.autoconnect.{uuid}")),
+                        effect(VpnEffect::SET_VPN_AUTOCONNECT).map({
+                            let uuid = keyed(&uuid);
+                            move |on: bool| (uuid.clone(), on)
+                        }),
+                    ),
+                ),
+            ),
+            setting_row_described(
+                &t("net-vpn-all-traffic"),
+                &t("net-vpn-all-traffic-caption"),
+                Box::new(
+                    self.cx.bind(
+                        Toggle::from_state(&LocalState::new(settings.all_traffic))
+                            .with_id(&format!("network.vpn.all-traffic.{uuid}")),
+                        effect(VpnEffect::SET_VPN_ALL_TRAFFIC).map({
+                            let uuid = keyed(&uuid);
+                            move |on: bool| (uuid.clone(), on)
+                        }),
+                    ),
+                ),
+            ),
+            field_row(
+                &t("net-dns-servers"),
+                Box::new(self.cx.bind(
+                    text("dns", settings.dns.join(", "), t("net-dns-automatic")),
+                    effect(VpnEffect::SET_VPN_DNS).map({
+                        let uuid = keyed(&uuid);
+                        move |servers: String| (uuid.clone(), servers)
+                    }),
+                )),
+            ),
+            setting_row_described(
+                "MTU",
+                &t("net-vpn-mtu-caption"),
+                Box::new(
+                    self.cx.bind(
+                        NumberInput::new(f64::from(settings.mtu.unwrap_or(0)))
+                            .with_range(0.0, 9000.0)
+                            .with_step(1.0)
+                            .with_precision(0)
+                            .with_id(&format!("network.vpn.mtu.{uuid}"))
+                            .with_accessible_name("MTU"),
+                        effect(VpnEffect::SET_VPN_MTU).map({
+                            let uuid = keyed(&uuid);
+                            move |value: f64| (uuid.clone(), whole(value))
+                        }),
+                    ),
+                ),
+            ),
+        ];
+        if !settings.addresses.is_empty() {
+            out.push(value_row(
+                &t("net-vpn-address"),
+                &settings.addresses.join(", "),
+            ));
+        }
+        if settings.kind != "wireguard" {
+            if let Some(server) = &settings.endpoint {
+                out.push(value_row(&t("net-vpn-server"), server));
+            }
+            return out;
+        }
+        out.extend(self.wireguard_settings_rows(&uuid, settings));
+        out
+    }
+
+    /// A `WireGuard` tunnel's own settings: its server and what it carries.
+    fn wireguard_settings_rows(&self, uuid: &str, settings: &VpnProfileSettings) -> Vec<Item> {
+        let text = |id: &str, value: String, placeholder: String| {
+            TextInput::from_state(&LocalState::new(value))
+                .with_id(&format!("network.vpn.{id}.{uuid}"))
+                .with_placeholder(placeholder)
+        };
+        let keyed = |uuid: &str| uuid.to_owned();
+        let mut out = Vec::new();
+        if let Some(key) = &settings.peer_public_key {
+            out.push(value_row(&t("net-vpn-server-key"), key));
+        }
+        out.extend([
+            field_row(
+                &t("net-vpn-server"),
+                Box::new(self.cx.bind(
+                    text(
+                        "endpoint",
+                        settings.endpoint.clone().unwrap_or_default(),
+                        t("net-vpn-server"),
+                    ),
+                    effect(VpnEffect::SET_VPN_SERVER).map({
+                        let uuid = keyed(uuid);
+                        move |endpoint: String| (uuid.clone(), endpoint)
+                    }),
+                )),
+            ),
+            field_row(
+                &t("net-vpn-allowed"),
+                Box::new(self.cx.bind(
+                    text(
+                        "allowed",
+                        settings.allowed_ips.join(", "),
+                        t("net-vpn-allowed"),
+                    ),
+                    effect(VpnEffect::SET_VPN_ALLOWED_IPS).map({
+                        let uuid = keyed(uuid);
+                        move |addresses: String| (uuid.clone(), addresses)
+                    }),
+                )),
+            ),
+            setting_row_described(
+                &t("net-vpn-keepalive"),
+                &t("net-vpn-keepalive-caption"),
+                Box::new(
+                    self.cx.bind(
+                        NumberInput::new(f64::from(settings.keepalive.unwrap_or(0)))
+                            .with_range(0.0, 3600.0)
+                            .with_step(1.0)
+                            .with_precision(0)
+                            .with_id(&format!("network.vpn.keepalive.{uuid}"))
+                            .with_accessible_name(t("net-vpn-keepalive")),
+                        effect(VpnEffect::SET_VPN_KEEPALIVE).map({
+                            let uuid = keyed(uuid);
+                            move |value: f64| (uuid.clone(), whole(value))
+                        }),
+                    ),
+                ),
+            ),
+        ]);
+        out
+    }
+}
+
+#[cfg(test)]
+impl NetworkModel {
+    /// The public key generated for a new tunnel.
+    pub(super) fn vpn_public_key(&self) -> Option<String> {
+        self.vpn.wireguard.public_key.clone()
+    }
+
+    /// Fill the new tunnel's form as a person would.
+    pub(super) fn fill_wireguard_form(
+        &self,
+        name: &str,
+        address: &str,
+        peer: &str,
+        endpoint: &str,
+    ) {
+        let form = &self.vpn.wireguard;
+        form.name.set(name.into());
+        form.address.set(address.into());
+        form.server_public_key.set(peer.into());
+        form.endpoint.set(endpoint.into());
+    }
+
+    /// Whether the new tunnel's private key buffer holds nothing.
+    pub(super) fn vpn_private_key_is_empty(&self) -> bool {
+        self.vpn
+            .wireguard
+            .private_key
+            .lock()
+            .is_ok_and(|key| key.is_empty())
+    }
+}

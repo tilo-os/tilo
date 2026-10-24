@@ -99,6 +99,8 @@ pub struct PaneCx {
     scene: Option<Rc<crate::scenarios::CaptureScene>>,
     /// The radios this device has; never read when it reaches no device.
     radios: crate::radios::Radios,
+    /// The pages the panes drilled into, shared with the window.
+    pages: crate::pages::PanePages,
     pub provider_admin: ui::models::ProviderAdministration,
     /// The person's accounts with the services the room is connected to,
     /// when the host lent them.
@@ -153,9 +155,24 @@ impl PaneCx {
             mode: RunMode::Capture,
             scene: None,
             radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
             provider_admin: ui::models::ProviderAdministration::default(),
             linked: ui::linked_accounts::LinkedAccounts::default(),
         }
+    }
+
+    /// This context keeping its pages in `pages`: the window hands every
+    /// context it attaches the one trail its header shows.
+    #[must_use]
+    pub fn with_pages(mut self, pages: crate::pages::PanePages) -> Self {
+        self.pages = pages;
+        self
+    }
+
+    /// The pages the panes drilled into ([`crate::pages`]).
+    #[must_use]
+    pub fn pages(&self) -> &crate::pages::PanePages {
+        &self.pages
     }
 
     /// This pane reaching `linked` for the person's linked accounts.
@@ -212,6 +229,7 @@ impl PaneCx {
             provider_admin,
             linked,
             radios: crate::radios::Radios::unread(),
+            pages: crate::pages::PanePages::new(),
         };
         if attached.reaches_devices() {
             attached.radios = crate::radios::Radios::of_device();

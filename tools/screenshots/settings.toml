@@ -34,3 +34,73 @@ title = "About this computer"
 
 [[situation.steps]]
 invoke = { resource = "settings.root", action = "open-pane", args = { pane = "about" } }
+
+[[situation]]
+name = "network"
+title = "Network"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation]]
+name = "network-all"
+title = "Network: every network in range"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "show-all-networks" }
+
+[[situation]]
+name = "network-page"
+title = "Network: the network in use"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation.steps]]
+invoke = { resource = "network.wifi:Home_Network", action = "open-network-page", args = { ssid = "Home_Network" } }
+
+[[situation]]
+name = "network-known"
+title = "Network: known networks"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "show-known-networks" }
+
+[[situation]]
+name = "network-vpn"
+title = "Network: VPN"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "show-vpns" }
+
+[[situation]]
+name = "network-vpn-profile"
+title = "Network: a WireGuard tunnel"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation.steps]]
+invoke = { resource = "vpn.connection:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", action = "show-vpn-profile", args = { connection = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d" } }
+
+[[situation]]
+name = "network-vpn-add"
+title = "Network: adding a VPN"
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "open-pane", args = { pane = "network" } }
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "show-vpns" }
+
+[[situation.steps]]
+invoke = { resource = "settings.root", action = "show-add-vpn" }
