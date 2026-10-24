@@ -520,6 +520,13 @@ impl VideoEditorApp {
             self.trigger_import();
             return;
         }
+        // The empty timeline's action.
+        if let Some((btn, action)) = self.timeline_empty_action_rect(r)
+            && btn.contains(p)
+        {
+            self.run_timeline_empty_action(action);
+            return;
+        }
         // "+ Title" in the bin header.
         if self.bin_is_visible(r) && self.add_title_rect(r).contains(p) {
             self.add_title();

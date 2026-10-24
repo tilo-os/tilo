@@ -602,22 +602,13 @@ impl VideoEditorApp {
         // Empty timeline: say what to do, rather than showing bare lanes.
         // Through the same shared empty state the preview and the inspector
         // use, so the three empty surfaces of one window are one design.
-        if self.project.clips.is_empty() {
-            let area = Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1);
-            let message = if self.project.media.is_empty() {
-                "Import media, then drag it here."
-            } else {
-                "Drag a clip from the media bin onto a track."
-            };
+        // Its words ask for a step, so it carries the button for it.
+        if let Some(empty) = self.timeline_empty(r) {
             ui::widget::EmptyState::paint(
                 &mut ui::paint::PaintCtx::new(scene, tf, tr, theme),
-                area,
-                &ui::widget::EmptyStateContent {
-                    icon: Some(Icon::Layers),
-                    message: Some(message),
-                    ..ui::widget::EmptyStateContent::new("Nothing on the timeline")
-                },
-                Point::new(f64::MIN, f64::MIN),
+                empty.area,
+                &empty.content(),
+                self.last_mouse,
             );
         }
 
