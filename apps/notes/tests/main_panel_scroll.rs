@@ -540,3 +540,49 @@ fn a_touchpad_swipe_lifted_while_moving_glides_and_comes_to_rest() {
     }
     assert_eq!(scroll_y(&mut app), caught, "a press stops the glide");
 }
+
+/// A finger flicked up a touchscreen and lifted while moving leaves the note
+/// gliding, as a touchpad swipe does. The lift reaches the body twice, as
+/// the scroll's end and as the finger's own contact: the second must not
+/// catch the glide the first started. A finger put back down catches it.
+#[test]
+fn a_touchscreen_flick_lifted_while_moving_glides_and_a_finger_down_catches_it() {
+    use winit::event::TouchPhase::{Ended, Moved, Started};
+    let start = ui::time::now();
+    let at = |frame: u32| start + ui::time::Duration::from_millis(16 * u64::from(frame));
+    let flick = |app: &mut TestApp<NotesShell>| {
+        ui::time::testing::with_monotonic_time(start, || {
+            let harness = app.harness();
+            harness.touch(0, Started, 500.0, 280.0);
+            for step in 1..=6 {
+                harness.touch(0, Moved, 500.0, 280.0 - 30.0 * f64::from(step));
+            }
+            harness.touch(0, Ended, 500.0, 100.0);
+        });
+    };
+
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    flick(&mut app);
+    let lifted = ui::time::testing::with_monotonic_time(start, || scroll_y(&mut app));
+    assert_eq!(lifted, 180.0, "the finger moves the body 1:1");
+    for frame in 1..30 {
+        ui::time::testing::with_monotonic_time(at(frame), || app.frame());
+    }
+    let glided = scroll_y(&mut app);
+    assert!(
+        glided > lifted + 50.0,
+        "lifted while moving, the note glides on: {lifted} -> {glided}"
+    );
+
+    let mut app = note_at(&tall_body(), 1000, 300, 1.0);
+    flick(&mut app);
+    ui::time::testing::with_monotonic_time(at(1), || app.frame());
+    ui::time::testing::with_monotonic_time(at(1), || {
+        app.harness().touch(1, Started, 500.0, 150.0);
+    });
+    let caught = scroll_y(&mut app);
+    for frame in 2..20 {
+        ui::time::testing::with_monotonic_time(at(frame), || app.frame());
+    }
+    assert_eq!(scroll_y(&mut app), caught, "a finger down stops the glide");
+}
