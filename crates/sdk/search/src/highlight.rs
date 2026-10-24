@@ -14,7 +14,7 @@ use crate::weight::{FieldWeight, MatchTier};
 /// word, or inside a word where a field of `weight` matches inside words
 /// (a name or an identity, the query long enough to be a fragment). A query
 /// only beginning a name ([`MIN_ALIAS_SCALARS`]) shows in any other field
-/// only as the whole field. `None` where the index finds no match.
+/// only as a whole word. `None` where the index finds no match.
 ///
 /// [`MIN_ALIAS_SCALARS`]: crate::MIN_ALIAS_SCALARS
 #[must_use]
@@ -33,15 +33,31 @@ pub fn locate(query: &str, text: &str, weight: FieldWeight) -> Option<Range<usiz
         });
     }
     let scalars: Vec<char> = query.chars().collect();
-    let at = if names_only(&scalars) && weight != FieldWeight::TITLE {
-        (folded.trim() == query).then(|| folded.len().saturating_sub(folded.trim_start().len()))?
-    } else {
-        let starts_word = |at: usize| {
-            folded
+    // Punctuation the query starts or ends with is a word's edge itself.
+    let opens = scalars
+        .first()
+        .is_some_and(|first| !first.is_alphanumeric());
+    let closes = scalars.last().is_some_and(|last| !last.is_alphanumeric());
+    let starts_word = |at: usize| {
+        opens
+            || folded
                 .get(..at)
                 .and_then(|before| before.chars().next_back())
                 .is_none_or(|previous| !previous.is_alphanumeric())
-        };
+    };
+    let ends_word = |at: usize| {
+        closes
+            || folded
+                .get(at.saturating_add(query.len())..)
+                .and_then(|after| after.chars().next())
+                .is_none_or(|next| !next.is_alphanumeric())
+    };
+    let at = if names_only(&scalars) && weight != FieldWeight::TITLE {
+        folded
+            .match_indices(query.as_str())
+            .map(|(at, _)| at)
+            .find(|at| starts_word(*at) && ends_word(*at))?
+    } else {
         let inside_words = infix_allowed(&scalars) && MatchTier::Contains.rank_in(weight).is_some();
         let mut occurrences = folded.match_indices(query.as_str()).map(|(at, _)| at);
         let first = occurrences.next()?;

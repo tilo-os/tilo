@@ -127,9 +127,15 @@ pub(crate) fn names_only(query: &[char]) -> bool {
 }
 
 /// Whether a query that is [`names_only`] may match `tier` in a field of
-/// `weight`: a name, or any other field typed whole (an app's initials).
+/// `weight`: a name begun, or a whole word of any other field typed in full
+/// (an app's initials, "tv", a file's ".rs").
 pub(crate) fn admitted(names_only: bool, tier: MatchTier, weight: FieldWeight) -> bool {
-    !names_only || weight == FieldWeight::TITLE || tier == MatchTier::Exact
+    !names_only
+        || weight == FieldWeight::TITLE
+        || matches!(
+            tier,
+            MatchTier::Exact | MatchTier::PrefixWord | MatchTier::Word
+        )
 }
 
 /// [`infix_allowed`] for typed text: whether `query` may match inside a word
@@ -394,6 +400,23 @@ fn spanning_typo_query(
 
 /// The query for typed `text`, or `None` when nothing can match. An empty
 /// query browses every record.
+/// Every one of `chunks` in some field of `slots`.
+fn spanning_query(fields: &Fields, slots: &[usize], chunks: &[&str]) -> Option<BoxQuery> {
+    let every: Option<Vec<BoxQuery>> = chunks
+        .iter()
+        .map(|chunk| {
+            let chunk = marked(chunk, false);
+            any_of(
+                slots
+                    .iter()
+                    .filter_map(|slot| sequence_query(*fields.grams.get(*slot)?, &chunk))
+                    .collect(),
+            )
+        })
+        .collect();
+    every.map(all_of)
+}
+
 pub(crate) fn compile(
     fields: &Fields,
     used: Used,
@@ -444,22 +467,9 @@ pub(crate) fn compile(
         && !names_only
         && chunks.len() > 1
         && let Some(rank) = ranks(MatchTier::Spanning, FieldWeight::UNRANKED)
+        && let Some(every) = spanning_query(fields, &slots, &chunks)
     {
-        let every: Option<Vec<BoxQuery>> = chunks
-            .iter()
-            .map(|chunk| {
-                let chunk = marked(chunk, false);
-                any_of(
-                    slots
-                        .iter()
-                        .filter_map(|slot| sequence_query(*fields.grams.get(*slot)?, &chunk))
-                        .collect(),
-                )
-            })
-            .collect();
-        if let Some(every) = every {
-            ranked.push(constant(all_of(every), rank));
-        }
+        ranked.push(constant(every, rank));
     }
     let query_words = words(text);
     if matching.typos {
