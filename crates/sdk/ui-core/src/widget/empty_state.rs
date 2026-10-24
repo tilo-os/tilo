@@ -1684,7 +1684,7 @@ impl Widget for EmptyState {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
         // The empty state is a labelled group; the title is its accessible
         // name and the message its description so a screen reader announces
         // both without the caller wiring anything.
@@ -1694,6 +1694,12 @@ impl Widget for EmptyState {
         }
         if self.spinner.is_some() {
             node = node.with_state(AccessState::new().busy(true));
+        }
+        // A failure is announced at once; a wait when the reader is free.
+        if self.error {
+            node = node.with_live(Politeness::Assertive);
+        } else if self.spinner.is_some() {
+            node = node.with_live(Politeness::Polite);
         }
         let mut children = Vec::new();
         if let Some(action) = &self.resolved.2 {
@@ -1706,6 +1712,7 @@ impl Widget for EmptyState {
             children.push(
                 AccessNode::new(Role::Button)
                     .with_name(action.clone())
+                    .with_bounds(self.action_rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -1722,6 +1729,7 @@ impl Widget for EmptyState {
                 AccessNode::new(Role::Button)
                     .with_name(crate::i18n!("empty-state-details"))
                     .with_description(details.clone())
+                    .with_bounds(self.details_rect)
                     .with_state(
                         AccessState::new()
                             .focusable(true)
@@ -2408,6 +2416,17 @@ mod tests {
             let action = scroll.children()[0]
                 .synthetic_accessibility_rect(&[0])
                 .expect("retained action geometry");
+            let node = scroll.children()[0]
+                .accessibility()
+                .expect("a described state");
+            assert_eq!(
+                node.children
+                    .first()
+                    .and_then(|button| button.bounds)
+                    .map(crate::a11y::AccessBounds::to_rect),
+                Some(action),
+                "the action is described where it is drawn"
+            );
             assert!(
                 scroll.content_viewport_rect().contains(action.center()),
                 "the scrolled action is visible: {action:?}"
@@ -2512,6 +2531,14 @@ mod tests {
             assert_eq!(node.role, Role::Group);
             assert_eq!(node.name.as_deref(), Some("No results"));
             assert_eq!(node.description.as_deref(), Some("Try another search"));
+            assert_eq!(node.live, None, "a quiet empty state is not a live region");
+            let failed = EmptyState::error("Couldn't open Music", "Permission denied");
+            let node = Widget::accessibility(&failed).expect("an error exposes a11y");
+            assert_eq!(node.live, Some(crate::a11y::Politeness::Assertive));
+            let waiting = EmptyState::new("Opening folder").busy();
+            let node = Widget::accessibility(&waiting).expect("a wait exposes a11y");
+            assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
+            assert!(node.state.busy);
         }
 
         draws_something_visible();
