@@ -166,16 +166,15 @@ mod tests {
         }
     }
 
-    /// Invoke the library's action `id` with `arguments` by its address, as a
-    /// headless drive's `invoke` step does: no coordinates, no click.
+    /// Invoke the library's action `id` with the argument `name` set to
+    /// `value` by its address, as a headless drive's `invoke` step does: no
+    /// coordinates, no click.
     fn drive_invoke(
         app: &mut TestApp<VideoPlayerShell>,
         id: &str,
-        arguments: serde_json::Value,
+        (name, value): (&str, serde_json::Value),
     ) -> Result<(), ui::tilo_actions::DoorError> {
-        let serde_json::Value::Object(arguments) = arguments else {
-            panic!("arguments are an object");
-        };
+        let arguments = serde_json::Map::from_iter([(name.to_owned(), value)]);
         let address = ui::tilo_actions::ActionAddress::new("video-player.library", id);
         app.harness()
             .invoke_action(&address, &arguments, false, None)
@@ -198,12 +197,8 @@ mod tests {
     #[test]
     fn a_drive_of_a_scenario_shows_the_library_and_seeks_by_address() {
         let mut app = TestApp::<VideoPlayerShell>::drive("playing").unwrap();
-        drive_invoke(
-            &mut app,
-            "show-library",
-            serde_json::json!({ "tab": "shared" }),
-        )
-        .expect("the drive shows the library, as the L key does");
+        drive_invoke(&mut app, "show-library", ("tab", "shared".into()))
+            .expect("the drive shows the library, as the L key does");
         app.settle();
         assert!(surface(&mut app, |player| player.library_visible()));
         assert_eq!(
@@ -212,7 +207,7 @@ mod tests {
         );
         // Seek reaches the player: it moves the open clip, or, on a machine
         // without the system decoder, says a video must be open first.
-        if let Err(error) = drive_invoke(&mut app, "seek", serde_json::json!({ "seconds": 2.0 })) {
+        if let Err(error) = drive_invoke(&mut app, "seek", ("seconds", 2.0.into())) {
             assert_eq!(error.code(), "action_unavailable", "{error}");
         }
     }
