@@ -221,6 +221,30 @@ impl AuthorDirectory {
             .then(|| self.resolve_identity(&key))
     }
 
+    /// The author of a file version `device` signed for `person`, when the
+    /// device recorded which agent caused it (`attribution`, from the signed
+    /// record): that agent, on behalf of `person` — never anybody else's
+    /// person. Without a valid attribution, [`Self::resolve_file_actor`].
+    pub fn resolve_attributed_file_actor(
+        &self,
+        person: &[u8; 32],
+        device: &[u8; 32],
+        attribution: Option<&fs_protocol::FileAttributionV1>,
+    ) -> Option<HistoryAuthor> {
+        let Some(attribution) = attribution.filter(|attribution| attribution.validate().is_ok())
+        else {
+            return self.resolve_file_actor(person, device);
+        };
+        let [red, green, blue] = attribution.color;
+        let agent = HistoryAgent {
+            principal: attribution.actor.clone(),
+            label: attribution.label.clone(),
+            rgb: (red, green, blue),
+            person: hex::encode(person),
+        };
+        Some(self.agent_author(&hex::encode(device), &agent))
+    }
+
     /// The author a registered agent is: the agent, on behalf of its person,
     /// in the agent's own colour.
     fn agent_author(&self, actor_hex: &str, agent: &HistoryAgent) -> HistoryAuthor {

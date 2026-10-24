@@ -430,6 +430,7 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                 heads: vec![id],
                 current_revision: None,
                 next_after: None,
+                attributions: vec![],
             });
             xattr::set(
                 path,
@@ -450,7 +451,11 @@ fn framework_history_recovers_sessions_after_a_b_a() {
                 .xattr_name(),
                 &serde_json::to_vec(&FileHistoryReadResponseV1 {
                     schema_version: 1,
-                    result: Ok(FileHistoryReadValueV1::Version { scope, version }),
+                    result: Ok(FileHistoryReadValueV1::Version {
+                        scope,
+                        version,
+                        attribution: None,
+                    }),
                 })
                 .unwrap(),
             )
