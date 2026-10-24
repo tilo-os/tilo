@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {createVoiceCall, GRANT_DEADLINE_MS, GRANT_LOOK_MS, NO_GRANT} from './voice.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
+import {CarrierUnsupportedError, carrierUnsupported} from './moq-carrier.mjs';
 
 const CALL = 'c'.repeat(64);
 const ME = 'a'.repeat(64);
@@ -30,10 +31,12 @@ function fixture() {
     onEvent(next) { listener = next; return () => { listener = undefined; }; },
   };
   const audio = {started: 0, played: [], removed: [], mutes: [], stopped: 0};
-  audio.start = async ({muted, onFrame, onLevels}) => {
+  audio.start = async ({muted, onFrame, onLevels, onCaptureLost, onInputChanged}) => {
     audio.started++;
     audio.onFrame = onFrame;
     audio.onLevels = onLevels;
+    audio.onCaptureLost = onCaptureLost;
+    audio.onInputChanged = onInputChanged;
     audio.muted = muted;
     return {
       play: frame => audio.played.push(frame),
@@ -426,4 +429,55 @@ test('a refused unmute keeps the person in the call, muted, until they allow it'
   assert.equal(f.call.state.micIssue, null);
   assert.equal(f.call.stats().captureActive, true);
   f.call.dispose();
+});
+
+test('a microphone unplugged mid-call keeps the call: capture moves to the default, or mutes and says why', async () => {
+  const f = fixture();
+  f.call.join(CALL, {muted: true}); await drain();
+  f.event({kind: 'granted', grant: grantFor()}); await drain();
+  await f.call.selectInput('usb-mic');
+  await f.call.setMuted(false);
+  assert.equal(f.call.state.inputId, 'usb-mic');
+  // The audio session picked up the default microphone in its place.
+  f.audio.onInputChanged(undefined);
+  assert.equal(f.call.state.inputId, null);
+  assert.equal(f.call.state.phase, 'live');
+  assert.equal(f.call.state.muted, false);
+  // No microphone is left: muted, the reason shown, still in the call.
+  f.audio.onCaptureLost(new DOMException('Requested device not found', 'NotFoundError'));
+  await drain();
+  assert.equal(f.call.state.phase, 'live', 'still in the call, still hearing it');
+  assert.equal(f.call.state.muted, true);
+  assert.equal(f.call.state.micIssue, 'source_lost');
+  assert.notDeepEqual(f.sent.at(-1), ['leave']);
+  // Plugged back in: unmuting picks it up again.
+  await f.call.setMuted(false);
+  assert.equal(f.call.state.muted, false);
+  assert.equal(f.call.state.micIssue, null);
+  f.call.dispose();
+});
+
+test('a browser that cannot open the carrier says so instead of reconnecting forever', async () => {
+  // No WebTransport, or one too old to offer the carrier's subprotocol
+  // (the host answers those 404 every time).
+  assert.equal(carrierUnsupported(undefined), 'WebTransport is unavailable');
+  assert.match(carrierUnsupported(class {}), /cannot negotiate/);
+  assert.equal(carrierUnsupported(class { get protocol() { return ''; } }), null);
+
+  const before = fixture();
+  before.transport.unsupported = () => 'WebTransport is unavailable';
+  before.call.join(CALL); await drain();
+  assert.equal(before.call.state.phase, 'ended');
+  assert.equal(before.call.state.unsupported, true);
+  assert.deepEqual(before.sent, [], 'never joins: the others would see someone who hears nothing');
+  assert.equal(before.audio.started, 0);
+
+  const during = fixture();
+  during.call.join(CALL); await drain();
+  during.transport.connect = async () => { throw new CarrierUnsupportedError('WebTransport is unavailable'); };
+  during.event({kind: 'granted', grant: grantFor()}); await drain();
+  assert.equal(during.call.state.phase, 'ended');
+  assert.equal(during.call.state.unsupported, true);
+  assert.deepEqual(during.sent.at(-1), ['leave']);
+  assert.equal(during.timers.filter(timer => timer.delay < GRANT_LOOK_MS).length, 0, 'no reconnect is scheduled');
 });

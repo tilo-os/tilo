@@ -29,7 +29,7 @@
 import {audioInputs, createBrowserAudio} from './voice-audio.mjs';
 import {createPictureInbox, openSource} from './voice-video.mjs';
 import {createVoiceTransport} from './voice-transport.mjs';
-import {MediaAdmissionError} from './moq-carrier.mjs';
+import {CarrierUnsupportedError, MediaAdmissionError} from './moq-carrier.mjs';
 
 /** RMS above which a participant counts as speaking, and how long it stays so. */
 const SPEAKING_LEVEL = 0.015;
@@ -61,7 +61,8 @@ export function microphoneIssue(error) {
 
 /**
  * `state` is `{phase, call, muted, canPublish, participants, inputId,
- * reason, carrier, micIssue}` where `micIssue` is why the microphone could
+ * reason, carrier, micIssue, unsupported}` where `unsupported` says an
+ * ended call ended because this browser cannot open the carrier, and `micIssue` is why the microphone could
  * not start (`permission_denied`, `source_lost`, `capture_failed`) or null; `phase` is `idle`, `joining`, `connecting`, `live`,
  * `reconnecting` or `ended`, `admitted` says whether the host granted the
  * call (an ended call that never was is a refusal), and each participant is `{namespace, device,
@@ -109,7 +110,7 @@ export function createVoiceCall({
   const inbox = createPictureInbox();
 
   function idle() {
-    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null, micIssue: null};
+    return {phase: 'idle', call: null, admitted: false, muted: wantMuted, canPublish: false, participants: [], inputId: inputId ?? null, reason: null, carrier: null, camera: false, screen: false, videoIssue: null, micIssue: null, unsupported: false};
   }
   const emit = () => { for (const listener of [...listeners]) { try { listener(state); } catch (error) { report({type: 'voice-listener-error', error}); } } };
   const update = change => { state = {...state, ...change}; emit(); };
@@ -157,7 +158,18 @@ export function createVoiceCall({
     const controller = new AbortController();
     audioController = controller;
     const startingMuted = wantMuted;
-    audioStarting = audio.start({inputId, muted: startingMuted, onFrame, onLevels, signal: controller.signal, onError: error => {
+    // The microphone going away mutes the person, with the reason; the
+    // call goes on and they still hear it.
+    const onCaptureLost = error => {
+      if (audioController !== controller || controller.signal.aborted) return;
+      microphoneFailed(audioSession, error);
+    };
+    const onInputChanged = id => {
+      if (audioController !== controller || controller.signal.aborted) return;
+      inputId = id;
+      update({inputId: id ?? null});
+    };
+    audioStarting = audio.start({inputId, muted: startingMuted, onFrame, onLevels, onCaptureLost, onInputChanged, signal: controller.signal, onError: error => {
       if (audioController !== controller || controller.signal.aborted) return;
       report({type: 'voice-audio-error', error});
       const call = state.call;
@@ -353,6 +365,10 @@ export function createVoiceCall({
       if (ticket !== generation) return;
       connecting = undefined;
       report({type: 'voice-carrier-error', error});
+      if (error instanceof CarrierUnsupportedError) {
+        unsupportedEnded(opening.call, error.message);
+        return;
+      }
       if (error instanceof MediaAdmissionError) {
         admissionLost(opening.call, error.message);
         return;
@@ -442,6 +458,15 @@ export function createVoiceCall({
     });
   }
 
+  /** This browser can never open the carrier: the call ends at once with
+   * why, instead of reconnecting forever. */
+  function unsupportedEnded(call, reason) {
+    if (call !== state.call) return;
+    stopAll();
+    update({...idle(), phase: 'ended', call, admitted: false, unsupported: true, reason});
+    try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
+  }
+
   function admissionEnded(call, reason) {
     ended(call, reason);
     try { signalling.leave(); } catch (error) { report({type: 'voice-signalling-error', error}); }
@@ -485,6 +510,14 @@ export function createVoiceCall({
       if (state.phase !== 'idle' && state.phase !== 'ended') this.leave();
       wantMuted = muted;
       attempt = 0;
+      // A browser that cannot open the carrier never joins: the others
+      // would see someone in the call who hears nothing.
+      const unsupported = transport.unsupported?.();
+      if (unsupported) {
+        state = {...idle(), phase: 'ended', call, muted, unsupported: true, reason: unsupported};
+        emit();
+        return;
+      }
       state = {...idle(), phase: 'joining', call, muted};
       emit();
       void startAudio();
@@ -539,6 +572,8 @@ export function createVoiceCall({
     async selectOutput(deviceId) {
       return (audioSession ?? await audioStarting)?.selectOutput(deviceId) ?? false;
     },
+    /** Why this browser cannot take part in calls, or null when it can. */
+    unsupported: () => transport.unsupported?.() ?? null,
     /** Carrier and audio counters, for diagnostics and tests. */
     stats: () => ({carrier: carrier?.stats() ?? null, phase: state.phase, captureActive: audioSession?.captureActive === true}),
     networkChanged,

@@ -12,7 +12,7 @@ async function connected({status = STATUS_ADMITTED, expectedPhase = 'live', leav
   class WebTransport {
     constructor() {
       webTransport = this;
-      this.protocol = MOQ_PROTOCOL;
+      this.negotiated = MOQ_PROTOCOL;
       this.ready = Promise.resolve();
       this.closed = new Promise(resolve => {this.disconnected = resolve;});
     }
@@ -21,6 +21,7 @@ async function connected({status = STATUS_ADMITTED, expectedPhase = 'live', leav
         admission = controller; controller.enqueue(Uint8Array.of(status));
       }}), writable:new WritableStream({write(bytes) {assert.equal(bytes[0], 1);}})};
     }
+    get protocol() {return this.negotiated;}
     close() {this.disconnected();}
     hostClose(closeCode) {this.disconnected({closeCode});}
   }
@@ -211,7 +212,7 @@ test('a revoked carrier lets its holder close its tracks before the transport cl
   const timers = [];
   class WebTransport {
     constructor() {
-      this.protocol = MOQ_PROTOCOL;
+      this.negotiated = MOQ_PROTOCOL;
       this.ready = Promise.resolve();
       this.closed = new Promise(() => {});
     }
@@ -220,6 +221,7 @@ test('a revoked carrier lets its holder close its tracks before the transport cl
         admission = controller; controller.enqueue(Uint8Array.of(STATUS_ADMITTED));
       }}), writable:new WritableStream()};
     }
+    get protocol() {return this.negotiated;}
     close() {closes++;}
   }
   const opened = await openCarrier({url:new URL('https://localhost/moq/live'), grant:Uint8Array.of(1),
