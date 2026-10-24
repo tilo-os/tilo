@@ -195,24 +195,43 @@ impl NativeCommittedView {
     pub fn continuity(&self) -> u64 {
         self.record.continuity
     }
+    /// The delivery host the enrollment pinned apart from its governor;
+    /// none once the room was handed to another device, which hosts it.
     #[must_use]
     pub fn host(&self) -> Option<&DeviceCert> {
-        self.record.enrollment.as_ref()?.host.as_ref()
+        self.enrolled_host()?.host.as_ref()
     }
     #[must_use]
     pub fn delivery_locator(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.enrollment.as_ref()?.locator.as_ref()
+        self.enrolled_host()?.locator.as_ref()
     }
     #[must_use]
     pub fn hint(&self) -> Option<&tilo_peer_state::join::TransportHint> {
-        self.record.enrollment.as_ref()?.hint.as_ref()
+        self.enrolled_host()?.hint.as_ref()
     }
-    /// Where the host this device enrolled through is reached.
+    /// The enrollment, while the host it pinned still carries the room.
+    fn enrolled_host(&self) -> Option<&record::StoredEnrollment> {
+        self.record
+            .handoffs
+            .is_empty()
+            .then_some(self.record.enrollment.as_ref())
+            .flatten()
+    }
+    /// Where the room's host is reached: the host this device enrolled
+    /// through, or the device the room was handed to since.
     ///
     /// # Errors
     /// The room's record holds no enrollment.
     pub fn transport_hint(&self) -> Result<&tilo_peer_state::join::TransportHint, String> {
-        Ok(&self.enrollment()?.transport_hint)
+        let enrolled = &self.enrollment()?.transport_hint;
+        Ok(self.record.handed_to().unwrap_or(enrolled))
+    }
+    /// The handoffs of the room's governance this device followed, in
+    /// order: the room's owner gave it to another person, whose device
+    /// governs it now.
+    #[must_use]
+    pub fn handoffs(&self) -> &[tilo_peer_state::handoff::GovernorHandoff] {
+        &self.record.handoffs
     }
     /// # Errors
     /// The enrollment pinned no delivery host independently of its governor.
@@ -246,6 +265,7 @@ impl NativeCommittedView {
             enrollment.and_then(|enrollment| enrollment.host.as_ref()),
             enrollment.and_then(|enrollment| enrollment.hint.as_ref()),
             enrollment.and_then(|enrollment| enrollment.floor.as_ref()),
+            self.record.handed_to(),
         ))
         .map_err(|e| e.to_string())?;
         Ok(*blake3::hash(&bytes).as_bytes())
@@ -604,10 +624,21 @@ impl NativeWorkspaceOwner {
                 return Ok(exact);
             }
         }
+        let governance = matches!(&message, NeighbourMsg::SyncResp { .. });
         let report = candidate
             .peer
             .receive_from_report(origin, message, now)
             .map_err(|e| e.to_string())?;
+        if governance {
+            // The room's owner gave it to another person: their device
+            // governs it from this change on, and this device reaches the
+            // room there.
+            let followed = candidate.peer.follow_handoffs()?;
+            if !followed.is_empty() {
+                tracing::info!(%room, "the room's governance moved to another device");
+            }
+            candidate.record.handoffs.extend(followed);
+        }
         for dropped in &report.summary().dropped {
             tracing::warn!(%room, %dropped, "a held app message was let go unapplied");
         }

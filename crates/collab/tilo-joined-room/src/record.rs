@@ -105,27 +105,48 @@ pub(crate) struct StoredRoom {
     /// these say who governs the room now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub successions: Vec<tilo_user_identity::GovernorSuccession>,
+    /// The handoffs of the room's governance to another person's device
+    /// this device followed, in order: the room's owner gave it away
+    /// ([`tilo_peer_state::handoff`]). The last one's successor governs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoffs: Vec<tilo_peer_state::handoff::GovernorHandoff>,
 }
 
 impl StoredRoom {
     /// Who governs the room now, and the revocations of the governors it
     /// passed on the way: the invitation's governor unless a succession
-    /// names another ([`tilo_peer_state::succeeded_authority`]).
+    /// names another ([`tilo_peer_state::succeeded_authority`]), or the
+    /// device the room was handed to after
+    /// ([`tilo_peer_state::handoff::follow`], which reads no clock).
     pub(crate) fn current_governor(
         &self,
         now: std::time::SystemTime,
     ) -> (DeviceCert, tilo_user_identity::RevocationList) {
         let mut revoked = tilo_user_identity::RevocationList::new();
-        let Some((governor, revocations)) =
-            tilo_peer_state::succeeded_authority(&self.governor, &self.successions, now)
-        else {
-            return (self.governor.clone(), revoked);
-        };
-        for revocation in revocations {
-            // Each verified with its succession.
-            let _ = revoked.insert(revocation);
-        }
+        let governor =
+            match tilo_peer_state::succeeded_authority(&self.governor, &self.successions, now) {
+                Some((governor, revocations)) => {
+                    for revocation in revocations {
+                        // Each verified with its succession.
+                        let _ = revoked.insert(revocation);
+                    }
+                    governor
+                }
+                None => self.governor.clone(),
+            };
+        let room = self.room.to_string();
+        let governor = tilo_peer_state::handoff::follow(&room, &governor, &self.handoffs)
+            .last()
+            .map_or(governor, |handoff| handoff.successor().clone());
         (governor, revoked)
+    }
+
+    /// Where the room's governor is reached now: the host hint of the
+    /// device the room was last handed to, when it was handed on.
+    pub(crate) fn handed_to(&self) -> Option<&tilo_peer_state::join::TransportHint> {
+        self.handoffs
+            .last()
+            .map(|handoff| &handoff.acceptance.successor_hint)
     }
 }
 /// The signed join a device enrolled in a host-governed room with, and the

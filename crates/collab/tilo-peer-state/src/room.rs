@@ -276,6 +276,7 @@ pub fn governance_unchanged(before: Option<&AutoCommit>, after: &AutoCommit) -> 
         && crate::document_import::governed_bytes(before)
             == crate::document_import::governed_bytes(Some(after))
         && settings_of(before) == settings_of(Some(after))
+        && crate::handoff::governed_bytes(before) == crate::handoff::governed_bytes(Some(after))
 }
 
 /// The room settings only its governor writes, as stored: the room's name

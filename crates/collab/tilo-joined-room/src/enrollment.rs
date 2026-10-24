@@ -433,6 +433,7 @@ impl NativeWorkspaceOwner {
             effect_receipts: std::collections::BTreeMap::new(),
             effect_history_root: None,
             successions: Vec::new(),
+            handoffs: Vec::new(),
         };
         self.publish_room(room, NativeCommittedView { peer, record }, Some(&pending))
     }
