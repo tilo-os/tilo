@@ -41,7 +41,7 @@ mod old_rooms;
 mod own_devices;
 
 /// The app whose document the tests edit, and its record.
-pub(super) const NOTES: &str = "so.tilo.notes";
+pub(crate) const NOTES: &str = "so.tilo.notes";
 const NOTE_RECORD: &str = "plan";
 /// The note's text, a field of the record's document.
 const NOTE_TEXT: &str = "text";
@@ -56,7 +56,7 @@ const ENROLLMENT_POLL: Duration = Duration::from_millis(200);
 /// The wakes of every device's loop in one test: set by any of them,
 /// consumed by the one waiting.
 #[derive(Default)]
-pub(super) struct Wakes {
+pub(crate) struct Wakes {
     woken: Mutex<bool>,
     ready: Condvar,
 }
@@ -85,23 +85,23 @@ impl Wakes {
 }
 
 /// A person: their root key, which certifies each of their devices.
-pub(super) struct Person {
+pub(crate) struct Person {
     root: SigningKey,
 }
 
 impl Person {
-    pub(super) fn new(seed: u8) -> Self {
+    pub(crate) fn new(seed: u8) -> Self {
         Self {
             root: SigningKey::from_bytes(&[seed; 32]),
         }
     }
 
-    pub(super) fn user(&self) -> [u8; 32] {
+    pub(crate) fn user(&self) -> [u8; 32] {
         self.root.verifying_key().to_bytes()
     }
 
     /// The person's id as their own devices name them.
-    pub(super) fn id(&self) -> String {
+    pub(crate) fn id(&self) -> String {
         match collab_types::caps::Principal::person_from_key(
             collab_types::crypto::Ed25519PublicKey::from_bytes(self.user()),
         ) {
@@ -111,7 +111,7 @@ impl Person {
     }
 
     /// A certificate from this person's root for `key`.
-    pub(super) fn certify(
+    pub(crate) fn certify(
         &self,
         key: &SigningKey,
         label: &str,
@@ -145,15 +145,15 @@ struct Loop {
 /// One of a person's devices: its session's network over its tree, its
 /// state on disk, and its device key and certificate (made at its first
 /// start and kept across restarts, as a device's are).
-pub(super) struct Device {
-    pub(super) label: String,
+pub(crate) struct Device {
+    pub(crate) label: String,
     dir: PathBuf,
     root: SigningKey,
     capabilities: DeviceCapabilities,
     /// The id namespace this device mints its windows in.
     salt: u16,
     minted: Mutex<u64>,
-    pub(super) tree: WorkspaceTreeHandle,
+    pub(crate) tree: WorkspaceTreeHandle,
     net: Option<Arc<ShellNetwork>>,
     custody: Arc<Mutex<Option<(SigningKey, DeviceCert)>>>,
     wakes: Arc<Wakes>,
@@ -161,13 +161,13 @@ pub(super) struct Device {
     /// Joins in flight, by enrollment.
     enrollments: Mutex<Vec<u64>>,
     /// How each finished join ended.
-    pub(super) joins: Mutex<Vec<Result<RoomId, String>>>,
+    pub(crate) joins: Mutex<Vec<Result<RoomId, String>>>,
 }
 
 impl Device {
     /// A device of `person` with an empty tree, its state under `dir`,
     /// started.
-    pub(super) fn start(
+    pub(crate) fn start(
         person: &Person,
         label: &str,
         dir: &Path,
@@ -182,7 +182,7 @@ impl Device {
 
     /// [`Self::start`] over `tree`, which persists to the device's state
     /// file.
-    pub(super) fn start_with(
+    pub(crate) fn start_with(
         person: &Person,
         label: &str,
         dir: &Path,
@@ -256,7 +256,7 @@ impl Device {
 
     /// Take this device off the network, as shutting it down does: its
     /// session ends, its state stays on disk.
-    pub(super) fn go_offline(&mut self) {
+    pub(crate) fn go_offline(&mut self) {
         let net = self.net.take().expect("the device is online");
         crate::shell::persist::wait_for_saves();
         drop(
@@ -267,7 +267,7 @@ impl Device {
 
     /// Start this device again from what it kept on disk, as booting it
     /// does.
-    pub(super) fn come_back(&mut self) {
+    pub(crate) fn come_back(&mut self) {
         let path = self.dir.join("state.json");
         let (mut tree, notice) = crate::shell::persist::load_or_default(&path);
         assert!(
@@ -284,7 +284,7 @@ impl Device {
 
     /// Hold `keys` for every channel of this device's rooms, as its channel
     /// membership would give them, so it seals and opens live frames.
-    pub(super) fn hold_live_keys(
+    pub(crate) fn hold_live_keys(
         &mut self,
         keys: fn(collab_types::ChannelId) -> channel_crypto::ChannelContentKeys,
     ) {
@@ -293,13 +293,13 @@ impl Device {
         net.live_keys = Box::new(move |_, channel| Some(keys(channel)));
     }
 
-    pub(super) fn net(&self) -> &Arc<ShellNetwork> {
+    pub(crate) fn net(&self) -> &Arc<ShellNetwork> {
         self.net
             .as_ref()
             .unwrap_or_else(|| panic!("{} is offline", self.label))
     }
 
-    pub(super) fn cert(&self) -> DeviceCert {
+    pub(crate) fn cert(&self) -> DeviceCert {
         self.custody
             .lock()
             .unwrap()
@@ -322,7 +322,7 @@ impl Device {
     /// One turn of this device's compositor loop: the network's tick, the
     /// windows it keeps in its rooms when its tree changed, and the join
     /// card's poll of an enrollment in flight. Nothing while it is offline.
-    pub(super) fn frame(&self) {
+    pub(crate) fn frame(&self) {
         let Some(net) = self.net.as_ref() else {
             return;
         };
@@ -392,12 +392,12 @@ impl Device {
 
     /// Make a new workspace called `name`, as the create-workspace action
     /// does: placed on this device's own host.
-    pub(super) fn create_workspace(&self, name: &str) -> (WorkspaceId, RoomId) {
+    pub(crate) fn create_workspace(&self, name: &str) -> (WorkspaceId, RoomId) {
         self.tree.write().create_hosted_workspace(name)
     }
 
     /// Paste an invitation's text into the join field.
-    pub(super) fn join(&self, invitation: &str) -> Result<(), String> {
+    pub(crate) fn join(&self, invitation: &str) -> Result<(), String> {
         match self.net().accept_peer_invitation(invitation)? {
             PeerSyncResponse::EnrollmentPending { id } => {
                 self.enrollments.lock().unwrap().push(id);
@@ -415,7 +415,7 @@ impl Device {
     }
 
     /// Invite someone to `local` from the workspace's sharing card.
-    pub(super) fn invite(
+    pub(crate) fn invite(
         &self,
         local: WorkspaceId,
         invitee: &str,
@@ -435,7 +435,7 @@ impl Device {
     }
 
     /// Cancel the pending invitation to `room` for `invitee`.
-    pub(super) fn cancel_invitation(&self, room: RoomId, invitee: &str) {
+    pub(crate) fn cancel_invitation(&self, room: RoomId, invitee: &str) {
         let pending = self
             .net()
             .pending_invitations(room)
@@ -450,7 +450,7 @@ impl Device {
 
     /// Open a window of the notes app in `room`'s workspace, in a group of
     /// its own on the workspace's first strip. Answers its tab.
-    pub(super) fn open_window(&self, room: RoomId, title: &str) -> u64 {
+    pub(crate) fn open_window(&self, room: RoomId, title: &str) -> u64 {
         let (group, tab) = (self.mint(), self.mint());
         let strip_id = self.mint();
         let mut tree = self.tree.write();
@@ -487,7 +487,7 @@ impl Device {
     }
 
     /// Close the window showing `tab` in `room`'s workspace.
-    pub(super) fn close_window(&self, room: RoomId, tab: u64) {
+    pub(crate) fn close_window(&self, room: RoomId, tab: u64) {
         let mut tree = self.tree.write();
         let workspace = tree
             .desktop
@@ -512,7 +512,7 @@ impl Device {
     /// make the note's empty record, as opening the app there first does.
     /// The workspace's owner does this once; whoever opens it later finds
     /// the record.
-    pub(super) fn open_notes_first(&self, room: RoomId) {
+    pub(crate) fn open_notes_first(&self, room: RoomId) {
         let net = Arc::clone(self.net());
         let cert = self.cert();
         let runtime = net.runtime_handle().unwrap();
@@ -527,7 +527,7 @@ impl Device {
     }
 
     /// Whether this device holds the note's record in `room`.
-    pub(super) fn holds_note(&self, room: RoomId) -> bool {
+    pub(crate) fn holds_note(&self, room: RoomId) -> bool {
         self.net.as_ref().is_some_and(|net| {
             net.native_owner().is_ok_and(|owner| {
                 owner
@@ -542,7 +542,7 @@ impl Device {
     /// Write `text` into the note in `room`, as the notes app does: a
     /// change to its record signed by this device and committed by its
     /// owner, which publishes it to the room's host.
-    pub(super) fn write_note(&self, room: RoomId, text: &str) {
+    pub(crate) fn write_note(&self, room: RoomId, text: &str) {
         let net = self.net();
         let owner = net.native_owner().unwrap();
         let key = self.key();
@@ -573,7 +573,7 @@ impl Device {
     }
 
     /// The note's text in `room` as the notes app here shows it.
-    pub(super) fn note(&self, room: RoomId) -> Option<String> {
+    pub(crate) fn note(&self, room: RoomId) -> Option<String> {
         let owner = self.net.as_ref()?.native_owner().ok()?;
         let bytes = owner
             .with_current(room, |view| Ok(view.peer().document(NOTES, NOTE_RECORD)))
@@ -586,7 +586,7 @@ impl Device {
     // What the person sees.
 
     /// The rooms of the workspaces this device lists, in order.
-    pub(super) fn workspace_rooms(&self) -> Vec<RoomId> {
+    pub(crate) fn workspace_rooms(&self) -> Vec<RoomId> {
         self.tree
             .read()
             .desktop
@@ -597,7 +597,7 @@ impl Device {
     }
 
     /// How many workspaces this device lists for `room`.
-    pub(super) fn workspaces_of(&self, room: RoomId) -> usize {
+    pub(crate) fn workspaces_of(&self, room: RoomId) -> usize {
         self.workspace_rooms()
             .into_iter()
             .filter(|listed| *listed == room)
@@ -606,7 +606,7 @@ impl Device {
 
     /// Whether this device holds `room`: its workspace is listed and no
     /// longer says Joining….
-    pub(super) fn holds(&self, room: RoomId) -> bool {
+    pub(crate) fn holds(&self, room: RoomId) -> bool {
         let tree = self.tree.read();
         tree.holds_room(room)
             && !tree.is_joining(room)
@@ -618,7 +618,7 @@ impl Device {
     }
 
     /// The tabs of `room`'s workspace as this device shows them.
-    pub(super) fn tabs(&self, room: RoomId) -> Vec<(u64, String)> {
+    pub(crate) fn tabs(&self, room: RoomId) -> Vec<(u64, String)> {
         self.tree
             .read()
             .desktop
@@ -637,12 +637,12 @@ impl Device {
             .unwrap_or_default()
     }
 
-    pub(super) fn shows_tab(&self, room: RoomId, tab: u64) -> bool {
+    pub(crate) fn shows_tab(&self, room: RoomId, tab: u64) -> bool {
         self.tabs(room).iter().any(|(shown, _)| *shown == tab)
     }
 
     /// The people in `room`'s roster as this device holds it.
-    pub(super) fn roster(&self, room: RoomId) -> BTreeSet<[u8; 32]> {
+    pub(crate) fn roster(&self, room: RoomId) -> BTreeSet<[u8; 32]> {
         self.net
             .as_ref()
             .and_then(|net| net.native_owner().ok())
@@ -663,7 +663,7 @@ impl Device {
 
     /// `room`'s governance as this device holds it: its owner, its members'
     /// roles and its grants.
-    pub(super) fn policy(&self, room: RoomId) -> Option<tilo_action_policy::RoomPolicy> {
+    pub(crate) fn policy(&self, room: RoomId) -> Option<tilo_action_policy::RoomPolicy> {
         let owner = self.net.as_ref()?.native_owner().ok()?;
         owner
             .with_current(room, |view| {
@@ -676,7 +676,7 @@ impl Device {
     }
 
     /// The role `person` holds in `room`, as this device sees it.
-    pub(super) fn role_of(
+    pub(crate) fn role_of(
         &self,
         room: RoomId,
         person: &Person,
@@ -686,7 +686,7 @@ impl Device {
 
     /// Whether `room`'s governance lets `app` keep records there, as this
     /// device sees it.
-    pub(super) fn app_may_author(&self, room: RoomId, app: &str) -> bool {
+    pub(crate) fn app_may_author(&self, room: RoomId, app: &str) -> bool {
         self.policy(room).is_some_and(|policy| {
             policy
                 .grants
@@ -698,7 +698,7 @@ impl Device {
     /// Change `person`'s role in `room` from the workspace's people
     /// settings: the room's `set-role` governance action, asked of the
     /// room's host.
-    pub(super) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
+    pub(crate) fn set_role(&self, room: RoomId, person: &Person, role: &str) {
         let net = self.net();
         let target = net
             .administered_room(room)
@@ -715,7 +715,7 @@ impl Device {
     }
 
     /// The rooms this device's own host serves; empty while it runs none.
-    pub(super) fn hosted_rooms(&self) -> Vec<RoomId> {
+    pub(crate) fn hosted_rooms(&self) -> Vec<RoomId> {
         let Some(host) = self.net.as_ref().and_then(|net| net.room_host()) else {
             return Vec::new();
         };
@@ -728,7 +728,7 @@ impl Device {
     }
 
     /// Where this device's own host keeps what it retains of its rooms.
-    pub(super) fn host_state_root(&self) -> PathBuf {
+    pub(crate) fn host_state_root(&self) -> PathBuf {
         self.net()
             .room_host()
             .expect("the device runs its host")
@@ -738,7 +738,7 @@ impl Device {
 
     /// Open a connection to `other`, as two of a person's devices that find
     /// each other on the network do.
-    pub(super) fn reach(&self, other: &Self) {
+    pub(crate) fn reach(&self, other: &Self) {
         let addr = until(&[self, other], "the other device to listen", || {
             other.net().dial_addr()
         });
@@ -782,7 +782,7 @@ fn note_message(
 /// Run `devices`' loops until `probe` answers, waking only when one of
 /// them is woken or reaches a deadline of its own loop; fail at the shared
 /// hang bound naming `what`.
-pub(super) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
+pub(crate) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
     let bound = tilo_test_env::hang_deadline();
     let wakes = &devices
         .first()
@@ -807,13 +807,13 @@ pub(super) fn until<T>(devices: &[&Device], what: &str, mut probe: impl FnMut() 
 }
 
 /// A fresh directory for one test's devices.
-pub(super) fn scratch() -> tempfile::TempDir {
+pub(crate) fn scratch() -> tempfile::TempDir {
     tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap()
 }
 
 /// Make `name` on `device` and wait until its host serves it and its owner
 /// holds it as a member.
-pub(super) fn hosted_workspace(
+pub(crate) fn hosted_workspace(
     device: &Device,
     others: &[&Device],
     name: &str,
