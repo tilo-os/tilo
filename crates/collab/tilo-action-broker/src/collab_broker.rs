@@ -5,11 +5,11 @@ pub use crate::collab_core::{
 };
 pub use crate::route::CrdtRoute;
 use collab_types::{ArtifactId, ChannelState};
+use runtime_collab::event::CollabEvent;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use ui::collaboration::CollabEvent;
 /// Callback an in-process fanout subscriber registers to receive
 /// delivered events. Aliased because the raw `Box<dyn Fn(...)>` shape
 /// recurs across [`RoomSubscription`], [`FanoutState::subscribe_rooms`]

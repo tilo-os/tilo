@@ -116,12 +116,14 @@ use tokio::sync::{mpsc, watch};
 #[cfg(any(test, feature = "test-support"))]
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use collab_types::presence::PresencePayload;
 use collab_types::{
     ArtifactId, ArtifactKind, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op,
 };
 #[cfg(test)]
 use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
+use runtime_collab::event::CollabEvent;
 use runtime_collab::raw::{
     OpAdmission, OpKind, action_catalogue_stream, action_directory, blob_stream, channel_handle,
     collab_service, context_stream, invocation_stream, presence_event, presence_handle,
@@ -130,7 +132,6 @@ use runtime_collab::raw::{
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Grant, RoomPolicy, Subject, TreePath, roles,
 };
-use ui::collaboration::{CollabEvent, PresencePayload};
 use ui::presence::PresenceKey;
 
 use crate::collab_broker::{
