@@ -2,7 +2,8 @@
 
 //! A destructive verb of a document is undoable: from whatever path it
 //! comes it applies at once, nobody is asked, and Undo takes it back. Only
-//! what Undo cannot take back is confirmed (the palette's tests cover that).
+//! what Undo cannot take back is confirmed, from a gesture and through the
+//! door alike (and in the palette's tests).
 
 use tilo_app::prelude::*;
 
@@ -38,6 +39,13 @@ impl Notes {
     pub fn clear(&mut self) {
         self.notes = Collection::new();
     }
+
+    /// Forget every note, with what each device kept beside the document:
+    /// Undo brings the notes back but not what the devices forgot.
+    #[action(destructive, irreversible)]
+    pub fn forget(&mut self) {
+        self.notes = Collection::new();
+    }
 }
 
 struct NotesApp;
@@ -55,6 +63,7 @@ impl ResourceApp for NotesApp {
                 Notes::REMOVE.with(first.unwrap_or_else(|| Id::from_raw("")))
             ),
             cx.button("clear", Notes::CLEAR.with(())),
+            cx.button("forget", Notes::FORGET.with(())),
         ])
     }
 }
@@ -76,6 +85,19 @@ fn an_undoable_destructive_verb_applies_at_once_and_undo_takes_it_back() {
     );
     assert!(app.undo(), "Undo takes it back");
     assert_eq!(app.state().notes.len(), 1);
+}
+
+/// What Undo cannot take back is asked first through the door: the
+/// person's press of a control for an irreversible destructive verb.
+#[test]
+fn an_irreversible_destructive_verb_through_the_door_asks_first() {
+    let mut app = TestApp::<NotesApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    let mut app = app.reopen().unwrap();
+    app.harness().click_named("forget").unwrap();
+    app.settle();
+    assert!(app.asking().is_some(), "the person is asked first");
+    assert_eq!(app.state().notes.len(), 1, "nothing is forgotten yet");
 }
 
 #[test]
@@ -105,6 +127,8 @@ enum Now {
     Queued,
     Gesture,
     InvokedGesture,
+    IrreversibleGesture,
+    IrreversibleVerb,
 }
 
 thread_local! {
@@ -166,6 +190,8 @@ impl Widget for Remover {
                 ]),
             ),
             Now::Gesture => dispatch.submit_gesture(edits, Notes::REMOVE.with(first)),
+            Now::IrreversibleGesture => dispatch.submit_gesture(edits, Notes::FORGET.with(())),
+            Now::IrreversibleVerb => dispatch.submit_now(edits, Notes::FORGET.with(())),
             Now::InvokedGesture => {
                 let _agent = tilo_app::invocation_scope::InvokerScope::enter(
                     tilo_actions::ActionInvoker::actor("agent:helper"),
@@ -289,4 +315,32 @@ fn a_typed_undoable_removal_applied_now_applies_at_once() {
 #[test]
 fn a_queued_undoable_removal_applies_at_once() {
     applies_now_without_asking(Now::Queued);
+}
+
+/// Applying `now` an irreversible destructive verb asks the person first
+/// and forgets nothing until they answer.
+fn asks_before_forgetting(now: Now) {
+    let mut app = TestApp::<RemoverApp>::new().unwrap();
+    app.invoke(Notes::ADD.with("Milk")).unwrap();
+    NOW.set(Some(now));
+    app.settle();
+    assert!(app.asking().is_some(), "{now:?}: the person is asked first");
+    assert_eq!(
+        app.state().notes.len(),
+        1,
+        "{now:?}: nothing is forgotten yet"
+    );
+}
+
+/// What Undo cannot take back is asked first from the person's own gesture
+/// too, as through the door: the gesture confirms only what has a way back.
+#[test]
+fn an_irreversible_destructive_verb_of_a_gesture_asks_first() {
+    asks_before_forgetting(Now::IrreversibleGesture);
+}
+
+/// A surface applying an irreversible destructive verb now asks first too.
+#[test]
+fn an_irreversible_destructive_verb_applied_now_asks_first() {
+    asks_before_forgetting(Now::IrreversibleVerb);
 }

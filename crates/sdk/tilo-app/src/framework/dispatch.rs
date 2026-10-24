@@ -1275,6 +1275,7 @@ impl<R: Resource> Dispatcher<R> {
     /// gesture itself supplied. Like a keystroke, such a gesture is its own
     /// confirmation, so a destructive verb the surface offers with its own
     /// way back (a message held so Undo takes it back unsent) applies now.
+    /// What has no way back (`#[action(irreversible)]`) is still asked first.
     /// The confirmation stays with the callers who supply the arguments
     /// themselves (the palette, a script, an agent): under any invocation,
     /// an effect's handler, custody or a past version this is
@@ -1297,6 +1298,11 @@ impl<R: Resource> Dispatcher<R> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
+        // The gesture confirms only what has a way back: a verb that loses
+        // something Undo cannot bring back is asked first, as at every door.
+        if tilo_actions::Action::irreversible(&action) && asks(&action) {
+            return self.ask_first(invoke, &action);
+        }
         let applied = self.apply_now_as(edits, &action, self.core.context(), true);
         // A view that showed the edit before it was refused (a row already
         // gone) shows the stored state again.
@@ -1646,14 +1652,18 @@ impl Landed {
     }
 }
 
-/// Whether `action` needs the person's confirmation before it applies: its
-/// risk asks for it and Undo cannot take it back. A removal that only
-/// changes the document runs at once; Undo is how the person takes it back
-/// (`RiskLevel::requires_confirmation_when`).
+/// Whether `action` needs the person's confirmation before it applies, by
+/// the one rule every door asks (`tilo_actions::asks_first`): its risk asks
+/// for it and Undo cannot take it back. A removal that only changes the
+/// document runs at once; Undo is how the person takes it back. One that
+/// loses something outside the document (`irreversible`) still asks.
 fn asks<A: tilo_actions::Action>(action: &A) -> bool {
-    let undoable = tilo_actions::Action::action_kind(action) == tilo_actions::ActionKind::Undoable
-        && tilo_actions::Action::change_kind(action).is_step();
-    tilo_actions::Action::risk(action).requires_confirmation_when(undoable)
+    tilo_actions::asks_first(
+        tilo_actions::Action::risk(action),
+        tilo_actions::Action::action_kind(action),
+        tilo_actions::Action::change_kind(action),
+        tilo_actions::Action::irreversible(action),
+    )
 }
 
 /// The submissions each effect queued that have not landed yet, and the

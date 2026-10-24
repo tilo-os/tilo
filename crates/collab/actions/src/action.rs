@@ -224,6 +224,33 @@ pub trait Action: std::fmt::Debug {
     }
 }
 
+/// Whether Undo takes back a value with these facts: it changes the document
+/// alone ([`ActionKind::Undoable`](crate::ActionKind::Undoable)), as a
+/// person's step ([`ChangeKind::is_step`](crate::ChangeKind::is_step)), and
+/// loses nothing Undo cannot bring back ([`Action::irreversible`]). The one
+/// rule every host asks, whatever the value's type.
+#[must_use]
+pub fn undo_takes_back(
+    kind: crate::ActionKind,
+    change: crate::ChangeKind,
+    irreversible: bool,
+) -> bool {
+    kind == crate::ActionKind::Undoable && change.is_step() && !irreversible
+}
+
+/// Whether a value with these facts is confirmed before it applies: its risk
+/// asks for confirmation and Undo cannot take it back
+/// ([`RiskLevel::requires_confirmation_when`](crate::RiskLevel::requires_confirmation_when)).
+#[must_use]
+pub fn asks_first(
+    risk: crate::RiskLevel,
+    kind: crate::ActionKind,
+    change: crate::ChangeKind,
+    irreversible: bool,
+) -> bool {
+    risk.requires_confirmation_when(undo_takes_back(kind, change, irreversible))
+}
+
 /// A serialized action ready to cross a process/network boundary: the
 /// registry `type_id` plus the JSON payload the matching decoder
 /// reconstructs it from.
