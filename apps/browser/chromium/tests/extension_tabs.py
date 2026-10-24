@@ -714,9 +714,9 @@ class ExtensionTabs(unittest.TestCase):
         title = self.title(host, 1, 'framed')
         self.assertTrue(title.startswith('framed:'), title)
         framed = json.loads(title[len('framed:'):])
-        # After the frame of the same site went to a page the extension's
-        # content script does not match, a script into every frame still
-        # runs in the page and in the frame of the other site.
+        # After the frame of the same site went to a page of the other site
+        # the extension's content script does not match, a script into every
+        # frame still runs in the page and in the frame of the other site.
         after = framed.pop('after')
         self.assertIsInstance(after, list, after)
         self.assertIn(['/framed', '/framed'], after)
