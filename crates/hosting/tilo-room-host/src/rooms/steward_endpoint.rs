@@ -50,16 +50,64 @@ impl Rooms {
         )
     }
 
+    /// The content keys of `channel`, one of `room`'s channels, for the
+    /// device that governs and stewards the room here and runs in this
+    /// process beside it: a device hosting its own rooms, whose session
+    /// opens their records under the steward's own leaf. `route` is the
+    /// channel's record when the device names it; `create` opens the channel
+    /// when it has none yet, else only an existing channel is read. `None`
+    /// when this host does not govern and steward the room.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked from the decision until its keys are read"
+    )]
+    pub async fn steward_channel_keys(
+        &self,
+        room: &str,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<ChannelContentKeys, String>> {
+        let state = self.room(room).await.ok()?;
+        let governed = state.lock().await;
+        governed.stewardship.as_ref()?;
+        if route.is_some_and(|route| !route.proves(room, channel)) {
+            return Some(Err("the record is not this channel's".into()));
+        }
+        Some(
+            self.stewarded_keys_locked(&governed, channel, route, create)
+                .await,
+        )
+    }
+
     async fn steward_endpoint_keys_locked(
         &self,
         room: &super::GovernedRoom,
         route: &DocumentRoute,
         create: bool,
     ) -> Result<ChannelContentKeys, String> {
-        let workspace_id = room.workspace_id();
-        if route.workspace_id().ok() != Some(workspace_id) {
+        if route.workspace_id().ok() != Some(room.workspace_id()) {
             return Err("the record is not in this room".into());
         }
+        let channel =
+            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+        // This relay's own endpoint names the record it writes: the channel
+        // is decided by it from its first admission.
+        let route = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
+        self.stewarded_keys_locked(room, channel, Some(&route), create)
+            .await
+    }
+
+    /// The steward's keys of `channel` in `room`, after the one admission
+    /// decision that hands them out ([`RoomOperation::StewardedChannelKeys`]).
+    async fn stewarded_keys_locked(
+        &self,
+        room: &super::GovernedRoom,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        create: bool,
+    ) -> Result<ChannelContentKeys, String> {
+        let workspace_id = room.workspace_id();
         let workspace = self
             .inner
             .host
@@ -88,22 +136,17 @@ impl Rooms {
             RoomOperation::StewardedChannelKeys,
         );
         if let Decision::Deny(reason) = decision {
-            tracing::warn!(room = %route.cluster_id, reason = reason.reason(),
-                "room actions: the steward's channel keys refused");
+            tracing::warn!(room = %room.room(), reason = reason.reason(),
+                "the steward's channel keys refused");
             return Err(reason.reason().into());
         }
-        let channel =
-            collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record);
         let steward = room
             .stewardship
             .clone()
             .ok_or("this relay does not steward the room's channels")?;
-        // This relay's own endpoint names the record it writes: the channel
-        // is decided by it from its first admission.
-        steward.learn_route(
-            channel,
-            &collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str()),
-        );
+        if let Some(route) = route {
+            steward.learn_route(channel, route);
+        }
         let mut stewardship = steward.channels.lock().await;
         if create {
             self.open_record_channel(room, &steward, &mut stewardship, channel)
@@ -111,8 +154,8 @@ impl Rooms {
         }
         let keys = stewardship.existing_keys(channel)?;
         drop(stewardship);
-        tracing::debug!(room = %route.cluster_id, app = %route.app_id, record = %route.record,
-            epoch = keys.epoch(), "room actions: handed the steward's channel keys");
+        tracing::debug!(room = %room.room(), epoch = keys.epoch(),
+            "handed the steward's channel keys");
         Ok(keys)
     }
 }
