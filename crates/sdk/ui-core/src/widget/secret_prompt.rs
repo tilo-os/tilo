@@ -77,10 +77,6 @@ use crate::widget::{
     TextInputKind, Widget,
 };
 
-/// The smallest target a finger is given, in design pixels at 1×: fields,
-/// buttons and keypad keys are never shorter.
-pub const TOUCH_TARGET: f64 = 44.0;
-
 /// The digits a SIM's PUK has.
 pub const PUK_DIGITS: usize = 8;
 
@@ -1108,17 +1104,15 @@ impl SecretPrompt {
         }
     }
 
-    /// The theme the prompt draws with: a finger gets targets of at least
-    /// [`TOUCH_TARGET`], whatever the pointer metrics say.
+    /// The theme the prompt draws with: once a finger is in play, its
+    /// fields, buttons and keypad keys are touch targets
+    /// ([`InteractionEnvironment::TOUCH`]), whatever the pointer metrics say.
     fn effective_theme(&self, theme: &Theme) -> Theme {
         let coarse =
             self.touch_mode || self.environment.pointer_precision == PointerPrecision::Coarse;
         let mut theme = theme.clone();
         if coarse {
-            let target = crate::num::f32_of_f64(
-                f64::from(self.environment.minimum_target()).max(TOUCH_TARGET)
-                    * f64::from(theme.ui_scale),
-            );
+            let target = InteractionEnvironment::TOUCH.minimum_target() * theme.ui_scale;
             let metrics = &mut theme.tokens.metrics;
             metrics.min_pointer_target = metrics.min_pointer_target.max(target);
         }
@@ -1130,9 +1124,7 @@ impl SecretPrompt {
     }
 
     fn field_height(theme: &Theme) -> f64 {
-        ControlSize::Regular
-            .height(theme)
-            .max(TOUCH_TARGET * f64::from(theme.ui_scale))
+        ControlSize::Regular.height(theme)
     }
 
     fn line_height(theme: &Theme, role: TextRole) -> f64 {
@@ -1140,9 +1132,7 @@ impl SecretPrompt {
     }
 
     fn keypad_key_height(theme: &Theme) -> f64 {
-        ControlSize::Regular
-            .height(theme)
-            .max(TOUCH_TARGET * f64::from(theme.ui_scale))
+        ControlSize::Regular.height(theme)
     }
 
     fn keypad_height(theme: &Theme) -> f64 {
