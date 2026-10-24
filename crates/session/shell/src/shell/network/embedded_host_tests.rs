@@ -98,6 +98,44 @@ fn a_workspace_not_placed_stays_waiting_for_the_next_pass() {
 }
 
 #[test]
+fn a_failed_placement_waits_for_something_it_depends_on_to_change() {
+    let plans = RoomId::new();
+    let mut tree = tree_with(&[("Plans", plans)]);
+    tree.pending_placements.insert(plans);
+    let (network, _commands) = shell_network_for_test(tree.shared(), 1);
+    let passes = || network.embedded_host.passes.load(Ordering::Acquire);
+    // This network has no host to place it on.
+    network.place_pending_workspaces();
+    assert_eq!(passes(), 1);
+    for _ in 0..10 {
+        network.place_pending_workspaces();
+        network.place_pending_workspaces_off_loop();
+    }
+    assert_eq!(passes(), 1, "nothing changed, so no pass ran again");
+    assert!(
+        !network.placements_pending(),
+        "the frame loop queues no pass"
+    );
+
+    // A new workspace waits too: the pass runs again, once.
+    let notes = network.tree.write().create_hosted_workspace("Notes").1;
+    network.place_pending_workspaces();
+    network.place_pending_workspaces();
+    assert_eq!(passes(), 2);
+    let pending = network.tree.read().pending_placements.clone();
+    assert_eq!(pending, BTreeSet::from([plans, notes]));
+
+    // The host opening is another such change.
+    network
+        .embedded_host
+        .host_generation
+        .fetch_add(1, Ordering::AcqRel);
+    assert!(network.placements_pending());
+    network.place_pending_workspaces();
+    assert_eq!(passes(), 3);
+}
+
+#[test]
 fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     let person_root = ed25519_dalek::SigningKey::from_bytes(&[0x51; 32]);
     let other = ed25519_dalek::SigningKey::from_bytes(&[0xB0; 32])
@@ -164,4 +202,92 @@ fn a_room_another_device_hosts_is_entered_at_that_devices_host() {
     assert_eq!(action, ENTER_ROOM);
     assert_eq!(room, Some(serde_json::Value::from(plans.to_string())));
     assert!(!held, "a room its host did not let in is not held");
+}
+
+/// A new workspace is this person's own room becoming hosted, not a join:
+/// while its room is created on this device's host and its native owner
+/// enrolls, it never says Joining…, and the window opened in it stays.
+#[test]
+#[serial_test::serial]
+fn a_new_workspace_keeps_its_windows_and_never_joins_while_it_is_placed() {
+    use crate::shell::state::compose_id;
+    use crate::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
+
+    let mut home = tilo_test_env::TestHome::new().expect("home");
+    let dir = tempfile::tempdir().expect("temp");
+    let root = ed25519_dalek::SigningKey::from_bytes(&[0x52; 32]);
+    home.env()
+        .set("TILO_USER_ID", hex::encode(root.verifying_key().to_bytes()));
+    let mut tree = WorkspaceTree::default();
+    tree.set_salt_override(7);
+    let (workspace, room) = tree.create_hosted_workspace("Plans");
+    tree.persist_path = Some(dir.path().join("workspaces.json"));
+    let tab = compose_id(7, 1);
+    tree.desktop
+        .workspaces
+        .iter_mut()
+        .find(|candidate| candidate.id == workspace)
+        .expect("the workspace")
+        .strips[0]
+        .window_groups
+        .push(WindowGroup {
+            id: compose_id(7, 2),
+            tabs: vec![Tab {
+                id: tab,
+                title: "Terminal".into(),
+                tile: TileContent::LocalApp {
+                    app_id: "so.tilo.terminal".into(),
+                    label: "Terminal".into(),
+                    note: String::new(),
+                },
+                app_title: None,
+            }],
+            active_tab: tab,
+            width: WindowWidth::Normal,
+            maximized: false,
+            focus_history: Vec::new(),
+        });
+    let tree = tree.shared();
+    let tabs = |tree: &crate::shell::state::WorkspaceTreeHandle| {
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|candidate| candidate.id == workspace)
+            .map(|candidate| {
+                candidate
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .map(|tab| tab.id)
+                    .collect::<Vec<_>>()
+            })
+    };
+    let network = crate::shell::network::idle_quiet_tests::device_reaching(
+        tree.clone(),
+        dir.path(),
+        &root,
+        tilo_user_identity::DeviceCapabilities::primary(),
+        crate::shell::network::Reach::Loopback,
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    while !tree.read().native_authority.holds(room) {
+        assert!(
+            !tree.read().is_joining(room),
+            "a workspace being placed says Joining…"
+        );
+        assert_eq!(tabs(&tree), Some(vec![tab]), "its window went away");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the workspace was never placed"
+        );
+        network.tick();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    network.tick();
+    assert!(!tree.read().is_joining(room));
+    assert_eq!(tabs(&tree), Some(vec![tab]), "placing it took its window");
+    assert!(network.administered_room(room).is_some());
+    drop(network);
 }
