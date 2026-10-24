@@ -94,6 +94,88 @@ fn overlapping_damage_renders_sparsely_while_its_union_leaves_a_quarter_untouche
 }
 
 #[test]
+fn overlapping_damage_that_copies_more_than_the_output_reads_it_back_whole() {
+    let size = (2944, 1840);
+    // A window's edge stepping right one column a frame, each step its own rectangle: together
+    // they cover 2063 of 2944 columns, so the frame renders sparsely, but copied one by one they
+    // would read the output back more than forty times.
+    let staggered: Vec<_> = (0..64).map(|step| rect(step, 0, 2000, 1840)).collect();
+    let admitted = VelloDrmBridge::normalize_damage(&staggered, size)
+        .expect("the union leaves more than a quarter untouched");
+    assert_eq!(admitted.len(), 64, "no rectangle holds another");
+    assert!(
+        FrameOutput::copied_by_rect(&admitted, size).is_none(),
+        "the readback copies the whole output once instead"
+    );
+    // Damage that copies less than the output is still read back rectangle by rectangle.
+    let windows = [rect(0, 0, 1000, 1840), rect(700, 0, 1000, 1840)];
+    let admitted = VelloDrmBridge::normalize_damage(&windows, size).expect("sparse");
+    assert_eq!(
+        FrameOutput::copied_by_rect(&admitted, size),
+        Some(&windows[..])
+    );
+}
+
+#[test]
+fn a_sparse_frame_whose_rectangles_overlap_many_times_reads_the_output_back_once() {
+    let (width, height) = (200_u32, 100_u32);
+    let pitch = width as usize * 4;
+    let mut bridge = required_bridge(width, height);
+    let mut fresh = required_bridge(width, height);
+    let before = window_scene(Color::from_rgb8(255, 255, 255));
+    let after = window_scene(Color::from_rgb8(0, 0, 0));
+    bridge.set_phase_timing_enabled(true);
+    let mut destination = vec![0; pitch * height as usize];
+    bridge
+        .paint_damage_into_xrgb8888(
+            &before,
+            SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: None,
+            },
+            &mut destination,
+            pitch,
+        )
+        .expect("first paint");
+    // The window's tile stepping right a column at a time: 137 of 200 columns, a sparse frame,
+    // whose eight rectangles copied one by one would read back the output five times over.
+    let staggered: Vec<_> = (0..8).map(|step| rect(step, 0, 130, 100)).collect();
+    bridge
+        .paint_damage_into_xrgb8888(
+            &after,
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&staggered),
+            },
+            &mut destination,
+            pitch,
+        )
+        .expect("damage paint");
+    if bridge.target.renderer.sparse_fine_supported() {
+        assert_eq!(
+            (
+                bridge.last_sparse_render_attempts(),
+                bridge.last_full_render_attempts()
+            ),
+            (1, 0),
+            "the frame renders sparsely"
+        );
+    }
+    assert_eq!(
+        bridge.last_phase_timing().expect("timing").readback_bytes,
+        u64::from(width) * u64::from(height) * 4,
+        "the output is read back once, not once per rectangle"
+    );
+    let mut expected = vec![0; pitch * height as usize];
+    fresh
+        .paint_into_xrgb8888(&after, &mut expected, pitch)
+        .expect("dense oracle");
+    assert!(destination == expected, "the pixels equal a full repaint");
+}
+
+#[test]
 fn a_window_sized_typing_update_renders_sparsely_and_equals_a_full_repaint() {
     let mut bridge = required_bridge(200, 100);
     let mut fresh = required_bridge(200, 100);

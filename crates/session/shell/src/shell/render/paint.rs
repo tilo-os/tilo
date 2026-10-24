@@ -459,7 +459,10 @@ impl FrameOutput<'_> {
         else {
             return;
         };
-        if let Some(damage) = damage.filter(|_| partial) {
+        if let Some(damage) = damage
+            .filter(|_| partial)
+            .and_then(|damage| Self::copied_by_rect(damage, size))
+        {
             for rect in damage {
                 encoder.copy_texture_to_buffer(
                     wgpu::TexelCopyTextureInfo {
@@ -495,15 +498,32 @@ impl FrameOutput<'_> {
     }
 
     fn copy_bytes(self, size: (u32, u32), damage: Option<&[vello::FineDamageRect]>) -> u64 {
-        match self {
-            Self::GpuOnly => 0,
-            Self::Xrgb { partial: true, .. } if damage.is_some() => {
-                VelloDrmBridge::sparse_damage_readback_bytes(damage.unwrap_or_default())
-            }
-            Self::Xrgb { .. } => u64::from(size.0)
+        let Self::Xrgb { partial, .. } = self else {
+            return 0;
+        };
+        match damage
+            .filter(|_| partial)
+            .and_then(|damage| Self::copied_by_rect(damage, size))
+        {
+            Some(damage) => VelloDrmBridge::sparse_damage_readback_bytes(damage),
+            None => u64::from(size.0)
                 .saturating_mul(u64::from(size.1))
                 .saturating_mul(4),
         }
+    }
+
+    /// `damage` when copying its rectangles one by one moves fewer pixels than copying the
+    /// whole target; `None` when the whole target is the cheaper copy. Damage is admitted to
+    /// the sparse path by the pixels it covers, each once, but every rectangle is its own copy:
+    /// a pile of overlapping ones may cover little and still copy the target many times over.
+    fn copied_by_rect(
+        damage: &[vello::FineDamageRect],
+        (width, height): (u32, u32),
+    ) -> Option<&[vello::FineDamageRect]> {
+        let copied = damage.iter().fold(0_u64, |pixels, rect| {
+            pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
+        });
+        (copied < u64::from(width).saturating_mul(u64::from(height))).then_some(damage)
     }
 
     fn unmap(self) {
