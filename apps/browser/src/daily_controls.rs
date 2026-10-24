@@ -8,9 +8,20 @@ use ui::{
 };
 
 pub(crate) const FIND_INPUT: &str = "browser.find.input";
-/// The smallest and largest zoom levels, `1.2` times apart each.
-const MIN_ZOOM: f64 = -5.0;
-const MAX_ZOOM: f64 = 9.0;
+/// The zoom steps a page goes through, `1.2` times apart each: five out,
+/// nine in.
+const ZOOM_STEPS: std::ops::RangeInclusive<i32> = -5..=9;
+
+/// The smallest zoom level, the page's level being the steps from its
+/// default size.
+fn zoom_min() -> f64 {
+    f64::from(*ZOOM_STEPS.start())
+}
+
+/// The largest zoom level.
+fn zoom_max() -> f64 {
+    f64::from(*ZOOM_STEPS.end())
+}
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
     Open,
@@ -78,7 +89,7 @@ impl DailyControls {
                 self.zoom = if step == 0 {
                     0.0
                 } else {
-                    (self.zoom + f64::from(step)).clamp(MIN_ZOOM, MAX_ZOOM)
+                    (self.zoom + f64::from(step)).clamp(zoom_min(), zoom_max())
                 };
                 engine.send(WebViewCommand::SetZoomLevel(self.zoom));
             }
@@ -208,8 +219,8 @@ impl DailyControls {
     /// the largest, out (`-1`) above the smallest, back (`0`) while zoomed.
     pub fn can_zoom(&self, step: i32) -> bool {
         match step.signum() {
-            1 => self.zoom < MAX_ZOOM,
-            -1 => self.zoom > MIN_ZOOM,
+            1 => self.zoom < zoom_max(),
+            -1 => self.zoom > zoom_min(),
             _ => self.zoom.abs() >= f64::EPSILON,
         }
     }
