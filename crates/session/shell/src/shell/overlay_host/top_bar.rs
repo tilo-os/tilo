@@ -82,6 +82,15 @@ impl ShellOverlayHost {
         // its client can be scanned out) until the bar is reached for.
         let chosen = self.desktop_controls.config().hide_top_bar;
         let maximized = self.maximized_on_top_bar_display();
+        // The bar leaves with a window maximizing over it and comes back
+        // with its restore, moved by what moved the window.
+        let (motion, source) = (self.overview_layout_theme.motion(), self.input_source);
+        if let Some(bar) = self
+            .desktop_surface_mut()
+            .and_then(tilo_desktop::composition::DesktopSurface::topbar_mut)
+        {
+            bar.move_with_window(!maximized, motion, source);
+        }
         self.top_bar_reveal.set_hide(chosen || maximized);
         self.top_bar_reveal.settle(now);
         let held_open = self.top_bar_held_open();
