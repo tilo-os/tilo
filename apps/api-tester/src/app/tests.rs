@@ -1002,6 +1002,53 @@ fn sent_response(url: String) -> ResponseData {
         .expect("the response is displayed")
 }
 
+/// Sending answers whoever sent the request with the response the pane
+/// shows: an agent or a script reads the status, headers and body without
+/// looking at the window.
+#[test]
+fn send_answers_its_caller_with_the_response() {
+    let body = "{\"ok\":true}";
+    let url = serve_once(
+        format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nX-Request-Id: probe-7\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        ),
+        body.as_bytes().to_vec(),
+    );
+    let mut app = TestApp::<ApiTesterShell>::new().unwrap();
+    let mut request = Request::new("Answer proof");
+    request.url = url;
+    open(&mut app, &request);
+    app.start_effect(&ApiTesterEffect::Send).unwrap();
+    tilo_test_env::wait_until("the HTTP worker to answer", || {
+        app.settle();
+        app.effect_progress()
+            .iter()
+            .any(|update| matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }))
+    });
+    let answer = app
+        .effect_progress()
+        .into_iter()
+        .find_map(|update| match update {
+            ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => output.value,
+            _ => None,
+        })
+        .expect("the request answers with its response");
+    assert_eq!(answer["status"], 201);
+    assert_eq!(answer["status_text"], "Created");
+    assert_eq!(answer["body"], body);
+    assert_eq!(answer["size_bytes"], body.len());
+    assert_eq!(answer["binary"], false);
+    assert!(
+        answer["headers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|header| header["name"] == "x-request-id" && header["value"] == "probe-7"),
+        "{answer}"
+    );
+}
+
 /// A response larger than the pane can lay out is downloaded only as far
 /// as it is shown, and the pane says so instead of holding gigabytes.
 #[test]
