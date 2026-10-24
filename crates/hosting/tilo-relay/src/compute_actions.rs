@@ -488,12 +488,17 @@ impl ActionHost for InWorkspace {
         self.actions.ledger().get(caller, id).cloned()
     }
 
-    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Result<(), ActionHostError> {
-        if !self.actions.admitted(caller, id) {
-            return Err(ActionHostError::UnknownInvocation);
-        }
-        Err(ActionHostError::NotCancellable {
-            reason: "compute placement completes at once".into(),
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(if self.actions.admitted(caller, id) {
+            Err(ActionHostError::NotCancellable {
+                reason: "compute placement completes at once".into(),
+            })
+        } else {
+            Err(ActionHostError::UnknownInvocation)
         })
     }
 }

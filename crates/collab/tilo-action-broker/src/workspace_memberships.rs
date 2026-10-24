@@ -164,7 +164,9 @@ impl CapnpBrokerState {
                 admitted: Box::new(admitted),
                 time,
             }),
-        )
+        )?
+        // A host-side call from the shell's threads, never the broker's loop.
+        .start_blocking(self)
     }
 
     pub(super) fn refresh_workspace_membership_services(self: &Arc<Self>) -> Result<(), String> {

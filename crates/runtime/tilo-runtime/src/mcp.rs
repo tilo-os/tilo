@@ -1757,6 +1757,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 let invocation = invocation_id(&a.invocation_id)?;
                 self.host()
                     .cancel(&self.caller(), &invocation)
+                    .await
+                    .ok_or("the host dropped the request")?
                     .map_err(BridgeError::Host)?;
                 self.status(invocation)
             }

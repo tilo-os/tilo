@@ -155,7 +155,7 @@ impl tilo_actions::remote::ActionHost for ConnectionActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         self.state.action_cancel(caller, id)
     }
 
@@ -254,7 +254,7 @@ impl tilo_actions::remote::ActionHost for BrokerDoor {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
         self.state.action_cancel(caller, id)
     }
 
@@ -465,6 +465,37 @@ fn launch_content_hash(argument: Option<&str>) -> &str {
 /// Map a broker refusal onto the remote vocabulary. The broker words its
 /// refusals for people; only the distinctions a caller can act on are
 /// recovered, everything else stays a plain refusal.
+/// What a start admitted: a host action already durable, or an app's
+/// invocation nobody hears of before its admission is.
+pub(super) enum Started {
+    Now(u64),
+    Staged(super::StagedJob),
+}
+
+impl Started {
+    /// The job, once delivered: never before its admission is durable.
+    async fn job(self, state: &CapnpBrokerState) -> Result<u64, ActionHostError> {
+        match self {
+            Self::Now(job) => Ok(job),
+            Self::Staged(staged) => staged.start(state).await.map(|job| job.id).map_err(refusal),
+        }
+    }
+}
+
+/// Complete `reply` with `answer` once it is known.
+pub(super) fn answer_with<T: Send + 'static>(
+    answer: Pending<Result<T, ActionHostError>>,
+    reply: Completer<Result<T, ActionHostError>>,
+) {
+    answer.then(move |answer| {
+        reply.complete(answer.unwrap_or_else(|| {
+            Err(ActionHostError::Unavailable {
+                reason: "the admission was dropped".into(),
+            })
+        }));
+    });
+}
+
 fn refusal(reason: String) -> ActionHostError {
     if reason.starts_with("action_confirmation_required")
         || reason.contains("confirmation is required")
@@ -1604,7 +1635,7 @@ impl CapnpBrokerState {
                 Err(error) => Pending::ready(Err(bridge_error(error))),
             };
         }
-        Pending::ready(self.invoke_eager(caller, own_peer, launch, None, request))
+        self.invoke_eager(caller, own_peer, launch, None, request)
     }
 
     /// Invoke an action retained from a closed application: launch the app,
@@ -1627,11 +1658,7 @@ impl CapnpBrokerState {
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
-                return Pending::ready(
-                    self.remote_job(caller, &request.invocation)
-                        .map(|job| self.receipt_for(request.invocation, job))
-                        .ok_or(ActionHostError::UnknownInvocation),
-                );
+                return self.admitted_receipt(caller, request.invocation);
             }
             Ok(Reservation::Reserved) => {}
         }
@@ -1875,7 +1902,7 @@ impl CapnpBrokerState {
                 if let Some(native) = native {
                     return native.deliver(self, peer_id).await.map_err(refusal);
                 }
-                return self.start_for(caller, None, None, origin, &delivered, request);
+                return self.start_job(caller, origin, &delivered, request).await;
             }
             if !launched {
                 {
@@ -2241,24 +2268,91 @@ impl CapnpBrokerState {
         launch: Option<&LaunchScope>,
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
-    ) -> Result<InvocationReceipt, ActionHostError> {
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         let reservation = self
             .remote_invocations
             .lock()
             .map_err(|_| ActionHostError::Unavailable {
                 reason: "the invocation ledger is unavailable".into(),
-            })?
-            .reserve(caller, request)?;
-        if reservation == Reservation::Admitted {
-            return self
-                .remote_job(caller, &request.invocation)
-                .map(|job| self.receipt_for(request.invocation, job))
-                .ok_or(ActionHostError::UnknownInvocation);
+            })
+            .and_then(|mut ledger| ledger.reserve(caller, request));
+        match reservation {
+            Err(error) => return Pending::ready(Err(error)),
+            Ok(Reservation::Admitted) => {
+                return self.admitted_receipt(caller, request.invocation);
+            }
+            Ok(Reservation::Reserved) => {}
         }
         // Signing and durable admission can block. Keep the UUID reserved, but
         // never hold the UI's lookup/enqueue mutex across those operations.
         let started = self.start_for(caller, own_peer, launch, origin, request, request);
-        self.finish_directory_admission(request.invocation, started)
+        self.finish_started(request.invocation, started)
+    }
+
+    /// Start `delivered` for `caller`: the job, once its admission is
+    /// durable and delivered.
+    async fn start_job(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        delivered: &InvokeRequest,
+        request: &InvokeRequest,
+    ) -> Result<u64, ActionHostError> {
+        self.start_for(caller, None, None, origin, delivered, request)?
+            .job(self)
+            .await
+    }
+
+    /// The receipt for `invocation`, given once what `started` admitted is
+    /// durable and delivered.
+    fn finish_started(
+        self: &Arc<Self>,
+        invocation: tilo_actions::InvocationId,
+        started: Result<Started, ActionHostError>,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        match started {
+            Err(error) => Pending::ready(self.finish_directory_admission(invocation, Err(error))),
+            Ok(Started::Now(job)) => {
+                Pending::ready(self.finish_directory_admission(invocation, Ok(job)))
+            }
+            Ok(Started::Staged(staged)) => {
+                // A retry finds the job at once, and its answer waits for
+                // the same write (`admitted_receipt`).
+                if let Ok(mut ledger) = self.remote_invocations.lock() {
+                    ledger.complete(&invocation, staged.id());
+                }
+                let (receipt, answered) = pending();
+                let state = Arc::clone(self);
+                staged.start_then(self, move |started| {
+                    let started = started.map(|job| job.id).map_err(refusal);
+                    receipt.complete(state.finish_directory_admission(invocation, started));
+                });
+                answered
+            }
+        }
+    }
+
+    /// The receipt for `invocation`, admitted for `caller` already, once its
+    /// admission is durable and delivered: a retry is told no sooner than
+    /// the first asker.
+    fn admitted_receipt(
+        self: &Arc<Self>,
+        caller: &Caller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        let Some(job) = self.remote_job(caller, &invocation) else {
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+        };
+        let (receipt, answered) = pending();
+        let state = Arc::clone(self);
+        self.journal_in_flight(&invocation).then(move |outcome| {
+            receipt.complete(
+                outcome
+                    .map(|()| state.receipt_for(invocation, job))
+                    .map_err(|reason| ActionHostError::Unavailable { reason }),
+            );
+        });
+        answered
     }
 
     pub(super) fn receipt_for(
@@ -2348,11 +2442,7 @@ impl CapnpBrokerState {
         match reservation {
             Err(error) => return Pending::ready(Err(error)),
             Ok(Reservation::Admitted) => {
-                return Pending::ready(
-                    self.remote_job(caller, &request.invocation)
-                        .map(|job| self.receipt_for(request.invocation, job))
-                        .ok_or(ActionHostError::UnknownInvocation),
-                );
+                return self.admitted_receipt(caller, request.invocation);
             }
             Ok(Reservation::Reserved) => {}
         }
@@ -2383,7 +2473,7 @@ impl CapnpBrokerState {
         resolved.then(move |reply| {
             // A caller that stopped waiting (its admission deadline passed)
             // has already been told the action did not start; keep it so.
-            let started = if completer.is_abandoned() {
+            let staged = if completer.is_abandoned() {
                 Err(ActionHostError::Unavailable {
                     reason: "the caller stopped waiting for admission".into(),
                 })
@@ -2397,7 +2487,16 @@ impl CapnpBrokerState {
                     reply,
                 )
             };
-            completer.complete(state.finish_directory_admission(request.invocation, started));
+            // Answered once admitted durably and delivered.
+            state
+                .finish_started(request.invocation, staged.map(Started::Staged))
+                .then(move |receipt| {
+                    completer.complete(receipt.unwrap_or_else(|| {
+                        Err(ActionHostError::Unavailable {
+                            reason: "the admission was dropped".into(),
+                        })
+                    }));
+                });
         });
         admitted
     }
@@ -2435,7 +2534,7 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         argument: Option<&str>,
         reply: Option<ActionDirectoryBridgeReply>,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<super::StagedJob, ActionHostError> {
         let stale = || ActionHostError::StaleRevision;
         let (row, resolved) = match reply {
             Some(Ok(ActionDirectoryBridgeResponse::Resolution(
@@ -2527,7 +2626,6 @@ impl CapnpBrokerState {
                 retained_time: None,
             },
         )
-        .map(|job| job.id)
         .map_err(refusal)
     }
 
@@ -2539,19 +2637,14 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
         original_request: &InvokeRequest,
-    ) -> Result<u64, ActionHostError> {
+    ) -> Result<Started, ActionHostError> {
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
         if let Some(room) = workspace_provider_room(provider) {
-            return self.start_workspace_action(
-                caller,
-                room,
-                launch,
-                origin,
-                request,
-                argument.as_deref(),
-            );
+            return self
+                .start_workspace_action(caller, room, launch, origin, request, argument.as_deref())
+                .map(Started::Now);
         }
         let peer_id = if provider == OWN_PROVIDER {
             own_peer.ok_or(ActionHostError::UnknownAction)?
@@ -2619,9 +2712,9 @@ impl CapnpBrokerState {
             },
             origin.cloned(),
         )
-        .map(|job| {
+        .map(|staged| {
             self.launchable.note_view(&room, &actor.id, &app_id);
-            job.id
+            Started::Staged(staged)
         })
         .map_err(refusal)
     }
@@ -2984,23 +3077,40 @@ impl CapnpBrokerState {
         self.action_next_change(caller, id, self.invocation_changes())
     }
 
-    /// Ask an invocation `caller` admitted to stop.
+    /// Ask an invocation `caller` admitted to stop, answered once the
+    /// request is durable.
     ///
-    /// # Errors
-    ///
-    /// Returns an error when `caller` admitted no such invocation or it cannot
-    /// be cancelled.
+    /// The answer is an error when `caller` admitted no such invocation or it
+    /// cannot be cancelled.
     pub fn action_cancel(
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        let job = self
-            .remote_job(caller, id)
-            .ok_or(ActionHostError::UnknownInvocation)?;
-        self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
-            .map_err(|reason| ActionHostError::NotCancellable { reason })
+    ) -> Pending<Result<(), ActionHostError>> {
+        let Some(job) = self.remote_job(caller, id) else {
+            return Pending::ready(Err(ActionHostError::UnknownInvocation));
+        };
+        answered_when_durable(
+            self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
+                .map_err(|reason| ActionHostError::NotCancellable { reason }),
+        )
     }
+}
+
+/// The answer to a request `staged` in the journal: given once its write
+/// resolves, and never sooner.
+pub(super) fn answered_when_durable(
+    staged: Result<super::invocation_journal::Durable, ActionHostError>,
+) -> Pending<Result<(), ActionHostError>> {
+    let durable = match staged {
+        Ok(durable) => durable,
+        Err(error) => return Pending::ready(Err(error)),
+    };
+    let (answer, answered) = tilo_actions::remote::pending();
+    durable.then(move |outcome| {
+        answer.complete(outcome.map_err(|reason| ActionHostError::Unavailable { reason }));
+    });
+    answered
 }
 
 /// A directory row, already validated and permission-checked on the local

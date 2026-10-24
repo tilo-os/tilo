@@ -324,8 +324,11 @@ impl ActionHost for BrokerActionHost {
         &self,
         caller: &Caller,
         id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        let retained = self.retained_session(caller)?;
+    ) -> Pending<Result<(), ActionHostError>> {
+        let retained = match self.retained_session(caller) {
+            Ok(retained) => retained,
+            Err(error) => return Pending::ready(Err(error)),
+        };
         match retained {
             Some(session) => {
                 let (host, certified) = session.host_and_caller();
@@ -579,7 +582,7 @@ mod tests {
         let id = tilo_actions::InvocationId::new();
         assert!(host.observe(&native, &id).is_none());
         assert!(host.next_change(&native, &id).is_none());
-        let _ = host.cancel(&native, &id);
+        drop(host.cancel(&native, &id));
         assert_eq!(
             service.0.load(Ordering::Relaxed),
             0,
@@ -819,10 +822,19 @@ mod tests {
             assert_eq!(host.observe(&stranger(), &id), None);
 
             assert_eq!(
-                host.cancel(&stranger(), &id),
+                host.cancel(&stranger(), &id)
+                    .wait_timeout(std::time::Duration::from_secs(30))
+                    .ok()
+                    .flatten()
+                    .expect("the host answers"),
                 Err(ActionHostError::UnknownInvocation)
             );
-            host.cancel(&owner(), &id).expect("owner cancels");
+            host.cancel(&owner(), &id)
+                .wait_timeout(std::time::Duration::from_secs(30))
+                .ok()
+                .flatten()
+                .expect("the host answers")
+                .expect("owner cancels");
         }
     }
 }

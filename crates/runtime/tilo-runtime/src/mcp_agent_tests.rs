@@ -444,8 +444,8 @@ impl ActionHost for Notes {
         &self,
         _caller: &Caller,
         _id: &tilo_actions::InvocationId,
-    ) -> Result<(), ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 

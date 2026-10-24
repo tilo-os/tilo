@@ -443,8 +443,12 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
     let mut pending = host.invoke(&owner, request.clone());
     assert!(matches!(pending.poll_ready(), PendingPoll::Waiting));
     turn();
-    let outcome = pending.poll_ready();
-    let PendingPoll::Ready(Ok(_receipt)) = outcome else {
+    // Answered once the admission is durable, from the journal's writer.
+    let outcome = pending
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten();
+    let Some(Ok(_receipt)) = outcome else {
         panic!("the synthetic app must accept the invocation: {outcome:?}");
     };
     assert!(invocations.try_recv().is_ok());
@@ -453,7 +457,14 @@ fn assert_runtime_admission_revoked(joined: &Arc<Joined>, room: RoomId, actor: &
         .owner
         .invalidate_identity(RoomId::parse(&room).unwrap());
     assert!(host.observe(&owner, &id).is_none());
-    assert_eq!(host.cancel(&owner, &id), Err(ActionHostError::NotPermitted));
+    assert_eq!(
+        host.cancel(&owner, &id)
+            .wait_timeout(std::time::Duration::from_secs(30))
+            .ok()
+            .flatten()
+            .expect("the host answers"),
+        Err(ActionHostError::NotPermitted)
+    );
     assert!(matches!(
         host.invoke(&owner, request).poll_ready(),
         PendingPoll::Ready(Err(ActionHostError::NotPermitted))

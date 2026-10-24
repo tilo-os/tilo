@@ -2478,8 +2478,8 @@ impl tilo_actions::remote::ActionHost for LinkHost {
         &self,
         _: &tilo_actions::remote::Caller,
         _: &tilo_actions::InvocationId,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
-        Ok(())
+    ) -> tilo_actions::remote::Pending<Result<(), tilo_actions::remote::ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Ok(()))
     }
 }
 

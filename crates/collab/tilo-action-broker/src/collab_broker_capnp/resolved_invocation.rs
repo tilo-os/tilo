@@ -675,7 +675,7 @@ fn invoke_checked(
             .map_err(|error| {
                 capnp::Error::failed(format!("directory confirmation refused: {error:?}"))
             })?;
-        let job = state
+        let staged = state
             .dispatch_invocation_from_offered_owned(
                 peer,
                 offered,
@@ -701,6 +701,10 @@ fn invoke_checked(
                 },
             )
             .map_err(capnp::Error::failed)?;
+        // Answered once durable; the admission lock is not held across the
+        // wait.
+        drop(admission);
+        let job = staged.start(state).await.map_err(capnp::Error::failed)?;
         let update = state.invocation_status(job.id).ok_or_else(|| {
             capnp::Error::failed("accepted invocation has no broker state".into())
         })?;
@@ -709,7 +713,6 @@ fn invoke_checked(
         results.get().set_id(job.id);
         results.get().set_update_json(&update);
         drop(job.completion);
-        drop(admission);
         drop(offer);
         Ok(())
     })

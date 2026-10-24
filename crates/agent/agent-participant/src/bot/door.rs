@@ -551,10 +551,14 @@ impl<P: DoorParticipant + 'static> ActionHost for BotDoor<P> {
         update_of(*id, &status).map(|update| InvocationState::new(*id, update))
     }
 
-    fn cancel(&self, _caller: &Caller, _id: &InvocationId) -> Result<(), ActionHostError> {
-        Err(ActionHostError::NotCancellable {
+    fn cancel(
+        &self,
+        _caller: &Caller,
+        _id: &InvocationId,
+    ) -> tilo_actions::remote::Pending<Result<(), ActionHostError>> {
+        tilo_actions::remote::Pending::ready(Err(ActionHostError::NotCancellable {
             reason: "a bot's step runs to its end".into(),
-        })
+        }))
     }
 
     // `confirm` keeps the default: nobody answers for a bot, so an action
