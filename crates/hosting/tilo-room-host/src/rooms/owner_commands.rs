@@ -130,7 +130,7 @@ impl OwnerCommand {
     /// What the command is called in the room's request records: two
     /// requests with one id and different commands are a conflict.
     fn digest(&self) -> Result<[u8; 32], CollaborationError> {
-        let digest = match self {
+        match self {
             Self::Rename { name } => request_digest(&("owner.rename", name)),
             Self::SavePreset { preset } => request_digest(&("owner.preset.save", preset)),
             Self::AssignPreset {
@@ -148,8 +148,7 @@ impl OwnerCommand {
             Self::RevokeSandbox { capability } => {
                 request_digest(&("owner.sandbox.revoke", capability))
             }
-        };
-        digest
+        }
     }
 
     /// The room's governance action the command exercises, named in the
@@ -187,7 +186,53 @@ fn workspace_of(room: &GovernedRoom) -> Result<Workspace, CollaborationError> {
     Ok(workspace)
 }
 
-fn refusal(reason: impl ToString) -> CollaborationError {
+/// The grant letting `action`'s app use it, as `person` gives it.
+fn app_action_grant(
+    action: &AppAction,
+    room_node: &TreePath,
+    request_id: [u8; 32],
+    person: &str,
+) -> Result<Change, CollaborationError> {
+    if action.target_app == WORKSPACE_GOVERNANCE_APP_ID {
+        return Err(CollaborationError::new(
+            "governing the workspace is granted to people, not apps",
+        ));
+    }
+    // Enough for any action that at most changes the room undoably: an
+    // outside effect still asks.
+    let grant = Grant::new(
+        format!("app-action:{}", hex::encode(&request_id[..16])),
+        Subject::App(action.app.clone()),
+        action.node(room_node),
+        KindSet::READ_UNDOABLE,
+        Answer::Allow,
+        Subject::person(person),
+    )
+    .with_lifetime(Lifetime::UntilRevoked);
+    Ok(Change::Policy(vec![tilo_action_policy::Change::Grant(
+        grant,
+    )]))
+}
+
+/// Taking back every grant given for `action`, whether through
+/// [`app_action_grant`] or by answering the app's ask in place.
+fn app_action_revoke(action: &AppAction, room_node: &TreePath, workspace: &Workspace) -> Change {
+    let subject = Subject::App(action.app.clone());
+    let node = action.node(room_node);
+    Change::Policy(
+        workspace
+            .policy
+            .grants
+            .iter()
+            .filter(|grant| {
+                grant.subject == subject && (grant.node == node || node.covers(&grant.node))
+            })
+            .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
+            .collect(),
+    )
+}
+
+fn refusal(reason: &impl ToString) -> CollaborationError {
     CollaborationError::new(reason.to_string())
 }
 
@@ -200,10 +245,6 @@ impl Rooms {
     /// # Errors
     ///
     /// Why the room refused the command, or why it could not be committed.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
-    )]
     pub async fn apply_owner_command(
         &self,
         room: &str,
@@ -232,132 +273,8 @@ impl Rooms {
             })?;
         let key = self.inner.host.key.clone();
         let at = system_time(now);
-        let seconds = now / SECOND_NS;
-        let bound = roles::foreign_device_bound();
-        let authority = member.authority(&bound);
-        let cx = Context::at_time(at);
-        let mut workspace = workspace_of(&governed)?;
-        let room_node = workspace.node();
-        let decided: Result<Change, CollaborationError> = match command {
-            OwnerCommand::Rename { name } => {
-                let name = valid_name(&name).map_err(refusal)?.to_owned();
-                self.may_rename(&governed, device, &member, &workspace)?;
-                Ok(Change::Rename(name))
-            }
-            OwnerCommand::SavePreset { preset } => workspace
-                .save_preset_with_at(&authority, preset, seconds)
-                .map(|()| Change::Presets(workspace.presets.clone()))
-                .map_err(refusal),
-            OwnerCommand::AssignPreset {
-                preset,
-                subject,
-                lifetime,
-            } => {
-                let assigned = workspace
-                    .assign_preset_with_at(
-                        &member.person,
-                        &authority,
-                        &preset,
-                        &subject,
-                        &lifetime,
-                        seconds,
-                    )
-                    .map_err(refusal)?;
-                Ok(Change::Grants(
-                    workspace
-                        .policy
-                        .grants
-                        .iter()
-                        .filter(|grant| assigned.contains(&grant.id))
-                        .cloned()
-                        .collect(),
-                ))
-            }
-            OwnerCommand::GrantAppAction(action) => {
-                if action.target_app == WORKSPACE_GOVERNANCE_APP_ID {
-                    Err(CollaborationError::new(
-                        "governing the workspace is granted to people, not apps",
-                    ))
-                } else {
-                    // Enough for any action that at most changes the room
-                    // undoably: an outside effect still asks.
-                    let grant = Grant::new(
-                        format!("app-action:{}", hex::encode(&request_id[..16])),
-                        Subject::App(action.app.clone()),
-                        action.node(&room_node),
-                        KindSet::READ_UNDOABLE,
-                        Answer::Allow,
-                        Subject::person(member.person.clone()),
-                    )
-                    .with_lifetime(Lifetime::UntilRevoked);
-                    Ok(Change::Policy(vec![tilo_action_policy::Change::Grant(
-                        grant,
-                    )]))
-                }
-            }
-            OwnerCommand::RevokeAppAction(action) => {
-                let subject = Subject::App(action.app.clone());
-                let node = action.node(&room_node);
-                // The grants given for this action, whether through a grant
-                // like this or by answering the app's ask in place.
-                Ok(Change::Policy(
-                    workspace
-                        .policy
-                        .grants
-                        .iter()
-                        .filter(|grant| {
-                            grant.subject == subject
-                                && (grant.node == node || node.covers(&grant.node))
-                        })
-                        .map(|grant| tilo_action_policy::Change::Revoke(grant.id.clone()))
-                        .collect(),
-                ))
-            }
-            OwnerCommand::Grant { grant } => {
-                if grant.node.room_id() == Some(governed.room()) {
-                    Ok(Change::Policy(vec![tilo_action_policy::Change::Grant(
-                        grant,
-                    )]))
-                } else {
-                    Err(CollaborationError::new(
-                        "a grant names a place in this room",
-                    ))
-                }
-            }
-            OwnerCommand::Revoke { grant } => {
-                Ok(Change::Policy(vec![tilo_action_policy::Change::Revoke(
-                    grant,
-                )]))
-            }
-            OwnerCommand::GrantSandbox { mut capability } => {
-                if capability.persists_across_restart() {
-                    member
-                        .policy
-                        .check_action(&authority, governance::GRANT, &cx, false)
-                        .map_err(refusal)?;
-                    if capability.id.trim().is_empty() {
-                        capability.id = format!("cap-{}", hex::encode(&request_id[..16]));
-                    }
-                    workspace.grant_sandbox(
-                        capability.granted_by(Principal::Person(member.person.clone())),
-                    );
-                    Ok(Change::Sandbox(workspace.sandbox.clone()))
-                } else {
-                    Err(CollaborationError::new(
-                        "a capability that ends with a session or a single use is never \
-                         written into the room",
-                    ))
-                }
-            }
-            OwnerCommand::RevokeSandbox { capability } => {
-                member
-                    .policy
-                    .check_action(&authority, governance::REVOKE, &cx, false)
-                    .map_err(refusal)?;
-                workspace.revoke_sandbox(&capability);
-                Ok(Change::Sandbox(workspace.sandbox.clone()))
-            }
-        };
+        let decided =
+            self.decide_owner_command(&governed, device, &member, request_id, command, now);
         let change = decided.inspect_err(|reason| {
             tracing::warn!(
                 room = %governed.room(),
@@ -369,11 +286,14 @@ impl Rooms {
         // Policy changes are checked once more by the room's own grant rule
         // as each is written: the asker gives no more than they hold.
         if let Change::Policy(changes) = &change {
+            let bound = roles::foreign_device_bound();
+            let authority = member.authority(&bound);
+            let cx = Context::at_time(at);
             let mut checked = member.policy.clone();
             for change in changes {
                 checked
                     .apply(&member.person, &authority, change.clone(), &cx, false)
-                    .map_err(refusal)?;
+                    .map_err(|error| refusal(&error))?;
             }
         }
         let renamed = match &change {
@@ -401,6 +321,114 @@ impl Rooms {
             governed.record.name = prior;
         }
         done
+    }
+
+    /// What `command` changes in `room`, decided by `member`'s standing on
+    /// `device` at `now`.
+    fn decide_owner_command(
+        &self,
+        governed: &GovernedRoom,
+        device: &DeviceCert,
+        member: &MemberAuthority,
+        request_id: [u8; 32],
+        command: OwnerCommand,
+        now: u64,
+    ) -> Result<Change, CollaborationError> {
+        let at = system_time(now);
+        let seconds = now / SECOND_NS;
+        let bound = roles::foreign_device_bound();
+        let authority = member.authority(&bound);
+        let cx = Context::at_time(at);
+        let mut workspace = workspace_of(governed)?;
+        let room_node = workspace.node();
+        match command {
+            OwnerCommand::Rename { name } => {
+                let name = valid_name(&name)
+                    .map_err(|error| refusal(&error))?
+                    .to_owned();
+                self.may_rename(governed, device, member, &workspace)?;
+                Ok(Change::Rename(name))
+            }
+            OwnerCommand::SavePreset { preset } => workspace
+                .save_preset_with_at(&authority, preset, seconds)
+                .map(|()| Change::Presets(workspace.presets.clone()))
+                .map_err(|error| refusal(&error)),
+            OwnerCommand::AssignPreset {
+                preset,
+                subject,
+                lifetime,
+            } => {
+                let assigned = workspace
+                    .assign_preset_with_at(
+                        &member.person,
+                        &authority,
+                        &preset,
+                        &subject,
+                        &lifetime,
+                        seconds,
+                    )
+                    .map_err(|error| refusal(&error))?;
+                Ok(Change::Grants(
+                    workspace
+                        .policy
+                        .grants
+                        .iter()
+                        .filter(|grant| assigned.contains(&grant.id))
+                        .cloned()
+                        .collect(),
+                ))
+            }
+            OwnerCommand::GrantAppAction(action) => {
+                app_action_grant(&action, &room_node, request_id, &member.person)
+            }
+            OwnerCommand::RevokeAppAction(action) => {
+                Ok(app_action_revoke(&action, &room_node, &workspace))
+            }
+            OwnerCommand::Grant { grant } => {
+                if grant.node.room_id() == Some(governed.room()) {
+                    Ok(Change::Policy(vec![tilo_action_policy::Change::Grant(
+                        grant,
+                    )]))
+                } else {
+                    Err(CollaborationError::new(
+                        "a grant names a place in this room",
+                    ))
+                }
+            }
+            OwnerCommand::Revoke { grant } => {
+                Ok(Change::Policy(vec![tilo_action_policy::Change::Revoke(
+                    grant,
+                )]))
+            }
+            OwnerCommand::GrantSandbox { mut capability } => {
+                if capability.persists_across_restart() {
+                    member
+                        .policy
+                        .check_action(&authority, governance::GRANT, &cx, false)
+                        .map_err(|error| refusal(&error))?;
+                    if capability.id.trim().is_empty() {
+                        capability.id = format!("cap-{}", hex::encode(&request_id[..16]));
+                    }
+                    workspace.grant_sandbox(
+                        capability.granted_by(Principal::Person(member.person.clone())),
+                    );
+                    Ok(Change::Sandbox(workspace.sandbox.clone()))
+                } else {
+                    Err(CollaborationError::new(
+                        "a capability that ends with a session or a single use is never \
+                         written into the room",
+                    ))
+                }
+            }
+            OwnerCommand::RevokeSandbox { capability } => {
+                member
+                    .policy
+                    .check_action(&authority, governance::REVOKE, &cx, false)
+                    .map_err(|error| refusal(&error))?;
+                workspace.revoke_sandbox(&capability);
+                Ok(Change::Sandbox(workspace.sandbox.clone()))
+            }
+        }
     }
 
     /// The asker's standing in `room`: a person's current device, not one
@@ -459,7 +487,7 @@ impl Rooms {
         }
         let standing = Standing {
             person: &member.person,
-            role: Some(member.role).filter(|_| !workspace.is_blocked(&member.person)),
+            role: (!workspace.is_blocked(&member.person)).then_some(member.role),
             layout_shared: !self.layout(room.room()).is_personal(),
             members: None,
         };
@@ -471,7 +499,7 @@ impl Rooms {
                 name: String::new(),
             },
         )
-        .map_err(refusal)
+        .map_err(|error| refusal(&error))
     }
 
     /// Whether the device `device` may ask for what `offer` names in
@@ -569,7 +597,7 @@ impl Change {
                 .put_governed_presets(presets, key, now),
             Self::Grants(grants) => peer.governance_mut().put_governed_grants(grants, key, now),
             Self::Policy(changes) => {
-                let mut changed = false;
+                let mut wrote = false;
                 for change in changes {
                     let command = match change {
                         tilo_action_policy::Change::Grant(grant) => Command::Grant {
@@ -582,11 +610,11 @@ impl Change {
                             return Err("only grants and revocations change the policy here".into());
                         }
                     };
-                    changed |= peer
+                    wrote |= peer
                         .workspace_mut()
                         .apply_workspace_membership_command(caller, &command, key, now)?;
                 }
-                Ok(changed)
+                Ok(wrote)
             }
             Self::Sandbox(sandbox) => peer
                 .governance_mut()
