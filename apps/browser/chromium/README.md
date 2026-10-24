@@ -118,7 +118,9 @@ callbacks to a new action.
 Every tab starts on `about:blank` before its first address. That first entry is
 no page the person visited: `history` reports no `back` while it is all that is
 behind the page, `back` does not go to it, and `navigation_history` leaves it
-out.
+out. Once the first page commits, the session history forgets it
+(`Page.resetNavigationHistory`), so the page's own `history.back()` cannot reach
+it either and `history.length` starts at the page.
 
 A page's own questions (`alert`, `confirm`, `prompt`, and "leave this page?"
 from a `beforeunload` handler) are the embedder's to show. `ready` /

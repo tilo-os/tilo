@@ -4,7 +4,9 @@
 - A tab's first page has nothing behind it. The engine opens every tab on a
   blank page before its first address; that page is no step back: the back
   button is off on the first page, going back from it does nothing, and the
-  back list never offers it.
+  back list never offers it. Nor can the page take its tab there: its own
+  `history.back()` on the first page does nothing, and the session history
+  it sees holds only itself.
 - A page that asks to be kept open (a `beforeunload` handler, armed by a click
   on the page) still lets the person leave it and reload it in a tab that does
   not answer page questions, as closing its tab does: nobody would see the
@@ -38,6 +40,16 @@ GUARD = '''<!doctype html><title>guard-{n}</title>
 <script>
 addEventListener('beforeunload', event => {{ event.preventDefault(); event.returnValue = 'unsaved'; }});
 </script></body>'''
+# A first page that goes back on its own as soon as it has loaded, and names
+# itself after the session history it sees.
+SELF_BACK = '''<!doctype html><title>self-back</title><body>self-back
+<script>
+addEventListener('load', () => setTimeout(() => {
+  history.back();
+  history.go(-1);
+  document.title = 'went-back-' + history.length;
+}, 0));
+</script></body>'''
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -46,6 +58,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == '/guard':
             loads['/guard'] += 1
             body = GUARD.format(n=loads['/guard']).encode()
+        elif path == '/self-back':
+            body = SELF_BACK.encode()
         elif path in ('/a', '/b', '/c', '/after'):
             body = f'<!doctype html><title>{path[1:]}</title><body>{path}</body>'.encode()
         else:
@@ -201,10 +215,36 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-navigation-') as profile:
             settled(tab, BASE + '/a')
             assert history[tab] == (False, True), (tab, history[tab])
 
+        # The page's own history.back() on its first page stays on it: the
+        # blank page is not in the session history the page can walk.
+        send(op='create_tab', tab=4)
+        until('a fresh tab', on(4, 'tab_ready'))
+        send(op='navigate', tab=4, url=BASE + '/self-back')
+        until('the first page', on(4, 'uri', url=BASE + '/self-back'))
+        start = len(seen)
+        went = until('the page going back', lambda e: on(4, 'title')(e)
+                     and e['title'].startswith('went-back-'))
+        # Going back would have left the page by now; give it as long again.
+        quiet = time.monotonic() + 3
+        while time.monotonic() < quiet:
+            try:
+                next_event(.1)
+            except queue.Empty:
+                pass
+        left = [e for e in seen[start:] if e.get('tab', 1) == 4 and e['event'] == 'uri']
+        assert not left, left
+        # A tab's history, as the page sees it, starts at its first page.
+        assert went['title'] == 'went-back-1', went
+        assert history[4] == (False, False), (history[4], seen[-20:])
+        send(op='navigate', tab=4, url=BASE + '/b')
+        settled(4, BASE + '/b')
+        send(op='back', tab=4)
+        settled(4, BASE + '/self-back')
+
         send(op='shutdown')
         until('closed', lambda e: e['event'] == 'closed' and e.get('tab', 1) == 1)
         assert host.wait(timeout=HANG_BOUND) == 0
-        print('PASS: no step back to the blank page, and a guarded page can be left and reloaded')
+        print('PASS: no step back to the blank page, from the Browser or the page, and a guarded page can be left and reloaded')
     finally:
         if host.poll() is None:
             host.kill()

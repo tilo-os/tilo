@@ -737,8 +737,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       ScheduleNavigation();
     }
   }
-  void OnLoadStart(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,TransitionType) override {
+  void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
+    tilo::ForgetBootstrap(browser);
     // A new document: extensions' worlds and ports in the old one are gone.
     if(extension_tabs)extension_tabs->Navigated(id_);
     main_navigation_finished_=false;
