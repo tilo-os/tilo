@@ -2177,6 +2177,7 @@ impl PendingInvocation {
 mod action_host;
 mod admission_memo;
 mod app_consent;
+mod app_open_door;
 mod host_action_admission;
 mod host_steps;
 mod launchable;
@@ -9284,24 +9285,38 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // An edit an effect submits while running for someone is theirs.
-        let caller =
-            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
-                match continued {
-                    Ok(caller) => caller,
-                    Err(refused) => return reply_frame(*refused, results),
-                }
-            } else if current.agent_id.is_some() {
-                person.clone()
-            } else {
-                match self
-                    .state
-                    .app_door(&person, &route.app_id, &request.message)
-                {
-                    Ok(caller) => caller,
-                    Err(refusal) => return reply_frame(*refusal, results),
-                }
-            };
+        // An app's open of an application is decided as the caller of the
+        // invocation it continues, under that invocation's custody, else as
+        // the person whose press it follows; an edit an effect submits while
+        // running for someone is theirs.
+        let (decided, continued_origin) = match current
+            .agent_id
+            .is_none()
+            .then(|| {
+                self.state
+                    .app_open_caller(self.peer_id, &route.app_id, &person, &request.message)
+            })
+            .flatten()
+        {
+            Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+            Some(Err(refused)) => (Some(Err(refused)), None),
+            None => (
+                self.state.continued_caller(self.peer_id, &request.message),
+                None,
+            ),
+        };
+        let caller = match decided {
+            Some(Ok(caller)) => caller,
+            Some(Err(refused)) => return reply_frame(*refused, results),
+            None if current.agent_id.is_some() => person.clone(),
+            None => match self
+                .state
+                .app_door(&person, &route.app_id, &request.message)
+            {
+                Ok(caller) => caller,
+                Err(refusal) => return reply_frame(*refusal, results),
+            },
+        };
         if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
             &request.message
             && query.view_resource.is_some()
@@ -9360,11 +9375,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
-            origin: InvocationCaller::Local {
+            origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
                 route,
                 time: original_time,
                 admitted: Box::new(current),
-            },
+            }),
         };
         if let Some(question) = question {
             return run_question::serve_answered(
@@ -11782,6 +11797,19 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
+        // An app opens another only for the person's press in it or an
+        // invocation delivered to it ([`app_open_door`]); an agent's own
+        // connection, by its own grants.
+        if self.verified_identity.agent_id.is_none()
+            && self
+                .state
+                .app_open_authority(self.peer_id, &self.route().app_id, parent)
+                .is_none()
+        {
+            return Promise::err(capnp::Error::failed(
+                "nothing the person or an invocation asked for is behind this launch".into(),
+            ));
+        }
         if let Err(error) = self.current_launch_authority(&app_id, parent) {
             return Promise::err(capnp::Error::failed(error));
         }

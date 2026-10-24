@@ -38,6 +38,7 @@ async fn observed_person_launch_retains_exact_original_scope_and_cancellation() 
                 requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                 original: Mutex::new(None),
+                pressed: false.into(),
             });
             let rig = Rig::with_services(
                 &env,
@@ -139,10 +140,15 @@ struct ObservedLauncher {
     requests: Mutex<Vec<ObservedLaunch>>,
     adoption: Mutex<Option<crate::services::LaunchAdoption>>,
     original: Mutex<Option<crate::services::ObservedApplicationLaunch>>,
+    /// Whether the person pressed in the app that asks to open one.
+    pressed: std::sync::atomic::AtomicBool,
 }
 impl crate::services::LauncherServices for ObservedLauncher {
     fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
         Vec::new()
+    }
+    fn person_initiated(&self, _: &str) -> bool {
+        self.pressed.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn launch(
         &self,
@@ -214,6 +220,7 @@ async fn installed_launch_rpc_waits_for_adoption_preserves_signed_root_and_reval
                     requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
+                    pressed: true.into(),
                 });
                 if matches!(
                     scenario,
@@ -341,6 +348,7 @@ async fn installed_launch_rpc_rejects_a_noncanonical_package_root_before_host_ad
                 requests: Mutex::new(Vec::new()),
                 adoption: Mutex::new(None),
                 original: Mutex::new(None),
+                pressed: true.into(),
             });
             let rig = Rig::with_services(
                 &env,
@@ -382,6 +390,7 @@ async fn installed_launch_continuation_keeps_the_original_agents_authority() {
                     requests: Mutex::new(Vec::new()),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
+                    pressed: false.into(),
                 });
                 let rig = Rig::with_services(
                     &env,
@@ -489,6 +498,7 @@ async fn native_person_installed_launch_keeps_host_origin_until_real_adoption() 
                     requests: Mutex::new(vec![]),
                     adoption: Mutex::new(None),
                     original: Mutex::new(None),
+                    pressed: false.into(),
                 });
                 let rig = Rig::with_services(
                     &env,
