@@ -241,6 +241,11 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
+    fn room_unavailable(&self, room: &str) -> Option<String> {
+        super::state::RoomId::parse(room)
+            .is_some_and(|room| self.tree.read().on_this_device_only(room))
+            .then(|| super::i18n::t("workspace-on-this-device-only-no-documents"))
+    }
     fn requires_room(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
     }
@@ -441,6 +446,9 @@ impl WorkspaceAuthority for NativeWorkspaceAuthority {
         super::state::RoomId::parse(room)
             .map(|room| self.0.read().verified_agents(room))
             .unwrap_or_default()
+    }
+    fn room_revocations(&self, room: &str) -> Option<tilo_user_identity::RevocationList> {
+        super::state::RoomId::parse(room).and_then(|room| self.0.read().room_revocations(room))
     }
 }
 impl LegacyWorkspaceProjection for NativeWorkspaceAuthority {
@@ -1093,42 +1101,129 @@ impl LauncherServices for NativeLauncher {
     }
 }
 
-/// The workspace's shortcuts, stored in the shell's canonical workspace
-/// state and run on the session runtime.
-pub struct NativeShortcutLibrary(pub WorkspaceTreeHandle);
+/// The workspace's shortcuts, saved in its room document and run on the
+/// session runtime. The tree only mirrors what the room's governor
+/// committed: a save is this device's signed write of the room, through the
+/// room's governor, under the rule admission holds every writer to.
+pub struct NativeShortcutLibrary(
+    pub WorkspaceTreeHandle,
+    pub Option<Arc<super::network::ShellNetwork>>,
+);
+impl NativeShortcutLibrary {
+    /// `change` committed in `room` by its governor: the host governing it
+    /// (the owner's device or a node), or this device's own owner when it
+    /// governs the room itself. A saved shortcut carries this device's proof
+    /// that its person, `actor`, saved it. Runs on the session runtime; the
+    /// owner's durable publication on a blocking thread.
+    pub(crate) async fn commit(
+        tree: WorkspaceTreeHandle,
+        network: Option<Arc<super::network::ShellNetwork>>,
+        room: super::state::RoomId,
+        actor: String,
+        change: tilo_action_broker::automation::ShortcutChange,
+    ) -> Result<(), String> {
+        use tilo_action_broker::automation::ShortcutChange;
+        if tree.read().on_this_device_only(room) {
+            return Err(super::i18n::t("workspace-on-this-device-only-no-documents"));
+        }
+        let owner = super::native_workspace_owner::attached(&tree)
+            .ok_or("the workspace is no longer hosted here")?;
+        let (key, device) = match &network {
+            Some(network) => network.room_signer(room)?,
+            None => tilo_identity_host::broker::trusted_current_device(&room.to_string())
+                .map_err(|error| format!("this device cannot sign in the workspace: {error}"))?,
+        };
+        let change = match change {
+            ShortcutChange::Save(mut shortcut) => {
+                if shortcut.saved_by.as_deref() != Some(actor.as_str())
+                    || actor != hex::encode(device.user_public_key)
+                {
+                    return Err("a shortcut is saved from its saver's own device".into());
+                }
+                tilo_peer_state::room::sign_saved_shortcut(
+                    &room.to_string(),
+                    &mut shortcut,
+                    &device,
+                    &key,
+                )?;
+                ShortcutChange::Save(shortcut)
+            }
+            delete @ ShortcutChange::Delete(_) => delete,
+        };
+        if let Some(network) = &network {
+            network.check_native_custody(&owner, room)?;
+            if let Some(committed) = Arc::clone(network)
+                .save_shortcut_at_host(room, change.clone())
+                .await
+            {
+                return committed;
+            }
+        }
+        // No host governs the room: this device does, or it holds a room a
+        // device governed before rooms had hosts, which takes no shortcuts.
+        let governs = owner.with_current(room, |view| Ok(view.device() == view.governor()))?;
+        if !governs {
+            return Err("this workspace's governing device has no host to save shortcuts".into());
+        }
+        let request = tilo_owner_commit::OwnerCommitRequest {
+            room: room.to_string(),
+            operation: tilo_owner_commit::CommitOperation::ShortcutChange {
+                invocation: uuid::Uuid::new_v4(),
+                caller: device.clone(),
+                change: serde_json::to_vec(&change).map_err(|error| error.to_string())?,
+            },
+        };
+        tokio::task::spawn_blocking(move || {
+            owner.commit_shortcut_change(&request, &device, &key, std::time::SystemTime::now())
+        })
+        .await
+        .map_err(|_| "the shortcut's commit stopped".to_owned())??;
+        if let Some(network) = &network {
+            network.schedule_native_owner_publication(room);
+        }
+        Ok(())
+    }
+}
 impl ShortcutLibraryServices for NativeShortcutLibrary {
     fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
         settings_store::hardware::ShortcutConfig::load()
     }
-    fn store(&self, request: &ShortcutLibraryRequest<'_>) -> Result<(), String> {
-        let mut tree = self.0.write();
-        let workspace_id = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room().to_string() == request.room)
-            .map(|workspace| workspace.id)
-            .ok_or_else(|| "the workspace is no longer hosted here".to_string())?;
-        let stored = match request.change {
-            tilo_action_broker::automation::ShortcutChange::Save(shortcut) => {
-                tree.save_workspace_shortcut(workspace_id, shortcut)
+    fn store(
+        &self,
+        request: ShortcutLibraryRequest,
+    ) -> tilo_action_broker::services::ShortcutStore {
+        let tree = self.0.clone();
+        let network = self.1.clone();
+        Box::pin(async move {
+            let room =
+                super::state::RoomId::parse(&request.room).ok_or("invalid workspace room")?;
+            Self::commit(
+                tree.clone(),
+                network,
+                room,
+                request.actor.clone(),
+                request.change,
+            )
+            .await?;
+            let mut tree = tree.write();
+            if let Some(workspace_id) = tree
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room() == room)
+                .map(|workspace| workspace.id)
+            {
+                let _ = tree.append_workspace_effect_receipt(
+                    workspace_id,
+                    request.invocation,
+                    &request.actor,
+                    request.context,
+                    tilo_actions::EffectReceiptStatus::Succeeded,
+                );
             }
-            tilo_action_broker::automation::ShortcutChange::Delete(id) => {
-                tree.remove_workspace_shortcut(workspace_id, id)
-            }
-        };
-        if !stored {
-            return Err("the workspace no longer holds that shortcut".into());
-        }
-        let _ = tree.append_workspace_effect_receipt(
-            workspace_id,
-            request.invocation,
-            request.actor.id(),
-            request.context.clone(),
-            tilo_actions::EffectReceiptStatus::Succeeded,
-        );
-        drop(tree);
-        Ok(())
+            drop(tree);
+            Ok(())
+        })
     }
     fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
         crate::session_runtime::runtime().map(|runtime| runtime.handle().clone())
@@ -1673,7 +1768,8 @@ pub fn native_services(
             as Arc<dyn WorkspaceGovernanceServices>
     });
     let shortcut_library = membership.as_ref().map(|tree| {
-        Arc::new(NativeShortcutLibrary(tree.clone())) as Arc<dyn ShortcutLibraryServices>
+        Arc::new(NativeShortcutLibrary(tree.clone(), network.clone()))
+            as Arc<dyn ShortcutLibraryServices>
     });
     let nearby_transfer = membership
         .as_ref()
@@ -1845,7 +1941,7 @@ pub(crate) fn test_broker_with_membership(
             membership.clone(),
             None,
         ))),
-        shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone()))),
+        shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone(), None))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
         app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
         ..Default::default()
