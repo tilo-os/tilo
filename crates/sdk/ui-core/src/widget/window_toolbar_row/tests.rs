@@ -477,12 +477,17 @@ fn file_toolbar(actions: usize) -> WindowToolbar {
 fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
     // As wide as the row a compact (420 px) window leaves the toolbar.
     let compact = Rect::new(0.0, 0.0, 220.0, 40.0);
-    let one = Slots::lay_out(&file_toolbar(1), compact, None);
+    let one = Slots::lay_out(&file_toolbar(1), compact, None, &LocationForms::default());
     assert_eq!(one.actions.len(), 1, "the action stands in the row");
     assert_eq!(one.overflow, Rect::ZERO, "no menu for one action");
 
     for declared in [2, 3] {
-        let slots = Slots::lay_out(&file_toolbar(declared), compact, None);
+        let slots = Slots::lay_out(
+            &file_toolbar(declared),
+            compact,
+            None,
+            &LocationForms::default(),
+        );
         let folded = declared - slots.actions.len();
         assert!(
             folded == 0 || folded >= 2,
@@ -491,7 +496,12 @@ fn a_compact_row_never_folds_one_action_alone_into_the_menu() {
         assert_eq!(slots.overflow.area() > 0.0, folded > 0);
     }
 
-    let wide = Slots::lay_out(&file_toolbar(1), Rect::new(0.0, 0.0, 900.0, 40.0), None);
+    let wide = Slots::lay_out(
+        &file_toolbar(1),
+        Rect::new(0.0, 0.0, 900.0, 40.0),
+        None,
+        &LocationForms::default(),
+    );
     assert_eq!(wide.actions.len(), 1);
     assert_eq!(wide.overflow, Rect::ZERO);
 }
@@ -655,6 +665,51 @@ fn the_location_picks_the_view_from_the_width_its_narrower_form_fits_whole() {
         picker.take_events(),
         vec![(3, ToolbarEvent::Action { id: "day".into() })]
     );
+}
+
+#[test]
+fn a_wider_row_never_names_the_period_in_a_narrower_form() {
+    let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap_or_default();
+    for period in [
+        a_week(),
+        crate::format::Period::Day(day(21)),
+        crate::format::Period::Month(day(21)),
+    ] {
+        let mut toolbar = calendar();
+        toolbar.location = Some(ToolbarLocation::period(period));
+        let forms = period.forms();
+        let mut narrower: Option<(f64, usize)> = None;
+        for width in (120..=1400).map(f64::from) {
+            let row = calendar_row_of(&toolbar, width);
+            let slots = row.slots();
+            if slots.location.area() <= 0.0 {
+                continue;
+            }
+            if width >= 233.0 {
+                assert!(
+                    slots.leading[..2].iter().all(|rect| rect.area() > 0.0),
+                    "{width} px keeps the navigation for {:?}",
+                    forms[slots.form.min(forms.len() - 1)],
+                );
+            }
+            if let Some((at, form)) = narrower {
+                assert!(
+                    slots.form <= form,
+                    "{width} px names {:?} as {:?}, narrower than {:?} at {at} px",
+                    forms[0],
+                    forms[slots.form.min(forms.len() - 1)],
+                    forms[form.min(forms.len() - 1)],
+                );
+            }
+            narrower = Some((width, slots.form));
+        }
+        assert_eq!(
+            narrower.map(|(_, form)| form),
+            Some(0),
+            "a wide row names {:?} whole",
+            forms[0]
+        );
+    }
 }
 
 #[test]
