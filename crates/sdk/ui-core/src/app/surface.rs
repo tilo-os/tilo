@@ -778,7 +778,7 @@ impl App {
         if handled {
             let commit = phases.start();
             if view_only_scroll && !history_handled && focus_target.is_none() {
-                app.commit_action_with_invalidation(false);
+                app.commit_view_change();
             } else {
                 app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
                 app.needs_sync = true;
