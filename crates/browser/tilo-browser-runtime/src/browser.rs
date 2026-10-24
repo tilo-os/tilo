@@ -58,6 +58,9 @@ thread_local! {
     /// How many of the renderer's awaited pipelines have compiled on this
     /// page: progress within the pipelines step (`watch_first_frame`).
     static PIPELINES_BUILT: Cell<u32> = const { Cell::new(0) };
+    /// Whether the deferred pipelines' compile was scheduled
+    /// (`compile_deferred_pipelines_later`).
+    static DEFERRED_PIPELINES_ASKED: Cell<bool> = const { Cell::new(false) };
     /// Mounts presenting a desktop, which applications' notifications wake.
     static DESKTOPS: RefCell<std::collections::BTreeSet<u64>> =
         const { RefCell::new(std::collections::BTreeSet::new()) };
@@ -293,6 +296,8 @@ struct SharedGpu {
     mounts: Arc<Mutex<Vec<u64>>>,
     /// Videos' pictures, copied from the page's media elements.
     video_pictures: crate::video_pictures::VideoPictures,
+    /// The device of `cx` the renderer was made on.
+    dev_id: usize,
 }
 
 impl SharedGpu {
@@ -1962,6 +1967,44 @@ async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Re
     }
 }
 
+/// How long after its first frame a page waits before compiling the
+/// pipelines that frame did not need. The browser compiles every page's
+/// pipelines on the same threads and does not cancel those of a page that
+/// closed, so a page left right after it drew would leave its compiles
+/// queued ahead of the next page's: with a software rasteriser that next
+/// page's own start then waited behind them for over a minute without an
+/// animation frame. A page that stays this long compiles them; one gone
+/// sooner leaves nothing behind. A frame that needs one sooner creates it
+/// itself, as before.
+const DEFERRED_PIPELINES_AFTER_MS: u32 = 10_000;
+
+/// Start compiling the shared renderer's deferred pipelines
+/// [`DEFERRED_PIPELINES_AFTER_MS`] from now, once per page.
+fn compile_deferred_pipelines_later() {
+    if DEFERRED_PIPELINES_ASKED.replace(true) {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async {
+        sleep_ms(DEFERRED_PIPELINES_AFTER_MS).await;
+        // Another mount may be drawing with the device just now.
+        loop {
+            let Some(shared) = SHARED_GPU.with_borrow(Clone::clone) else {
+                return;
+            };
+            if let Ok(mut shared) = shared.try_borrow_mut() {
+                let shared = &mut *shared;
+                if let Some(handle) = shared.cx.devices.get(shared.dev_id) {
+                    shared
+                        .renderer
+                        .start_deferred_pipelines_async(&handle.device);
+                }
+                return;
+            }
+            sleep_ms(first_frame::DRIVE_MS).await;
+        }
+    });
+}
+
 /// Asynchronous pipeline creation: the browser compiles vello's pipelines in
 /// parallel off its GPU process's main thread. Created synchronously they
 /// hold that thread for the whole compile (seconds each under a software
@@ -1971,7 +2014,8 @@ async fn take_prepared_gpu() -> Option<Result<(ui::gpu::RenderContext, vello::Re
 /// Only the pipelines a default full frame dispatches are awaited (13 of
 /// 24): the rest (sparse fine, the indirect path and large path-tag scan
 /// stages, the GPU draw prefix, clip reduce) start compiling once the first
-/// frame is out (`start_deferred_pipelines_async` in `render`). A frame that
+/// page has stayed a while after its first frame
+/// (`compile_deferred_pipelines_later`). A frame that
 /// needs one sooner creates it there and then, so nothing is ever drawn
 /// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
@@ -2089,8 +2133,11 @@ async fn shared_gpu(
         failure,
         mounts,
         video_pictures: crate::video_pictures::VideoPictures::default(),
+        dev_id: surface.dev_id,
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
+    // A renderer made anew (after a lost device) compiles its own.
+    DEFERRED_PIPELINES_ASKED.set(false);
     Ok((shared, surface))
 }
 
@@ -2616,11 +2663,10 @@ impl Mount {
             &gpu.surface,
             &output.texture,
         );
-        // The first frame is out: the pipelines it did not need compile now.
-        shared
-            .renderer
-            .start_deferred_pipelines_async(&handle.device);
+        // The first frame is out: the pipelines it did not need compile once
+        // the page has stayed a while (`compile_deferred_pipelines_later`).
         drop(shared_guard);
+        compile_deferred_pipelines_later();
         output.present();
         self.presented_capture_protected = self.frame.capture_protected();
         self.metric_end(render_stage, stage);
