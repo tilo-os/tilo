@@ -20104,51 +20104,71 @@ mod tests {
     #[test]
     fn state_dump_names_what_animates_with_the_top_bar_drawn() {
         use crate::shell::state::{
-            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-            WorkspaceTree,
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
         };
-        // A window asked for but not drawn yet holds animation frames, so the
-        // dump walks the content tree, top bar included.
-        let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::new(WorkspaceId(73), "Animating");
-        workspace.strips.push(Strip::new(StripId(74), "Main"));
-        workspace.strips[0].window_groups.push(WindowGroup {
-            id: 75,
+        let group = |id: u64, title: &str| WindowGroup {
+            id,
             tabs: vec![Tab {
-                id: 76,
-                title: "Opening".into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.fixture".into(),
-                    surface_id: 0x7e57_0000_0027,
+                id: id + 1,
+                title: title.into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: title.into(),
                 },
                 app_title: None,
             }],
-            active_tab: 76,
+            active_tab: id + 1,
             focus_history: Vec::new(),
             width: WindowWidth::Normal,
             maximized: false,
-        });
+        };
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(73), "Animating");
+        workspace.strips.push(Strip::new(StripId(74), "Main"));
+        workspace.strips[0].window_groups.push(group(75, "Open"));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(73));
-        let mut fb = FrameBuilder::with_handle(tree.shared(), false, (1600, 900));
-        let _ = fb.paint();
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-            seat: None,
-            resolved: None,
-        };
-        let animating = state.chrome_state_json()["animating"].clone();
-        assert!(
-            animating
-                .as_array()
-                .is_some_and(|owners| owners.iter().any(|owner| owner
-                    .as_str()
-                    .is_some_and(|owner| owner.contains("ForeignSurfaceWidget")))),
-            "the dump names the opening window: {animating}"
-        );
+        // One instant for the whole frame: the window opening below is still
+        // opening when the dump asks, however long the machine takes.
+        let at = ui::time::now();
+        ui::time::testing::with_monotonic_time(at, || {
+            let mut fb = FrameBuilder::with_handle(tree.shared(), false, (1600, 900));
+            let _ = fb.paint();
+            // A window opens: its slot grows from nothing, so the content
+            // asks for frames and the dump walks the content tree, top bar
+            // included.
+            fb.with_chrome(|chrome| {
+                chrome.tree_mut().desktop.workspaces[0].strips[0]
+                    .window_groups
+                    .push(group(77, "Opening"));
+                chrome.bump();
+            });
+            let mut doc = automerge::AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            let _ = fb.paint();
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+                seat: None,
+                resolved: None,
+            };
+            let animating = state.chrome_state_json()["animating"].clone();
+            assert!(
+                animating
+                    .as_array()
+                    .is_some_and(
+                        |owners| owners.iter().any(|owner| owner
+                            .as_str()
+                            .is_some_and(|owner| owner.starts_with("content/")
+                                && owner.contains("WindowGroup")))
+                    ),
+                "the dump names the opening window: {animating}"
+            );
+        });
     }
 
     /// `chrome.displays` names what is painted: every connected display and
