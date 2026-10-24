@@ -15,8 +15,13 @@
 //!   devices, acts on a stop asked from Settings, and publishes a
 //!   [`DeviceVpnStatus`] for Settings, from which quick settings and the
 //!   palette read the same state ([`entries`], [`choose`], [`stop_device`]).
+//! * The kill switch of the person's `NetworkManager` VPN profiles
+//!   ([`profile_block`]) asks the same helper to block traffic while a
+//!   profile is set to connect and is not connected; what blocks is part of
+//!   the same status.
 
 pub(crate) mod controller;
+pub mod profile_block;
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -36,7 +41,7 @@ use device_vpn::tunnel::{Authority, Decision, Ended, Exit, ExitDevices, Tunnel, 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use settings_store::device_vpn::{
     self as settings, ClientState, ClientStatus, DeviceVpnStatus, ExitUser, OfferedExit, Problem,
-    StopRequest, Through,
+    ProfileBlockStatus, StopRequest, Through,
 };
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tokio::sync::watch;
@@ -176,6 +181,11 @@ struct DeviceVpn {
 }
 
 static DEVICE_VPN: OnceLock<DeviceVpn> = OnceLock::new();
+/// What the kill switch of the person's VPN profiles blocks now.
+static PROFILE_BLOCK: Mutex<ProfileBlockStatus> = Mutex::new(ProfileBlockStatus {
+    blocking: Vec::new(),
+    failed: false,
+});
 static LIVE_SETTINGS: OnceLock<settings_store::live::LiveSettings> = OnceLock::new();
 
 fn device_vpn() -> &'static DeviceVpn {
@@ -366,8 +376,18 @@ fn status(vpn: &DeviceVpn, follow: &Follow) -> DeviceVpnStatus {
             .collect(),
         offered,
         client,
+        profile_block: PROFILE_BLOCK.lock_recover().clone(),
         ..DeviceVpnStatus::default()
     }
+}
+
+/// Take in what the kill switch of the person's VPN profiles blocks, and
+/// publish it at once.
+pub(crate) fn set_profile_block(status: ProfileBlockStatus) {
+    *PROFILE_BLOCK.lock_recover() = status;
+    let vpn = device_vpn();
+    let mut follow = vpn.follow.lock_recover();
+    publish(vpn, &mut follow);
 }
 
 /// Write the status for Settings when it changed, off this thread.
