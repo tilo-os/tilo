@@ -218,15 +218,14 @@ impl ShellNetwork {
             .checked_add(LINK_JOIN_WAIT)
             .unwrap_or_else(std::time::Instant::now);
         loop {
-            let held = self.replica.lock().is_ok_and(|replica| {
-                replica
-                    .tree
+            let held = {
+                self.tree
                     .read()
                     .desktop
                     .workspaces
                     .iter()
                     .any(|workspace| workspace.room() == room)
-            });
+            };
             if held {
                 return Ok(room);
             }
@@ -245,12 +244,7 @@ impl ShellNetwork {
         room: RoomId,
         invitation: &str,
     ) -> Result<PeerSyncResponse, String> {
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         if tree.read().holds_room(room) {
             return Ok(PeerSyncResponse::Message(room.to_string()));
         }

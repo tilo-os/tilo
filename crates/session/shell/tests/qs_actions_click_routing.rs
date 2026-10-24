@@ -676,7 +676,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
         use shell::shell::chrome_state::WsTab;
 
         let mut tree = minimal_tree();
-        tree.adopt_ownerless_workspaces_with(shell::shell::state::local_user_id_for_room);
+        tree.own_workspaces_for_test(shell::shell::state::local_user_id_for_room);
         let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
         host.set_peer_sync_enabled(true);
         {

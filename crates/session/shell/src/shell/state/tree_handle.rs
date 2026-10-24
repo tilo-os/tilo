@@ -90,20 +90,14 @@ struct TreeCell {
 
 /// The parts of the tree an authorization decision reads: each
 /// workspace's room, owner, roster, grants, permission profiles, tasks and
-/// pending ownership transfer, and the session's room authorities, admitted
-/// devices, authenticated persons and stewarded rooms. Strips, records,
+/// pending ownership transfer, and the session's person and stewarded
+/// rooms. Strips, records,
 /// presence and effect receipts are written on every frame or by the broker
 /// itself and decide nothing.
 #[derive(Default, PartialEq)]
 struct PolicySnapshot {
     workspaces: Vec<WorkspacePolicy>,
-    room_authority: std::collections::HashMap<tilo_desktop_model::RoomId, super::RoomAuthority>,
-    room_peer_identities: std::collections::HashMap<
-        tilo_desktop_model::RoomId,
-        std::collections::BTreeMap<String, super::GovernedPeerIdentity>,
-    >,
     local_person: Option<[u8; 32]>,
-    authenticated_persons: std::collections::HashMap<super::PeerOrigin, [u8; 32]>,
     stewarded_rooms: std::collections::BTreeSet<tilo_desktop_model::RoomId>,
 }
 
@@ -135,10 +129,7 @@ impl PolicySnapshot {
                     pending_ownership_transfer: workspace.pending_ownership_transfer.clone(),
                 })
                 .collect(),
-            room_authority: tree.room_authority.clone(),
-            room_peer_identities: tree.room_peer_identities.clone(),
             local_person: tree.local_person,
-            authenticated_persons: tree.authenticated_persons.clone(),
             stewarded_rooms: tree.stewarded_rooms.clone(),
         }
     }
@@ -160,10 +151,7 @@ impl PolicySnapshot {
                         && seen.sandbox == workspace.sandbox
                         && seen.pending_ownership_transfer == workspace.pending_ownership_transfer
                 })
-            && self.room_authority == tree.room_authority
-            && self.room_peer_identities == tree.room_peer_identities
             && self.local_person == tree.local_person
-            && self.authenticated_persons == tree.authenticated_persons
             && self.stewarded_rooms == tree.stewarded_rooms
     }
 }
@@ -501,7 +489,7 @@ mod tests {
             start,
             "a layout write is no new policy"
         );
-        let _ = handle.write().append_empty_workspace("Granted");
+        let _ = handle.write().create_hosted_workspace("Granted").0;
         let first = handle.policy_revision();
         assert!(first > start, "a new workspace is a new policy");
         handle.write().desktop.workspaces[0]
@@ -524,7 +512,7 @@ mod tests {
     #[test]
     fn a_write_announces_a_policy_change_only_when_it_changed_policy() {
         let handle = WorkspaceTreeHandle::new(WorkspaceTree::default());
-        let workspace = handle.write().append_empty_workspace("Shared");
+        let workspace = handle.write().create_hosted_workspace("Shared").0;
         let (woke, wakes) = std::sync::mpsc::channel();
         let woke = std::sync::Mutex::new(woke);
         let watch = tilo_identity_host::policy_change::Watch::new(move || {
@@ -622,7 +610,7 @@ mod tests {
                 .unwrap();
             reader.policy_revision()
         });
-        let _ = guard.append_empty_workspace("Granted");
+        let _ = guard.create_hosted_workspace("Granted").0;
         let tid = tilo_test_env::recv("the reader's thread id", &tid_rx);
         // Release only once the reader has blocked on the held write.
         tilo_test_env::wait_until("the reader to block on the held write", || {

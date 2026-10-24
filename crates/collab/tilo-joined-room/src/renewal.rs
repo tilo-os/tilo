@@ -26,8 +26,7 @@ impl NativeWorkspaceOwner {
     /// device. Published before it returns.
     ///
     /// # Errors
-    /// The room is governed here, `renewed` does not renew the certificate
-    /// the room's record holds, the answer is not the room's or its
+    /// `renewed` does not renew the certificate the room's record holds, the answer is not the room's or its
     /// governance does not hold `renewed`, or the record cannot be
     /// published.
     pub fn renew_membership(
@@ -39,9 +38,6 @@ impl NativeWorkspaceOwner {
     ) -> Result<(), String> {
         let _turn = self.0.mutation.lock();
         let mut candidate = self.with_current(room, |view| Ok(view.clone()))?;
-        if candidate.governed_here() {
-            return Err("a room governed here holds its own certificate".into());
-        }
         if &candidate.record.device == renewed {
             return Ok(());
         }

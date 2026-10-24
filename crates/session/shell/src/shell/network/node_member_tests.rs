@@ -232,8 +232,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     until("the session to hold the company workspace", || {
         net.tick();
         let tree = tree.read();
-        (tree.requires_native_owner(room)
-            && !tree.is_joining(room)
+        (!tree.is_joining(room)
             && tree
                 .desktop
                 .workspaces

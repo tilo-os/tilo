@@ -1537,7 +1537,7 @@ pub(crate) fn is_active_workspace_owner(state: &crate::shell::chrome_state::Chro
     let tree = state.tree();
     tree.desktop
         .active_workspace()
-        .is_some_and(|ws| tree.governs_room(ws.room()) && ws.may_administer(&user))
+        .is_some_and(|ws| ws.may_administer(&user))
 }
 
 /// The kind chip a picker opened by "give me a new window" starts lit: Apps,

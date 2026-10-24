@@ -80,9 +80,6 @@ impl Connect {
     /// The room is not held here or custody cannot be read.
     pub fn renewal(&self, identity: &HostIdentity) -> Result<Option<DeviceCert>, String> {
         self.owner.with_current(self.room, |view| {
-            if view.governed_here() {
-                return Ok(None);
-            }
             let (cert, _) = identity.current_native_material(view.workspace())?;
             Ok(crate::renewal::renews(&cert, view.device()).then_some(cert))
         })

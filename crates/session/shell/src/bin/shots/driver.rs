@@ -138,7 +138,7 @@ impl ShellDriver {
         // offers no Invite.
         let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
-        tree.adopt_ownerless_workspaces(&owner);
+        tree.own_workspaces_for_test(|_| owner.clone());
         let hosted_tabs = hosted_app_tabs(&tree);
         // An owned fixture never reads the wall clock, so frames compare
         // across minutes; it shows the time it is given, like a session
@@ -928,7 +928,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
-                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
+                let _ = tree.admit_here_for_test(ws_id, &owner, member, role);
             }
             // Both members at their desks: a room only carries a display
             // name while a session of theirs is present.
@@ -942,7 +942,7 @@ impl ShellDriver {
                 ("/var/workspace/design", "ada", Access::Write),
                 ("/var/workspace/brief.pdf", "bo", Access::Read),
             ] {
-                tree.grant_sandbox_in_workspace(
+                tree.grant_sandbox_here_for_test(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
@@ -960,7 +960,7 @@ impl ShellDriver {
                 .collect();
             for id in research {
                 for (member, role) in [("alice", Role::Editor), ("bob", Role::Viewer)] {
-                    let _ = tree.admit_in_workspace(id, &owner, member, role);
+                    let _ = tree.admit_here_for_test(id, &owner, member, role);
                 }
             }
         }
@@ -1097,7 +1097,7 @@ impl ShellDriver {
             let owner = st.local_user_id.clone();
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
-            let _ = tree.admit_in_workspace(ws_id, &owner, "cy", Role::Editor);
+            let _ = tree.admit_here_for_test(ws_id, &owner, "cy", Role::Editor);
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return;
             };
@@ -1173,7 +1173,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace_id = tree.desktop.active;
             let changes = AgentPreset::Operator
                 .grants(
@@ -1187,7 +1187,7 @@ impl ShellDriver {
                 .into_iter()
                 .map(tilo_action_policy::Change::Grant)
                 .collect();
-            let _ = tree.govern_in_workspace(workspace_id, &owner, changes);
+            let _ = tree.govern_here_for_test(workspace_id, &owner, changes);
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
                 workspace.collaborators.insert(
@@ -1567,7 +1567,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
             let tab_ids = tree
                 .desktop
@@ -1591,7 +1591,7 @@ impl ShellDriver {
             .into_iter()
             .enumerate()
             {
-                let _ = tree.admit_in_workspace(
+                let _ = tree.admit_here_for_test(
                     workspace,
                     &owner,
                     id,
@@ -1632,9 +1632,9 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
-            let _ = tree.admit_in_workspace(workspace, &owner, "ada", Role::Editor);
+            let _ = tree.admit_here_for_test(workspace, &owner, "ada", Role::Editor);
             if let Some(ws) = tree.desktop.active_workspace_mut()
                 && !ws.collaborators.iter().any(|person| person.id == "ada")
             {
@@ -1886,9 +1886,8 @@ impl ShellDriver {
     }
 
     /// Seeds the active workspace with membership and granted capabilities
-    /// via `WorkspaceTree::grant_in_workspace` — the same authority-checked
-    /// path the settings panel and portal use, so this is a state the
-    /// compositor can actually be in.
+    /// as the room's admitted document would carry them, checked against the
+    /// room's policy, so this is a state the compositor can actually be in.
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
         use tilo_action_policy::Role;
@@ -1897,10 +1896,10 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
-                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
+                let _ = tree.admit_here_for_test(ws_id, &owner, member, role);
             }
             for (app, scope, verb, expiry) in [
                 (
@@ -1922,13 +1921,13 @@ impl ShellDriver {
                     Expiry::AfterUse,
                 ),
             ] {
-                tree.grant_sandbox_in_workspace(
+                tree.grant_sandbox_here_for_test(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
                 );
             }
-            tree.grant_sandbox_in_workspace(
+            tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -2145,7 +2144,7 @@ impl ShellDriver {
         let mut lounge = None;
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
-            let id = tree.append_empty_workspace("Lounge");
+            let id = tree.create_hosted_workspace("Lounge").0;
             lounge = tree
                 .desktop
                 .workspaces
@@ -3093,9 +3092,9 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
-            tree.grant_sandbox_in_workspace(
+            tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -3104,7 +3103,7 @@ impl ShellDriver {
                     Access::Write,
                 ),
             );
-            let temp = tree.grant_sandbox_in_workspace(
+            let temp = tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -3120,7 +3119,7 @@ impl ShellDriver {
             );
             tree.commit_room_change();
             if let Some(cap_id) = temp {
-                tree.revoke_sandbox_in_workspace(ws_id, &owner, &cap_id);
+                tree.narrow_sandbox(ws_id, &owner, &cap_id);
             }
             if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.name = "Design review".to_string();
