@@ -61,6 +61,7 @@ pub use sealed_records::fixtures as sealed_fixtures;
 mod spectator_keys;
 #[cfg(feature = "agents")]
 mod steward_endpoint;
+mod steward_keys;
 mod stewardship;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -175,14 +176,15 @@ fn readers(
 }
 
 /// The stewards of `room`'s channels, under `dir`, when `authority` (this
-/// relay) may own workspaces.
+/// host, a relay or a person's device) stewards the channels of the rooms
+/// it governs ([`tilo_user_identity::DeviceCapabilities::stewards_room_channels`]).
 fn stewardship(
     dir: &Path,
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
 ) -> Option<Arc<stewardship::Steward>> {
-    authority.capabilities.can_own_workspaces.then(|| {
+    authority.capabilities.stewards_room_channels().then(|| {
         Arc::new(stewardship::Steward::new(stewardship::Stewardship::new(
             room,
             dir.join(format!("{room}.channels")),
@@ -753,7 +755,6 @@ pub(crate) struct RoomServices {
     /// Pre-admissions each room keeps, spent ones included.
     pub(crate) max_pre_admissions: usize,
     /// The live handshake trust policy, for [`crate::room_access::decide`].
-    #[cfg(feature = "agents")]
     pub(crate) trust_policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     /// Agent delegations, for [`crate::room_access::decide`] and for
     /// refusing an agent the administration only a person holds.
@@ -1830,7 +1831,6 @@ impl Rooms {
     }
 
     /// Retain channel governance messages as this relay's own.
-    #[cfg(feature = "agents")]
     async fn publish_channel_governance(
         &self,
         workspace_id: u64,
