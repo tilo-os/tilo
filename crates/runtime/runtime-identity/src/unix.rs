@@ -65,9 +65,10 @@ pub use backup::{
     import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
 };
 pub use recovery_words::{
-    DEFAULT_AVATAR_COLOR, RECOVERY_WORD_COUNT, RecoveryWordsError, check_recovery_words,
-    import_recovery_words, import_recovery_words_with_provider, recovery_expected_identity,
-    recovery_words, recovery_words_error, recovery_words_public_key,
+    DEFAULT_AVATAR_COLOR, RECOVERY_WORD_COUNT, RecoveryWordsError, RecoveryWordsProgress,
+    check_recovery_words, import_recovery_words, import_recovery_words_with_provider,
+    recovery_expected_identity, recovery_words, recovery_words_error, recovery_words_progress,
+    recovery_words_public_key,
 };
 pub use secure_store::{
     BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,

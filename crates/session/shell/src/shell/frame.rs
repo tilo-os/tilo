@@ -8898,7 +8898,7 @@ mod tests {
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("without an encrypted backup")),
+                    .any(|name| name.contains("without a recovery key or backup")),
                 "skip acknowledgement must be keyboard reachable: {names:?}"
             );
 
@@ -8907,7 +8907,7 @@ mod tests {
                 .into_iter()
                 .find(|id| {
                     focused_name(&fb, Some(*id))
-                        .is_some_and(|name| name.contains("without an encrypted backup"))
+                        .is_some_and(|name| name.contains("without a recovery key or backup"))
                 })
                 .expect("acknowledgement focus target");
             fb.set_native_focus(&mut focus, Some(acknowledgement));

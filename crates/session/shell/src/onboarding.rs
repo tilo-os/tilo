@@ -8,17 +8,15 @@
 //! a deliberate encrypted portable-backup choice; and a concise hand-off.
 //!
 //! Tilo mints a personal Ed25519 root plus a distinct device key certified
-//! by that root, with no escrow or recovery phrase. `threshold-identity`
-//! implements share-based recovery only after a genuine multi-device
-//! ceremony; this path creates a single-device identity, whose actual
-//! recovery material is an encrypted portable backup. The only true thing to
-//! tell a user is that losing every local key and that backup loses the
-//! identity. The copy in
+//! by that root, with no escrow. What brings it back is held by the person
+//! alone: a 24-word recovery key written on paper, or an encrypted portable
+//! backup file and its passphrase. The only true thing to tell a user is that
+//! losing every local key and both of those loses the identity. The copy in
 //! [`no_recovery_points`] says exactly that, and the flow makes the user
 //! acknowledge it before the key is created; softening it into "keep
-//! your device safe" would imply a safety net that doesn't exist. If
-//! recovery is ever wired up, this copy changes in the same commit —
-//! `tests::onboarding_copy_is_honest_about_identity_and_recovery` guards against drift.
+//! your device safe" would imply a safety net that doesn't exist.
+//! `tests::onboarding_copy_is_honest_about_identity_and_recovery` guards
+//! against drift.
 
 use std::error::Error;
 use std::fmt;
@@ -37,6 +35,8 @@ pub enum Screen {
     Nearby,
     /// Restore the identity from an encrypted backup file.
     Restore,
+    /// Restore the identity from the 24 words of its recovery key.
+    RecoveryKey,
     /// The consequence of losing the device, and the acknowledgement.
     NoRecovery,
     /// The minted key: fingerprint and path.
@@ -185,9 +185,17 @@ impl Onboarding {
 
     /// Return to the choice this screen was opened from, before any
     /// identity exists.
+    pub fn choose_recovery_key(&mut self) {
+        if self.screen == Screen::Existing {
+            self.screen = Screen::RecoveryKey;
+        }
+    }
+
     pub fn back(&mut self) {
         match self.screen {
-            Screen::Nearby | Screen::Restore => self.screen = Screen::Existing,
+            Screen::Nearby | Screen::Restore | Screen::RecoveryKey => {
+                self.screen = Screen::Existing;
+            }
             Screen::Existing | Screen::NoRecovery => {
                 self.screen = Screen::Intro;
                 self.acknowledged = false;
@@ -200,7 +208,7 @@ impl Onboarding {
     pub fn is_existing_branch(&self) -> bool {
         matches!(
             self.screen,
-            Screen::Existing | Screen::Nearby | Screen::Restore
+            Screen::Existing | Screen::Nearby | Screen::Restore | Screen::RecoveryKey
         )
     }
 
@@ -818,20 +826,20 @@ mod tests {
             assert_eq!(m.grouped_fingerprint(), "0123 4567 89ab cdef");
         }
         // Phase `copy_does_not_promise_recovery`.
-        // The copy must not imply a safety net that does not exist.
-        //
-        // Tilo mints a root and certified device key with no escrow or recovery phrase.
-        // `threshold-identity` implements share-based recovery but is
-        // deliberately not wired into this path. A user-held encrypted export is
-        // a backup, but it is not escrow and cannot help without its passphrase.
+        // The copy must not imply a safety net that does not exist: there is
+        // no escrow, only what the person keeps themselves (a recovery key or
+        // an encrypted backup), and the copy names both.
         {
             let all = no_recovery_points().join(" ").to_lowercase();
             assert!(
                 all.contains("there is no recovery"),
                 "the no-recovery screen must say so outright: {all}"
             );
+            assert!(
+                all.contains("recovery key") && all.contains("encrypted backup"),
+                "the screen must name what the person keeps to recover: {all}"
+            );
             for weasel in [
-                "recovery phrase",
                 "backup code",
                 "restore your identity",
                 "we can help",
