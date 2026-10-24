@@ -40,7 +40,7 @@ use tilo_actions::ActionAddress;
 use tilo_lock::RwLockRecover as _;
 
 /// Fold text the way every index does: case, compatibility forms and
-/// alphabetic diacritics (see [`tilo_search::fold`]).
+/// alphabetic diacritics (see [`tilo_search::fold()`]).
 #[must_use]
 pub fn normalize_search_text(text: &str) -> String {
     tilo_search::fold(text)

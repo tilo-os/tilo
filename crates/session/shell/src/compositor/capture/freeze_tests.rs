@@ -247,7 +247,6 @@ impl Desk {
             self.fb.relayout();
             let mut frame = self.fb.paint();
             let _ = self.executor.execute_ready(&mut self.fb, &mut frame);
-            self.fb.frame_presented();
         }
     }
 

@@ -1,8 +1,8 @@
 //! The editor's window chrome: the controls above the panes.
 //!
-//! Every control is a library widget hosted by the painted [`TypstApp`]
+//! Every control is a library widget hosted by the painted [`TypstApp`](crate::app::TypstApp)
 //! (`crate::app::TypstApp`): a [`Toolbar`] for the commands, a semantic
-//! file-name heading, and a [`ToggleGroup`] for Edit/Preview at narrow widths.
+//! file-name heading, and a [`ToggleGroup`](ui::widget::ToggleGroup) for Edit/Preview at narrow widths.
 //! The desktop owns document tabs. The app places the controls with
 //! [`Chrome::place`] and reads what the person chose from [`Chrome::take`].
 

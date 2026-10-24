@@ -4,9 +4,8 @@
 #
 #   os/dev/publish-dev-disk.sh
 #
-# Run by the native lane that installed and booted the disk: the OS
-# integration lane (.forgejo/workflows/build-image.yml) and the dev disk
-# workflow (.forgejo/workflows/dev-disk.yml). It writes, in this order:
+# Run once the disk passed its gates: t's publish-os-dev-<arch>
+# (tools/ci/publish/os-dev-publish.sh). It writes, in this order:
 #
 #   registry.tilo.so/tilo/tilo-vm:<tag>-<arch>          the dev image child
 #   registry.tilo.so/tilo/tilo-vm:<tag>                 OCI index of every child

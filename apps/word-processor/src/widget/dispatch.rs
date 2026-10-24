@@ -740,7 +740,7 @@ impl WordProcessorWidget {
 
     /// This window's own view as a participant view: the caret, the
     /// selection anchor, the active region and the Find bar's query and hits.
-    /// [`Self::wp_resource_ctx`] is its projection (computed from the render
+    /// `Self::wp_resource_ctx` is its projection (computed from the render
     /// cache so it stays cheap per frame); `view.ctx(doc)` yields the same
     /// context.
     pub fn local_participant_view(&self) -> crate::actions::participant::ParticipantView {

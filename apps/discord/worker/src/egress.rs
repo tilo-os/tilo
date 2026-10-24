@@ -1,5 +1,6 @@
-//! Where the worker may connect: Discord's API host, its gateway hosts and
-//! its CDN, and nothing else (discord-bridge.md §2, "Outside worker").
+//! Where the worker may connect: Discord's API host, its gateway hosts, its
+//! CDN and its voice servers, and nothing else (discord-bridge.md §2,
+//! "Outside worker").
 //!
 //! The sandbox pins the worker's egress to the same hosts; this check is the
 //! worker's own copy of the rule, so a URL that reaches it from Discord (a
@@ -19,6 +20,10 @@ pub enum Purpose {
     /// Downloads for `fetch-asset`: `https://cdn.discordapp.com`, and
     /// `https://media.discordapp.net`, which serves the same files resized.
     Cdn,
+    /// A voice server's WebSocket: `wss://*.discord.media`, the endpoint
+    /// `VOICE_SERVER_UPDATE` names. Its UDP media goes only to the address
+    /// that socket's Ready names (see [`Egress::check_voice_udp`]).
+    Voice,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +62,7 @@ impl Egress {
                 "https",
                 host == "cdn.discordapp.com" || host == "media.discordapp.net",
             ),
+            Purpose::Voice => ("wss", is_subdomain(host, "discord.media")),
         };
         if !allowed {
             return Err(format!("{host} is not one of Discord's {purpose:?} hosts"));
@@ -65,6 +71,48 @@ impl Egress {
             return Err(format!("{host}: only {scheme} is allowed"));
         }
         Ok(())
+    }
+}
+
+impl Egress {
+    /// Whether the worker may send voice over UDP to `ip`, the address a
+    /// voice server's Ready named: a public address, as Discord's voice
+    /// servers have, or loopback when the configuration allows it. The
+    /// voice server itself was checked against [`Purpose::Voice`] first.
+    ///
+    /// # Errors
+    /// Why not.
+    pub fn check_voice_udp(self, ip: std::net::IpAddr) -> Result<(), String> {
+        if ip.is_loopback() {
+            return if self.allow_loopback {
+                Ok(())
+            } else {
+                Err(format!("{ip}: a voice server on loopback is not Discord"))
+            };
+        }
+        let private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_broadcast()
+                    || v4.is_multicast()
+                    || v4.is_documentation()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_unspecified()
+                    || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+            }
+        };
+        if private {
+            Err(format!(
+                "{ip} is not a public address, as Discord's voice servers have"
+            ))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -162,6 +210,42 @@ mod tests {
             !check("https://discord.com/api/v10/x", Purpose::Cdn, false),
             "API is not the CDN"
         );
+    }
+
+    #[test]
+    fn voice_goes_to_discord_media_only() {
+        assert!(check(
+            "wss://c-ams12-3a4b.discord.media/?v=8",
+            Purpose::Voice,
+            false
+        ));
+        assert!(
+            check(
+                "wss://c-ams12-3a4b.discord.media:443/?v=8",
+                Purpose::Voice,
+                false
+            ),
+            "the default port written out"
+        );
+        assert!(!check("wss://discord.media/?v=8", Purpose::Voice, false));
+        assert!(!check("wss://evil.example/?v=8", Purpose::Voice, false));
+        assert!(!check("ws://x.discord.media/?v=8", Purpose::Voice, false));
+        assert!(!check("wss://x.discord.media:2053/", Purpose::Voice, false));
+        assert!(
+            !check("wss://gateway.discord.gg", Purpose::Voice, false),
+            "the gateway is not a voice server"
+        );
+        assert!(check("ws://127.0.0.1:4001/voice?v=8", Purpose::Voice, true));
+
+        let strict = Egress::default();
+        assert!(strict.check_voice_udp([162, 159, 128, 233].into()).is_ok());
+        assert!(strict.check_voice_udp([127, 0, 0, 1].into()).is_err());
+        assert!(strict.check_voice_udp([10, 0, 0, 1].into()).is_err());
+        assert!(strict.check_voice_udp([192, 168, 1, 1].into()).is_err());
+        let fake = Egress {
+            allow_loopback: true,
+        };
+        assert!(fake.check_voice_udp([127, 0, 0, 1].into()).is_ok());
     }
 
     #[test]

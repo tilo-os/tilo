@@ -18,7 +18,7 @@ use collab_types::{ArtifactId, PeerPresence, SignedOp};
 use crate::route::CrdtRoute;
 
 /// The network operations the broker's outbound half needs. A trait
-/// rather than a bare [`ShellNetwork`] so the routing decision can be
+/// rather than a bare `ShellNetwork` so the routing decision can be
 /// tested against a recording sink instead of standing up Iroh.
 pub trait PeerPublishSink: Send + Sync {
     fn app_document(

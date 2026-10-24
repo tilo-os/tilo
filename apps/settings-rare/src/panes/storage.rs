@@ -3,10 +3,10 @@
 //! Reclaiming space is a [`StorageEffect`] the [`StorageModel`] runs.
 //!
 //! What each device holds of the person's workspaces, and what of it is
-//! only there, is [`residency`]: this device's storage summary is the
+//! only there, is `residency`: this device's storage summary is the
 //! `storage-summary` effect, which another of the person's devices asks
 //! for too, and the other devices' are theirs, asked of each through the
-//! host ([`other_devices`]).
+//! host (`other_devices`).
 
 mod other_devices;
 mod residency;

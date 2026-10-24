@@ -15,7 +15,7 @@ use media::voice::{
 use runtime_collab::native_media::{
     Inventory, Issue, Picture, PictureSource, Shown, State as CallState,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
 use tilo_relay_protocol::voice::HEARTBEAT;
@@ -167,6 +167,8 @@ impl MediaFactory for Factory {
                         choice: camera,
                         ..Video::default()
                     },
+                    volumes: BTreeMap::new(),
+                    volumes_applied: None,
                     said_muted: true,
                     told: Arc::default(),
                 }) as Box<dyn MediaSession>)
@@ -502,6 +504,10 @@ struct Session {
     /// Those keys, as of this tick; `None` until this device holds them.
     keys: Option<channel_crypto::ChannelContentKeys>,
     video: Video,
+    /// How loud each participant plays here, by `authority::call_id`.
+    volumes: BTreeMap<String, u16>,
+    /// The grant revision `volumes` was last worked out for, as publications.
+    volumes_applied: Option<u64>,
     /// Whether the governor was last told this device is muted. A call
     /// starts muted, as its participation says from the start.
     said_muted: bool,
@@ -639,6 +645,32 @@ impl Session {
         self.video.showing.clear();
         self.video.inbox.clear();
     }
+    /// Play each participant at the volume set for them, by the
+    /// publications of the current grant: someone back on a new
+    /// publication keeps theirs.
+    fn volume_tick(&mut self) {
+        let revision = self.runtime.ticket.revision();
+        if self.volumes_applied == Some(revision) {
+            return;
+        }
+        let volumes = &self.volumes;
+        let by_publication = self
+            .runtime
+            .ticket
+            .inspect_current(|_, grant| {
+                Ok(grant
+                    .participants
+                    .iter()
+                    .filter_map(|participant| {
+                        let percent = volumes.get(&authority::call_id(participant)?)?;
+                        Some((participant.namespace.clone(), *percent))
+                    })
+                    .collect())
+            })
+            .unwrap_or_default();
+        self.audio.set_volumes(by_publication);
+        self.volumes_applied = Some(revision);
+    }
     /// Ask the carrier for the pictures the app shows, by the publications
     /// of the people it shows, whenever the carrier or its grant changed;
     /// then move what arrived into the inbox, named by person.
@@ -656,6 +688,10 @@ impl Session {
                     for participant in &grant.participants {
                         if grant.publication.as_ref() == Some(&participant.namespace) {
                             own = Some(hex::encode(participant.user_public_key));
+                            continue;
+                        }
+                        // A bridge carries voices only, under its own person.
+                        if participant.bridged.is_some() {
                             continue;
                         }
                         let person = hex::encode(participant.user_public_key);
@@ -726,7 +762,9 @@ impl Session {
                     Ok(grant
                         .participants
                         .iter()
-                        .find(|participant| &participant.namespace == namespace)
+                        .find(|participant| {
+                            &participant.namespace == namespace && participant.bridged.is_none()
+                        })
                         .map(|participant| hex::encode(participant.user_public_key)))
                 })
                 .ok()
@@ -1054,6 +1092,7 @@ impl MediaSession for Session {
         }
         self.retire_departed(&client);
         self.video_tick(&client);
+        self.volume_tick();
         let now = Instant::now();
         self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
         let others = self
@@ -1269,6 +1308,14 @@ impl MediaSession for Session {
             self.video.shown = shown;
             self.video.applied = None;
         }
+    }
+    fn set_volume(&mut self, participant: String, percent: u16) {
+        if percent == 100 {
+            self.volumes.remove(&participant);
+        } else {
+            self.volumes.insert(participant, percent);
+        }
+        self.volumes_applied = None;
     }
     fn take_pictures(&mut self, after: u64, budget: usize) -> (Vec<Picture>, u64) {
         self.video.inbox.take(after, budget)

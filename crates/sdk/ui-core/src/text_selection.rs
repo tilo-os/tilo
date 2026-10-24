@@ -335,7 +335,7 @@ pub(crate) fn clipboard_copy_accepted(text: &str) -> bool {
 
 /// Copy formatted text: `html` for the apps that read formatting, `plain`
 /// for every other. Reports whether the host's clipboard took it, as
-/// [`clipboard_copy_accepted`] does, so Cut never deletes words a refused
+/// `clipboard_copy_accepted` does, so Cut never deletes words a refused
 /// copy did not keep.
 #[must_use]
 pub fn clipboard_copy_rich_accepted(html: &str, plain: &str) -> bool {

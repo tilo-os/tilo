@@ -3,10 +3,12 @@
 # Run: cargo deny check
 
 # crates/workspace-hack (cargo hakari) names every feature-unified crate only to
-# fix its features. Pruned from the graph, deny sees the dependency edges members
-# really have, so `workspace` scoped advisories stay about direct dependencies.
+# fix its features, and crates/dev/workspace-unify (tools/ci/workspace_unify.py)
+# every library the workspace builds. Pruned from the graph, deny sees the
+# dependency edges members really have, so `workspace` scoped advisories stay
+# about direct dependencies.
 [graph]
-exclude = ["workspace-hack"]
+exclude = ["workspace-hack", "workspace-unify"]
 
 [advisories]
 # Both remaining quick-xml versions are selected by current upstream releases:

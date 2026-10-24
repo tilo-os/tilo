@@ -18,7 +18,7 @@
 //!
 //! Apple signing is additional to, never a substitute for, the registry's
 //! signed index (`docs/app-model/trust.md`): the caller verifies a payload
-//! against the Ed25519 root before it reaches [`launch`].
+//! against the Ed25519 root before it reaches `launch`.
 //!
 //! - [`classify`] — the signature verdict as data and the pure decision
 //!   over it.

@@ -3052,7 +3052,7 @@ impl App {
         }
     }
 
-    /// `--from ci:<tag>`: the dev image dev-disk.yml published for that build,
+    /// `--from ci:<tag>`: the dev image published for that build (publish-os-dev-<arch>),
     /// which the VM pulls itself; else the production image it was built FROM,
     /// pulled here so a dev image can be built on top of it.
     fn resolve_ci_upgrade(&mut self, tag: &str, target: &CiTarget) -> Result<CiUpgrade, CliError> {

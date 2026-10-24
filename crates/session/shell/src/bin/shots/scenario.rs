@@ -13,7 +13,7 @@
 //!   - **window mode** — runs the scenario as a "pre-roll" before
 //!     handing control to the live winit event loop.
 //!
-//! Built-in catalogue is the [`SCENARIOS`] table at the bottom: name,
+//! Built-in catalogue is the [`scenarios()`] table at the bottom: name,
 //! description, and an action list. `--list-scenarios` and `--scenario NAME`
 //! read that table. The apply engine above stays code; the scenes are data.
 

@@ -184,7 +184,7 @@ impl WorkspaceTreeReplica {
     }
 
     /// What follows a peer's batch for `room_id` once
-    /// [`WorkspaceTree::merge_room_changes`] merged it, which needs no lock
+    /// [`crate::shell::state::WorkspaceTree::merge_room_changes`] merged it, which needs no lock
     /// on this replica: a caller off the compositor's loop merges first and
     /// takes the replica only for this.
     pub fn room_batch_merged(

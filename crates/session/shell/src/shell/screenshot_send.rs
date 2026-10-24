@@ -55,7 +55,7 @@ impl SendReceipt {
 pub trait ScreenshotSendBridge {
     /// Your other devices that are online now.
     fn devices(&self) -> Vec<ScreenshotSendDevice>;
-    /// Offer the screenshot [`prepare_device_send`] read to device `id`
+    /// Offer the screenshot `prepare_device_send` read to device `id`
     /// through Nearby Send. Reads no file.
     ///
     /// # Errors
@@ -133,7 +133,7 @@ pub(crate) fn offer(
     })
 }
 
-/// A device send [`prepare_device_send`] read on the capture worker, on its
+/// A device send `prepare_device_send` read on the capture worker, on its
 /// way to the loop that offers it. Shared, so the capture outcome carrying
 /// it can be cloned and compared; the offer takes it once.
 #[derive(Clone)]

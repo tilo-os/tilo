@@ -3,15 +3,15 @@
 //!
 //! - **HTTPS** (TCP, HTTP/2 and HTTP/1.1): device certification, the session
 //!   handshake, and the durable plane — `/send` and the long-polled
-//!   `/events` of [`sessions`]. Routes are listed in
+//!   `/events` of `sessions`. Routes are listed in
 //!   [`tilo_relay_protocol::web`].
 //! - **WebTransport** (UDP, HTTP/3, same port number): the live plane as
 //!   `moq-lite` at [`LIVE_PATH`](tilo_relay_protocol::web::LIVE_PATH), the
 //!   [`tilo_moq::live::LiveRelay`] ported from PR 541, admitted by
-//!   [`live::Authority`]. Browsers without WebTransport use its HTTPS
+//!   `live::Authority`. Browsers without WebTransport use its HTTPS
 //!   fallback routes.
 //!
-//! Browser sessions are ordinary relay peers (see [`sessions`]), and live
+//! Browser sessions are ordinary relay peers (see `sessions`), and live
 //! frames from iroh peers are bridged into the live relay, so browser and
 //! native peers share one host order and one live room.
 //!

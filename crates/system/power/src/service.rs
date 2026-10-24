@@ -237,7 +237,7 @@ pub type LogindInhibitorRow = (String, String, String, String, u32, u32);
 /// A `block` lock on `sleep` holds off idle-suspend only, so the screen still blanks and locks
 /// while, say, a remote admin keeps the machine awake; a `block` lock on `idle` is a request to
 /// keep the whole session awake and holds both. `delay` locks, Tilo's own locks
-/// ([`OWN_INHIBITOR_WHO`]) and anything this process (`own_pid`) holds are not outside holds.
+/// (`OWN_INHIBITOR_WHO`) and anything this process (`own_pid`) holds are not outside holds.
 #[must_use]
 pub fn foreign_sleep_hold(rows: &[LogindInhibitorRow], own_pid: u32) -> Option<(Vec<String>, u32)> {
     let mut reasons = Vec::new();

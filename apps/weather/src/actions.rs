@@ -1,7 +1,7 @@
 //! What Weather does with its saved places beyond the document.
 //!
 //! Saved places, their order and the default place are the document
-//! ([`Weather`](crate::model::Weather)), changed by its verbs and field edits.
+//! ([`Weather`]), changed by its verbs and field edits.
 //! Opening a forecast and fetching one change no document, so they are
 //! [`WeatherEffect`]s answered by the window, offered on each place as a live
 //! row joining that place's published item.

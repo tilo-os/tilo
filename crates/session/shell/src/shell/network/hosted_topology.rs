@@ -117,7 +117,7 @@ impl ShellNetwork {
 
     /// Keep `room`'s document showing this session's windows among its
     /// workspace's layout in `tree`. When another device governs `room`,
-    /// that is this session's own legacy tabs ([`own_legacy_windows`]),
+    /// that is this session's own legacy tabs (`own_legacy_windows`),
     /// published for the governor to admit; the governor places the rest.
     /// When this device governs `room` itself, it is every window it owns,
     /// admitted here. Nothing at all in a room

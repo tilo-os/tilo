@@ -244,8 +244,8 @@ pub fn composites(code: Fourcc, modifier: Modifier) -> bool {
 
 /// Every format the importer composites, as the compositor advertises it: the
 /// single list behind `zwp_linux_dmabuf_v1` feedback, so a client can only pick
-/// what [`CpuLayout::for_fourcc`] reads. Each is `Linear`
-/// ([`modifier_is_cpu_readable`]).
+/// what `CpuLayout::for_fourcc` reads. Each is `Linear`
+/// (`modifier_is_cpu_readable`).
 #[cfg(target_os = "linux")]
 pub fn importable_formats() -> Vec<smithay::backend::allocator::Format> {
     use smithay::backend::allocator::Format;
@@ -3819,7 +3819,7 @@ impl ForeignFrameStore {
     }
 
     /// A person is dragging an edge of `id`'s window and `fixed` holds still
-    /// (`None`: nothing holds). See [`ForeignEntry::frame_rect`].
+    /// (`None`: nothing holds). See `ForeignEntry::frame_rect`.
     pub fn set_resize_anchor(&self, id: SurfaceId, fixed: Option<ui::widget::WindowEdge>) {
         self.with_entry(id, |e| {
             e.resize_anchor = fixed.map(|fixed| ResizeAnchor {
@@ -3869,7 +3869,7 @@ impl ForeignFrameStore {
     /// tile draws it. The window's geometry is drawn at the corner of
     /// [`Self::target_box`], so a shadow or resize border the client keeps
     /// around it lies off the tile, and the image is scaled as
-    /// [`ForeignSurfaceWidget::fit_rect`] scales it.
+    /// `ForeignSurfaceWidget::fit_rect` scales it.
     pub fn surface_point(&self, id: SurfaceId, tile: Rect, (x, y): (f64, f64)) -> (f64, f64) {
         let target = self.target_box(id, tile);
         let Some(layout) = self.layout(id) else {
@@ -3975,6 +3975,25 @@ impl ForeignFrameStore {
         guard
             .get(&id)
             .is_some_and(|e| !e.presented && e.first_seen.elapsed() >= OPENING_DELAY)
+    }
+
+    /// When the tile of `id`, not yet presented, next changes with no frame
+    /// from its client: the opening card is put up after `OPENING_DELAY`,
+    /// and the window is shown regardless after `PRESENT_GRACE`. `None`
+    /// once presented. A client's frame wakes the loop by itself (its
+    /// sequence moves), so waiting needs these two wakes and no frames.
+    pub fn presentation_wake(&self, id: SurfaceId) -> Option<Instant> {
+        let first_seen = self
+            .entries
+            .lock_recover()
+            .get(&id)
+            .filter(|entry| !entry.presented)?
+            .first_seen;
+        let card = first_seen.checked_add(OPENING_DELAY);
+        let backstop = first_seen.checked_add(PRESENT_GRACE);
+        // Past the backstop the deadline stays due until a draw presents
+        // the window (`mark_presented`), which is what serving it does.
+        card.filter(|&at| at > Instant::now()).or(backstop)
     }
 
     /// Test-only: pretend this surface was first heard of `age` ago, reaching past a delay without sleeping; creates the entry if absent.
@@ -5160,13 +5179,18 @@ impl Widget for ForeignSurfaceWidget {
         self.rect
     }
 
-    /// Only an unpresented window holds animation cadence: nothing else
-    /// wakes the loop for its first paint. A later client commit is
-    /// `needs_redraw` (one shot). Treating a pending sequence as cadence
-    /// kept off-screen tiles — never drawn, so never cached — asking for
-    /// frames at the refresh rate after the app itself had gone idle.
+    /// A window never asks for animation frames: nothing of it moves. A
+    /// client commit is `needs_redraw` (one shot), and an unpresented
+    /// window's own changes (its opening card, its presentation backstop)
+    /// are wake deadlines ([`Self::next_wake_deadline`]). As cadence, a
+    /// window whose client had not drawn a fitting frame kept the desktop
+    /// at the refresh rate for the whole ten second backstop.
     fn needs_animation_frame(&self) -> bool {
-        self.awaiting_first_paint()
+        false
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        store().presentation_wake(self.surface_id)
     }
 
     fn animation_detail(&self) -> Option<String> {
@@ -6931,29 +6955,51 @@ mod tests {
             store().forget(id);
         }
 
-        /// A surface asks for frames until it has drawn, and after that only when
-        /// a newer one is waiting. The first half matters because an
-        /// undrawn-first-buffer client is the one case nothing else wakes the
-        /// paint loop for; the second: an app with nothing newer must not hold the loop awake.
-        fn widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one() {
+        /// A window never asks for animation frames. Until it has drawn a
+        /// frame that fits, it is woken twice by deadlines (its opening card,
+        /// its presentation backstop); a client's frame is a one-shot redraw.
+        /// As cadence, a client that had not drawn kept the desktop at the
+        /// refresh rate for the whole backstop.
+        fn an_undrawn_window_waits_on_deadlines_not_frames() {
             let id = sid(7);
             store().forget(id);
+            // Its toplevel was adopted: the wait for its first frame starts.
+            store().note_adopted(id);
             let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
             // A 1×1 tab, so the 1×1 frame below *fits* it — what being presented waits for, not merely a frame having landed.
             w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
             assert!(
-                w.needs_animation_frame(),
-                "nothing presented yet: a widget that stopped asking here would \
-                 never be woken to paint the window's first frame"
+                w.needs_redraw(),
+                "nothing presented yet: the window is drawn whenever a frame is"
+            );
+            assert!(
+                !w.needs_animation_frame(),
+                "a window that has not drawn moves nothing and asks for no frames"
+            );
+            let card = w
+                .next_wake_deadline()
+                .expect("an undrawn window wakes the loop for its opening card");
+            let card_due = Instant::now()
+                .checked_add(OPENING_DELAY)
+                .expect("a short delay fits the clock");
+            assert!(card <= card_due, "the first wake is the opening card's");
+            store().backdate_first_seen(id, OPENING_DELAY.saturating_mul(2));
+            let backstop = w
+                .next_wake_deadline()
+                .expect("past the card it still wakes for the backstop");
+            assert!(
+                backstop > card_due,
+                "the next wake is the backstop, not a frame"
             );
             store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
             assert!(
                 !w.awaiting_first_paint(),
                 "the paint gate itself must settle a fitting first frame; native asks it before draw"
             );
-            assert!(
-                !w.needs_animation_frame(),
-                "an idle hosted app must not keep requesting frames after its first buffer landed"
+            assert_eq!(
+                w.next_wake_deadline(),
+                None,
+                "a presented window has nothing to wake for"
             );
             assert!(
                 w.needs_redraw(),
@@ -7051,7 +7097,7 @@ mod tests {
 
         pending_configure_fires_once_per_size_change();
         a_window_shown_only_elsewhere_takes_the_size_shown_there();
-        widget_asks_for_frames_until_it_has_drawn_then_only_for_a_pending_one();
+        an_undrawn_window_waits_on_deadlines_not_frames();
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
         moving_a_static_foreign_surface_requests_one_repaint();

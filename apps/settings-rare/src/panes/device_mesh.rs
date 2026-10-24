@@ -515,7 +515,7 @@ impl DeviceMeshArea {
 
     /// The model, over this device's relay configuration, or, for a
     /// screenshot, over an unconfigured one with nothing paired: from the
-    /// read [`Self::start_read`] started, waiting for it if it still runs,
+    /// read `Self::start_read` started, waiting for it if it still runs,
     /// else read here.
     pub fn model(&self) -> &Shared<DeviceMeshModel> {
         self.model.get_or_init(|| {

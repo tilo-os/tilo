@@ -1,5 +1,5 @@
 //! Where Monitor's readings come from: the system information service
-//! ([`service`], through `tilo_system_info`). On Linux the session reads
+//! (`service`, through `tilo_system_info`). On Linux the session reads
 //! the machine and pushes it, since the sandbox shows Monitor no other
 //! process; elsewhere (macOS) the same service runs in Monitor's process
 //! over the platform's own interfaces. The sampler folds a reading into the

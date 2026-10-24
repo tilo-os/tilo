@@ -14130,7 +14130,9 @@ pub fn run() {
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
             if paint_ticks {
-                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+                crate::stderr_guard::write_line(format_args!(
+                    "paint-tick: painted={should_paint} woke={last_wake}"
+                ));
             }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
@@ -14171,17 +14173,17 @@ pub fn run() {
                 stats_since = Instant::now();
             } else if stats_since.elapsed() >= Duration::from_secs(2) {
                 if !paint_stats_idle.is_zero() {
-                    eprintln!(
+                    crate::stderr_guard::write_line(format_args!(
                         "paint-stats: idle {:.0}s before this, nothing painted",
                         paint_stats_idle.as_secs_f64()
-                    );
+                    ));
                     paint_stats_idle = Duration::ZERO;
                 }
                 let animation_host_labels =
                     crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
                         .collect::<Vec<_>>()
                         .join(",");
-                eprintln!(
+                crate::stderr_guard::write_line(format_args!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
@@ -14203,7 +14205,7 @@ pub fn run() {
                     present_pipe
                         .as_ref()
                         .map_or(0, super::present::PresentPipe::backpressured),
-                );
+                ));
                 frames_total = 0;
                 frames_painted = 0;
                 cause_events = 0;
@@ -14211,11 +14213,11 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
-                eprintln!(
+                crate::stderr_guard::write_line(format_args!(
                     "paint-stats: wakes {} | widget-deadline owner {:?}",
                     wakes_seen.take_summary(),
                     widget_wake_owner.take().unwrap_or_default(),
-                );
+                ));
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
@@ -14406,11 +14408,6 @@ pub fn run() {
                         .with_hdr_layers(frame_builder.take_hdr_layers())
                         .with_backdrop(frame_builder.take_backdrop())
                 };
-                // Without this a window group's width spring stepped once and
-                // stopped: its once-per-drawn-frame token returns only when
-                // content is marked drawn, which this loop never does, and
-                // the group asked for animation frames forever.
-                frame_builder.frame_presented();
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.
@@ -14845,7 +14842,7 @@ pub fn run() {
             // asynchronous one dates it when it retires that serial. A lost
             // render thread queued nothing.
             if !async_present || submitted_serial.is_some() {
-                let holding = frame_builder.host().workspace_switch_holding();
+                let holding = frame_builder.host().workspace_switch_owed();
                 if let Some(switch) = frame_builder
                     .host_mut()
                     .workspace_switch_latency_mut()
@@ -21241,7 +21238,7 @@ fn apply_shell_gesture(
             if switched {
                 frame_builder
                     .host_mut()
-                    .start_workspace_switch_frames(ui::tokens::MotionSource::Gesture);
+                    .start_workspace_switch(ui::tokens::MotionSource::Gesture);
             }
         }
         GestureAction::ShowOverview => {

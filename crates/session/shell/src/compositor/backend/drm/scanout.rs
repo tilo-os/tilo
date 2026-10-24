@@ -2,7 +2,7 @@
 //!
 //! KMS hardware cursor plane (`set_cursor2`/`move_cursor`, software cursor as fallback) plus
 //! two buffer rings per output, each ping-ponged by page flips. Every flip goes through
-//! [`super::kms_flip::KmsFlip`]: an atomic commit of the primary plane where the driver
+//! `super::kms_flip::KmsFlip`: an atomic commit of the primary plane where the driver
 //! takes atomic, else a legacy `drmModePageFlip`:
 //!
 //! - **Direct** ([`DirectScanoutTargets`]): two GBM buffers the size of the output's mode,
@@ -22,7 +22,7 @@
 //! smithay's `DrmCompositor` drives GLES, not vello, so neither ring uses it.
 //!
 //! HDR: an output driven in HDR scans out `XBGR2101010` (or `ABGR16161616F`) buffers holding a
-//! PQ BT.2020 signal, with the connector's HDR properties set by [`super::output_signal`]. The
+//! PQ BT.2020 signal, with the connector's HDR properties set by `super::output_signal`. The
 //! direct path renders into imported GBM buffers; the readback path swaps in a second pair of
 //! `XBGR2101010` dumb buffers and encodes on the CPU. Any refusal falls back to 8-bit SDR.
 
@@ -600,7 +600,7 @@ impl<T> DirectScanoutTargets<T> {
     }
 
     /// The slot neither shown nor pending, to render while a flip is pending.
-    /// It may be queued once that flip retired ([`DirectScanoutState::submit`]).
+    /// It may be queued once that flip retired (`DirectScanoutState::submit`).
     pub fn overlap_slot(&self) -> Option<(usize, &T)> {
         let index = self.state.overlap_slot()?;
         self.imported.get(index).map(|target| (index, target))
@@ -1186,7 +1186,7 @@ impl CardHandle {
         }
     }
 
-    /// Ask the hardware what is connected now (see [`probe_connected`]).
+    /// Ask the hardware what is connected now (see `probe_connected`).
     /// Only startup calls this on the loop thread; a hotplug probes through a
     /// [`ConnectorProber`] on a worker thread.
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
@@ -1399,7 +1399,7 @@ impl ConnectorProber {
         self.device_id
     }
 
-    /// Force-probe what is connected now ([`probe_connected`]).
+    /// Force-probe what is connected now (`probe_connected`).
     pub fn connected(&self) -> Vec<ConnectorSnapshot> {
         probe_connected(&self.card, &self.card_path)
     }
@@ -1578,7 +1578,7 @@ fn mode_refresh_mhz(mode: &Mode) -> u32 {
 
 /// Repositions the hardware cursor plane without touching the framebuffer, decoupled from the
 /// paint/flip cadence. Its ioctl runs on the output's cursor mover thread
-/// ([`super::cursor_plane`]), never on the compositor loop: a commit holding the CRTC blocks it.
+/// (`super::cursor_plane`), never on the compositor loop: a commit holding the CRTC blocks it.
 pub struct HwCursor {
     card: Card,
     crtc: crtc::Handle,
@@ -3934,7 +3934,7 @@ impl DrmScanout {
     /// per `drm_mode.h`; virtio-gpu may ignore it) and a CRTC toggle (the reliable cross-driver path). Both best-effort; the backend skips `Self::present` while blanked.
     ///
     /// An atomic output instead makes one nonblocking commit of its CRTC's
-    /// `ACTIVE` ([`super::output_link`]) and presents again once it is
+    /// `ACTIVE` (`super::output_link`) and presents again once it is
     /// proven up; `flip_unread` says a flip's event is still to be read.
     /// The legacy DPMS property is not written there: on an atomic driver
     /// it is a blocking commit of its own.

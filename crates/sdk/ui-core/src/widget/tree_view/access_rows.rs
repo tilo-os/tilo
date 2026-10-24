@@ -255,7 +255,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         rows
     }
 
-    /// The node rows [`Self::access_rows`] built rather than kept, since the
+    /// The node rows `Self::access_rows` built rather than kept, since the
     /// tree was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn access_row_builds_for_test(&self) -> usize {

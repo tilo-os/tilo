@@ -163,6 +163,7 @@ impl Project {
     ///
     /// Places a bin source, by id or name, on a track: by default the first
     /// track of its kind, after the clips already there, its whole length.
+    /// A track named V1, A2 and so on that the project lacks is made.
     /// Answers the new clip's id.
     #[action(id = "add-clip", answers)]
     pub fn add_named_clip(
@@ -256,22 +257,7 @@ impl Project {
     /// Add an empty track.
     #[action]
     pub fn add_track(&mut self, #[param("Video or audio")] kind: TrackKind) {
-        let index = self
-            .tracks
-            .iter()
-            .filter(|t| t.kind == kind)
-            .map(|t| t.index)
-            .max()
-            .unwrap_or(0)
-            + 1;
-        let prefix = if kind == TrackKind::Video { "V" } else { "A" };
-        self.tracks.push(Track {
-            id: tilo_resource::fresh_uuid(),
-            name: format!("{prefix}{index}"),
-            kind,
-            index,
-            ..Track::default()
-        });
+        self.new_lane(kind);
     }
 
     /// Put a track's gain and pan back to unity and centre.

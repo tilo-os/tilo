@@ -23,7 +23,7 @@
 //! consume it. Passwords are sealed in the accompanying encrypted
 //! [`accounts::SecretVault`], never in the plaintext store.
 //!
-//! [`AccountDirectory::load`] projects that shared store into the in-memory
+//! [`AccountDirectory::load_in`] projects that shared store into the in-memory
 //! [`MailStore`] / [`DavStore`] shapes this pane renders, so the pane code is
 //! unchanged while the on-disk store is the shared one. Consequently the
 //! `MailStore` / `MailAccount` types below are now **render view-models**
@@ -813,7 +813,7 @@ pub struct AccountDirectory {
 }
 
 impl AccountDirectory {
-    /// [`Self::load`] from the stores under `root`.
+    /// Loads the directory from the stores under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
         root.recover_mutation_or_warn();
         let shared = root.store();

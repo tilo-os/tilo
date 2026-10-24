@@ -3,7 +3,7 @@
 //! `ImagerApp` holds the state of a guided **wizard** — Image → Drive →
 //! Customize → Confirm → Write → Done — for creating a verified USB or SD
 //! installation medium, and composes each step from toolkit widgets in the
-//! shared [`page`](crate::page) frame:
+//! shared `page` frame:
 //!
 //! * **Image** — pick a local `.iso` / `.img` through the host XDG portal
 //!   (never a bespoke picker, per HIG §5), drop one on the drop zone, or
@@ -21,7 +21,7 @@
 //!
 //! Every control is a toolkit widget that owns its hit-testing, focus, states
 //! and accessibility; a control reports what the person asked for as a
-//! [`Command`], which the wizard applies with the document in hand. When what
+//! `Command`, which the wizard applies with the document in hand. When what
 //! the page shows changes, the page is composed again.
 //!
 //! Every write is doubly gated: the typed confirmation at Confirm, then native

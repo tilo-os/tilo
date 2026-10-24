@@ -5,7 +5,7 @@
 //! monitor measured ([`surface_declarations`]).
 //!
 //! Every change of the project is a field edit or a verb of
-//! [`Project`](crate::model::Project) ([`crate::resource`]); clip metadata is
+//! [`Project`] ([`crate::resource`]); clip metadata is
 //! the document, pixels and sound are produced outside it.
 
 use ui::tilo_resource::{self, ActionDecl, Effect};

@@ -126,7 +126,7 @@ impl super::Decorator for Slot {
 }
 
 /// One of several parts, chosen by a key, each built once and kept alive
-/// while another shows. See the [module docs](self).
+/// while another shows. See the module docs.
 pub struct Switch<K> {
     key: Box<dyn FnMut() -> K>,
     build: Box<dyn FnMut(&K) -> Element>,

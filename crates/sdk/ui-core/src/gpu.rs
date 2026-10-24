@@ -178,7 +178,7 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
 }
 
 /// The largest texture edge of every device this module opens: wgpu's
-/// default, which [`required_limits`] keeps. A window's frame is fitted under
+/// default, which `required_limits` keeps. A window's frame is fitted under
 /// it before it is drawn (`crate::scale::fit_to_texture_limit`), since a
 /// surface target past it fails validation and the window stops.
 #[must_use]

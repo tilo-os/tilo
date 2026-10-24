@@ -205,7 +205,7 @@ macro_rules! decorator_trait {
         }
 
         /// The same trait for the toolkit's own decorators that apps box
-        /// ([`concrete_decorator_widget`]): it has no blanket [`Widget`]
+        /// (`concrete_decorator_widget`): it has no blanket [`Widget`]
         /// impl, so each such type gets a concrete one, compiled once into
         /// the toolkit. Through the blanket impl a decorator's [`Widget`]
         /// methods are generic, and every app that boxes one compiled them
@@ -324,7 +324,7 @@ decorator_trait! {
 
         /// A decorator's structure flag is its own [`Decorator::take_structure_dirty`]
         /// (which may add flags of its own), so by default it says
-        /// [`super::StructureChange::Rebuild`]; one that adds no flags forwards
+        /// [`crate::widget::StructureChange::Rebuild`]; one that adds no flags forwards
         /// its inner widget's change by overriding this.
         fn take_structure_change(&mut self) -> crate::widget::StructureChange {
             crate::widget::StructureChange::of(Decorator::take_structure_dirty(self))

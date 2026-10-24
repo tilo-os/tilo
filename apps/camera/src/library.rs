@@ -7,7 +7,7 @@
 //! Responsibilities kept here (pure IO, no rendering / no CRDT):
 //!   * [`resolve_dir`]   — where captures live (overridable for tests).
 //!   * [`write_photo`]   — encode an RGBA frame to a timestamped JPEG/PNG.
-//!   * [`load_luma`]     — decode + downscale an image for the code scanner.
+//!   * [`load_luma_bytes`] — decode + downscale an image for the code scanner.
 
 use std::path::{Path, PathBuf};
 

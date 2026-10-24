@@ -198,7 +198,9 @@ when it ran past `wait_ms`; there is no receipt to poll for an action that
 finishes. `calls: [{path, args}, …]` runs several in order and stops at the
 first failure. `notes#open` starts an installed app and lists it. `tilo_find`
 searches apps by name, then resources, then actions named as searched, then
-actions described so; it does not search files. Listings
+actions described so; it does not search files. It asks every running app at
+once, and an app that does not answer is named as not searched rather than
+failing the search. Listings
 carry names and one-line labels only; `tilo_ls path#action` gives an action's
 parameters when it is wanted. Results are text, with no structured copy beside them. Measured (the
 `mcp_agent` tests keep these in bounds): the agent tool list is 2,900 bytes of

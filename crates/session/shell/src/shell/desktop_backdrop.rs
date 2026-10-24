@@ -575,7 +575,7 @@ impl CustomWallpapers {
 /// Return a normalised, private wallpaper image for the named local workspace.
 /// The cache only reads Tilo's 0600 registry and cache directory; it never
 /// dereferences the original document URI. Paint reads memory only
-/// ([`CustomWallpapers`]).
+/// (`CustomWallpapers`).
 pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option<ImageData> {
     custom_wallpapers().image_for(workspace_id, target)
 }

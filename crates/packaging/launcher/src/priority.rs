@@ -678,9 +678,9 @@ pub fn rtkit_args(pid: u32, tid: u64, priority: i32) -> Vec<String> {
 ///
 /// A realtime thread that spins starves everything below it, so the grant is
 /// bounded twice. `RLIMIT_RTTIME` makes the kernel send `SIGXCPU` once the
-/// thread has run [`RT_SOFT_LIMIT_US`] without blocking; the handler installed
+/// thread has run `RT_SOFT_LIMIT_US` without blocking; the handler installed
 /// here drops that thread back to `SCHED_OTHER` and logs it, so a spin costs
-/// latency, not the session. The hard limit, [`RT_HARD_LIMIT_US`] (the ceiling
+/// latency, not the session. The hard limit, `RT_HARD_LIMIT_US` (the ceiling
 /// `RealtimeKit` accepts), only matters if the handler cannot run: then the
 /// kernel kills the process rather than let the machine freeze.
 /// `TILO_PRESENT_RT=0` opts out.

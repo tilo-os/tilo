@@ -2885,3 +2885,110 @@ fn the_pointer_takes_the_shape_the_page_asks_for() {
     assert!(validate_event(&json!({"event":"cursor","cursor":""})).is_err());
     assert!(validate_event(&json!({"event":"cursor","cursor":"x".repeat(65)})).is_err());
 }
+
+#[test]
+fn page_questions_reach_only_a_tab_that_answers_them() {
+    let tx = Arc::new(CommandQueue::default());
+    let shared = Arc::new(Shared::default());
+    let routes = Arc::new(Mutex::new(HashMap::from([(1, Arc::downgrade(&shared))])));
+    let runtime = Arc::new(Runtime {
+        tx: tx.clone(),
+        process: shared.clone(),
+        supervisor: Mutex::default(),
+        routes,
+        next_tab: AtomicU32::new(2),
+        download_events: Arc::default(),
+        server: Arc::default(),
+        link: None,
+        service_session: None,
+        exited: Arc::new(AtomicBool::new(false)),
+    });
+    let engine = ChromiumEngine {
+        tx: tx.clone(),
+        shared,
+        runtime: runtime.clone(),
+        tab: 1,
+    };
+    engine.accept_page_dialogs();
+    assert!(engine.drain_events().is_empty());
+    let queued = || tx.state.lock().unwrap().0.len();
+    assert_eq!(queued(), 0, "an older host never sees the command");
+
+    let (ready, _receiver) = sync_channel(1);
+    let route = |event: Value| {
+        route_native_event(&event, &runtime.routes, &runtime.download_events, &ready)
+    };
+    route(json!({"event":"ready","cef_version":"152","chromium_version":"152","js_dialogs":true}))
+        .unwrap();
+    engine.drain_events();
+    let asked = tx.pop().expect("told once the host sends questions");
+    assert_eq!(asked, json!({"op":"js_dialogs","tab":1,"enabled":true}));
+    engine.drain_events();
+    assert_eq!(queued(), 0, "told once");
+
+    route(
+        json!({"event":"js_dialog","tab":1,"id":4,"kind":"prompt","origin":"https://example.org",
+        "message":"Your name?","default_text":"Ada"}),
+    )
+    .unwrap();
+    route(
+        json!({"event":"js_dialog","tab":1,"id":5,"kind":"beforeunload","reload":true,
+        "origin":"https://example.org","message":"","default_text":""}),
+    )
+    .unwrap();
+    route(json!({"event":"js_dialog_closed","tab":1,"id":4})).unwrap();
+    assert_eq!(
+        engine.drain_events(),
+        [
+            WebViewEvent::PageDialog(crate::webview::PageDialog {
+                id: 4,
+                kind: crate::webview::PageDialogKind::Prompt,
+                origin: "https://example.org".into(),
+                message: "Your name?".into(),
+                default_text: "Ada".into(),
+            }),
+            WebViewEvent::PageDialog(crate::webview::PageDialog {
+                id: 5,
+                kind: crate::webview::PageDialogKind::Leave { reload: true },
+                origin: "https://example.org".into(),
+                message: String::new(),
+                default_text: String::new(),
+            }),
+            WebViewEvent::PageDialogClosed { id: 4 },
+        ]
+    );
+    for malformed in [
+        json!({"event":"js_dialog","tab":1,"id":6,"kind":"print","origin":"","message":"","default_text":""}),
+        json!({"event":"js_dialog","tab":1,"id":0,"kind":"alert","origin":"","message":"","default_text":""}),
+        json!({"event":"js_dialog","tab":1,"id":6,"kind":"beforeunload","origin":"","message":"","default_text":""}),
+        json!({"event":"js_dialog","tab":1,"id":6,"kind":"alert","origin":"","message":"x".repeat(16 * 1024 + 1),"default_text":""}),
+        json!({"event":"js_dialog_closed","tab":1,"id":-1}),
+    ] {
+        assert!(route(malformed.clone()).is_err(), "{malformed}");
+    }
+
+    engine.send(WebViewCommand::AnswerPageDialog {
+        id: 4,
+        accept: true,
+        text: Some("Grace".into()),
+    });
+    assert_eq!(
+        tx.pop().unwrap(),
+        json!({"op":"js_dialog_reply","tab":1,"id":4,"accept":true,"text":"Grace"})
+    );
+    engine.send(WebViewCommand::AnswerPageDialog {
+        id: 5,
+        accept: false,
+        text: None,
+    });
+    assert_eq!(
+        tx.pop().unwrap(),
+        json!({"op":"js_dialog_reply","tab":1,"id":5,"accept":false})
+    );
+    engine.send(WebViewCommand::AnswerPageDialog {
+        id: 6,
+        accept: true,
+        text: Some("x".repeat(crate::webview::MAX_PAGE_DIALOG_ANSWER + 1)),
+    });
+    assert_eq!(queued(), 0, "an answer past the host's bound is never sent");
+}

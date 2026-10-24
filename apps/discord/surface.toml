@@ -56,6 +56,7 @@ fields = [
   { path = "tilo_only", type = "Set<String>" },
   { path = "discord_only", type = "Set<String>" },
   { path = "outbox", type = "Outbox<Queued, DiscordResult>", unit = true },
+  { path = "voice_problem", type = "Option<String>" },
 ]
 
 [[resources.verbs]]
@@ -281,5 +282,12 @@ id = "finish-import"
 kind = "undoable"
 params = [
   { name = "tilo_only", required = true, schema = { type = "array", items = { type = "string" } } },
+]
+
+[[resources.verbs]]
+id = "report-voice"
+kind = "undoable"
+params = [
+  { name = "problem", required = false, schema = { type = ["string", "null"] } },
 ]
 

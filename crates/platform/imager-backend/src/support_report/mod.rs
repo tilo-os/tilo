@@ -44,7 +44,7 @@ const MAX_FIELD_CHARS: usize = 512;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ReportSource {
-    /// Read from this computer by [`probe`].
+    /// Read from this computer by [`probe`](SupportReport::probe).
     LocalScan,
     /// Produced on another computer and imported here.
     Imported,

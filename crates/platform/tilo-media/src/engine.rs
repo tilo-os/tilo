@@ -1,7 +1,7 @@
 //! The playback engine: one control surface, two interchangeable backends.
 //!
 //! * **`GStreamer` decode** (`--features decode`) drives the pipeline in
-//!   [`crate::gst_backend`]: `playbin3` with hardware decoders ranked above
+//!   `crate::gst_backend`: `playbin3` with hardware decoders ranked above
 //!   software ones, a sink that negotiates the best memory the consumer
 //!   declared it can take (dmabuf → planar → RGBA), frame-exact `ACCURATE`
 //!   seeking that reads the preroll without ever starting the audio sink, and

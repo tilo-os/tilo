@@ -397,12 +397,6 @@ tests = true
 inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**",
           "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs"]
 
-[[step]]
-name = "signed-development-board"
-label = "Signed development board dispatch and policy tests"
-run = "python3 os/tests/test_signed_development_board.py"
-tests = true
-inputs = [".forgejo/workflows/build-image.yml", "os/**", "keys/cosign.pub"]
 
 [[step]]
 name = "codex-hooks"

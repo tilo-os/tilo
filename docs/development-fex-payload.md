@@ -26,12 +26,12 @@ that its traditional Wine pair, source pins, DXVK payload and loader layout
 pass the current `windows_provider.py` consumer checks. Its producer records
 `runtime_acceptance_verified=false`.
 
-`build-image.yml` normally reads repository variables `TILO_FEX_PAYLOAD_REF`
-and `TILO_WINDOWS_GUEST_REF` as a pair. It fails with only one variable and
-builds an ARM image without Windows apps if both are absent. An explicit
-Lenovo `main` dispatch can instead supply both immutable references as
-`fex_payload_candidate` and `windows_guest_candidate`. This confines the
-experimental inputs to one build without changing the nightly or tag channels.
+An OS image build (os/dev/build-image.sh) reads `TILO_FEX_PAYLOAD_REF` and
+`TILO_WINDOWS_GUEST_REF` as a pair. It fails with only one of them and builds an
+ARM image without Windows apps if both are absent, as the images t builds are
+(`os-image-aarch64`, `os-release-image-aarch64`). A one-off Lenovo build can
+supply both immutable references, which confines the experimental inputs to
+that build.
 The resulting image retains `org.tilo.with-windows=1` and its embedded provider
 digest record. Its KMS-signed SLSA release provenance names both input digests
 and records `inputClass=development-only` and

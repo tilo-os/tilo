@@ -1469,7 +1469,7 @@ pub const CONTINUE_PROVIDER_ID: &str = "continuity.continue";
 const CONTINUE_ID: &str = "continuity.continue";
 const CONTINUE_DISMISS_ID: &str = "continuity.continue.dismiss";
 
-/// The palette's door to the top bar's "Continue <app> from <device>"
+/// The palette's door to the top bar's "Continue \<app\> from \<device\>"
 /// offer: accept it (focus that tab here) or dismiss it.
 #[derive(Default)]
 pub struct ContinueFromDeviceProvider {

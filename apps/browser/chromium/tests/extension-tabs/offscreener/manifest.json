@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Offscreener", "version": "1.0",
+ "action": {"default_title": "Read this page"},
+ "permissions": ["offscreen", "activeTab", "scripting", "tabs"],
+ "background": {"service_worker": "worker.js"}}

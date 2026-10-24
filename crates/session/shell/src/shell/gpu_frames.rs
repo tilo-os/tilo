@@ -726,7 +726,7 @@ fn retire(retiring: Retiring) {
 pub struct ReleaseLatency {
     /// Buffers given back since the process started.
     pub releases: u64,
-    /// Over the latest window of up to [`RELEASE_SUMMARY_EVERY`] releases.
+    /// Over the latest window of up to `RELEASE_SUMMARY_EVERY` releases.
     pub p50: Duration,
     pub p99: Duration,
     pub max: Duration,

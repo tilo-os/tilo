@@ -1184,7 +1184,7 @@ pub struct LibraryEntry {
     /// when only the devices holding the file read it.
     #[model(readonly)]
     pub content: Bytes,
-    /// The index of the book's text ([`crate::library_index`]), by reference
+    /// The index of the book's text (`crate::library_index`), by reference
     /// to a host content store: with it every device finds a passage in the
     /// book before the book itself is there. Empty until a device that has
     /// the text builds it.

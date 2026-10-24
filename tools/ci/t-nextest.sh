@@ -42,10 +42,18 @@ done
 tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
 
 if (( nextest )); then
-    # Package-qualified features: never enable inference for client-only apps.
-    feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
-    read -r -a features <<<"$feature_flags"
-    arguments+=("${features[@]}")
+    if [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
+        # A build of named packages resolves every member's features as the whole workspace does,
+        # its tests' features included (tools/ci/workspace_unify.py), so jobs testing different
+        # packages share each member's unit. Not as --features too: `tilo-media/decode` there
+        # also turns on the optional tilo-media of every package selected beside it.
+        arguments+=(-p workspace-unify)
+    else
+        # Package-qualified features: never enable inference for client-only apps.
+        feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
+        read -r -a features <<<"$feature_flags"
+        arguments+=("${features[@]}")
+    fi
 fi
 
 # Only the NTFS helper's own tests read the native images, which take minutes to build.

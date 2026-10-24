@@ -537,7 +537,7 @@ jobs:
       - name: Exercise the complete graphical installation cycle
         env:
           TILO_ACCEL: kvm
-          TILO_BOOT_WAIT_ATTEMPTS: "600"
+          TILO_BOOT_WAIT_SECS: "1800"
           TILO_DISTROBOX: ""
           TILO_INSTALLER_CYCLE_STORAGE: /var/tmp/tilo-installer-cycle-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           TILO_INSTALLER_CYCLE_MAX_INSTALL_SECONDS: "3600"

@@ -236,7 +236,7 @@ impl<'a> StatTileFace<'a> {
         h.ceil()
     }
 
-    /// Paint the tile into `rect` (its height from [`Self::measure`]).
+    /// Paint the tile into `rect` (its height from [`Self::height`]).
     pub fn paint(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;

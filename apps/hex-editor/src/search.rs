@@ -70,7 +70,7 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-/// Like [`find_all_bounded`], under `rules`.
+/// Like `find_all_bounded`, under `rules`.
 pub fn find_matches(
     haystack: &[u8],
     needle: &[u8],

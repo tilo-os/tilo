@@ -16,9 +16,18 @@ features the page runtime gives it, then the native command unchanged. The
 wasm pass goes first: t answers a package's check as soon as its native units
 have compiled. Any other command passes through unchanged.
 
-Clippy gets tools/ci/package_features.py's selection: the native command adds
-each named package's NATIVE_TEST_FEATURES (all of them for `--workspace`), so
-code behind those features is linted at all, and each DEFAULT_BUILDS_ALSO_CHECKED
+The native command also selects tools/ci/workspace_unify.py's package, which builds nothing and
+makes every member resolve its features as in the whole workspace, so that jobs of different
+packages build each member as the same unit; the wasm and default-build passes don't, as they
+build what ships.
+
+Clippy gets tools/ci/package_features.py's selection: each named package builds
+with its NATIVE_TEST_FEATURES, so code behind those features is linted at all.
+Named packages get them through workspace-unify, which carries them; `--workspace`
+gets them as `--features` (all of them). Never both: `--features tilo-media/decode`
+also turns on every selected package's optional dependency named tilo-media, and
+gives tilo-media those features where it is built for the host as well, so a
+member built beside tilo-media would be another unit. Each DEFAULT_BUILDS_ALSO_CHECKED
 package named is linted once more as it ships, before the native command. That
 pass's errors fail the package as any other's; its artifacts are not passed on,
 since t answers a package as passed once each of its units has an artifact, and
@@ -34,6 +43,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import package_features  # noqa: E402
 import package_sets  # noqa: E402
+import workspace_unify  # noqa: E402
 
 TARGET = "wasm32-unknown-unknown"
 COMPILE = ("check", "clippy")
@@ -111,6 +121,19 @@ def with_test_features(argv: list[str]) -> list[str]:
     return [*argv[:end], *features, *argv[end:]]
 
 
+def unified(argv: list[str]) -> list[str]:
+    """The native command `argv` with tools/ci/workspace_unify.py's package selected too, so every
+    member it builds resolves its features as in the whole workspace, its tests' included: one
+    unit for every job. The whole workspace's gets its tests' features as `--features` instead."""
+    if len(argv) < 2 or argv[0] != "cargo" or argv[1] not in COMPILE:
+        return argv
+    packages, workspace = linted(argv)
+    if workspace or not packages:
+        return with_test_features(argv)
+    end = argv.index("--") if "--" in argv else len(argv)
+    return [*argv[:end], "-p", workspace_unify.NAME, *argv[end:]]
+
+
 def default_build_passes(argv: list[str]) -> list[list[str]]:
     """The clippy commands over the default build of each package `argv` names whose tested
     features are not the build it ships."""
@@ -156,7 +179,7 @@ def main(argv: list[str]) -> int:
     codes = [subprocess.run(command, check=False).returncode for command in passes]
     sys.stdout.flush()
     codes += [without_artifacts(command) for command in default_build_passes(argv)]
-    codes.append(subprocess.run(with_test_features(argv), check=False).returncode)
+    codes.append(subprocess.run(unified(argv), check=False).returncode)
     return next((code for code in codes if code), 0)
 
 

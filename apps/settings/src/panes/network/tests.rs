@@ -516,6 +516,7 @@ impl NetworkService for FakeNetwork {
             name: "New".into(),
             uuid: uuid.clone(),
             kind: "wireguard".into(),
+            service: None,
             active: false,
         });
         Ok(uuid)
@@ -657,7 +658,6 @@ fn declared_network_inspection_reads_the_mounted_model_without_rescanning() {
     *fake.networks.lock().unwrap() = networks();
     let mut observed = model(&fake);
     observed.enterprise_open = true;
-    *observed.enterprise.password.lock().unwrap() = "private-enterprise-input".into();
     *observed.hotspot_password.lock().unwrap() = "private-hotspot-input".into();
     let mut app =
         ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
@@ -1366,7 +1366,13 @@ fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
     app.call_on(&row, "show-vpn-profile", serde_json::json!({}))
         .unwrap();
     settle_until(&mut app, |model| model.vpn.settings.contains_key(&vpn.uuid));
-    for id in ["autoconnect", "all-traffic", "mtu", "name", "dns"] {
+    for id in [
+        "autoconnect",
+        "all-traffic",
+        "mtu-choice",
+        "name",
+        "dns.add",
+    ] {
         let id = format!("network.vpn.{id}.{}", vpn.uuid);
         assert_eq!(
             rendered_enabled(app.harness().root_widget(), &id),
@@ -1384,6 +1390,81 @@ fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
         !before,
         "the switch reached the device"
     );
+}
+
+/// A VPN's MTU is chosen automatically or set by the person, its size
+/// field shown only then; its name servers are a list, each added and
+/// removed on its own, and what is no address is refused.
+#[test]
+fn a_vpns_mtu_and_name_servers_are_set_on_its_page() {
+    let fake = Arc::new(FakeNetwork::default());
+    let vpn = work_vpn();
+    *fake.vpns.lock().unwrap() = vec![vpn.clone()];
+    fake.vpn_settings.lock().unwrap().insert(
+        vpn.uuid.clone(),
+        SampleNetwork::vpn_settings(SAMPLE_VPN_HOME).unwrap(),
+    );
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    let observed = hosted_model(&mut app, Arc::clone(&fake) as Arc<dyn NetworkService>);
+    mount_network(&mut app, observed).unwrap();
+    app.harness().resize((1600, 6000)).unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    let row = format!("vpn.connection:{}", vpn.uuid);
+    app.call_on(&row, "show-vpn-profile", serde_json::json!({}))
+        .unwrap();
+    settle_until(&mut app, |model| model.vpn.settings.contains_key(&vpn.uuid));
+    let held = |fake: &FakeNetwork| fake.vpn_settings.lock().unwrap()[&vpn.uuid].clone();
+    let size = format!("network.vpn.mtu.{}", vpn.uuid);
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &size),
+        None,
+        "an automatic MTU has no size to set"
+    );
+
+    app.call_on(&row, "set-vpn-mtu", serde_json::json!({"mtu": 1420}))
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(held(&fake).mtu, Some(1420));
+    app.settle();
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &size),
+        Some(true),
+        "a custom MTU shows its size"
+    );
+    assert!(
+        app.call_on(&row, "set-vpn-mtu", serde_json::json!({"mtu": 100}))
+            .is_err()
+    );
+    app.call_on(&row, "set-vpn-mtu", serde_json::json!({}))
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(held(&fake).mtu, None, "back to automatic");
+
+    for server in ["9.9.9.9", "2620:fe::fe"] {
+        app.call_on(
+            &row,
+            "add-vpn-dns-server",
+            serde_json::json!({"server": server}),
+        )
+        .unwrap();
+        settle_until(&mut app, |model| model.in_flight == 0);
+    }
+    assert_eq!(held(&fake).dns, ["10.7.0.1", "9.9.9.9", "2620:fe::fe"]);
+    assert!(
+        app.call_on(
+            &row,
+            "add-vpn-dns-server",
+            serde_json::json!({"server": "dns.example"}),
+        )
+        .is_err()
+    );
+    app.settle();
+    app.harness()
+        .click_named("settings.network.vpn.dns.remove.10.7.0.1")
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(held(&fake).dns, ["9.9.9.9", "2620:fe::fe"]);
 }
 
 /// The known networks list every saved Wi-Fi network, the last joined first,
@@ -1544,41 +1625,60 @@ fn network_status_never_waits_for_a_scan_and_refresh_scans_first() {
     assert!(!text.contains("Can't read network status"), "{text}");
 }
 
-/// A secure network first asks the person's devices for its password,
-/// opens its prompt when they share none, and joins with what is typed
-/// there; the typed password is zeroed and the prompt closes.
+/// The window's Network pane over `fake`, open on its first page.
+fn hosted_network(
+    fake: &Arc<FakeNetwork>,
+) -> ui::framework::testing::TestApp<crate::SettingsShell> {
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    let observed = hosted_model(&mut app, Arc::clone(fake) as Arc<dyn NetworkService>);
+    mount_network(&mut app, observed).unwrap();
+    app.harness().resize((1280, 900)).unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    app.settle();
+    app
+}
+
+/// A secure network the person's devices share no password for asks for
+/// it with the window's password prompt; Cancel closes it and joins
+/// nothing, and what is typed the next time joins, closes the prompt and is
+/// sealed for the person's devices.
 #[test]
-fn joining_a_secure_network_asks_then_uses_the_typed_password() {
+fn joining_a_secure_network_asks_with_the_password_prompt() {
     let fake = Arc::new(FakeNetwork::default());
     *fake.networks.lock().unwrap() = networks();
-    let mut model = model(&fake);
-    let connect = || NetworkEffect::ConnectNetwork {
-        ssid: "Office_5G".into(),
-        password: None,
+    let mut app = hosted_network(&fake);
+    let connect = |app: &mut ui::framework::testing::TestApp<crate::SettingsShell>| {
+        app.call_on(
+            "network.wifi:Office_5G",
+            "connect-network",
+            serde_json::json!({}),
+        )
+        .unwrap();
+        settle_until(app, |model| model.asking_to_join("Office_5G"));
     };
-    run(&mut model, connect()).unwrap();
-    assert_eq!(model.expanded.as_deref(), Some("Office_5G"));
+    connect(&mut app);
     assert!(
         fake.changes.lock().unwrap().is_empty(),
         "nothing joined yet"
     );
+    app.harness().key("Escape");
+    settle_until(&mut app, |model| model.asking.is_none());
     assert!(
-        network_rows(&model).contains(&"Office_5G".to_owned()),
-        "the prompt opens in its row, which keeps its place"
+        fake.changes.lock().unwrap().is_empty(),
+        "a cancel joins nothing"
     );
 
-    let buffer = Arc::clone(&model.join_passwords["Office_5G"]);
-    *buffer.lock().unwrap() = "hunter22".into();
-    run(&mut model, connect()).unwrap();
+    connect(&mut app);
+    app.harness().type_text("hunter22");
+    app.harness().key("Return");
+    settle_until(&mut app, |model| {
+        model.asking.is_none() && model.connecting.is_empty()
+    });
     assert_eq!(
         fake.changes.lock().unwrap().as_slice(),
         ["connect Office_5G hunter22"]
     );
-    assert!(
-        buffer.lock().unwrap().is_empty(),
-        "the typed password is zeroed"
-    );
-    assert_eq!(model.expanded, None);
     assert!(
         fake.continuity
             .lock()
@@ -1609,7 +1709,7 @@ fn a_known_network_joins_without_asking() {
         ["connect Library -"]
     );
     assert!(fake.continuity.lock().unwrap().is_empty());
-    assert_eq!(model.expanded, None);
+    assert!(model.asking.is_none());
 }
 
 /// A password the person's devices share joins without a prompt; an open
@@ -1640,7 +1740,7 @@ fn a_shared_password_or_an_open_network_joins_directly() {
         fake.changes.lock().unwrap().as_slice(),
         ["connect Office_5G from-phone", "connect Cafe_Guest -"]
     );
-    assert_eq!(model.expanded, None);
+    assert!(model.asking.is_none());
     assert!(
         model
             .begin(NetworkEffect::ConnectNetwork {
@@ -1652,38 +1752,26 @@ fn a_shared_password_or_an_open_network_joins_directly() {
     );
 }
 
-/// A network that hides its name is joined from its own page, with the
-/// typed password zeroed.
+/// A network that hides its name is asked for with the password prompt:
+/// its name, then its password; joined, the prompt closes.
 #[test]
-fn a_hidden_network_is_joined_from_its_form() {
+fn a_hidden_network_is_joined_from_the_password_prompt() {
     let fake = Arc::new(FakeNetwork::default());
-    let mut model = model(&fake);
-    run(&mut model, NetworkEffect::ShowHiddenNetwork).unwrap();
-    assert!(
-        model
-            .begin(NetworkEffect::JoinHiddenNetwork {
-                ssid: None,
-                password: None
-            })
-            .is_err(),
-        "a name is needed"
-    );
-    model.hidden.ssid.set("Attic".into());
-    *model.hidden.password.lock().unwrap() = "rafters1".into();
-    run(
-        &mut model,
-        NetworkEffect::JoinHiddenNetwork {
-            ssid: None,
-            password: None,
-        },
-    )
-    .unwrap();
+    let mut app = hosted_network(&fake);
+    app.call("show-hidden-network", serde_json::json!({}))
+        .unwrap();
+    settle_until(&mut app, |model| model.asking.is_some());
+    app.harness().type_text("Attic");
+    app.harness().key("Tab");
+    app.harness().type_text("rafters1");
+    app.harness().key("Return");
+    settle_until(&mut app, |model| {
+        model.asking.is_none() && model.in_flight == 0
+    });
     assert_eq!(
         fake.changes.lock().unwrap().as_slice(),
         ["join-hidden Attic rafters1"]
     );
-    assert!(model.hidden.password.lock().unwrap().is_empty());
-    assert_eq!(model.page_key(), None, "joined, the page closes");
 }
 
 /// A switch shows the requested state at once and puts it back when the
@@ -1710,6 +1798,7 @@ fn work_vpn() -> VpnInfo {
         name: "Work".into(),
         uuid: "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e".into(),
         kind: "wireguard".into(),
+        service: None,
         active: false,
     }
 }
@@ -2076,7 +2165,8 @@ fn a_vpn_is_switched_edited_and_deleted() {
     let row = model.vpn_rows().remove(0).into_resource();
     for id in [
         "set-vpn-name",
-        "set-vpn-dns",
+        "add-vpn-dns-server",
+        "remove-vpn-dns-server",
         "set-vpn-keepalive",
         "set-vpn-server",
         "export-vpn",
@@ -2110,6 +2200,23 @@ fn a_vpn_is_switched_edited_and_deleted() {
     let changes = fake.changes.lock().unwrap().clone();
     assert_eq!(changes[0], "vpn Work true");
     assert_eq!(changes.last().map(String::as_str), Some("vpn-delete Work"));
+}
+
+/// A plugin's tunnel is called by the protocol its service type names,
+/// before its page is opened and without its plugin installed here.
+#[test]
+fn a_plugin_vpn_is_called_by_its_protocol() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.vpns.lock().unwrap() = vec![VpnInfo {
+        kind: "vpn".into(),
+        service: Some("org.freedesktop.NetworkManager.openvpn".into()),
+        ..work_vpn()
+    }];
+    let mut model = model(&fake);
+    run_vpn(&mut model, VpnEffect::ShowVpns).unwrap();
+    let text = shown(&model).join("\n");
+    assert!(text.contains("OpenVPN"), "{text}");
+    assert!(model.vpn.settings.is_empty(), "no profile was read for it");
 }
 
 /// What asked the VPN app to import, connect, disconnect or delete finds

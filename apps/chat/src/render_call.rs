@@ -48,6 +48,22 @@ struct Participant {
     muted: bool,
     audio_only: bool,
     sharing: bool,
+    /// This person silenced them for themselves.
+    silenced: bool,
+}
+
+impl Participant {
+    /// The mark beside their name: a muted microphone while they are
+    /// muted, else a muted speaker while this person silenced them.
+    fn mark(&self) -> Option<Icon> {
+        if self.muted {
+            Some(Icon::MicOff)
+        } else if self.silenced {
+            Some(Icon::VolumeX)
+        } else {
+            None
+        }
+    }
 }
 
 /// How the expanded call overlay tiles the surface. A plain call packs every
@@ -246,6 +262,7 @@ impl ChatApp {
             muted: self.call.muted,
             audio_only: self.call.audio_only,
             sharing: self.call.sharing,
+            silenced: false,
         });
         for m in members {
             if m.user == self.me.id {
@@ -257,6 +274,7 @@ impl ChatApp {
                 muted: m.muted,
                 audio_only: m.audio_only,
                 sharing: m.sharing,
+                silenced: self.call_listening(&m.user).silenced,
             });
         }
         out
@@ -348,12 +366,14 @@ impl ChatApp {
         self.draw_member_picture(scene, tf, tr, theme, self.huddle_video(), &p);
     }
 
-    /// A person's face in the call: their colour as a ring, and their
-    /// speaking ring while the call hears them.
+    /// A person's face in the call: their picture or initials, their
+    /// colour as a ring, and their speaking ring while the call hears them.
     pub(crate) fn paint_call_face(&self, ctx: &mut PaintCtx<'_>, rect: Rect, user: &str) {
-        let name = self.user_name(user);
+        let name = self.call_face_name(user);
+        let picture = self.call_picture(user);
         ui::widget::AvatarFace::new(&name, user)
-            .presence(self.identity_colour(user))
+            .image(picture.as_ref())
+            .presence(self.call_colour(user))
             .presence_ring()
             .speaking(self.speaking.level(user, ui::motion::frame_now()))
             .paint(ctx, rect);
@@ -427,10 +447,10 @@ impl ChatApp {
     fn huddle_face_width(&self, p: &Participant, tr: &mut TextRenderer, theme: &Theme) -> f64 {
         let sp = &theme.tokens.spacing;
         let face = ui::widget::AvatarSize::Small.side(theme);
-        let name = self.user_name(&p.user);
+        let name = self.call_name(&p.user);
         let name_w =
             width_of(tr, &name, &theme.text(TextRole::Label)).min(Self::huddle_name_max(theme));
-        let muted = if p.muted {
+        let muted = if p.mark().is_some() {
             f64::from(sp.s1) + f64::from(theme.tokens.metrics.icon_sm)
         } else {
             0.0
@@ -594,11 +614,20 @@ impl ChatApp {
 
     /// What the call panel tells the person besides its count: what is
     /// wrong (a blocked microphone, a call that ended, a browser that
-    /// cannot join), else how it is connected.
+    /// cannot join), else how it is connected, and where everyone's voice
+    /// goes besides when a bridge carries the call to another service.
     pub(crate) fn call_status_label(&self) -> String {
-        self.media_error
-            .clone()
-            .unwrap_or_else(|| self.call_connection_label())
+        if let Some(error) = self.media_error.clone() {
+            return error;
+        }
+        let connection = self.call_connection_label();
+        match self.call_bridged_note(&self.call.channel) {
+            Some(note) => crate::i18n::t_args(
+                "chat-call-status-bridged",
+                &[("connection", connection.into()), ("note", note.into())],
+            ),
+            None => connection,
+        }
     }
 
     pub(crate) fn draw_huddle_bg(
@@ -665,8 +694,11 @@ impl ChatApp {
         let v = self.huddle_video();
         let parts = self.huddle_participants();
         if let Some(featured) = parts.first() {
-            let name = self.user_name(&featured.user);
-            Self::name_plate(scene, tf, tr, theme, v, &name, featured.muted);
+            let name = self.call_name(&featured.user);
+            Self::name_plate(scene, tf, tr, theme, v, &name, featured.mark());
+            if !self.is_me(&featured.user) {
+                ChatApp::push_hit(hits, v, Hit::CallParticipant(featured.user.clone()));
+            }
         }
         // A call that ended for a reason says it on the status line.
         if let Some(error) = self
@@ -715,7 +747,7 @@ impl ChatApp {
             );
             let alpha = reveal * reveal * (3.0 - 2.0 * reveal);
             scene.push_layer(Fill::NonZero, BlendMode::default(), alpha, tf, &clip);
-            self.draw_huddle_chips(PaintCtx::new(scene, tf, tr, &local), status, &parts);
+            self.draw_huddle_chips(PaintCtx::new(scene, tf, tr, &local), status, &parts, hits);
             scene.pop_layer();
         }
 
@@ -760,8 +792,13 @@ impl ChatApp {
             );
             x += icon_side + f64::from(theme.tokens.metrics.icon_label_gap);
         }
-        let status = match self.media_error.clone() {
-            Some(reason) if self.native_voice.ended_for_a_reason() => reason,
+        let bridged = self
+            .call_bridged_note(&self.call.channel)
+            .filter(|_| self.native_voice.snapshot.state == ui::native_media::State::Live);
+        let status = match (self.media_error.clone(), bridged) {
+            (Some(reason), _) if self.native_voice.ended_for_a_reason() => reason,
+            // Connected, and where everyone's voice goes besides.
+            (_, Some(note)) => note,
             _ => self.call_connection_label(),
         };
         line_in(
@@ -782,7 +819,13 @@ impl ChatApp {
     /// ringing while they talk, with their name and a muted microphone while
     /// they are muted; wrapping to the panel width in rows under the
     /// connection line.
-    fn draw_huddle_chips(&self, paint: PaintCtx<'_>, status: Rect, parts: &[Participant]) {
+    fn draw_huddle_chips(
+        &self,
+        paint: PaintCtx<'_>,
+        status: Rect,
+        parts: &[Participant],
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
         let PaintCtx {
             scene,
             transform: tf,
@@ -812,13 +855,13 @@ impl ChatApp {
                 &p.user,
             );
             let name_x = x + face + f64::from(sp.s2);
-            let muted_w = if p.muted {
+            let muted_w = if p.mark().is_some() {
                 f64::from(sp.s1) + icon
             } else {
                 0.0
             };
             let room = (x + w - f64::from(sp.s2) - muted_w - name_x).max(0.0);
-            let name = elide(ctx.text, &self.user_name(&p.user), &style, room);
+            let name = elide(ctx.text, &self.call_name(&p.user), &style, room);
             let name_w = width_of(ctx.text, &name, &style);
             line_in(
                 &mut ctx,
@@ -829,15 +872,20 @@ impl ChatApp {
                 Rect::new(name_x, y, name_x + room, y + h),
                 room + 1.0,
             );
-            if p.muted {
+            if let Some(mark) = p.mark() {
                 let ix = name_x + name_w + f64::from(sp.s1);
-                Icon::MicOff.draw(
+                mark.draw(
                     scene,
                     tf,
                     Rect::new(ix, cy - icon / 2.0, ix + icon, cy + icon / 2.0),
                     theme.text_dim,
                 );
             }
+            ChatApp::push_hit(
+                hits,
+                Rect::new(x, y, x + w, y + h),
+                Hit::CallParticipant(p.user.clone()),
+            );
             x += w + gap;
         }
     }
@@ -1074,7 +1122,26 @@ impl ChatApp {
     ) {
         let host = self.overlay_host_rect();
         let you = self.user_name(&self.me.id);
-        Self::name_plate(scene, tf, tr, theme, host, &you, self.call.muted);
+        Self::name_plate(
+            scene,
+            tf,
+            tr,
+            theme,
+            host,
+            &you,
+            self.call.muted.then_some(Icon::MicOff),
+        );
+        // Each other participant's tile opens how loud they play here.
+        let tiles = match self.overlay_stage() {
+            CallStage::Grid(tiles) => tiles,
+            CallStage::Share { strip, .. } => strip,
+        };
+        for (p, rect) in self.call_participants().iter().zip(&tiles).skip(1) {
+            ChatApp::push_hit(hits, *rect, Hit::CallParticipant(p.user.clone()));
+        }
+        if let Some(note) = self.call_bridged_note(&self.call.channel) {
+            self.draw_bridged_note(PaintCtx::new(scene, tf, tr, theme), &note);
+        }
 
         // Controls bar: auto-sized to its buttons and wrapped onto extra rows
         // when the window is too narrow to hold them all in one line, so it
@@ -1100,6 +1167,42 @@ impl ChatApp {
                 ChatApp::push_hit(hits, r, hit);
             }
         }
+    }
+
+    /// Where the call's voices also go, centred in the space above the
+    /// tiles, so everyone in it knows before they speak.
+    fn draw_bridged_note(&self, paint: PaintCtx<'_>, note: &str) {
+        let PaintCtx {
+            scene,
+            transform: tf,
+            text: tr,
+            theme,
+        } = paint;
+        let region = self.overlay_content_region();
+        let band = Rect::new(region.x0, self.rect.y0, region.x1, region.y0);
+        let style = theme.text(TextRole::Caption);
+        let icon = f64::from(theme.tokens.metrics.icon_sm);
+        let gap = f64::from(theme.tokens.metrics.icon_label_gap);
+        let room = (band.width() - icon - gap).max(0.0);
+        let shown = elide(tr, note, &style, room);
+        let w = width_of(tr, &shown, &style);
+        let x = band.center().x - (icon + gap + w) / 2.0;
+        let cy = band.center().y;
+        Icon::Link.draw(
+            scene,
+            tf,
+            Rect::new(x, cy - icon / 2.0, x + icon, cy + icon / 2.0),
+            theme.text_dim,
+        );
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, theme),
+            &shown,
+            &style,
+            theme.text_dim,
+            x + icon + gap,
+            band,
+            w + 1.0,
+        );
     }
 
     /// The band the expanded call fills with participant tiles: everything
@@ -1294,8 +1397,8 @@ impl ChatApp {
         p: &Participant,
     ) {
         self.draw_member_picture(scene, tf, tr, theme, rect, p);
-        let name = self.user_name(&p.user);
-        Self::name_plate(scene, tf, tr, theme, rect, &name, p.muted);
+        let name = self.call_name(&p.user);
+        Self::name_plate(scene, tf, tr, theme, rect, &name, p.mark());
         if p.sharing {
             let side = ChipFace::height(theme);
             let inset = f64::from(theme.tokens.spacing.s2);
@@ -1347,11 +1450,7 @@ impl ChatApp {
                 scene,
                 tf,
                 RoundedRect::from_rect(rect, radius),
-                theme
-                    .tokens
-                    .colors
-                    .presence
-                    .of(self.identity_colour(&p.user)),
+                theme.tokens.colors.presence.of(self.call_colour(&p.user)),
                 speaking,
                 theme,
             );
@@ -1366,8 +1465,8 @@ impl ChatApp {
     }
 
     /// The name plate at a tile's bottom-leading corner: the person's name
-    /// and, while muted, a muted microphone, on the floating material over
-    /// the media.
+    /// and its `mark` (a muted microphone while they are muted), on the
+    /// floating material over the media.
     fn name_plate(
         scene: &mut Scene,
         tf: Affine,
@@ -1375,7 +1474,7 @@ impl ChatApp {
         theme: &Theme,
         tile: Rect,
         name: &str,
-        muted: bool,
+        mark: Option<Icon>,
     ) {
         let sp = &theme.tokens.spacing;
         let local = theme.on_ground(ui::chrome::panel_ground(theme));
@@ -1384,7 +1483,7 @@ impl ChatApp {
         let inset = f64::from(sp.s2);
         let pad_x = f64::from(sp.s2);
         let icon_side = f64::from(theme.tokens.metrics.icon_sm);
-        let icon_w = if muted {
+        let icon_w = if mark.is_some() {
             icon_side + f64::from(sp.s1)
         } else {
             0.0
@@ -1401,8 +1500,8 @@ impl ChatApp {
         let shape = RoundedRect::from_rect(plate, plate_h / 2.0);
         paint_material(scene, tf, &shape, Material::Floating, theme);
         let mut x = plate.x0 + pad_x;
-        if muted {
-            Icon::MicOff.draw(
+        if let Some(mark) = mark {
+            mark.draw(
                 scene,
                 tf,
                 Rect::new(
@@ -2119,6 +2218,7 @@ mod tests {
             muted: false,
             audio_only,
             sharing: false,
+            silenced: false,
         }
     }
 

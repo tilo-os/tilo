@@ -1,5 +1,5 @@
 //! Shared, render-free mail state, owned by the app and borrowed by each of the
-//! three [`crate::pane::Pane`]s through an `Rc<RefCell<_>>`.
+//! three panes through an `Rc<RefCell<_>>`.
 //!
 //! The panes are siblings inside a [`ui::widget::NavShell`], so they can't call
 //! each other directly. Instead they mutate this shared state and raise

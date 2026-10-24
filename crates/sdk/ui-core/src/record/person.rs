@@ -6,7 +6,7 @@
 //! the keyboard, where they stopped reading — and is still data rather than
 //! a preference: it grows, it has history, edits to it are undone. That
 //! state is a record like any other, kept in the person's own room
-//! ([`collab_types::person_room`]): a room whose id is derived from the
+//! ([`collab_types::person_room()`]): a room whose id is derived from the
 //! person's root key and whose members are, by that derivation, exactly the
 //! devices that root certified. Nobody can be invited into it.
 //!

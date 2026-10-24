@@ -204,7 +204,7 @@ impl ShellOverlayHost {
     /// caret or pointer it came from) sits on: the one holding the anchor,
     /// else the focused display. The one placement rule for every shell
     /// surface, shared with the overlay stack's layers
-    /// ([`super::layers::LayerGeometry::display_for`]): across a 2x laptop
+    /// (`super::layers::LayerGeometry::display_for`): across a 2x laptop
     /// panel and a 1x monitor beside it the host's own rect is both
     /// displays, centred on the seam and taller than the panel.
     pub fn surface_area(&self, anchor: Option<Point>) -> Rect {
