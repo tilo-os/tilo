@@ -385,7 +385,8 @@ pub(crate) struct Core {
     pub(crate) backup_portal: Option<crate::transfer::Saving>,
     pub(crate) restore_portal: Option<crate::transfer::Choosing>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
-    /// A browser page is still writing a save or delete to its storage.
+    /// The vault is still writing an edit: a browser page to its storage,
+    /// or the frame loop's writer thread to the disk.
     pub(crate) writing: bool,
     pub(crate) backup_password: Zeroizing<String>,
     pub(crate) backup_confirmation: Zeroizing<String>,
@@ -670,33 +671,46 @@ impl Core {
         let Some(was) = self.item(id).map(is_favorite) else {
             return;
         };
+        if let Err(error) = self.set_favorite(id, !was) {
+            self.toast(error);
+        }
+    }
+
+    /// Make the item `id` a favorite or not, saying so; nothing changes when
+    /// it already is what was asked.
+    pub(crate) fn set_favorite(&mut self, id: &SecretId, favorite: bool) -> Result<(), String> {
+        let Some(was) = self.item(id).map(is_favorite) else {
+            return Err("That item is no longer in your vault".to_owned());
+        };
+        if was == favorite {
+            return Ok(());
+        }
         if let Some(model) = &mut self.model {
             let Some(mut full) = model.items().into_iter().find(|item| &item.id == id) else {
-                return;
+                return Err("That item is no longer in your vault".to_owned());
             };
-            if was {
-                full.tags.remove("favorite");
-            } else {
+            if favorite {
                 full.tags.insert("favorite".into());
+            } else {
+                full.tags.remove("favorite");
             }
-            if let Err(error) = model.update(&mut full) {
-                self.toast(error);
-                return;
-            }
+            model.update(&mut full)?;
+            self.flush_vault();
             self.refresh();
         } else if let Some(item) = self.items.iter_mut().find(|item| &item.id == id) {
-            if was {
-                item.tags.remove("favorite");
-            } else {
+            if favorite {
                 item.tags.insert("favorite".into());
+            } else {
+                item.tags.remove("favorite");
             }
             self.touch();
         }
-        self.toast(if was {
-            "Removed from favorites"
-        } else {
+        self.toast(if favorite {
             "Added to favorites"
+        } else {
+            "Removed from favorites"
         });
+        Ok(())
     }
 
     pub(crate) fn revealed_value(&self, id: &SecretId) -> Option<&str> {
@@ -1399,6 +1413,7 @@ impl Core {
                         restored = restored.saturating_add(1);
                     }
                 }
+                self.flush_vault();
                 self.refresh();
                 self.toast(if restored == count {
                     format!("Restored {restored} items")
@@ -1469,6 +1484,7 @@ impl Core {
                 skipped = skipped.saturating_add(1);
             }
         }
+        self.flush_vault();
         self.refresh();
         self.toast(match (imported, skipped) {
             (1, 0) => "Imported 1 login".to_owned(),
@@ -1516,8 +1532,9 @@ impl Core {
     }
 
     /// Learn whether the vault's last edits are kept yet: a browser page
-    /// writes its storage asynchronously, so a save is kept a moment after
-    /// it shows. A failed write is said, not dropped.
+    /// writes its storage asynchronously, and on the frame loop a writer
+    /// thread writes the disk, so a save is kept a moment after it shows. A
+    /// failed write is said, not dropped.
     pub(crate) fn flush_vault(&mut self) {
         let Some(model) = self.model.as_mut() else {
             self.writing = false;
@@ -1527,9 +1544,7 @@ impl Core {
             Ok(kept) => self.writing = !kept,
             Err(error) => {
                 self.writing = false;
-                self.toast(format!(
-                    "Couldn't keep your last change in this browser's storage: {error}"
-                ));
+                self.toast(format!("Couldn't keep your last change: {error}"));
             }
         }
     }
@@ -1929,6 +1944,9 @@ impl Core {
                 }
             }
             PasswordsEffect::Delete { item } => self.delete(&SecretId(item))?,
+            PasswordsEffect::Favorite { item, favorite } => {
+                self.set_favorite(&SecretId(item), favorite)?;
+            }
             PasswordsEffect::Import => self.request_import(),
             PasswordsEffect::Export => self.request_export(),
             PasswordsEffect::Filter { filter } => {

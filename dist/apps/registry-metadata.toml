@@ -121,8 +121,6 @@ description = "Write polished Typst documents with a native editing workspace."
 description = "Arrange clips, sound, and stories in a native video editor."
 [apps.video-player]
 description = "Watch local video with simple, dependable playback."
-[apps.vpn]
-description = "Connect and manage private network access from one place."
 [apps.weather]
 description = "Check current conditions and forecasts without the clutter."
 [apps.web-search]

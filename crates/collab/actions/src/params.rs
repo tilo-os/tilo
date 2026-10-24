@@ -839,6 +839,12 @@ impl ActionArgs {
                 // not get.
                 return Err(ArgError::Unknown { name });
             };
+            // Callers (models especially) write null for "not set": for an
+            // optional parameter that is leaving it out. A nullable one
+            // takes null as its value.
+            if matches!(value, ArgValue::Null) && !param.nullable && !param.required {
+                continue;
+            }
             if matches!(value, ArgValue::Null) && !param.nullable {
                 return Err(ArgError::Constraint {
                     name,
@@ -1810,6 +1816,32 @@ mod rich_schema_tests {
         resource_datetime_secret_and_nullable_values_round_trip();
         malformed_schema_is_rejected_before_it_describes_values();
         unique_array_items_are_published_and_enforced();
+    }
+
+    #[test]
+    fn null_leaves_an_optional_argument_out_and_is_no_required_ones_value() {
+        let params = vec![
+            ActionParam::required("media", ParamType::Text, "media"),
+            ActionParam::optional("fade_in", ParamType::Number, "fade in"),
+            ActionParam::optional("parent", ParamType::Text, "parent").nullable(),
+        ];
+        let supplied = json!({"media": "shot-a.mp4", "fade_in": null, "parent": null});
+        let bound = ActionArgs::bind_json(&params, supplied.as_object().unwrap()).unwrap();
+        assert_eq!(
+            bound.to_json(),
+            *json!({"media": "shot-a.mp4", "parent": null})
+                .as_object()
+                .unwrap()
+        );
+        assert_eq!(bound.number("fade_in"), None);
+
+        let missing = json!({"media": null});
+        assert_eq!(
+            ActionArgs::bind_json(&params, missing.as_object().unwrap())
+                .unwrap_err()
+                .to_string(),
+            "argument `media` may not be null"
+        );
     }
 
     #[test]

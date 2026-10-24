@@ -1066,6 +1066,45 @@ fn the_platform_search_finds_and_opens_places_in_a_window() {
     );
 }
 
+/// A place the geocoder found for the platform search offers directions on
+/// its row, and asking for them routes there: the place is taken into the
+/// map as opening it would, rather than refused for not being on it yet.
+#[test]
+fn directions_to_a_found_place_route_there_from_its_row() {
+    let mut app = ui::framework::testing::TestApp::<crate::MapsShell>::new().unwrap();
+    app.with_surface(|maps: &mut MapsApp| {
+        // Hermetic: the geocoder and the router are out of reach.
+        maps.online = false;
+        maps.place_search.answer(
+            "Theatiner",
+            vec![crate::model::Place::new(
+                "osm-w-1",
+                "Theatinerstraße 18",
+                Category::Shop,
+                "18, Theatinerstraße, München",
+                LatLon::new(48.141, 11.577),
+            )],
+        );
+    })
+    .unwrap();
+    app.settle();
+    // Through the row the window publishes for it, as an agent asks.
+    app.call_on("maps.place:osm-w-1", "directions", serde_json::json!({}))
+        .expect("directions to the found place");
+    app.settle();
+    app.with_surface(|maps: &mut MapsApp| {
+        assert_eq!(maps.model.panel, Panel::Directions);
+        assert_eq!(maps.model.selected.as_deref(), Some("osm-w-1"));
+        assert_eq!(maps.model.dest_name, "Theatinerstraße 18");
+        assert!(maps.model.dest.is_some(), "the route has its destination");
+    })
+    .unwrap();
+    assert!(
+        app.state().places.iter().any(|place| place.id == "osm-w-1"),
+        "the found place is taken into the map"
+    );
+}
+
 /// Maps draws no search field: its search buttons open the platform search,
 /// its entries answer from what the map holds, a hit opens the place, and
 /// the recent searches dispatch canonical actions.

@@ -1307,8 +1307,11 @@ pub struct State {
     /// text-input focus (see `compositor::shell_text_input`).
     pub(crate) shell_field_active: bool,
     /// Editing keys a virtual keyboard sent while a shell field was served,
-    /// as chrome events, until the loop delivers them.
-    pub(crate) shell_field_keys: Vec<winit::event::WindowEvent>,
+    /// as chrome events with the modifiers it held for them, until the loop
+    /// delivers them.
+    pub(crate) shell_field_keys: Vec<(winit::event::WindowEvent, winit::event::Modifiers)>,
+    /// The modifiers virtual keyboards last said they hold.
+    pub(crate) virtual_modifiers: winit::keyboard::ModifiersState,
     /// Each virtual keyboard's current keymap, to read its keys as keysyms.
     pub(crate) virtual_keymaps: std::collections::HashMap<
         smithay::reexports::wayland_server::backend::ObjectId,
@@ -1986,6 +1989,14 @@ impl State {
         })
     }
 
+    /// The keys virtual keyboards sent to the shell's own focused field
+    /// since the last call, each with the modifiers held for it.
+    pub fn take_shell_field_keys(
+        &mut self,
+    ) -> Vec<(winit::event::WindowEvent, winit::event::Modifiers)> {
+        std::mem::take(&mut self.shell_field_keys)
+    }
+
     pub fn text_input_active(&self) -> bool {
         let mut active = false;
         self.seat
@@ -2212,6 +2223,7 @@ impl State {
             input_method_serial: 0,
             shell_field_active: false,
             shell_field_keys: Vec::new(),
+            virtual_modifiers: winit::keyboard::ModifiersState::empty(),
             virtual_keymaps: std::collections::HashMap::new(),
             closing_toplevels: HashMap::new(),
             provisional_focus: HashMap::new(),
@@ -7693,7 +7705,7 @@ impl State {
 /// process.
 #[cfg(target_os = "linux")]
 fn end_unresponsive_process(pid: u32, start_time: Option<u64>) {
-    let Some((_, started)) = crate::shell::launcher::proc_stat(pid) else {
+    let Some((_, started)) = crate::shell::host_runtime::proc_stat(pid) else {
         return;
     };
     if start_time.is_some_and(|expected| started != expected) {
@@ -8248,6 +8260,16 @@ impl
                     state.virtual_keymaps.insert(resource.id(), keymap);
                 }
             }
+            Request::Modifiers {
+                mods_depressed,
+                mods_latched,
+                mods_locked,
+                ..
+            } => {
+                state.virtual_modifiers = crate::compositor::shell_text_input::modifiers_state(
+                    mods_depressed | mods_latched | mods_locked,
+                );
+            }
             Request::Key { key, state: key_state, .. } if state.shell_field_active => {
                 if let Some(event) = state
                     .virtual_keymaps
@@ -8263,7 +8285,8 @@ impl
                         )
                     })
                 {
-                    state.shell_field_keys.push(event);
+                    let modifiers = winit::event::Modifiers::from(state.virtual_modifiers);
+                    state.shell_field_keys.push((event, modifiers));
                 }
             }
             _ => {}

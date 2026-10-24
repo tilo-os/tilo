@@ -433,6 +433,9 @@ pub enum WebViewCommand {
         hosts: Vec<String>,
         /// What its service worker shows the engine to be known as its.
         token: Option<String>,
+        /// Its keyboard shortcuts: the manifest's `commands` object, whose
+        /// suggested keys the engine gives and runs.
+        commands: Option<serde_json::Value>,
     },
     /// An extension that left the profile: it is told nothing more.
     ExtensionForget {
@@ -512,6 +515,12 @@ pub enum WebViewEvent {
     ExtensionOpenPopup {
         id: String,
         url: String,
+    },
+    /// The person pressed the keyboard shortcut of an extension's toolbar
+    /// button (`_execute_action`) over this tab's page: act as a click on
+    /// the button does.
+    ExtensionExecuteAction {
+        id: String,
     },
     SiteStatus(SiteStatus),
     SiteResult {

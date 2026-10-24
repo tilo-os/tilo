@@ -148,7 +148,6 @@ members = [
     "apps/typst-editor",
     "apps/video-editor",
     "apps/video-player",
-    "apps/vpn",
     "apps/weather",
     "apps/web-search",
     "apps/windows",
@@ -672,6 +671,7 @@ tar = "0.4"
 # `CryptoRng` is required).
 # ---------------------------------------------------------------------------
 ed25519-dalek = "3"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 rand = "0.10"
 rand_core = "0.10"
 rand_chacha = "0.10"

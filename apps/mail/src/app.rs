@@ -1588,9 +1588,19 @@ impl MailApp {
     /// moment after the typing stops, as the body is kept while it is
     /// written: a draft survives the window closing or the app quitting.
     fn keep_compose_headers(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let Some([to, cc, bcc, subject]) = self.compose.take_due_headers() else {
+        let Some(headers) = self.compose.take_due_headers() else {
             return;
         };
+        self.store_compose_headers(doc, headers);
+    }
+
+    /// Keep `to`, `cc`, `bcc` and `subject` in the draft where they differ
+    /// from what it holds.
+    fn store_compose_headers(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        [to, cc, bcc, subject]: [String; 4],
+    ) {
         let kept = read_mail(doc.doc()).unwrap_or_default().draft;
         let draft = Mail::paths().draft;
         let st = self.shared.borrow();
@@ -1716,9 +1726,67 @@ impl MailApp {
             msg.subject,
             msg.body
         );
-        self.compose.open_forward(&subj, &quote);
+        let forwarded = self.forwarded_files(&msg);
+        self.compose.open_forward(&subj, &quote, &forwarded.carried);
+        let left_behind = [
+            ("mail-forward-not-downloaded", &forwarded.not_downloaded),
+            ("mail-forward-too-large", &forwarded.too_large),
+        ]
+        .into_iter()
+        .filter(|(_, files)| !files.is_empty())
+        .map(|(key, files)| {
+            crate::i18n::t_args(
+                key,
+                &[
+                    (
+                        "count",
+                        ui::i18n::ArgValue::Number(f64::from(
+                            u32::try_from(files.len()).unwrap_or(u32::MAX),
+                        )),
+                    ),
+                    ("files", ui::i18n::ArgValue::Text(files.join(", "))),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+        if !left_behind.is_empty() {
+            self.shared.borrow_mut().status = Some(left_behind.join("\n"));
+        }
         self.close_menu();
         self.dirty = true;
+    }
+
+    /// The files a forward of `msg` carries, kept for the draft, and the
+    /// names of those it cannot.
+    fn forwarded_files(&self, msg: &Message) -> ForwardedFiles {
+        let mut files = Vec::new();
+        let mut not_downloaded = Vec::new();
+        for (index, attachment) in msg.shown_attachments() {
+            let staged = self
+                .attachment_to_save(&msg.id.to_string(), index)
+                .and_then(|(_, bytes)| {
+                    crate::attachment_store::stage_bytes(
+                        &self.content,
+                        &bytes,
+                        &attachment.filename,
+                    )
+                });
+            match staged {
+                Ok(file) => files.push(file),
+                Err(_) => not_downloaded.push(attachment.filename.clone()),
+            }
+        }
+        let carried = crate::attachment_store::bounded(&files);
+        let too_large = files
+            .iter()
+            .filter(|file| !carried.contains(file))
+            .map(|file| file.filename.clone())
+            .collect();
+        ForwardedFiles {
+            carried,
+            not_downloaded,
+            too_large,
+        }
     }
 
     /// Send the message the composer holds: it goes into the mailbox's
@@ -1759,6 +1827,17 @@ impl MailApp {
             self.dirty = true;
             return;
         }
+        // The draft holds what is sent, even what was typed a moment ago,
+        // so sending it empties the draft.
+        self.store_compose_headers(
+            doc,
+            [
+                draft.to.clone(),
+                draft.cc.clone(),
+                draft.bcc.clone(),
+                draft.subject.clone(),
+            ],
+        );
         {
             let st = self.shared.borrow();
             if let Some(refused) = self.resending.take() {
@@ -3102,6 +3181,16 @@ impl MailApp {
     fn accounts_persist_root(&self) -> Option<std::path::PathBuf> {
         self.accounts_persist.root()
     }
+}
+
+/// What a forward does with the forwarded message's files.
+struct ForwardedFiles {
+    /// Kept for the draft: they go with the forward.
+    carried: Vec<crate::model::DraftAttachment>,
+    /// Not on this device yet, by name.
+    not_downloaded: Vec<String>,
+    /// Past what one message carries, by name.
+    too_large: Vec<String>,
 }
 
 fn attachment_meta(attachment: &crate::model::DraftAttachment) -> Attachment {
@@ -6152,6 +6241,105 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         assert!(
             matches!(requests.try_recv(), Ok(EngineRequest::Send { .. })),
             "after the undo time it goes"
+        );
+    }
+
+    /// A forward carries the forwarded message's files: one on this device
+    /// goes with it, and one not downloaded yet is named, not dropped
+    /// unsaid.
+    #[test]
+    fn a_forward_carries_the_messages_files() {
+        let (mut app, mut doc) = app();
+        let mut message = app
+            .shared
+            .borrow()
+            .mailbox
+            .messages
+            .values()
+            .next()
+            .expect("a seeded message")
+            .clone();
+        message.id = uuid::Uuid::new_v4();
+        message.folder = Folder::Inbox;
+        message.subject = "Figures".into();
+        message.attachments = vec![
+            Attachment::hydrated("q3.csv", "text/csv", b"quarter,total\n3,42\n".to_vec()),
+            Attachment::projected("deck.pdf", "application/pdf", 2048),
+        ];
+        let id = message.id;
+        app.shared.borrow_mut().mailbox.insert(message);
+
+        app.open_forward(id);
+        assert!(app.compose.open, "Forward opens the composer");
+        let draft = app.compose.to_draft(&mut ui::widget::Edits::lend(&mut doc));
+        let [file] = draft.attachments.as_slice() else {
+            panic!(
+                "the downloaded file goes with the forward: {:?}",
+                draft.attachments
+            );
+        };
+        assert_eq!(file.filename, "q3.csv");
+        assert_eq!(
+            crate::attachment_store::materialize(&app.content, file).unwrap(),
+            b"quarter,total\n3,42\n"
+        );
+        let status = app.shared.borrow().status.clone().unwrap_or_default();
+        assert!(
+            status.contains("deck.pdf") && status.contains("not downloaded"),
+            "the file left behind is named: {status}"
+        );
+        assert!(
+            !app.compose.touched(),
+            "a forward nobody changed leaves no draft when closed"
+        );
+    }
+
+    /// A saved draft, opened again and sent, is done with: it leaves
+    /// Drafts, and the mailbox's draft is empty for the next message.
+    #[test]
+    fn a_sent_draft_leaves_drafts() {
+        let (mut app, mut doc) = app();
+        TestMail::store_draft(
+            &mut doc,
+            &crate::model::Draft {
+                to: "dest@there.example".into(),
+                subject: "Ready to go".into(),
+                body: "See you at noon".into(),
+                ..Default::default()
+            },
+        );
+        app.hydrate_domain_state_now(&mut ui::widget::Edits::lend(&mut doc));
+        let in_drafts = |app: &MailApp| -> Vec<MessageId> {
+            app.shared
+                .borrow()
+                .mailbox
+                .messages_in(Folder::Drafts)
+                .iter()
+                .filter(|message| message.subject == "Ready to go")
+                .map(|message| message.id)
+                .collect()
+        };
+        let [id] = in_drafts(&app)[..] else {
+            panic!("the saved draft shows in Drafts, once");
+        };
+
+        app.open_draft(id);
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+        let outbox = TestMail::outbox(&doc);
+        assert!(
+            matches!(outbox.as_slice(), [(sent, None)] if sent.draft.subject == "Ready to go"),
+            "the draft went to the outbox: {outbox:?}"
+        );
+        assert!(
+            TestMail::load_draft(&doc).is_empty(),
+            "sending the draft empties it: {:?}",
+            TestMail::load_draft(&doc)
+        );
+        app.hydrate_domain_state_now(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(
+            in_drafts(&app).is_empty(),
+            "the sent message no longer shows in Drafts"
         );
     }
 

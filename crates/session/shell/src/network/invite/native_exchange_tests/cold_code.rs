@@ -62,6 +62,7 @@ pub(super) fn governor(directory: &Path) -> TestGovernor {
             assert_eq!(view.device(), &certificate);
             view.peer()
                 .clone()
+                .publication_mut()
                 .durable_bootstrap_messages(&key, now, view.generation())
         })
         .unwrap();

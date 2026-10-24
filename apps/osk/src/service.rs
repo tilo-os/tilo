@@ -146,7 +146,11 @@ pub(crate) fn connect(choice: InputMethodChoice, wake: WakeHandle) -> Result<Con
             invoke_context: Box::new(|_, _| {
                 Err("contextual input actions require the trusted input method".into())
             }),
-            output: Box::new(move |output| injector.send(&emulator.symbols(&output))),
+            output: Box::new(move |output| {
+                for keypress in emulator.keypresses(&output) {
+                    injector.press(keypress);
+                }
+            }),
         });
     };
     tracing::info!("osk: auto-show via input-method-v2");
@@ -269,7 +273,7 @@ fn deliver(
         match step {
             Step::Preedit(text) => im.set_preedit(&text),
             Step::Commit(text) => im.commit_text(&text),
-            Step::Key(symbol) => keys.send(&[symbol]),
+            Step::Key(keypress) => keys.press(keypress),
             Step::Barrier(Channel::InputMethod) => {
                 im.sync();
                 read_socket = true;

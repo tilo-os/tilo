@@ -398,7 +398,7 @@ fn app_names() -> Vec<(&'static str, Expect)> {
         ("word", app("so.tilo.word-processor")),
         ("files", app("so.tilo.file-explorer")),
         ("calc", app("so.tilo.calculator")),
-        ("vpn", app("so.tilo.vpn")),
+        ("vpn", action("quick-settings.vpn.set-enabled")),
         ("theme", app("so.tilo.themes")),
         ("shortcuts", app("so.tilo.shortcuts")),
         // The product or the plain word an app stands in for.
@@ -470,7 +470,6 @@ fn app_names() -> Vec<(&'static str, Expect)> {
         ("github", not_app("so.tilo.git-client")),
         ("outlook", not_app("so.tilo.mail")),
         ("zoom", not_app("so.tilo.remote")),
-        ("nordvpn", not_app("so.tilo.vpn")),
     ]
 }
 

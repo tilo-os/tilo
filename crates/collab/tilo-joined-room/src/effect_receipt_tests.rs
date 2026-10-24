@@ -83,7 +83,7 @@ fn member_effect_uses_original_durable_receipt_and_refuses_changed_or_foreign_au
                 &fixture.key,
                 fixture.now
             )?);
-            peer.durable_mutation_messages(
+            peer.publication_mut().durable_mutation_messages(
                 view.peer(),
                 &fixture.key,
                 fixture.now,

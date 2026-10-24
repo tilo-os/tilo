@@ -9,8 +9,9 @@ three things, all from source text and manifests (nothing is compiled, and
 ``cargo`` is not run):
 
 * **Service modules stay below the compositor.** The workspace model,
-  persistence, the collaboration broker, the network bridge, the identity
-  broker and the compositor-free runtime host (``SERVICE_MODULES``) must not
+  persistence, the action-policy publication, the collaboration broker, the
+  network bridge, the identity broker and the compositor-free runtime host
+  (``SERVICE_MODULES``) must not
   name the compositor, the chrome/launch/overlay modules above them, or a
   renderer/windowing crate (``FORBIDDEN_*``). Paths are read from ``use``
   trees (grouped ``use crate::{compositor::state::State, shell::frame}``
@@ -79,6 +80,9 @@ SERVICE_MODULES = (
     "src/shell/channel_*.rs",
     "src/shell/peer_presence.rs",
     "src/shell/remote_actions.rs",
+    "src/shell/action_authority.rs",
+    "src/shell/action_authority/",
+    "src/shell/host_runtime.rs",
 )
 # Inside a service directory, but tied to the compositor by what they do:
 # reading back a client buffer and filtering compositor input.
@@ -123,12 +127,6 @@ IGNORED_PACKAGES = frozenset({"workspace-hack"})
 # Comments written above each group of [modules] entries, by path prefix: what
 # each remaining edge is for, and what removes it.
 MODULE_GROUPS = (
-    (
-        "src/shell/state",
-        "The workspace model asks the launcher for installed apps and action authority, "
-        "and doc_open for file labels. These go when those answers are handed to the "
-        "model, ahead of moving it into its own crate.",
-    ),
     (
         "src/shell/persist",
         "Persistence reads launch keys from the launcher's process-wide table. This goes "

@@ -356,6 +356,11 @@ impl ShellOverlayHost {
             // most browsers/terminals/editors, and the
             // shell would swallow it ahead of the client.
             "w" | "W" => {
+                // A shortcut's close lands: the window is gone on the next
+                // frame and its neighbours are in their places.
+                if !repeat {
+                    self.begin_motion(ui::tokens::MotionSource::Keyboard);
+                }
                 if repeat || self.close_focused_tab() {
                     *handled = true;
                     true

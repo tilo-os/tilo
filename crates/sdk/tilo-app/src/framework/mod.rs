@@ -324,6 +324,9 @@ mod each;
 mod effect;
 mod env;
 mod form;
+// The headless host discovers native presentation, which the browser has not got.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod headless;
 pub mod history;
 mod kinds;
 mod launch;
@@ -391,10 +394,6 @@ pub use text::{EditsText, TextControl};
 pub use tilo_resource::{Effect, NoEffect};
 pub use ui_core::record::{chain_of_resource_id, chain_resource_id};
 pub use view::{Bindable, EffectsHandle, ViewCx};
-
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod headless_results_tests;
 
 /// Record content, canonical hashing and picture headers. Use the store
 /// borrowed through `SurfaceCx::content` or `LaunchInput::content` so the host

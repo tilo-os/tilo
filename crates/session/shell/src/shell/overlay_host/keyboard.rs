@@ -731,6 +731,8 @@ impl ShellOverlayHost {
             A::PreviousTab
                 | A::NextTab
                 | A::ToggleMaximize
+                | A::MaximizeWindow
+                | A::RestoreWindow
                 | A::DetachTab
                 | A::AttachTabLeft
                 | A::AttachTabRight

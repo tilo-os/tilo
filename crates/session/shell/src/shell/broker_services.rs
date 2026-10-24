@@ -1151,7 +1151,7 @@ impl LauncherServices for NativeLauncher {
         app: &str,
         room: &str,
     ) -> bool {
-        let Some((_, start)) = super::launcher::proc_stat(launcher_pid) else {
+        let Some((_, start)) = super::host_runtime::proc_stat(launcher_pid) else {
             return false;
         };
         super::launcher::attest_trusted_service_launch_for_pid(launcher_pid, app, room).is_some()

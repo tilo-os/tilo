@@ -149,10 +149,6 @@ D2 = 2
 [apps.video-editor]
 D2 = 3
 
-[apps.vpn]
-D1 = 1
-D2 = 2
-
 [apps.weather]
 D2 = 1
 

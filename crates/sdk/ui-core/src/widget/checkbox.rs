@@ -795,6 +795,12 @@ impl Widget for Checkbox {
         }
     }
 
+    /// The node below never sets `hidden`: answered without translating
+    /// its name, for every checkbox of a list on every focus walk.
+    fn accessibility_hidden(&self) -> bool {
+        false
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // A visible inline label names itself; an explicit accessible name

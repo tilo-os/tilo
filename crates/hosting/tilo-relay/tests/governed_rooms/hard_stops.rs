@@ -63,6 +63,7 @@ async fn a_write_the_relay_committed_survives_a_hard_stop_before_the_governor_ke
     doc.put(ROOT, "topic", "welcome").unwrap();
     doc.commit_edit("fixture", "topic");
     let message = alice_peer
+        .publication_mut()
         .publish_incremental(APP, "", doc.save_after(&[]), &laptop.sk, SystemTime::now())
         .unwrap();
     publish(&alice_session, &message);

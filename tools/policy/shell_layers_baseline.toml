@@ -8,14 +8,6 @@
 # chrome or renderer paths they still reach.
 [modules]
 
-# The workspace model asks the launcher for installed apps and action authority, and
-# doc_open for file labels. These go when those answers are handed to the model, ahead
-# of moving it into its own crate.
-"src/shell/state.rs" = [
-    "crate::shell::doc_open",
-    "crate::shell::launcher",
-]
-
 # Persistence reads launch keys from the launcher's process-wide table. This goes when
 # the model records a window's launch key itself.
 "src/shell/persist.rs" = [
@@ -28,14 +20,6 @@
 "src/shell/network.rs" = [
     "crate::shell::launcher",
     "crate::shell::overlay_host",
-]
-
-# The headless runtime session publishes its room's accepted action policy at start, as
-# the native shell does when it builds the desktop, through the launcher's process-wide
-# policy table that launches are admitted against. This goes when that table moves below
-# the launcher with the workspace model.
-"src/runtime_host.rs" = [
-    "crate::shell::launcher",
 ]
 
 # Peer presence measures tiles with vello's re-exported geometry types. This goes when

@@ -993,6 +993,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     key_modifiers_=e.modifiers;
     std::string key=d->GetString("key");
+    // An extension's keyboard shortcut runs its command, and the page gets
+    // neither its press nor its release (extension_commands.h). A release
+    // is known by the key's name: it may read otherwise ("y" once Shift is up).
+    if(auto shortcut=tilo::KeyShortcut(key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
+      if(!d->GetBool("down")) { if(commanded_keys_.erase(shortcut->key)) return; }
+      else if(!extension_panel_ && extension_tabs && extension_tabs->Key(id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
+    }
 #if defined(OS_MAC)
     // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
     // Execute against the focused frame, preserving native clipboard semantics.
@@ -1393,6 +1400,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The pointer shape the page last asked for, by its CSS name.
   std::string cursor_;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
+  // Keys pressed for an extension's command, whose release is the command's too.
+  std::set<std::string> commanded_keys_;
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=24;
@@ -1437,7 +1446,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
     std::set<std::string> permissions;std::vector<std::string> hosts;
     auto list=d->GetList("permissions");for(size_t i=0;i<list->GetSize();++i)permissions.insert(list->GetString(i));
     list=d->GetList("hosts");for(size_t i=0;i<list->GetSize();++i)hosts.push_back(list->GetString(i));
-    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),d->HasKey("token")?d->GetString("token").ToString():std::string());
+    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),d->HasKey("token")?d->GetString("token").ToString():std::string(),
+      d->GetType("commands")==VTYPE_DICTIONARY?d->GetDictionary("commands"):nullptr);
     return;
   }
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
@@ -1763,7 +1773,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     };
     // The token the extension's worker shows the bridge (extension_tabs.h).
     const bool token=!d->HasKey("token") || (type("token",VTYPE_STRING) && d->GetString("token").length()>=32 && d->GetString("token").length()<=128);
-    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && token;
+    // Its keyboard shortcuts, as its manifest declares them (extension_commands.h).
+    const bool commands=!d->HasKey("commands") || type("commands",VTYPE_DICTIONARY);
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && token && commands;
   }
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);

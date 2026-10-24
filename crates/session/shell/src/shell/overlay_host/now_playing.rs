@@ -1,8 +1,10 @@
 //! The now-playing card beside the Quick Settings root page.
 //!
 //! The card is its own Panel, attached under the popover (or beside it when
-//! the display is too short), opened and closed with it and hit-tested in
-//! the same entrance transform. Its model comes from a
+//! the display is too short), placed against the popover as drawn so it
+//! follows the popover's height, opened and closed with it and hit-tested
+//! in the same entrance transform. Changing sides fades it out where it was
+//! and in where it goes (`QsMotion::follow_card`). Its model comes from a
 //! [`NowPlayingSource`](crate::shell::now_playing::NowPlayingSource); outputs
 //! come from the device fabric's route targets, named by their continuity
 //! tokens.
@@ -16,6 +18,7 @@ use vello::peniko::Fill;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 
+use super::qs_motion::CardSide;
 use super::{DeviceFabricUiAction, ShellOverlayHost};
 use crate::shell::now_playing::{NowPlayingView, output_targets, resolve_output, tr};
 use crate::shell::quick_settings::QsLevel;
@@ -41,10 +44,10 @@ impl ShellOverlayHost {
         })
     }
 
-    /// This frame's model: `None` when the popover is elsewhere or nothing
-    /// is playing or paused.
+    /// This frame's model while the popover draws (open, or still on its
+    /// way in or out): `None` when nothing is playing or paused.
     pub(super) fn now_playing_view(&self) -> Option<NowPlayingView> {
-        if !self.now_playing_visible() {
+        if !self.qs_motion.is_visible(ui::time::now()) {
             return None;
         }
         let players = self.now_playing_source.players();
@@ -64,28 +67,84 @@ impl ShellOverlayHost {
             .map(|view| view.with_speakers(speakers))
     }
 
-    /// Where the card sits: under the popover when it fits, else beside it,
-    /// else nowhere — it never covers the popover or leaves the display.
-    pub(super) fn now_playing_rect(&self, view: &NowPlayingView) -> Option<Rect> {
-        let qs = self.quick_settings_rect();
-        let height = self.now_playing_card.preferred_height(view);
-        let below = Rect::new(
-            qs.x0,
-            qs.y1 + SIBLING_GAP,
-            qs.x1,
-            qs.y1 + SIBLING_GAP + height,
-        );
-        let area = self.overlay_area();
-        if below.y1 <= area.y1 - PANEL_PAD {
-            return Some(below);
+    /// Which side the card goes to against the popover at rest: under it
+    /// when it fits, else beside it, else nowhere — it never covers the
+    /// popover or leaves the display. Only on the root page, while open.
+    pub(super) fn now_playing_side(&self, view: &NowPlayingView) -> Option<CardSide> {
+        if !self.now_playing_visible() {
+            return None;
         }
-        let beside = Rect::new(
-            qs.x0 - SIBLING_GAP - qs.width(),
-            qs.y0,
-            qs.x0 - SIBLING_GAP,
-            qs.y0 + height,
+        let qs = self.quick_settings_rect();
+        let area = self.overlay_area();
+        let fits = |side| {
+            let card = Self::card_at(side, qs, self.now_playing_card.preferred_height(view));
+            card.x0 >= area.x0 + PANEL_PAD && card.y1 <= area.y1 - PANEL_PAD
+        };
+        [CardSide::Below, CardSide::Beside]
+            .into_iter()
+            .find(|side| fits(*side))
+    }
+
+    /// The card `height` tall on `side` of the popover drawn at `qs`.
+    fn card_at(side: CardSide, qs: Rect, height: f64) -> Rect {
+        match side {
+            CardSide::Below => Rect::new(
+                qs.x0,
+                qs.y1 + SIBLING_GAP,
+                qs.x1,
+                qs.y1 + SIBLING_GAP + height,
+            ),
+            CardSide::Beside => Rect::new(
+                qs.x0 - SIBLING_GAP - qs.width(),
+                qs.y0,
+                qs.x0 - SIBLING_GAP,
+                qs.y0 + height,
+            ),
+        }
+    }
+
+    /// The popover as drawn at `now`: its height on its way.
+    fn quick_settings_drawn_rect(&self, now: ui::time::Instant) -> Rect {
+        self.qs_motion.drawn_rect(self.quick_settings_rect(), now)
+    }
+
+    /// Where the card takes input: on the side it goes to, against the
+    /// popover as drawn.
+    pub(super) fn now_playing_rect(&self, view: &NowPlayingView) -> Option<Rect> {
+        let side = self.now_playing_side(view)?;
+        let qs = self.quick_settings_drawn_rect(ui::time::now());
+        Some(Self::card_at(
+            side,
+            qs,
+            self.now_playing_card.preferred_height(view),
+        ))
+    }
+
+    /// Where the card is drawn at `now`, on each side it stands on, with
+    /// its opacity there.
+    pub(super) fn now_playing_drawn(&self, view: &NowPlayingView) -> Vec<(Rect, f32)> {
+        let now = ui::time::now();
+        let qs = self.quick_settings_drawn_rect(now);
+        let height = self.now_playing_card.preferred_height(view);
+        self.qs_motion
+            .card_sides(now)
+            .into_iter()
+            .map(|(side, opacity)| (Self::card_at(side, qs, height), opacity))
+            .collect()
+    }
+
+    /// Follow where the card goes this frame.
+    pub(super) fn follow_now_playing_side(&mut self, open: bool, theme: &Theme) {
+        let side = self
+            .now_playing_view()
+            .and_then(|view| self.now_playing_side(&view));
+        self.qs_motion.follow_card(
+            open,
+            side,
+            theme.motion(),
+            self.input_source,
+            ui::time::now(),
         );
-        (beside.x0 >= area.x0 + PANEL_PAD && beside.y1 <= area.y1 - PANEL_PAD).then_some(beside)
     }
 
     /// The card's laid-out rect and model together, for input and semantics.
@@ -139,7 +198,10 @@ impl ShellOverlayHost {
         theme: &Theme,
     ) -> Option<Rect> {
         let view = self.now_playing_view()?;
-        let rect = self.now_playing_rect(&view)?;
+        let drawn = self.now_playing_drawn(&view);
+        if drawn.is_empty() {
+            return None;
+        }
         if self
             .now_playing_tick
             .get()
@@ -148,33 +210,56 @@ impl ShellOverlayHost {
             self.now_playing_tick.set(view.now.checked_add(REFRESH));
         }
         self.now_playing_card.set_text_scale(theme.text_scale);
-        let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
-        ui::surface::shadow(
-            scene,
-            transform,
-            rect,
-            radius,
-            &theme.tokens.elevation.floating,
-        );
-        Self::draw_quick_settings_card_background(scene, transform, theme, rect);
-        scene.push_layer(
-            Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &RoundedRect::from_rect(rect, radius),
-        );
-        self.now_playing_card.draw(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            self.last_cursor,
-            &view,
-        );
-        scene.pop_layer();
-        Some(rect)
+        let mut painted: Option<Rect> = None;
+        for (rect, opacity) in drawn {
+            self.now_playing_card.layout(rect);
+            let radius = ui::chrome::ChromeRole::Panel.radius(theme, rect.height());
+            // On its way between sides it fades, shadow and all.
+            let faded = opacity < 1.0;
+            if faded {
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    opacity,
+                    transform,
+                    &rect.inflate(48.0, 48.0),
+                );
+            }
+            ui::surface::shadow(
+                scene,
+                transform,
+                rect,
+                radius,
+                &theme.tokens.elevation.floating,
+            );
+            Self::draw_quick_settings_card_background(scene, transform, theme, rect);
+            scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &RoundedRect::from_rect(rect, radius),
+            );
+            self.now_playing_card.draw(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                self.last_cursor,
+                &view,
+            );
+            scene.pop_layer();
+            if faded {
+                scene.pop_layer();
+            }
+            painted = Some(painted.map_or(rect, |all| all.union(rect)));
+        }
+        // Input reads the card where it goes.
+        if let Some(rect) = self.now_playing_rect(&view) {
+            self.now_playing_card.layout(rect);
+        }
+        painted
     }
 
     /// A click in popover layout coordinates. `true` when the card took it.
@@ -188,6 +273,41 @@ impl ShellOverlayHost {
         let action = self.now_playing_card.click(&view, point);
         self.apply_now_playing_action(action, &view);
         true
+    }
+
+    /// Whether a finger landing at `point` (as drawn) is on the card's seek
+    /// bar.
+    pub(super) fn now_playing_seek_at(&self, point: Point) -> bool {
+        use crate::shell::quick_settings::now_playing::CardTarget;
+        let Some(view) = self.now_playing_view() else {
+            return false;
+        };
+        let Some(rect) = self.now_playing_rect(&view) else {
+            return false;
+        };
+        let p = self.untransform_quick_settings_pointer(point, Instant::now());
+        self.now_playing_card.laid_out(rect).target_at(&view, p) == Some(CardTarget::Seek)
+    }
+
+    /// The held seek bar follows the pointer or the finger at `point`.
+    pub(super) fn drag_now_playing_seek(&mut self, point: Point) {
+        let p = self.untransform_quick_settings_pointer(point, Instant::now());
+        let Some((view, _)) = self.now_playing_layout() else {
+            self.now_playing_card.reset();
+            return;
+        };
+        let action = self.now_playing_card.drag(&view, p);
+        self.apply_now_playing_action(action, &view);
+    }
+
+    /// The seek bar is let go: the player seeks there.
+    pub(super) fn release_now_playing_seek(&mut self) {
+        let Some((view, _)) = self.now_playing_layout() else {
+            self.now_playing_card.reset();
+            return;
+        };
+        let action = self.now_playing_card.release(&view);
+        self.apply_now_playing_action(action, &view);
     }
 
     /// Keyboard traversal into, through and out of the card. Tab from the
@@ -431,10 +551,8 @@ mod tests {
             .borrow_mut()
             .quick_settings
             .push_level(QsLevel::Notifications);
-        assert!(
-            host.now_playing_view().is_none(),
-            "drill-ins replace the card"
-        );
+        assert!(!host.now_playing_published(), "drill-ins replace the card");
+        assert!(host.now_playing_semantic_rects().is_empty());
     }
 
     #[test]

@@ -175,6 +175,12 @@ pub struct Slider {
     layout_target: Option<f32>,
     /// Show the value in words beside the track ([`Self::shows_value`]).
     shows_value: bool,
+    /// Show the value in words over the knob while it is held
+    /// ([`Self::reads_out_while_held`]).
+    reads_out: bool,
+    /// The readout was on screen at the last frame, so the frame after it
+    /// goes repaints where it stood.
+    readout_drawn: bool,
     /// The width the shown value takes at the trailing edge, measured when
     /// drawn; the track is the rest.
     value_lane: f64,
@@ -259,6 +265,8 @@ impl Slider {
             shows_value: false,
             value_lane: 0.0,
             touch: SliderTouch::default(),
+            reads_out: false,
+            readout_drawn: false,
             level: None,
             level_drawn: None,
             thumb: crate::motion::Thumb::default(),
@@ -398,6 +406,15 @@ impl Slider {
     #[must_use]
     pub fn shows_value(mut self) -> Self {
         self.shows_value = true;
+        self
+    }
+
+    /// While the knob is held, by the pointer or a finger, show the value
+    /// it would land on in words ([`Self::value_text`]) on a chip above it:
+    /// a scrubber says the time under the finger that covers the knob.
+    #[must_use]
+    pub fn reads_out_while_held(mut self) -> Self {
+        self.reads_out = true;
         self
     }
 
@@ -846,6 +863,13 @@ impl SliderFace {
         ((point.x - track.x0) / track.width()).clamp(0.0, 1.0)
     }
 
+    /// Where the knob's centre stands: the end of the filled track.
+    #[must_use]
+    pub fn knob_centre(&self) -> Point {
+        let track = self.track_rect();
+        Point::new(track.x0 + self.value * track.width(), self.rect.center().y)
+    }
+
     /// The track rect this face paints, so a caller hit-tests the geometry it
     /// actually draws.
     pub fn track_rect(&self) -> Rect {
@@ -1020,6 +1044,46 @@ impl Slider {
             scene.pop_layer();
         }
     }
+}
+
+/// The value a held knob would land on, `label`, on a chip above the knob,
+/// kept over the slider's own span so it never leaves the control it reads.
+/// The one readout every held slider shows: the retained [`Slider`] and an
+/// immediate-mode seek bar (a shell card's) alike.
+pub fn paint_held_readout(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    face: &SliderFace,
+    label: &str,
+) {
+    let reach = SliderFace::overhang();
+    let knob = Rect::from_center_size(face.knob_centre(), (2.0 * reach, 2.0 * reach));
+    // No room under the knob: the chip stands above it, clear of the
+    // finger, and inside the slider's span.
+    let span = Rect::new(
+        face.rect.x0 - reach,
+        knob.y0 - READOUT_ROOM,
+        face.rect.x1 + reach,
+        knob.y1,
+    );
+    crate::widget::tooltip::draw_hover_tooltip(scene, transform, text, theme, knob, label, span);
+}
+
+/// How far above its knob a held slider's readout may reach: a chip of the
+/// largest text scale and its gap.
+const READOUT_ROOM: f64 = 96.0;
+
+/// Everything a held readout over a slider laid out in `rect` may cover.
+fn readout_zone(rect: Rect) -> Rect {
+    let reach = SliderFace::overhang();
+    Rect::new(
+        rect.x0 - reach,
+        rect.y0 - READOUT_ROOM,
+        rect.x1 + reach,
+        rect.y1,
+    )
 }
 
 /// The thumb's fill and ring over a track whose halves are `filled` and
@@ -1224,6 +1288,31 @@ impl Widget for Slider {
                 .disabled(!self.effectively_enabled()),
         );
         crate::widget::draw_gate_and_peer_focus(self, scene, transform, theme, presence);
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &crate::presence::PresenceCtx,
+    ) {
+        self.readout_drawn = self.reads_out && self.is_held() && self.effectively_enabled();
+        if self.readout_drawn {
+            let face = SliderFace::new(self.track_rect(), self.fraction());
+            let label = self.spoken_value();
+            paint_held_readout(scene, transform, text_renderer, theme, &face, &label);
+        }
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.needs_redraw() {
+            regions.push(self.rect);
+        }
+        if self.readout_drawn || (self.reads_out && self.is_held()) {
+            regions.push(readout_zone(self.rect));
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

@@ -184,7 +184,7 @@ pub(super) struct Runtime {
     /// The tree document beside the state file.
     document: crate::shell::persist::DocLog,
     /// The action policy this writer's tree has published.
-    action_authority: Arc<crate::shell::launcher::action_authority::Authority>,
+    action_authority: Arc<crate::shell::action_authority::Authority>,
     /// An owner publication between taking its sequence and installing its
     /// record, and whether a snapshot of the tree was taken meanwhile. Read
     /// and changed only with the tree held, so a snapshot and the install
@@ -213,6 +213,13 @@ impl Default for Runtime {
             action_authority: Arc::default(),
             in_flight: Mutex::new(None),
         }
+    }
+}
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        // The policy this writer's tree published is no longer accepted by
+        // a writer that holds it: what was judged against it is judged again.
+        self.action_authority.judge_again();
     }
 }
 #[derive(Default)]
@@ -287,9 +294,7 @@ impl NativeStateRuntime {
         NativeStateWitness(Arc::downgrade(&self.0))
     }
     /// The action policy this writer's tree has published.
-    pub(crate) fn action_authority(
-        &self,
-    ) -> Arc<crate::shell::launcher::action_authority::Authority> {
+    pub(crate) fn action_authority(&self) -> Arc<crate::shell::action_authority::Authority> {
         self.0.action_authority.clone()
     }
     pub(crate) fn owner(&self) -> Option<NativeWorkspaceOwner> {
@@ -486,6 +491,8 @@ impl NativeStateRuntime {
                         uncertain.extend(next.rooms());
                     }
                     self.0.healthy.store(false, Ordering::Release);
+                    // Every authority this writer vouched for is withdrawn.
+                    tilo_identity_host::policy_change::announce();
                     return Err(WriteError::Uncertain(error.into_io_error()));
                 }
                 Err(WriteError::Refused(error.into_io_error()))

@@ -543,6 +543,17 @@ impl State {
         }
     }
 
+    /// Whether the focused field offers acknowledged edits: an app's field
+    /// over the private text input, or one of the shell's own fields whose
+    /// widget asks for them.
+    fn field_offers_acknowledged_edits(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    ) -> bool {
+        self.private_text_input.identity(&surface.id()).is_some()
+            || (self.shell_field_active && self.text_commit.dictation.native_field_deferred)
+    }
+
     pub(crate) fn set_native_dictation_deferred(&mut self, required: bool) {
         self.text_commit.dictation.native_field_deferred = required;
     }
@@ -1080,11 +1091,16 @@ impl State {
                 let content = self.text_fields.content_type(field);
                 target = if content.is_sensitive() {
                     Err(DictationError::SensitiveField)
-                } else if content.purpose == u32::from(ContentPurpose::Terminal) {
-                    // Terminal purpose does not identify an inner program's edit,
-                    // command or secret mode. Neither a caret nor a private
-                    // receipt supplies that contract. Refuse speech before capture
-                    // and on every revalidation; ordinary keyboard IME is separate.
+                } else if content.purpose == u32::from(ContentPurpose::Terminal)
+                    && !self.field_offers_acknowledged_edits(surface)
+                {
+                    // Terminal purpose alone does not identify an inner
+                    // program's edit, command or secret mode, and a caret does
+                    // not supply that contract. Only a field that offers
+                    // acknowledged edits does: a native editor prompt confirms
+                    // each edit against its own lease. Refuse speech before
+                    // capture and on every revalidation otherwise; ordinary
+                    // keyboard IME is separate.
                     Err(DictationError::UnsupportedField)
                 } else {
                     self.text_fields

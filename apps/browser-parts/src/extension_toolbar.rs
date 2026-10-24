@@ -76,6 +76,9 @@ pub struct Access {
     /// The token its service worker shows the engine
     /// ([`crate::extensions::prepare_tabs`]).
     pub token: Option<String>,
+    /// Its keyboard shortcuts: the manifest's `commands`, whose suggested
+    /// keys the engine gives and runs as Chrome does.
+    pub commands: Option<Value>,
 }
 
 pub fn access(manifest: &Value) -> Access {
@@ -113,6 +116,10 @@ pub fn access(manifest: &Value) -> Access {
         permissions,
         hosts,
         token: None,
+        commands: manifest
+            .get("commands")
+            .filter(|commands| commands.is_object())
+            .cloned(),
     }
 }
 
@@ -531,9 +538,20 @@ mod tests {
                     "https://old.example/*".into(),
                 ],
                 token: None,
+                commands: None,
             }
         );
         assert_eq!(access(&serde_json::json!({})), Access::default());
+        // Its keyboard shortcuts go to the engine as the manifest has them.
+        let shortcuts = serde_json::json!({"_execute_action": {"suggested_key": "Alt+Shift+Y"}});
+        assert_eq!(
+            access(&serde_json::json!({"commands": shortcuts})).commands,
+            Some(shortcuts)
+        );
+        assert_eq!(
+            access(&serde_json::json!({"commands": ["toggle"]})).commands,
+            None
+        );
     }
 
     #[test]

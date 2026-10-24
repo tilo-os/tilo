@@ -651,6 +651,7 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     });
     let large = local_edit(&mut member, &key, now, true, &large_text);
     let small = member
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", branch.save_after(&base), &key, now)
         .unwrap();
     // Governor has only the large branch; receipt is deliberately withheld.
@@ -664,6 +665,7 @@ fn local_projection_partial_ack_rebuilds_within_reduced_remaining_reservation() 
     // A genuine same-change Incremental is independently signed/admitted locally
     // before sending; the member Snapshot itself stays immutable custody.
     let actual = member
+        .publication_mut()
         .publish_incremental("test.app", "tab:1", large_history.save(), &key, now)
         .unwrap();
     governor

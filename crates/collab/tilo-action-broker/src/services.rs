@@ -573,7 +573,8 @@ pub trait LauncherServices: Send + Sync {
     /// now: a press of theirs (never an agent's) reached one of its windows
     /// within the activation window, and has not proved another open
     /// already. Answering uses it up. A host without that record answers
-    /// `false`, and an app's launches then keep the person's place.
+    /// `false`: an app then opens nothing on its own, only what an
+    /// invocation someone else asked of it calls for.
     fn person_initiated(&self, _app_id: &str) -> bool {
         false
     }

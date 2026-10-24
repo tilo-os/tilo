@@ -103,6 +103,35 @@ impl FilePickerOverlay {
         self.search = Some(files);
     }
 
+    /// Whether the open chooser holds the keyboard where `place` puts it:
+    /// a sheet while its window is the focused one, a chooser no window
+    /// asked for always. While it does, no window hears a key; otherwise
+    /// keys go to the focused window as if no chooser were up.
+    pub(crate) fn takes_keyboard(&self, place: PickerPlace) -> bool {
+        self.active.is_some()
+            && match place {
+                PickerPlace::Window { focused, .. } => focused,
+                PickerPlace::Hidden => false,
+                PickerPlace::Display(_) => true,
+            }
+    }
+
+    /// Whether the open chooser takes the pointer at `at`: over its sheet
+    /// and the window it closes to input, or anywhere while a press it took
+    /// is held; anywhere for a chooser no window asked for.
+    pub(crate) fn takes_pointer_at(&self, place: PickerPlace, at: Point) -> bool {
+        self.active.is_some()
+            && match place {
+                PickerPlace::Window { window, .. } => {
+                    self.grabbed
+                        || window.contains(at)
+                        || place.dialog_rect().is_some_and(|sheet| sheet.contains(at))
+                }
+                PickerPlace::Hidden => false,
+                PickerPlace::Display(_) => true,
+            }
+    }
+
     pub(crate) fn widget(&self) -> Option<&ui::widget::FilePicker> {
         self.active.as_ref().map(|active| &active.widget)
     }

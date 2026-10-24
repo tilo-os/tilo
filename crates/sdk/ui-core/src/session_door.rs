@@ -54,6 +54,11 @@ pub(crate) fn decode_application_launch(payload: &[u8]) -> Result<ApplicationLau
 /// Open the app `payload` names, through `door`, in the workspace of the
 /// action's `route` (else the door's own).
 ///
+/// The request continues the invocation the broker delivered for it
+/// (`operation`, when `admitted`; else the one being handled here), so the
+/// session decides it as that invocation's caller; without one, only the
+/// person's own press in this app is behind it.
+///
 /// # Errors
 /// An invalid launch, no door or workspace to open it in, or the door's
 /// refusal.
@@ -81,11 +86,16 @@ pub(crate) fn start_application_launch(
             reason: "Opening an application requires an admitted workspace route".into(),
         });
     };
+    let on_behalf_of = if admitted {
+        Some(operation)
+    } else {
+        crate::invocation_scope::delivered_invocation()
+    };
     door.invoke(
         operation,
         admitted,
         InvokeRequest {
-            on_behalf_of: None,
+            on_behalf_of,
             invocation: InvocationId::new(),
             target: launch.target(&room),
             argument: launch.argument(),
@@ -189,7 +199,8 @@ impl SessionDoor for ClientDoor {
         _admitted: bool,
         request: InvokeRequest,
     ) -> Result<ResourceOperationStart, DoorError> {
-        let call = self.client.invoke_with_id(
+        let call = self.client.invoke_continuing(
+            request.on_behalf_of,
             request.invocation,
             request.target,
             request.argument,

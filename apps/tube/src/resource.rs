@@ -296,7 +296,7 @@ impl ResourceSurface<Library, TubeEffect> for TubeApp {
     }
 
     fn effects(&self) -> Vec<EffectStatus> {
-        crate::rows::effect_statuses(self.device_sync_view())
+        crate::rows::effect_statuses(self.model_ref(), self.device_sync_view())
     }
 
     fn live_rows(&self) -> Vec<LiveRow> {

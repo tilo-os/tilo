@@ -8,7 +8,8 @@ pub(crate) mod discovery;
 pub(crate) mod open_selected;
 pub(crate) mod selected_target;
 
-use super::{InstalledApp, LaunchCommand, action_authority};
+use super::{InstalledApp, LaunchCommand};
+use crate::shell::action_authority;
 use crate::shell::{
     collab_broker::NativePersonalSession, native_workspace_owner::NativeWorkspaceOwner,
     state::RoomId,
@@ -774,7 +775,7 @@ mod tests {
                 candidate
                     .governance_mut()
                     .put_governed_grants(&[cap], &key, now)?;
-                candidate.durable_mutation_messages(
+                candidate.publication_mut().durable_mutation_messages(
                     &before,
                     &key,
                     now,
@@ -862,7 +863,7 @@ mod tests {
                         now
                     )?
                 );
-                candidate.durable_mutation_messages(
+                candidate.publication_mut().durable_mutation_messages(
                     &before,
                     &key,
                     now,

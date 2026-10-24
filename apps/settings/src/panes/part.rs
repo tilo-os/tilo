@@ -60,6 +60,7 @@ pub(crate) const FAMILIES: &[(u16, &crate::effects::EffectFamily)] = &[
     (220, audio::AudioEffect::FAMILY),
     (240, display::DisplayEffect::FAMILY),
     (250, network::NetworkEffect::FAMILY),
+    (252, network::vpn::VpnEffect::FAMILY),
     (255, network::mobile::MobileEffect::FAMILY),
 ];
 
@@ -225,8 +226,14 @@ pub(crate) const PANES: &[crate::area::PaneEntry] = &[
     crate::area::PaneEntry {
         categories: &[Category::Network],
         build: |app, _| {
+            let network = network::area(app).map(network::NetworkArea::model);
+            // The Mobile section sits under the first page; a page opened
+            // from it (a network, the VPNs) is that page alone.
+            if network.is_some_and(|model| model.borrow().page_key().is_some()) {
+                return model_pane(network);
+            }
             network::mobile::with_mobile(
-                model_pane(network::area(app).map(network::NetworkArea::model)),
+                model_pane(network),
                 model_pane(network::mobile::area(app).map(network::mobile::MobileArea::model)),
             )
         },

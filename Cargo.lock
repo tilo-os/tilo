@@ -10878,6 +10878,7 @@ dependencies = [
 name = "os-actions"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bounded-command",
  "getrandom 0.4.3",
  "libc",
@@ -10894,6 +10895,7 @@ dependencies = [
  "tilo-nm",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-seal",
  "tilo-test-env",
  "tracing",
  "uuid",
@@ -21783,6 +21785,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-doc",
  "tilo-resource",
  "tilo-ui",
@@ -22315,28 +22318,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "vpn"
-version = "0.1.0"
-dependencies = [
- "bounded-command",
- "os-actions",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-history",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "uuid",
- "workspace-hack",
- "zeroize",
 ]
 
 [[package]]

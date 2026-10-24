@@ -69,8 +69,12 @@ impl NativeWorkspaceOwner {
         // This is the existing signed governance writer/publication sequence.
         // Its durable state includes the signed room policy and admitted graph;
         // no legacy cache or relay acceptance stands in for the owner barrier.
-        let messages =
-            peer.durable_mutation_messages(&candidate.peer, key, now, next_generation)?;
+        let messages = peer.publication_mut().durable_mutation_messages(
+            &candidate.peer,
+            key,
+            now,
+            next_generation,
+        )?;
         for message in &messages {
             if matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
                 let outgoing = crate::publication::prepare(&crate::publication::request(message)?)?;

@@ -5,6 +5,7 @@ use tilo_automerge::ApplyIncoming;
 use tilo_automerge::WriteTyped as _;
 use tilo_clock::unix_now_i64;
 
+mod continuation_labels;
 mod local_app_records;
 mod room_bases;
 mod room_binding;
@@ -13,6 +14,7 @@ mod window_hosting;
 use super::fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use super::fs_authority::wait_for_fs_authority_publication_idle;
+pub use continuation_labels::{ContinuationLabels, UnresolvedContinuationLabels};
 pub use local_app_records::LocalAppRecord;
 pub(crate) use room_binding::room_holds_files;
 pub use tree_handle::{
@@ -3192,7 +3194,7 @@ impl WorkspaceTree {
     pub fn queue_save(&self) {
         let started = std::time::Instant::now();
         let export = self.fs_capability_export();
-        let actions = crate::shell::launcher::action_authority::Export::of(self);
+        let actions = crate::shell::action_authority::Export::of(self);
         let failure = actions.failure_handle();
         match (&self.persist_path, export) {
             (Some(path), export) => {
@@ -5016,8 +5018,9 @@ impl WorkspaceTree {
     }
 
     /// Materialize another device's continuation as synchronized placeholder
-    /// tabs. This never activates a workspace, strip, or group; the compositor
-    /// opens the matching local apps through its normal authorized launch path.
+    /// tabs, titled by the session's `labels`. This never activates a
+    /// workspace, strip, or group; the compositor opens the matching local
+    /// apps through its normal authorized launch path.
     #[allow(
         clippy::too_many_lines,
         clippy::indexing_slicing,
@@ -5027,6 +5030,7 @@ impl WorkspaceTree {
         &mut self,
         _source_device: &str,
         continuation: &crate::shell::personal_continuity::WorkspaceContinuation,
+        labels: &dyn ContinuationLabels,
     ) -> bool {
         let existing_continuation_tabs = self.continuation_tabs.clone();
         let (changed, file_references, file_reference_removals, inserted_continuation_tabs) = {
@@ -5075,10 +5079,7 @@ impl WorkspaceTree {
                         (
                             // Built on the compositor loop: the installed
                             // apps as last enumerated, never a registry read.
-                            crate::shell::launcher::installed_apps_without_waiting()
-                                .into_iter()
-                                .find(|installed| installed.package_id == *app_id)
-                                .map_or_else(|| app_id.clone(), |installed| installed.display_name),
+                            labels.app_name(app_id).unwrap_or_else(|| app_id.clone()),
                             TileContent::PeerWindow {
                                 app_id: app_id.clone(),
                                 label: "Available on another device".to_string(),
@@ -5090,7 +5091,7 @@ impl WorkspaceTree {
                     crate::shell::personal_continuity::LaunchIntent::FileReference { .. } => {
                         file_references.push((app.id.0, app.launch.clone()));
                         (
-                            crate::shell::doc_open::continuity_file_reference_label(&app.launch),
+                            labels.file_reference_label(&app.launch),
                             TileContent::Stub {
                                 kind: AppKind::FileExplorer,
                                 label: "Available on another device".to_string(),
@@ -5533,7 +5534,7 @@ impl WorkspaceTree {
     /// into the restart snapshot. `Ok(false)` when the order did not change.
     ///
     /// Only reorders inside one strip commit here; a close runs its own
-    /// lifecycle ([`crate::shell::window_actions::close_tab`]).
+    /// lifecycle, in the window actions above the model.
     ///
     /// Like a close, a move is not checked per person: this desktop records
     /// no window authors, so the policy a shared desktop applies to other
@@ -9748,6 +9749,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![app],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 ));
                 assert!(tree.continuation_tabs.contains(&0x99));
                 assert!(tree.reconcile_continuation_tabs(&BTreeSet::new()));
@@ -9780,6 +9782,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![app],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 );
 
                 assert!(tree.claim_continuation_tab(0x9a));
@@ -9873,6 +9876,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![make(0, "so.tilo.browser")],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 );
                 tree.materialize_continuation_workspace(
                     "Laptop",
@@ -9880,6 +9884,7 @@ mod workspace_tree_lifecycle_tests {
                         room,
                         apps: vec![make(1, "so.tilo.music")],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 );
                 let workspace = tree
                     .desktop
@@ -9942,6 +9947,7 @@ mod workspace_tree_lifecycle_tests {
                                 stamp,
                             )],
                     },
+                    &crate::shell::doc_open::DesktopContinuationLabels,
                 ));
                 let workspace = tree
                     .desktop
@@ -10031,6 +10037,7 @@ mod workspace_tree_lifecycle_tests {
                 room,
                 apps: vec![file],
             },
+            &crate::shell::doc_open::DesktopContinuationLabels,
         ));
         assert!(tree.continuation_file_references.contains_key(&id.0));
 
@@ -10047,6 +10054,7 @@ mod workspace_tree_lifecycle_tests {
                 room,
                 apps: vec![app.clone()],
             },
+            &crate::shell::doc_open::DesktopContinuationLabels,
         ));
         assert!(!tree.continuation_file_references.contains_key(&id.0));
         // Every checkpoint offers it again; one that moved nothing changes
@@ -10058,6 +10066,7 @@ mod workspace_tree_lifecycle_tests {
                 room,
                 apps: vec![app],
             },
+            &crate::shell::doc_open::DesktopContinuationLabels,
         ));
         assert_eq!(tree.current_heads(), heads);
         let replacement = tree
