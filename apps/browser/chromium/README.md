@@ -714,7 +714,13 @@ content scripts (with `sender.tab`) work without help.
   signed in.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
-  worker still sleeps. `tests/extension_tabs.py` covers each of these.
+  worker still sleeps. A worker tells the host all it listens for once its
+  first script has run. Until it has (it starts with the engine, or as it is
+  added, and may ask before the Browser has said whose worker it is), the tab
+  events it may want are kept for it, for up to thirty seconds, and it hears
+  those it listens for then: a page that loads as the Browser starts is one
+  its extensions hear of, as in Chrome. `tests/extension_tabs.py` covers each
+  of these.
 
 ## Remaining integration work
 

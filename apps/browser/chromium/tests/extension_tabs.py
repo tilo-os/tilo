@@ -16,7 +16,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A tab keeps the id an extension was told of it by on a blank page or the
   extension's own page, once it shows a web page: the one Chromium gives
   that page's messages.
-- A worker hears of a page that finished loading.
+- A worker hears of a page that finished loading, also one that finished
+  before the Browser told the engine whose worker it is, as when the Browser
+  starts.
 - An extension that follows navigations (webNavigation) hears of each
   frame's by the ids the tab APIs give and finds the page's frames; a page's
   link that opens a tab, in its main frame or in a frame, tells it which
@@ -521,13 +523,14 @@ class ExtensionTabs(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def start(self, *names, access, installed=None, profile=None, files=None, focus=True):
+    def start(self, *names, access, installed=None, profile=None, files=None, focus=True, withhold=()):
         """A host with the fixtures `names` loaded, each granted what the
         Browser grants an installed extension (`access`: name -> (permissions,
         hosts[, scriptable])), with `files` (name -> {file: bytes}) written into its copy. A
         host started again with the `installed` directory and the `profile` of
         an earlier one finds the same extensions there. With `focus`, the
-        person has focused the first page."""
+        person has focused the first page. The engine is not told yet of those
+        in `withhold`: what it would be told is in `self.withheld`."""
         if installed is None:
             directory = tempfile.TemporaryDirectory(prefix='tilo-extension-tabs-')
             self.addCleanup(directory.cleanup)
@@ -561,6 +564,9 @@ class ExtensionTabs(unittest.TestCase):
             commands = json.loads((path / 'manifest.json').read_text()).get('commands')
             if isinstance(commands, dict):
                 command['commands'] = commands
+            if name in withhold:
+                self.withheld = {**getattr(self, 'withheld', {}), name: command}
+                continue
             host.send(op='extension_access', **command)
         host.send(op='resize', width=800, height=600, scale_factor=1.0)
         if focus:
@@ -1178,6 +1184,25 @@ class ExtensionTabs(unittest.TestCase):
         # Each tab stays in a window of its own, as it was made.
         never = {'tabs.onReplaced', 'tabs.onAttached', 'tabs.onDetached', 'tabs.onMoved', 'webNavigation.onTabReplaced'}
         self.assertEqual([h for h in heard() if h['name'] in never], [])
+
+    def test_a_worker_hears_of_a_page_that_loaded_before_the_browser_said_whose_it_is(self):
+        # As the Browser starts: the worker runs and listens, a page loads,
+        # and only then does the Browser tell the engine whose worker it is.
+        host, ids = self.start('watcher', access={'watcher': (['scripting'], ['http://127.0.0.1/*'])}, withhold=('watcher',))
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['watcher'], 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        host.settle(0.5)
+        host.navigate(self.url + '/watched')
+        watched = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('watched:')
+        self.assertFalse(any(watched(e) for e in host.seen), 'an extension the engine was not told of scripted the page')
+        host.send(op='extension_access', **self.withheld['watcher'])
+        try:
+            title = (next((e for e in host.seen if watched(e)), None) or host.until(watched, timeout=20))['title']
+        except (TimeoutError, queue.Empty):
+            self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
+        self.assertRegex(title, r'^watched:\d+$')
 
     def test_an_extension_that_may_connect_only_to_its_own_servers_finds_its_tabs(self):
         # Before the person focused any page, as when the Browser starts: the
