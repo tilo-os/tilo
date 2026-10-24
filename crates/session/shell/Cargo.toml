@@ -398,6 +398,8 @@ tokio-util.workspace = true
 # Drives the secret agent from a stand-in NetworkManager into the sheet.
 tilo-network-secret-agent = { path = "../network-secret-agent", features = ["test-support"] }
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability", features = ["test-support"] }
+# Site join tests pin the wall clock the host's threads read while it admits a page.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 # Signs the installed-package fixtures the launch path reads surfaces from.
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 # Native Store publication through the same certified session fixture as Browser.
