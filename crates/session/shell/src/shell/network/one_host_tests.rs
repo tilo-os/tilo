@@ -14,17 +14,21 @@
 //! workspace's room, its windows and tabs, an app's document and the room's
 //! roster.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::SigningKey;
+use tilo_automerge::ApplyIncoming as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 use super::{HostIdentity, NetCmd, Reach, ShellNetwork};
+use crate::shell::channel_encryption::{ChannelAccess, ChannelEncryptionConfig, ChannelKeyAccess};
+use crate::shell::collab_core::BrokerChannels;
 use crate::shell::peer_sync_overlay::{InvitationTerms, PeerSyncResponse};
 use crate::shell::state::{
     AppKind, RoomId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceId,
@@ -40,6 +44,7 @@ mod idle_host;
 mod invite_join;
 mod old_rooms;
 mod own_devices;
+mod sealed_records;
 
 /// The app whose document the tests edit, and its record.
 pub(crate) const NOTES: &str = "so.tilo.notes";
@@ -75,13 +80,13 @@ impl Wakes {
 
     /// Block until a wake arrives or `deadline` passes.
     fn wait_until(&self, deadline: Instant) {
-        let woken = self.woken.lock().unwrap();
         let left = deadline.saturating_duration_since(Instant::now());
         let (mut woken, _) = self
             .ready
-            .wait_timeout_while(woken, left, |woken| !*woken)
+            .wait_timeout_while(self.woken.lock().unwrap(), left, |woken| !*woken)
             .unwrap();
         *woken = false;
+        drop(woken);
     }
 }
 
@@ -167,6 +172,67 @@ pub(crate) struct Device {
     enrollments: Mutex<Vec<u64>>,
     /// How each finished join ended.
     pub(crate) joins: Mutex<Vec<Result<RoomId, String>>>,
+    /// This device's channel encryption service, and the thread that pumps
+    /// its governance, as the session broker's drain does; while online.
+    channels: Option<(ChannelKeyAccess, Drain)>,
+    /// The note's document in each room as the notes app here holds it:
+    /// what it wrote and every sealed write it opened.
+    notes: Mutex<HashMap<RoomId, automerge::AutoCommit>>,
+    /// Every sealed write to the note in each room this device made or
+    /// opened, in order, as it travelled.
+    note_writes: Mutex<HashMap<RoomId, Vec<collab_types::SignedOp>>>,
+}
+
+/// The session broker's drain, as far as channels go: parked until the
+/// network or the channel service pokes it, it pumps channel governance
+/// and wakes the loop, which reads what arrived.
+struct Drain {
+    quit: Arc<AtomicBool>,
+    park: Arc<crate::idle_wake::DrainPark>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drain {
+    fn start(net: &Arc<ShellNetwork>, channels: ChannelKeyAccess, wakes: &Arc<Wakes>) -> Self {
+        let quit = Arc::new(AtomicBool::new(false));
+        let park = Arc::clone(&net.drain_wake);
+        let net = Arc::downgrade(net);
+        let thread = std::thread::spawn({
+            let quit = Arc::clone(&quit);
+            let park = Arc::clone(&park);
+            let wakes = Arc::clone(wakes);
+            move || {
+                let mut due = Some(Duration::ZERO);
+                loop {
+                    park.wait(due);
+                    if quit.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let Some(net) = net.upgrade() else {
+                        return;
+                    };
+                    due = channels.pump_until_due(&*net);
+                    drop(net);
+                    wakes.wake();
+                }
+            }
+        });
+        Self {
+            quit,
+            park,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for Drain {
+    fn drop(&mut self) {
+        self.quit.store(true, Ordering::Release);
+        self.park.poke();
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
 }
 
 impl Device {
@@ -212,6 +278,9 @@ impl Device {
             state: Mutex::default(),
             enrollments: Mutex::default(),
             joins: Mutex::default(),
+            channels: None,
+            notes: Mutex::default(),
+            note_writes: Mutex::default(),
         };
         device.go_online();
         device
@@ -219,6 +288,10 @@ impl Device {
 
     /// Start this device's session over its current tree, as a session
     /// starts: the network, its wake into the loop, and its rooms.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the network it starts is this device's for as long as it is online"
+    )]
     fn go_online(&mut self) {
         assert!(self.net.is_none(), "{} is already online", self.label);
         let root = self.root.clone();
@@ -256,13 +329,34 @@ impl Device {
         let wakes = Arc::clone(&self.wakes);
         net.set_wake(Arc::new(move || wakes.wake()));
         assert!(net.join_default_workspace());
-        self.net = Some(Arc::new(net));
+        // As a session starts: the rooms this device hosted before are
+        // served again.
+        net.open_hosted_rooms();
+        let net = Arc::new(net);
+        let mut vault = [0x5A; 32];
+        vault[..2].copy_from_slice(&self.salt.to_le_bytes());
+        let channels = crate::shell::collab_broker::channel_key_access(
+            ChannelEncryptionConfig {
+                root: self.dir.join("channels"),
+                vault: channel_crypto::VaultKey::new(vault),
+                device_key: self.key(),
+            },
+            self.tree.clone(),
+            Some(Arc::clone(&net)),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+        )
+        .expect("the device's channel state opens");
+        let drain = Drain::start(&net, channels.clone(), &self.wakes);
+        self.channels = Some((channels, drain));
+        self.net = Some(net);
     }
 
     /// Take this device off the network, as shutting it down does: its
     /// session ends, its state stays on disk.
     pub(crate) fn go_offline(&mut self) {
         let net = self.net.take().expect("the device is online");
+        self.channels = None;
+        self.notes.lock().unwrap().clear();
         crate::shell::persist::wait_for_saves();
         drop(
             Arc::try_unwrap(net)
@@ -293,13 +387,22 @@ impl Device {
         dead_code,
         reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
     )]
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the drain stops before the network changes and starts again after"
+    )]
     pub(crate) fn hold_live_keys(
         &mut self,
         keys: fn(collab_types::ChannelId) -> channel_crypto::ChannelContentKeys,
     ) {
-        let net = Arc::get_mut(self.net.as_mut().expect("the device is online"))
-            .expect("nothing else holds the device's network");
-        net.live_keys = Box::new(move |_, channel| Some(keys(channel)));
+        let (channels, drain) = self.channels.take().expect("the device is online");
+        drop(drain);
+        let net = self.net.as_mut().expect("the device is online");
+        Arc::get_mut(net)
+            .expect("nothing else holds the device's network")
+            .live_keys = Box::new(move |_, channel| Some(keys(channel)));
+        let drain = Drain::start(net, channels.clone(), &self.wakes);
+        self.channels = Some((channels, drain));
     }
 
     pub(crate) fn net(&self) -> &Arc<ShellNetwork> {
@@ -382,12 +485,15 @@ impl Device {
     /// When this device's loop next has to run though nothing wakes it.
     fn next_deadline(&self) -> Option<Instant> {
         self.net.as_ref()?;
-        let state = self.state.lock().unwrap();
-        let layout = state.layout.and_then(|(seen, at)| {
+        let (layout, polled) = {
+            let state = self.state.lock().unwrap();
+            (state.layout, state.polled)
+        };
+        let layout = layout.and_then(|(seen, at)| {
             (seen != self.tree.generation()).then(|| at.checked_add(LAYOUT_CHECK).unwrap_or(at))
         });
         let poll = (!self.enrollments.lock().unwrap().is_empty()).then(|| {
-            state.polled.map_or_else(Instant::now, |at| {
+            polled.map_or_else(Instant::now, |at| {
                 at.checked_add(ENROLLMENT_POLL).unwrap_or(at)
             })
         });
@@ -494,6 +600,10 @@ impl Device {
     }
 
     /// Close the window showing `tab` in `room`'s workspace.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the window closes in one write of the tree"
+    )]
     pub(crate) fn close_window(&self, room: RoomId, tab: u64) {
         let mut tree = self.tree.write();
         let workspace = tree
@@ -510,84 +620,223 @@ impl Device {
     }
 
     fn mint(&self) -> u64 {
-        let mut minted = self.minted.lock().unwrap();
-        *minted = minted.saturating_add(1);
-        tilo_desktop_model::compose_id(self.salt, 0x00E2_E000 + *minted)
+        let minted = {
+            let mut minted = self.minted.lock().unwrap();
+            *minted = minted.saturating_add(1);
+            *minted
+        };
+        tilo_desktop_model::compose_id(self.salt, minted.saturating_add(0x00E2_E000))
     }
 
-    /// Let the notes app keep records in `room` and have the room's host
-    /// make the note's empty record, as opening the app there first does.
-    /// The workspace's owner does this once; whoever opens it later finds
-    /// the record.
+    /// Let the notes app keep records in `room`, as opening the app there
+    /// first does: the room's host lets it author, and the note's record is
+    /// its sealed channel, which this device asks the room's steward for.
+    /// Every hosted room is sealed, wherever it is hosted. Whoever opens
+    /// the app later finds the record.
     pub(crate) fn open_notes_first(&self, room: RoomId) {
+        self.let_notes_author(room)
+            .unwrap_or_else(|error| panic!("the host lets the notes app author: {error}"));
+        self.assert_sealed(room);
+        let _ = self.note_keys(room);
+    }
+
+    /// Ask `room`'s host to let the notes app author the room's records, as
+    /// this device: the host's answer.
+    pub(crate) fn let_notes_author(&self, room: RoomId) -> Result<(), String> {
         let net = Arc::clone(self.net());
         let cert = self.cert();
         let runtime = net.runtime_handle().unwrap();
         runtime
             .block_on(net.grant_app_authorship_at_host(room, &cert, NOTES))
-            .expect("the room's host answers for the app's authorship")
-            .unwrap_or_else(|error| panic!("the host lets the notes app author: {error}"));
-        runtime
-            .block_on(net.prepare_application_record_at_host(room, &cert, NOTES, NOTE_RECORD))
-            .expect("the room's host answers for the app's record")
-            .unwrap_or_else(|error| panic!("the host makes the note's record: {error}"));
+            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
+            .map(|_| ())
     }
 
-    /// Whether this device holds the note's record in `room`.
+    /// `room`'s records are sealed channels each app opens itself, never
+    /// documents this device's owner commits.
+    fn assert_sealed(&self, room: RoomId) {
+        assert!(
+            self.tree.read().seals_records(room),
+            "{} holds {room} as a sealed room",
+            self.label
+        );
+    }
+
+    /// The note's channel keys in `room`, once the room's steward admitted
+    /// this device: what the identity service answers the notes app.
+    fn note_keys(&self, room: RoomId) -> Option<channel_crypto::ChannelContentKeys> {
+        let (channels, _) = self.channels.as_ref()?;
+        let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
+        match channels.access_record(room, &route).0 {
+            ChannelAccess::Ready(keys) => Some(keys),
+            ChannelAccess::Waiting => None,
+            other => panic!("{} cannot open the note's channel: {other:?}", self.label),
+        }
+    }
+
+    /// Where this device stands on the note's channel in `room`, as the
+    /// identity service answers the notes app, refusals included.
+    pub(crate) fn note_access(&self, room: RoomId) -> ChannelAccess {
+        let Some((channels, _)) = self.channels.as_ref() else {
+            return ChannelAccess::Unavailable;
+        };
+        let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
+        channels.access_record(room, &route).0
+    }
+
+    /// Every sealed write to the note in `room` this device made or opened
+    /// so far, in order.
+    pub(crate) fn note_writes(&self, room: RoomId) -> Vec<collab_types::SignedOp> {
+        self.note_writes
+            .lock()
+            .unwrap()
+            .get(&room)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Whether this device holds the note's channel in `room`, so the notes
+    /// app here reads and writes it.
     pub(crate) fn holds_note(&self, room: RoomId) -> bool {
-        self.net.as_ref().is_some_and(|net| {
-            net.native_owner().is_ok_and(|owner| {
-                owner
-                    .with_current(room, |view| {
-                        Ok(view.peer().document(NOTES, NOTE_RECORD).is_some())
-                    })
-                    .unwrap_or(false)
-            })
-        })
+        self.assert_sealed(room);
+        self.note_keys(room).is_some()
     }
 
     /// Write `text` into the note in `room`, as the notes app does: a
-    /// change to its record signed by this device and committed by its
-    /// owner, which publishes it to the room's host.
+    /// change to its document sealed under the record's channel keys,
+    /// signed by this device and published to the room's host.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the note's document is edited and its change taken in one hold"
+    )]
     pub(crate) fn write_note(&self, room: RoomId, text: &str) {
-        let net = self.net();
-        let owner = net.native_owner().unwrap();
+        self.assert_sealed(room);
+        let keys = self
+            .note_keys(room)
+            .unwrap_or_else(|| panic!("{} holds the note's channel", self.label));
+        self.read_notes(room, &keys);
         let key = self.key();
+        let changes = {
+            let mut notes = self.notes.lock().unwrap();
+            let document = notes.entry(room).or_default();
+            document.set_actor(automerge::ActorId::from(
+                key.verifying_key().to_bytes().to_vec(),
+            ));
+            let heads = document.get_heads();
+            document.put(automerge::ROOT, NOTE_TEXT, text).unwrap();
+            document.commit_with(typed());
+            document.save_after(&heads)
+        };
+        let room_id = room.to_string();
+        let artifact = collab_types::document_artifact_id(NOTES, &room_id, NOTE_RECORD);
+        let mut frames = collab_types::DocumentMutation::Incremental(changes)
+            .encode_frames()
+            .unwrap();
+        assert_eq!(frames.len(), 1, "a note's edit is one frame");
+        let frame = frames.remove(0);
+        // Sealed under the storage class its frame is, as every app's
+        // collaboration seals it: an edit is a delta, never a checkpoint.
+        let (metadata, sealed) = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::of_frame(&frame),
+                &frame,
+            )
+            .unwrap();
         let now = SystemTime::now();
-        let changes = owner
-            .with_current(room, |view| {
-                let bytes = view
-                    .peer()
-                    .document(NOTES, NOTE_RECORD)
-                    .ok_or("the note's record is not here yet")?;
-                let mut document =
-                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                document.set_actor(automerge::ActorId::from(
-                    key.verifying_key().to_bytes().to_vec(),
-                ));
-                let heads = document.get_heads();
-                document
-                    .put(automerge::ROOT, NOTE_TEXT, text)
-                    .map_err(|error| error.to_string())?;
-                Ok(document.save_after(&heads))
-            })
-            .unwrap_or_else(|error| panic!("{} edits the note: {error}", self.label));
-        let message = note_message(room, changes, &key, now);
-        owner
-            .commit_document(tilo_joined_room::testing::request(&message).unwrap(), now)
-            .unwrap_or_else(|error| panic!("{}'s owner commits the edit: {error}", self.label));
-        net.schedule_native_owner_publication(room);
+        let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+            sealed,
+            artifact,
+            collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            collab_types::document_attestation_id(NOTES, &room_id, NOTE_RECORD),
+            collab_types::OpKind::Change,
+            now,
+            collab_types::next_unordered_document_sequence(now),
+            metadata,
+        );
+        collab_types::sign_op(&mut op, &key).unwrap();
+        self.note_writes
+            .lock()
+            .unwrap()
+            .entry(room)
+            .or_default()
+            .push(op.clone());
+        self.net()
+            .publish_document(NOTES.into(), room_id, NOTE_RECORD, op);
+    }
+
+    /// Open every sealed write to the note in `room` that reached this
+    /// device, into the note's document here.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "every arrived write opens into the note's document in one hold"
+    )]
+    fn read_notes(&self, room: RoomId, keys: &channel_crypto::ChannelContentKeys) {
+        let room_id = room.to_string();
+        let arrived: Vec<_> = {
+            let inbound = self.net().inbound_documents_handle();
+            let mut inbound = inbound.lock().unwrap();
+            let (notes, rest) = std::mem::take(&mut *inbound)
+                .into_iter()
+                .partition(|document| {
+                    document.app_id == NOTES
+                        && document.cluster_id == room_id
+                        && document.record_id == NOTE_RECORD
+                });
+            *inbound = rest;
+            notes
+        };
+        let mut notes = self.notes.lock().unwrap();
+        let document = notes.entry(room).or_default();
+        for entry in arrived {
+            let envelope = entry.envelope;
+            self.note_writes
+                .lock()
+                .unwrap()
+                .entry(room)
+                .or_default()
+                .push((*envelope).clone());
+            let opened = keys
+                .open_content(
+                    envelope.artifact,
+                    envelope.encryption.as_ref().expect("the note is sealed"),
+                    &envelope.payload,
+                )
+                .unwrap_or_else(|error| panic!("{} opens the note: {error}", self.label));
+            match collab_types::DocumentFrame::decode(&opened).unwrap() {
+                collab_types::DocumentFrame::Whole(collab_types::DocumentMutation::Snapshot(
+                    bytes,
+                )) => {
+                    document
+                        .merge_incoming(&mut automerge::AutoCommit::load(&bytes).unwrap())
+                        .unwrap();
+                }
+                collab_types::DocumentFrame::Whole(
+                    collab_types::DocumentMutation::Incremental(bytes),
+                ) => {
+                    document.load_incoming(&bytes).unwrap();
+                }
+                other => panic!("a note's write is one whole frame: {other:?}"),
+            }
+        }
     }
 
     /// The note's text in `room` as the notes app here shows it.
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
-        let owner = self.net.as_ref()?.native_owner().ok()?;
-        let bytes = owner
-            .with_current(room, |view| Ok(view.peer().document(NOTES, NOTE_RECORD)))
-            .ok()??;
-        let document = automerge::AutoCommit::load(&bytes).ok()?;
-        let (value, _) = document.get(automerge::ROOT, NOTE_TEXT).ok()??;
-        value.as_str().map(str::to_owned)
+        self.net.as_ref()?;
+        self.assert_sealed(room);
+        let keys = self.note_keys(room)?;
+        self.read_notes(room, &keys);
+        let notes = self.notes.lock().unwrap();
+        let text = notes
+            .get(&room)?
+            .get(automerge::ROOT, NOTE_TEXT)
+            .ok()??
+            .0
+            .as_str()
+            .map(str::to_owned);
+        drop(notes);
+        text
     }
 
     // What the person sees.
@@ -721,6 +970,22 @@ impl Device {
         .unwrap_or_else(|error| panic!("the room's host changes the role: {error}"));
     }
 
+    /// Remove `person` from `room`, as its owner on this device.
+    pub(crate) fn remove_member(&self, room: RoomId, person: &Person) {
+        let net = self.net();
+        let target = net
+            .administered_room(room)
+            .unwrap_or_else(|| panic!("{} administers the room it owns", self.label));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("person".into(), hex::encode(person.user()).into());
+        net.govern(
+            &target,
+            tilo_action_policy::roles::governance::REMOVE_MEMBER,
+            arguments,
+        )
+        .unwrap_or_else(|error| panic!("the room's host removes the member: {error}"));
+    }
+
     /// The rooms this device's own host serves; empty while it runs none.
     pub(crate) fn hosted_rooms(&self) -> Vec<RoomId> {
         let Some(host) = self.net.as_ref().and_then(|net| net.room_host()) else {
@@ -757,34 +1022,11 @@ impl Device {
     }
 }
 
-/// The signed change `changes` to the note in `room` by `key`, as the notes
-/// app sends it.
-fn note_message(
-    room: RoomId,
-    changes: Vec<u8>,
-    key: &SigningKey,
-    now: SystemTime,
-) -> neighbour_wire::NeighbourMsg {
-    let room = room.to_string();
-    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let mutation = collab_types::DocumentMutation::Incremental(changes);
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        mutation.encode().unwrap(),
-        collab_types::document_artifact_id(NOTES, &room, NOTE_RECORD),
-        author,
-        collab_types::document_attestation_id(NOTES, &room, NOTE_RECORD),
-        collab_types::OpKind::Change,
-        now,
-        collab_types::next_unordered_document_sequence(now),
-    );
-    collab_types::sign_op(&mut envelope, key).unwrap();
-    neighbour_wire::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(author.as_bytes()),
-        app_id: NOTES.into(),
-        cluster_id: room,
-        record_id: NOTE_RECORD.into(),
-        envelope: Box::new(envelope),
-    }
+/// How the notes app commits what a person typed: a direct edit of the
+/// record that names no finer action.
+fn typed() -> automerge::transaction::CommitOptions {
+    automerge::transaction::CommitOptions::default()
+        .with_message(tilo_actions::FrameworkChange::Native.change_message())
 }
 
 /// Run `devices`' loops until `probe` answers, waking only when one of
@@ -832,5 +1074,6 @@ pub(crate) fn hosted_workspace(
     until(&all, "the new workspace to be hosted on its device", || {
         (device.holds(room) && device.hosted_rooms().contains(&room)).then_some(())
     });
+    drop(all);
     (local, room)
 }

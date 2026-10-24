@@ -127,6 +127,13 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
     })
 }
 
+/// Whether the invitation `invite_id` was redeemed in the room whose
+/// admitted document `doc` is. An invitation is redeemed once.
+#[must_use]
+pub fn invitation_redeemed(doc: &AutoCommit, invite_id: &[u8; 32]) -> bool {
+    invitation_receipts(doc).is_ok_and(|receipts| receipts.contains_key(&hex::encode(invite_id)))
+}
+
 pub(crate) fn invitation_receipts(
     doc: &AutoCommit,
 ) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {

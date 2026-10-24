@@ -1451,6 +1451,10 @@ pub trait FileClipboardServices: Send + Sync {
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
 }
+/// A grant being recorded ([`AppActionGrants::record`]): its id once it is
+/// in force, or why it is not.
+pub type GrantRecording =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>;
 /// Where grants a person gives an application for another app's action are
 /// recorded. The broker decides whether to ask and builds the grant; the
 /// host owns the workspace records it lands in.
@@ -1459,14 +1463,16 @@ pub trait AppActionGrants: Send + Sync {
     /// so a grant they give can be recorded here.
     fn may_grant(&self, room: &str, person: &str) -> bool;
     /// Record `grant` in `request.room` as given by `request.person`, and
-    /// note `answer` in the workspace's history. The recorded grant's id, or
-    /// `None` when it could not be recorded.
+    /// note `answer` in the workspace's history. Resolves to the recorded
+    /// grant's id once the grant is in force here, so the call it was given
+    /// for is admitted with it in place. Otherwise it resolves to why
+    /// nothing was granted, worded for the person.
     fn record(
         &self,
         request: &crate::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
         answer: crate::app_actions::AppActionConsent,
-    ) -> Option<String>;
+    ) -> GrantRecording;
     /// Remove the grant `grant` from `room`: a grant given once, now that
     /// its call was decided.
     fn revoke(&self, room: &str, grant: &str);

@@ -149,10 +149,17 @@ impl crate::services::AppActionGrants for Native {
         _request: &crate::app_actions::AppActionConsentRequest,
         grant: tilo_action_policy::Grant,
         _answer: crate::app_actions::AppActionConsent,
-    ) -> Option<String> {
+    ) -> crate::services::GrantRecording {
         let id = grant.id.as_str().to_owned();
-        self.granted.lock().unwrap().as_mut()?.push(grant);
-        Some(id)
+        let recorded = self
+            .granted
+            .lock()
+            .unwrap()
+            .as_mut()
+            .map(|granted| granted.push(grant))
+            .map(|()| id)
+            .ok_or_else(|| "nothing is granted here".to_owned());
+        Box::pin(std::future::ready(recorded))
     }
     fn revoke(&self, requested: &str, grant: &str) {
         assert_eq!(requested, room().to_string());

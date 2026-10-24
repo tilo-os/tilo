@@ -471,13 +471,13 @@ async fn expired_agent_delegation_cannot_invoke_host() {
         lifetime = lifetime.saturating_mul(2);
     };
 
-    // Just past expiry, without waiting for the access audit.
+    // Just past expiry. An access audit may already have ended the session
+    // (one is due at the expiry, and a connection's first comes a second
+    // after it connected), and then the frame is never sent.
     let remaining = expires.saturating_sub(tilo_clock::try_unix_now_ns().unwrap());
     tokio::time::sleep(Duration::from_nanos(remaining).saturating_add(Duration::from_millis(20)))
         .await;
-    client
-        .send(to_host(frame(invoke(InvocationId::new()))))
-        .unwrap();
+    let _ = client.send(to_host(frame(invoke(InvocationId::new()))));
     let refused = refusal(&client, "agent").await;
     assert!(
         refused.is_none_or(|reason| reason == UnavailableReason::NotAuthorised),

@@ -14,6 +14,7 @@ use super::idle_quiet_tests::{
 };
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
 use crate::network::actor::gossip_caches_drain_within;
+use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
 /// How often a desktop whose relays rest may block, every thread of the
@@ -250,18 +251,50 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         .try_send(NetCmd::Connect { addr: first_addr })
         .unwrap();
     let invitation = first.issue_invite(home_workspace, 3600).unwrap();
-    second.accept_peer_invitation(&invitation).unwrap();
+    assert_eq!(
+        first.pending_invitations(room).len(),
+        1,
+        "the invitation waits to be redeemed"
+    );
+    // The collaborator's enrollment finishes when it is asked about, as the
+    // join sheet asks.
+    let PeerSyncResponse::EnrollmentPending { id } =
+        second.accept_peer_invitation(&invitation).unwrap()
+    else {
+        panic!("redeeming the invitation enrolls with the room's host");
+    };
+    until("the collaborator to enroll at the room's host", || {
+        first.tick();
+        second.tick();
+        match second.poll_enrollment(id).unwrap() {
+            PeerSyncResponse::EnrollmentPending { .. } => None,
+            joined => Some(joined),
+        }
+    });
+    until("the collaborator to hold the room", || {
+        first.tick();
+        second.tick();
+        (workspace_name(&second_tree, room).as_deref() == Some("Home")
+            && second_tree.read().native_authority.holds(room))
+        .then_some(())
+    });
+    // The room's state can reach the collaborator before its host sees them
+    // as a member. Keep the collaborator until it does.
+    until("the host to count the collaborator as a member", || {
+        first.tick();
+        second.tick();
+        first.hosts_other_members().then_some(())
+    });
+    // Redeemed, as the room's document records, the invitation is no longer
+    // pending: nobody is still to come with it.
+    until("the redeemed invitation to leave the pending list", || {
+        first.tick();
+        first.pending_invitations(room).is_empty().then_some(())
+    });
     until("the two desktops to converge with their relays up", || {
         first.tick();
         second.tick();
-        // The room's state can reach the collaborator before its host's
-        // owner sees them as a member. Keep the collaborator until it does.
-        (workspace_name(&second_tree, room).as_deref() == Some("Home")
-            && second_tree.read().native_authority.holds(room)
-            && first.hosts_other_members()
-            && !first.reachability.is_dormant()
-            && !second.reachability.is_dormant())
-        .then_some(())
+        (!first.reachability.is_dormant() && !second.reachability.is_dormant()).then_some(())
     });
 
     // The collaborator leaves: its session ends, and the owner takes them
@@ -396,4 +429,169 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
         "an open invitation holds the relays up"
     );
     drop(net);
+}
+
+/// A desktop governs the room it hosts through its own host's in-process
+/// caller, as an endpoint cannot dial itself: changing a collaborator's
+/// role and then removing them are the host's room governance actions, and
+/// both reach the room's admitted document here.
+#[test]
+#[serial_test::serial]
+fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[48; 32]);
+    home.env().set("TILO_USER_ID", person_of(&root));
+
+    let mut first_tree = WorkspaceTree::default();
+    // A new workspace waits to be placed on this device's host.
+    let (workspace, room) = first_tree.create_hosted_workspace("Home");
+    first_tree.persist_path = Some(dir.path().join("first/workspaces.json"));
+    let first_tree = first_tree.shared();
+    let first = device_reaching(
+        first_tree.clone(),
+        &dir.path().join("first"),
+        &root,
+        DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(first.join_default_workspace());
+    until("the workspace to be hosted here", || {
+        first.tick();
+        first.administered_room(room)
+    });
+    let second_tree = WorkspaceTree {
+        persist_path: Some(dir.path().join("second/workspaces.json")),
+        ..WorkspaceTree::default()
+    }
+    .shared();
+    let collaborator_root = SigningKey::from_bytes(&[49; 32]);
+    let collaborator = person_of(&collaborator_root);
+    let second = device_reaching(
+        second_tree,
+        &dir.path().join("second"),
+        &collaborator_root,
+        DeviceCapabilities::member(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(second.join_default_workspace());
+    let first_addr = until("the first device to listen", || first.dial_addr());
+    second
+        .cmd_tx
+        .try_send(NetCmd::Connect { addr: first_addr })
+        .unwrap();
+    let invitation = first.issue_invite(workspace, 3600).unwrap();
+    let PeerSyncResponse::EnrollmentPending { id } =
+        second.accept_peer_invitation(&invitation).unwrap()
+    else {
+        panic!("redeeming the invitation enrolls with the room's host");
+    };
+    until("the collaborator to enroll at the room's host", || {
+        first.tick();
+        second.tick();
+        match second.poll_enrollment(id).unwrap() {
+            PeerSyncResponse::EnrollmentPending { .. } => None,
+            joined => Some(joined),
+        }
+    });
+    let role_of = |tree: &WorkspaceTreeHandle| {
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .and_then(|workspace| workspace.policy.members.get(&collaborator).copied())
+    };
+    until("the host to count the collaborator as a member", || {
+        first.tick();
+        second.tick();
+        (first.hosts_other_members() && role_of(&first_tree).is_some()).then_some(())
+    });
+
+    first
+        .ask_governor(
+            room,
+            GovernanceRequest::Policy(tilo_action_policy::Change::SetRole {
+                person: collaborator.clone(),
+                role: tilo_action_policy::Role::Commenter,
+            }),
+        )
+        .expect("this device's host changes the collaborator's role");
+    until("the role change to reach the room's document here", || {
+        first.tick();
+        (role_of(&first_tree) == Some(tilo_action_policy::Role::Commenter)).then_some(())
+    });
+    drop(second);
+    first
+        .ask_governor(
+            room,
+            GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
+                person: collaborator.clone(),
+            }),
+        )
+        .expect("this device's host removes the collaborator");
+    until("the removal to reach the room's document here", || {
+        first.tick();
+        role_of(&first_tree).is_none().then_some(())
+    });
+    assert!(
+        !first.hosts_other_members(),
+        "the removed collaborator is still a member of the room hosted here"
+    );
+    drop(first);
+}
+
+/// A rename made on a desktop of a room its own host holds, with the relays
+/// down and nobody else to reach, is the host's room governance action,
+/// asked through its in-process caller: the room's admitted document here
+/// carries the new name, and nothing waits.
+#[test]
+#[serial_test::serial]
+fn a_rename_of_a_room_hosted_here_applies_with_the_relays_down() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[50; 32]);
+    home.env().set("TILO_USER_ID", person_of(&root));
+
+    let mut tree = WorkspaceTree::default();
+    let (_, room) = tree.create_hosted_workspace("Home");
+    tree.persist_path = Some(dir.path().join("workspaces.json"));
+    let tree = tree.shared();
+    let device = device_reaching(
+        tree.clone(),
+        dir.path(),
+        &root,
+        DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays,
+    );
+    let name_of = |tree: &WorkspaceTreeHandle| {
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .map(|workspace| workspace.name.clone())
+    };
+    until("the workspace to be hosted here", || {
+        device.tick();
+        tree.read().native_authority.holds(room).then_some(())
+    });
+
+    tree.write().request_governance(
+        room,
+        GovernanceRequest::Command(
+            tilo_desktop_model::commands::DesktopCommand::RenameWorkspace {
+                name: "Design".into(),
+            },
+        ),
+    );
+    until("the rename to reach the room's document here", || {
+        device.tick();
+        (name_of(&tree).as_deref() == Some("Design")).then_some(())
+    });
+    assert!(
+        tree.read().governance_requests.is_empty(),
+        "the rename still waits for a governor"
+    );
+    drop(device);
 }

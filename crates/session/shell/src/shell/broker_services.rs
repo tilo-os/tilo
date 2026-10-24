@@ -243,8 +243,8 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
 
     fn room_unavailable(&self, room: &str) -> Option<String> {
         super::state::RoomId::parse(room)
-            .is_some_and(|room| self.tree.read().on_this_device_only(room))
-            .then(|| super::i18n::t("workspace-on-this-device-only-no-documents"))
+            .and_then(|room| self.tree.read().documents_unavailable(room))
+            .map(super::i18n::t)
     }
     fn requires_room(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
@@ -253,8 +253,7 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
     /// A room its node stewards: this owner forwards an opening app's
     /// authorship to that host ([`grant_authorship_at_host`]).
     fn grants_authorship_at_host(&self, room: &str) -> bool {
-        super::state::RoomId::parse(room)
-            .is_some_and(|room| !self.tree.read().commits_native_documents(room))
+        super::state::RoomId::parse(room).is_some_and(|room| self.tree.read().seals_records(room))
     }
 
     fn health(&self) -> Result<(), String> {
@@ -1123,8 +1122,9 @@ impl NativeShortcutLibrary {
         change: tilo_action_broker::automation::ShortcutChange,
     ) -> Result<(), String> {
         use tilo_action_broker::automation::ShortcutChange;
-        if tree.read().on_this_device_only(room) {
-            return Err(super::i18n::t("workspace-on-this-device-only-no-documents"));
+        let unavailable = tree.read().documents_unavailable(room);
+        if let Some(reason) = unavailable {
+            return Err(super::i18n::t(reason));
         }
         let owner = super::native_workspace_owner::attached(&tree)
             .ok_or("the workspace is no longer hosted here")?;
@@ -1456,38 +1456,30 @@ fn decode_governance_operation(
 }
 
 /// Grants people give applications for other apps' actions, recorded in the
-/// workspace's own records by the person who gave them and noted in its
-/// history.
-pub struct NativeAppActionGrants(pub WorkspaceTreeHandle);
-impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
-    fn may_grant(&self, room: &str, person: &str) -> bool {
-        let tree = self.0.read();
-        tree.desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room().to_string() == room)
-            .is_some_and(|workspace| {
-                workspace.may_govern_at(
-                    person,
-                    tilo_action_policy::roles::governance::GRANT,
-                    tilo_clock::unix_now(),
-                )
-            })
+/// room's own records at its governor, the room's host, as given by the
+/// person who gave them, and noted in the room's history. A grant is in
+/// force once the room as this device holds it carries it: the call it was
+/// given for waits until then ([`super::network::ShellNetwork::put_grant_in_force`]).
+pub struct NativeAppActionGrants {
+    tree: WorkspaceTreeHandle,
+    /// The way to the rooms' hosts; without one nothing is granted.
+    network: Option<Arc<super::network::ShellNetwork>>,
+}
+
+impl NativeAppActionGrants {
+    pub fn new(
+        tree: WorkspaceTreeHandle,
+        network: Option<Arc<super::network::ShellNetwork>>,
+    ) -> Self {
+        Self { tree, network }
     }
-    fn record(
-        &self,
+
+    /// The receipt noting `answer` to `request` in the room's history,
+    /// as `request.person` gave it.
+    fn receipt(
         request: &tilo_action_broker::app_actions::AppActionConsentRequest,
-        grant: tilo_action_policy::Grant,
         answer: tilo_action_broker::app_actions::AppActionConsent,
-    ) -> Option<String> {
-        let mut tree = self.0.write();
-        let workspace_id = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.room().to_string() == request.room)?
-            .id;
-        let id = tree.grant_in_workspace(workspace_id, &request.person, grant)?;
+    ) -> tilo_desktop_model::WorkspaceEffectReceipt {
         let label = |app: &str| {
             super::launcher::display_name_for_app_id(app)
                 .unwrap_or_else(|| super::launcher::display_name_for_package_id(app))
@@ -1505,20 +1497,95 @@ impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
             &format!("{} · {}", request.resource_label, request.action_label),
             answer.lifetime(),
         );
-        let _ = tree.append_workspace_effect_receipt(
-            workspace_id,
+        tilo_desktop_model::WorkspaceEffectReceipt::recorded(
             tilo_actions::InvocationId::new(),
             &request.person,
             context,
             tilo_actions::EffectReceiptStatus::Succeeded,
-        );
-        tree.desktop.external_revision = tree.desktop.external_revision.wrapping_add(1);
-        tree.queue_save();
+            i64::try_from(tilo_clock::unix_now()).unwrap_or(i64::MAX),
+        )
+    }
+
+    /// Whether the room's policy as this device holds it lets `person`
+    /// give `grant` in `room`: what the host would refuse is refused here
+    /// without asking. Why not, when it does not.
+    fn precheck(
+        &self,
+        room: super::state::RoomId,
+        person: &str,
+        grant: &tilo_action_policy::Grant,
+    ) -> Result<(), String> {
+        let tree = self.tree.read();
+        let mut edited = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .cloned()
+            .ok_or("the workspace is not on this device")?;
         drop(tree);
-        Some(id.as_str().to_owned())
+        edited
+            .govern_all_at(
+                person,
+                vec![tilo_action_policy::Change::Grant(grant.clone())],
+                tilo_clock::unix_now(),
+            )
+            .map(drop)
+            .map_err(|refusal| refusal.to_string())
+    }
+}
+
+impl tilo_action_broker::services::AppActionGrants for NativeAppActionGrants {
+    fn may_grant(&self, room: &str, person: &str) -> bool {
+        let tree = self.tree.read();
+        tree.desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room().to_string() == room)
+            .is_some_and(|workspace| {
+                workspace.may_govern_at(
+                    person,
+                    tilo_action_policy::roles::governance::GRANT,
+                    tilo_clock::unix_now(),
+                )
+            })
+    }
+    fn record(
+        &self,
+        request: &tilo_action_broker::app_actions::AppActionConsentRequest,
+        grant: tilo_action_policy::Grant,
+        answer: tilo_action_broker::app_actions::AppActionConsent,
+    ) -> tilo_action_broker::services::GrantRecording {
+        let Some(room) = super::state::RoomId::parse(&request.room) else {
+            return Box::pin(std::future::ready(Err("no such workspace".into())));
+        };
+        let receipt = Self::receipt(request, answer);
+        let tree = self.tree.clone();
+        let checked = self.precheck(room, &request.person, &grant);
+        let network = self.network.clone();
+        Box::pin(async move {
+            let asked = grant.clone();
+            let recorded = match (checked, network) {
+                (Err(refusal), _) => Err(refusal),
+                (Ok(()), None) => Err("this workspace's host is out of reach".into()),
+                (Ok(()), Some(network)) => network.put_grant_in_force(room, grant, receipt).await,
+            };
+            recorded
+                .map(|id| id.as_str().to_owned())
+                .inspect_err(|reason| {
+                    // Said as any refused change to the room is.
+                    tree.write().refuse_governance(
+                        room,
+                        super::state::GovernanceRequest::Policy(tilo_action_policy::Change::Grant(
+                            asked,
+                        )),
+                        reason.clone(),
+                    );
+                })
+        })
     }
     fn revoke(&self, room: &str, grant: &str) {
-        let mut tree = self.0.write();
+        let mut tree = self.tree.write();
         let Some(workspace) = tree
             .desktop
             .workspaces
@@ -1779,7 +1846,7 @@ pub fn native_services(
                 as Arc<dyn tilo_action_broker::services::NearbyTransferServices>
         });
     let app_action_grants = membership.as_ref().map(|tree| {
-        Arc::new(NativeAppActionGrants(tree.clone()))
+        Arc::new(NativeAppActionGrants::new(tree.clone(), network.clone()))
             as Arc<dyn tilo_action_broker::services::AppActionGrants>
     });
     #[cfg(target_os = "linux")]
@@ -1943,7 +2010,7 @@ pub(crate) fn test_broker_with_membership(
         ))),
         shortcut_library: Some(Arc::new(NativeShortcutLibrary(membership.clone(), None))),
         keyboard_shortcuts: Some(Arc::new(NativeKeyboardShortcuts)),
-        app_action_grants: Some(Arc::new(NativeAppActionGrants(membership))),
+        app_action_grants: Some(Arc::new(NativeAppActionGrants::new(membership, None))),
         ..Default::default()
     };
     tilo_action_broker::collab_broker_capnp::CapnpBrokerState::test_broker_with_authority(
