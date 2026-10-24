@@ -153,7 +153,9 @@ pub struct WindowToolbar {
 /// What just happened, said in the window's bar for a while: an operation's
 /// result or failure ("Page 1 captured"). The bar shows it in the
 /// location's place, its kind's icon first, and announces it; its one
-/// action ("Undo") stands first among the bar's actions while it shows.
+/// action ("Undo") stands right after its text, a button that names
+/// itself where the row has room and its icon where not, and never goes
+/// into the overflow menu.
 /// Notices replace each other; none stack. A message the person must act
 /// on before it goes is not a notice.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -767,12 +769,13 @@ impl WindowToolbar {
     }
 
     /// The slots as the bar lays them out: the notice up, if any, in the
-    /// location's place (its kind's icon, then its text), and its action
-    /// first among the actions.
+    /// location's place (its kind's icon, then its text). Its action is the
+    /// notice's own, laid out right after its text, never among the
+    /// actions.
     #[must_use]
     pub fn presented(&self) -> Self {
         let mut shown = self.clone();
-        let Some(notice) = shown.notice.clone() else {
+        let Some(notice) = self.notice.as_ref() else {
             return shown;
         };
         shown.location = Some(ToolbarLocation {
@@ -784,11 +787,6 @@ impl WindowToolbar {
             ),
             ..ToolbarLocation::default()
         });
-        if let Some(mut action) = notice.action {
-            action.menu = false;
-            shown.actions.insert(0, action);
-            shown.actions.truncate(MAX_DECLARED_ACTIONS);
-        }
         shown
     }
 

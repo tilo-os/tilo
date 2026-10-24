@@ -286,6 +286,7 @@ pub mod system_search;
 pub mod test_support;
 mod tooltip_layer;
 mod window_bar;
+pub use window_bar::{WindowBarNotice, WindowBarNoticeButton};
 
 /// What answers another provider's action in a harness, in place of the
 /// workspace broker.

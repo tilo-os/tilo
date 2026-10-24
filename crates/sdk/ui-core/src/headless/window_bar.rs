@@ -386,6 +386,49 @@ impl FrameHarness {
         bar
     }
 
+    /// How the window's bar, as the desktop draws it across a window
+    /// `width` wide, shows the notice up (none: no notice is up).
+    #[must_use]
+    pub fn window_bar_notice(&mut self, width: f64) -> Option<WindowBarNotice> {
+        let _settled = crate::motion::testing::settled();
+        let mut bar = self.window_bar(width);
+        // Painting measures the slots' labels; the layout after it sizes
+        // them.
+        bar.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
+        lay_out_bar(&mut bar, width, &self.theme);
+        let row = bar.toolbar_row();
+        let toolbar = row.toolbar()?;
+        let notice = toolbar.notice.as_ref()?;
+        let slots = row.slots();
+        let plain_leading = slots
+            .leading
+            .iter()
+            .zip(&toolbar.leading)
+            .filter(|(rect, action)| !action.navigates && rect.area() > 0.0)
+            .count();
+        Some(WindowBarNotice {
+            text: notice.text.clone(),
+            whole: row.notice_whole().unwrap_or(false),
+            button: notice
+                .action
+                .as_ref()
+                .filter(|_| slots.notice.area() > 0.0)
+                .map(|action| WindowBarNoticeButton {
+                    name: action.name.clone(),
+                    bounds: slots.notice,
+                    labelled: slots.notice_labelled,
+                }),
+            text_bounds: slots.location,
+            beside: slots.actions.len() + plain_leading,
+        })
+    }
+
     /// Paint the window's bar across the top of a `width`-wide window.
     pub(super) fn paint_window_bar(&mut self, scene: &mut Scene, transform: Affine, width: f64) {
         // A capture shows the bar at rest, as a person sees it after it
@@ -439,6 +482,34 @@ impl FrameHarness {
             &self.presence,
         );
     }
+}
+
+/// How the window's bar shows the notice up
+/// ([`FrameHarness::window_bar_notice`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowBarNotice {
+    /// What it says.
+    pub text: String,
+    /// Where its text stands, its kind's icon first.
+    pub text_bounds: Rect,
+    /// Its text stands whole, not cut short.
+    pub whole: bool,
+    /// Its button, where it stands in the row (none: it has none, or the
+    /// row has no room for it).
+    pub button: Option<WindowBarNoticeButton>,
+    /// How many of the app's actions and the leading actions that do not
+    /// move through the content stand in the row beside it, not in the
+    /// overflow menu: what yields to it.
+    pub beside: usize,
+}
+
+/// The notice's button as the window's bar shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowBarNoticeButton {
+    pub name: String,
+    pub bounds: Rect,
+    /// It names itself, not only its icon.
+    pub labelled: bool,
 }
 
 /// The bar's height in whole logical pixels: one row, the slots in it.

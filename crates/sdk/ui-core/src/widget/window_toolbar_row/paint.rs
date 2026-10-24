@@ -285,6 +285,23 @@ pub(super) fn paint_slots(
             overflow,
         );
     }
+    if let Some(action) = toolbar
+        .notice
+        .as_ref()
+        .and_then(|notice| notice.action.as_ref())
+        .filter(|_| slots.notice.area() > 0.0)
+    {
+        let lifted = face(Slot::Notice, action.enabled, false);
+        if slots.notice_labelled {
+            let face = labelled_face(slots.notice, &action.name)
+                .hovered(lifted.hovered && lifted.enabled)
+                .pressed(lifted.pressed && lifted.enabled)
+                .disabled(!lifted.enabled);
+            crate::widget::Button::paint(scene, transform, tr, theme, &face);
+        } else if let Some(icon) = Icon::from_name(&action.icon) {
+            paint_icon_button(scene, transform, tr, theme, (slots.notice, icon), lifted);
+        }
+    }
     let editing = interaction.is_some_and(|i| i.editing);
     let location = toolbar.location.as_ref()?;
     if slots.location.area() <= 0.0 || editing || slots.views_in_location() {

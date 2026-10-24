@@ -2862,7 +2862,8 @@ impl Widget for NotesApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.main.block_drag_scrolling() || self.main.gliding()
+        self.main.block_drag_scrolling()
+            || self.main.gliding()
             || self.main.editor().drag_handles_fading()
             || self.shell.needs_animation_frame()
     }
@@ -4133,6 +4134,25 @@ mod tests {
         assert!(held.text.starts_with("Save failed: "), "{held:?}");
         let retry = held.action.clone().expect("Try again beside it");
         assert_eq!(retry.name, "Try again");
+        // In the window's bar, wide and compact, Try again stands right
+        // after the failure, naming itself where the row has room, and never
+        // in the overflow menu; the failure is cut short only where nothing
+        // that yields to it stands beside it.
+        host.harness().present_in_window_bar();
+        for width in [1280.0, 420.0] {
+            let shown = host
+                .harness()
+                .window_bar_notice(width)
+                .expect("the failure is up in the bar");
+            let button = shown.button.as_ref().expect("Try again stands in the row");
+            assert_eq!(button.name, "Try again");
+            assert!(
+                button.bounds.x0 > shown.text_bounds.x1,
+                "{width} px: {shown:?}"
+            );
+            assert!(shown.whole || shown.beside == 0, "{width} px: {shown:?}");
+            assert!(button.labelled || width < 1280.0, "{width} px: {shown:?}");
+        }
         host.settle();
         host.settle();
         assert_eq!(

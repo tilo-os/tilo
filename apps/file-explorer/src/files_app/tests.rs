@@ -5272,6 +5272,54 @@ mod responsive_body_tests {
         assert!(!told.contains("os error"), "{told}");
     }
 
+    /// A move to Trash's Undo stands in the window's bar right after the
+    /// notice, wide and compact: it names itself where the row has room and
+    /// never goes into the overflow menu, and the notice is cut short only
+    /// where nothing that yields to it stands beside it.
+    #[test]
+    fn a_move_to_trash_keeps_its_undo_in_the_window_bar_wide_and_compact() {
+        use crate::file_ops::Change;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, None);
+        files.navigate(dir.path().to_path_buf());
+        files.wait_for_archive();
+        let mut harness = ui::headless::FrameHarness::for_app(
+            ui::State::new(),
+            files,
+            (1280, 720),
+            Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        let gone = dir.path().join("a.txt").display().to_string();
+        let w = harness.root_mut::<FileExplorerWidget>();
+        ui::undo::UndoControl::set_undo_status(w, &mut || ui::UndoStatus {
+            can_undo: true,
+            ..ui::UndoStatus::default()
+        });
+        w.settle_op(
+            OpFollowUp::Trash { count: 1 },
+            &ui::tilo_resource::Settled::Done(vec![Change::Trashed {
+                from: gone,
+                entry: Some("/trash/files/a.txt".into()),
+            }]),
+        );
+        harness.recompose().unwrap();
+        for width in [1280.0, 420.0] {
+            let shown = harness
+                .window_bar_notice(width)
+                .expect("the move is said in the bar");
+            let button = shown.button.as_ref().expect("Undo stands in the row");
+            assert_eq!(button.name, t("files-notice-undo"));
+            assert!(
+                button.bounds.x0 > shown.text_bounds.x1,
+                "{width} px: {shown:?}"
+            );
+            assert!(shown.whole || shown.beside == 0, "{width} px: {shown:?}");
+            assert!(button.labelled || width < 1280.0, "{width} px: {shown:?}");
+        }
+    }
+
     /// Alt+Left, Alt+Right and Alt+Up go back, forward and up; typing the
     /// start of a name moves to it.
     #[test]

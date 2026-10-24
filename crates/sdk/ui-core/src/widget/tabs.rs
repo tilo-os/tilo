@@ -770,7 +770,6 @@ impl TabBar {
     }
 
     /// The row the active tab's toolbar stands in.
-    #[cfg(test)]
     pub(crate) fn toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
         &self.toolbar_row
     }

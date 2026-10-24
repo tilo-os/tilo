@@ -46,8 +46,9 @@ fn row() -> ToolbarRow {
 }
 
 /// A notice takes the location's place for as long as it is up, at any
-/// width, without moving a slot; its button is a bar action while it
-/// shows, and a screen reader hears it without the focus moving.
+/// width, without moving a slot; its button stands right after its text,
+/// naming itself where the row has room, and runs as a bar action; a
+/// screen reader hears it without the focus moving.
 #[test]
 fn a_notice_stands_in_the_location_and_is_read_out_politely() {
     use crate::widget::toast::ToastKind;
@@ -108,7 +109,18 @@ fn a_notice_stands_in_the_location_and_is_read_out_politely() {
         crate::motion::frame_now(),
     );
     row.lay_out(Rect::new(40.0, 0.0, 640.0, 40.0));
-    let button = row.slots().actions[0].center();
+    assert!(row.measure_views(&Theme::dark()), "the notice is measured");
+    let slots = row.slots();
+    assert!(
+        slots.notice_labelled && slots.notice.width() > CONTROL_PX,
+        "Undo names itself in a wide row: {slots:?}"
+    );
+    assert!(
+        (slots.notice.x0 - slots.location.x1 - CONTROL_GAP).abs() < 1e-9,
+        "right after the notice's text"
+    );
+    assert_eq!(row.slots().actions.len(), 1, "and is not among the actions");
+    let button = row.slots().notice.center();
     assert!(row.press(button));
     assert!(row.release(button));
     assert_eq!(
@@ -1126,4 +1138,106 @@ fn an_unavailable_sidebar_holds_its_place_and_cannot_act() {
         unavailable.take_events().is_empty(),
         "neither a press nor assistive technology toggles it"
     );
+}
+
+/// The bars of a held failure and of an undoable deletion, each with its
+/// notice up.
+fn noticed() -> [(WindowToolbar, &'static str); 2] {
+    use crate::widget::toast::ToastKind;
+    use crate::window_toolbar::ToolbarNotice;
+    let failed = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new("Save failed: the disk is full", ToastKind::Error).action(
+                ToolbarAction::new("save-status-retry", "rotate-cw", "Try again"),
+            ),
+        ),
+        ..calendar()
+    };
+    let deleted = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new("Moved 3 items to the trash", ToastKind::Info)
+                .action(ToolbarAction::new("notice-undo", "undo-2", "Undo")),
+        ),
+        leading: vec![ToolbarAction::new(
+            "new-folder",
+            "folder-plus",
+            "New folder",
+        )],
+        ..file_toolbar(3)
+    };
+    [(failed, "Try again"), (deleted, "Undo")]
+}
+
+/// A notice's text stands whole before any action that yields to the
+/// location stands beside it, and is cut short only once they are all in
+/// the overflow menu. Its button stands right after the text at every
+/// width: it names itself where the row has room for that beside the whole
+/// text, from there on at every wider width, and is its icon where not;
+/// it is never in the overflow menu.
+#[test]
+fn a_notice_stands_whole_before_the_actions_and_its_button_stays_in_the_row() {
+    fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>) {
+        for node in nodes {
+            if node.name.as_deref() == Some(name) {
+                out.push(node);
+            }
+            named(&node.children, name, out);
+        }
+    }
+    for (toolbar, name) in noticed() {
+        let mut labelled_from = None;
+        // From a compact (420 px) window's row (220 px) to a wide one's.
+        for width in (200..=1100).step_by(4).map(f64::from) {
+            let row = calendar_row_of(&toolbar, width);
+            let slots = row.slots();
+            assert!(
+                slots.notice.area() > 0.0,
+                "{name} stands in a {width} px row: {slots:?}"
+            );
+            assert!(
+                slots.notice.x0 >= slots.location.x1 + CONTROL_GAP - 1e-9
+                    && slots.location.area() > 0.0,
+                "{name} stands after the notice's text at {width} px: {slots:?}"
+            );
+            let nodes = row.accessibility();
+            let mut found = Vec::new();
+            named(&nodes, name, &mut found);
+            assert!(
+                !found.is_empty()
+                    && found
+                        .iter()
+                        .all(|node| node.action_target.as_deref() == Some(NOTICE_TARGET)),
+                "{name} is the notice's button alone, never an overflow item, at {width} px"
+            );
+            if row.notice_whole() != Some(true) {
+                assert!(
+                    slots.actions.is_empty()
+                        && slots
+                            .leading
+                            .iter()
+                            .zip(&toolbar.leading)
+                            .all(|(rect, action)| action.navigates || rect.area() <= 0.0),
+                    "the notice is cut short at {width} px only with every plain action \
+                     in the menu: {slots:?}"
+                );
+            }
+            match (slots.notice_labelled, labelled_from) {
+                (true, None) => labelled_from = Some(width),
+                (false, Some(from)) => {
+                    panic!("{name} named itself at {from} px and not at {width} px")
+                }
+                _ => {}
+            }
+            if !slots.notice_labelled {
+                assert!(
+                    (slots.notice.width() - CONTROL_PX).abs() < 1e-9,
+                    "folded, {name} is its icon"
+                );
+            }
+        }
+        assert!(
+            labelled_from.is_some_and(|from| from < 1100.0),
+            "{name} names itself where the row has room"
+        );
+    }
 }
