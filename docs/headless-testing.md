@@ -803,7 +803,7 @@ window starts nothing on its own (no fetch, no projection drain), so what it
 shows stays the scenario's. `TestApp::drive(scenario)` is the same window in a
 Rust test, and `testing::unreachable_actions` invokes every action it publishes
 with sample arguments from each parameter's schema and names any the door could
-not address or bind. With `window_bar` it is how a review shows the app's real
+not address. With `window_bar` it is how a review shows the app's real
 content under the bar, from the one set of sample data the app's shots use:
 
 ```json
