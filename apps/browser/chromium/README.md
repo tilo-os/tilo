@@ -640,6 +640,25 @@ content scripts (with `sender.tab`) work without help.
   extension's current one and grants `activeTab`, as Chrome does; the
   extension sends the page where it says (`tabs.update`). The extension's
   resource offers the same as `send-to-extension`, for scripts and agents.
+- Side panels (`sidePanel`): Chromium keeps an extension's options, for
+  every tab and for one, and how a click on its button treats the panel
+  (`setPanelBehavior`), and answers for them; it finds no window to show a
+  panel in. The script asks the host (`sidePanel.show`), which asks the
+  Browser (`extension_side_panel`) to show the page the options name beside
+  the tab's page, where the Browser lays it out at the window's trailing
+  edge, never over the page. `sidePanel.open` needs a gesture, as in
+  Chrome: it runs from a listener of something the person did (a click, a
+  keyboard shortcut, a menu item) while it runs, or from the extension's own
+  page the person used; the host also refuses one more than five seconds
+  after the person's last act for the extension. A click on its button
+  opens or closes the panel instead of reaching the extension when it asked
+  for that (`openPanelOnActionClick`) and its button has no popup, as in
+  Chrome; the worker wakes for the click and answers which page.
+  `setOptions` reaches the panel where it shows (another page, or closed
+  once turned off for the tab) and `sidePanel.close` closes it. The person
+  opens a panel from the Browser too (`extension_side_panel`, the page the
+  extension names for the tab). The panel is a panel tab, as a popup is: no
+  tab to the extension, its window the page beside it.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -699,7 +718,9 @@ content scripts (with `sender.tab`) work without help.
 
 ## Remaining integration work
 
-- Extensions' side panels are not offered. Their keyboard shortcuts run while
+- Extensions' side panels show beside the page they were opened for, one at a
+  time per window; `sidePanel.onOpened` and `onClosed` are not fired, and the
+  panel cannot be widened. Extensions' keyboard shortcuts run while
   a page has the keyboard, not while the address bar or a popup has it; the
   suggested keys are the ones given (there is no page to change them), and
   `global` shortcuts work only in the Browser. A keyword's Enter always

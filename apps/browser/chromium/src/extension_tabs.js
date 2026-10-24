@@ -217,6 +217,78 @@
     return testOutcome(asked).then((outcome) => outcome.matchedRules || [], () => []);
   };
 
+  // Events the person causes, during whose listeners an API that needs a
+  // gesture (sidePanel.open) may be called; `acting` while one runs. In a
+  // page of the extension the page's own activation counts.
+  const PERSON = new Set(['action.onClicked', 'commands.onCommand', 'contextMenus.onClicked']);
+  let acting = 0;
+  const gesture = () => acting > 0
+    || (typeof navigator !== 'undefined' && !!navigator.userActivation && navigator.userActivation.isActive);
+
+  // The extension's side panel, which the Browser shows beside the page.
+  // Chromium keeps its options, for every tab and for one, and how a click
+  // on the button treats it, and answers for them; it finds no window to
+  // open it in, so the host asks the Browser to show it beside the tab's
+  // page, and to show what the options say where it shows already.
+  const sidePanel = (() => {
+    const panel = chrome.sidePanel;
+    if (!panel || typeof panel.getOptions !== 'function') return null;
+    const native = {};
+    for (const name of ['getOptions', 'setOptions', 'getPanelBehavior', 'setPanelBehavior']) native[name] = panel[name].bind(panel);
+    // Whether a click on the button opens the panel, read once and kept as
+    // the extension changes it; null until read.
+    let opensOnClick = null;
+    const read = native.getPanelBehavior().then((behavior) => {
+      if (opensOnClick === null) opensOnClick = !!(behavior && behavior.openPanelOnActionClick);
+    }, () => {
+      if (opensOnClick === null) opensOnClick = false;
+    });
+    replace(panel, 'setPanelBehavior', async (behavior) => {
+      await native.setPanelBehavior(behavior || {});
+      if (behavior && typeof behavior.openPanelOnActionClick === 'boolean') opensOnClick = behavior.openPanelOnActionClick;
+    });
+    // The page the options show, named from the extension's root; none
+    // where the panel is off or has no page.
+    const pageOf = (options) => {
+      if (!options || options.enabled === false || typeof options.path !== 'string' || !options.path) return null;
+      return options.path.startsWith('chrome-extension:') ? options.path : runtime.getURL(options.path.replace(/^\//, ''));
+    };
+    // In Chrome a window holds tabs; here each tab is a window of its own.
+    const tabOf = (options) => {
+      const {tabId, windowId} = options || {};
+      if (Number.isInteger(tabId)) return tabId;
+      if (Number.isInteger(windowId)) return windowId;
+      throw new Error('At least one of `tabId` and `windowId` must be provided');
+    };
+    replace(panel, 'open', (options) => {
+      const acted = gesture();
+      return (async () => {
+        if (!acted) throw new Error('`sidePanel.open()` may only be called in response to a user gesture.');
+        const tabId = tabOf(options);
+        const forTab = Number.isInteger((options || {}).tabId);
+        const url = pageOf(await native.getOptions(forTab ? {tabId} : {}));
+        if (!url) throw new Error(`No active side panel for ${forTab ? 'tabId' : 'windowId'}: ${tabId}`);
+        await call('sidePanel.show', {tabId, url, mode: 'open'});
+      })();
+    });
+    replace(panel, 'close', async (options) => {
+      await call('sidePanel.show', {tabId: tabOf(options), url: null, mode: 'close'});
+    });
+    // Where the panel shows, it follows its options: another page, or
+    // closed once turned off. Options for every tab reach each tab without
+    // options of its own.
+    replace(panel, 'setOptions', async (options) => {
+      await native.setOptions(options || {});
+      const tabId = (options || {}).tabId;
+      const shown = Number.isInteger(tabId) ? [tabId] : await call('sidePanel.shown');
+      await Promise.all((shown || []).map(async (shownOver) => {
+        const url = pageOf(await native.getOptions({tabId: shownOver}));
+        await call('sidePanel.show', {tabId: shownOver, url, mode: 'options'});
+      }));
+    });
+    return {native, pageOf, read, opensOnClick: () => opensOnClick};
+  })();
+
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;
@@ -252,20 +324,52 @@
         return Promise.all((requests || []).map((request) => matchedRules(request).then((found) => found.length > 0)));
       },
       // The host tells the extension of a tab event: every listener runs.
+      // One the person caused (a click, a shortcut, a menu item) lets its
+      // listeners do what needs a gesture while they run, as in Chrome.
       dispatch(name, args) {
         const run = () => {
           const adapt = adapters.get(name);
           const given = adapt ? adapt(args) : args;
-          for (const listener of listeners.get(name) || []) {
-            try {
-              listener(...given);
-            } catch (error) {
-              console.error(error);
+          const acted = PERSON.has(name);
+          if (acted) ++acting;
+          try {
+            for (const listener of listeners.get(name) || []) {
+              try {
+                listener(...given);
+              } catch (error) {
+                console.error(error);
+              }
             }
+          } finally {
+            if (acted) --acting;
           }
           return (listeners.get(name) || new Set()).size;
         };
         return name === 'webNavigation.onCreatedNavigationTarget' ? sourceFrame(args[0]).then(run) : run();
+      },
+      // The person clicked the extension's toolbar button over `tab`: its
+      // side panel opens or closes there when it asked for that
+      // (`openPanelOnActionClick`) and has one for the tab, as in Chrome;
+      // otherwise the extension hears of the click. One known not to open
+      // its panel on a click hears of it at once, while the click's gesture
+      // lasts.
+      clicked(tab) {
+        if (!sidePanel || sidePanel.opensOnClick() === false) return this.dispatch('action.onClicked', [tab]);
+        return (async () => {
+          await sidePanel.read;
+          const url = sidePanel.opensOnClick() && sidePanel.pageOf(await sidePanel.native.getOptions({tabId: tab.id}));
+          if (!url) return this.dispatch('action.onClicked', [tab]);
+          await call('sidePanel.show', {tabId: tab.id, url, mode: 'toggle'});
+          return 0;
+        })();
+      },
+      // The person opened the extension's side panel over the tab `tabId`
+      // from the Browser: its page for that tab, if it has one.
+      async showPanel(tabId) {
+        const url = sidePanel && sidePanel.pageOf(await sidePanel.native.getOptions({tabId}));
+        if (!url) return false;
+        await call('sidePanel.show', {tabId, url, mode: 'open'});
+        return true;
       },
     }),
   });

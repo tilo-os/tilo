@@ -1076,6 +1076,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!extension_panel_ && last_focused_tab!=id_) {last_focused_tab=id_;if(extension_tabs)extension_tabs->Focused(id_);}
       if(extension_tabs)extension_tabs->Omnibox(d->GetString("id"),id_,d->GetString("input"),d->HasKey("text")?d->GetString("text").ToString():std::string(),d->HasKey("request")?d->GetInt("request"):0);
     }
+    // The person opened an extension's side panel beside this page.
+    else if(op=="extension_side_panel") {if(extension_tabs)extension_tabs->OpenSidePanel(d->GetString("id"),id_);}
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -1961,7 +1963,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action")return false;
     return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
   }
-  if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
+  if(op=="extension_click" || op=="extension_side_panel" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
   if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
   if(op=="extension_notification_chosen") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);

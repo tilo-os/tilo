@@ -240,6 +240,14 @@ impl Installed {
         })
     }
 
+    /// Whether it may show a side panel beside the page (`chrome.sidePanel`).
+    pub fn side_panel(&self) -> bool {
+        self.access
+            .permissions
+            .iter()
+            .any(|permission| permission == "sidePanel")
+    }
+
     /// `chrome-extension://<id>/<popup>`, when the action has a popup.
     pub fn popup_url(&self) -> Option<String> {
         let popup = self.action.as_ref()?.popup.as_ref()?;

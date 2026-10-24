@@ -699,3 +699,61 @@ fn what_follows_an_extensions_keyword_goes_to_it_and_its_suggestions_come_back()
         assert_eq!(event(bad.clone()), None, "{bad}");
     }
 }
+
+#[test]
+fn an_extensions_side_panel_opens_closes_and_follows_its_options() {
+    use crate::webview::ExtensionSidePanelChange as Change;
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let page = format!("chrome-extension://{id}/panel.html");
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    let side_panel = |change| {
+        Some(WebViewEvent::ExtensionSidePanel {
+            id: id.into(),
+            change,
+        })
+    };
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"open","url":page})),
+        side_panel(Change::Open(page.clone()))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"toggle","url":page})),
+        side_panel(Change::Toggle(page.clone()))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"options","url":page})),
+        side_panel(Change::Options(Some(page.clone())))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"options","url":null})),
+        side_panel(Change::Options(None))
+    );
+    assert_eq!(
+        event(json!({"event":"extension_side_panel","tab":2,"id":id,"mode":"close","url":null})),
+        side_panel(Change::Close)
+    );
+    // Another extension's page, a web page, a page to open missing, an
+    // unknown mode: refused.
+    let other = "bbcdefghijklmnopabcdefghijklmnop";
+    for bad in [
+        json!({"event":"extension_side_panel","id":id,"mode":"open","url":format!("chrome-extension://{other}/p.html")}),
+        json!({"event":"extension_side_panel","id":id,"mode":"options","url":"https://example.test/"}),
+        json!({"event":"extension_side_panel","id":id,"mode":"open","url":null}),
+        json!({"event":"extension_side_panel","id":id,"mode":"toggle"}),
+        json!({"event":"extension_side_panel","id":id,"mode":"close","url":page}),
+        json!({"event":"extension_side_panel","id":id,"mode":"float","url":page}),
+        json!({"event":"extension_side_panel","id":"short","mode":"open","url":page}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionOpenSidePanel { id: id.into() }),
+        Some(json!({"op":"extension_side_panel","id":id}))
+    );
+    assert!(!command_within_limits(
+        &WebViewCommand::ExtensionOpenSidePanel { id: "short".into() }
+    ));
+}

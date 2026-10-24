@@ -39,6 +39,8 @@ use crate::extensions::{self, ExtensionInfo, StagedPackage};
 use crate::web_store;
 
 mod omnibox;
+mod side_panel;
+use side_panel::SidePanel;
 
 /// An extension popup's size before its page says how big it is, in
 /// logical pixels: as wide as a panel, and short, because a page reports at
@@ -46,6 +48,9 @@ mod omnibox;
 const POPUP_SIZE: (f32, f32) = (360.0, 120.0);
 /// The largest popup, as in Chrome.
 const POPUP_MAX: (f32, f32) = (800.0, 600.0);
+/// An extension's side panel beside the page, in logical pixels: about as
+/// wide as Chrome's, which extensions lay their panels out for.
+pub const SIDE_PANEL_WIDTH: f32 = 360.0;
 
 const ADD_BUTTON: &str = "browser.extension.add";
 const MENU_BUTTON: &str = "browser.extensions.menu";
@@ -58,6 +63,8 @@ const BAR_OPEN: &str = "extension-open:";
 const BAR_MENU: &str = "extension-menu:";
 /// Chrome's extension ids: 32 letters.
 const EXTENSION_ID_LEN: usize = 32;
+/// The prefix of an item showing or hiding one extension's side panel.
+const BAR_SIDE_PANEL: &str = "extension-side-panel:";
 
 /// Something the interface asked for.
 #[derive(Debug, Clone)]
@@ -81,6 +88,9 @@ enum Command {
     ClosePanel,
     /// Choose an item of an extension's button menu: (extension, key).
     ChooseMenuItem(String, String),
+    /// Show an extension's side panel beside the page, or close it.
+    OpenSidePanel(String),
+    CloseSidePanel(String),
 }
 
 /// The commands of a button menu, depth first, each with whether it can be
@@ -305,6 +315,7 @@ pub struct ExtensionController {
     store_item: Option<web_store::Item>,
     busy: bool,
     panel: Option<Panel>,
+    side_panel: Option<SidePanel>,
     file_path: ui::LocalState<String>,
     chromium_version: String,
     /// Extensions to turn on (`true`) or off through the manager extension.
@@ -391,6 +402,7 @@ impl ExtensionController {
             store_item: None,
             busy: false,
             panel: None,
+            side_panel: None,
             file_path: ui::LocalState::new(String::new()),
             chromium_version: web_store::FALLBACK_CHROMIUM_VERSION.to_owned(),
             switches: Vec::new(),
@@ -617,6 +629,9 @@ impl ExtensionController {
             }
             event @ (WebViewEvent::ExtensionOmniboxSuggestions { .. }
             | WebViewEvent::ExtensionOmniboxDefault { .. }) => self.omnibox.on_engine_event(&event),
+            WebViewEvent::ExtensionSidePanel { id, change } => {
+                self.side_panel_changed(id, change, engine)
+            }
             _ => false,
         }
     }
@@ -857,6 +872,7 @@ impl ExtensionController {
         for event in permissions {
             changed |= self.on_engine_event(event, engine);
         }
+        changed |= self.sync_side_panel();
         changed
     }
 
@@ -929,6 +945,7 @@ impl ExtensionController {
                 self.panel = None;
             }
         }
+        self.keep_side_panel(&profile.installed);
         self.awaiting.retain(|name| {
             profile
                 .installed
@@ -1207,6 +1224,8 @@ impl ExtensionController {
                 id,
                 input: ui::webview::OmniboxInput::Entered { text },
             }),
+            Command::OpenSidePanel(id) => self.open_side_panel(id, engine),
+            Command::CloseSidePanel(id) => self.close_side_panel(&id),
             // Busy: ignore a second fetch until the first settles.
             Command::Fetch(_) | Command::StageFile(_) => {}
         }
@@ -1384,6 +1403,7 @@ impl ExtensionController {
             }
             buttons.push(Box::new(button));
         }
+        buttons.extend(self.side_panel_button());
         if !model.menu.is_empty() {
             buttons.push(Box::new(self.extensions_menu(&model)));
         }
@@ -1422,9 +1442,11 @@ impl ExtensionController {
             return Vec::new();
         }
         let entries = self.model().menu;
+        let side_panels = self.side_panel_entries();
         let mut room = ui::window_toolbar::MAX_ITEMS
             .saturating_sub(1)
-            .saturating_sub(entries.len());
+            .saturating_sub(entries.len())
+            .saturating_sub(side_panels.len());
         let mut items = Vec::new();
         for entry in entries {
             let name = if entry.button.badge.is_empty() {
@@ -1462,6 +1484,7 @@ impl ExtensionController {
                 });
             }
         }
+        items.extend(side_panel::bar_items(side_panels));
         items
     }
 
@@ -1480,6 +1503,8 @@ impl ExtensionController {
             .and_then(|rest| rest.split_at_checked(EXTENSION_ID_LEN))
         {
             Command::ChooseMenuItem(extension.to_owned(), key.to_owned())
+        } else if let Some(command) = self.side_panel_bar_command(id) {
+            command
         } else {
             return false;
         };
@@ -1518,6 +1543,7 @@ impl ExtensionController {
                 ));
             }
         }
+        items.extend(self.side_panel_menu_items());
         Button::icon_only(MENU_BUTTON, Icon::Box, "Extensions")
             .tooltip("Extensions")
             .with_menu(items)
@@ -1788,6 +1814,9 @@ impl ExtensionController {
                         .bound_asking(&["text"]),
                     );
                 }
+                if let Some(action) = self.side_panel_action(extension) {
+                    resource = resource.with_action(action);
+                }
                 if extension.enabled && extension.action.is_some() {
                     resource = resource.with_action(if extension.pinned {
                         E::UnpinExtension { id: id.clone() }.bound()
@@ -1817,6 +1846,8 @@ impl ExtensionController {
             | ExtensionRequest::OpenSettings(id)
             | ExtensionRequest::Use(id)
             | ExtensionRequest::Send(id, _)
+            | ExtensionRequest::OpenSidePanel(id)
+            | ExtensionRequest::CloseSidePanel(id)
             | ExtensionRequest::Remove(id) => id.clone(),
         };
         let (info, extension) = self
@@ -1853,6 +1884,9 @@ impl ExtensionController {
                 ));
             }
             ExtensionRequest::Send(_, text) => Command::Send(id, text.clone()),
+            ExtensionRequest::OpenSidePanel(_) | ExtensionRequest::CloseSidePanel(_) => {
+                side_panel::command(request, extension)?
+            }
             ExtensionRequest::Remove(_) => Command::Remove(id),
         };
         (self.queue(command))();
@@ -1995,6 +2029,7 @@ mod tests {
     use super::*;
 
     mod omnibox;
+    mod side_panel;
     mod sign_in;
 
     const STORE_ITEM: &str = "https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh";
