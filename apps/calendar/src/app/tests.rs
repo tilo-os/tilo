@@ -3885,3 +3885,48 @@ fn dragging_a_repeating_event_asks_only_this_or_all_future() {
         "no second series"
     );
 }
+
+#[test]
+fn a_sideways_swipe_on_the_calendar_steps_its_period() {
+    let mut h = Harness::new(420, 800);
+    let (app, doc) = h.parts();
+    app.apply_action(Action::CloseDetail, &mut Edits::lend(doc));
+    app.apply_action(Action::View(View::Week), &mut Edits::lend(doc));
+    h.relayout();
+    let week = h.app.anchor;
+    let area = h.app.content_rect;
+    let (left, right) = (area.x0 + area.width() * 0.2, area.x0 + area.width() * 0.8);
+    let y = area.center().y;
+
+    Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
+    assert_eq!(
+        h.app.anchor,
+        week + Duration::days(7),
+        "a leftward swipe shows the next week"
+    );
+    Framed::harness_mut(&mut h.app).swipe_at((left, y), (right, y));
+    assert_eq!(
+        h.app.anchor, week,
+        "a rightward swipe shows the previous week again"
+    );
+
+    Framed::harness_mut(&mut h.app).swipe_at(
+        (area.center().x, area.y0 + 40.0),
+        (area.center().x, area.y1 - 40.0),
+    );
+    assert_eq!(
+        h.app.anchor, week,
+        "a downward drag scrolls; it does not step the week"
+    );
+
+    let (app, doc) = h.parts();
+    app.apply_action(Action::View(View::Month), &mut Edits::lend(doc));
+    h.relayout();
+    let month = h.app.anchor.month();
+    Framed::harness_mut(&mut h.app).swipe_at((right, y), (left, y));
+    assert_ne!(
+        h.app.anchor.month(),
+        month,
+        "a leftward swipe shows the next month"
+    );
+}

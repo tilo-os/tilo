@@ -67,7 +67,7 @@ const KEPT_JOBS: usize = 8;
 const VIDEO_EDITOR: &str = "so.tilo.video-editor";
 
 /// The operations the service answers.
-const RENDER: &str = "render";
+const RENDER: &str = "render-timeline";
 const EXPORT: &str = "export-video-content";
 const STATUS: &str = "export-video-status";
 const CANCEL: &str = "cancel-video-export";

@@ -881,7 +881,13 @@ impl PresentPipe {
             .name("tilo-present".to_string())
             .spawn(move || {
                 // Flag completion however this thread leaves (normal return or unwind), so `shutdown` never waits on a thread that's already gone.
-                let _done = FinishedOnDrop(thread_finished);
+                let _done = FinishedOnDrop {
+                    finished: thread_finished,
+                    pending: thread_pending.clone(),
+                };
+                // Declared after `_done`, so the receiver goes first: a submit that still got
+                // its frame through left it in `pending` before `_done` empties it.
+                let rx = rx;
                 // Presentation has a deadline every refresh; input and the app
                 // under the person's hands share the machine with anything.
                 #[cfg(target_os = "linux")]
@@ -1224,11 +1230,21 @@ impl PresentPipe {
 }
 
 /// Sets the shared "thread finished" flag on drop, so it's set whether the render thread returns normally or unwinds.
-struct FinishedOnDrop(Arc<AtomicBool>);
+///
+/// Frames still handed over go first: nothing will render them, and each holds the capacity
+/// it was admitted with. The receiver is gone by then, so a submit either failed to send or
+/// queued its frame before this empties the queue; none is left holding capacity, and a
+/// loop that sees the thread finished also sees its next submit refused.
+struct FinishedOnDrop {
+    finished: Arc<AtomicBool>,
+    pending: PendingFrames,
+}
 
 impl Drop for FinishedOnDrop {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Release);
+        let unrendered = std::mem::take(&mut *lock_pending(&self.pending));
+        drop(unrendered);
+        self.finished.store(true, Ordering::Release);
     }
 }
 

@@ -3969,7 +3969,9 @@ pub(crate) mod ordinary_confirmation_tests {
             self.act(label, crate::a11y::Action::Activate);
         }
         fn value(&mut self, value: &str) {
-            self.act("Confirmation", crate::a11y::Action::SetValue(value.into()));
+            // Confirmation is a question, not an editable search field.
+            // Typing must not change the arguments captured by its control.
+            self.key(value);
         }
         fn frame(&mut self) {
             match self {
@@ -4012,8 +4014,8 @@ pub(crate) mod ordinary_confirmation_tests {
         }
         fn submit_id(&mut self) -> accesskit::NodeId {
             match self {
-                Self::Native(app) => named(app, "Confirm"),
-                Self::FrameHarness(driver) => driver.a11y_node_named("Confirm").unwrap(),
+                Self::Native(app) => named(app, "Run fixture"),
+                Self::FrameHarness(driver) => driver.a11y_node_named("Run fixture").unwrap(),
             }
         }
         fn stale(&mut self, id: accesskit::NodeId) {
@@ -4068,11 +4070,11 @@ pub(crate) mod ordinary_confirmation_tests {
                 app.layout.taffy.total_node_count(),
                 app.root_widget.get_rect(),
             ));
-            let field = named(app, "Confirmation");
-            app.dispatch_a11y_action(
-                field,
-                &crate::a11y::Action::SetValue(format!("draft {index}")),
+            let event = crate::synthetic_input::key_input(
+                &Key::Character(format!("draft {index}").into()),
+                ElementState::Pressed,
             );
+            assert!(app.action_palette_handle_key(&event));
             app.controlled_local_idle_for_test();
             layout(app);
             samples.push((
@@ -4143,13 +4145,13 @@ pub(crate) mod ordinary_confirmation_tests {
                 .build_a11y_tree_update(1.0)
                 .nodes
                 .into_iter()
-                .find(|(_, node)| node.label() == Some("Confirmation"))
-                .and_then(|(_, node)| node.description().map(str::to_owned))
-                .expect("native published field describes how to confirm"),
+                .find(|(_, node)| node.label() == Some("Run fixture?"))
+                .and_then(|(_, node)| node.label().map(str::to_owned))
+                .expect("native published dialog states the exact question"),
             Host::FrameHarness(driver) => {
                 fn access(node: &crate::a11y::AccessNode) -> Option<String> {
-                    if node.name.as_deref() == Some("Confirmation") {
-                        return node.description.clone();
+                    if node.name.as_deref() == Some("Run fixture?") {
+                        return node.name.clone();
                     }
                     node.children.iter().find_map(access)
                 }
@@ -4160,7 +4162,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         .or_else(|| node.children.iter().find_map(widget))
                 }
                 widget(&driver.inspection().root)
-                    .expect("FrameHarness published field describes how to confirm")
+                    .expect("FrameHarness published dialog states the exact question")
             }
         }
     }
@@ -4175,17 +4177,14 @@ pub(crate) mod ordinary_confirmation_tests {
             let mut host = Host::new(native, root);
             host.activate("Emit request");
             assert!(ledger.borrow().is_empty());
-            // The published question says what to do without any phrase to
-            // type: one Confirm goes ahead, Phrase policy included.
+            // The published question names the action; the matching verb
+            // button confirms it, with no search field or phrase to type.
             let instruction = published_confirmation_instruction(&mut host);
-            assert!(
-                instruction.contains("Press Enter or Confirm"),
-                "{instruction:?}"
-            );
+            assert_eq!(instruction, "Run fixture?");
             assert!(!instruction.contains("Type "), "{instruction:?}");
             assert!(!instruction.contains("APPLY EXACT"), "{instruction:?}");
             let stale = host.submit_id();
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 &*ledger.borrow(),
                 &[serde_json::json!({"payload":"original"})]
@@ -4220,7 +4219,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 assert!(ledger.borrow().is_empty());
                 let stale = host.submit_id();
                 host.value("wrong");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert_eq!(
                     &*ledger.borrow(),
                     &[serde_json::json!({"payload":"original"})]
@@ -4243,7 +4242,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.value("CONFIRM");
             host.stale(stale);
             assert!(ledger.borrow().is_empty());
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
@@ -4342,7 +4341,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     host.revoke();
                 }
                 host.value("CONFIRM");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert!(ledger.borrow().is_empty(), "{native}:{mutation}");
             }
         }
@@ -4392,7 +4391,7 @@ pub(crate) mod ordinary_confirmation_tests {
                     host.activate("Emit request");
                     epoch.store(later, Ordering::SeqCst);
                     host.value("CONFIRM");
-                    host.activate("Confirm");
+                    host.activate("Run fixture");
                     assert!(ledger.borrow().is_empty());
                 }
             }
@@ -4412,12 +4411,12 @@ pub(crate) mod ordinary_confirmation_tests {
             assert!(ledger.borrow().is_empty());
             host.stale(stale);
             host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert!(ledger.borrow().is_empty());
             host.activate("Cancel");
             host.activate("Emit request");
             host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
@@ -4434,7 +4433,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 .unwrap()
                 .insert("payload".into(), serde_json::json!("successor-selection"));
             host.key("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(
                 &*ledger.borrow(),
                 &[serde_json::json!({"payload":"original"})]
@@ -4467,7 +4466,7 @@ pub(crate) mod ordinary_confirmation_tests {
                         _ => {}
                     }
                     host.value("CONFIRM");
-                    host.activate("Confirm");
+                    host.activate("Run fixture");
                     assert_eq!(
                         ledger.borrow().len(),
                         usize::from(case == "positive"),
@@ -4571,13 +4570,14 @@ pub(crate) mod ordinary_confirmation_tests {
                 layout(&mut app);
             }
             assert!(ledger.borrow().is_empty());
-            let named_action_target = named(&mut app, "Confirmation");
-            app.dispatch_a11y_action(
-                named_action_target,
-                &crate::a11y::Action::SetValue("CONFIRM".into()),
+            assert!(
+                app.action_palette_handle_key(&crate::synthetic_input::key_input(
+                    &Key::Character("CONFIRM".into()),
+                    ElementState::Pressed,
+                ))
             );
             layout(&mut app);
-            let named_action_target = named(&mut app, "Confirm");
+            let named_action_target = named(&mut app, "Run fixture");
             app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
             layout(&mut app);
             assert_eq!(
@@ -4613,7 +4613,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 host.activate("History");
                 assert!(ledger.borrow().is_empty());
                 host.value("CONFIRM");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert_eq!(
                     ledger.borrow().len(),
                     usize::from(!changed),
@@ -4666,7 +4666,7 @@ pub(crate) mod ordinary_confirmation_tests {
             let before = state(&mut host).doc.get_heads();
             host.activate("Emit request");
             host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             let author = match &host {
                 Host::Native(app) => app.collaboration.local_author.clone(),
                 Host::FrameHarness(_) => crate::permissions::UserId("fixture".into()),
@@ -4703,12 +4703,12 @@ pub(crate) mod ordinary_confirmation_tests {
         }
     }
     #[test]
-    fn ordinary_confirmation_modal_focus_tracks_actual_field() {
+    fn ordinary_confirmation_modal_focus_tracks_its_action_button() {
         for native in [true, false] {
             let (root, _, _) = fixture(tilo_actions::ConfirmationPolicy::Confirm);
             let mut host = Host::new(native, root);
             host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Confirm"));
+            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
         }
     }
     #[test]
@@ -4719,7 +4719,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 let mut host = Host::new(native, root);
                 host.activate("Emit request");
                 host.value("CONFIRM");
-                let label = if cancel { "Cancel" } else { "Confirm" };
+                let label = if cancel { "Cancel" } else { "Run fixture" };
                 let nodes = match &mut host {
                     Host::Native(app) => app.build_a11y_tree_update(1.0).nodes,
                     Host::FrameHarness(driver) => driver.a11y_nodes(),
@@ -4835,7 +4835,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 // Back from History the question is asked again; going ahead
                 // runs the original request once, however Confirm is reached.
                 if ledger.borrow().is_empty() {
-                    host.activate("Confirm");
+                    host.activate("Run fixture");
                 }
                 assert_eq!(
                     &*ledger.borrow(),
@@ -4847,7 +4847,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 resources.borrow_mut()[0].actions[0] = fresh;
                 host.activate("Emit request");
                 host.value("CONFIRM");
-                host.activate("Confirm");
+                host.activate("Run fixture");
                 assert_eq!(
                     &*ledger.borrow(),
                     &[
@@ -4878,7 +4878,7 @@ pub(crate) mod ordinary_confirmation_tests {
                 })
             });
             host.value("CONFIRM");
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert_eq!(ledger.borrow().len(), 1);
         }
     }
@@ -4890,7 +4890,7 @@ pub(crate) mod ordinary_confirmation_tests {
             host.act("Emit request", crate::a11y::Action::Focus);
             assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
             host.activate("Emit request");
-            assert_eq!(host.focused_label().as_deref(), Some("Confirm"));
+            assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
             if let Host::Native(app) = &host {
                 assert!(app.actions.ordinary_palette_return_focus.is_some());
             }
@@ -4909,7 +4909,7 @@ pub(crate) mod ordinary_confirmation_tests {
         host.act("Emit request", crate::a11y::Action::Focus);
         assert_eq!(host.focused_label().as_deref(), Some("Emit request"));
         host.activate("Emit request");
-        assert_eq!(host.focused_label().as_deref(), Some("Confirm"));
+        assert_eq!(host.focused_label().as_deref(), Some("Run fixture"));
         let Host::Native(app) = &mut host else {
             unreachable!()
         };
@@ -5032,7 +5032,7 @@ pub(crate) mod ordinary_confirmation_tests {
             } else {
                 old.close();
             }
-            host.activate("Confirm");
+            host.activate("Run fixture");
             assert!(ledger.borrow().is_empty());
         }
     }
@@ -5046,8 +5046,8 @@ pub(crate) mod ordinary_confirmation_tests {
         app.controlled_local_idle_for_test();
         layout(&mut app);
         assert!(ledger.borrow().is_empty());
-        named(&mut app, "Confirmation");
-        named(&mut app, "Confirm");
+        named(&mut app, "Run fixture?");
+        named(&mut app, "Run fixture");
         named(&mut app, "Cancel");
     }
     #[test]
@@ -5067,10 +5067,10 @@ pub(crate) mod ordinary_confirmation_tests {
             .unwrap();
         assert!(ledger.borrow().is_empty());
         assert!(
-            driver.a11y_node_named("Confirmation").is_some(),
-            "actual palette field must be published"
+            driver.a11y_node_named("Run fixture?").is_some(),
+            "the actual dialog question must be published"
         );
-        assert!(driver.a11y_node_named("Confirm").is_some());
+        assert!(driver.a11y_node_named("Run fixture").is_some());
         assert!(driver.a11y_node_named("Cancel").is_some());
     }
 }

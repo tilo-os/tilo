@@ -186,6 +186,36 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
         browser.key.clone(),
     );
     let events = peer.events();
+    // A reader of the status (the host's room actions on another thread)
+    // that sees the note no longer awaiting keys finds its documents among
+    // the events already: a record read as open is never read empty.
+    let opened_when_unsealed = {
+        let (peer, route, watched) = (peer.clone(), route.clone(), peer.events());
+        std::thread::spawn(move || {
+            let deadline = tilo_test_env::hang_deadline();
+            let mut held = false;
+            while std::time::Instant::now() < deadline {
+                let awaiting = peer
+                    .status()
+                    .routes
+                    .get(&route)
+                    .map(|status| status.awaiting_keys);
+                match awaiting {
+                    Some(count) if count > 0 => held = true,
+                    Some(0) if held => {
+                        return watched.drain().into_iter().any(|event| {
+                            matches!(&event, PeerEvent::Document(document)
+                                if document.mutation() == Some(DocumentMutation::Incremental(
+                                    b"from the laptop".to_vec())))
+                        });
+                    }
+                    _ => {}
+                }
+                std::thread::yield_now();
+            }
+            panic!("the note was never held for its keys, then opened");
+        })
+    };
     peer.join(workspace()).unwrap();
     peer.open_route(route.clone()).unwrap();
     ready(&[&peer]).await;
@@ -257,6 +287,10 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
         }
     }
     assert!(sent_welcome);
+    assert!(
+        opened_when_unsealed.join().unwrap(),
+        "the status said the note no longer awaited its keys before its document was out"
+    );
     assert_eq!(
         DocumentFrame::decode(browser_edit.as_ref().unwrap()).unwrap(),
         DocumentFrame::Whole(DocumentMutation::Incremental(b"from the browser".to_vec()))

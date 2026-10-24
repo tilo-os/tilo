@@ -111,6 +111,7 @@ pub fn show_install_under_way_for_shots(
                 ),
                 missing: None,
             },
+            app_title: None,
         },
         placement,
     );
@@ -469,7 +470,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
         // A governed room's window opens the record its owner created for
         // it; wait until this device has admitted it.
-        if !item.local && tree.requires_native_owner(workspace.room()) {
+        if !item.local {
             match prepare_hosted_record(tree, &item) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -891,10 +892,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     stage_continuation_for_tab(tree, item);
     // The instance runs as the tab, whose saved view names the record the
     // room's owner created for it (`prepare_hosted_record`).
-    if !item.local
-        && tree.requires_native_owner(ws.room())
-        && tree.room_tab_record(ws.room(), item.tab).is_some()
-    {
+    if !item.local && tree.room_tab_record(ws.room(), item.tab).is_some() {
         launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
@@ -1283,6 +1281,7 @@ mod tests {
                 label: "Legacy App".into(),
                 note: String::new(),
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1343,6 +1342,7 @@ mod tests {
                     label: "Still launching".into(),
                     note: OPENING.into(),
                 },
+                app_title: None,
             });
         tree.remember_local_app_record(live, 8124);
         let records = tree.local_app_records.clone();
@@ -1459,6 +1459,7 @@ mod tests {
                     label: "Second".into(),
                     note: "Interrupted".into(),
                 },
+                app_title: None,
             });
         tree.remember_local_app_record(first, 8191);
         tree.remember_local_app_record(second, 8192);
@@ -1653,6 +1654,7 @@ mod tests {
                     label: "Second saved window".into(),
                     note: String::new(),
                 },
+                app_title: None,
             });
         launcher::set_pending_placement(app, Placement::IntoTab(first));
         launcher::attach_continuity_instance_for_test(app, 42);
@@ -1815,6 +1817,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1874,6 +1877,7 @@ mod tests {
                 app_id: SETTINGS.into(),
                 surface_id: 7,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -2010,6 +2014,7 @@ mod tests {
                     app_id: APP.into(),
                     surface_id: 4711,
                 },
+                app_title: None,
             };
             let tab_id = tab.id;
             let group = WindowGroup {
@@ -2046,6 +2051,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 99,
                 },
+                app_title: None,
             };
             let tab_id = tab.id;
             let group = WindowGroup {

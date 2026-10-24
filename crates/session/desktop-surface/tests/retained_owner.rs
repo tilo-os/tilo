@@ -147,6 +147,7 @@ fn tab(minter: &mut IdMinter) -> Tab {
             label: "Retained owner".into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 #[test]

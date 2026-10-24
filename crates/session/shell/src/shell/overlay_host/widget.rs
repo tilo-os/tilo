@@ -61,9 +61,8 @@ impl Widget for ShellOverlayHost {
             // that principal outside the workspaces the Unix account created.
             if (acquired_identity || finished)
                 && let Some(chrome) = self.chrome.as_ref()
-                && let Some(account) = std::env::var("USER").ok().filter(|a| !a.is_empty())
             {
-                chrome.borrow_mut().adopt_provisioned_identity(&account);
+                chrome.borrow_mut().adopt_provisioned_identity();
             }
             if finished {
                 self.onboarding = None;
@@ -310,6 +309,7 @@ impl Widget for ShellOverlayHost {
         self.harvest_pending_tab_reorder();
         self.harvest_pending_group_topology();
         self.harvest_pending_search_open();
+        let tab_rename_dirty = self.harvest_tab_renames();
         let hosted_windows_dirty = self.sync_hosted_windows();
         let chips_dirty = self.sync_desktop_control_chips();
         // Refreshing here (not inside the harvest) means the palette never
@@ -413,6 +413,7 @@ impl Widget for ShellOverlayHost {
             || peer_sync_dirty
             || activity_records_dirty
             || hosted_windows_dirty
+            || tab_rename_dirty
     }
 
     #[allow(
@@ -1676,6 +1677,10 @@ impl ShellOverlayHost {
         // A window's location edited in its bar has the keyboard, ahead of
         // the chords for the same reason as the password below.
         if self.route_window_location_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
+            return;
+        }
+        // So does a tab's name field, while a tab is named in its pill.
+        if self.route_tab_rename_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id)) {
             return;
         }
         // Ahead of every chord: a password can contain any character, and

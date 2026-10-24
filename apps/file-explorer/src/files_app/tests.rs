@@ -1217,6 +1217,53 @@ mod command_path_tests {
         }
     }
 
+    /// The record catalogue of a workspace root whose watch sees every
+    /// change (a local folder, or the tilo-fs mount, which signals its
+    /// peers' edits) is checked when the root changes, not on a timer: an
+    /// idle window over it asks for no wake at all.
+    #[cfg(unix)]
+    #[test]
+    fn idle_files_over_a_watched_workspace_root_has_no_catalogue_poll() {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        let _identities = quiet_refresh_sources(&mut env);
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        env.set("TILO_WORKSPACE_ROOTS", root.path());
+        let mut widget = FileExplorerWidget::new();
+        assert!(
+            widget.collaborative_record_pager.borrow().has_roots(),
+            "the root holds a record catalogue"
+        );
+        // The open folder is not the root, so only the catalogue's watch
+        // can report a change to the root.
+        widget.load(folder);
+        let _ = widget.refresh_metadata_if_due(ui::time::now());
+        assert_ne!(
+            widget.catalog_watch.coverage(),
+            crate::directory_watch::Coverage::None,
+            "the catalogue's root is watched"
+        );
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+
+        std::fs::write(root.path().join("new.txt"), b"new").unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let mut checked = false;
+        while !checked && ui::time::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            // Where the watch sees every change nothing is polled, so only
+            // the watch can make this check.
+            #[cfg(target_os = "linux")]
+            assert_eq!(widget.next_metadata_refresh, None, "nothing is polled");
+            checked = widget.refresh_metadata_if_due(ui::time::now());
+        }
+        assert!(
+            checked,
+            "the root's change moved the catalogue's generation"
+        );
+        assert_watched_idle_window_needs_no_wake(&mut widget);
+    }
+
     /// A file another program creates in the open directory shows, read
     /// because the watch reported it, before any poll is due.
     #[cfg(unix)]
@@ -2110,6 +2157,66 @@ mod command_path_tests {
         assert!(
             w.error_message().is_none(),
             "retry succeeds once the dir exists"
+        );
+    }
+
+    /// A link to a folder lists as the folder it opens and a link to a file
+    /// as the file it opens: first among the folders, with the target's size,
+    /// and named as a folder to an agent. On Tilo's own image `/home`, `/opt`
+    /// and `/srv` are such links. A link to nothing stays a file.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_lists_as_what_it_opens() {
+        let d = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let folder = elsewhere.path().join("folder");
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("inside.txt"), b"x").unwrap();
+        let file = elsewhere.path().join("file.txt");
+        std::fs::write(&file, vec![b'x'; 5000]).unwrap();
+        std::fs::write(d.path().join("a-plain.txt"), b"x").unwrap();
+        std::os::unix::fs::symlink(&folder, d.path().join("z-linked-folder")).unwrap();
+        std::os::unix::fs::symlink(&file, d.path().join("linked-file.txt")).unwrap();
+        std::os::unix::fs::symlink("missing-target", d.path().join("dangling")).unwrap();
+
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+        let shown = w.displayed_entries();
+        let names: Vec<&str> = shown.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "z-linked-folder",
+                "a-plain.txt",
+                "dangling",
+                "linked-file.txt"
+            ],
+            "the linked folder sorts with the folders"
+        );
+        let linked_folder = &shown[0];
+        assert!(linked_folder.is_dir, "a link to a folder is a folder");
+        let linked_file = shown
+            .iter()
+            .find(|entry| entry.name == "linked-file.txt")
+            .unwrap();
+        assert!(!linked_file.is_dir);
+        assert_eq!(
+            linked_file.size, 5000,
+            "a linked file shows its target's size"
+        );
+        let dangling = shown.iter().find(|entry| entry.name == "dangling").unwrap();
+        assert!(!dangling.is_dir, "a link to nothing stays a file");
+        // The row keeps the link's own identity: operations on it act on the
+        // link, never on what it points at.
+        let link_meta = std::fs::symlink_metadata(d.path().join("z-linked-folder")).unwrap();
+        assert_eq!(
+            linked_folder.observed,
+            host_fs::ObservedObject::from_metadata(&link_meta)
+        );
+        let answer = w.folder_answer().to_string();
+        assert!(
+            answer.contains("\"z-linked-folder/\""),
+            "an agent reads the linked folder as a folder: {answer}"
         );
     }
 

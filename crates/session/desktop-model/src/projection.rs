@@ -65,6 +65,10 @@ pub struct ReplicatedTab {
     pub id: TabId,
     pub order: u64,
     pub title: String,
+    /// The window's own title while a person's name stands in `title`
+    /// ([`Tab::app_title`]): the hosting device keeps it so clearing the
+    /// name anywhere shows the window's latest title.
+    pub app_title: Option<String>,
     /// `None` when unparseable — hydrated as a stub rather than dropped,
     /// since a window in the room should still show up as one here.
     pub tile: Option<TileContent>,
@@ -882,6 +886,16 @@ fn project_owned_tabs_in(
         };
         let _ = doc.put_uint_if_changed(&tab_entry, "order", ti as u64);
         let _ = doc.put_str_if_changed(&tab_entry, "title", &tab.title);
+        match &tab.app_title {
+            Some(app_title) => {
+                let _ = doc.put_str_if_changed(&tab_entry, "app_title", app_title);
+            }
+            None => {
+                if doc.get(&tab_entry, "app_title").ok().flatten().is_some() {
+                    let _ = doc.delete(&tab_entry, "app_title");
+                }
+            }
+        }
         if let Ok(blob) = serde_json::to_vec(&tab.tile) {
             let unchanged = matches!(
                 doc.get(&tab_entry, "tile_json").ok().flatten(),
@@ -949,6 +963,7 @@ pub fn contents_of(doc: &AutoCommit) -> Vec<ReplicatedStrip> {
                     id: tid,
                     order: uint(tab_entry, "order").unwrap_or(u64::MAX),
                     title: text(tab_entry, "title").unwrap_or_default(),
+                    app_title: text(tab_entry, "app_title"),
                     tile,
                 });
             }
@@ -1002,7 +1017,10 @@ pub fn owned_contents_digest(doc: Option<&AutoCommit>, local_salt: u16) -> Vec<(
                 if peer_salt_of(tab.id) == local_salt {
                     out.push((
                         tab.id,
-                        format!("t|{}|{}|{:?}", tab.order, tab.title, tab.tile),
+                        format!(
+                            "t|{}|{}|{:?}|{:?}",
+                            tab.order, tab.title, tab.app_title, tab.tile
+                        ),
                     ));
                 }
             }
@@ -1089,6 +1107,10 @@ pub fn merge_group(
                         tab.title.clone_from(&rep.title);
                         *changed = true;
                     }
+                    if tab.app_title != rep.app_title {
+                        tab.app_title.clone_from(&rep.app_title);
+                        *changed = true;
+                    }
                     if let Some(tile) = rep.tile.clone() {
                         let tile = localise_tile(tile, Some(&tab.tile), &rep.title);
                         if serde_json::to_vec(&tab.tile).ok() != serde_json::to_vec(&tile).ok() {
@@ -1165,6 +1187,7 @@ pub fn hydrate_tab(rep: ReplicatedTab) -> Tab {
         ),
         id: rep.id,
         title,
+        app_title: rep.app_title,
     }
 }
 
@@ -1794,6 +1817,7 @@ mod tests {
             id: 9,
             order: 0,
             title: "Poster.xcf".into(),
+            app_title: None,
             tile: Some(hosted.clone()),
         });
         assert_eq!(tab.tile, hosted);
@@ -1851,6 +1875,7 @@ mod tests {
                     kind: AppKind::Other("Canvas".into()),
                     label: name.into(),
                 },
+                app_title: None,
             }],
             active_tab: id,
             width: crate::width::WindowWidth::Normal,
@@ -1974,6 +1999,85 @@ mod tests {
             strips.iter().any(|s| s.id == StripId(compose_id(B, 1))),
             "B's own strip stays"
         );
+    }
+
+    /// A person's name for a host window travels with the window's own
+    /// title behind it, and clearing it travels too: every member shows the
+    /// name, and the window's latest title once it is cleared.
+    #[test]
+    fn a_named_host_window_carries_its_own_title_through_the_room() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let tab_id = compose_id(A, 10);
+        let mut tab = Tab {
+            id: tab_id,
+            title: "~/src".into(),
+            tile: TileContent::Foreign {
+                app_id: "Alacritty".into(),
+                surface_id: 4,
+            },
+            app_title: None,
+        };
+        tab.rename("Build");
+        let mut group = canvas_group(A, 10, "unused");
+        group.tabs = vec![tab];
+        let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        strip.window_groups.push(group);
+        let mut a = room_desktop(room, 1, vec![strip]);
+        let mut b = room_desktop(room, 2, vec![Strip::new(StripId(compose_id(B, 1)), "Mine")]);
+        let mut doc = AutoCommit::new();
+        let project = |doc: &mut AutoCommit, a: &crate::tree::DesktopTree| {
+            project_owned_contents(doc, &a.workspaces[0].strips, A, None, EmptyStrips::Skip)
+                .expect("projected");
+        };
+        let find_tab = |tree: &crate::tree::DesktopTree| {
+            tree.workspaces[0]
+                .strips
+                .iter()
+                .flat_map(|s| &s.window_groups)
+                .flat_map(|g| &g.tabs)
+                .find(|t| t.id == tab_id)
+                .cloned()
+                .expect("the window is there")
+        };
+        project(&mut doc, &a);
+        let replicated = contents_of(&doc)
+            .into_iter()
+            .flat_map(|s| s.groups)
+            .flat_map(|g| g.tabs)
+            .find(|t| t.id == tab_id)
+            .expect("the tab is in the room");
+        assert_eq!(replicated.title, "Build");
+        assert_eq!(replicated.app_title.as_deref(), Some("~/src"));
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        let arrived = find_tab(&b);
+        assert_eq!(arrived.title, "Build");
+        assert_eq!(arrived.app_title.as_deref(), Some("~/src"));
+
+        // The window keeps titling itself behind the name.
+        let tab = &mut a.workspaces[0].strips[0].window_groups[0].tabs[0];
+        tab.set_window_title("cargo test");
+        project(&mut doc, &a);
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        assert_eq!(find_tab(&b).title, "Build");
+        assert_eq!(find_tab(&b).app_title.as_deref(), Some("cargo test"));
+
+        let tab = &mut a.workspaces[0].strips[0].window_groups[0].tabs[0];
+        tab.rename("");
+        project(&mut doc, &a);
+        assert!(
+            contents_of(&doc)
+                .into_iter()
+                .flat_map(|s| s.groups)
+                .flat_map(|g| g.tabs)
+                .all(|t| t.app_title.is_none()),
+            "a cleared name leaves nothing behind in the room"
+        );
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        let cleared = find_tab(&b);
+        assert_eq!(cleared.title, "cargo test");
+        assert_eq!(cleared.app_title, None);
     }
 
     /// The layout scope is the governor's word in the room document: absent,

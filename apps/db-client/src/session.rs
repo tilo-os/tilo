@@ -40,6 +40,15 @@ impl MainTab {
         }
     }
 
+    /// The tab's id in the window bar's view switcher.
+    pub fn view_id(self) -> &'static str {
+        match self {
+            MainTab::Query => "db.view.query",
+            MainTab::Data => "db.view.data",
+            MainTab::Structure => "db.view.structure",
+        }
+    }
+
     pub fn all() -> [MainTab; 3] {
         [MainTab::Query, MainTab::Data, MainTab::Structure]
     }

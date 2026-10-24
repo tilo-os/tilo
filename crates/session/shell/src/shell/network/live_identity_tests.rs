@@ -62,7 +62,7 @@ fn presence_published_on_the_brokers_runtime_names_the_person_without_the_secret
 
     let dir = tempfile::tempdir().unwrap();
     let mut tree = WorkspaceTree::default();
-    let workspace = tree.append_empty_workspace("Home");
+    let workspace = tree.create_hosted_workspace("Home").0;
     let room: RoomId = tree.room_of(workspace).unwrap();
     let network = ShellNetwork::spawn_with(
         tree.shared(),

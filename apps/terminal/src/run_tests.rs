@@ -349,3 +349,64 @@ fn two_sessions_are_searchable_together() {
         "{found:?}"
     );
 }
+
+/// Tab and Shift+Tab are the shell's keys while the grid has the keyboard:
+/// the window hands them to the session's process (completion, back-tab)
+/// rather than moving focus to the next control.
+#[test]
+fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
+    let mut app = App::new().expect("terminal");
+    let (_print, printed) = channel::<Vec<u8>>();
+    let (typed_tx, typed) = channel();
+    let mut parts = Some((printed, typed_tx));
+    let sessions = Sessions::scripted(RecentTarget::none(), move |_, _, _| {
+        let (printed, typed) = parts.take().expect("one process");
+        let mut backend = crate::inner::TerminalBackend::for_test();
+        backend.reader = Box::new(Printed(printed, Vec::new()));
+        backend.writer = Box::new(Typed(typed));
+        Ok(backend)
+    });
+    app.with_surface(|terminal: &mut TerminalWidget| terminal.set_sessions(sessions))
+        .expect("the terminal surface is hosted");
+    app.settle();
+    let grid = app
+        .with_surface(|terminal: &mut TerminalWidget| terminal.grid_rect())
+        .unwrap();
+    assert!(grid.area() > 0.0, "the grid is laid out: {grid:?}");
+    let centre = grid.center();
+    app.harness().click_at(centre.x, centre.y);
+    app.settle();
+    while typed.try_recv().is_ok() {}
+    let focused = app
+        .with_surface(|terminal: &mut TerminalWidget| ui::widget::Widget::is_focused(terminal))
+        .unwrap();
+    assert!(focused, "a click on the grid gives it the keyboard");
+
+    let sent = |app: &mut App, modifiers: &[&str], key: &str| {
+        app.harness().set_modifiers(
+            &modifiers
+                .iter()
+                .map(|m| (*m).to_owned())
+                .collect::<Vec<_>>(),
+        );
+        app.harness().key(key);
+        app.harness().set_modifiers(&[]);
+        app.settle();
+        let mut bytes = Vec::new();
+        while let Ok(chunk) = typed.try_recv() {
+            bytes.extend(chunk);
+        }
+        bytes
+    };
+    assert_eq!(sent(&mut app, &[], "Tab"), b"\t", "Tab is the shell's");
+    assert_eq!(
+        sent(&mut app, &["shift"], "Tab"),
+        b"\x1b[Z",
+        "Shift+Tab is back-tab"
+    );
+    assert_eq!(
+        sent(&mut app, &[], "Tab"),
+        b"\t",
+        "the grid still has the keyboard"
+    );
+}

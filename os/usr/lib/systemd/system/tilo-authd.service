@@ -1,0 +1,66 @@
+[Unit]
+Description=Check every person's secret by unwrapping their user key
+After=local-fs.target
+# Every sign-in surface asks it, the greeter first; the boot sign-in it takes
+# over from the initrd waits only ten minutes for the greeter to claim it.
+Before=greetd.service systemd-user-sessions.service
+ConditionPathExists=/usr/libexec/tilo/tilo-authd
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/tilo/tilo-authd
+Restart=on-failure
+RestartSec=1
+# The socket lives here; the scratch files of the TPM tools beside it.
+RuntimeDirectory=tilo-auth
+RuntimeDirectoryMode=0755
+StateDirectory=tilo/auth
+StateDirectoryMode=0700
+UMask=0077
+# The volume key the initrd links into root's user keyring for the first
+# sign-in is readable only by a possessor: the user keyring must hang off this
+# service's session keyring.
+KeyringMode=shared
+# Moving someone off their old password locks their shadow entry (usermod,
+# which rewrites /etc/shadow and /etc/passwd) and reads the old hash through
+# pam_unix; adding the admin's keyslot writes the LUKS2 header of the system
+# volume; the lockout authorisation leaves tilo-rollback's directory.
+ReadWritePaths=/etc -/var/lib/tilo/rollback -/run/cryptsetup
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectProc=invisible
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+# CAP_SYS_ADMIN: device-mapper status and LUKS2 header writes. CAP_IPC_LOCK:
+# cryptsetup locks its key material in memory. The DAC and ownership ones:
+# reading /etc/shadow (mode 0000) and rewriting it. CAP_AUDIT_WRITE: pam_unix
+# records the check.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_IPC_LOCK CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER CAP_AUDIT_WRITE
+AmbientCapabilities=
+DevicePolicy=closed
+DeviceAllow=block-* rw
+DeviceAllow=/dev/mapper/control rw
+DeviceAllow=/dev/tpmrm0 rw
+DeviceAllow=/dev/tpm0 rw
+SystemCallArchitectures=native
+SystemCallFilter=@system-service @keyring
+SystemCallFilter=~@clock @cpu-emulation @debug @module @mount @obsolete @raw-io @reboot @swap
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

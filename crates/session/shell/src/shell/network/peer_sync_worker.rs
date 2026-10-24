@@ -9,11 +9,11 @@
 //! whose enrollment completed are installed here too, at the frame loop's
 //! prompting ([`ShellNetwork::frame_tick`]), and every sync round, whose
 //! requests carry identity material read from the disk
-//! ([`ShellNetwork::publish_sync_requests`]), and peers' batches for the
-//! rooms, whose admission decodes them in a worker process and copies the
-//! room's document ([`ShellNetwork::merge_room_batch_off_loop`]). One thread
-//! runs them all, in the order they came, so enrollments are finished by
-//! one writer at a time and a room's batches merge in the order they came.
+//! ([`ShellNetwork::publish_sync_requests`]), and the governance changes
+//! made here, each of which waits for its room's governor
+//! ([`ShellNetwork::send_governance_requests_off_loop`]). One thread runs
+//! them all, in the order they came, so enrollments are finished by one
+//! writer at a time and a room's changes reach its governor in order.
 use super::ShellNetwork;
 use crate::shell::{
     peer_sync_overlay::{PeerSyncRequest, PeerSyncResponse, PendingInvitationSummary},
@@ -39,12 +39,12 @@ pub(crate) type Job = Box<dyn FnOnce() + Send>;
 enum Work {
     Job(Job),
     FinishSharedRooms,
+    PlaceWorkspaces,
+    FollowList(crate::shell::personal_workspaces::Adoption),
+    /// Enter the rooms a configured host lists (each, when `None`).
+    HostRooms(Option<iroh::EndpointId>),
     SyncRound,
-    RoomBatch {
-        peer: iroh::EndpointId,
-        room: RoomId,
-        changes: Vec<Vec<u8>>,
-    },
+    Governance(Vec<(RoomId, crate::shell::state::GovernanceRequest)>),
 }
 
 #[derive(Default)]
@@ -86,15 +86,19 @@ impl ShellNetwork {
                                 queued.store(false, Ordering::Release);
                                 network.finish_shared_rooms();
                             }
+                            Work::FollowList(adoption) => network.follow_list(adoption),
+                            Work::HostRooms(host) => network.enter_configured_host_rooms(host),
+                            Work::PlaceWorkspaces => {
+                                network.placement_pass_started();
+                                network.place_pending_workspaces();
+                            }
                             Work::SyncRound => {
                                 sync_queued.store(false, Ordering::Release);
                                 network.publish_sync_requests_now();
                             }
-                            Work::RoomBatch {
-                                peer,
-                                room,
-                                changes,
-                            } => network.merge_room_batch(peer, room, &changes),
+                            Work::Governance(requests) => {
+                                network.send_governance_requests(requests);
+                            }
                         }));
                     if ran.is_err() {
                         tracing::error!("a peer-sync request panicked on its worker");
@@ -257,9 +261,6 @@ impl ShellNetwork {
         workspace: WorkspaceId,
     ) -> Result<PeerSyncResponse, String> {
         let room = self
-            .replica
-            .lock()
-            .map_err(|_| "peer-sync replica lock poisoned".to_string())?
             .tree
             .read()
             .room_of(workspace)
@@ -286,65 +287,29 @@ impl ShellNetwork {
             Err(mpsc::SendError(Work::Job(job))) => Err(job),
             Ok(())
             | Err(mpsc::SendError(
-                Work::FinishSharedRooms | Work::SyncRound | Work::RoomBatch { .. },
+                Work::FinishSharedRooms
+                | Work::PlaceWorkspaces
+                | Work::FollowList(_)
+                | Work::HostRooms(_)
+                | Work::SyncRound
+                | Work::Governance(_),
             )) => Ok(()),
         }
     }
 
-    /// Merge a peer's batch for `room` on the worker, for the frame loop,
-    /// which wakes once it landed. A network the session started no worker
-    /// for merges it in place.
-    pub(super) fn merge_room_batch_off_loop(
+    /// Hand `requests` to the worker, which asks their governors; answered
+    /// with them when the session started no worker.
+    pub(super) fn governance_off_loop(
         &self,
-        peer: iroh::EndpointId,
-        room: RoomId,
-        changes: Vec<Vec<u8>>,
-    ) {
-        let work = Work::RoomBatch {
-            peer,
-            room,
-            changes,
+        requests: Vec<(RoomId, crate::shell::state::GovernanceRequest)>,
+    ) -> Result<(), Vec<(RoomId, crate::shell::state::GovernanceRequest)>> {
+        let Some(worker) = self.peer_sync_worker.worker.get() else {
+            return Err(requests);
         };
-        let unsent = match self.peer_sync_worker.worker.get() {
-            Some(worker) => match worker.send(work) {
-                Ok(()) => return,
-                Err(mpsc::SendError(work)) => work,
-            },
-            None => work,
-        };
-        if let Work::RoomBatch {
-            peer,
-            room,
-            changes,
-        } = unsent
-        {
-            self.merge_room_batch(peer, room, &changes);
+        match worker.send(Work::Governance(requests)) {
+            Err(mpsc::SendError(Work::Governance(requests))) => Err(requests),
+            Ok(()) | Err(mpsc::SendError(_)) => Ok(()),
         }
-    }
-
-    /// Merge a peer's batch for `room` into the tree, holding neither the
-    /// tree nor the replica while it is admitted
-    /// ([`crate::shell::state::WorkspaceTree::merge_room_changes`]).
-    pub(super) fn merge_room_batch(
-        &self,
-        peer: iroh::EndpointId,
-        room: RoomId,
-        changes: &[Vec<u8>],
-    ) {
-        let origin = crate::shell::state::PeerOrigin::peer(&peer);
-        let Some(tree) = self.replica.lock().ok().map(|rep| rep.tree.clone()) else {
-            return;
-        };
-        if tree.read().requires_native_owner(room) {
-            return;
-        }
-        let result =
-            crate::shell::state::WorkspaceTree::merge_room_changes(&tree, room, changes, &origin);
-        let Ok(mut rep) = self.replica.lock() else {
-            return;
-        };
-        rep.room_batch_merged(room, &origin, changes.len(), result);
-        self.finish_replica_turn(rep, Some(room));
     }
 
     /// Install the shared rooms whose enrollment completed, for the frame
@@ -384,6 +349,59 @@ impl ShellNetwork {
                 .shared_rooms_queued
                 .store(false, Ordering::Release);
         }
+    }
+
+    /// Enter the rooms the person's list brought and release those it let
+    /// go, on the worker, as they wait on hosts and the disk. A network the
+    /// session started no worker for does it in place.
+    pub(super) fn follow_list_off_loop(
+        &self,
+        adoption: crate::shell::personal_workspaces::Adoption,
+    ) {
+        if adoption.enter.is_empty() && adoption.release.is_empty() {
+            return;
+        }
+        let unsent = match self.peer_sync_worker.worker.get() {
+            Some(worker) => match worker.send(Work::FollowList(adoption)) {
+                Ok(()) => return,
+                Err(mpsc::SendError(work)) => work,
+            },
+            None => Work::FollowList(adoption),
+        };
+        if let Work::FollowList(adoption) = unsent {
+            self.follow_list(adoption);
+        }
+    }
+
+    /// Enter, on the peer-sync worker, the rooms the configured workspace
+    /// host `host` (each, when `None`) lists: nothing for a session
+    /// configured with none.
+    pub(super) fn enter_configured_host_rooms_off_loop(&self, host: Option<iroh::EndpointId>) {
+        let configured = super::configured_host_addrs();
+        if configured.is_empty()
+            || host.is_some_and(|host| !configured.iter().any(|addr| addr.id == host))
+        {
+            return;
+        }
+        let unsent = match self.peer_sync_worker.worker.get() {
+            Some(worker) => match worker.send(Work::HostRooms(host)) {
+                Ok(()) => return,
+                Err(mpsc::SendError(work)) => work,
+            },
+            None => Work::HostRooms(host),
+        };
+        if let Work::HostRooms(host) = unsent {
+            self.enter_configured_host_rooms(host);
+        }
+    }
+
+    /// Queue a pass placing the workspaces that wait for their rooms on this
+    /// device's host: whether there is a worker to run it.
+    pub(super) fn queue_placements(&self) -> bool {
+        self.peer_sync_worker
+            .worker
+            .get()
+            .is_some_and(|worker| worker.send(Work::PlaceWorkspaces).is_ok())
     }
 
     /// Ask every room this machine is in for whatever it is missing, and

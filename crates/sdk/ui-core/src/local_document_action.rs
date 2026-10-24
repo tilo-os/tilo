@@ -147,7 +147,8 @@ pub(crate) struct InputRoute {
     pub revision: String,
     /// The surface moved under this input: its actions are admitted and
     /// reported once a later surface can be pinned. Otherwise an input with
-    /// no revision refuses its actions before they edit anything.
+    /// no revision reports nothing: its actions still edit, and the queue
+    /// records the gap.
     pub revision_pending: bool,
     pub aliases: Rc<std::collections::HashMap<String, String>>,
     pub pin: Option<Rc<dyn std::any::Any>>,

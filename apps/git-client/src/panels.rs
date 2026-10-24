@@ -4,13 +4,12 @@
 //! Sections stand on the window ground, separated by space; on a wide window
 //! they flow into two columns. Every row is a toolkit [`ListRowFace`]; what
 //! can be done to a row (check out, delete, apply) is its hover action. The
-//! remote commands (fetch, pull, push) live in the window's header row.
+//! remote commands (fetch, pull, push) are actions in the window's bar.
 
 use vello::kurbo::{Point, Rect};
 
 use ui::icons::Icon;
 use ui::paint::PaintCtx;
-use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
     BadgeFace, Button, ButtonFace, ButtonRole, ControlSize, Interaction, ListRowFace, RowAction,
@@ -20,7 +19,7 @@ use crate::history::short_id;
 use crate::i18n::{t, t_args};
 use crate::model::{Branch, RepoModel, Stash};
 
-/// A remote command from the header row.
+/// A remote command, an action in the window's bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RemoteAction {
     Fetch,
@@ -31,15 +30,15 @@ pub enum RemoteAction {
 impl RemoteAction {
     pub const ALL: [Self; 3] = [Self::Fetch, Self::Pull, Self::Push];
 
-    pub fn label(self) -> String {
+    /// The outcome the command names.
+    pub fn name(self) -> String {
         t(match self {
-            Self::Fetch => "git-fetch",
-            Self::Pull => "git-pull",
-            Self::Push => "git-push",
+            Self::Fetch => "git-fetch-name",
+            Self::Pull => "git-pull-name",
+            Self::Push => "git-push-name",
         })
     }
 
-    /// The command's icon, for a header too narrow for its label.
     pub fn icon(self) -> Icon {
         match self {
             Self::Fetch => Icon::CloudDownload,
@@ -435,7 +434,9 @@ fn paint_section(
         } + f64::from(s.s2);
     }
 
-    let pad = f64::from(s.s3);
+    // Rows bleed past the content edge, so their text stands on it with
+    // the section heading.
+    let pad = ui::chrome::row_bleed(theme);
     let pointer = input.pointer.filter(|p| clip.contains(*p));
     for (i, row) in section.rows.iter().enumerate() {
         let actions: Vec<RowAction<'_>> = row
@@ -537,58 +538,6 @@ fn paint_branch_form(
     button.y1
 }
 
-/// The header's remote commands, laid out from `right` leftwards in `band`:
-/// labelled where they fit right of `min_x`, icons where only those do.
-pub fn remote_buttons(
-    ctx: &mut PaintCtx<'_>,
-    band: Rect,
-    right: f64,
-    min_x: f64,
-    pointer: Option<Point>,
-) -> Vec<(Rect, RemoteAction)> {
-    let theme = ctx.theme;
-    let gap = f64::from(theme.tokens.spacing.s2);
-    let h = ButtonFace::height(ControlSize::Regular, theme);
-    let y = band.center().y - h / 2.0;
-    let labelled = right - remote_buttons_width(ctx.text, theme) >= min_x;
-    let mut x1 = right;
-    let mut placed = Vec::new();
-    for action in RemoteAction::ALL.iter().rev() {
-        let label = action.label();
-        let w = if labelled {
-            ButtonFace::new(Rect::ZERO, &label).intrinsic_width(ctx.text, theme)
-        } else {
-            h
-        };
-        let rect = Rect::new(x1 - w, y, x1, y + h);
-        if rect.x0 < min_x {
-            break;
-        }
-        let face = if labelled {
-            ButtonFace::new(rect, &label)
-        } else {
-            ButtonFace::icon_only(rect, action.icon(), &label)
-        };
-        let hovered = pointer.is_some_and(|p| face.contains(theme, p));
-        let face = face.hovered(hovered);
-        Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &face);
-        placed.push((rect, *action));
-        x1 = rect.x0 - gap;
-    }
-    placed.reverse();
-    placed
-}
-
-/// Width the remote commands need, gaps included.
-pub fn remote_buttons_width(text: &mut ui::text_render::TextRenderer, theme: &Theme) -> f64 {
-    let gap = f64::from(theme.tokens.spacing.s2);
-    RemoteAction::ALL
-        .iter()
-        .map(|a| ButtonFace::new(Rect::ZERO, &a.label()).intrinsic_width(text, theme))
-        .sum::<f64>()
-        + gap * (RemoteAction::ALL.len() - 1) as f64
-}
-
 /// Lay out shared toolkit inputs; all submission routes invoke `CreateWorktree`.
 fn paint_worktree_form(
     ctx: &mut PaintCtx<'_>,
@@ -635,6 +584,7 @@ fn paint_worktree_form(
 mod tests {
     use super::*;
     use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
     use vello::Scene;
     use vello::kurbo::Affine;
 

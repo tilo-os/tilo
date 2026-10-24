@@ -138,7 +138,7 @@ impl ShellDriver {
         // offers no Invite.
         let owner = shell::shell::state::local_user_id();
         let mut tree = tree;
-        tree.adopt_ownerless_workspaces(&owner);
+        tree.own_workspaces_for_test(|_| owner.clone());
         let hosted_tabs = hosted_app_tabs(&tree);
         // An owned fixture never reads the wall clock, so frames compare
         // across minutes; it shows the time it is given, like a session
@@ -665,6 +665,11 @@ impl ShellDriver {
             );
         }
         let mut scene = self.fb.paint();
+        // As the compositor does after every paint (`compositor::native`):
+        // motion that steps once per presented frame (a window group's
+        // width spring) is told the frame turned, or it stops after its
+        // first step and a film shows it frozen.
+        self.fb.frame_presented();
         #[cfg(target_os = "linux")]
         if let Some(executor) = self.capture_executor.as_mut() {
             let _ = executor.execute_ready(&mut self.fb, &mut scene);
@@ -928,7 +933,7 @@ impl ShellDriver {
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
-                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
+                let _ = tree.admit_here_for_test(ws_id, &owner, member, role);
             }
             // Both members at their desks: a room only carries a display
             // name while a session of theirs is present.
@@ -942,7 +947,7 @@ impl ShellDriver {
                 ("/var/workspace/design", "ada", Access::Write),
                 ("/var/workspace/brief.pdf", "bo", Access::Read),
             ] {
-                tree.grant_sandbox_in_workspace(
+                tree.grant_sandbox_here_for_test(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::person(who), Scope::FsPath(path.to_string()), verb),
@@ -960,7 +965,7 @@ impl ShellDriver {
                 .collect();
             for id in research {
                 for (member, role) in [("alice", Role::Editor), ("bob", Role::Viewer)] {
-                    let _ = tree.admit_in_workspace(id, &owner, member, role);
+                    let _ = tree.admit_here_for_test(id, &owner, member, role);
                 }
             }
         }
@@ -1025,12 +1030,11 @@ impl ShellDriver {
         let Some((mut laptop, mut list)) = self.own_device.take() else {
             return;
         };
-        let person = self.chrome().local_user_id.clone();
         let handle = self.chrome_handle();
         let arrived = {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            let arrived = laptop.deliver(&person, &mut tree, &mut list);
+            let arrived = laptop.deliver(&mut tree, &mut list);
             let shown = tree
                 .desktop
                 .workspaces
@@ -1097,7 +1101,7 @@ impl ShellDriver {
             let owner = st.local_user_id.clone();
             let mut tree = st.tree_mut();
             let ws_id = tree.desktop.active;
-            let _ = tree.admit_in_workspace(ws_id, &owner, "cy", Role::Editor);
+            let _ = tree.admit_here_for_test(ws_id, &owner, "cy", Role::Editor);
             let Some(ws) = tree.desktop.active_workspace_mut() else {
                 return;
             };
@@ -1116,6 +1120,7 @@ impl ShellDriver {
                         kind,
                         label: label.into(),
                     },
+                    app_title: None,
                 };
                 tabs.push(tab.id);
                 let mut strip = Strip::new(StripId::from(ids.mint_id()), name);
@@ -1173,7 +1178,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace_id = tree.desktop.active;
             let changes = AgentPreset::Operator
                 .grants(
@@ -1187,7 +1192,7 @@ impl ShellDriver {
                 .into_iter()
                 .map(tilo_action_policy::Change::Grant)
                 .collect();
-            let _ = tree.govern_in_workspace(workspace_id, &owner, changes);
+            let _ = tree.govern_here_for_test(workspace_id, &owner, changes);
             if let Some(workspace) = tree.desktop.active_workspace_mut() {
                 workspace.collaborators.retain(|row| row.id != "scribe");
                 workspace.collaborators.insert(
@@ -1293,27 +1298,8 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
         use shell::shell::state::Collaborator;
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
-        self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+        self.seed_now_playing_for_shots();
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1361,6 +1347,30 @@ impl ShellDriver {
                 );
             }
         }
+    }
+
+    /// A music player playing, as the now-playing card reads it.
+    pub fn seed_now_playing_for_shots(&mut self) {
+        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
+        let player = PlayerSnapshot {
+            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
+            identity: "Spotify".to_string(),
+            status: PlaybackStatus::Playing,
+            title: Some("Teardrop".to_string()),
+            artist: Some("Massive Attack".to_string()),
+            artwork: None,
+            track_id: Some("/org/tilo/shots/track/1".to_string()),
+            length_us: Some(330_000_000),
+            position_us: 94_000_000,
+            can_play: true,
+            can_pause: true,
+            can_seek: true,
+            can_go_next: true,
+            can_go_previous: true,
+            observed_at: Instant::now(),
+        };
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada
@@ -1567,7 +1577,7 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
             let tab_ids = tree
                 .desktop
@@ -1591,7 +1601,7 @@ impl ShellDriver {
             .into_iter()
             .enumerate()
             {
-                let _ = tree.admit_in_workspace(
+                let _ = tree.admit_here_for_test(
                     workspace,
                     &owner,
                     id,
@@ -1632,9 +1642,9 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let workspace = tree.desktop.active;
-            let _ = tree.admit_in_workspace(workspace, &owner, "ada", Role::Editor);
+            let _ = tree.admit_here_for_test(workspace, &owner, "ada", Role::Editor);
             if let Some(ws) = tree.desktop.active_workspace_mut()
                 && !ws.collaborators.iter().any(|person| person.id == "ada")
             {
@@ -1886,9 +1896,8 @@ impl ShellDriver {
     }
 
     /// Seeds the active workspace with membership and granted capabilities
-    /// via `WorkspaceTree::grant_in_workspace` — the same authority-checked
-    /// path the settings panel and portal use, so this is a state the
-    /// compositor can actually be in.
+    /// as the room's admitted document would carry them, checked against the
+    /// room's policy, so this is a state the compositor can actually be in.
     fn seed_workspace_permissions(&mut self) {
         use shell::shell::state::{Access, CapOverride, Expiry, Scope, Subject};
         use tilo_action_policy::Role;
@@ -1897,10 +1906,10 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
             for (member, role) in [("ada", Role::Editor), ("bo", Role::Viewer)] {
-                let _ = tree.admit_in_workspace(ws_id, &owner, member, role);
+                let _ = tree.admit_here_for_test(ws_id, &owner, member, role);
             }
             for (app, scope, verb, expiry) in [
                 (
@@ -1922,13 +1931,13 @@ impl ShellDriver {
                     Expiry::AfterUse,
                 ),
             ] {
-                tree.grant_sandbox_in_workspace(
+                tree.grant_sandbox_here_for_test(
                     ws_id,
                     &owner,
                     CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
                 );
             }
-            tree.grant_sandbox_in_workspace(
+            tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -1982,6 +1991,7 @@ impl ShellDriver {
                 self.scene_downloaded_add(downloaded_scene::AddScene::NoArtwork);
             }
             "quick-settings" => self.scene_quick_settings(),
+            "qs-muted" => self.scene_qs_muted(),
             "qs-edit" => self.scene_qs_edit(false),
             "qs-edit-drag" => self.scene_qs_edit(true),
             "qs-hardware-wired" => self.scene_qs_hardware_wired(),
@@ -2062,6 +2072,7 @@ impl ShellDriver {
             "desktop-control-menu" => self.scene_desktop_control_menu(),
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
+            "tab-rename" => self.scene_tab_rename(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
@@ -2145,7 +2156,7 @@ impl ShellDriver {
         let mut lounge = None;
         self.with_chrome(|st| {
             let mut tree = st.tree_mut();
-            let id = tree.append_empty_workspace("Lounge");
+            let id = tree.create_hosted_workspace("Lounge").0;
             lounge = tree
                 .desktop
                 .workspaces
@@ -2344,12 +2355,16 @@ impl ShellDriver {
             PowerProfile::Performance,
         ];
         qs.power_profile = PowerProfile::Balanced;
-        qs.battery = tilo_power_mgmt::BatterySnapshot {
+        qs.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 72,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
-        qs.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        });
+        qs.status.battery_time = Some(tilo_power_mgmt::BatteryTime::ToEmpty(254));
+        qs.status.volume = Some(os_actions::VolumeState {
+            level: 0.45,
+            muted: false,
+        });
         let network =
             |ssid: &str, signal: u8, secure: bool, connected: bool, known: bool| WifiNetwork {
                 ssid: ssid.into(),
@@ -2402,6 +2417,19 @@ impl ShellDriver {
 
     fn scene_quick_settings(&mut self) {
         self.with_chrome(Self::seed_laptop_quick_settings);
+        self.fb.host_mut().force_quick_settings_settled();
+    }
+
+    /// The laptop's Quick Settings with its sound muted: the speaker shows
+    /// struck through and the volume track empty, as the top bar shows it.
+    fn scene_qs_muted(&mut self) {
+        self.with_chrome(|st| {
+            Self::seed_laptop_quick_settings(st);
+            st.quick_settings.status.volume = Some(os_actions::VolumeState {
+                level: 0.45,
+                muted: true,
+            });
+        });
         self.fb.host_mut().force_quick_settings_settled();
     }
 
@@ -2922,6 +2950,7 @@ impl ShellDriver {
                                 label: label.into(),
                                 note: note.into(),
                             },
+                            app_title: None,
                         };
                         strip.window_groups.push(WindowGroup {
                             id: ids.mint_id(),
@@ -3093,9 +3122,9 @@ impl ShellDriver {
         {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            tree.adopt_ownerless_workspaces(&owner);
+            tree.own_workspaces_for_test(|_| owner.clone());
             let ws_id = tree.desktop.active;
-            tree.grant_sandbox_in_workspace(
+            tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -3104,7 +3133,7 @@ impl ShellDriver {
                     Access::Write,
                 ),
             );
-            let temp = tree.grant_sandbox_in_workspace(
+            let temp = tree.grant_sandbox_here_for_test(
                 ws_id,
                 &owner,
                 CapOverride::grant(
@@ -3120,7 +3149,7 @@ impl ShellDriver {
             );
             tree.commit_room_change();
             if let Some(cap_id) = temp {
-                tree.revoke_sandbox_in_workspace(ws_id, &owner, &cap_id);
+                tree.narrow_sandbox(ws_id, &owner, &cap_id);
             }
             if let Some(ws) = tree.desktop.active_workspace_mut() {
                 ws.name = "Design review".to_string();
@@ -3630,6 +3659,7 @@ impl ShellDriver {
                             kind: shell::shell::state::AppKind::Settings,
                             label: label.to_string(),
                         },
+                        app_title: None,
                     };
                     let group = WindowGroup {
                         id: gid,
@@ -3716,6 +3746,7 @@ impl ShellDriver {
                                     kind: AppKind::Settings,
                                     label: (*name).to_string(),
                                 },
+                                app_title: None,
                             }],
                             active_tab: tid,
                             width: WindowWidth::Normal,
@@ -3795,6 +3826,13 @@ impl ShellDriver {
         // out-of-process `compositor::test_control` and in-process
         // ShellDriver see exactly the same target set.
         self.fb.widget_registry()
+    }
+
+    /// Who asks for another animation frame at `now`: chrome sources by
+    /// label, widgets by path; empty once the loop may idle.
+    #[cfg(feature = "test-support")]
+    pub fn animation_owners_at(&self, now: Instant) -> Vec<String> {
+        self.fb.animation_owners_at(now)
     }
 
     /// Centre of a named rect — convenience for the scenario engine.

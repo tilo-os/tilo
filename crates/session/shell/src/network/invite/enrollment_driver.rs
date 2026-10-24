@@ -92,6 +92,16 @@ pub(crate) enum Via {
         http: Arc<dyn tilo_relay_client::HttpClient>,
         door: Option<tilo_relay_session::workspace_join::DoorAdmission>,
     },
+    /// This device's own host, in process: a room placed on this device
+    /// (`crate::network::local_host::LocalHost::join_client`). An endpoint
+    /// cannot dial itself.
+    Local(tilo_relay_session::workspace_join::WorkspaceJoinClient),
+}
+impl Command {
+    /// Whether the enrollment goes to this device's own host, in process.
+    pub(crate) const fn is_local(&self) -> bool {
+        matches!(self.via, Via::Local(_))
+    }
 }
 impl std::fmt::Debug for Command {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -137,12 +147,16 @@ pub(crate) fn command(
 }
 #[derive(Default)]
 pub(crate) struct Registry {
-    tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Each enrollment's task, and whether its host is on another machine.
+    tasks: Vec<(tokio::task::JoinHandle<()>, bool)>,
 }
 impl Registry {
-    /// Whether an enrollment is still talking to its host.
+    /// Whether an enrollment is still talking to a host on another machine:
+    /// one with this device's own host stays in this process.
     pub(crate) fn is_busy(&self) -> bool {
-        self.tasks.iter().any(|task| !task.is_finished())
+        self.tasks
+            .iter()
+            .any(|(task, remote)| *remote && !task.is_finished())
     }
 
     pub(crate) fn handle(
@@ -151,7 +165,7 @@ impl Registry {
         endpoint: iroh::Endpoint,
         identity: Option<&HostIdentity>,
     ) {
-        self.tasks.retain(|task| !task.is_finished());
+        self.tasks.retain(|(task, _)| !task.is_finished());
         let failure = if self.tasks.len() >= MAX_PENDING {
             Some("native enrollment task quota reached")
         } else if identity.is_none() {
@@ -169,17 +183,30 @@ impl Registry {
         let Some(identity) = identity.cloned() else {
             return;
         };
-        self.tasks.push(tokio::spawn(async move {
-            let Command { attempt, invitation, via, mut receiver } = command;
+        let remote = !command.is_local();
+        let task = tokio::spawn(async move {
+            let Command {
+                attempt,
+                invitation,
+                via,
+                mut receiver,
+            } = command;
             let client = match via {
                 Via::Iroh => tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
-                Via::Https { http, door } => tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, door),
+                Via::Https { http, door } => {
+                    tilo_relay_session::workspace_join::WorkspaceJoinClient::https(http, door)
+                }
+                Via::Local(client) => client,
             };
             // A certificate due for renewal is renewed before the host sees it.
-            if let Ok(Err(error)) = tokio::task::spawn_blocking(crate::firstboot::renew_due_device_certificates).await {
+            if let Ok(Err(error)) =
+                tokio::task::spawn_blocking(crate::firstboot::renew_due_device_certificates).await
+            {
                 tracing::warn!(%error, "could not renew this device's certificate before enrolling");
             }
-            let result = if *receiver.borrow() { Err("native enrollment cancelled".into()) } else {
+            let result = if *receiver.borrow() {
+                Err("native enrollment cancelled".into())
+            } else {
                 tokio::select! {
                     biased;
                     _ = receiver.changed() => Err("native enrollment cancelled".into()),
@@ -191,15 +218,21 @@ impl Registry {
             // The exchange future has been dropped before cancellation touches the
             // store, so it cannot persist a new proof after this cleanup barrier.
             let result = if attempt.shared.cancelled.load(Ordering::SeqCst) {
-                cancel_pending(&attempt.owner, attempt.local).and_then(|()| Err("native enrollment cancelled; proof retained".into()))
-            } else { result };
-            if let Ok(mut stored) = attempt.shared.result.lock() { *stored = Some(result); }
-        }));
+                cancel_pending(&attempt.owner, attempt.local)
+                    .and_then(|()| Err("native enrollment cancelled; proof retained".into()))
+            } else {
+                result
+            };
+            if let Ok(mut stored) = attempt.shared.result.lock() {
+                *stored = Some(result);
+            }
+        });
+        self.tasks.push((task, remote));
     }
 }
 impl Drop for Registry {
     fn drop(&mut self) {
-        for task in &self.tasks {
+        for (task, _) in &self.tasks {
             task.abort();
         }
     }

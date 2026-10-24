@@ -6,9 +6,8 @@
 use std::path::PathBuf;
 
 use shell::shell::state::{
-    Access, AppKind, CapOverride, NativeDocumentReference, PeerOrigin, RoomAuthority, RoomId,
-    Scope, Strip, StripId, Subject, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
-    WorkspaceId, WorkspaceTree,
+    Access, AppKind, CapOverride, NativeDocumentReference, RoomId, Scope, Strip, StripId, Subject,
+    Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId, WorkspaceTree,
 };
 
 const FIXTURE: &str = "tests/fixtures/state_v1.json";
@@ -26,6 +25,7 @@ fn tab(id: u64, title: &str, content: TileContent) -> Tab {
         id,
         title: title.into(),
         tile: content,
+        app_title: None,
     }
 }
 
@@ -119,16 +119,28 @@ fn populated_tree() -> WorkspaceTree {
         .active_strip
         .insert(WorkspaceId(9), StripId(10));
     tree.desktop.active_group.insert(StripId(2), 6);
-    tree.room_authority.insert(
-        room(2),
-        RoomAuthority::Peer(PeerOrigin::peer_id("peer-endpoint")),
-    );
-    tree.room_authority.insert(room(3), RoomAuthority::Unpinned);
-    tree.room_peer_names
-        .entry(room(2))
-        .or_default()
-        .insert("peer-endpoint".into(), "Ada".into());
-    tree.room_share_floor.insert(room(2), 11);
+    // What the shell's own room engine kept: no longer read, still written
+    // back exactly as the file had it.
+    for (key, value) in [
+        (
+            "room_authority",
+            serde_json::json!({
+                room(2).to_string(): { "Peer": "iroh:peer-endpoint" },
+                room(3).to_string(): "Unpinned",
+            }),
+        ),
+        (
+            "room_peer_names",
+            serde_json::json!({ room(2).to_string(): { "peer-endpoint": "Ada" } }),
+        ),
+        ("room_peer_identities", serde_json::json!({})),
+        (
+            "room_share_floor",
+            serde_json::json!({ room(2).to_string(): 11 }),
+        ),
+    ] {
+        tree.retired_fields.insert(key.into(), value);
+    }
     tree.continuation_tabs.insert(5);
     tree.continuation_rooms.insert(room(3));
     tree.continuation_owned_tabs.insert(5, room(3));

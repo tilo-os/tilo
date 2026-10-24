@@ -803,24 +803,20 @@ fn launch_resolved_installed_app(
     // the capability list now, so the grant has to be in that copy.
     let launched = {
         let st = chrome.borrow();
-        let mut tree = st.tree_mut();
-        let native_room = tree
+        let tree = st.tree();
+        let room = tree
             .desktop
             .active_workspace()
-            .map(crate::shell::state::Workspace::room)
-            .filter(|room| tree.requires_native_owner(*room));
-        if let Some(room) = native_room {
-            drop(tree);
-            Some(launcher::queue_native_authoring_launch(
+            .map(crate::shell::state::Workspace::room);
+        drop(tree);
+        room.map(|room| {
+            launcher::queue_native_authoring_launch(
                 app.clone(),
                 st.tree_handle(),
                 room,
                 st.native_app_opening.clone(),
-            ))
-        } else {
-            tree.workspace_after_opening_app(package_id)
-                .map(|workspace| launcher::queue_launch_in_workspace(app.clone(), &workspace))
-        }
+            )
+        })
     };
     // Non-blocking past resolution — only pre-fork failures land here, the
     // rest arrive as launch events drained each frame.
@@ -913,13 +909,6 @@ impl SearchProvider for ApplicationsProvider {
     }
     fn launcher_section(&self) -> Option<crate::shell::search::launcher::LauncherSection> {
         Some(crate::shell::search::launcher::LauncherSection::Apps)
-    }
-    fn app_category(&self, result: &SearchResult) -> Option<String> {
-        let snapshot = self.snapshot()?;
-        snapshot.entries.iter().find_map(|entry| match entry {
-            ApplicationEntry::Installed(app) if app.package_id == result.id => app.category.clone(),
-            ApplicationEntry::Installed(_) | ApplicationEntry::Dynamic(_) => None,
-        })
     }
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if !ctx
@@ -1309,6 +1298,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 7,
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -1368,6 +1358,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 7,
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,
@@ -1421,6 +1412,7 @@ mod tests {
                     label: "Browser".into(),
                     note: "Failed to open".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
             width: WindowWidth::Normal,

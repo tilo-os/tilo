@@ -24,12 +24,19 @@ impl NativeAuthorityStorage {
     pub fn rooms(&self) -> impl Iterator<Item = RoomId> + '_ {
         self.rooms.keys().chain(self.pending.keys()).copied()
     }
-    /// Whether this device governs `room` itself, having created it.
+    /// Whether `room`'s host runs on the device `device`: this device entered
+    /// it at a host there, or an enrollment into it there is in flight.
     #[must_use]
-    pub fn governed_here(&self, room: RoomId) -> bool {
-        self.rooms
-            .get(&room)
-            .is_some_and(|stored| stored.enrollment.is_none())
+    pub fn hosted_on(&self, room: RoomId, device: &[u8; 32]) -> bool {
+        if let Some(stored) = self.rooms.get(&room) {
+            return stored.enrollment.as_ref().is_some_and(|enrollment| {
+                crate::session::hosted_by(&enrollment.transport_hint, device)
+            });
+        }
+        self.pending.get(&room).is_some_and(|pending| {
+            crate::VerifiedNativeEnrollmentIntent::restore(&pending.intent)
+                .is_ok_and(|intent| crate::session::hosted_by(intent.transport_hint(), device))
+        })
     }
     /// Whether this device holds `room`: its replica is installed, not
     /// merely an enrollment into it in flight.
@@ -67,8 +74,9 @@ pub(crate) struct StoredRoom {
     pub workspace: u64,
     pub governor: DeviceCert,
     pub device: DeviceCert,
-    /// How this device joined the room a host governs; `None` for a room
-    /// this device governs itself, which it joined by creating it.
+    /// How this device joined the room its host governs. A record without
+    /// one (a room an earlier build governed on the device itself) is
+    /// refused when restored.
     #[serde(flatten)]
     pub enrollment: Option<StoredEnrollment>,
     /// `StatePeer::durable()`: the largest field by far.
@@ -89,6 +97,11 @@ pub(crate) struct StoredRoom {
     /// Exact broker terminal bindings, committed with the signed room checkpoint.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub effect_receipts: BTreeMap<String, crate::effect_receipt::StoredEffectReceipt>,
+    /// The latest shortcut change committed here: the owner receipt its
+    /// signed room checkpoint is published under. A shortcut change is
+    /// idempotent, so no older one is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut_change: Option<tilo_owner_commit::OwnerCommitReceipt>,
     /// Content-addressed cold UUID index, also anchored in signed public room history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effect_history_root: Option<[u8; 32]>,
@@ -97,15 +110,6 @@ pub(crate) struct StoredRoom {
     /// these say who governs the room now.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub successions: Vec<tilo_user_identity::GovernorSuccession>,
-    /// What this device, governing the room, keeps between the steps of
-    /// its joins: the same ledger a relay keeps for the rooms it governs.
-    /// Empty for a room joined through a host.
-    #[serde(
-        default,
-        rename = "joinLedger",
-        skip_serializing_if = "tilo_peer_state::join_ledger::JoinLedger::is_empty"
-    )]
-    pub join_ledger: tilo_peer_state::join_ledger::JoinLedger,
 }
 
 impl StoredRoom {

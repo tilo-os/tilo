@@ -39,8 +39,10 @@ const PINCH_STEP: f64 = 0.12;
 /// step; a wheel notch is one step.
 const SCROLL_STEP_PX: f64 = 60.0;
 
-/// What a zoom gesture asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a zoom gesture asks for, and what the window's Zoom in, Zoom out
+/// and Actual size actions carry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ZoomStep {
     /// One level larger (Ctrl+Plus, scroll up, pinch out).
     In,
@@ -173,7 +175,7 @@ pub fn provided(widget: &mut dyn crate::widget::Widget) -> bool {
 
 /// What the window remembers per app: its content zoom on this device.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-struct ZoomPrefs {
+pub(crate) struct ZoomPrefs {
     /// The window's content zoom; none is the default size.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     content_zoom: Option<f32>,
@@ -217,7 +219,11 @@ impl WindowZoom {
     /// Remember the factor in `app_id`'s settings on this device, and take
     /// up the one stored there. Returns whether the factor changed.
     pub fn restore_for_app(&mut self, app_id: &str) -> bool {
-        let settings = crate::storage::Settings::<ZoomPrefs>::for_app(app_id);
+        self.restore_from(crate::storage::Settings::for_app(app_id))
+    }
+
+    /// [`Self::restore_for_app`], with the factor kept in `settings`.
+    pub(crate) fn restore_from(&mut self, settings: crate::storage::Settings<ZoomPrefs>) -> bool {
         let stored = settings
             .get()
             .content_zoom
@@ -225,6 +231,14 @@ impl WindowZoom {
             .map_or(1.0, |factor| factor.clamp(MIN, MAX));
         self.settings = Some(settings);
         self.set_factor(stored)
+    }
+
+    /// Whether a window a person sees has this zoom: one was opened for an
+    /// app ([`Self::restore_for_app`]). A test's or a host worker's app has
+    /// no window to zoom.
+    #[must_use]
+    pub fn in_window(&self) -> bool {
+        self.settings.is_some()
     }
 
     fn set_factor(&mut self, factor: f32) -> bool {

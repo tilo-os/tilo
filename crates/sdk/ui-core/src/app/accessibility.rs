@@ -659,11 +659,14 @@ impl App {
             .flatten()
     }
 
+    /// The focused field takes text only through deferred receipts, so
+    /// standard text input (and with it the on-screen keyboard) stays closed
+    /// until dictation admits it.
     #[cfg(feature = "native")]
-    fn focused_ime_requires_deferred_ack(&self) -> bool {
+    fn focused_ime_refuses_ordinary_commits(&self) -> bool {
         self.focused_node
             .and_then(|node| {
-                self.inspect_node(node, |widget| widget.ime_requires_deferred_ack())
+                self.inspect_node(node, |widget| widget.ime_refuses_ordinary_commits())
                     .ok()
             })
             .unwrap_or(false)

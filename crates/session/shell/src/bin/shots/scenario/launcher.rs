@@ -6,16 +6,21 @@ use winit::keyboard::{Key, NamedKey};
 use super::{Action, Scenario};
 
 /// Global search before anything is typed: the launcher. A device
-/// with nothing going on shows only its apps.
+/// with nothing going on shows only Tilo's starting points, then every app
+/// through "All apps".
 pub(super) fn fresh() -> Scenario {
     Scenario {
         name: "launcher_fresh",
-        description: "Super+Space on a device with no activity: the launcher lists only the apps.",
+        description: "Super+Space on a device with no activity: the launcher lists Tilo's starting points and All apps; choosing All apps lists every app.",
         actions: vec![
             Action::SeedLauncherFresh,
             Action::OpenPalette,
             Action::WaitSettled,
             Action::Snapshot("01-launcher-fresh"),
+            Action::Key(Key::Named(NamedKey::ArrowUp)),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::WaitSettled,
+            Action::Snapshot("02-all-apps"),
         ],
     }
 }

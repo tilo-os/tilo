@@ -4,8 +4,8 @@
 //! The trail takes the width it is given. When its segments do not fit, it
 //! truncates the middle: keeps the first segment, puts the
 //! [`Icon::MoreHorizontal`] glyph in place of the hidden ones, keeps the
-//! last two. A trail of 4 or fewer segments never truncates (the truncated
-//! form wouldn't be shorter).
+//! last two, then fewer. What still does not fit ends the current
+//! segment's label in an ellipsis.
 //!
 //! An optional root icon ([`Breadcrumb::root_icon`]) leads the first
 //! segment (a drive, Home). A trail that doubles as an editable path
@@ -141,7 +141,8 @@ impl Breadcrumb {
     /// Compute the list of visible labels for the given available width.
     /// The whole trail when it fits; otherwise the first segment, `...`
     /// and the last two; then the first, `...` and the last; and at the
-    /// narrowest `...` and the last. The current folder always shows.
+    /// narrowest `...` and the last (for a trail of two as well). The
+    /// current folder always shows.
     /// Pure function — does not mutate `self`. Exposed for tests that want
     /// to pin the truncation behaviour without running a full layout pass.
     pub fn visible_segments(
@@ -163,7 +164,7 @@ impl Breadcrumb {
     ) -> Vec<Option<usize>> {
         let n = self.segments.len();
         let full: Vec<Option<usize>> = (0..n).map(Some).collect();
-        if n < 3 {
+        if n < 2 {
             return full;
         }
         let last = n - 1;
@@ -171,7 +172,9 @@ impl Breadcrumb {
         if n > 3 {
             candidates.push(vec![Some(0), None, Some(last - 1), Some(last)]);
         }
-        candidates.push(vec![Some(0), None, Some(last)]);
+        if n > 2 {
+            candidates.push(vec![Some(0), None, Some(last)]);
+        }
         candidates.push(vec![None, Some(last)]);
         let narrowest = candidates.pop().unwrap_or_default();
         candidates
@@ -245,7 +248,21 @@ impl Breadcrumb {
                 cursor_x += sep_pad + sep_w + sep_pad;
             }
         }
-        self.cached_visible = self.labels_of(&origin);
+        let mut labels = self.labels_of(&origin);
+        // Where even `...` and the current segment overrun the width, the
+        // current segment's label ends in an ellipsis inside it.
+        if let (Some(rect), Some(label)) = (rects.last_mut(), labels.last_mut())
+            && rect.x1 > self.rect.x1
+        {
+            rect.x1 = self.rect.x1.max(rect.x0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a segment's width is a bounded on-screen size, far inside f32"
+            )]
+            let room = rect.width() as f32;
+            *label = tr.elide_to_width_style(label, room, &theme.text(self.role));
+        }
+        self.cached_visible = labels;
         self.segment_rects = rects;
         self.visible_origin = origin;
     }
@@ -650,6 +667,35 @@ mod tests {
             );
         }
 
+        fn breadcrumb_of_two_long_segments_stays_inside_its_width() {
+            let mut bc = Breadcrumb::new(vec![
+                "Samsung SSD 990 PRO 1TB".to_string(),
+                "system partition".to_string(),
+            ]);
+            let mut tr = TextRenderer::new();
+            let theme = Theme::dark();
+            let both = bc.width_of(&[Some(0), Some(1)], &theme, &mut tr);
+            assert_eq!(
+                bc.visible_segments(both - 1.0, &theme, &mut tr),
+                vec![ELLIPSIS.to_string(), "system partition".to_string()],
+                "a trail of two too wide for its room keeps the current segment"
+            );
+            let rect = Rect::new(10.0, 0.0, 70.0, 24.0);
+            bc.set_rect(rect);
+            bc.rebuild_rects(&theme, &mut tr);
+            let end = bc.segment_rects.last().map(|r| r.x1).unwrap_or_default();
+            assert!(end <= rect.x1, "the trail ends at {end}, inside {rect:?}");
+            let shown = bc.cached_visible.last().cloned().unwrap_or_default();
+            let style = theme.text(bc.role);
+            let (shown_w, _) = tr.measure_style(&shown, None, &style);
+            let last = bc.segment_rects.last().copied().unwrap_or(Rect::ZERO);
+            assert!(
+                shown != "system partition" && f64::from(shown_w) <= last.width() + 0.5,
+                "the current segment's label is cut to its room: {shown}"
+            );
+        }
+
+        breadcrumb_of_two_long_segments_stays_inside_its_width();
         breadcrumb_with_one_segment_paints_no_separator();
         breadcrumb_labels_and_chevrons_centre_their_measured_line();
         breadcrumb_with_long_path_truncates_middle_segments();

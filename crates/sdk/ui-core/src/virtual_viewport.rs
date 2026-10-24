@@ -1181,8 +1181,11 @@ where
     }
 
     /// Scroll one page while keeping the focused row's screen position as
-    /// the navigation anchor. Runtime and memory stay independent of `count`,
-    /// including hundred-million-row models with variable measured heights.
+    /// the navigation anchor. A page the content's edge cuts short (a list
+    /// that fits its viewport, or one already showing its last page) lands
+    /// on the row at that edge instead, as it is then in view. Runtime and
+    /// memory stay independent of `count`, including hundred-million-row
+    /// models with variable measured heights.
     pub(crate) fn page_from(&mut self, index: usize, forward: bool) -> Option<(usize, bool)> {
         if self.count == 0 || self.viewport <= 0.0 || index >= self.count {
             return None;
@@ -1193,13 +1196,21 @@ where
         let previous = self.offset;
         let distance = self.viewport * PAGE_FRACTION * if forward { 1.0 } else { -1.0 };
         self.scroll_by(distance);
-        let target = self.hit_test(anchor_y).unwrap_or_else(|| {
-            if forward {
-                self.count.saturating_sub(1)
-            } else {
-                0
-            }
-        });
+        let edge = if forward {
+            self.count.saturating_sub(1)
+        } else {
+            0
+        };
+        let cut_short = if forward {
+            self.offset < previous + distance
+        } else {
+            self.offset > previous + distance
+        };
+        let target = if cut_short {
+            edge
+        } else {
+            self.hit_test(anchor_y).unwrap_or(edge)
+        };
         Some((target, self.offset.to_bits() != previous.to_bits()))
     }
 
@@ -1665,6 +1676,30 @@ mod tests {
             assert!(moved);
             assert_eq!(previous, current);
             assert_eq!(view.resident_measurements(), 0);
+        }
+
+        {
+            // A page the content's edge cuts short lands on the edge row:
+            // a list that fits its viewport, then one on its last page.
+            let mut view = SparseVirtualViewport::<u64>::new(24.0);
+            view.reconcile(5, |_| None, None);
+            view.set_viewport(720.0);
+            assert_eq!(view.page_from(0, true), Some((4, false)));
+            assert_eq!(view.page_from(4, false), Some((0, false)));
+
+            view.reconcile(100, |_| None, None);
+            view.set_viewport(240.0);
+            view.set_offset(view.max_offset() - 12.0);
+            let top = view.hit_test(0.0).expect("a row at the top");
+            let (next, moved) = view.page_from(top, true).expect("page down");
+            assert!(moved);
+            assert_eq!(next, 99, "the last page's last row");
+            let (back, moved) = view.page_from(next, false).expect("page up");
+            assert!(moved, "a full page back up still scrolls");
+            assert_ne!(
+                back, 0,
+                "and keeps its place rather than leaping to the top"
+            );
         }
 
         {

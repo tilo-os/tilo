@@ -1,5 +1,6 @@
-//! Network — Wi-Fi, wired, VPN, hotspot, mobile broadband and the saved
-//! connection profiles of this device, as `NetworkManager` reports them.
+//! Network — Wi-Fi, wired, VPN, hotspot and the saved connection profiles
+//! of this device, as `NetworkManager` reports them; mobile data is its
+//! own section ([`mobile`]).
 //!
 //! Every read and change may block on `nmcli` or the system bus for
 //! seconds, so none runs on the UI thread: the model reads a snapshot in the
@@ -9,8 +10,7 @@
 //! zeroed once used; they never reach a document.
 //!
 //! A radio the device does not have is not offered: Wi-Fi and the hotspot
-//! without a Wi-Fi radio, mobile broadband without a modem, airplane mode
-//! with neither ([`NetworkArea::statuses`]).
+//! without a Wi-Fi radio, airplane mode without a Wi-Fi radio or a modem ([`NetworkArea::statuses`]).
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -61,6 +61,7 @@ pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&NetworkArea> {
     app.areas().find()
 }
 
+pub(crate) mod mobile;
 pub(crate) mod values;
 
 // Ask the authenticated host: this app intentionally has an isolated network
@@ -131,9 +132,6 @@ pub enum NetworkEffect {
     /// Share this device's connection as a Wi-Fi hotspot, or stop.
     #[effect(job, idempotent, label = "Hotspot")]
     SetHotspot { on: bool },
-    /// Use mobile broadband, or stop.
-    #[effect(job, idempotent, label = "Mobile broadband")]
-    SetMobileBroadband { on: bool },
     /// Connect to a Wi-Fi network. Without a password a secure network uses
     /// one the person's devices share, else asks for it; while its password
     /// prompt is open, the password typed there.
@@ -252,22 +250,6 @@ pub enum NetworkEffect {
         mac: Option<String>,
         #[param("A proxy auto-configuration URL")]
         proxy: Option<String>,
-    },
-    /// Create a mobile broadband profile; what is omitted is what the form
-    /// holds.
-    #[effect(job, label = "Create mobile profile")]
-    CreateMobileProfile {
-        name: Option<String>,
-        #[param("The access point name")]
-        apn: Option<String>,
-    },
-    /// Unlock a SIM with its PIN; what is omitted is what the form holds.
-    #[effect(job, label = "Unlock SIM")]
-    UnlockSim {
-        #[param("The SIM, as listed")]
-        sim: Option<String>,
-        #[param(secret, "The SIM's PIN")]
-        pin: Option<String>,
     },
     /// Show or hide the enterprise (802.1X) network setup.
     #[effect(view, label = "Enterprise network setup")]
@@ -421,7 +403,6 @@ fn radio_shown(radio: Radio) -> String {
     t(match radio {
         Radio::Airplane => "net-radio-airplane",
         Radio::Hotspot => "net-radio-hotspot",
-        Radio::Mobile => "net-radio-mobile",
     })
 }
 
@@ -515,8 +496,6 @@ type Part<T> = Option<Result<T, String>>;
 pub(crate) struct NetworkSnapshot {
     networks: Result<Vec<WifiNetworkInfo>, String>,
     wifi_enabled: Part<bool>,
-    /// Read only for the first snapshot.
-    sims: Part<Vec<os_actions::SimInfo>>,
     wired: Part<WiredInfo>,
     radios: Part<os_actions::RadioState>,
     connectivity: Part<ConnectivityState>,
@@ -530,13 +509,12 @@ pub(crate) struct NetworkSnapshot {
 impl NetworkSnapshot {
     /// Query `NetworkManager`. Every call here may block on `nmcli` or the
     /// system bus, so this never runs on the UI thread.
-    fn read(initial: bool) -> Self {
+    fn read() -> Self {
         let profiles = os_actions::list_saved_network_profiles();
         let radios = os_actions::get_radio_state();
         Self {
             networks: os_actions::list_wifi_networks(),
             wifi_enabled: Some(wifi_enabled_from(&radios)),
-            sims: initial.then(os_actions::list_mobile_sims),
             wired: Some(os_actions::get_wired()),
             radios: Some(radios),
             connectivity: Some(os_actions::get_connectivity()),
@@ -572,7 +550,6 @@ impl NetworkSnapshot {
         Self {
             networks,
             wifi_enabled: None,
-            sims: None,
             wired: None,
             radios: None,
             connectivity: None,
@@ -589,7 +566,6 @@ impl NetworkSnapshot {
         Self {
             networks: Ok(networks),
             wifi_enabled: Some(Ok(true)),
-            sims: Some(Ok(Vec::new())),
             wired: Some(Ok(WiredInfo::default())),
             radios: Some(Ok(os_actions::RadioState {
                 wifi_available: true,
@@ -617,7 +593,6 @@ const SCAN_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
 struct NetworkReadErrors {
     networks: Option<String>,
     wifi_enabled: Option<String>,
-    sims: Option<String>,
     wired: Option<String>,
     radios: Option<String>,
     connectivity: Option<String>,
@@ -657,7 +632,6 @@ fn adopt<T>(part: Part<T>, error: &mut Option<String>) -> Option<T> {
 pub(crate) enum Radio {
     Airplane,
     Hotspot,
-    Mobile,
 }
 
 /// A change to this device's networking, carried out off the UI thread.
@@ -698,14 +672,6 @@ pub(crate) enum NetworkChange {
         ssid: String,
         password: Option<Zeroizing<String>>,
     },
-    MobileProfile {
-        name: String,
-        apn: String,
-    },
-    UnlockSim {
-        sim: String,
-        pin: Zeroizing<String>,
-    },
     Enterprise {
         config: EnterpriseWifiConfiguration,
         password: Zeroizing<String>,
@@ -723,10 +689,10 @@ impl Drop for NetworkChange {
 /// What carries out Network's reads and changes: `NetworkManager` on a
 /// device, a fixed sample in a screenshot or test.
 pub(crate) trait NetworkService: Send + Sync {
-    /// Read everything Network shows; `initial` also reads the SIMs.
+    /// Read everything Network shows.
     /// Connectivity is the last verdict; this never probes the internet,
     /// and the networks are those last seen: it never waits for a scan.
-    fn snapshot(&self, initial: bool) -> NetworkSnapshot;
+    fn snapshot(&self) -> NetworkSnapshot;
     /// Scan for Wi-Fi networks and return once the scan has finished, so the
     /// snapshot that follows lists what the radio sees now. A scan takes as
     /// long as the hardware needs, so it runs on its own worker (the open
@@ -741,7 +707,7 @@ pub(crate) trait NetworkService: Send + Sync {
     /// The networks in range as last seen, and nothing else: what the
     /// periodic look reads after its scan.
     fn networks(&self) -> NetworkSnapshot {
-        NetworkSnapshot::networks_only(self.snapshot(false).networks)
+        NetworkSnapshot::networks_only(self.snapshot().networks)
     }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
@@ -766,11 +732,12 @@ pub(crate) trait NetworkService: Send + Sync {
     /// # Errors
     /// Why there is none to open.
     fn sign_in_page(&self) -> Result<String, String>;
-    /// Open a system tool.
+    /// Open a system tool, for the broker invocation `on_behalf_of` when
+    /// an agent asked for it ([`os_actions::open_tool`]).
     ///
     /// # Errors
     /// Why it could not be opened.
-    fn open_tool(&self, intent: ToolIntent) -> Result<(), String>;
+    fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String>;
 }
 
 /// This device's `NetworkManager`, its radios switched through the
@@ -784,8 +751,8 @@ impl NetworkService for DeviceNetwork {
         NetworkSnapshot::networks_only(os_actions::list_wifi_networks())
     }
 
-    fn snapshot(&self, initial: bool) -> NetworkSnapshot {
-        NetworkSnapshot::read(initial)
+    fn snapshot(&self) -> NetworkSnapshot {
+        NetworkSnapshot::read()
     }
 
     fn recheck_connectivity(&self) {
@@ -805,7 +772,6 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::Wired(on) => dispatcher.set_wired(*on),
             NetworkChange::Radio(Radio::Airplane, on) => dispatcher.set_airplane_mode(*on),
             NetworkChange::Radio(Radio::Hotspot, on) => dispatcher.set_hotspot(*on),
-            NetworkChange::Radio(Radio::Mobile, on) => dispatcher.set_mobile_broadband(*on),
             NetworkChange::Vpn { name, on } => dispatcher.set_vpn_connection(name, *on),
             NetworkChange::Autoconnect { uuid, on, .. } => {
                 os_actions::set_network_autoconnect(uuid, *on)
@@ -823,10 +789,6 @@ impl NetworkService for DeviceNetwork {
             NetworkChange::Connect { ssid, password } => {
                 dispatcher.connect_wifi(ssid, password.as_deref().map(String::as_str))
             }
-            NetworkChange::MobileProfile { name, apn } => {
-                os_actions::create_mobile_profile(name, apn)
-            }
-            NetworkChange::UnlockSim { sim, pin } => os_actions::unlock_mobile_sim_on(sim, pin),
             NetworkChange::Enterprise { config, password } => {
                 os_actions::connect_enterprise_wifi(config, password)
             }
@@ -845,9 +807,9 @@ impl NetworkService for DeviceNetwork {
         os_actions::captive_portal_uri()
     }
 
-    fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+    fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String> {
         crate::device_read::off_ui_thread();
-        os_actions::open_tool(intent)
+        os_actions::open_tool(intent, on_behalf_of)
     }
 }
 
@@ -887,7 +849,7 @@ impl SampleNetwork {
 }
 
 impl NetworkService for SampleNetwork {
-    fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+    fn snapshot(&self) -> NetworkSnapshot {
         let mut snapshot = NetworkSnapshot::of_networks(Self::networks());
         // A laptop on Wi-Fi with its Ethernet port empty.
         snapshot.wired = Some(Ok(WiredInfo {
@@ -941,7 +903,7 @@ impl NetworkService for SampleNetwork {
         Err("a sample has no sign-in page".into())
     }
 
-    fn open_tool(&self, _intent: ToolIntent) -> Result<(), String> {
+    fn open_tool(&self, _intent: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         Ok(())
     }
@@ -1119,8 +1081,8 @@ impl NetworkArea {
     }
 
     /// What this device cannot do with its networks now: Wi-Fi and a
-    /// hotspot without a Wi-Fi radio, mobile broadband without a modem,
-    /// airplane mode with neither. Reads nothing itself: only what the
+    /// hotspot without a Wi-Fi radio, airplane mode without a Wi-Fi radio
+    /// or a modem. Reads nothing itself: only what the
     /// radios and the area's model have read, so it never opens the area.
     pub(crate) fn statuses(&self) -> Vec<EffectStatus> {
         let reported = self.model.get().and_then(|model| {
@@ -1149,13 +1111,6 @@ impl NetworkArea {
                 ],
                 "no_adapter",
                 &t("net-no-wifi-adapter"),
-            );
-        }
-        if wwan {
-            unavailable(
-                &[NetworkEffect::SET_MOBILE_BROADBAND.id],
-                "no_modem",
-                &t("net-no-modem"),
             );
         }
         if wifi && wwan {
@@ -1275,7 +1230,6 @@ pub struct NetworkModel {
     profiles: Vec<SavedNetworkProfile>,
     profile_settings: HashMap<String, os_actions::ConnectionProfileSettings>,
     wake_settings: HashMap<String, Result<NetworkWakeStatus, String>>,
-    sims: Vec<os_actions::SimInfo>,
     hotspot_clients: Vec<os_actions::HotspotClient>,
     vpns: Vec<VpnInfo>,
     diagnostics: Option<os_actions::ConnectionDiagnostics>,
@@ -1322,10 +1276,6 @@ pub struct NetworkModel {
     hotspot_band: LocalState<String>,
     policy_forms: HashMap<String, PolicyForm>,
     ipv4_forms: HashMap<String, Ipv4Form>,
-    mobile_name: LocalState<String>,
-    mobile_apn: LocalState<String>,
-    mobile_sim: LocalState<String>,
-    sim_pin: Arc<Mutex<String>>,
     enterprise: EnterpriseForm,
     ca_picker: Option<ui::portal::PortalChannel>,
     changed: bool,
@@ -1333,11 +1283,7 @@ pub struct NetworkModel {
 
 impl Drop for NetworkModel {
     fn drop(&mut self) {
-        let secrets = [
-            &self.hotspot_password,
-            &self.sim_pin,
-            &self.enterprise.password,
-        ];
+        let secrets = [&self.hotspot_password, &self.enterprise.password];
         for buffer in secrets.into_iter().chain(self.join_passwords.values()) {
             if let Ok(mut secret) = buffer.lock() {
                 secret.zeroize();
@@ -1474,7 +1420,7 @@ impl NetworkModel {
     /// A model over `service`, its first snapshot read at once.
     fn loaded_from(cx: PaneCx, service: Arc<dyn NetworkService>) -> Self {
         let mut model = Self::with_service(cx, service);
-        let snapshot = model.service.snapshot(true);
+        let snapshot = model.service.snapshot();
         let _ = model.adopt_snapshot(snapshot);
         model
     }
@@ -1494,7 +1440,6 @@ impl NetworkModel {
             profiles: Vec::new(),
             profile_settings: HashMap::new(),
             wake_settings: HashMap::new(),
-            sims: Vec::new(),
             hotspot_clients: Vec::new(),
             vpns: Vec::new(),
             diagnostics: None,
@@ -1523,10 +1468,6 @@ impl NetworkModel {
             hotspot_band: LocalState::new(band_shown("Automatic")),
             policy_forms: HashMap::new(),
             ipv4_forms: HashMap::new(),
-            mobile_name: LocalState::new(String::new()),
-            mobile_apn: LocalState::new(String::new()),
-            mobile_sim: LocalState::new(String::new()),
-            sim_pin: Arc::new(Mutex::new(String::new())),
             enterprise: EnterpriseForm::new(),
             ca_picker: None,
             changed: false,
@@ -1558,12 +1499,11 @@ impl NetworkModel {
     fn start_snapshot(&mut self) {
         let (sender, receiver) = crate::channel::channel();
         let service = Arc::clone(&self.service);
-        let initial = !self.loaded;
         let wake = ui::WakeHandle::new();
         let started = crate::device_read::thread(
             "settings-network-read",
             Box::new(move || {
-                if sender.send(service.snapshot(initial)).is_ok() {
+                if sender.send(service.snapshot()).is_ok() {
                     wake.wake();
                 }
             }),
@@ -1600,9 +1540,6 @@ impl NetworkModel {
         if let Some(enabled) = adopt(snapshot.wifi_enabled, &mut self.read_errors.wifi_enabled) {
             self.wifi_enabled = enabled;
         }
-        if let Some(sims) = adopt(snapshot.sims, &mut self.read_errors.sims) {
-            self.sims = sims;
-        }
         if let Some(wired) = adopt(snapshot.wired, &mut self.read_errors.wired) {
             self.wired = wired;
         }
@@ -1627,11 +1564,6 @@ impl NetworkModel {
         }
         if let Some(vpns) = adopt(snapshot.vpns, &mut self.read_errors.vpns) {
             self.vpns = vpns;
-        }
-        if self.mobile_sim.get().is_empty()
-            && let Some(sim) = self.sims.first()
-        {
-            self.mobile_sim.set(sim.label.clone());
         }
         self.loaded = true;
         outcome
@@ -1769,7 +1701,7 @@ impl NetworkModel {
                     let scan = service.scan();
                     service.recheck_connectivity();
                     Landed::Refreshed {
-                        snapshot: service.snapshot(false),
+                        snapshot: service.snapshot(),
                         scan,
                     }
                 })
@@ -1793,7 +1725,6 @@ impl NetworkModel {
             }
             NetworkEffect::SetAirplaneMode { on } => self.switch(Radio::Airplane, on)?,
             NetworkEffect::SetHotspot { on } => self.switch(Radio::Hotspot, on)?,
-            NetworkEffect::SetMobileBroadband { on } => self.switch(Radio::Mobile, on)?,
             NetworkEffect::ConnectNetwork { ssid, password } => self.connect(ssid, password)?,
             NetworkEffect::CancelConnect { ssid } => {
                 if self.expanded.as_deref() == Some(ssid.as_str()) {
@@ -1877,7 +1808,9 @@ impl NetworkModel {
                         profile: None,
                     },
                 };
-                Begun::work(move || Landed::Opened(service.open_tool(intent)))
+                let on_behalf_of =
+                    ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
+                Begun::work(move || Landed::Opened(service.open_tool(intent, on_behalf_of)))
             }
             NetworkEffect::RunDiagnostics => {
                 Begun::work(move || Landed::Diagnosed(service.diagnostics()))
@@ -2007,30 +1940,6 @@ impl NetworkModel {
                     Some(format!("Applying advanced policy to {}…", profile.name)),
                 )
             }
-            NetworkEffect::CreateMobileProfile { name, apn } => {
-                let name = name.unwrap_or_else(|| self.mobile_name.get());
-                let apn = apn.unwrap_or_else(|| self.mobile_apn.get());
-                self.change(
-                    NetworkChange::MobileProfile { name, apn },
-                    Some("Creating mobile profile…".into()),
-                )
-            }
-            NetworkEffect::UnlockSim { sim, pin } => {
-                let typed = take_secret(&self.sim_pin);
-                let pin = pin.map_or(typed, Zeroizing::new);
-                let wanted = sim.unwrap_or_else(|| self.mobile_sim.get());
-                let sim = self
-                    .sims
-                    .iter()
-                    .find(|s| s.label == wanted || s.path == wanted)
-                    .or_else(|| self.sims.first())
-                    .map(|s| s.path.clone())
-                    .ok_or_else(|| "No SIM is available".to_string())?;
-                self.change(
-                    NetworkChange::UnlockSim { sim, pin },
-                    Some("Unlocking SIM…".into()),
-                )
-            }
             NetworkEffect::ShowEnterpriseSetup => {
                 self.enterprise_open = !self.enterprise_open;
                 Begun::Done
@@ -2091,7 +2000,6 @@ impl NetworkModel {
         match radio {
             Radio::Airplane => self.radios.airplane_mode = on,
             Radio::Hotspot => self.radios.hotspot_active = on,
-            Radio::Mobile => self.radios.wwan_enabled = on,
         }
         Ok(self.change(NetworkChange::Radio(radio, on), None))
     }
@@ -2363,7 +2271,6 @@ impl NetworkModel {
                 match radio {
                     Radio::Airplane => self.radios.airplane_mode = !on,
                     Radio::Hotspot => self.radios.hotspot_active = !on,
-                    Radio::Mobile => self.radios.wwan_enabled = !on,
                 }
                 Err(t_args(
                     "net-notice-radio-err",
@@ -2425,12 +2332,6 @@ impl NetworkModel {
             )),
             (NetworkChange::Policy { .. }, Err(error)) => {
                 Err(t_args("net-notice-policy-err", &[("error", error.into())]))
-            }
-            (NetworkChange::MobileProfile { .. }, result) => {
-                Self::operation(result, "Mobile profile created.", "net-subject-mobile")
-            }
-            (NetworkChange::UnlockSim { .. }, result) => {
-                Self::operation(result, "SIM unlocked.", "net-subject-sim")
             }
             (NetworkChange::Enterprise { .. }, result) => Self::operation(
                 result,
@@ -2583,17 +2484,6 @@ impl NetworkModel {
             cards.push(self.hotspot_card());
         }
         cards.push(self.airplane_card());
-        if self.radios.wwan_available {
-            cards.push(card_with_action(
-                &t("net-mobile"),
-                Box::new(self.switch_control(
-                    "network.mobile",
-                    self.radios.wwan_enabled,
-                    NetworkEffect::SET_MOBILE_BROADBAND,
-                )),
-                rows(self.mobile_rows()),
-            ));
-        }
         cards.push(card(&t("net-diag-title"), rows(self.diagnostic_rows())));
         crate::widgets::cards(cards)
     }
@@ -3184,58 +3074,6 @@ impl NetworkModel {
                     .with_placeholder(placeholder),
             ),
         )
-    }
-
-    fn mobile_rows(&self) -> Vec<Item> {
-        let mut rows = Vec::new();
-        if let Some(error) = &self.read_errors.sims {
-            rows.push(row(error_caption(&t_args(
-                "net-sims-error",
-                &[("error", error.as_str().into())],
-            ))));
-        }
-        rows.extend([
-            note(&t("net-mobile-caption")),
-            Self::text_field(
-                &self.mobile_name,
-                "network.mobile.profile",
-                &t("net-profile-name"),
-            ),
-            Self::text_field(&self.mobile_apn, "network.mobile.apn", &t("net-apn")),
-            self.button_row(
-                "settings.network.mobile.create",
-                &t("net-create-profile"),
-                NetworkEffect::CreateMobileProfile {
-                    name: None,
-                    apn: None,
-                },
-            ),
-            note(&t("net-sim-pin-caption")),
-        ]);
-        if !self.sims.is_empty() {
-            rows.push(setting_row(
-                &t("net-sim"),
-                Box::new(
-                    Dropdown::from_state(
-                        self.sims.iter().map(|s| s.label.clone()).collect(),
-                        &self.mobile_sim,
-                    )
-                    .with_placeholder(&self.mobile_sim.get()),
-                ),
-            ));
-        }
-        rows.extend([
-            Self::secret_field(&self.sim_pin, "network.mobile.pin", &t("net-sim-pin")),
-            self.button_row(
-                "settings.network.mobile.unlock",
-                &t("net-unlock-sim"),
-                NetworkEffect::UnlockSim {
-                    sim: None,
-                    pin: None,
-                },
-            ),
-        ]);
-        rows
     }
 
     fn enterprise_rows(&self) -> Vec<Item> {
@@ -4049,7 +3887,7 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
-        fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+        fn snapshot(&self) -> NetworkSnapshot {
             self.snapshot_reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let gate = self.snapshot_gate.lock().unwrap().take();
@@ -4067,7 +3905,6 @@ mod tests {
                 return NetworkSnapshot {
                     networks: Err(reason.clone()),
                     wifi_enabled: Some(failed(&reason)),
-                    sims: Some(failed(&reason)),
                     wired: Some(failed(&reason)),
                     radios: Some(failed(&reason)),
                     connectivity: Some(failed(&reason)),
@@ -4141,7 +3978,7 @@ mod tests {
             Err("no portal".into())
         }
 
-        fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+        fn open_tool(&self, intent: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
             crate::device_read::off_ui_thread();
             let _ = intent;
             self.changes.lock().unwrap().push("tool".into());
@@ -4181,7 +4018,6 @@ mod tests {
         observed.enterprise_open = true;
         *observed.enterprise.password.lock().unwrap() = "private-enterprise-input".into();
         *observed.hotspot_password.lock().unwrap() = "private-hotspot-input".into();
-        *observed.sim_pin.lock().unwrap() = "private-pin-input".into();
         let mut app =
             ui::framework::testing::TestApp::<crate::SettingsShell>::with_role(ui::Role::Viewer)
                 .expect("read-only Settings opens");
@@ -4496,7 +4332,7 @@ mod tests {
     }
 
     impl NetworkService for NmRadio {
-        fn snapshot(&self, _initial: bool) -> NetworkSnapshot {
+        fn snapshot(&self) -> NetworkSnapshot {
             let on = *self.on.lock().unwrap() && !*self.hard.lock().unwrap();
             let mut snapshot =
                 NetworkSnapshot::of_networks(if on { networks() } else { Vec::new() });
@@ -4527,7 +4363,7 @@ mod tests {
         fn sign_in_page(&self) -> Result<String, String> {
             Err("no portal".into())
         }
-        fn open_tool(&self, _: ToolIntent) -> Result<(), String> {
+        fn open_tool(&self, _: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
             Ok(())
         }
     }

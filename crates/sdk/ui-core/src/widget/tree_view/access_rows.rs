@@ -23,12 +23,16 @@ use crate::widget::Widget;
 pub(super) struct KeptAccessRows {
     context: Option<AccessRowsContext<'static>>,
     rows: rustc_hash::FxHashMap<NodeId, KeptAccessRow>,
+    /// Counts the walks, to tell the rows the last one reached.
+    walk: u64,
 }
 
 /// One node row as the last walk built it, and what it was built from.
 struct KeptAccessRow {
     inputs: AccessRowInputs<'static>,
     node: Arc<AccessNode>,
+    /// The last walk that reached the row.
+    walk: u64,
 }
 
 /// What every node row of one walk is built from beyond its own inputs:
@@ -48,6 +52,10 @@ struct AccessRowsContext<'a> {
     spacing: crate::tokens::Spacing,
     /// Whether every row carries the move buttons.
     reorderable: bool,
+    /// For a navigation list, the revision of what its rows are read from
+    /// beyond their own inputs: the model (labels, keys, what each row
+    /// shows), the checks the rows show and the presentation's theme.
+    nav: Option<u64>,
 }
 
 impl AccessRowsContext<'_> {
@@ -66,6 +74,7 @@ impl AccessRowsContext<'_> {
                 .collect(),
             spacing: self.spacing,
             reorderable: self.reorderable,
+            nav: self.nav,
         }
     }
 }
@@ -83,11 +92,20 @@ struct AccessRowInputs<'a> {
     expanded: Option<bool>,
     selected: bool,
     focused: bool,
-    shows_row_actions: bool,
     /// Which of [`TreeMove::ALL`] the hierarchy has room for.
     moves: [bool; 4],
-    label: Cow<'a, str>,
     description: Option<Cow<'a, str>>,
+    /// What the row reads from the model. A navigation row leaves it to the
+    /// context's revision ([`AccessRowsContext::nav`]), which changes with
+    /// the model, so a kept row costs no label compare or key allocation.
+    model: Option<AccessRowModel<'a>>,
+}
+
+/// What a plain tree row reads from its model.
+#[derive(Debug, PartialEq)]
+struct AccessRowModel<'a> {
+    shows_row_actions: bool,
+    label: Cow<'a, str>,
     semantic_key: Option<String>,
 }
 
@@ -101,13 +119,15 @@ impl AccessRowInputs<'_> {
             expanded: self.expanded,
             selected: self.selected,
             focused: self.focused,
-            shows_row_actions: self.shows_row_actions,
             moves: self.moves,
-            label: Cow::Owned(self.label.into_owned()),
             description: self
                 .description
                 .map(|description| Cow::Owned(description.into_owned())),
-            semantic_key: self.semantic_key,
+            model: self.model.map(|model| AccessRowModel {
+                shows_row_actions: model.shows_row_actions,
+                label: Cow::Owned(model.label.into_owned()),
+                semantic_key: model.semantic_key,
+            }),
         }
     }
 }
@@ -122,6 +142,41 @@ impl<T, M: TreeModel> TreeView<T, M> {
 }
 
 impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
+    /// The tree's own node, without its rows: what focus capture and focus
+    /// order read of it on every frame ([`Widget::accessibility_root`]).
+    pub(super) fn access_root(&self) -> AccessNode {
+        // Labels are runtime strings supplied by the host, not FTL keys.
+        let value = self
+            .selected()
+            .and_then(|id| self.model.label(id))
+            .map(str::to_owned);
+        let mut node = AccessNode::new(Role::Tree)
+            .with_optional_name(
+                self.accessible_name
+                    .as_deref()
+                    .map(crate::i18n::I18nManager::lookup_plain)
+                    .or_else(|| self.heading.clone()),
+            )
+            .with_optional_value(value)
+            .with_state(
+                AccessState::new()
+                    .focusable(self.is_focusable())
+                    .focused(self.is_focused())
+                    .disabled(!self.is_enabled()),
+            );
+        if let Some(key) = &self.semantic_key {
+            node = node.with_semantic_key(key.clone());
+        }
+        if let Some(sel) = self.selected()
+            && let Some(idx) = self.visible_index_of(sel)
+            && let Some((TreeRowKey::Node(_), depth)) = self.index.row_at(&self.model, idx)
+        {
+            node = node.with_position(idx.saturating_add(1), self.index.len());
+            node = node.with_level(depth.saturating_add(1));
+        }
+        node
+    }
+
     /// The visible rows of the accessibility tree, in order. A node row
     /// hosting no delegate widget and no rename field is the very row of the
     /// last walk while everything it is built from is the same; only the
@@ -131,12 +186,16 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         let context = self.access_rows_context(row_count);
         let mut kept = self.access_rows.borrow_mut();
         let kept = &mut *kept;
-        if kept.context.as_ref() != context.as_ref() {
+        if kept.context.as_ref() != Some(&context) {
             kept.rows.clear();
-            kept.context = context.map(AccessRowsContext::into_owned);
+            kept.context = Some(context.into_owned());
         }
-        let keeps = kept.context.is_some();
-        let mut previous = std::mem::take(&mut kept.rows);
+        // Rows stay where they are kept; each one this walk reaches is
+        // stamped with it, and only when some were not reached are the
+        // others let go.
+        kept.walk = kept.walk.wrapping_add(1);
+        let walk = kept.walk;
+        let mut reached = 0_usize;
         let visible = self.visible_row_range();
         let mut rows = Vec::with_capacity(visible.len());
         for index in visible {
@@ -146,8 +205,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             let delegate = self.mounted_rows.iter().find(|row| row.key == key);
             let plain_node = match key {
                 TreeRowKey::Node(id)
-                    if keeps
-                        && delegate.is_none()
+                    if delegate.is_none()
                         && self.rename.as_ref().is_none_or(|field| field.id != id) =>
                 {
                     Some(id)
@@ -165,11 +223,12 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
             let Some(inputs) = self.access_row_inputs(id, index, depth) else {
                 continue;
             };
-            if let Some(row) = previous.remove(&id).filter(|row| row.inputs == inputs)
-                && self.kept_access_row_holds(&row, id, index, depth, row_count)
+            reached = reached.saturating_add(1);
+            if let Some(row) = kept.rows.get_mut(&id).filter(|row| row.inputs == inputs)
+                && self.kept_access_row_holds(row, id, index, depth, row_count)
             {
+                row.walk = walk;
                 rows.push(Arc::clone(&row.node));
-                kept.rows.insert(id, row);
                 continue;
             }
             #[cfg(any(test, feature = "test-support"))]
@@ -185,8 +244,12 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 KeptAccessRow {
                     inputs: inputs.into_owned(),
                     node,
+                    walk,
                 },
             );
+        }
+        if kept.rows.len() != reached {
+            kept.rows.retain(|_, row| row.walk == walk);
         }
         rows
     }
@@ -198,14 +261,19 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         self.access_row_builds.get()
     }
 
-    /// What every node row of this walk shares, or `None` when rows are not
-    /// kept: a navigation list's rows read its presentation for their
-    /// descriptions, checks and section buttons.
-    fn access_rows_context(&self, row_count: usize) -> Option<AccessRowsContext<'_>> {
-        if self.nav.is_some() {
-            return None;
-        }
-        Some(AccessRowsContext {
+    /// Run `walk` with no row kept, as a tree that keeps none walks, and
+    /// keep the rows kept before it again afterwards.
+    #[cfg(test)]
+    pub(crate) fn walk_keeping_nothing<R>(&self, walk: impl FnOnce() -> R) -> R {
+        let kept = self.access_rows.replace(KeptAccessRows::default());
+        let walked = walk();
+        *self.access_rows.borrow_mut() = kept;
+        walked
+    }
+
+    /// What every node row of this walk shares.
+    fn access_rows_context(&self, row_count: usize) -> AccessRowsContext<'_> {
+        AccessRowsContext {
             row_count,
             disabled: !self.is_enabled(),
             labels: crate::i18n::I18nManager::revision(),
@@ -217,7 +285,8 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 .collect(),
             spacing: self.spacing,
             reorderable: self.reorder_validator.is_some() && self.reorder_commit.is_some(),
-        })
+            nav: self.nav_revision(),
+        }
     }
 
     /// What node row `id`, visible row `index`, is built from. `None` when
@@ -229,6 +298,11 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         depth: usize,
     ) -> Option<AccessRowInputs<'_>> {
         let label = self.model.label(id)?;
+        let model = (!self.is_nav()).then(|| AccessRowModel {
+            shows_row_actions: self.model.shows_row_actions(id),
+            label: Cow::Borrowed(label),
+            semantic_key: self.model.semantic_key(id),
+        });
         let reorderable = self.reorder_validator.is_some() && self.reorder_commit.is_some();
         Some(AccessRowInputs {
             bounds: self.access_row_bounds(index),
@@ -241,15 +315,13 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 .then(|| self.expanded.contains(&id)),
             selected: self.selection.is_selected(&id),
             focused: self.row_has_focus(TreeRowKey::Node(id)),
-            shows_row_actions: self.model.shows_row_actions(id),
             moves: TreeMove::ALL
                 .map(|movement| reorderable && self.move_target(id, movement).is_some()),
-            label: Cow::Borrowed(label),
             description: self
                 .row_descriptions
                 .get(&id)
                 .map(|description| Cow::Borrowed(description.as_str())),
-            semantic_key: self.model.semantic_key(id),
+            model,
         })
     }
 

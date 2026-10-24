@@ -678,6 +678,16 @@ mime type, on the thread that already writes the pipe, so starting a drag
 seconds holding a multi-gigabyte video in memory before the gesture began.
 Offers are held behind an `Arc`, so a request no longer copies a payload.
 
+## `vendor/winit`: activation tokens carry the press they follow
+
+On Wayland, `Window::request_activation_token` sets the serial and seat of the
+last press in the window (a pointer button press, a key press or a touch
+down) before committing the request. Upstream sets only the surface, so a
+compositor that checks the serial, as `xdg_activation_v1` lets it, refuses
+every token a native app asks for. The press is recorded per window from the
+input handlers; releases, motion and focus changes are not presses and are
+not recorded. A token still proves only what the compositor checks.
+
 ## Build-script-generated protobuf descriptors
 
 `buffa-build` 0.9.2 is carried as verified registry source with a small

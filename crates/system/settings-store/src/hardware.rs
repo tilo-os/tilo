@@ -14,7 +14,8 @@ use tilo_lock::MutexRecover as _;
 mod profiles;
 
 pub use profiles::{
-    AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet, MonitorHistory, same_scale,
+    AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet, MonitorHistory, MonitorLast,
+    same_scale,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1215,7 +1216,10 @@ impl DisplayConfig {
     /// rejection/revert always resolves to the last known-good
     /// configuration. A transaction staged for other monitors never applies.
     pub fn load_effective(set: &DisplaySet) -> Self {
-        let committed = Self::load_for(set);
+        Self::effective_over(set, Self::load_for(set))
+    }
+
+    fn effective_over(set: &DisplaySet, committed: Self) -> Self {
         let Some(transaction) = DisplayTransaction::load() else {
             return committed;
         };

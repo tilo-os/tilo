@@ -845,6 +845,7 @@ mod room_tests {
                                 kind: AppKind::Other("Notes".to_string()),
                                 label: "Brief".to_string(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: second_tab,
@@ -853,6 +854,7 @@ mod room_tests {
                                 kind: AppKind::Browser,
                                 label: "References".to_string(),
                             },
+                            app_title: None,
                         },
                     ],
                     active_tab: second_tab,
@@ -902,6 +904,7 @@ mod room_tests {
                             kind: AppKind::Other("Notes".to_string()),
                             label: "Brief".to_string(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tab_id,
                     width: WindowWidth::Normal,

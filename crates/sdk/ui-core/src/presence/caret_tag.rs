@@ -51,11 +51,6 @@ impl LabeledCaret {
 /// Space between a caret and its name chip.
 const CARET_CHIP_GAP: f64 = 2.0;
 
-/// The room, in logical pixels, each name tag keeps clear around itself:
-/// a person's pointer tag and caret tag closer than twice this read as one
-/// cluster of the same name, so only the caret's shows.
-pub const TAG_CLEARANCE: f64 = 6.0;
-
 /// A caret name tag a frame painted: the name, and the tag's rect in scene
 /// coordinates.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,19 +59,26 @@ pub struct CaretTag {
     pub rect: Rect,
 }
 
-/// Whether a caret tag and a pointer tag, each padded by
-/// [`TAG_CLEARANCE`], overlap.
+/// The gap between two tag rects: zero when they touch or overlap, else
+/// the straight distance between their nearest edges.
+#[must_use]
+pub fn tag_gap(a: Rect, b: Rect) -> f64 {
+    let dx = (a.x0 - b.x1).max(b.x0 - a.x1).max(0.0);
+    let dy = (a.y0 - b.y1).max(b.y0 - a.y1).max(0.0);
+    dx.hypot(dy)
+}
+
+/// Whether a caret tag and a pointer tag of the same person read as one
+/// name twice: their gap is within one tag height (the taller of the two),
+/// so the eye takes them as one cluster.
 #[must_use]
 pub fn tags_crowd(caret: Rect, pointer: Rect) -> bool {
-    !caret
-        .inflate(TAG_CLEARANCE, TAG_CLEARANCE)
-        .intersect(pointer.inflate(TAG_CLEARANCE, TAG_CLEARANCE))
-        .is_zero_area()
+    tag_gap(caret, pointer) <= caret.height().max(pointer.height())
 }
 
 /// Leave out the name of each pointer whose name tag would crowd a caret
-/// tag with the same name ([`tags_crowd`]): one person, one tag, however
-/// far the caret and pointer are, only whether their tags meet. A pointer's
+/// tag with the same name ([`tags_crowd`]): one person, one tag, wherever
+/// the two tags would sit within a tag height of each other. A pointer's
 /// tag is measured where it goes beside its pointer within `viewport`, as
 /// [`super::draw_peer_cursors`] places a lone name. `carets` are in the
 /// pointers' coordinates. A pointer saying something keeps its bubble.
@@ -224,11 +226,49 @@ mod tests {
     }
 
     #[test]
-    fn tags_crowd_when_closer_than_their_clearance() {
+    fn tags_crowd_within_one_tag_height() {
         let caret = Rect::new(0.0, 0.0, 90.0, 20.0);
         let apart = |space: f64| Rect::new(90.0 + space, 0.0, 180.0 + space, 20.0);
-        assert!(tags_crowd(caret, apart(2.0 * TAG_CLEARANCE - 1.0)));
-        assert!(!tags_crowd(caret, apart(2.0 * TAG_CLEARANCE + 1.0)));
+        assert!(tags_crowd(caret, apart(0.0)), "touching");
+        // The shots' case: the same name twice, about 20 px apart.
+        assert!(tags_crowd(caret, apart(19.0)));
+        assert!(tags_crowd(caret, apart(20.0)));
+        assert!(
+            !tags_crowd(caret, apart(21.0)),
+            "more than a tag height apart"
+        );
+        let below = |space: f64| Rect::new(30.0, 20.0 + space, 120.0, 40.0 + space);
+        assert!(tags_crowd(caret, below(12.0)));
+        assert!(!tags_crowd(caret, below(25.0)));
+        assert!(
+            tags_crowd(caret, Rect::new(10.0, 5.0, 100.0, 25.0)),
+            "overlapping"
+        );
+    }
+
+    #[test]
+    fn a_pointer_tag_20_px_from_its_persons_caret_tag_leaves_the_name_to_the_caret() {
+        let color = vello::peniko::Color::WHITE;
+        let tags = [first_line_tag("Quiet Koala", 500.0)];
+        let caret = tags[0].rect;
+        // Find the pointer x whose tag starts about 20 px right of the
+        // caret's tag, on the same line, as in the shots.
+        let mut text = TextRenderer::new();
+        let theme = Theme::default();
+        let gap_at = |x: f64, text: &mut TextRenderer| {
+            let peer = PeerCursor::new((x, 110.0), "Quiet Koala", color);
+            tag_gap(caret, pointer_tag_rect(VIEWPORT, &peer, text, &theme))
+        };
+        let x = (560..900)
+            .map(f64::from)
+            .find(|x| gap_at(*x, &mut text) >= 20.0 - 1.0)
+            .expect("some pointer puts its tag 20 px away");
+        assert!(gap_at(x, &mut text) <= 21.0);
+        let pointers = vec![
+            PeerCursor::new((x, 110.0), "Quiet Koala", color),
+            PeerCursor::new((x, 110.0), "Calm Owl", color),
+        ];
+        assert_eq!(shown(pointers, &tags), vec![0.0, 1.0]);
     }
 
     #[test]

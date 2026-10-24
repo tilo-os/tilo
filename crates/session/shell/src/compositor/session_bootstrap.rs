@@ -19,8 +19,8 @@ pub(crate) struct LoadedSession {
 }
 
 /// Load this machine's desktop state and bring it up to the invariants
-/// later stages assume: a persist path, a durable room identity per
-/// workspace, and an owner per room — an unowned room has no administrators.
+/// later stages assume: a persist path and a durable room identity per
+/// workspace. Each room's owner is what its host's admitted document says.
 ///
 /// Peer sync may come up only when it was asked for *and* the device key
 /// loads, since the id salt comes from it and an unsalted id space lets peers
@@ -98,26 +98,14 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
         tree.queue_save();
     }
 
-    let adopted = tree.adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
-    if !adopted.is_empty() {
+    let claimed = tree.claim_own_unhosted_rooms(crate::shell::state::local_user_id_for_room);
+    if !claimed.is_empty() {
         tracing::info!(
-            "capabilities: {} workspace(s) adopted by their selected identities",
-            adopted.len()
+            "capabilities: {} workspace(s) of this device's own belong to their selected identities until their host holds them",
+            claimed.len()
         );
     }
-    if let Some(account) = std::env::var("USER")
-        .ok()
-        .filter(|account| !account.is_empty())
-    {
-        let rebound = tree
-            .rebind_account_owned_workspaces(&account, crate::shell::state::local_user_id_for_room);
-        if !rebound.is_empty() {
-            tracing::info!(
-                "capabilities: {} workspace(s) created before this device's identity now belong to it",
-                rebound.len()
-            );
-        }
-    }
+
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
     // background publisher coalesces this with any immediate mutation.

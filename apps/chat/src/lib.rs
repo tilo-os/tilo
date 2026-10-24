@@ -10,11 +10,11 @@
 //! document plus an input router.
 //!
 //! ## Layout
-//! Two toolkit drawers (`ui::widget::SidebarDrawer`) frame a conversation
-//! column: the navigation drawer (the room's channel list) and the
-//! detail drawer (people, or the open thread). Each docks beside the
-//! conversation on a wide window and floats over it behind a scrim on a
-//! narrow one.
+//! The window's shell (`ui::widget::NavShell`) keeps the room's channels in
+//! its sidebar (`sidebar.rs`) beside the conversation; a toolkit drawer
+//! (`ui::widget::SidebarDrawer`) holds the detail (people, or the open
+//! thread). Each docks beside the conversation on a wide window and floats
+//! over it on a narrow one.
 //!
 //! ## Calls
 //! Voice controls send typed local commands to the privileged native media
@@ -87,6 +87,7 @@ pub mod render_call;
 pub mod render_chat;
 pub mod resource;
 mod shared_resources;
+mod sidebar;
 pub mod transcript;
 mod window_bar;
 

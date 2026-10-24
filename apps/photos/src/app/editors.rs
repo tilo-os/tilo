@@ -1108,7 +1108,9 @@ impl PhotosApp {
             transform,
             text_renderer,
             &local,
-            &SegmentedFace::new(&segments, &label_refs, selected).hovered(hovered),
+            &SegmentedFace::new(&segments, &label_refs, selected)
+                .style(ui::widget::SegmentedStyle::Tabs)
+                .hovered(hovered),
         );
         hits.extend(
             [MetadataEditorHit::Organize, MetadataEditorHit::TimeAndPlace]

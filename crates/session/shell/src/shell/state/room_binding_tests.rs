@@ -143,7 +143,6 @@ fn the_laptops_lounge_becomes_the_sites_room_with_its_windows_and_its_id() {
         tree.is_joining(site_room()),
         "it says Joining… until the room installs"
     );
-    assert!(tree.requires_native_owner(site_room()));
     assert!(!tree.holds_room(site_room()));
     for id in ids_before {
         assert!(

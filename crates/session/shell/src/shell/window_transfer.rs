@@ -693,13 +693,12 @@ fn plan(
     if source_ws.id == target {
         return Err(MoveTabError::SameWorkspace);
     }
-    let governed = |room: RoomId| {
-        tree.requires_native_owner(room) || hosted.is_some_and(|hosted| hosted.hosts(room))
-    };
-    let source_hosted = governed(source_ws.room());
-    if (source_hosted || governed(destination_ws.room())) && hosted.is_none() {
+    // Every room is governed by its host: a window moves between rooms
+    // only through their hosts.
+    if hosted.is_none() {
         return Err(MoveTabError::HostedWorkspace);
     }
+    let source_hosted = true;
     // The person carrying the window must be allowed to open this app in
     // the destination; the destination's own authority governs it there.
     if destination_ws.owner().is_some() {
@@ -716,7 +715,7 @@ fn plan(
         workspace: workspace.id,
         room: workspace.room(),
         name: workspace.name.clone(),
-        hosted: governed(workspace.room()),
+        hosted: true,
     };
     let source = side(source_ws);
     let inputs = data_home.and_then(|home| {
@@ -1130,6 +1129,7 @@ fn open_followed(st: &mut ChromeState, follower: Follower, instance: u64) -> Opt
                 label: follower.title,
                 note: String::new(),
             },
+            app_title: None,
         },
     );
     // Its launch opens this instance, which reopens on the record brought.
@@ -1632,6 +1632,7 @@ fn open_fresh(st: &mut ChromeState, plan: &Plan) {
                 label: plan.title.clone(),
                 note: String::new(),
             },
+            app_title: None,
         },
     );
 }
@@ -2013,6 +2014,7 @@ fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
                 label: plan.title.clone(),
                 note: crate::shell::peer_windows::OPENING.to_string(),
             },
+            app_title: None,
         },
     ))
 }

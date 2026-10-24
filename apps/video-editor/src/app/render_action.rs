@@ -1,4 +1,4 @@
-//! The `render` effect: the timeline rendered on this device into a video
+//! The `render-timeline` effect: the timeline rendered on this device into a video
 //! kept as content, with the render's progress reported to its caller.
 //!
 //! A person's Export writes a file they chose; this writes nothing of

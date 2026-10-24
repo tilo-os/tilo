@@ -64,6 +64,10 @@ pub enum Content {
     /// Presentation only: never interpreted as an instruction or tool call.
     Reasoning {
         text: String,
+        /// Opaque provider state that carries the reasoning into the next
+        /// turn, such as `OpenAI` Responses' encrypted reasoning; never shown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        extra_content: Option<Value>,
     },
     /// Inline bytes, never a local path or an implicit URL fetch.
     Image {
@@ -585,7 +589,7 @@ impl StreamState {
                 for block in &response.message.content {
                     match block {
                         Content::Text { text: part } => text.push_str(part),
-                        Content::Reasoning { text: part } => reasoning.push_str(part),
+                        Content::Reasoning { text: part, .. } => reasoning.push_str(part),
                         _ => {}
                     }
                 }
@@ -682,7 +686,7 @@ pub trait ModelBackend {
             for content in &response.message.content {
                 match content {
                     Content::Text { text } => sink(StreamEvent::TextDelta { text: text.clone() }),
-                    Content::Reasoning { text } => {
+                    Content::Reasoning { text, .. } => {
                         sink(StreamEvent::ReasoningDelta { text: text.clone() });
                     }
                     _ => {}
@@ -777,6 +781,7 @@ mod tests {
             });
             final_response.message.content.push(Content::Reasoning {
                 text: "Summary".into(),
+                extra_content: None,
             });
             state.apply(&StreamEvent::Finished {
                 response: final_response,

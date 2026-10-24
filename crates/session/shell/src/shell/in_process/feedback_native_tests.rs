@@ -103,14 +103,16 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     let mut wrong = answer(&delivery.connection.borrow());
     wrong.admission.reporter_device = hex::encode([99; 32]);
     assert!(delivery.connection.borrow().admit(&wrong).is_err());
+    // An admission is fresh for five seconds. Opening the profile first
+    // keeps its stores' setup on a loaded runner out of that window.
+    let profile = directory.path().join("feedback-private-profile");
+    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
     admit(&delivery);
     let current = delivery.connection.borrow().current().unwrap();
     assert_eq!(
         current.owner.device_public_key(),
         Some(&governor.device_public_key)
     );
-    let profile = directory.path().join("feedback-private-profile");
-    let mut apps = InProcessApps::at(&profile, &profile.join("person"), &author).unwrap();
     assert!(
         delivery.pump(&mut apps).is_err(),
         "this fixture supplies no application broker; publication must remain unavailable"

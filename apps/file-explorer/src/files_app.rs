@@ -697,6 +697,9 @@ pub struct FileExplorerWidget {
     /// Reports changes to the trusted-identity projection's directory, or,
     /// while it does not exist, its creation.
     identity_watch: crate::directory_watch::AwaitedDirectoryWatch,
+    /// Reports changes to the record catalogue's roots: a mount moves a
+    /// root's catalogue generation by changing the root.
+    catalog_watch: crate::directory_watch::RootsWatch,
     /// The directory watch reported a change that has not been read yet
     /// (held while a rename or pin drag defers the read).
     directory_changed: bool,
@@ -1885,6 +1888,7 @@ impl FileExplorerWidget {
             identity_watch: crate::directory_watch::AwaitedDirectoryWatch::new(
                 ui::WakeHandle::new(),
             ),
+            catalog_watch: crate::directory_watch::RootsWatch::new(ui::WakeHandle::new()),
             directory_changed: false,
             last_directory_read: ui::time::now(),
             renaming: None,
@@ -3716,6 +3720,8 @@ impl FileExplorerWidget {
             self.directory_changed = true;
         }
         let identity_signal = identities_watched || self.identity_watch.take_changes();
+        let catalog_watched = self.catalog_watch.point_at(&self.catalog_roots_to_watch());
+        let catalog_signal = catalog_watched || self.catalog_watch.take_changes();
         let poll_due = self.next_metadata_refresh.is_some_and(|due| now >= due);
         if poll_due || self.next_metadata_refresh.is_none() {
             // Set the next deadline before doing any I/O.  A transient read
@@ -3723,7 +3729,9 @@ impl FileExplorerWidget {
             // busy loop.
             self.next_metadata_refresh = self.next_poll_interval().map(|interval| now + interval);
         }
-        let catalog_changed = poll_due
+        let catalog_changed = (catalog_signal
+            || (poll_due
+                && self.catalog_watch.coverage() != crate::directory_watch::Coverage::Complete))
             && self
                 .collaborative_record_pager
                 .borrow_mut()
@@ -3752,6 +3760,17 @@ impl FileExplorerWidget {
         self.refresh_metadata_preserving_view() || changed
     }
 
+    /// The record catalogue's roots, when one generation check reads them
+    /// all, so that a change any watch reports is seen; with more, none, and
+    /// the catalogue is checked on a timer, a few roots at a time.
+    fn catalog_roots_to_watch(&self) -> Vec<PathBuf> {
+        let roots = self.collaborative_record_pager.borrow().generation_roots();
+        if roots.len() > crate::model::WorkspaceRecordIndexPager::GENERATION_ROOTS_PER_POLL {
+            return Vec::new();
+        }
+        roots
+    }
+
     /// A rename or pin drag defers reading the listing, and a read under way
     /// covers every change before it started.
     fn directory_read_deferred(&self) -> bool {
@@ -3776,15 +3795,13 @@ impl FileExplorerWidget {
         let entries = self.entries.len();
         let directory = match self.directory_watch.coverage() {
             Coverage::Complete => None,
-            // Local edits arrive as events; remote ones (tilo-fs gossip, a
-            // network share) only by reading, as promptly as before.
+            // Local edits arrive as events; remote ones (a network share, a
+            // FUSE mount that does not signal them) only by reading.
             Coverage::Partial => Some(metadata_refresh::interval(entries)),
             Coverage::None => Some(metadata_refresh::unwatched_interval(entries)),
         };
-        let catalog = self
-            .collaborative_record_pager
-            .borrow()
-            .has_roots()
+        let catalog = (self.collaborative_record_pager.borrow().has_roots()
+            && self.catalog_watch.coverage() != Coverage::Complete)
             .then_some(metadata_refresh::BACKGROUND_INTERVAL);
         let identities = (self.startup_accounts.is_none()
             && self.identity_watch.coverage() != Coverage::Complete)
@@ -7527,7 +7544,8 @@ impl FileExplorerWidget {
     pub fn open_terminal(&self) -> Result<(), String> {
         #[cfg(test)]
         crate::model::fixture_io_guard::ambient_io("open_terminal");
-        runtime_portal::tools::open_tool(self.terminal_intent())
+        let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
+        runtime_portal::tools::open_tool(self.terminal_intent(), on_behalf_of)
     }
 
     /// Activate entry `idx` (by displayed index): navigate into a directory

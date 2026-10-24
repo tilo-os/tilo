@@ -32,6 +32,7 @@ fn tree_with_single_placeholder(kind: AppKind, title: &str) -> WorkspaceTree {
                     kind,
                     label: title.into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: WindowWidth::Normal,

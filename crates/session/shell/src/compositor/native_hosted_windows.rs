@@ -320,6 +320,7 @@ mod tests {
                     app_id: "Alacritty".into(),
                     surface_id: 31,
                 },
+                app_title: None,
             }],
             active_tab: 93,
             width: WindowWidth::Normal,

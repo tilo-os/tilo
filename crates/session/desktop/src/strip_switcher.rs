@@ -127,13 +127,27 @@ pub struct StripEntry {
 }
 
 /// What the switcher shows: the active workspace's strips.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SwitcherModel {
     pub strips: Vec<StripEntry>,
     /// Index into `strips` of the strip with focus.
     pub focused: usize,
     /// It offers a new strip: the person may add one to the workspace.
     pub can_add: bool,
+}
+
+/// No strips yet, and a new one offered: only a person the workspace keeps
+/// from adding strips (a spectator) is offered none, and says so explicitly
+/// ([`crate::strip_navigator::Viewer::may_add`]). A switcher waiting for its
+/// first model must not drop the row and re-centre the column it heads.
+impl Default for SwitcherModel {
+    fn default() -> Self {
+        Self {
+            strips: Vec::new(),
+            focused: 0,
+            can_add: true,
+        }
+    }
 }
 
 impl SwitcherModel {
@@ -1709,6 +1723,16 @@ mod tests {
         let rows: Vec<Row> = s.layout().labels.iter().map(|(row, _)| *row).collect();
         assert_eq!(rows, [Row::Strip(0), Row::Strip(1)]);
         assert_eq!(s.rows_in_order(), rows);
+    }
+
+    /// A switcher that has no model from its host yet still offers a new
+    /// strip: only an explicit refusal takes the row away.
+    #[test]
+    fn a_switcher_without_a_model_yet_offers_a_new_strip() {
+        let (mut s, _) = switcher(&["Lounge"]);
+        s.set_model(SwitcherModel::default());
+        s.open_at(Instant::now(), false);
+        assert_eq!(s.rows_in_order(), [Row::NewStrip]);
     }
 
     #[test]

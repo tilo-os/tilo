@@ -14,16 +14,22 @@ use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{RenderParams, Renderer, Scene};
 
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+/// The CPU raster a software adapter's frames are drawn with: the native
+/// render worker's. The native feature is only ever enabled off the web.
+#[cfg(feature = "native")]
 use crate::render_thread::cpu_raster;
 
 /// A host without the native CPU raster (the browser) never makes a raster
 /// on the CPU: the canvas is a type with no values.
-#[cfg(not(all(feature = "native", not(target_arch = "wasm32"))))]
+#[cfg(not(feature = "native"))]
 mod cpu_raster {
     use super::FrameContent;
 
     pub(super) struct CpuCanvas(std::convert::Infallible);
+
+    pub(super) fn canvas(_: bool) -> Option<CpuCanvas> {
+        None
+    }
 
     impl CpuCanvas {
         pub(super) fn invalidate(&self) {
@@ -77,18 +83,13 @@ impl RetainedRaster {
     /// pixels (a software adapter, see
     /// `render_thread::rasterizes_on_cpu`), where the host has a CPU raster.
     pub fn new(on_cpu: bool) -> Self {
-        #[cfg(not(all(feature = "native", not(target_arch = "wasm32"))))]
-        let _ = on_cpu;
         Self {
             damage_cache: DamageCache {
                 geometric_capacity: damage_geometric_capacity_enabled(),
                 ..DamageCache::default()
             },
             backdrop_blur: None,
-            #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-            cpu: on_cpu.then(cpu_raster::CpuCanvas::new),
-            #[cfg(not(all(feature = "native", not(target_arch = "wasm32"))))]
-            cpu: None,
+            cpu: cpu_raster::canvas(on_cpu),
         }
     }
 
@@ -366,7 +367,8 @@ fn repaint_damage(
         .unwrap_or(0);
     // Vello's sparse fine pass is a second render path the web build would
     // carry for this alone; it repaints through the window below instead.
-    #[cfg(not(target_arch = "wasm32"))]
+    // The native feature is only ever enabled off the web.
+    #[cfg(feature = "native")]
     if renderer.sparse_fine_supported() {
         let raster_pixels = u64::from(prefix_width).saturating_mul(u64::from(prefix_height));
         if damage_cache.coarse_pool_high_water_pixels >= full_pixels.saturating_div(2)
@@ -625,6 +627,8 @@ pub enum Unknown {
 #[derive(Default)]
 pub struct RetainedFrames {
     last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
+    /// The target holds the frame last presented, parts or not.
+    shown: bool,
 }
 
 impl RetainedFrames {
@@ -675,11 +679,22 @@ impl RetainedFrames {
         key: TargetKey,
     ) {
         self.last = parts.map(|parts| (scene.clone(), parts.clone(), key));
+        self.shown = true;
     }
 
     /// The target no longer shows the last frame presented.
     pub fn forget(&mut self) {
         self.last = None;
+        self.shown = false;
+    }
+
+    /// Whether the target still holds the frame last presented: a host
+    /// that acquired a surface texture for a frame it then skipped puts
+    /// that on it again ([`crate::gpu::submit_target_to_surface`]) rather
+    /// than presenting a cleared one.
+    #[must_use]
+    pub const fn shows_frame(&self) -> bool {
+        self.shown
     }
 }
 

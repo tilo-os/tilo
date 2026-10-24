@@ -6,8 +6,7 @@
 //! relationship always gets the same step: `S1` between a label and its
 //! control, between lanes and between the pills on a track head; `S2`
 //! between related rows (the bin's list, the two add-track buttons); `S3`
-//! between siblings of equal weight (the topbar commands, a pane's content
-//! inset). A track head is the one place the old offsets produced a touch —
+//! between siblings of equal weight, and a pane's content inset. A track head is the one place the old offsets produced a touch —
 //! the kind line sat a pixel or two off the level meter on a 46 px audio
 //! lane — so its bands are modelled here and a test asserts they clear.
 //!
@@ -24,8 +23,8 @@ pub(crate) const S1: f64 = Spacing::BASE.s1 as f64;
 /// `spacing.s2`: related rows that read as one group — the bin's list rows,
 /// the two add-track buttons, a row's inner inset.
 pub(crate) const S2: f64 = Spacing::BASE.s2 as f64;
-/// `spacing.s3`: siblings of equal weight — the topbar commands — and the
-/// content inset of every pane.
+/// `spacing.s3`: siblings of equal weight, and the content inset of every
+/// pane.
 pub(crate) const S3: f64 = Spacing::BASE.s3 as f64;
 /// `spacing.s4`: section padding; the master strip's readout band.
 pub(crate) const S4: f64 = Spacing::BASE.s4 as f64;

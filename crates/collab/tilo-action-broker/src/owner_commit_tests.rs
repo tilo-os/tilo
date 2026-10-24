@@ -57,9 +57,9 @@ mod owner_commit_tests {
                 person_chat_views: RefCell::default(),
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
                 state, directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
-                channel_id: route.channel_key(), peer_id: 1, verified_identity: admitted,
+                channel_id: route.channel_key(), peer_id: 1, connection_id: 1, verified_identity: admitted,
                 record_kind: None,
-                lease: None,
+                lease: None, _hold: None,
             });
             let mut document = automerge::AutoCommit::new();
             word_processor::initialize_empty_document(&mut document).unwrap();
@@ -165,9 +165,11 @@ mod owner_commit_tests {
                             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
                             channel_id: route.channel_key(),
                             peer_id: 1,
+                            connection_id: 1,
                             verified_identity: admitted,
                             record_kind: None,
                             lease: None,
+                            _hold: None,
                         });
                     let mut request = client.committed_document_request();
                     request.get().set_request(
@@ -579,9 +581,11 @@ mod owner_commit_tests {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             channel_id: route.channel_key(),
             peer_id: 72,
+            connection_id: 72,
             verified_identity: admitted,
             record_kind: None,
             lease: None,
+            _hold: None,
         });
         OwnerFixture {
             membership,

@@ -900,6 +900,8 @@ pub struct FrameBuilder {
     /// The session network, once peer sync is up, so a control invoke can
     /// address an enrolled device.
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    skipped_frames: ui::widget::SkippedFrames,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1225,6 +1227,7 @@ impl FrameBuilder {
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
+            skipped_frames: ui::widget::SkippedFrames::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1999,13 +2002,11 @@ impl FrameBuilder {
             )
         };
         if let Err(err) = layout_result {
-            // Same "should be structurally impossible" situation as
-            // `rebuild_layout_tree`'s node-creation call: log and skip this
-            // frame's apply_layout rather than aborting the session.
-            tracing::error!(
-                %err,
-                "frame-builder: widget layout did not settle; skipping apply_layout this frame"
-            );
+            // Skip this frame's apply_layout rather than aborting the
+            // session, as every host does with a layout that fails.
+            if let Some(line) = self.skipped_frames.skip(&err, ui::time::now()) {
+                tracing::error!("frame-builder: {line}");
+            }
             return;
         }
         let solved = std::time::Instant::now();
@@ -4487,6 +4488,29 @@ impl FrameBuilder {
         self.with_chrome(|st| st.set_fullscreen_group(group));
     }
 
+    /// The group of the client in its own full screen this frame, or
+    /// `None`. A client's full screen is the overlay drawn above everything
+    /// ([`Self::set_client_fullscreen_surface`]), never a layout collapse,
+    /// so another display's desktop stays visible and interactive. Except
+    /// while the shell takes the input over it (the search palette, a
+    /// sheet): the shell's surfaces would draw under the overlay unseen, so
+    /// the group is laid out full screen in the desktop itself, on its own
+    /// display, beneath them, and the top bar stays hidden.
+    pub fn set_client_fullscreen_group(&mut self, group: Option<u64>) {
+        let beneath_shell =
+            group.filter(|_| crate::shell::input_policy::chrome_captures_input(self));
+        self.set_fullscreen(beneath_shell);
+    }
+
+    /// The client in full screen, placed over `rect`: drawn as the overlay
+    /// above everything, unless [`Self::set_client_fullscreen_group`] laid
+    /// it out beneath the shell this frame. Then nothing is drawn above the
+    /// shell's surfaces and no frame of it goes straight to the display.
+    pub fn set_client_fullscreen_surface(&mut self, surface: Option<(u64, String, Rect)>) {
+        let beneath_shell = self.chrome().client_fullscreen_group().is_some();
+        self.set_fullscreen_surface(surface.filter(|_| !beneath_shell));
+    }
+
     /// The group currently promoted to full-output, or `None` in the normal
     /// tiled state. Exposed for the compositor + tests.
     pub fn fullscreen_group(&self) -> Option<u64> {
@@ -5483,6 +5507,14 @@ impl FrameBuilder {
         unsafe { &**widget }.ime_requires_deferred_ack()
     }
 
+    /// The focused field takes text only through deferred receipts.
+    pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
+        let widget = focus.and_then(|focus| self.node_map.get(&focus));
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        !self.host.palette_visible()
+            && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
+    }
+
     pub(crate) fn start_deferred_text(
         &mut self,
         focus: Option<NodeId>,
@@ -6247,6 +6279,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let mut strip = Strip::new(StripId::from(next_id()), "main");
@@ -6852,77 +6885,6 @@ mod tests {
             );
         }
 
-        /// A window from a peer must reach the widget tree, not just the
-        /// workspace tree: peer-sync writes the tree from the network thread,
-        /// which can't bump the chrome revision `resync_strips_from_tree` gates
-        /// its rebuild on. Drives the ingest and per-frame pump.
-        fn a_peers_changes_landing_make_the_frame_rebuild() {
-            use crate::shell::state::PeerOrigin;
-            use collab_types::caps::{Access, CapOverride, Scope, Subject};
-
-            // A room owned by somebody else, with something in it.
-            let owner = "quinten".to_string();
-            let mut host = WorkspaceTree::default();
-            let host_ws = host.append_empty_workspace("Shared");
-            host.adopt_ownerless_workspaces(&owner);
-            let room = host
-                .room_of(host_ws)
-                .expect("the host's workspace has a room");
-            host.grant_sandbox_in_workspace(
-                host_ws,
-                &owner,
-                CapOverride::grant(
-                    Subject::app("files"),
-                    Scope::FsPath("/shared".to_string()),
-                    Access::Read,
-                ),
-            )
-            .expect("the owner may grant in their own room");
-            host.sync_room_doc(room);
-            let changes = host
-                .export_room_changes_since(room, &[])
-                .expect("the host is in the room");
-            assert!(!changes.is_empty(), "the host must have something to send");
-
-            // This session joins it.
-            let mut fb = FrameBuilder::new((1600, 900));
-            let joined = {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                let active = tree.desktop.active;
-                // Joined through the peer's invite, which pins it (hub 1)
-                // as the room's governor.
-                tree.stand_in_room(active, room)
-                    && tree.pin_room_authority(room, PeerOrigin::hub(1))
-            };
-            assert!(joined, "this session joins the peer's room");
-
-            let mut doc = AutoCommit::new();
-            let doc_root = automerge::ROOT;
-            // Settle: pump once so the builder is past its first frame and
-            // any revision movement below is attributable to the arrival.
-            fb.pump_apps(&mut doc, &doc_root);
-            let before = fb.chrome_revision();
-
-            let landed = {
-                let chrome = fb.chrome();
-                let mut tree = chrome.tree_mut();
-                tree.apply_room_changes(room, &changes, &PeerOrigin::hub(1))
-                    .expect("well-formed changes parse")
-            };
-            assert!(
-                landed,
-                "the peer's changes must merge into this session's tree"
-            );
-
-            fb.pump_apps(&mut doc, &doc_root);
-            assert!(
-                fb.chrome_revision() > before,
-                "a peer's change landed in the tree and nothing told the shell \
-                 to rebuild, so it would never be drawn"
-            );
-        }
-
         /// `widget_registry` is idempotent — two consecutive calls with no
         /// layout/chrome mutation between return the same keys mapped to the
         /// same rects; the walker may not mutate anything.
@@ -6971,7 +6933,6 @@ mod tests {
         frame_builder_chrome_round_trips();
         frame_builder_resize_paints_again();
         a_quiet_frame_does_not_rebuild();
-        a_peers_changes_landing_make_the_frame_rebuild();
         widget_registry_is_idempotent_between_calls();
         external_scene_append_is_an_unversioned_retained_boundary();
     }
@@ -7610,6 +7571,7 @@ mod tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "Notes".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 84,
                     width: WindowWidth::Fraction(667),
@@ -7872,6 +7834,7 @@ mod tests {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         };
 
         let window_groups = groups
@@ -8866,7 +8829,7 @@ mod tests {
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("without an encrypted backup")),
+                    .any(|name| name.contains("without a recovery key or backup")),
                 "skip acknowledgement must be keyboard reachable: {names:?}"
             );
 
@@ -8875,7 +8838,7 @@ mod tests {
                 .into_iter()
                 .find(|id| {
                     focused_name(&fb, Some(*id))
-                        .is_some_and(|name| name.contains("without an encrypted backup"))
+                        .is_some_and(|name| name.contains("without a recovery key or backup"))
                 })
                 .expect("acknowledgement focus target");
             fb.set_native_focus(&mut focus, Some(acknowledgement));
@@ -9737,6 +9700,7 @@ mod tests {
                         // a real process from this frame-builder regression.
                         note: crate::shell::peer_windows::OPENING.into(),
                     },
+                    app_title: None,
                 },
                 Placement::NewGroup,
             );

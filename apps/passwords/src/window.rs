@@ -121,9 +121,9 @@ pub struct PasswordsSurface {
     overview_title: String,
     /// The overview header is in the window's bar ([`ui::window_toolbar`]).
     header_in_bar: bool,
-    /// The list title and sidebar state the bar's slots were last declared
-    /// with.
-    declared_bar: Option<(String, bool)>,
+    /// The list title and the shell's own slots the bar's slots were last
+    /// declared with.
+    declared_bar: Option<(String, ui::window_toolbar::WindowToolbar)>,
     shows_list: bool,
     /// The empty vault stands in for the list and the item
     /// ([`NavShell::nothing_listed`]).
@@ -178,32 +178,36 @@ impl PasswordsSurface {
         if !hosted {
             return;
         }
-        let open = self.shell.is_sidebar_open();
-        let key = (self.overview_title.clone(), open);
+        // The shell's own slots: the sidebar's toggle, and Back while an
+        // item in a narrow window has its list to go back to.
+        let shell = self.shell.window_toolbar();
+        let key = (self.overview_title.clone(), shell.clone());
         if self.declared_bar.as_ref() != Some(&key) {
-            ui::window_toolbar::declare(Some(WindowToolbar {
-                sidebar: Some(open),
-                navigation: None,
+            let mut toolbar = WindowToolbar {
                 location: Some(ToolbarLocation {
                     label: self.overview_title.clone(),
                     ..ToolbarLocation::default()
                 }),
-                actions: vec![ToolbarAction {
+                ..shell
+            };
+            NavShell::push_window_actions(
+                &mut toolbar,
+                [ToolbarAction {
                     id: NEW_ITEM.into(),
                     icon: "plus".into(),
                     name: crate::CATALOG.t("passwords-new-item"),
                     enabled: true,
-                    on: false,
-                    menu: false,
-                    items: Vec::new(),
+                    ..ToolbarAction::default()
                 }],
-                ..WindowToolbar::default()
-            }));
+            );
+            ui::window_toolbar::declare(Some(toolbar));
             self.declared_bar = Some(key);
         }
         for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
             match event {
-                ToolbarEvent::ToggleSidebar => self.shell.toggle_sidebar(),
                 ToolbarEvent::Action { ref id } if id == NEW_ITEM => {
                     self.requests.borrow_mut().push(Request::NewItem);
                 }

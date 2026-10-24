@@ -18,6 +18,8 @@ mod capture_settings;
 #[cfg(feature = "native")]
 use app_log::init_app_log;
 pub use capture_settings::capture_appearance;
+mod scenario;
+pub use scenario::HostSource;
 mod shot_frame;
 pub use shot_frame::ShotFrame;
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
@@ -101,6 +103,9 @@ pub struct LaunchArgs {
     /// `--history`: a capture shows History open, where the app has
     /// History.
     pub history: bool,
+    /// `--window-bar`: a capture is drawn as a desktop window shows the app,
+    /// under the window's bar with the app's slots in it.
+    pub window_bar: bool,
     /// `--search QUERY`: a capture shows this window's search open with
     /// `QUERY` typed, as the app's search launcher opens it.
     pub search: Option<String>,
@@ -185,6 +190,7 @@ pub struct LaunchSpec {
     allowed_live_options: &'static [&'static str],
     max_positionals: usize,
     scenarios: &'static [&'static str],
+    host_sources: &'static [HostSource],
     without_identity: bool,
 }
 
@@ -220,6 +226,7 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            host_sources: &[],
             without_identity: false,
         }
     }
@@ -948,8 +955,7 @@ fn run_parsed(
         }
         DefinitionDispatch::Rendered(mut driver) => {
             if let Some(out) = &args.shots {
-                driver.prepare_component_output();
-                driver.render_png(out);
+                driver.write_shot(out, args.window_bar);
             } else if let Some(directory) = &args.responsive_matrix {
                 for (name, viewport) in RESPONSIVE_VIEWPORTS {
                     driver.resize_component_capture(viewport);
@@ -1353,31 +1359,7 @@ fn validate_spec_args(args: &LaunchArgs, spec: &LaunchSpec) -> Result<(), Launch
     if args.headless.is_some() && !spec.headless_enabled {
         return Err(LaunchError::HeadlessUnsupported);
     }
-    if let Some(scenario) = args.scenario.as_deref()
-        && !spec.scenarios.contains(&scenario)
-    {
-        return Err(LaunchError::Scenario(unknown_scenario(
-            scenario,
-            spec.scenarios,
-        )));
-    }
-    Ok(())
-}
-
-/// The refusal of an undeclared `--scenario`, listing the declared ones.
-fn unknown_scenario(name: &str, declared: &[&str]) -> String {
-    if declared.is_empty() {
-        format!("unknown screenshot scenario {name:?}; this app declares no scenarios")
-    } else {
-        format!(
-            "unknown screenshot scenario {name:?}; expected one of {}",
-            declared
-                .iter()
-                .map(|name| format!("{name:?}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    }
+    scenario::check(args, spec)
 }
 
 /// How long a capture waits for the window to settle (animations finished,
@@ -1657,6 +1639,12 @@ fn parse_args_extended(
                 }
                 parsed.history = true;
             }
+            "--window-bar" if inline.is_none() => {
+                if parsed.window_bar {
+                    return Err(LaunchError::Duplicate(flag.to_owned()));
+                }
+                parsed.window_bar = true;
+            }
             // A Jump List task: run this host command once the window exists.
             #[cfg(all(windows, feature = "native"))]
             crate::host_chrome::windows_items::LAUNCH_OPTION => {
@@ -1722,6 +1710,9 @@ fn parse_args_extended(
         && parsed.responsive_matrix.is_none()
     {
         return Err(LaunchError::ShotsOnly("--history".to_owned()));
+    }
+    if parsed.window_bar && parsed.shots.is_none() {
+        return Err(LaunchError::ShotsOnly("--window-bar".to_owned()));
     }
     if parsed.search.is_some()
         && parsed.shots.is_none()
@@ -2148,6 +2139,12 @@ mod tests {
             assert!(matches!(
                 parse_args(&strings(&["app", "--history"]), &[], &[]),
                 Err(LaunchError::ShotsOnly(flag)) if flag == "--history"
+            ));
+            let framed = strings(&["app", "--shots", "/tmp/a.png", "--window-bar"]);
+            assert!(parse_args(&framed, &[], &[]).unwrap().window_bar);
+            assert!(matches!(
+                parse_args(&strings(&["app", "--window-bar"]), &[], &[]),
+                Err(LaunchError::ShotsOnly(flag)) if flag == "--window-bar"
             ));
             let shot = parse_args(
                 &strings(&["app", "--shots", "/tmp/a.png", "--search", "café"]),
@@ -2810,7 +2807,7 @@ mod prepared_launch_tests {
         Ok(())
     }
 
-    fn prepare(
+    pub(super) fn prepare(
         definition: &crate::application::ApplicationDefinition,
         args: &LaunchArgs,
     ) -> Result<PreparedComponentInputs, LaunchError> {

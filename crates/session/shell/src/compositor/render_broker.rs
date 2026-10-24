@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn rooms_render_in_the_private_service_only_while_nobody_else_is_in_them() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        tree.adopt_ownerless_workspaces(&local_user_id());
+        tree.own_workspaces_for_test(|_| local_user_id());
         let room = tree.desktop.workspaces[0].room().to_string();
         assert_eq!(render_key(&tree, Some(&room)), PRIVATE);
         assert_eq!(

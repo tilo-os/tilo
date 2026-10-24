@@ -28,10 +28,12 @@
 //! - **leading actions:** icon buttons that act on where the window is,
 //!   standing right after the navigation (a calendar's previous, next and
 //!   today), at most [`MAX_LEADING`] of them;
-//! - **views:** a segmented switcher between the app's views of the same
+//! - **views:** tabs switching between the app's views of the same
 //!   thing (Month, Week, Day), trailing the location; where the row has no
-//!   room for it, its choices are in the overflow menu, the chosen one
-//!   checked. Choosing one sends its id as an [`ToolbarEvent::Action`];
+//!   room for it, it folds into a views menu that names the chosen view and
+//!   lists them all, the chosen one checked (only a row too narrow even for
+//!   that lists them in the overflow menu). Choosing one sends its id as an
+//!   [`ToolbarEvent::Action`];
 //! - **actions:** icon buttons (reload, bookmark…), at most [`MAX_ACTIONS`]
 //!   of them in the row; the rest, those the row has no room for and those
 //!   declared for the menu ([`ToolbarAction::menu`]) are in the menu of a
@@ -119,6 +121,11 @@ pub struct WindowToolbar {
     /// window's navigation, leading the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sidebar: Option<bool>,
+    /// The sidebar toggle holds its place but cannot act: a view of the
+    /// window that has no sidebar, so the row stands still as the views
+    /// change. Only with [`Self::sidebar`].
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sidebar_unavailable: bool,
     /// Back and forward, for an app that keeps a trail of places.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub navigation: Option<ToolbarNavigation>,
@@ -138,7 +145,7 @@ pub struct WindowToolbar {
     pub views: Option<ToolbarViews>,
 }
 
-/// A segmented switcher between an app's views (Month, Week, Day).
+/// Tabs switching between an app's views (Month, Week, Day).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarViews {
     /// The switcher's accessible name ("View").
@@ -179,6 +186,14 @@ pub struct ToolbarNavigation {
 pub struct ToolbarLocation {
     /// What the bar shows at rest: a page's domain, a folder, a document.
     pub label: String,
+    /// Narrower forms of the label, widest first, each saying the same (a
+    /// period's `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the
+    /// label does not fit, the bar shows the widest of them that fits the
+    /// room the location has once everything else it can fold is in the
+    /// menu, and keeps that room for it, so a wider window never shows a
+    /// narrower form. Only the last is ever elided.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shorter: Vec<String>,
     /// What an edit starts from: the whole address. Empty means the label.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
@@ -222,6 +237,11 @@ pub struct ToolbarLocation {
     /// launcher's Continue. `None`: the app cannot be opened at it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<String>,
+    /// The document the location names has changes not yet saved: the bar
+    /// says so after the label, in words, and tells assistive technology
+    /// the same. Every editor marks its unsaved document this one way.
+    #[serde(default)]
+    pub edited: bool,
 }
 
 /// One row of a location's picker.
@@ -318,6 +338,29 @@ pub struct LocationSuggestion {
 }
 
 impl ToolbarLocation {
+    /// A location naming `period` ([`crate::format::Period`]), in its
+    /// widest form, with its narrower ones for a narrow bar.
+    #[must_use]
+    pub fn period(period: crate::format::Period) -> Self {
+        let mut forms = period.forms().into_iter();
+        Self {
+            label: forms.next().unwrap_or_default(),
+            shorter: forms.collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The label (`0`) or its narrower form `form`, the narrowest past the
+    /// last.
+    #[must_use]
+    pub fn form(&self, form: usize) -> &str {
+        form.checked_sub(1)
+            .map_or(Some(&self.label), |shorter| {
+                self.shorter.get(shorter).or_else(|| self.shorter.last())
+            })
+            .map_or(self.label.as_str(), String::as_str)
+    }
+
     /// The text an edit starts from.
     #[must_use]
     pub fn edit_value(&self) -> &str {
@@ -341,9 +384,13 @@ pub struct ToolbarAction {
     /// It can act now.
     #[serde(default = "enabled")]
     pub enabled: bool,
-    /// It is a toggle that is on (a bookmarked page's star).
+    /// It is a toggle that is on (a bookmarked page's star, an open panel).
     #[serde(default)]
     pub on: bool,
+    /// It is a toggle, on or off ([`Self::on`]): assistive technology
+    /// hears it as pressed or not.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub toggles: bool,
     /// It is in the overflow menu only, never a button in the row: an
     /// occasional action (import, export, the app's settings).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -353,6 +400,16 @@ pub struct ToolbarAction {
     /// At most [`MAX_ITEMS`], one level deep.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub items: Vec<ToolbarAction>,
+    /// It moves the person through the content (previous, next, back): a
+    /// leading action that stays in a narrow row after the others and the
+    /// views have gone into the overflow menu.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub navigates: bool,
+    /// It ends, removes or discards something (leaving a call, deleting):
+    /// its button has the destructive role's danger ink, as every other
+    /// destructive button does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub destructive: bool,
 }
 
 fn enabled() -> bool {
@@ -373,7 +430,17 @@ impl ToolbarAction {
             on: false,
             menu: false,
             items: Vec::new(),
+            navigates: false,
+            toggles: false,
+            destructive: false,
         }
+    }
+
+    /// It ends, removes or discards something ([`Self::destructive`]).
+    #[must_use]
+    pub fn destructive(mut self) -> Self {
+        self.destructive = true;
+        self
     }
 
     /// A menu button listing `items`.
@@ -394,6 +461,7 @@ impl ToolbarAction {
     #[must_use]
     pub fn on(mut self, on: bool) -> Self {
         self.on = on;
+        self.toggles = true;
         self
     }
 
@@ -401,6 +469,13 @@ impl ToolbarAction {
     #[must_use]
     pub fn in_menu(mut self) -> Self {
         self.menu = true;
+        self
+    }
+
+    /// It moves through the content ([`Self::navigates`]).
+    #[must_use]
+    pub fn navigating(mut self) -> Self {
+        self.navigates = true;
         self
     }
 }
@@ -636,11 +711,13 @@ impl WindowToolbar {
     /// [`MAX_LEADING`] leading actions, [`MAX_VIEWS`] views,
     /// [`MAX_SEGMENTS`] levels and [`MAX_SUGGESTIONS`] suggestions, every
     /// text at most [`MAX_TEXT_BYTES`], a picture at most
-    /// [`MAX_IMAGE_BYTES`], no icon the set does not have.
+    /// [`MAX_IMAGE_BYTES`], no icon the set does not have. A button in the
+    /// row needs an icon; a menu entry is named by its text, so one with no
+    /// icon stays ([`ToolbarAction::menu`], a menu button's items).
     #[must_use]
     pub fn bounded(mut self) -> Self {
         self.actions
-            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+            .retain(|action| shown_icon(&action.icon, action.menu));
         // The row's actions first, in their order, then the menu's: the
         // row shows a prefix of the declared actions.
         self.actions.sort_by_key(|action| action.menu);
@@ -651,9 +728,7 @@ impl WindowToolbar {
         for action in self.actions.iter_mut().chain(self.leading.iter_mut()) {
             cut(&mut action.id);
             cut(&mut action.name);
-            action
-                .items
-                .retain(|item| crate::icons::Icon::from_name(&item.icon).is_some());
+            action.items.retain(|item| shown_icon(&item.icon, true));
             action.items.truncate(MAX_ITEMS);
             for item in &mut action.items {
                 cut(&mut item.id);
@@ -731,6 +806,12 @@ impl WindowToolbar {
         }
         self
     }
+}
+
+/// Whether an action with `icon` can be shown: an icon the set has, or
+/// none at all for an entry of a menu (`in_menu`), which its text names.
+fn shown_icon(icon: &str, in_menu: bool) -> bool {
+    crate::icons::Icon::from_name(icon).is_some() || (in_menu && icon.is_empty())
 }
 
 impl ToolbarEvent {
@@ -998,6 +1079,9 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1076,6 +1160,9 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1086,6 +1173,9 @@ mod tests {
             on: false,
             menu: false,
             items: Vec::new(),
+            navigates: false,
+            toggles: false,
+            destructive: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1096,11 +1186,33 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
             });
         }
         let bounded = many.clone().bounded();
         assert_eq!(bounded.actions.len(), MAX_DECLARED_ACTIONS);
         assert!(bounded.actions.iter().all(|a| a.icon != "not-an-icon"));
+
+        // A menu entry is named by its text: one with no icon stays, and a
+        // button in the row with none does not.
+        let texts = WindowToolbar {
+            actions: vec![
+                ToolbarAction::new("import", "", "Import report").in_menu(),
+                ToolbarAction::new("bare", "", "No icon in the row"),
+                ToolbarAction::new("more", "more-horizontal", "More")
+                    .with_items(vec![ToolbarAction::new("export", "", "Export report")]),
+            ],
+            ..WindowToolbar::default()
+        }
+        .bounded();
+        let ids: Vec<&str> = texts.actions.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["more", "import"]);
+        assert_eq!(
+            texts.actions[0].items.first().map(|item| item.id.as_str()),
+            Some("export")
+        );
 
         let before = revision();
         declare(Some(browser()));

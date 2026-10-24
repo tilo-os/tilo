@@ -29,6 +29,7 @@ use ui::theme::Theme;
 use ui::widget::data_table::TableSort;
 use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, ModelPath, NavShell, Widget};
+use ui::window_toolbar::{ToolbarEvent, ToolbarLocation};
 
 use ui::framework::{Dispatcher, Setting};
 
@@ -99,8 +100,8 @@ struct ViewKey {
 )]
 pub struct FirewallApp {
     shell: NavShell,
-    /// The availability the shell's header was built for.
-    shell_available: bool,
+    /// What the window's bar names: the open zone, or Firewall.
+    title: String,
     intents: Intents,
     switches: Switches,
     enabled_switch: LocalState<bool>,
@@ -159,22 +160,13 @@ impl Default for FirewallApp {
     }
 }
 
-fn shell_for(
-    available: bool,
-    intents: &Intents,
-    enabled: &LocalState<bool>,
-    panic: &LocalState<bool>,
-) -> NavShell {
-    let shell = NavShell::new()
+/// The window: the zones beside the open zone. Its controls are the window
+/// bar's slots ([`FirewallApp::run_window_toolbar`]).
+fn shell() -> NavShell {
+    NavShell::new()
         .content_kind(ui::widget::ContentKind::List)
-        .with_id("firewall-shell");
-    if available {
-        shell
-            .sidebar_header("Zones", Vec::new())
-            .content_header("", view::header_actions(intents, enabled, panic))
-    } else {
-        shell
-    }
+        .with_id("firewall-shell")
+        .with_window_toolbar()
 }
 
 impl FirewallApp {
@@ -196,8 +188,8 @@ impl FirewallApp {
         let enabled_switch = LocalState::new(config.enabled);
         let panic_switch = LocalState::new(config.panic_mode);
         Self {
-            shell: shell_for(available, &intents, &enabled_switch, &panic_switch),
-            shell_available: available,
+            shell: shell(),
+            title: String::new(),
             intents,
             switches: Switches::default(),
             enabled_switch,
@@ -469,17 +461,6 @@ impl FirewallApp {
 
     /// Rebuild the sidebar and the content when what they show changed.
     fn refresh_view(&mut self) {
-        if self.shell_available != self.available {
-            self.shell = shell_for(
-                self.available,
-                &self.intents,
-                &self.enabled_switch,
-                &self.panic_switch,
-            );
-            self.shell_available = self.available;
-            self.built = None;
-            self.listed = None;
-        }
         let key = self.view_key();
         if self.built.as_ref() == Some(&key) {
             return;
@@ -492,7 +473,8 @@ impl FirewallApp {
             .filter(|_| self.available)
         else {
             self.shell.set_sidebar(None);
-            self.shell.set_content_title("Firewall");
+            self.listed = None;
+            "Firewall".clone_into(&mut self.title);
             self.shell
                 .set_content(view::unavailable(self.unavailable_detail(), &self.intents));
             return;
@@ -521,7 +503,7 @@ impl FirewallApp {
             wide: self.wide,
         };
         let page = view::zone_page(&model, &self.intents, &self.switches, &self.scroll);
-        self.shell.set_content_title(zone.kind.title());
+        zone.kind.title().clone_into(&mut self.title);
         self.shell.set_content(page);
     }
 
@@ -741,6 +723,53 @@ impl FirewallApp {
         }
     }
 
+    /// Run what the person did in the window's bar: the shell's own slots,
+    /// the firewall's switches, Apply, Add rule and the views.
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                self.changed = true;
+                continue;
+            }
+            let ToolbarEvent::Action { id } = event else {
+                continue;
+            };
+            match id.as_str() {
+                view::FIREWALL_ON => self.enabled_switch.update(|on| *on = !*on),
+                view::PANIC_MODE => self.panic_switch.update(|on| *on = !*on),
+                view::APPLY => self.intents.push(Intent::Apply),
+                view::ADD_RULE => self.intents.push(Intent::OpenAddRule),
+                id => {
+                    if let Some(tab) = Tab::ALL.into_iter().find(|tab| tab.view_id() == id) {
+                        self.intents.push(Intent::SetTab(tab));
+                    }
+                }
+            }
+            self.changed = true;
+        }
+    }
+
+    /// Declare the window bar's slots: the shell's own, the open zone as
+    /// the location, the firewall's switches and Apply, Add rule on the
+    /// rules, and the zone's two views.
+    fn declare_window_toolbar(&self) {
+        let mut toolbar = self.shell.window_toolbar();
+        toolbar.location = Some(ToolbarLocation {
+            label: self.title.clone(),
+            ..ToolbarLocation::default()
+        });
+        if self.available {
+            let enabled = self.enabled_switch.with(|on| *on);
+            let panic = self.panic_switch.with(|on| *on);
+            NavShell::push_window_actions(
+                &mut toolbar,
+                view::window_actions(enabled, panic, self.tab),
+            );
+            toolbar.views = Some(view::window_views(self.tab));
+        }
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+
     /// Report a failed apply of the projection on this device. It runs
     /// after every change, so a success stays quiet and the person keeps
     /// the confirmation of what they did.
@@ -765,13 +794,16 @@ impl ui::widget::Decorator for FirewallApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.take_outcome();
+        self.take_window_toolbar_events();
         self.drain();
         self.changed = false;
         self.refresh_view();
+        self.declare_window_toolbar();
         self.shell.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.take_window_toolbar_events();
         self.drain();
         let shell = self.shell.update(state, path);
         shell || self.changed || self.outcome.borrow().is_some()

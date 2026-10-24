@@ -269,33 +269,43 @@ impl SearchProvider for ShortcutsProvider {
         let PendingPoll::Ready(Ok(page)) = page.poll_ready() else {
             return Vec::new();
         };
-        let needle = ctx.needle.trim().to_lowercase();
         let within = ctx.chrome.search_resource_scope.clone();
-        page.rows
+        let (rows, fields): (Vec<SearchResult>, Vec<_>) = page
+            .rows
             .into_iter()
             .filter(|row| row.app_id == SHORTCUTS_APP_ID)
             .filter_map(|row| {
                 let descriptor = row.action.as_ref()?;
-                let haystack = format!(
-                    "{} {} {}#{}",
-                    descriptor.action_label.to_lowercase(),
-                    descriptor.resource_label.to_lowercase(),
-                    descriptor.address.resource,
-                    descriptor.address.action
-                );
-                let score = if needle.is_empty() {
-                    0
-                } else if haystack.contains(&needle) {
-                    80
-                } else {
-                    return None;
-                };
-                match &within {
-                    Some(resource) => self.quick_action(&caller, row, resource, score),
-                    None => self.result(&caller, row, score),
-                }
+                let fields = vec![
+                    (
+                        descriptor.action_label.clone(),
+                        ui::search::FieldWeight::TITLE,
+                    ),
+                    (
+                        descriptor.resource_label.clone(),
+                        ui::search::FieldWeight::SUBTITLE,
+                    ),
+                    (
+                        format!(
+                            "{}#{}",
+                            descriptor.address.resource, descriptor.address.action
+                        ),
+                        ui::search::FieldWeight::IDENTITY,
+                    ),
+                ];
+                let result = match &within {
+                    Some(resource) => self.quick_action(&caller, row, resource, 0),
+                    None => self.result(&caller, row, 0),
+                }?;
+                Some((result, fields))
             })
-            .collect()
+            .unzip();
+        crate::shell::search::rank_rows(
+            &ui::search::ListIndex::default(),
+            ctx.needle.trim(),
+            rows,
+            &fields,
+        )
     }
 }
 
@@ -330,6 +340,7 @@ mod tests {
             grant: Vec::new(),
             triggers: Vec::new(),
             saved_by: Some(owner.clone()),
+            saved_proof: None,
         };
         let mut plain = on_file.clone();
         plain.id = "tidy".into();

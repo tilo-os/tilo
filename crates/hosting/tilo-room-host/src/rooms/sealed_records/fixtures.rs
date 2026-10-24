@@ -9,9 +9,8 @@
 
 use std::time::SystemTime;
 
-use automerge::{ROOT, transaction::Transactable as _};
 use channel_crypto::ChannelContentKeys;
-use collab_types::{CommitNamed as _, ContentRetention, SignedOp};
+use collab_types::{ContentRetention, SignedOp};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_automerge::ApplyIncoming as _;
@@ -70,31 +69,14 @@ impl SealingMember {
             .unwrap()
             .unwrap();
         // The surface a member's write names: the one its replica signs with.
-        let surface = {
-            let state = rooms.room(room).await.unwrap();
-            let mut scratch = state.lock().await.peer().clone();
-            let mut document = automerge::AutoCommit::new();
-            document.put(ROOT, "probe", true).unwrap();
-            document.commit_edit("fixture", "probe");
-            let artifact = collab_types::document_artifact_id(app, room, record);
-            let NeighbourMsg::AppDocument { envelope, .. } = scratch
-                .publish_sealed_incremental(
-                    app,
-                    record,
-                    document.save_after(&[]),
-                    &mut |plaintext| {
-                        keys.seal_content(artifact, ContentRetention::Delta, plaintext)
-                            .map_err(|error| error.to_string())
-                    },
-                    &key,
-                    SystemTime::now(),
-                )
-                .unwrap()
-            else {
-                panic!("a document write")
-            };
-            envelope.surface
-        };
+        let surface = rooms
+            .room(room)
+            .await
+            .unwrap()
+            .lock()
+            .await
+            .peer()
+            .signed_surface(app);
         let member = Self {
             key,
             keys,
