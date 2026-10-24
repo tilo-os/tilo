@@ -39,7 +39,7 @@ audio = ["dep:gstreamer", "dep:tokio", "media/voice"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-invidious", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
+live = ["dep:rustypipe", "dep:tilo-innertube", "dep:tokio", "dep:reqwest", "dep:tilo-invidious", "tilo-net/http", "tilo-net/blocking", "dep:tilo-spotify"]
 
 [dependencies]
 tilo-spotify = { path = "../../crates/platform/tilo-spotify", optional = true }
@@ -87,6 +87,9 @@ tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"]
 # resolution. Embeds `rquickjs` for signature deobfuscation — no external
 # interpreter, downloader, or JS runtime binary. Gated behind `live`.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+# Its queries, compiled once beside it (in the YouTube engine library in a
+# release) rather than in this executable.
+tilo-innertube = { path = "../../crates/platform/tilo-innertube", optional = true }
 # Fully-rangeable stream URLs through Invidious media proxies.
 tilo-invidious = { path = "../../crates/platform/tilo-invidious", optional = true }
 

@@ -149,12 +149,7 @@ impl ShellNetwork {
         background: bool,
     ) -> Result<SiteJoin, SiteError> {
         let runtime = self.runtime_handle().map_err(SiteError::Unreachable)?;
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| SiteError::Refused("the workspaces are unavailable".into()))?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         // The site's workspace held already needs no door; one this device
         // still holds a membership of (the person left it here and came
         // back) gets its place back.
@@ -288,11 +283,7 @@ impl ShellNetwork {
     /// before they arrived, the arrival opened the app a second time beside
     /// the room's own window of it.
     pub(crate) fn take_arrivals(&self) -> Vec<Arrival> {
-        let Ok(replica) = self.replica.lock() else {
-            return Vec::new();
-        };
-        let tree = replica.tree.clone();
-        drop(replica);
+        let tree = self.tree.clone();
         self.hosted_sites
             .take_arrivals(|room| tree.read().room_docs.contains_key(&room))
     }
@@ -309,12 +300,7 @@ impl ShellNetwork {
         let Some(app) = arrival.app.as_deref() else {
             return Ok(());
         };
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "the workspaces are unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         let workspace = tree
             .read()
             .desktop
@@ -452,15 +438,12 @@ impl ShellNetwork {
         let Some(room) = self.hosted_sites.room_of_site(site) else {
             return false;
         };
-        self.replica.lock().is_ok_and(|replica| {
-            replica
-                .tree
-                .read()
-                .desktop
-                .workspaces
-                .iter()
-                .any(|workspace| workspace.room() == room)
-        })
+        self.tree
+            .read()
+            .desktop
+            .workspaces
+            .iter()
+            .any(|workspace| workspace.room() == room)
     }
 
     /// Leave the workspace of `site`, held or not: it is not joined again

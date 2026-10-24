@@ -26,12 +26,12 @@ continuity-other-device = deinem anderen Gerät
 tab-closed-toast = { $title } geschlossen
 tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
-workspace-deleted-toast = { $name } gelöscht
-workspace-deleted-undo = Rückgängig
 workspace-left-toast = { $name } verlassen
 workspace-joined-name = Geteilter Arbeitsbereich
 workspace-needs-join-again = Erneut beitreten, um teilzunehmen
 workspace-not-joined-yet = Noch nicht beigetreten
+workspace-on-this-device-only = Nur auf diesem Gerät
+workspace-on-this-device-only-no-documents = Dieser Arbeitsbereich ist nur auf diesem Gerät: Apps können darin keine Dokumente öffnen.
 workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem Arbeitsbereich beizutreten
 workspace-kept-before-joining = { $name } vor dem Beitritt
 
@@ -393,6 +393,7 @@ qs-bluetooth-use-elsewhere = Auf einem anderen Gerät nutzen
 qs-vpn-settings = VPN-Einstellungen
 qs-vpn-details = VPN-Profile
 qs-sound-output = Tonausgabe
+qs-volume-mute = Stummschalten
 qs-sound-settings = Ton-Einstellungen
 qs-devices-settings = Einstellungen für Geräte & Sync
 qs-clipboard-clear-history = Verlauf leeren
@@ -1124,10 +1125,12 @@ memory-app-reopen = Erneut öffnen
 # Tab- und Fensteraktionen, die nicht ausgeführt werden konnten
 window-duplicate-no-tab = Es gibt keinen Tab zum Duplizieren.
 window-duplicate-foreign = Dieses Fenster kann nicht dupliziert werden. Öffne ein weiteres über die Suche.
+window-duplicate-single-window = Diese App hat nur ein Fenster.
 window-tab-action-no-tab = Es gibt keinen Tab für diese Aktion.
 window-tab-action-unknown-tab = Dieser Tab ist nicht mehr geöffnet.
 window-tab-action-only-tab = Das ist der einzige Tab dieses Fensters; er kann nicht abgetrennt werden.
 window-tab-action-document-refused = Der Tab konnte nicht verschoben werden. Versuche es erneut.
+window-tab-action-not-renamable = Hier lässt sich nur ein Fenster von außerhalb von Tilo umbenennen, das auf diesem Gerät läuft.
 
 # Tab-Kontextmenü, Arbeitsbereichsmeldungen und Platzhalterkacheln
 shell-workspace-renamed = Arbeitsbereich umbenannt
@@ -1141,6 +1144,8 @@ shell-window-menu-restore = Wiederherstellen
 shell-window-menu-move-to-strip = In Leiste verschieben
 shell-window-menu-move-to-workspace = In Arbeitsbereich verschieben
 shell-window-menu-new-tab = Neuer Tab
+shell-window-menu-rename-tab = Tab umbenennen
+shell-tab-rename-field = Tab-Name
 shell-window-menu-close-window = Fenster schließen
 shell-window-menu-unnamed-strip = Leiste { $number }
 shell-window-menu-tell-agent = Einem Agenten sagen…
@@ -1310,15 +1315,7 @@ search-launcher-happening-now = Gerade los
 search-launcher-waiting-on-you = Wartet auf dich
 search-launcher-continue = Weitermachen
 search-launcher-apps = Apps
-search-launcher-apps-office = Büro
-search-launcher-apps-internet = Internet
-search-launcher-apps-media = Medien
-search-launcher-apps-development = Entwicklung
-search-launcher-apps-games = Spiele
-search-launcher-apps-learning = Lernen
-search-launcher-apps-utilities = Werkzeuge
-search-launcher-apps-system = System
-search-launcher-apps-other = Weitere Apps
+search-launcher-all-apps = Alle Apps
 search-launcher-app-downloaded = Heruntergeladen
 search-launcher-opened = Geöffnet { $when }
 search-launcher-here-one = { $name } ist hier
@@ -1514,6 +1511,8 @@ search-action-tab-duplicate = Diesen Tab duplizieren
 search-action-tab-duplicate-subtitle = Eine zweite Instanz der fokussierten App daneben öffnen
 search-action-tab-close = Diesen Tab schließen
 search-action-tab-close-subtitle = Den fokussierten Tab schließen; war er der letzte, schließt sich auch sein Fenster
+search-action-tab-rename = Diesen Tab umbenennen
+search-action-tab-rename-subtitle = Dem fokussierten Fenster einen eigenen Namen geben; ein leerer Name stellt seinen eigenen Titel wieder her
 search-action-tab-reopen = Geschlossenen Tab wieder öffnen
 search-action-tab-reopen-subtitle = Den zuletzt in diesem Arbeitsbereich geschlossenen Tab an seinem alten Platz zurückholen
 search-action-tab-open-beside = App in neuem Tab öffnen
@@ -1625,6 +1624,10 @@ search-action-member-role-set = Rolle eines Mitglieds ändern
 search-action-member-role-set-subtitle = Ein Mitglied des Arbeitsbereichs zum Betrachter, Kommentator oder Bearbeiter machen
 search-action-member-remove = Mitglied entfernen
 search-action-member-remove-subtitle = Ein Mitglied aus diesem Arbeitsbereich nehmen und alles widerrufen, was es hier tun durfte
+governance-change-members = Status eines Mitglieds ändern
+governance-change-access = Zugriff auf diesen Arbeitsbereich ändern
+governance-change-presets = Vorlagen dieses Arbeitsbereichs ändern
+governance-change-settings = Einstellungen dieses Arbeitsbereichs ändern
 search-action-invitation-issue = Einladung erstellen
 search-action-invitation-issue-subtitle = Eine Einladung in diesen Arbeitsbereich mit Rolle und Gültigkeitsdauer erzeugen
 search-action-invitation-list = Offene Einladungen anzeigen
@@ -1694,6 +1697,7 @@ search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrolle
 
 # Suche: was eine Shell-Aktion getan hat
 search-action-tab-close-failed = Dieser Tab kann nicht geschlossen werden
+search-action-tab-rename-failed = Dieser Tab kann nicht umbenannt werden
 search-action-tab-split-failed = Dieser Tab kann nicht geteilt werden
 search-action-device-list-copied = Geräteliste kopiert
 search-action-enrollment-copied = Geräte-Einrichtungscode kopiert. Er läuft in { $minutes } Min. ab.
@@ -1835,11 +1839,11 @@ onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevo
 
 # Identitätseinrichtung: kein Wiederherstellungsdienst
 onboarding-no-recovery-title = Verlierst du dieses Gerät ohne Sicherung, ist diese Identität verloren
-onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Kein Sicherungscode und keine Wiederherstellungsphrase können diese Identität neu erstellen.
-onboarding-no-recovery-point-backup = Die als Nächstes angebotene verschlüsselte Sicherung ist der einzige Weg zur Wiederherstellung. Bewahre Datei und Passphrase getrennt auf. Ohne sie braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
+onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Niemand, auch nicht Tilo, kann diese Identität für dich zurücksetzen oder neu erstellen.
+onboarding-no-recovery-point-backup = Schreib als Nächstes einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung. Beides holt diese Identität zurück. Ohne eines davon braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
 onboarding-acknowledgement = Mir ist klar, dass ich diese Identität verliere, wenn ich dieses Gerät ohne Sicherung verliere.
 onboarding-protect-title = Deine Tilo-Identität schützen
-onboarding-protect-message = Es gibt keine Zurücksetzen-Taste. Erstelle nach diesem Schritt eine verschlüsselte, übertragbare Sicherung.
+onboarding-protect-message = Es gibt keine Zurücksetzen-Taste. Schreib nach diesem Schritt einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung.
 onboarding-create-failed = Deine Identität wurde nicht erstellt
 onboarding-create-failed-title = Deine Identität konnte nicht erstellt werden
 onboarding-create-failed-message = Es wurde nichts geschrieben, und der Desktop ist weiterhin geschützt. Geh zurück und versuche es erneut, nachdem du Speicherplatz und Berechtigungen geprüft hast.
@@ -1875,6 +1879,38 @@ onboarding-existing-body = Wähle, wie die Identität, die du bereits nutzt, auf
 onboarding-choice-nearby = Mit einem Gerät in der Nähe verbinden
 onboarding-choice-nearby-detail = Diesen Rechner auf einem Gerät mit deiner Identität freigeben
 onboarding-choice-restore = Aus einer Sicherung wiederherstellen
+onboarding-choice-recovery-key = Wiederherstellungsschlüssel eingeben
+onboarding-choice-recovery-key-detail = Die 24 Wörter eintippen, die du aufgeschrieben hast
+onboarding-recovery-title = Hol deine Identität auf diesen Computer zurück
+onboarding-recovery-eyebrow = Identitätswiederherstellung
+onboarding-recovery-body = Tilo konnte die Kopie deiner Identität auf diesem Computer nicht öffnen und hat nichts geändert. Deine Arbeitsbereiche und anderen Geräte sind in Ordnung. Wenn dein Schlüsselbund gesperrt ist, entsperre ihn und wähle Erneut versuchen.
+onboarding-recovery-body-keyring = Tilo konnte den Schlüsselbund mit dem Schlüssel deiner Identität nicht erreichen und hat nichts geändert. Entsperre den Schlüsselbund und wähle Erneut versuchen.
+onboarding-recovery-body-missing = Die Kopie deiner Identität auf diesem Computer fehlt. Tilo hat nichts geändert, und deine Arbeitsbereiche und anderen Geräte sind in Ordnung.
+onboarding-recovery-body-invalid = Tilo konnte die Kopie deiner Identität auf diesem Computer nicht prüfen und hat nichts geändert. Wenn Datum oder Uhrzeit falsch sind, korrigiere sie und wähle Erneut versuchen.
+onboarding-recovery-identity = Identität dieses Computers: { $fingerprint }
+onboarding-backup-recovery-key = Wiederherstellungsschlüssel aufschreiben
+onboarding-backup-recovery-key-detail = 24 Wörter auf Papier holen diese Identität zurück. Ohne Datei oder Passphrase.
+onboarding-recovery-key-copy-title = Schreib deinen Wiederherstellungsschlüssel auf
+onboarding-recovery-key-copy-body = Schreib diese 24 Wörter der Reihe nach auf Papier und bewahre es sicher auf. Wer sie hat, kann sich als du ausgeben. Fotografiere sie also nicht und lege sie nicht an einem geteilten Ort ab.
+onboarding-recovery-key-confirm = Zur Kontrolle tippe die Wörter { $first }, { $second } und { $third } ein.
+onboarding-recovery-key-word = Wort { $position }
+onboarding-recovery-key-confirm-button = Ich habe ihn aufgeschrieben
+onboarding-recovery-key-written = Wiederherstellungsschlüssel aufgeschrieben
+onboarding-recovery-key-written-detail = Mit diesen 24 Wörtern holst du diese Identität auf jedem Computer zurück.
+onboarding-recovery-key-title = Wiederherstellungsschlüssel eingeben
+onboarding-recovery-key-body = Tippe oder füge die 24 Wörter in der richtigen Reihenfolge ein. Großbuchstaben, Zeilenumbrüche und Nummerierung spielen keine Rolle.
+onboarding-recovery-key-field = Wiederherstellungsschlüssel
+onboarding-recovery-key-placeholder = wort1 wort2 wort3 …
+onboarding-recovery-key-progress = { $count } von { $total } Wörtern
+onboarding-recovery-key-count = Ein Wiederherstellungsschlüssel hat 24 Wörter; dieser hat { $found }.
+onboarding-recovery-key-unknown-word = Wort { $position } ist kein Wort eines Wiederherstellungsschlüssels. Prüfe die Schreibweise.
+onboarding-recovery-key-checksum = Diese Wörter ergeben keinen Wiederherstellungsschlüssel. Wahrscheinlich ist eines vertippt oder vertauscht.
+onboarding-recovery-key-ready = Wiederherstellungsschlüssel für Identität { $fingerprint }
+onboarding-recovery-key-ready-detail = Wähle Identität wiederherstellen, um ihn auf diesem Computer zu verwenden.
+onboarding-recovery-key-matches = Das ist die Identität dieses Computers. Wähle Identität wiederherstellen, um sie zurückzuholen.
+onboarding-recovery-key-different = Diese Wörter gehören zu einer anderen Identität
+onboarding-recovery-key-different-detail = Sie stellen { $found } wieder her, aber dieser Computer gehört zu { $expected }. Prüfe, ob du den Wiederherstellungsschlüssel der Identität dieses Computers verwendest.
+onboarding-recovery-key-restoring = Deine Identität wird wiederhergestellt …
 onboarding-choice-restore-detail = Eine verschlüsselte Identitätssicherung öffnen
 onboarding-restore-title = Aus einer Sicherung wiederherstellen
 onboarding-restore-body = Wähle die verschlüsselte Sicherung, die du aus Tilo gespeichert hast, und gib ihre Passphrase ein.
@@ -1884,7 +1920,7 @@ onboarding-restore-file-label = Sicherungsdatei
 onboarding-connect-recovery-title = Deine vorhandene Identität muss wiederhergestellt werden
 onboarding-connect-recovery-message = Deine vorhandene Identität konnte nicht geprüft werden. Entsperre den Schlüsselbund des Desktops und versuche es erneut, oder stelle eine verschlüsselte Sicherung wieder her. Bis dahin bleibt deine Identität, wie sie ist.
 onboarding-connect-failed = Diese Identität konnte nicht verbunden werden
-onboarding-connect-retry-keyring = Schlüsselbund erneut versuchen
+onboarding-connect-retry-keyring = Erneut versuchen
 onboarding-connect-browse = Durchsuchen
 onboarding-connect-file = Sicherungsdatei der Identität
 onboarding-connect-file-placeholder = Verschlüsselte Sicherung oder ältere Identitäts-JSON auswählen
@@ -1930,7 +1966,7 @@ onboarding-nearby-connected = Verbunden. Deine Arbeitsbereiche erscheinen automa
 # Identitätseinrichtung: verschlüsselte Sicherung
 onboarding-backup-title = Deine Tilo-Identität sichern
 onboarding-backup-identity-created = Deine lokale Identität wurde erstellt
-onboarding-backup-explanation = Speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
+onboarding-backup-explanation = Oder speichere eine verschlüsselte Kopie an einem anderen Ort. Bewahre Datei und Passphrase getrennt auf; zusammen stellen sie diese Identität wieder her.
 onboarding-backup-passphrase = Neue Passphrase für die Sicherung
 onboarding-backup-passphrase-placeholder = Mindestens 12 Zeichen, lang und einzigartig
 onboarding-backup-confirmation = Neue Passphrase für die Sicherung bestätigen
@@ -1938,7 +1974,7 @@ onboarding-backup-confirmation-placeholder = Passphrase bestätigen
 onboarding-backup-save = Speicherort wählen und Sicherung speichern …
 onboarding-backup-save-another = Weitere Kopie speichern
 onboarding-backup-save-action = Verschlüsselte Sicherung speichern
-onboarding-backup-skip-acknowledgement = Mir ist klar, dass ich ohne verschlüsselte Sicherung diese Identität verliere, wenn ich dieses Gerät verliere.
+onboarding-backup-skip-acknowledgement = Mir ist klar, dass ich ohne Wiederherstellungsschlüssel oder Sicherung diese Identität verliere, wenn ich dieses Gerät verliere.
 onboarding-backup-continue-without = Ohne Sicherung fortfahren
 onboarding-backup-failed = Die Sicherung wurde nicht gespeichert
 onboarding-backup-verified = Verschlüsselte Sicherung geprüft
@@ -2057,8 +2093,6 @@ peer-sync-link-note-anyone = Wer den Link öffnet, kann beitreten. Er funktionie
 peer-sync-copy-invite = Einladung kopieren
 peer-sync-revoke = Widerrufen
 peer-sync-done = Fertig
-peer-sync-code-hint = Diesen Code sieht die Person, wenn sie die Einladung öffnet
-peer-sync-code-check = Prüfe, ob die Person, die dich eingeladen hat, denselben Code sieht
 peer-sync-paste-link = Link einfügen
 peer-sync-join-field-label = Link oder Seite
 peer-sync-who-heading = Wer
@@ -2105,25 +2139,6 @@ peer-sync-role-expires = { $role }, { $unit ->
        *[other] { $count } Tagen
     } ab
 }
-peer-sync-received-role-expires = Zugriff als { $role }, { $unit ->
-    [now] läuft gleich ab
-    [seconds] läuft in { $count ->
-        [one] 1 Sekunde
-       *[other] { $count } Sekunden
-    } ab
-    [minutes] läuft in { $count ->
-        [one] 1 Minute
-       *[other] { $count } Minuten
-    } ab
-    [hours] läuft in { $count ->
-        [one] 1 Stunde
-       *[other] { $count } Stunden
-    } ab
-   *[days] läuft in { $count ->
-        [one] 1 Tag
-       *[other] { $count } Tagen
-    } ab
-}
 peer-sync-role-viewer = Betrachter
 peer-sync-role-commenter = Kommentator
 peer-sync-role-editor = Bearbeiter
@@ -2134,7 +2149,6 @@ peer-sync-copy-identity = Meine Identität kopieren
 peer-sync-role-heading = Zugriff
 peer-sync-recipient-hint = Wähle jemanden, den du kennst, oder füge die Tilo-Identität ein, die dir die Person geschickt hat.
 peer-sync-invite-anyone = Jeder mit dieser Einladung
-peer-sync-invite-received = Einladung erhalten
 peer-sync-paste-invite-hint = Etwa tilo.coffee oder einen Link, den man dir geschickt hat.
 peer-sync-join-site = Tritt dem Arbeitsbereich auf { $host } bei
 peer-sync-join-invitation-link = Eine Einladung in einen Arbeitsbereich auf { $host }
@@ -2165,6 +2179,8 @@ search-provider-downloaded-programs = Heruntergeladene Programme
 new-document-unavailable = Neues Dokument nicht verfügbar: { $error }
 collab-unavailable-title = Zusammenarbeit nicht verfügbar
 collab-unavailable-body = Apps in dieser Sitzung können keine Änderungen teilen. { $reason }
+identity-clock-wrong-title = Die Uhr dieses Geräts geht falsch
+identity-clock-wrong-body = Deine Identität ist sicher. Deine Arbeitsbereiche verbinden sich, sobald Datum und Uhrzeit stimmen.
 quiet-status-dnd = Bitte nicht stören
 quiet-status-dnd-presenting = Bitte nicht stören während der Präsentation
 quiet-status-dnd-sharing = Bitte nicht stören während der Bildschirmfreigabe
@@ -3017,6 +3033,7 @@ search-kw-tab-open-beside = app öffnen, neuer tab, starten, app starten
 search-kw-tab-menu = tab-menü, kontextmenü, rechtsklick
 search-kw-tab-drag-cancel = ziehen abbrechen
 search-kw-tab-close = schließen, tab schließen, fenster schließen, beenden
+search-kw-tab-rename = umbenennen, tab benennen, tab-name, titel, bezeichnung
 search-kw-tab-reopen = wieder öffnen, wiederherstellen, geschlossenen tab, rückgängig
 search-kw-tab-split-right = teilen, nebeneinander, geteilte ansicht, aufteilen
 search-kw-window-focus-previous = vorheriges fenster, fenster wechseln, zurück

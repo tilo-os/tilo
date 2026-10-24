@@ -2663,6 +2663,8 @@ impl Widget for NotesApp {
         self.self_dirty |= feedback_expired;
         // A dragged block's pointer at the page's edge scrolls the page.
         let dragged = self.main.autoscroll_block_drag();
+        // A lifted touchpad gesture glides the page on; only the view moves.
+        self.main.advance_glide();
         // The retained shell owns queued header views, responsive bindings
         // and navigation. It participates in the same lifecycle as the
         // separately projected notebook content in its column slots.
@@ -2966,6 +2968,7 @@ impl Widget for NotesApp {
         // Idle otherwise (no idle redraw spin).
         (!self.theme.reduce_motion && self.save_surface.needs_frame(ui::time::now()))
             || self.main.block_drag_scrolling()
+            || self.main.gliding()
             || self.main.editor().drag_handles_fading()
             || self.shell.needs_animation_frame()
     }

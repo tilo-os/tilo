@@ -437,6 +437,7 @@ mod tests {
                         kind: AppKind::Other("so.tilo.calculator".into()),
                         label: "Calculator".into(),
                     },
+                    app_title: None,
                 }],
                 active_tab: 30,
                 width: WindowWidth::Fraction(800),

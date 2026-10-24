@@ -13,6 +13,7 @@ sheets-delete-columns = Deleted columns
 sheets-import-sheets = Imported sheets
 sheets-set-title = Named the workbook { $title }
 sheets-set-records = Wrote records
+sheets-upsert-item = Updated or added a row
 sheets-add-chart = Charted { $range }
 sheets-edit-chart = Edited the chart { $title }
 sheets-edit-comment = Edited a comment: { $body }

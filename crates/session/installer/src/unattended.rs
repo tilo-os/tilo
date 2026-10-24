@@ -901,6 +901,7 @@ pub(crate) struct ProtectionReport {
     pub tpm2: bool,
     pub pin_defensible: bool,
     pub lockout_auth_set: bool,
+    pub shared_with_windows: bool,
     pub target_verified_boot: bool,
 }
 
@@ -939,6 +940,10 @@ impl ProtectionProbe for SystemProtection {
             .get("reset_auth_set")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let shared_with_windows = status
+            .get("shared_with_windows")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
 
         let preflight = bounded_command::run(
             VERIFIED_BOOT_PREFLIGHT,
@@ -961,6 +966,7 @@ impl ProtectionProbe for SystemProtection {
             tpm2: true,
             pin_defensible,
             lockout_auth_set,
+            shared_with_windows,
             target_verified_boot: true,
         })
     }
@@ -991,8 +997,13 @@ fn execute(
         if !report.pin_defensible {
             eprintln!(
                 "Unattended installation: the destination TPM2 dictionary-attack reset \
-                 authorisation was not set at review time. The installed system hardens it on \
-                 first boot; without that, a short PIN is not a defensible unlock."
+                 authorisation was not set at review time. {} Without that, a short PIN is not \
+                 a defensible unlock.",
+                if report.shared_with_windows {
+                    "This TPM is shared with Windows, which sets it the next time it starts."
+                } else {
+                    "The installed system hardens it on first boot."
+                }
             );
         }
     }
@@ -1557,6 +1568,7 @@ mod tests {
             tpm2: false,
             pin_defensible: false,
             lockout_auth_set: false,
+            shared_with_windows: false,
             target_verified_boot: false,
         });
 
@@ -1612,6 +1624,7 @@ mod tests {
             tpm2: true,
             pin_defensible: false,
             lockout_auth_set: false,
+            shared_with_windows: false,
             target_verified_boot: true,
         });
 
@@ -1644,6 +1657,7 @@ mod tests {
             tpm2: true,
             pin_defensible: false,
             lockout_auth_set: false,
+            shared_with_windows: false,
             target_verified_boot: true,
         });
 
@@ -1726,6 +1740,7 @@ mod tests {
             tpm2: false,
             pin_defensible: false,
             lockout_auth_set: false,
+            shared_with_windows: false,
             target_verified_boot: false,
         });
 

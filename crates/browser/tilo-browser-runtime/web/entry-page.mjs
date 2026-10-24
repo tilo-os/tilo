@@ -16,7 +16,7 @@
  * has no seat for watches live instead and is let in once a seat frees up.
  */
 import {AdmissionError} from './admission.mjs';
-import {failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, visitLine} from './arrival.mjs';
+import {failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside, visitLine} from './arrival.mjs';
 import {watchForUpdate} from './bundle-update.mjs';
 import {boot, grammar} from './entry.mjs';
 import {loadRuntime, mountDesktop, prefetchApplication, prepareGpu} from './host.mjs';
@@ -982,7 +982,7 @@ export async function startEntryPage({mode}) {
     }
     if (entered || embed) tell(error instanceof HostAdmissionError && error.code === 'full' ? 'full' : 'unavailable');
     // Stopped after the host let the person in: opening the desktop failed.
-    const inside = Boolean(admitted) && ['open', 'draw'].includes(root.arrival);
+    const inside = stoppedInside(admitted, root.arrival);
     arrive('stopped');
     // Plain words and a way to try again (index.html); the cause, thrown
     // on, reaches the console and the host's error report.

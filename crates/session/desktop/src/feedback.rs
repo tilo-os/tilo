@@ -201,6 +201,7 @@ mod focus_tests {
                     id,
                     title: "Bank statement".into(),
                     tile,
+                    app_title: None,
                 }],
                 active_tab: id,
                 width: WindowWidth::Fraction(500),

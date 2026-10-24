@@ -312,6 +312,11 @@ class Groups(unittest.TestCase):
         self.assertNotIn("scheduled-idle-benchmark", manifest["features"]["default"])
         fixture = (root / "crates/session/shell/tests/idle_wakeups.rs").read_text()
         self.assertNotIn("fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget", fixture)
+        # The example includes the fixture, and Cargo defines CARGO_BIN_EXE_*
+        # for integration tests only: a compile-time `env!` of it (which
+        # `package_binary!` expands to) stops the example building.
+        self.assertNotIn("package_binary!", fixture)
+        self.assertNotIn('env!("CARGO_BIN_EXE', fixture.replace('option_env!("CARGO_BIN_EXE', ""))
         benchmark = (root / "crates/session/shell/examples/idle-wakeups.rs").read_text()
         self.assertIn("fn an_idle_desktop_with_two_apps_stays_within_its_wakeup_budget", benchmark)
         self.assertNotIn("#[test]", benchmark)
@@ -369,5 +374,16 @@ class Groups(unittest.TestCase):
             self.assertTrue(group.builds or group.tests, group.name)
 
 
+class Artifacts(unittest.TestCase):
+    def test_a_build_into_its_own_target_directory_is_found_there(self):
+        repo = Path("/src")
+        with mock.patch.dict(os.environ, {"CARGO_TARGET_DIR": "/target"}):
+            self.assertEqual(ab.artifact(repo, "target/debug/shell"), Path("/target/debug/shell"))
+            self.assertEqual(ab.artifact(repo, "crates/x/fixture"), Path("/src/crates/x/fixture"))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(ab.artifact(repo, "target/debug/shell"), Path("/src/target/debug/shell"))
+
+
 if __name__ == "__main__":
     unittest.main()
+

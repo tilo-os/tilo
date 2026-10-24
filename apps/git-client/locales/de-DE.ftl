@@ -7,16 +7,12 @@ git-screen-changes = Änderungen
 git-screen-history = Verlauf
 git-screen-branches = Branches
 git-app-description = Änderungen, Verlauf, Branches und Remotes des Repositorys
+git-view = Ansicht
 
-# Header
-git-diff-unified = Einspaltig
-git-diff-split = Geteilt
+# Window bar
 git-diff-unified-name = Einspaltiger Diff
 git-diff-split-name = Diff nebeneinander
-git-syntax = Syntax
 git-syntax-name = Syntaxhervorhebung
-git-sidebar-show = Seitenleiste einblenden
-git-sidebar-hide = Seitenleiste ausblenden
 git-dismiss-error = Fehler schließen
 
 # Confirmation
@@ -93,6 +89,7 @@ git-date = { $day }. { $month ->
     [11] November
    *[12] Dezember
 } { $year }, { $time }
+git-more-refs = +{ $count }
 git-fact-refs = Branches und Tags
 git-changed-files = Geänderte Dateien
 
@@ -102,9 +99,6 @@ git-section-remote-branches = Remote-Branches
 git-section-tags = Tags
 git-section-stashes = Stashes
 git-section-remotes = Remotes
-git-fetch = Abrufen
-git-pull = Pullen
-git-push = Pushen
 git-fetch-name = Vom Remote abrufen
 git-pull-name = Vom Remote pullen
 git-push-name = Zum Remote pushen

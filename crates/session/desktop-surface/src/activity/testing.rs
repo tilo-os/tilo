@@ -95,6 +95,7 @@ impl TestTree {
                 kind,
                 label: label.into(),
             },
+            app_title: None,
         };
         let tabs = vec![
             tab("Notes", AppKind::Other("Notes".into()), "Notes"),

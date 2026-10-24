@@ -516,6 +516,9 @@ mod tests {
             app.harness().set_theme(theme);
             app.harness().resize((390, 844)).unwrap();
             app.settle();
+            // Narrowed, the conversation stays in front; its slide lands.
+            app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap);
+            app.settle();
             assert!(
                 app.harness()
                     .a11y_node_named("Copy resource link")

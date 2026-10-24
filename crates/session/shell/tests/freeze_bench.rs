@@ -36,6 +36,7 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
                 kind: shell_kind,
                 label: label.to_string(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: shell::shell::state::WindowWidth::Normal,

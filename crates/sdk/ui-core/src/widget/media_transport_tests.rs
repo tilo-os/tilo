@@ -29,15 +29,79 @@ fn playing() -> TransportState {
     }
 }
 
+/// The player resource the test app publishes: one action per control.
+const PLAYER: &str = "test.player:player";
+
+fn player() -> tilo_actions::Resource {
+    let mut player = tilo_actions::Resource::new(PLAYER, "test.player", "Player");
+    for id in [
+        "play-pause",
+        "previous",
+        "next",
+        "toggle-shuffle",
+        "cycle-repeat",
+        "toggle-like",
+        "toggle-mute",
+        "seek",
+        "set-volume",
+    ] {
+        player = player.with_action(
+            tilo_actions::ActionSpec::operation(
+                id,
+                id,
+                tilo_actions::OperationKind::Effect,
+                "test.player.effect",
+                &id,
+            )
+            .expect("a test action"),
+        );
+    }
+    player
+}
+
+/// Every action the transport takes, bound to the test app's player.
+fn actions() -> TransportActions {
+    let player = player();
+    let unit = |id| Some(ActionBinding::unit_for(&player, id).expect("published"));
+    let value = |id: &str| {
+        let spec = player
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)
+            .expect("published");
+        Some(ActionBinding::new(&player, spec, |_: f64| serde_json::Map::new()).expect("bound"))
+    };
+    TransportActions {
+        play_pause: unit("play-pause"),
+        previous: unit("previous"),
+        next: unit("next"),
+        shuffle: unit("toggle-shuffle"),
+        repeat: unit("cycle-repeat"),
+        like: unit("toggle-like"),
+        mute: unit("toggle-mute"),
+        seek: value("seek"),
+        volume: value("set-volume"),
+    }
+}
+
 /// A shell whose band is a transport showing `state`, laid out at `w`.
 fn banded(state: TransportState, w: u32) -> (FrameHarness, TransportFeed) {
+    banded_with(state, w, actions())
+}
+
+/// [`banded`], the transport's controls invoking `actions`.
+fn banded_with(
+    state: TransportState,
+    w: u32,
+    actions: TransportActions,
+) -> (FrameHarness, TransportFeed) {
     let feed = TransportFeed::new();
     feed.show(state);
     let shell = NavShell::new()
         .with_id("player")
         .content_kind(ContentKind::List)
         .content(Box::new(Text::new("Page")))
-        .bottom_band(Box::new(MediaTransport::new(&feed)));
+        .bottom_band(Box::new(MediaTransport::new(&feed, actions)));
     let mut h = FrameHarness::for_root(State::new(), shell, (w, 700), Theme::dark());
     for _ in 0..3 {
         h.relayout_at((w, 700)).expect("layout settles");
@@ -103,17 +167,90 @@ fn a_wide_transport_shows_its_controls_inline_in_the_band() {
     );
 }
 
-/// A press reaches the app as what it asks for; the app's player stays
-/// the truth, so nothing changes until the app shows the new state.
+/// How each control under the transport invokes what it does.
+fn bindings(h: &FrameHarness) -> HashMap<String, crate::widget::ControlBindingKind> {
+    crate::widget::controls::control_action_bindings(band_transport(h))
+        .into_iter()
+        .map(|binding| (binding.control_id, binding.kind))
+        .collect()
+}
+
+/// Each control that steers the player invokes the action the app handed
+/// it, through the action door; the ones that change what the window shows
+/// are view actions of their own. None is a bare callback.
 #[test]
-fn presses_reach_the_app_as_events_and_the_state_follows_its_declaration() {
+fn each_control_invokes_the_action_the_app_handed_it() {
+    let (h, _) = banded(playing(), 1400);
+    let bindings = bindings(&h);
+    for (control, action) in [
+        ("transport.play", "play-pause"),
+        ("transport.previous", "previous"),
+        ("transport.next", "next"),
+        ("transport.shuffle", "toggle-shuffle"),
+        ("transport.repeat", "cycle-repeat"),
+        ("transport.like", "toggle-like"),
+        ("transport.mute", "toggle-mute"),
+        ("transport.position", "seek"),
+        ("transport.volume", "set-volume"),
+    ] {
+        assert_eq!(
+            bindings.get(control),
+            Some(&crate::widget::ControlBindingKind::Action(
+                tilo_actions::ActionAddress::new(PLAYER, action)
+            )),
+            "{control}"
+        );
+    }
+    for control in ["transport.queue", "transport.lyrics"] {
+        assert!(
+            matches!(
+                bindings.get(control),
+                Some(crate::widget::ControlBindingKind::Action(address))
+                    if address.resource == format!("tilo.control:{control}")
+            ),
+            "{control}: {:?}",
+            bindings.get(control)
+        );
+    }
+    assert!(
+        !bindings
+            .values()
+            .any(|kind| *kind == crate::widget::ControlBindingKind::LegacyCallback),
+        "{bindings:?}"
+    );
+}
+
+/// A control the app hands no action for is not there.
+#[test]
+fn a_control_without_an_action_is_left_out() {
+    let (h, _) = banded_with(
+        playing(),
+        1400,
+        TransportActions {
+            shuffle: None,
+            seek: None,
+            volume: None,
+            ..actions()
+        },
+    );
+    for id in [
+        "transport.shuffle",
+        "transport.position",
+        "transport.volume",
+    ] {
+        assert_eq!(control(&h, id), None, "{id} is left out");
+    }
+    assert!(control(&h, "transport.play").is_some());
+    assert!(control(&h, "transport.repeat").is_some());
+}
+
+/// The app's player stays the truth: a press changes nothing the transport
+/// shows until the app shows the new state.
+#[test]
+fn the_state_follows_its_declaration() {
     let (mut h, feed) = banded(playing(), 1400);
     press(&mut h, "transport.play");
-    press(&mut h, "transport.shuffle");
-    assert_eq!(
-        feed.take_events(),
-        vec![TransportEvent::TogglePlay, TransportEvent::ToggleShuffle]
-    );
+    assert_eq!(feed.take_events(), Vec::new(), "play is the app's action");
     let named = |h: &FrameHarness| {
         find(h.root::<NavShell>(), "transport.play")
             .and_then(Widget::accessibility)
@@ -265,13 +402,15 @@ fn the_volume_is_reachable_at_every_width() {
         assert_eq!(control(&h, "transport.volume"), None, "no inline slider");
         press(&mut h, "transport.volume-menu");
         h.relayout_at((width, 700)).expect("layout settles");
-        let slider = control(&h, "transport.volume-menu.slider")
+        control(&h, "transport.volume-menu.slider")
             .unwrap_or_else(|| panic!("the popover holds the slider at {width}"));
-        h.click_at(slider.x0 + slider.width() * 0.9, slider.center().y);
-        let events = feed.take_events();
-        assert!(
-            matches!(events.as_slice(), [.., TransportEvent::Volume(v)] if *v > 0.6),
-            "the slider sets the volume at {width}: {events:?}"
+        assert_eq!(
+            bindings(&h).get("transport.volume-menu.slider"),
+            Some(&crate::widget::ControlBindingKind::Action(
+                tilo_actions::ActionAddress::new(PLAYER, "set-volume")
+            )),
+            "the slider sets the volume at {width}"
         );
+        assert_eq!(feed.take_events(), Vec::new());
     }
 }

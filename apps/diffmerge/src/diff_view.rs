@@ -940,7 +940,7 @@ impl DiffView {
                 &labels,
                 usize::from(self.compact_show_right),
             )
-            .style(SegmentedStyle::Segmented)
+            .style(SegmentedStyle::Tabs)
             .control_size(ControlSize::Small)
             .hovered(
                 self.compact_source_hits

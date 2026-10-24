@@ -52,6 +52,12 @@ pub enum Capability {
     /// sandbox's seccomp filter refuses `setns` even where it lets a job make
     /// namespaces.
     NamespaceEntry,
+    /// An emulated TPM and the tools that drive it: `swtpm`, `tpm2-tools` and
+    /// `cryptsetup` ([`crate::swtpm`]).
+    Swtpm,
+    /// The kernel's key retention service (`add_key`, `keyctl`), which
+    /// container seccomp profiles often refuse.
+    KernelKeyring,
 }
 
 impl Capability {
@@ -70,6 +76,8 @@ impl Capability {
             Self::Chown => "TILO_REQUIRE_CHOWN",
             Self::UserNamespace => "TILO_REQUIRE_USERNS",
             Self::NamespaceEntry => "TILO_REQUIRE_SETNS",
+            Self::Swtpm => "TILO_REQUIRE_SWTPM",
+            Self::KernelKeyring => "TILO_REQUIRE_KEYRING",
         }
     }
 
@@ -95,6 +103,8 @@ impl fmt::Display for Capability {
             Self::Chown => "giving files to another user",
             Self::UserNamespace => "user and mount namespaces",
             Self::NamespaceEntry => "entering namespaces (setns)",
+            Self::Swtpm => "an emulated TPM",
+            Self::KernelKeyring => "the kernel keyring",
         })
     }
 }

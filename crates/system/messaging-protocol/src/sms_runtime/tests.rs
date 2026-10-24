@@ -344,10 +344,11 @@ impl Drop for DeadlineFixture {
     }
 }
 
-/// Budget for a send the fixture answers at once, when the test needs it to
-/// reach the modem. The budget also covers the durable reservation, whose
-/// fsync takes seconds on a loaded host, so give the runtime's maximum: only
-/// a hang uses it up.
+/// Budget for a send or read the fixture answers at once, when the test needs
+/// it to reach the modem. A send's budget also covers the durable
+/// reservation, whose fsync takes seconds on a loaded host, and a read's
+/// several D-Bus round trips stall just as long there, so give the runtime's
+/// maximum: only a hang uses it up.
 const ANSWERED_BUDGET: Duration = Duration::from_secs(60);
 
 fn owner() -> Owner {
@@ -776,7 +777,7 @@ async fn received_text_is_exact_complete_and_read_only() {
             &binding(),
             &route(),
             MESSAGE_PATH,
-            Duration::from_secs(2),
+            ANSWERED_BUDGET,
         )
         .await
         .unwrap();
@@ -789,7 +790,7 @@ async fn received_text_is_exact_complete_and_read_only() {
             &binding(),
             &route(),
             MESSAGE_PATH,
-            Duration::from_secs(2),
+            ANSWERED_BUDGET,
         )
         .await
         .unwrap();

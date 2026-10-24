@@ -269,6 +269,16 @@ export function inviteLinkTarget(text, base = globalThis.location?.href) {
   return (url.hash.includes('?') && carries(url.hash)) || carries(url.search) ? url.href : null;
 }
 
+/** Whether a page that stopped had got in: the host let the person in
+ * (`admitted`, the peer) and the desktop had not drawn yet (`arrival`, the
+ * page's arrival step). A desktop whose first frame never came marks the
+ * arrival `stopped` itself before the page hears its mount failed: that is
+ * still a desktop that did not start, not something that went wrong
+ * getting in. */
+export function stoppedInside(admitted, arrival) {
+  return Boolean(admitted) && arrival !== 'done';
+}
+
 /** Whether `error` is the network failing: a fetch that never answered, a
  * host's door that refused or failed, a connection that dropped. */
 function unreachable(error) {

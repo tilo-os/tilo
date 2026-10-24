@@ -2991,9 +2991,9 @@ dependencies = [
 
 [[package]]
 name = "crypto-bigint"
-version = "0.7.5"
+version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a52aa3fcda4e6302a9f48734f234d35d4721b96f8fe07d073f07ce9df4f0271"
+checksum = "6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0"
 dependencies = [
  "cpubits",
  "ctutils",
@@ -3034,7 +3034,7 @@ version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3633a51a39c69ebbaa4feaa694bd83d241e4093901c84a0963b19d9bb3f0cf8f"
 dependencies = [
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "rand_core 0.10.0",
 ]
 
@@ -3970,7 +3970,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d65aa39b3a5c1c9c1b745c9a019234bb7a21b77abcb4f4d266d706e2d577d65"
 dependencies = [
  "base16ct 1.0.0",
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "crypto-common 0.2.2",
  "digest 0.11.3",
  "ff 0.14.0",
@@ -9483,6 +9483,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-innertube",
  "tilo-invidious",
  "tilo-media",
  "tilo-net",
@@ -11087,6 +11088,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pam-tilo"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "tempfile",
+ "tilo-auth",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "papaya"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11992,7 +12005,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c555a6e4eb7d4e158fcb028c835c3b8642206ddc279b5c6b202ef9a8bdb592f4"
 dependencies = [
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "crypto-common 0.2.2",
  "ff 0.14.0",
  "rand_core 0.10.0",
@@ -13057,7 +13070,7 @@ version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
 dependencies = [
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "hmac 0.13.0",
 ]
 
@@ -13210,7 +13223,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30b2aa4ba0d89f73d1e332df05be0eeab8840351c36ca5654341dfdb57bb3caf"
 dependencies = [
  "const-oid 0.10.2",
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "crypto-primes",
  "digest 0.11.3",
  "pkcs1 0.8.0-rc.4",
@@ -13549,7 +13562,7 @@ dependencies = [
  "bytes",
  "cbc",
  "cipher 0.5.2",
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "ctr 0.10.1",
  "curve25519-dalek 5.0.0",
  "data-encoding",
@@ -14907,6 +14920,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-render-service",
  "tilo-resource",
+ "tilo-room-host",
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
@@ -16454,6 +16468,7 @@ dependencies = [
 name = "tilo-action-policy"
 version = "0.1.0"
 dependencies = [
+ "postcard",
  "serde",
  "serde_json",
  "tilo-clock",
@@ -16528,6 +16543,7 @@ dependencies = [
  "channel-crypto",
  "chat",
  "chip-design",
+ "chrono",
  "clocks",
  "collab-types",
  "contacts",
@@ -16822,6 +16838,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ask-password"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "tempfile",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
+name = "tilo-auth"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "getrandom 0.4.3",
+ "hex",
+ "hmac 0.13.0",
+ "libc",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tilo-files",
+ "tilo-rollback",
+ "tilo-seal",
+ "tilo-test-env",
+ "tilo-unlock-protocol",
+ "unicode-normalization",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
@@ -16923,6 +16976,18 @@ dependencies = [
  "tempfile",
  "tilo-test-env",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-boot-signin"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-ask-password",
+ "workspace-hack",
+ "zeroize",
 ]
 
 [[package]]
@@ -17091,6 +17156,15 @@ dependencies = [
  "tilo-lock",
  "tilo-media",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-canvas"
+version = "0.1.0"
+dependencies = [
+ "tilo-ui",
+ "tilo-ui-paint",
  "workspace-hack",
 ]
 
@@ -17346,7 +17420,7 @@ dependencies = [
  "base64",
  "cms",
  "const-oid 0.9.6",
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "der 0.7.10",
  "ed25519-dalek 3.0.0",
  "getrandom 0.4.3",
@@ -17486,7 +17560,6 @@ dependencies = [
  "collab-types",
  "desktop-policy",
  "hex",
- "postcard",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -17497,7 +17570,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-sort",
  "uuid",
- "web-time",
 ]
 
 [[package]]
@@ -17750,6 +17822,7 @@ name = "tilo-extension"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "reqwest 0.13.4",
  "rustix 1.1.4",
  "serde_json",
@@ -18181,6 +18254,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-innertube"
+version = "0.1.0"
+dependencies = [
+ "rustypipe",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-input-context"
 version = "0.1.0"
 dependencies = [
@@ -18270,6 +18351,7 @@ dependencies = [
  "tempfile",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
@@ -18816,6 +18898,8 @@ dependencies = [
  "collab-types",
  "postcard",
  "serde",
+ "serde_json",
+ "tilo-automation",
  "tilo-desktop-model",
  "tilo-peer-state",
  "tilo-user-identity",
@@ -19864,6 +19948,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-ask-password",
  "tilo-seal",
  "tilo-unlock-protocol",
  "tokio",
@@ -20173,6 +20258,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-tts",
  "tilo-ui-graph",
+ "tilo-ui-paint",
  "tilo-vello",
  "tilo-vello-encoding",
  "tilo-winit",
@@ -20214,6 +20300,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-ui-paint"
+version = "0.1.0"
+dependencies = [
+ "tilo-vello",
  "workspace-hack",
 ]
 
@@ -20609,6 +20703,7 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "rustypipe",
+ "tilo-innertube",
  "workspace-hack",
 ]
 
@@ -21237,6 +21332,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-clock",
  "tilo-files",
+ "tilo-innertube",
  "tilo-invidious",
  "tilo-media",
  "tilo-net",
@@ -24019,7 +24115,7 @@ dependencies = [
  "constant_time_eq",
  "crossbeam-epoch",
  "crossbeam-utils",
- "crypto-bigint 0.7.5",
+ "crypto-bigint 0.7.6",
  "crypto-common 0.1.7",
  "crypto-common 0.2.2",
  "ctr 0.10.1",

@@ -1329,6 +1329,7 @@ fn bridge_program() -> String {
         grant: vec![rule],
         triggers: vec![],
         saved_by: None,
+        saved_proof: None,
     };
     String::from_utf8(tilo_automation::program::canonical_bytes(&shortcut).unwrap()).unwrap()
 }
@@ -1870,6 +1871,7 @@ fn one_chat_window(salt: u16) -> [tilo_desktop_model::Strip; 1] {
                     app_id: "so.tilo.chat".into(),
                     surface_id: 7,
                 },
+                app_title: None,
             }],
             active_tab: own(3),
             width: WindowWidth::Normal,
@@ -2023,6 +2025,7 @@ async fn terminals_opened(rooms: &Rooms, room: &str, member: &DeviceCert, salt: 
                 app_id: "Alacritty".into(),
                 surface_id: counter,
             },
+            app_title: None,
         }],
         active_tab: own(counter),
         width: WindowWidth::Normal,

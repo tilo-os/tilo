@@ -51,7 +51,8 @@ pub(crate) fn new_collection(sink: &Sink) -> Element {
 }
 
 pub(crate) fn frame(environment: Element, lists: Element) -> Element {
-    // The list insets its own rows; the picker takes the sidebar's gutter.
+    // The list insets its own rows; the picker takes the sidebar's gutter,
+    // above it too, where the window bar ends.
     let gutter = Spacing::BASE.s3;
     Box::new(
         Column::new()
@@ -60,7 +61,7 @@ pub(crate) fn frame(environment: Element, lists: Element) -> Element {
                 Column::new()
                     .with_intrinsic_height()
                     .with_horizontal_padding(gutter, gutter)
-                    .with_vertical_padding(0.0)
+                    .with_vertical_padding(gutter)
                     .push(environment),
             ))
             // The list takes the rest of the column and scrolls itself.

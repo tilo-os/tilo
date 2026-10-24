@@ -1,4 +1,4 @@
-use super::{PriorityRoute, priority_route, vt_switch_chord};
+use super::{PowerKeyEffect, PriorityRoute, power_key_effect, priority_route, vt_switch_chord};
 use crate::shell::media_keys::MediaKey;
 use winit::event::{ElementState, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
@@ -200,4 +200,55 @@ fn unlocked_priority_order_is_power_vt_panic_lock_media_then_clients() {
         "the lock keeps the chord"
     );
     assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
+}
+
+#[test]
+fn the_power_key_reaches_its_handler_while_locked() {
+    let none = ModifiersState::empty();
+    assert_eq!(
+        route(&key(NamedKey::Power, ElementState::Pressed), none, true),
+        PriorityRoute::PowerKey,
+        "the lock screen would drop it"
+    );
+    assert_eq!(
+        route(&key(NamedKey::Power, ElementState::Released), none, true),
+        PriorityRoute::LockScreen,
+        "only the press acts"
+    );
+}
+
+#[test]
+fn every_power_key_press_does_something_visible() {
+    use tilo_power_mgmt::PowerAction;
+    assert_eq!(
+        power_key_effect(true, true, true, Some(PowerAction::Suspend)),
+        PowerKeyEffect::RelitOutputs,
+        "a display that could not be lit comes first"
+    );
+    assert_eq!(
+        power_key_effect(false, true, true, Some(PowerAction::Suspend)),
+        PowerKeyEffect::WokeDisplay,
+        "a press that woke the display does not also suspend"
+    );
+    assert_eq!(
+        power_key_effect(false, false, true, Some(PowerAction::Suspend)),
+        PowerKeyEffect::Suspend
+    );
+    assert_eq!(
+        power_key_effect(false, false, false, Some(PowerAction::Lock)),
+        PowerKeyEffect::Lock
+    );
+    assert_eq!(
+        power_key_effect(false, false, true, Some(PowerAction::Lock)),
+        PowerKeyEffect::Blank,
+        "locking a locked session would show nothing"
+    );
+    assert_eq!(
+        power_key_effect(false, false, true, Some(PowerAction::Ignore)),
+        PowerKeyEffect::Nothing
+    );
+    assert_eq!(
+        power_key_effect(false, false, false, None),
+        PowerKeyEffect::Nothing
+    );
 }

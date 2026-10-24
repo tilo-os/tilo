@@ -1458,12 +1458,16 @@ mod tests {
         crate::demo::seed(&mut doc).unwrap();
         let mut chat = crate::app::ChatApp::new_ephemeral();
         chat.reload(&doc);
-        let hit = |chat: &crate::app::ChatApp| {
-            let rect = vello::kurbo::Rect::new(0.0, 0.0, 10.0, 10.0);
-            let hits = [(rect, crate::app::Hit::VoiceChannel("c_standup".into()))];
-            chat.semantic_hits_from(&hits).remove(0).2
+        // The people in the call are the channel's rows in the sidebar.
+        let in_call = |chat: &crate::app::ChatApp| -> Vec<String> {
+            chat.sidebar_sections()
+                .into_iter()
+                .flat_map(|section| section.items)
+                .find(|item| item.id == crate::sidebar::channel_place("c_standup"))
+                .map(|item| item.children.into_iter().map(|row| row.label).collect())
+                .unwrap_or_default()
         };
-        assert!(!hit(&chat).contains(", with "));
+        assert!(in_call(&chat).is_empty());
         chat.voice_members.insert(
             "c_standup".into(),
             vec![crate::model::VoiceMember {
@@ -1477,9 +1481,7 @@ mod tests {
                 video: None,
             }],
         );
-        let name = hit(&chat);
-        assert!(name.contains(", with "), "{name}");
-        assert!(name.ends_with(&chat.user_name("someone")), "{name}");
+        assert_eq!(in_call(&chat), [chat.user_name("someone")]);
     }
 
     #[test]
@@ -1495,7 +1497,7 @@ mod tests {
             PermissionContext::member("reader", Role::Viewer),
         );
         pointer.on_hit(
-            crate::app::Hit::VoiceChannel("c_standup".into()),
+            crate::app::Hit::Channel("c_standup".into()),
             &mut ui::widget::Edits::lend(&mut doc),
         );
         let pointer_requests = pointer.take_collab_requests();

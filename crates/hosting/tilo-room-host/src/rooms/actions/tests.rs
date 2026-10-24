@@ -38,6 +38,16 @@ pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
 /// A new person admitted to `room` as an Editor, through the owner's
 /// pre-admission: their device's certificate.
 pub(super) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u8) -> DeviceCert {
+    admit_device(rooms, room, owner, seed).await.1
+}
+
+/// [`admit`], with the admitted device's key.
+pub(super) async fn admit_device(
+    rooms: &Rooms,
+    room: &str,
+    owner: &DeviceCert,
+    seed: u8,
+) -> (ed25519_dalek::SigningKey, DeviceCert) {
     let token = [seed; 8];
     let issued = rooms
         .pre_admit(
@@ -72,7 +82,7 @@ pub(super) async fn admit(rooms: &Rooms, room: &str, owner: &DeviceCert, seed: u
         })
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-    cert
+    (key, cert)
 }
 
 async fn grant(rooms: &Rooms, room: &str, owner: &DeviceCert, person: &DeviceCert, action: &str) {
@@ -202,8 +212,8 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
     let granted = offered(&host, workspace, &caller(&ada)).await;
     assert_eq!(granted, INVITE_FAMILY.map(str::to_owned).to_vec());
 
-    // A Moderator is offered the moderation of members below them, but no
-    // roles to hand out and no invitations.
+    // A Moderator is offered the moderation of members below them and
+    // naming the workspace, but no roles to hand out and no invitations.
     rooms
         .set_member_role(
             &room,
@@ -222,7 +232,8 @@ async fn the_catalogue_offers_what_the_rooms_governance_lets_each_caller_do() {
         [
             governance::RESTRICT,
             governance::UNRESTRICT,
-            governance::UNBAN
+            governance::UNBAN,
+            super::owner::RENAME,
         ]
         .map(str::to_owned)
     );

@@ -268,7 +268,7 @@ pub fn open_beside(
         }
     }
     let workspace = {
-        let mut tree = st.tree_mut();
+        let tree = st.tree();
         let active_room = tree
             .desktop
             .active_workspace()
@@ -280,7 +280,7 @@ pub fn open_beside(
                 .iter()
                 .find(|workspace| workspace.room() == anchor.room)
                 .cloned(),
-            _ => tree.workspace_after_opening_app(&app.package_id),
+            _ => tree.desktop.active_workspace().cloned(),
         }
     }
     .ok_or(AppTabError::NoWorkspace)?;
@@ -410,6 +410,7 @@ mod tests {
                         app_id: app.into(),
                         surface_id: 9_001,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: other,
@@ -418,6 +419,7 @@ mod tests {
                         app_id: "org.example.other".into(),
                         surface_id: 9_002,
                     },
+                    app_title: None,
                 },
             ],
             active_tab: other,

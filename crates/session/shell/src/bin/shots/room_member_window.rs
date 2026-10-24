@@ -105,6 +105,7 @@ impl ShellDriver {
                         host: HOST.into(),
                         host_label: "Ana's laptop".into(),
                     },
+                    app_title: None,
                 }],
                 active_tab: tab,
                 width: WindowWidth::Normal,

@@ -7,7 +7,7 @@ fn host_with_two_workspaces() -> (ShellOverlayHost, crate::shell::chrome_state::
     let mut tree = WorkspaceTree::bootstrap_demo();
     // `bootstrap_demo` only seeds one workspace; `switch_down` is a
     // no-op with nothing below.
-    tree.append_empty_workspace("Second");
+    tree.create_hosted_workspace("Second");
     let chrome = ChromeState::new(tree);
     let mut host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
         .with_chrome(chrome.clone());

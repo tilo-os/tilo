@@ -15,10 +15,11 @@
 # greeter's conversation loop displays and continues past — the
 # authoritative result is the top-level greetd Success/Error.
 #
-# Everything else defers to the distro's maintained `password-auth` stack
-# (pam_unix for auth/account/password, and pam_systemd/limits/keyinit for
-# the session), which keeps the always-present, VM-testable password login
-# working and registers the started session with logind.
+# Everything else defers to the distro's maintained `password-auth` stack,
+# in which pam_tilo checks the secret through tilo-authd and pam_unix is left
+# for people not yet moved off their old password (and for when the daemon is
+# down); pam_systemd/limits/keyinit in the session register the started
+# session with logind.
 #
 # Tilo's own Secret Service (tilo-secret-service) owns org.freedesktop.secrets
 # and opens with the device identity after any login method.  The two
@@ -30,8 +31,13 @@
 # activates the home (sufficient = short-circuit success); for a traditional
 # user it returns ignore and PAM falls through to the stack below — so this is a
 # no-op for the default account. The leading "-" tolerates the module's absence.
+# Whoever opened the system volume at the boot sign-in starts their session
+# without typing again, once (tilo-authd holds that sign-in for ten minutes).
+-auth      sufficient   pam_tilo.so boot_sign_in
 -auth      sufficient   pam_fprintd.so
 -auth      sufficient   pam_systemd_home.so
+# password-auth asks tilo-authd (pam_tilo) before its own password check:
+# the image's authselect profile puts it there (os/scripts/authselect-tilo.py).
 auth       substack     password-auth
 # After the password is verified: pam_gnome_keyring's auth hook only captures
 # the authtok an earlier module obtained (it never prompts), so placed before

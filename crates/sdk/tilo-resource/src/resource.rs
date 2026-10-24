@@ -21,6 +21,9 @@ use crate::reader::Demand;
 use crate::vocabulary::{Builds, Built, Declaration, Vocabulary, vocabulary};
 use tilo_lock::MutexRecover as _;
 
+mod head;
+pub use head::{HeadInputs, head_inputs, publish_head, publish_head_of};
+
 /// A resource type. `#[resource]` implements it for a `#[derive(Model)]`
 /// record, which is how every app declares its own. The SDK implements it by
 /// hand for the shared types with a storage layout of their own (a rich-text
@@ -636,7 +639,13 @@ fn field_ops(field: &crate::FieldShape, rich: bool) -> Vec<&'static str> {
     let ty = field.ty;
     match field.shape {
         crate::Shape::Collection(_) | crate::Shape::Keyed(_) => {
-            vec!["insert-item", "remove-item", "move-to", "set"]
+            vec![
+                "upsert-item",
+                "insert-item",
+                "remove-item",
+                "move-to",
+                "set",
+            ]
         }
         _ if rich => vec!["rich"],
         _ if ty.starts_with("Counter") => vec!["add", "set"],
@@ -714,6 +723,27 @@ fn edit_paths(
         properties.insert("path".into(), path);
         properties.insert("op".into(), serde_json::json!({ "enum": ops }));
         properties.insert("value".into(), value);
+        if ops.contains(&"upsert-item") {
+            properties.insert(
+                "match".into(),
+                serde_json::json!({
+                    "type": "object",
+                    "description": "upsert-item: the fields that identify the item, e.g. {\"name\": \"Ana\"}; it updates the one item holding them with `value`'s fields, else appends `value` as a new item"
+                }),
+            );
+            properties.insert(
+                "at".into(),
+                serde_json::json!({
+                    "description": "insert-item, move-to: \"end\" (the default), {\"after\": id} or {\"before\": id}",
+                    "anyOf": [
+                        { "const": "end" },
+                        { "type": "object", "properties": { "after": { "type": "string" } }, "required": ["after"] },
+                        { "type": "object", "properties": { "before": { "type": "string" } }, "required": ["before"] },
+                        { "type": "integer", "minimum": 0 }
+                    ]
+                }),
+            );
+        }
         if let Some(rich) = rich {
             properties.insert("rich".into(), rich.clone());
         }
@@ -1083,7 +1113,7 @@ fn edit_spec(
         },
     )
     .with_description(
-        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}.",
+        "Change one field: {path: [{field: name} | {item: id} | {key: k} | {cell: {row, column}}], op: set | splice | replace | add | insert | remove | ..., ...its arguments}. Address a collection's items by what they hold, never by position: {path: [{field: name}], op: \"upsert-item\", match: {field: value}, value: {fields}} updates the one item that matches, else appends one; insert-item and move-to place by at: \"end\" | {after: id} | {before: id}.",
     )
     // Controls and agents edit fields; a person picks named actions or edits
     // the field in place.
@@ -2530,74 +2560,6 @@ fn default_search_of(
 /// agents; a person picks it on the item, so it is not a palette row here.
 pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_actions::Resource {
     publish_parts::<R>(id, label, Some(state))
-}
-
-/// [`publish`] without the children: the resource's identity, actions and
-/// views exactly as `publish` gives them, at a cost that does not grow with
-/// the children ([`Resource::children_offer_bound`]). What controls bind to.
-pub fn publish_head<R: Resource>(
-    id: &str,
-    label: &str,
-    state: &R::State,
-) -> tilo_actions::Resource {
-    publish_head_of::<R>(id, label, &head_inputs::<R>(state))
-}
-
-/// What [`publish_head`] reads of a state. Two states with equal inputs
-/// publish the same head, so a publisher holding the head of one keeps it
-/// for the other.
-#[derive(Clone, Debug, PartialEq)]
-pub struct HeadInputs {
-    epoch: u64,
-    offered: Vec<&'static str>,
-    availability: Vec<tilo_actions::Availability>,
-    views: Vec<tilo_actions::ResourceViewSpec>,
-    now: Vec<(String, String)>,
-}
-
-/// [`HeadInputs`] of `state`: what its head is published from, read
-/// without publishing a child or an action.
-#[must_use]
-pub fn head_inputs<R: Resource>(state: &R::State) -> HeadInputs {
-    let declarations = vocabulary::<R>().declarations();
-    HeadInputs {
-        epoch: type_epoch(),
-        offered: R::children_offer_bound(state),
-        availability: declarations
-            .iter()
-            .map(|decl| R::availability(state, decl.id))
-            .collect(),
-        views: R::views(state),
-        now: weakening_now::<R>(state),
-    }
-}
-
-/// [`publish_head`] of a state whose inputs are `inputs`.
-#[must_use]
-pub fn publish_head_of<R: Resource>(
-    id: &str,
-    label: &str,
-    inputs: &HeadInputs,
-) -> tilo_actions::Resource {
-    let vocabulary = vocabulary::<R>();
-    let declarations = vocabulary.declarations();
-    let availability = |action: &str| {
-        declarations
-            .iter()
-            .position(|decl| decl.id == action)
-            .and_then(|at| inputs.availability.get(at))
-            .cloned()
-            .unwrap_or_default()
-    };
-    let own = Own {
-        availability: Some(&availability),
-        views: inputs.views.clone(),
-        local_operations: R::local_operations(),
-        now: inputs.now.clone(),
-    };
-    publish_own(vocabulary, id, label, own, &|decl| {
-        inputs.offered.contains(&decl.id)
-    })
 }
 
 /// [`publish`], or without a state only what does not depend on one: the

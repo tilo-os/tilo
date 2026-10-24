@@ -3,14 +3,25 @@
 #include "include/wrapper/cef_helpers.h"
 #include "include/wrapper/cef_library_loader.h"
 #include "host.h"
-@interface TiloApplication : NSApplication<CefAppProtocol> { BOOL handling_; }
+@interface TiloApplication : NSApplication<CefAppProtocol> { BOOL handling_; BOOL stamping_; }
+- (void)setStampingKeys:(BOOL)value;
 @end
 @implementation TiloApplication
 - (BOOL)isHandlingSendEvent { return handling_; }
+- (void)setStampingKeys:(BOOL)value { stamping_=value; }
+// A key the host forwards comes from no Cocoa event; CEF takes its time from
+// this one (StampHostKeys).
+- (NSEvent*)currentEvent {
+  NSEvent* event=[super currentEvent];
+  if(!stamping_ || event) return event;
+  return [NSEvent otherEventWithType:NSEventTypeApplicationDefined location:NSZeroPoint modifierFlags:0
+                           timestamp:[NSProcessInfo processInfo].systemUptime windowNumber:0 context:nil subtype:0 data1:0 data2:0];
+}
 - (void)setHandlingSendEvent:(BOOL)value { handling_=value; }
 - (void)sendEvent:(NSEvent*)event { CefScopedSendingEvent scope; [super sendEvent:event]; }
 - (void)terminate:(id)sender { CloseHost(); }
 @end
+void StampHostKeys(bool now) { [static_cast<TiloApplication*>(NSApp) setStampingKeys:now]; }
 bool ShowHostFileDialog(cef_file_dialog_mode_t mode,const CefString& title,const std::vector<CefString>& extensions,CefRefPtr<CefFileDialogCallback> callback) {
   if(mode==FILE_DIALOG_SAVE) return false;
   NSOpenPanel* panel=[NSOpenPanel openPanel];

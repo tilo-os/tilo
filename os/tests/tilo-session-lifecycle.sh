@@ -309,6 +309,36 @@ head -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 start=.* pid
 grep -Fqx "desktop-output --backend drm trace=$slow_dir/frame-trace.csv" "$slow_dir/latest.log"
 tail -n 1 "$slow_dir/latest.log" | grep -Eq '^tilo-flight-record-v1 end=.* status=5 logout_request=no restart_request=no$'
 [ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
+# The recorder persists its start record before it marks itself ready, so the
+# wrapper may stop waiting on the record alone. A ready mark that comes after
+# that must still be gone with the session, not left in the runtime directory.
+late_ready_recorder="$tmp/late-ready-flight-recorder"
+cat >"$late_ready_recorder" <<SH
+#!/bin/bash
+ready=\$TILO_FLIGHT_RECORD_READY
+unset TILO_FLIGHT_RECORD_READY
+(sleep 0.5; : >"\$ready") &
+"$TILO_FLIGHT_RECORDER" "\$@"
+status=\$?
+wait
+exit \$status
+SH
+chmod 0755 "$late_ready_recorder"
+late_ready_wrapper="$tmp/tilo-session-late-ready"
+tilo_stage_script "$wrapper" "$late_ready_wrapper" \
+  SYSTEMCTL="$fake_systemctl" \
+  DBUS_UPDATE="$fake_dbus_update" \
+  SHELL_BIN="$fake_shell" \
+  IMAGE_FLAVOUR="$tmp/no-image-flavour" \
+  FLIGHT_RECORDER="$late_ready_recorder"
+set +e
+XDG_STATE_HOME="$tmp/late-ready-state" XDG_RUNTIME_DIR="$runtime_dir" \
+  TILO_SESSION_TEST_LOG="$tmp/late-ready-log" TILO_SESSION_DESKTOP_STATUS=5 \
+  timeout 20 "$late_ready_wrapper" --backend drm >"$tmp/late-ready-stdout"
+status=$?
+set -e
+[ "$status" = 5 ]
+[ -z "$(ls -A "$runtime_dir")" ] || { ls -la "$runtime_dir" >&2; exit 1; }
 # A full or failing disk must never keep the person from logging in. Here the
 # state directory cannot exist at all (its parent is a file), so every write
 # the wrapper and the recorder try fails, as on a full disk; the tests may run

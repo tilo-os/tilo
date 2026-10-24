@@ -5,6 +5,7 @@
 
 pub(crate) mod governor_lane;
 pub(crate) mod native_ingress;
+pub(crate) mod own_device_host;
 
 /// A workspace host connection's error, as the actor reports it. A host at
 /// another peer protocol version is also the person's to know about: one of
@@ -19,6 +20,9 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 #[cfg(test)]
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
+mod room_members;
+use room_members::Admission;
+pub(crate) use room_members::RosterDevice;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -340,6 +344,9 @@ pub enum NetCmd {
     /// Hold an enrolled room's relay session, over its host's HTTPS routes
     /// when given, else over the iroh endpoint its hint names.
     NativeConnect(native_ingress::Connect, Option<HttpsRoute>),
+    /// This device's own room host opened: join the rooms it hosts that
+    /// wait for it.
+    LocalHostReady,
     /// Ask a governed room's governor, on its room's native relay session.
     GovernorAction {
         ws: u64,
@@ -375,12 +382,33 @@ pub enum NetCmd {
     /// own business in it, or the host's own operations) on a relay session,
     /// and answer the relay's receipt.
     RoomGovernance(Box<room_governance::Request>),
+    /// Ask another of the person's devices for one of its host's own
+    /// operations, on a session opened for it.
+    OwnDeviceHost(Box<own_device_host::Request>),
+    /// Take part in workspace `ws`: its events reach `on_event`, and its
+    /// workspace hosts are dialled. A room's traffic travels over its host
+    /// sessions alone.
     JoinWorkspace {
+        ws: WorkspaceId,
+        on_event: mpsc::Sender<NetEvent>,
+    },
+    /// [`NetCmd::JoinWorkspace`] for the topic of the person's own devices
+    /// (their continuity), which also travels directly between those
+    /// devices over gossip.
+    JoinPersonalTopic {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
     },
     LeaveWorkspace {
         ws: WorkspaceId,
+    },
+    /// Room `ws`'s admitted roster changed: `devices` are every device its
+    /// governor admitted, by endpoint id, with its certificate's expiry.
+    /// They alone send and receive the room's window streams; a device that
+    /// left, or whose certificate expired, has its connections closed.
+    SetRoomRoster {
+        ws: WorkspaceId,
+        devices: Vec<RosterDevice>,
     },
     Publish {
         ws: WorkspaceId,
@@ -667,8 +695,16 @@ enum InternalEvent {
     SurfaceFrame {
         ws: WorkspaceId,
         peer: EndpointId,
+        connection_incarnation: u64,
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
+    },
+    /// A peer opened (`Some`) or closed (`None`) a window-stream connection
+    /// to this device.
+    SurfaceIngress {
+        peer: EndpointId,
+        connection_incarnation: u64,
+        connection: Option<iroh::endpoint::Connection>,
     },
     SurfaceFanoutComplete {
         ws: WorkspaceId,
@@ -844,6 +880,9 @@ impl TopicRuntime {
 
 struct HostRuntime {
     native_scope: Option<Arc<native_ingress::Scope>>,
+    /// The session goes to this device's own host, in this process: no
+    /// remote party, nothing to keep up.
+    local: bool,
     /// The private lane to a governed room's governor, opened on first use.
     governor: Option<governor_lane::Lane>,
     actions: Option<tokio::task::JoinHandle<()>>,
@@ -872,6 +911,7 @@ impl ProtocolHandler for DeviceUnlockProtocol {
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
     input_tx: mpsc::Sender<InternalEvent>,
+    next_connection_incarnation: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for SurfaceStreamProtocol {
@@ -885,9 +925,27 @@ impl ProtocolHandler for SurfaceStreamProtocol {
         let peer = connection.remote_id();
         let tx = self.internal_tx.clone();
         let input_tx = self.input_tx.clone();
+        let connection_incarnation = self
+            .next_connection_incarnation
+            .fetch_add(1, Ordering::Relaxed)
+            .max(1);
+        let _ = tx
+            .send(InternalEvent::SurfaceIngress {
+                peer,
+                connection_incarnation,
+                connection: Some(connection.clone()),
+            })
+            .await;
         tokio::spawn(async move {
             loop {
                 let Ok(mut recv) = connection.accept_uni().await else {
+                    let _ = tx
+                        .send(InternalEvent::SurfaceIngress {
+                            peer,
+                            connection_incarnation,
+                            connection: None,
+                        })
+                        .await;
                     return;
                 };
                 let bytes = match recv.read_to_end(MAX_SURFACE_FRAME_BYTES).await {
@@ -929,6 +987,7 @@ impl ProtocolHandler for SurfaceStreamProtocol {
                 let event = InternalEvent::SurfaceFrame {
                     ws: frame.workspace,
                     peer,
+                    connection_incarnation,
                     fingerprint,
                     msg: frame.message,
                 };
@@ -1081,6 +1140,7 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
         NetCmd::GovernorAction { .. } | NetCmd::RoomGovernance(_) => "talking to a room's host",
+        NetCmd::OwnDeviceHost(_) => "asking one of the person's devices",
         NetCmd::NativeEnrollment(_) => "enrolling a device",
         NetCmd::NativeMedia(_) => "a call",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
@@ -1153,17 +1213,17 @@ impl Actor {
         )
     }
 
-    /// [`Self::spawn_deferring_relays`] for a device that may govern rooms:
-    /// with `governing`, its endpoint also answers the workspace-join
-    /// exchange for them ([`super::governor_join::GoverningRooms`]), as a
-    /// relay's does.
-    pub fn spawn_governing(
+    /// [`Self::spawn_deferring_relays`] for a device that hosts the rooms
+    /// placed on it: with `hosting`, its endpoint also serves this device's
+    /// room host's protocols (refusing them until the host opens), and the
+    /// native owner joins the rooms hosted here through that host.
+    pub fn spawn_hosting(
         endpoint: Endpoint,
         lookup: MemoryLookup,
         host_identity: Option<HostIdentity>,
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         reachability: Reachability,
-        governing: Option<super::governor_join::GoverningRooms>,
+        hosting: Option<Hosting>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         Self::spawn_with_heartbeat(
             endpoint,
@@ -1172,7 +1232,7 @@ impl Actor {
             listen_addrs,
             HEARTBEAT_INTERVAL,
             reachability,
-            governing,
+            hosting,
         )
     }
 
@@ -1186,7 +1246,7 @@ impl Actor {
         listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
         heartbeat: Duration,
         reachability: Reachability,
-        governing: Option<super::governor_join::GoverningRooms>,
+        hosting: Option<Hosting>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         if let Ok(mut out) = listen_addrs.lock() {
             out.push(endpoint.addr());
@@ -1200,10 +1260,18 @@ impl Actor {
             cmd_rx,
             heartbeat,
             reachability,
-            governing,
+            hosting,
         ));
         (cmd_tx, task)
     }
+}
+
+/// This device's room host, for the actor: the handle the native owner
+/// joins the rooms hosted here through, and the handlers serving the host
+/// on the router ([`super::local_host`]).
+pub struct Hosting {
+    pub host: super::local_host::LocalHost,
+    pub protocols: super::local_host::Protocols,
 }
 
 /// The channel governance a device published to one room: each message's
@@ -1221,12 +1289,17 @@ struct ActorState {
     native_media: super::native_media::Registry,
     native_enrollment: super::invite::enrollment_driver::Registry,
     native_routes: native_ingress::Routes,
+    /// This device's room host, through which the native owner joins the
+    /// rooms hosted here.
+    local_host: Option<super::local_host::LocalHost>,
     /// Governance invocations waiting for their room's relay to answer.
     room_governance: room_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
     gossip: Gossip,
     internal_tx: mpsc::Sender<InternalEvent>,
+    /// The person's own topics, the only ones carried over gossip too.
+    gossip_topics: HashSet<WorkspaceId>,
     topics: HashMap<WorkspaceId, TopicRuntime>,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     peers: HashMap<EndpointId, EndpointAddr>,
@@ -1248,6 +1321,9 @@ struct ActorState {
     /// their first frame. `None` is a tombstone retained until that concrete
     /// connection closes, so an old connection cannot rebind after reconnect.
     personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
+    /// Each room's admitted roster ([`NetCmd::SetRoomRoster`]), and the
+    /// window-stream connections peers opened to this device, bound to it.
+    room_members: room_members::RoomMembers,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
@@ -1541,6 +1617,63 @@ impl ActorState {
         Some(membership.epoch)
     }
 
+    /// Whether `peer` is a member of `ws` for window streams: on the room's
+    /// admitted roster, or, on the person's own topic, a member there.
+    fn is_surface_member(&self, ws: WorkspaceId, peer: EndpointId) -> bool {
+        if self.room_members.has_roster(ws) {
+            self.room_members
+                .member(ws, peer, tilo_clock::unix_now_ns())
+                .is_some()
+        } else {
+            self.peers_seen.contains_key(&(ws, peer))
+        }
+    }
+
+    /// Every device a window of `ws` streams to ([`Self::is_surface_member`]).
+    fn surface_members(&self, ws: WorkspaceId) -> Vec<EndpointId> {
+        if self.room_members.has_roster(ws) {
+            return self.room_members.members(ws, tilo_clock::unix_now_ns());
+        }
+        self.peers_seen
+            .keys()
+            .filter(|(peer_ws, _)| *peer_ws == ws)
+            .map(|(_, peer)| *peer)
+            .collect()
+    }
+
+    /// Take room `ws`'s admitted roster as `devices` (none, and not `keep`,
+    /// once this device left it): the connections bound to a membership that
+    /// ended close, and so does this device's own to a device no room holds
+    /// any more.
+    fn set_room_roster(&mut self, ws: WorkspaceId, devices: Vec<RosterDevice>, keep: bool) {
+        let local = self.endpoint.id();
+        let next = &mut self.next_membership_epoch;
+        let removed = self.room_members.set_roster(
+            ws,
+            local,
+            devices,
+            || {
+                *next = next.saturating_add(1).max(1);
+                MembershipEpoch(*next)
+            },
+            keep,
+        );
+        self.close_removed(removed, b"membership removed");
+    }
+
+    /// Close what ended memberships removed: the connections bound to them,
+    /// and this device's own to a device no room holds any more.
+    fn close_removed(&mut self, removed: room_members::Removed, reason: &[u8]) {
+        for connection in removed.connections {
+            connection.close(0_u32.into(), reason);
+        }
+        for device in removed.devices {
+            if let Some(connection) = self.surface_connections.remove(&device) {
+                connection.close(0_u32.into(), reason);
+            }
+        }
+    }
+
     /// The gossip link to `peer` on `ws` came up (`up`) or went down. While
     /// it is up the transport vouches for the peer: QUIC keep-alives flow
     /// under it and its idle timeout ([`PEER_TIMEOUT`]) ends it. Its going
@@ -1593,7 +1726,11 @@ impl ActorState {
         reason = "the actor command match is the single auditable transport mutation boundary"
     )]
     async fn handle_command(&mut self, command: Option<NetCmd>) -> bool {
-        if let Some(why) = command.as_ref().and_then(remote_party_command) {
+        if let Some(why) = command.as_ref().and_then(remote_party_command)
+            && !command
+                .as_ref()
+                .is_some_and(|command| self.stays_local(command))
+        {
             self.reachability.wake(why);
         }
         match command {
@@ -1611,6 +1748,8 @@ impl ActorState {
                     });
             }
             Some(NetCmd::NativeConnect(connect, https)) => self.native_connect(connect, https),
+            Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
+            Some(NetCmd::OwnDeviceHost(request)) => self.ask_own_device_host(*request),
             Some(NetCmd::GovernorAction { ws, room, request }) => {
                 self.governor_action(ws, room, request);
             }
@@ -1638,7 +1777,15 @@ impl ActorState {
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event).await;
             }
+            Some(NetCmd::JoinPersonalTopic { ws, on_event }) => {
+                self.gossip_topics.insert(ws);
+                self.handle_join_workspace(ws, on_event).await;
+            }
+            Some(NetCmd::SetRoomRoster { ws, devices }) => {
+                self.set_room_roster(ws, devices, true);
+            }
             Some(NetCmd::LeaveWorkspace { ws }) => {
+                self.gossip_topics.remove(&ws);
                 self.native_routes.remove(ws);
                 let subscriber = self.subscribers.get(&ws).cloned();
                 let leaving = self
@@ -1664,6 +1811,7 @@ impl ActorState {
                 }
                 self.subscribers.remove(&ws);
                 self.peers_seen.retain(|(peer_ws, _), _| *peer_ws != ws);
+                self.set_room_roster(ws, Vec::new(), false);
                 self.pending_surface_frames
                     .retain(|(frame_ws, _), _| *frame_ws != ws);
                 self.surface_fanout_viewers
@@ -1762,9 +1910,7 @@ impl ActorState {
                     self.surface_fanout_viewers
                         .remove(&(ws, fanout_surface(&msg)));
                     // The host plane is already connected and independently
-                    // useful. Enqueue it before any direct-peer dial timeout;
-                    // only the compatibility gossip fallback depends on the
-                    // outcome of dedicated media fanout.
+                    // useful. Enqueue it before any direct-peer dial timeout.
                     publish(
                         &self.topics,
                         &self.host_sessions,
@@ -1775,18 +1921,7 @@ impl ActorState {
                         true,
                     )
                     .await;
-                    if !self.start_surface_fanout(ws, msg.clone()) {
-                        publish(
-                            &self.topics,
-                            &self.host_sessions,
-                            ws,
-                            msg,
-                            false,
-                            true,
-                            false,
-                        )
-                        .await;
-                    }
+                    let _ = self.start_surface_fanout(ws, msg);
                 } else {
                     self.hold_for_host(ws, &msg, false);
                     self.publish_paced(ws, msg).await;
@@ -2019,20 +2154,21 @@ impl ActorState {
             return false;
         }
         let only = self.surface_fanout_viewers.get(&key);
-        let targets: Vec<_> = self
-            .peers
-            .values()
-            .filter(|addr| self.peers_seen.contains_key(&(ws, addr.id)))
-            .filter(|addr| only.is_none_or(|viewers| viewers.contains(&addr.id)))
-            .cloned()
+        let members = self.surface_members(ws);
+        let workspace_peer_count = members.len();
+        let targets: Vec<_> = members
+            .into_iter()
+            .filter(|peer| only.is_none_or(|viewers| viewers.contains(peer)))
+            .map(|peer| {
+                self.peers
+                    .get(&peer)
+                    .cloned()
+                    .unwrap_or_else(|| EndpointAddr::new(peer))
+            })
             .collect();
         let workspace_peer_count = match only {
             Some(_) => targets.len(),
-            None => self
-                .peers_seen
-                .keys()
-                .filter(|(peer_ws, _)| *peer_ws == ws)
-                .count(),
+            None => workspace_peer_count,
         };
         // Each viewer is an independent QUIC route. Dial/write them
         // concurrently so one unreachable peer cannot add 300ms in front of
@@ -2433,11 +2569,9 @@ impl ActorState {
     async fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
         self.observe_surface_stream(ws, &msg);
         let targets = self
-            .peers
-            .keys()
-            .filter(|peer| self.peers_seen.contains_key(&(ws, **peer)))
+            .surface_members(ws)
+            .into_iter()
             .filter(|peer| viewers.contains(&crate::network::behaviour::peer_liveness_handle(peer)))
-            .copied()
             .collect::<Vec<_>>();
         match msg {
             NeighbourMsg::SurfaceFrame { .. } => {
@@ -2475,7 +2609,7 @@ impl ActorState {
             );
             return;
         };
-        if self.peers_seen.contains_key(&(ws, target))
+        if self.is_surface_member(ws, target)
             && self
                 .publish_direct(
                     ws,
@@ -2513,8 +2647,7 @@ impl ActorState {
         match to {
             room_governance::Addressee::Device(host) => {
                 if let Some(frame) = self.room_governance.send(request, host, Instant::now()) {
-                    self.publish_remote_action(ws, host, NeighbourMsg::RemoteAction { frame })
-                        .await;
+                    self.publish_to_host_sessions(ws, host, frame);
                 }
             }
             room_governance::Addressee::Host(endpoint) => {
@@ -2582,6 +2715,28 @@ impl ActorState {
         }
     }
 
+    /// Send `frame`, addressed to the room host whose device is `host`, on a
+    /// host session of `ws`: the one whose handshake authenticated that
+    /// device, else any other, which routes it there. Never the direct
+    /// surface route: a device hosting its own rooms is also a member of
+    /// them under the same key, and its shell does not answer for its host.
+    fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: Vec<u8>) {
+        let device = *host.as_bytes();
+        let mut sessions: Vec<_> = self
+            .host_sessions
+            .iter()
+            .filter(|((session_ws, _), _)| *session_ws == ws)
+            .map(|(_, runtime)| &runtime.session)
+            .collect();
+        sessions.sort_by_key(|session| session.relay_device_public_key() != device);
+        let sent = sessions
+            .into_iter()
+            .any(|session| session.publish_remote_action(device, frame.clone()).is_ok());
+        if !sent {
+            tracing::warn!(ws, %host, "no session with the room's host to send a request on");
+        }
+    }
+
     async fn flush_pending_remote_actions(&mut self, ws: WorkspaceId, peer: EndpointId) {
         for frame in self
             .pending_remote_actions
@@ -2605,7 +2760,7 @@ impl ActorState {
             return;
         }
         if let Some(target) = target
-            && self.peers_seen.contains_key(&(ws, target))
+            && self.is_surface_member(ws, target)
             && self.publish_direct(ws, target, msg.clone()).await
         {
             return;
@@ -2648,7 +2803,7 @@ impl ActorState {
         target: EndpointId,
         msg: NeighbourMsg,
     ) -> bool {
-        if !self.peers_seen.contains_key(&(ws, target)) {
+        if !self.is_surface_member(ws, target) {
             tracing::warn!(ws, peer = %target, "direct route is no longer live");
             return false;
         }
@@ -2721,7 +2876,9 @@ impl ActorState {
     /// to keep that dispatcher short.
     async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
         self.subscribers.insert(ws, on_event);
-        self.subscribe_topic(ws).await;
+        if self.gossip_topics.contains(&ws) {
+            self.subscribe_topic(ws).await;
+        }
         if !self.native_routes.contains(ws)
             && let Some(identity) = self.host_identity.as_ref()
         {
@@ -2779,13 +2936,14 @@ impl ActorState {
         }
     }
 
-    /// Workspaces that are joined but have no running gossip subscription.
+    /// Personal topics that are joined but have no running gossip
+    /// subscription.
     async fn resubscribe_missing_topics(&mut self) {
         let missing: Vec<_> = self
-            .subscribers
-            .keys()
+            .gossip_topics
+            .iter()
             .copied()
-            .filter(|ws| !self.topics.contains_key(ws))
+            .filter(|ws| self.subscribers.contains_key(ws) && !self.topics.contains_key(ws))
             .collect();
         for ws in missing {
             self.subscribe_topic(ws).await;
@@ -2870,11 +3028,21 @@ impl ActorState {
             Some(InternalEvent::SurfaceFrame {
                 ws,
                 peer,
+                connection_incarnation,
                 fingerprint,
                 msg,
             }) => {
                 self.tally.note(msg.kind());
-                self.handle_surface_frame(ws, peer, fingerprint, msg).await;
+                self.handle_surface_frame(ws, peer, connection_incarnation, fingerprint, msg)
+                    .await;
+            }
+            Some(InternalEvent::SurfaceIngress {
+                peer,
+                connection_incarnation,
+                connection,
+            }) => {
+                self.room_members
+                    .connection(peer, connection_incarnation, connection);
             }
             Some(InternalEvent::SurfaceFanoutComplete {
                 ws,
@@ -2987,15 +3155,34 @@ impl ActorState {
         &mut self,
         ws: WorkspaceId,
         peer: EndpointId,
+        connection_incarnation: u64,
         fingerprint: [u8; 32],
         msg: NeighbourMsg,
     ) {
-        // A bare ALPN connection is not workspace admission. Require
-        // the peer to have appeared on this workspace's authenticated
-        // gossip topic first; ShellNetwork performs the capability
-        // and claimed-publisher checks before dispatch.
-        let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
-            tracing::warn!(ws, peer = %peer, "surface frame from unknown workspace peer");
+        // A bare ALPN connection is not workspace admission. Require the
+        // peer to be a member: of the room's admitted roster, or of the
+        // person's own topic. ShellNetwork performs the capability and
+        // claimed-publisher checks before dispatch.
+        let membership = if self.room_members.has_roster(ws) {
+            match self.room_members.admit(
+                ws,
+                peer,
+                connection_incarnation,
+                tilo_clock::unix_now_ns(),
+            ) {
+                Admission::Member(epoch) => Some(epoch),
+                Admission::Refused => None,
+                Admission::Expired(removed) => {
+                    tracing::info!(ws, peer = %peer, "surface frame from a device whose certificate expired");
+                    self.close_removed(removed, b"certificate expired");
+                    return;
+                }
+            }
+        } else {
+            self.touch_existing_membership(ws, peer)
+        };
+        let Some(membership_epoch) = membership else {
+            tracing::warn!(ws, peer = %peer, "surface frame from a device that is no member");
             return;
         };
         // Input has no event id or timestamp, so two deliberate
@@ -3039,7 +3226,7 @@ impl ActorState {
             return;
         }
         for outcome in outcomes {
-            if outcome.delivered && self.peers_seen.contains_key(&(ws, outcome.peer)) {
+            if outcome.delivered && self.is_surface_member(ws, outcome.peer) {
                 if let Some(connection) = outcome.connection {
                     self.surface_connections.insert(outcome.peer, connection);
                 }
@@ -3379,6 +3566,7 @@ impl ActorState {
                     HostRuntime {
                         replaying,
                         native_scope: None,
+                        local: false,
                         governor: None,
                         actions: self
                             .action_broker
@@ -3677,13 +3865,42 @@ impl ActorState {
         !self.peers.is_empty()
             || !self.peers_seen.is_empty()
             || !self.hosts.is_empty()
-            || !self.host_sessions.is_empty()
-            || !self.native_routes.is_empty()
+            || self.remote_host_sessions()
+            || self.native_routes.any_remote()
             || !self.pending_remote_actions.is_empty()
             || self
-                .subscribers
-                .keys()
-                .any(|ws| !self.topics.contains_key(ws))
+                .gossip_topics
+                .iter()
+                .any(|ws| self.subscribers.contains_key(ws) && !self.topics.contains_key(ws))
+    }
+
+    /// Whether a host session goes to another machine: sessions with this
+    /// device's own host keep nothing up.
+    fn remote_host_sessions(&self) -> bool {
+        self.host_sessions.values().any(|runtime| !runtime.local)
+    }
+
+    /// Whether `command` stays in this process: it goes to this device's
+    /// own host, so it needs no relay up.
+    fn stays_local(&self, command: &NetCmd) -> bool {
+        let own = self.endpoint.id();
+        match command {
+            NetCmd::NativeConnect(connect, None) => {
+                self.host_identity.as_ref().is_some_and(|identity| {
+                    connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
+                        tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key)
+                    })
+                })
+            }
+            NetCmd::RoomGovernance(request) => matches!(
+                request.to,
+                room_governance::Addressee::Device(host) | room_governance::Addressee::Host(host)
+                    if host == own
+            ),
+            NetCmd::GovernorAction { ws, .. } => self.native_routes.is_local(*ws),
+            NetCmd::NativeEnrollment(command) => command.is_local(),
+            _ => false,
+        }
     }
 
     /// The remote party this actor is connected to or keeps dialling, if
@@ -3700,11 +3917,11 @@ impl ActorState {
             "a peer on one of its topics"
         } else if !self.hosts.is_empty()
             || !self.connecting_hosts.is_empty()
-            || !self.host_sessions.is_empty()
+            || self.remote_host_sessions()
         {
             "a workspace host"
-        } else if !self.native_routes.is_empty() {
-            "a relay-governed room"
+        } else if self.native_routes.any_remote() {
+            "a room hosted elsewhere"
         } else if !self.personal_fabric_connections.is_empty()
             || !self.active_personal_transfers.is_empty()
         {
@@ -3728,14 +3945,21 @@ impl ActorState {
     /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
-            if self.peers_seen.contains_key(&(ws, peer)) {
+            if self.is_surface_member(ws, peer) {
                 self.flush_pending_remote_actions(ws, peer).await;
             }
         }
         self.resubscribe_missing_topics().await;
         self.retry_direct_peers().await;
         self.retry_native_routes();
-        let rooms: Vec<_> = self.host_sessions.keys().map(|(ws, _)| *ws).collect();
+        // A session with this device's own host loses nothing between
+        // heartbeats: it publishes as the owner commits.
+        let rooms: Vec<_> = self
+            .host_sessions
+            .iter()
+            .filter(|(_, runtime)| !runtime.local)
+            .map(|((ws, _), _)| *ws)
+            .collect();
         for ws in rooms {
             self.request_native_refresh(ws);
             self.drive_native_publication(ws);
@@ -3983,7 +4207,11 @@ impl ActorState {
     /// Re-announce every live workspace-host session so a late-joining
     /// subscriber still sees `HostReady`.
     async fn run_host_checkpoint_tick(&self) {
-        for &(ws, peer) in self.host_sessions.keys() {
+        for (&(ws, peer), _) in self
+            .host_sessions
+            .iter()
+            .filter(|(_, runtime)| !runtime.local)
+        {
             if let Some(tx) = self.subscribers.get(&ws) {
                 let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
             }
@@ -4211,7 +4439,7 @@ async fn run(
     mut cmd_rx: mpsc::Receiver<NetCmd>,
     heartbeat_interval: Duration,
     reachability: Reachability,
-    governing: Option<super::governor_join::GoverningRooms>,
+    hosting: Option<Hosting>,
 ) {
     let (internal_tx, mut internal_rx) = mpsc::channel(256);
     let personal_fabric_incarnations = Arc::new(AtomicU64::new(1));
@@ -4229,6 +4457,7 @@ async fn run(
             SurfaceStreamProtocol {
                 internal_tx: internal_tx.clone(),
                 input_tx,
+                next_connection_incarnation: Arc::new(AtomicU64::new(1)),
             },
         )
         .accept(
@@ -4239,16 +4468,18 @@ async fn run(
             },
         )
         .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol);
-    // Answered only where this device may govern rooms; a dial elsewhere
-    // finds no such protocol, as at any device that governs none.
-    let router = match governing {
-        Some(governing) => router.accept(
-            tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN,
-            tilo_relay_session::workspace_join::WorkspaceJoinProtocol::new(governing),
-        ),
-        None => router,
-    }
-    .spawn();
+    // This device's room host answers here once it opens: until then its
+    // handlers refuse, as a device hosting nothing does.
+    let (local_host, protocols) = match hosting {
+        Some(Hosting { host, protocols }) => (Some(host), protocols),
+        None => (None, Vec::new()),
+    };
+    let router = protocols
+        .into_iter()
+        .fold(router, |router, (alpn, handler)| {
+            router.accept(alpn, handler)
+        })
+        .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
     let mut state = ActorState {
         private_messages: super::private_messages::Transport::new(
@@ -4263,9 +4494,11 @@ async fn run(
         native_media: super::native_media::Registry::default(),
         native_enrollment: super::invite::enrollment_driver::Registry::default(),
         native_routes: native_ingress::Routes::default(),
+        local_host,
         room_governance: room_governance::Waiting::default(),
         gossip,
         internal_tx,
+        gossip_topics: HashSet::new(),
         topics: HashMap::new(),
         subscribers: HashMap::new(),
         peers: HashMap::new(),
@@ -4278,6 +4511,7 @@ async fn run(
         peers_seen: HashMap::new(),
         next_membership_epoch: 0,
         personal_fabric_ingress: HashMap::new(),
+        room_members: room_members::RoomMembers::default(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         recent_input: HashMap::new(),
@@ -4319,7 +4553,7 @@ async fn run(
         upkeep = next_upkeep(upkeep, state.needs_upkeep(), heartbeat_interval);
         host_checkpoint = next_upkeep(
             host_checkpoint,
-            !state.host_sessions.is_empty(),
+            state.remote_host_sessions(),
             HOST_CHECKPOINT_INTERVAL,
         );
         // A held pointer move falls due; nothing is armed while none is held.
@@ -4356,15 +4590,16 @@ async fn run(
         }
     }
 
-    for (_, topic) in state.topics {
+    for topic in state.topics.values() {
         topic.pump.abort();
     }
-    for (_, host) in state.host_sessions {
+    for host in state.host_sessions.values() {
         host.pump.abort();
     }
-    for (_, (_, task)) in state.surface_fanout_tasks {
+    for (_, task) in state.surface_fanout_tasks.values() {
         task.abort();
     }
+    drop(state);
     reporting_addrs.abort();
     let _ = router.shutdown().await;
 }
@@ -4509,6 +4744,17 @@ async fn publish(
         );
         return;
     }
+    let retention = retention(&msg, shell_checkpoint);
+    // Live traffic (pointers, carets, presence) is for whoever hears it now:
+    // in a room with no session up there is no one, and nothing keeps it.
+    if retention.is_none()
+        && !topics.contains_key(&ws)
+        && host_sessions
+            .keys()
+            .all(|(session_ws, _)| *session_ws != ws)
+    {
+        return;
+    }
     let bytes = match postcard::to_allocvec(&msg) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -4516,7 +4762,6 @@ async fn publish(
             return;
         }
     };
-    let retention = retention(&msg, shell_checkpoint);
 
     // Host clients enqueue synchronously into their already-authenticated
     // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
@@ -4553,6 +4798,7 @@ async fn publish(
         {
             tracing::warn!(
                 ws,
+                kind = msg.kind(),
                 "collaboration publish has no direct topic or workspace host"
             );
         }
@@ -5591,11 +5837,7 @@ mod tests {
     }
 
     use iroh::endpoint::presets;
-    use tilo_relay::{Relay, RelayConfig, daemon::RelayIdentity};
-    use tilo_user_identity::{
-        DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_device_cert,
-        sign_revocation_entry,
-    };
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tokio::time::timeout;
 
     async fn endpoint() -> (Endpoint, MemoryLookup) {
@@ -5673,6 +5915,7 @@ mod tests {
             InternalEvent::SurfaceFrame {
                 ws: 7,
                 peer,
+                connection_incarnation: 1,
                 fingerprint: [0; 32],
                 msg: NeighbourMsg::RemoteInput {
                     peer: 9,
@@ -5744,14 +5987,14 @@ mod tests {
             let (event_a, mut rx_a) = mpsc::channel(16);
             let (event_b, mut rx_b) = mpsc::channel(16);
             cmd_a
-                .send(NetCmd::JoinWorkspace {
+                .send(NetCmd::JoinPersonalTopic {
                     ws: 42,
                     on_event: event_a,
                 })
                 .await
                 .unwrap();
             cmd_b
-                .send(NetCmd::JoinWorkspace {
+                .send(NetCmd::JoinPersonalTopic {
                     ws: 42,
                     on_event: event_b,
                 })
@@ -5872,14 +6115,14 @@ mod tests {
             let (events_a, mut rx_a) = mpsc::channel(16);
             let (events_b, mut rx_b) = mpsc::channel(16);
             cmd_a
-                .send(NetCmd::JoinWorkspace {
+                .send(NetCmd::JoinPersonalTopic {
                     ws: 42,
                     on_event: events_a,
                 })
                 .await
                 .unwrap();
             cmd_b
-                .send(NetCmd::JoinWorkspace {
+                .send(NetCmd::JoinPersonalTopic {
                     ws: 42,
                     on_event: events_b,
                 })
@@ -5947,7 +6190,7 @@ mod tests {
             None,
         );
         let (events, rx) = mpsc::channel(64);
-        cmd.send(NetCmd::JoinWorkspace {
+        cmd.send(NetCmd::JoinPersonalTopic {
             ws: 42,
             on_event: events,
         })
@@ -6062,7 +6305,7 @@ mod tests {
             let (event_c, mut rx_c) = mpsc::channel(32);
             for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
                 command
-                    .send(NetCmd::JoinWorkspace {
+                    .send(NetCmd::JoinPersonalTopic {
                         ws: 44,
                         on_event: events,
                     })
@@ -6152,7 +6395,7 @@ mod tests {
             let (event_b, mut rx_b) = mpsc::channel(16);
             let (event_c, mut rx_c) = mpsc::channel(16);
             for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-                cmd.send(NetCmd::JoinWorkspace {
+                cmd.send(NetCmd::JoinPersonalTopic {
                     ws: 44,
                     on_event: events,
                 })
@@ -6238,7 +6481,7 @@ mod tests {
             let (event_b, mut rx_b) = mpsc::channel(16);
             let (event_c, mut rx_c) = mpsc::channel(16);
             for (cmd, events) in [(&cmd_a, event_a), (&cmd_b, event_b), (&cmd_c, event_c)] {
-                cmd.send(NetCmd::JoinWorkspace {
+                cmd.send(NetCmd::JoinPersonalTopic {
                     ws: 43,
                     on_event: events,
                 })
@@ -6332,14 +6575,14 @@ mod tests {
             let (event_a, mut rx_a) = mpsc::channel(16);
             let (event_b, mut rx_b) = mpsc::channel(16);
             cmd_a
-                .send(NetCmd::JoinWorkspace {
+                .send(NetCmd::JoinPersonalTopic {
                     ws: 43,
                     on_event: event_a,
                 })
                 .await
                 .unwrap();
             cmd_b
-                .send(NetCmd::JoinWorkspace {
+                .send(NetCmd::JoinPersonalTopic {
                     ws: 43,
                     on_event: event_b,
                 })
@@ -6393,7 +6636,7 @@ mod tests {
             let (event_b, mut rx_b) = mpsc::channel(256);
             for (command, events) in [(&cmd_a, event_a), (&cmd_b, event_b)] {
                 command
-                    .send(NetCmd::JoinWorkspace {
+                    .send(NetCmd::JoinPersonalTopic {
                         ws: 45,
                         on_event: events,
                     })
@@ -6577,1722 +6820,5 @@ mod tests {
                 }
             }
         }
-    }
-
-    /// Spin up a relay pinned to workspace 42 and admit `a_pub`/`b_pub` to
-    /// it. The returned `TempDir` must be kept alive for as long as the
-    /// relay is used — dropping it deletes the on-disk state root.
-    async fn spawn_pinned_relay_for_two_members(
-        root: &ed25519_dalek::SigningKey,
-        a_pub: [u8; 32],
-        b_pub: [u8; 32],
-    ) -> (Relay, tempfile::TempDir, DeviceCert) {
-        spawn_pinned_relay_for_members_on(root, 42, a_pub, b_pub).await
-    }
-
-    async fn spawn_pinned_relay_for_members_on(
-        root: &ed25519_dalek::SigningKey,
-        ws: WorkspaceId,
-        a_pub: [u8; 32],
-        b_pub: [u8; 32],
-    ) -> (Relay, tempfile::TempDir, DeviceCert) {
-        let (host_key, host_cert) = enrol(root, DeviceCapabilities::host(), "host");
-        let state = tempfile::tempdir().unwrap();
-        let config = RelayConfig {
-            state_root: state.path().to_path_buf(),
-            ..RelayConfig::default()
-        };
-        let relay = Box::pin(Relay::start(
-            config,
-            RelayIdentity {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_signing_key: host_key,
-                device_cert: host_cert.clone(),
-                revocations: RevocationList::new(),
-            },
-        ))
-        .await
-        .unwrap();
-        relay
-            .replace_governed_workspace_access(
-                ws,
-                true,
-                tilo_peer_state::GovernedAccess {
-                    member_devices: vec![a_pub, b_pub],
-                    member_user_roots: vec![relay.own_user_public_key()],
-                },
-                state.path().to_path_buf(),
-            )
-            .await
-            .unwrap();
-        (relay, state, host_cert)
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the enrolled-host and continuity replay transcripts need setup, relay, rejection and restart actors together"
-    )]
-    async fn workspace_host_relays_authenticated_traffic_and_retains_routes() {
-        // Phase `scheduled_enrolled_host_rejects_wrong_root_device_and_revocation`.
-        // Exercise the exact scheduled enrolled-home-peer route, rather than a
-        // direct `RelayClient` unit call. In particular, this protects against an
-        // innocuous-looking refactor that drops `HomePeerExpectation` before the
-        // relay dial.
-        {
-            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-            let other_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-            let (client_key, client_cert) = enrol(&root, DeviceCapabilities::primary(), "client");
-            let (host_key, host_cert) = enrol(&root, DeviceCapabilities::host(), "home");
-            let (_, wrong_device_cert) = enrol(&root, DeviceCapabilities::host(), "other-home");
-            let state = tempfile::tempdir().unwrap();
-            let relay = Box::pin(Relay::start(
-                RelayConfig {
-                    state_root: state.path().to_path_buf(),
-                    ..RelayConfig::default()
-                },
-                RelayIdentity {
-                    user_public_key: root.verifying_key().to_bytes(),
-                    device_signing_key: host_key,
-                    device_cert: host_cert.clone(),
-                    revocations: RevocationList::new(),
-                },
-            ))
-            .await
-            .unwrap();
-            relay
-                .replace_governed_workspace_access(
-                    42,
-                    true,
-                    tilo_peer_state::GovernedAccess {
-                        member_devices: vec![client_key.verifying_key().to_bytes()],
-                        member_user_roots: vec![relay.own_user_public_key()],
-                    },
-                    state.path().to_path_buf(),
-                )
-                .await
-                .unwrap();
-
-            let attempt =
-                |expectation: HomePeerExpectation,
-                 revocations: Vec<tilo_user_identity::RevocationEntry>| {
-                    let relay_addr = relay.node_addr();
-                    let client_key = client_key.clone();
-                    let client_cert = client_cert.clone();
-                    async move {
-                        let (endpoint, _) = identified_endpoint(&client_key).await;
-                        let identity = HostIdentity {
-                            device_cert: client_cert,
-                            device_signing_key: client_key,
-                            workspace_device_certs: HashMap::new(),
-                            workspace_revocations: HashMap::from([(42, revocations)]),
-                            identity_paths: None,
-                        };
-                        let (tx, mut rx) = mpsc::channel(2);
-                        let mut connecting = HashSet::new();
-                        let mut discoveries = HashMap::new();
-                        HostRouteScheduler {
-                            endpoint: &endpoint,
-                            identity: &identity,
-                            internal_tx: &tx,
-                            sessions: &HashMap::new(),
-                            connecting: &mut connecting,
-                            content_discovery_tasks: &mut discoveries,
-                        }
-                        .schedule(42, relay_addr, Some(expectation), false);
-                        let rejected = matches!(
-                        tilo_test_env::within("a message on rx", rx.recv()).await,
-                        Some(InternalEvent::HostConnected { result, .. }) if result.is_err()
-                                            );
-                        for (_, task) in discoveries {
-                            task.abort();
-                        }
-                        endpoint.close().await;
-                        rejected
-                    }
-                };
-            let host_device = host_cert.device_public_key;
-            assert!(
-                attempt(
-                    HomePeerExpectation {
-                        user_public_key: other_root.verifying_key().to_bytes(),
-                        device_public_key: host_device,
-                    },
-                    Vec::new(),
-                )
-                .await
-            );
-            assert!(
-                attempt(
-                    HomePeerExpectation {
-                        user_public_key: root.verifying_key().to_bytes(),
-                        device_public_key: wrong_device_cert.device_public_key,
-                    },
-                    Vec::new(),
-                )
-                .await
-            );
-            let mut revocation = RevocationEntry {
-                user_public_key: root.verifying_key().to_bytes(),
-                revoked_device_public_key: host_device,
-                revoked_at_ns: 1,
-                reason: RevocationReason::Lost,
-                signature: [0; 64],
-            };
-            sign_revocation_entry(&mut revocation, &root).unwrap();
-            assert!(
-                attempt(
-                    HomePeerExpectation {
-                        user_public_key: root.verifying_key().to_bytes(),
-                        device_public_key: host_device,
-                    },
-                    vec![revocation],
-                )
-                .await
-            );
-        }
-        // Phase `two_actors_exchange_through_authenticated_workspace_host`.
-        {
-            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-            let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
-                &root,
-                a_key.verifying_key().to_bytes(),
-                b_key.verifying_key().to_bytes(),
-            ))
-            .await;
-
-            let (a, lookup_a) = identified_endpoint(&a_key).await;
-            let (b, lookup_b) = identified_endpoint(&b_key).await;
-            let identity_a = HostIdentity {
-                device_cert: a_cert,
-                device_signing_key: a_key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            };
-            let identity_b = HostIdentity {
-                device_cert: b_cert,
-                device_signing_key: b_key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            };
-            let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-                a,
-                lookup_a,
-                identity_a,
-                b,
-                lookup_b,
-                identity_b,
-                &relay,
-                HEARTBEAT_INTERVAL,
-            )
-            .await;
-
-            cmd_a
-                .send(NetCmd::Publish {
-                    ws: 42,
-                    msg: NeighbourMsg::SyncReq {
-                        since: vec![],
-                        room: "hosted".into(),
-                        invite_id: None,
-                        nonce: 0,
-                    },
-                })
-                .await
-                .unwrap();
-            loop {
-                let event = tilo_test_env::within("a message on rx_b", rx_b.recv())
-                    .await
-                    .unwrap();
-                if matches!(
-                    event,
-                    NetEvent::Msg {
-                        msg: NeighbourMsg::SyncReq { .. },
-                        ..
-                    }
-                ) {
-                    break;
-                }
-            }
-        }
-        // Phase `remote_action_frames_fall_back_to_the_workspace_host`.
-        // Two devices that share only a workspace host, with no direct route,
-        // still exchange remote-action frames: the same bytes, delivered to the
-        // addressed device attributed to the sender the host authenticated, and
-        // a byte-identical retry is delivered again rather than deduplicated.
-        {
-            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-            let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
-                &root,
-                a_key.verifying_key().to_bytes(),
-                b_key.verifying_key().to_bytes(),
-            ))
-            .await;
-            let (a, lookup_a) = identified_endpoint(&a_key).await;
-            let (b, lookup_b) = identified_endpoint(&b_key).await;
-            let a_id = a.id();
-            let b_id = b.id();
-            let identity = |key: ed25519_dalek::SigningKey, cert| HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            };
-            let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-                a,
-                lookup_a,
-                identity(a_key, a_cert),
-                b,
-                lookup_b,
-                identity(b_key, b_cert),
-                &relay,
-                HEARTBEAT_INTERVAL,
-            )
-            .await;
-
-            let frame = br#"{"version":1}"#.to_vec();
-            for attempt in 0..2 {
-                cmd_a
-                    .send(NetCmd::PublishRemoteAction {
-                        ws: 42,
-                        target: b_id,
-                        msg: NeighbourMsg::RemoteAction {
-                            frame: frame.clone(),
-                        },
-                    })
-                    .await
-                    .unwrap();
-                let (peer, received) = timeout(tilo_test_env::hang_bound(), async {
-                    loop {
-                        if let Some(NetEvent::Msg {
-                            peer,
-                            msg: NeighbourMsg::RemoteAction { frame },
-                            ..
-                        }) = rx_b.recv().await
-                        {
-                            return (peer, frame);
-                        }
-                    }
-                })
-                .await
-                .unwrap_or_else(|_| panic!("relayed attempt {attempt} was not delivered"));
-                assert_eq!(peer, a_id, "attributed to the authenticated sender");
-                assert_eq!(received, frame, "the host carries the frame untouched");
-            }
-        }
-        // Phase `failed_host_address_refresh_retains_files_route_until_explicit_removal`.
-        {
-            const TEST_HEARTBEAT: Duration = Duration::from_millis(100);
-            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-            let a_public = a_key.verifying_key().to_bytes();
-            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-            let (relay, _state, host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
-                &root,
-                a_public,
-                b_key.verifying_key().to_bytes(),
-            ))
-            .await;
-            let (a, lookup_a) = identified_endpoint(&a_key).await;
-            let (b, lookup_b) = identified_endpoint(&b_key).await;
-            let identity = |key, cert| HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            };
-            let (cmd_a, mut rx_a, _cmd_b, _rx_b) = join_workspace_and_await_host_ready(
-                a,
-                lookup_a,
-                identity(a_key, a_cert),
-                b,
-                lookup_b,
-                identity(b_key, b_cert),
-                &relay,
-                TEST_HEARTBEAT,
-            )
-            .await;
-
-            // Upgrade the existing host route to an enrolled home-peer route.
-            // The subsequent address refresh must retain that route's Files
-            // endpoint; it is a reconnect, not a home-peer removal.
-            let expectation = HomePeerExpectation {
-                user_public_key: root.verifying_key().to_bytes(),
-                device_public_key: host_cert.device_public_key,
-            };
-            cmd_a
-                .send(NetCmd::ConnectHost {
-                    addr: relay.node_addr(),
-                    expectation: Some(expectation.clone()),
-                })
-                .await
-                .unwrap();
-            loop {
-                let event = tilo_test_env::within("a message on rx_a", rx_a.recv())
-                    .await
-                    .unwrap();
-                if matches!(event, NetEvent::HostReady { .. }) {
-                    break;
-                }
-            }
-
-            // A replacement address that cannot respond must not tear down the
-            // already-discovered Files endpoint. The old actor implementation
-            // called the permanent-removal path before attempting this dial.
-            let refreshed = EndpointAddr::new(relay.node_addr().id)
-                .with_ip_addr("192.0.2.1:9".parse().unwrap());
-            cmd_a
-                .send(NetCmd::ConnectHost {
-                    addr: refreshed,
-                    expectation: Some(expectation),
-                })
-                .await
-                .unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            assert!(
-                !noted_content_peer_removals()
-                    .lock_recover()
-                    .contains(&relay.node_addr().id),
-                "an address refresh must retain the enrolled peer's Files route"
-            );
-
-            cmd_a
-                .send(NetCmd::DisconnectHost {
-                    id: relay.node_addr().id,
-                })
-                .await
-                .unwrap();
-            tilo_test_env::within(
-                "explicit removal must revoke enrolled Files routes",
-                async {
-                    loop {
-                        if noted_content_peer_removals()
-                            .lock_recover()
-                            .contains(&relay.node_addr().id)
-                        {
-                            break;
-                        }
-                        tokio::task::yield_now().await;
-                    }
-                },
-            )
-            .await;
-            for _ in 0..100 {
-                if !relay.is_subscribed(42, &a_public).await {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            assert!(!relay.is_subscribed(42, &a_public).await);
-            // Several retry rounds pass; any of them would redial a host it still held.
-            tokio::time::sleep(TEST_HEARTBEAT * 4).await;
-            assert!(
-                !relay.is_subscribed(42, &a_public).await,
-                "a removed host must not be redialled by the heartbeat retry loop"
-            );
-        }
-        // Phase `host_replays_the_latest_personal_continuity_checkpoint_after_close`.
-        {
-            let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-            let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-            let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-            let (relay, _state, _host_cert) = Box::pin(spawn_pinned_relay_for_two_members(
-                &root,
-                a_key.verifying_key().to_bytes(),
-                b_key.verifying_key().to_bytes(),
-            ))
-            .await;
-            let (a, lookup_a) = identified_endpoint(&a_key).await;
-            let (b, lookup_b) = identified_endpoint(&b_key).await;
-            let b_restart_key = b_key.clone();
-            let b_restart_cert = b_cert.clone();
-            let identity = |key, cert| HostIdentity {
-                device_cert: cert,
-                device_signing_key: key,
-                workspace_device_certs: HashMap::new(),
-                workspace_revocations: HashMap::new(),
-                identity_paths: None,
-            };
-            let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-                a,
-                lookup_a,
-                identity(a_key, a_cert),
-                b,
-                lookup_b,
-                identity(b_key, b_cert),
-                &relay,
-                HEARTBEAT_INTERVAL,
-            )
-            .await;
-            let checkpoint = |bytes| NeighbourMsg::PersonalContinuityCheckpoint {
-                user_public_key: root.verifying_key().to_bytes(),
-                publisher: 7,
-                snapshot: bytes,
-            };
-            cmd_a
-                .send(NetCmd::PublishCheckpoint {
-                    ws: 42,
-                    msg: checkpoint(vec![1]),
-                })
-                .await
-                .unwrap();
-            loop {
-                if let Some(NetEvent::Msg {
-                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
-                    ..
-                }) = tilo_test_env::within("a message on rx_b", rx_b.recv()).await
-                {
-                    assert_eq!(snapshot, vec![1]);
-                    break;
-                }
-            }
-            cmd_a
-                .send(NetCmd::PublishCheckpoint {
-                    ws: 42,
-                    msg: checkpoint(Vec::new()),
-                })
-                .await
-                .unwrap();
-            loop {
-                if let Some(NetEvent::Msg {
-                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
-                    ..
-                }) = tilo_test_env::within("a message on rx_b", rx_b.recv()).await
-                {
-                    assert!(snapshot.is_empty(), "closure replaces live checkpoint");
-                    break;
-                }
-            }
-
-            // A fresh actor with B's durable device identity models a shell
-            // restart while A is offline. The host must replay the retained
-            // closure baseline rather than resurrecting A's earlier checkpoint.
-            let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
-            let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
-                b_restarted,
-                lookup_restarted,
-                Some(identity(b_restart_key, b_restart_cert)),
-                Arc::new(Mutex::new(Vec::new())),
-            );
-            let (events, mut replay_events) = mpsc::channel(16);
-            cmd_restarted
-                .send(NetCmd::JoinWorkspace {
-                    ws: 42,
-                    on_event: events,
-                })
-                .await
-                .unwrap();
-            cmd_restarted
-                .send(NetCmd::ConnectHost {
-                    addr: relay.node_addr(),
-                    expectation: None,
-                })
-                .await
-                .unwrap();
-            loop {
-                if let Some(NetEvent::Msg {
-                    msg: NeighbourMsg::PersonalContinuityCheckpoint { snapshot, .. },
-                    ..
-                }) =
-                    tilo_test_env::within("a message on replay_events", replay_events.recv()).await
-                {
-                    assert!(snapshot.is_empty(), "restarted B receives retained closure");
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Spawn two actors, join workspace 42 on each, connect both to `relay`,
-    /// and block until both report `HostReady`. Returns each actor's
-    /// command sender and event receiver.
-    async fn join_workspace_and_await_host_ready(
-        a: Endpoint,
-        lookup_a: MemoryLookup,
-        identity_a: HostIdentity,
-        b: Endpoint,
-        lookup_b: MemoryLookup,
-        identity_b: HostIdentity,
-        relay: &Relay,
-        heartbeat: Duration,
-    ) -> (
-        mpsc::Sender<NetCmd>,
-        mpsc::Receiver<NetEvent>,
-        mpsc::Sender<NetCmd>,
-        mpsc::Receiver<NetEvent>,
-    ) {
-        let (cmd_a, _task_a) = Actor::spawn_with_heartbeat(
-            a,
-            lookup_a,
-            Some(identity_a),
-            Arc::new(Mutex::new(Vec::new())),
-            heartbeat,
-            Reachability::default(),
-            None,
-        );
-        let (cmd_b, _task_b) = Actor::spawn_with_heartbeat(
-            b,
-            lookup_b,
-            Some(identity_b),
-            Arc::new(Mutex::new(Vec::new())),
-            heartbeat,
-            Reachability::default(),
-            None,
-        );
-        let (event_a, mut rx_a) = mpsc::channel(16);
-        let (event_b, mut rx_b) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: event_a,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: event_b,
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        for rx in [&mut rx_a, &mut rx_b] {
-            loop {
-                let event = tilo_test_env::within("a message on rx", rx.recv())
-                    .await
-                    .unwrap();
-                if matches!(event, NetEvent::HostReady { .. }) {
-                    break;
-                }
-            }
-        }
-        (cmd_a, rx_a, cmd_b, rx_b)
-    }
-
-    /// Each device's certificate reaches the others through the host, which
-    /// retains it; a device resubscribing receives the other member's again
-    /// but never its own, which nothing on this side could authenticate. Its
-    /// own documents do come back, marked as its own: a device that lost its
-    /// local state gets its earlier changes from the host's history.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one device's publish, restart and replay"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn host_replays_member_certificates_and_own_documents_but_not_own_certificate() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let a_device = a_key.verifying_key().to_bytes();
-        let b_device = b_key.verifying_key().to_bytes();
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let b_restart_key = b_key.clone();
-        let b_restart_cert = b_cert.clone();
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let signer = b_key.clone();
-        let (_cmd_a, mut rx_a, cmd_b, _rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity(a_key, a_cert),
-            b,
-            lookup_b,
-            identity(b_key, b_cert),
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
-        let artifact = collab_types::document_artifact_id("so.tilo.notes", "room", "record");
-        let mut op = collab_types::SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Incremental(b"b's earlier change".to_vec())
-                .encode()
-                .unwrap(),
-            artifact,
-            collab_types::Ed25519PublicKey::from_bytes(b_device),
-            collab_types::AttestationId::default(),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-        );
-        collab_types::sign_op(&mut op, &signer).unwrap();
-        cmd_b
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::AppDocument {
-                    peer: 7,
-                    app_id: "so.tilo.notes".into(),
-                    cluster_id: "room".into(),
-                    record_id: "record".into(),
-                    envelope: Box::new(op.clone()),
-                },
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("the host fans B's document to A", async {
-            loop {
-                if let Some(NetEvent::Msg {
-                    msg: NeighbourMsg::AppDocument { .. },
-                    ..
-                }) = rx_a.recv().await
-                {
-                    break;
-                }
-            }
-        })
-        .await;
-        drop(cmd_b);
-
-        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
-        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
-            b_restarted,
-            lookup_restarted,
-            Some(identity(b_restart_key, b_restart_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events, mut replay_events) = mpsc::channel(16);
-        cmd_restarted
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        cmd_restarted
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        let mut hellos = Vec::new();
-        let mut own = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, replay_events.recv()).await {
-            match event {
-                NetEvent::Msg {
-                    peer,
-                    msg: NeighbourMsg::IdentityHello { cert, .. },
-                    ..
-                } => {
-                    assert_eq!(*peer.as_bytes(), cert.device_public_key);
-                    hellos.push(cert.device_public_key);
-                }
-                NetEvent::Msg {
-                    peer,
-                    msg: NeighbourMsg::AppDocument { .. },
-                    ..
-                } => assert_ne!(*peer.as_bytes(), b_device, "not as another member's"),
-                NetEvent::OwnReplay {
-                    msg: NeighbourMsg::AppDocument { envelope, .. },
-                    ..
-                } => own.push(*envelope),
-                _ => {}
-            }
-        }
-        assert!(hellos.contains(&a_device), "A's certificate is replayed");
-        assert!(!hellos.contains(&b_device), "B's own certificate is not");
-        assert_eq!(own, [op], "B's own document comes back from the host");
-    }
-
-    /// Channel governance published while no host session is up (before the
-    /// first dial, or while a session is being replaced) reaches the host
-    /// once one starts: a steward announces a channel's genesis once, and a
-    /// browser learns only from the host that the channel exists.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn governance_published_before_a_host_session_reaches_the_host() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let genesis = collab_types::MlsGovernanceFrameV1::signed(
-            collab_types::ChannelId::new(),
-            [1; 32],
-            1,
-            [0; 32],
-            0,
-            collab_types::MlsGovernanceAction::Genesis,
-            &a_key,
-        )
-        .unwrap();
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
-            a,
-            lookup_a,
-            Some(identity(a_key, a_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_a, mut rx_a) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events_a,
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::MlsGovernance {
-                    room: "room".into(),
-                    frame: Box::new(genesis.clone()),
-                    delivery: 1,
-                },
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("A's host session is ready", async {
-            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
-        })
-        .await;
-
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
-            b,
-            lookup_b,
-            Some(identity(b_key, b_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_b, mut rx_b) = mpsc::channel(16);
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events_b,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("B receives A's genesis from the host", async {
-            loop {
-                if let Some(NetEvent::Msg {
-                    msg: NeighbourMsg::MlsGovernance { frame, .. },
-                    ..
-                }) = rx_b.recv().await
-                    && *frame == genesis
-                {
-                    break;
-                }
-            }
-        })
-        .await;
-    }
-
-    /// A document written while the device's host session is down (a
-    /// record created at launch, during the first session's replacement)
-    /// reaches the host once a session starts: every later change of the
-    /// record depends on it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a host, two members and a session replaced mid-publication in one scenario"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_document_published_before_a_host_session_reaches_the_host() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let a_device = a_key.verifying_key().to_bytes();
-        let artifact = collab_types::document_artifact_id("so.tilo.notes", "room", "record");
-        let mut op = collab_types::SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Incremental(b"written at launch".to_vec())
-                .encode()
-                .unwrap(),
-            artifact,
-            collab_types::Ed25519PublicKey::from_bytes(a_device),
-            collab_types::AttestationId::default(),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-        );
-        collab_types::sign_op(&mut op, &a_key).unwrap();
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
-            a,
-            lookup_a,
-            Some(identity(a_key, a_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_a, mut rx_a) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events_a,
-            })
-            .await
-            .unwrap();
-        // The host is known but its session is not up yet.
-        cmd_a
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::AppDocument {
-                    peer: 7,
-                    app_id: "so.tilo.notes".into(),
-                    cluster_id: "room".into(),
-                    record_id: "record".into(),
-                    envelope: Box::new(op.clone()),
-                },
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("A's host session is ready", async {
-            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
-        })
-        .await;
-
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
-            b,
-            lookup_b,
-            Some(identity(b_key, b_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_b, mut rx_b) = mpsc::channel(16);
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events_b,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("B receives A's launch-time document from the host", async {
-            loop {
-                if let Some(NetEvent::Msg {
-                    msg: NeighbourMsg::AppDocument { envelope, .. },
-                    ..
-                }) = rx_b.recv().await
-                    && *envelope == op
-                {
-                    break;
-                }
-            }
-        })
-        .await;
-    }
-
-    /// The person's always-on host keeps a record of their own room that one
-    /// of their devices published to it, and hands it to another of their
-    /// devices that connects after the first went away; only to hosts, on
-    /// the person's continuity topic.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "a host, two of one person's devices and the first leaving before the second arrives in one scenario"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn the_persons_host_keeps_their_records_for_a_device_that_comes_later() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let user = root.verifying_key().to_bytes();
-        let continuity = tilo_relay_protocol::personal_continuity_workspace_id(&user);
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "laptop");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "phone");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_members_on(
-            &root,
-            continuity,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let cluster = collab_types::person_room(&user).to_string();
-        let mut op = collab_types::SignedOp::new_unsigned(
-            collab_types::DocumentMutation::Snapshot(b"watched one video".to_vec())
-                .encode()
-                .unwrap(),
-            collab_types::document_artifact_id("so.tilo.tube", &cluster, "history"),
-            collab_types::Ed25519PublicKey::from_bytes(a_key.verifying_key().to_bytes()),
-            collab_types::document_attestation_id("so.tilo.tube", &cluster, "history"),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-        );
-        collab_types::sign_op(&mut op, &a_key).unwrap();
-
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (cmd_a, task_a) = Actor::spawn_reporting_addrs(
-            a,
-            lookup_a,
-            Some(identity(a_key, a_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_a, mut rx_a) = mpsc::channel(16);
-        cmd_a
-            .send(NetCmd::JoinWorkspace {
-                ws: continuity,
-                on_event: events_a,
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        cmd_a
-            .send(NetCmd::PublishToHosts {
-                ws: continuity,
-                msg: NeighbourMsg::AppDocument {
-                    peer: 7,
-                    app_id: "so.tilo.tube".into(),
-                    cluster_id: cluster.clone(),
-                    record_id: "history".into(),
-                    envelope: Box::new(op.clone()),
-                },
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within("the laptop's host session is ready", async {
-            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
-        })
-        .await;
-        // The host has it once the session is up; the laptop goes away.
-        tilo_test_env::within("the host retains the laptop's record", async {
-            while relay
-                .room_records()
-                .retained(continuity)
-                .await
-                .unwrap_or_default()
-                .is_empty()
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            }
-        })
-        .await;
-        drop(cmd_a);
-        task_a.abort();
-
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
-            b,
-            lookup_b,
-            Some(identity(b_key, b_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events_b, mut rx_b) = mpsc::channel(16);
-        cmd_b
-            .send(NetCmd::JoinWorkspace {
-                ws: continuity,
-                on_event: events_b,
-            })
-            .await
-            .unwrap();
-        cmd_b
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        tilo_test_env::within(
-            "the phone receives the laptop's record from the host",
-            async {
-                loop {
-                    if let Some(NetEvent::Msg {
-                        ws,
-                        msg:
-                            NeighbourMsg::AppDocument {
-                                envelope,
-                                cluster_id,
-                                ..
-                            },
-                        ..
-                    }) = rx_b.recv().await
-                        && *envelope == op
-                    {
-                        assert_eq!(ws, continuity);
-                        assert_eq!(cluster_id, cluster);
-                        break;
-                    }
-                }
-            },
-        )
-        .await;
-    }
-
-    /// Native shells are live members of their workspace host: a presence
-    /// frame one publishes reaches the other attributed to its device, the
-    /// same plane browsers and agents publish on.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn live_frames_cross_between_shells_through_the_workspace_host() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let a_device = a_key.verifying_key().to_bytes();
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _rx_a, _cmd_b, mut rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity(a_key, a_cert),
-            b,
-            lookup_b,
-            identity(b_key, b_cert),
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
-        // A sealed frame: the host relays its bytes unchanged.
-        let frame = tilo_relay_protocol::live::SealedLiveFrame {
-            kind: tilo_relay_protocol::live::LiveKind::Presence,
-            seq: 1,
-            record: [3; 32],
-            channel: [7; 16],
-            epoch: 1,
-            payload: vec![0xa5; 48],
-        }
-        .encode()
-        .unwrap();
-        // A frame in the clear never leaves.
-        let cleartext = tilo_relay_protocol::live::LiveFrame::Presence(
-            tilo_relay_protocol::live::PresenceFrame {
-                place: None,
-                chat: None,
-                reaction: None,
-                wave: None,
-                seq: 1,
-                sent_at_ms: 1,
-                focus: None,
-                pointer: Some(tilo_relay_protocol::live::LivePointer::Strip {
-                    strip: 1,
-                    at: [3.0, 4.0],
-                }),
-                selection: None,
-                drag: None,
-                participant: None,
-            },
-        )
-        .encode()
-        .unwrap();
-        // The live join follows the subscription; resend until it is in.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-        loop {
-            for frame in [cleartext.clone(), frame.clone()] {
-                cmd_a
-                    .send(NetCmd::PublishLive { ws: 42, frame })
-                    .await
-                    .unwrap();
-            }
-            match tokio::time::timeout(Duration::from_millis(200), rx_b.recv()).await {
-                Ok(Some(NetEvent::Live {
-                    ws,
-                    from,
-                    frame: received,
-                })) => {
-                    assert_eq!(ws, 42);
-                    assert_eq!(from, a_device, "attributed to the authenticated device");
-                    assert_eq!(received, frame);
-                    break;
-                }
-                _ => assert!(
-                    tokio::time::Instant::now() < deadline,
-                    "no live frame crossed"
-                ),
-            }
-        }
-    }
-
-    /// What a host writes before answering a subscription is its replay of
-    /// retained history and is marked so (receivers exempt it from their
-    /// freshness window); what it fans out afterwards is live.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one host, two members and the replay/live boundary in a single scenario"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn host_replay_is_marked_until_the_host_answers_ready() {
-        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
-        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
-        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let a_device = a_key.verifying_key().to_bytes();
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let b_restart_key = b_key.clone();
-        let b_restart_cert = b_cert.clone();
-        let identity = |key, cert| HostIdentity {
-            device_cert: cert,
-            device_signing_key: key,
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, _rx_a, cmd_b, _rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity(a_key, a_cert),
-            b,
-            lookup_b,
-            identity(b_key, b_cert),
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
-        drop(cmd_b);
-
-        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
-        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
-            b_restarted,
-            lookup_restarted,
-            Some(identity(b_restart_key, b_restart_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events, mut rx) = mpsc::channel(64);
-        cmd_restarted
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        cmd_restarted
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        let mut replayed_hello = None;
-        loop {
-            match timeout(Duration::from_secs(15), rx.recv())
-                .await
-                .unwrap()
-                .unwrap()
-            {
-                NetEvent::Msg {
-                    msg: NeighbourMsg::IdentityHello { cert, .. },
-                    replayed,
-                    membership_epoch: None,
-                    ..
-                } if cert.device_public_key == a_device => replayed_hello = Some(replayed),
-                NetEvent::HostReady { .. } => break,
-                _ => {}
-            }
-        }
-        assert_eq!(
-            replayed_hello,
-            Some(true),
-            "A's retained certificate is replay"
-        );
-
-        // Asked again (a local app joined a record late), the host replays
-        // the room once more, and that is replay too.
-        cmd_restarted.send(NetCmd::Replay { ws: 42 }).await.unwrap();
-        let mut replayed_again = None;
-        loop {
-            match timeout(Duration::from_secs(15), rx.recv())
-                .await
-                .unwrap()
-                .unwrap()
-            {
-                NetEvent::Msg {
-                    msg: NeighbourMsg::IdentityHello { cert, .. },
-                    replayed,
-                    membership_epoch: None,
-                    ..
-                } if cert.device_public_key == a_device => replayed_again = Some(replayed),
-                NetEvent::HostReady { .. } if replayed_again.is_some() => break,
-                _ => {}
-            }
-        }
-        assert_eq!(replayed_again, Some(true));
-
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::SyncReq {
-                    since: vec![],
-                    room: "after-ready".into(),
-                    invite_id: None,
-                    nonce: 0,
-                },
-            })
-            .await
-            .unwrap();
-        loop {
-            if let NetEvent::Msg {
-                msg: NeighbourMsg::SyncReq { room, .. },
-                replayed,
-                ..
-            } = timeout(Duration::from_secs(15), rx.recv())
-                .await
-                .unwrap()
-                .unwrap()
-                && room == "after-ready"
-            {
-                assert!(!replayed, "a fan-out after Ready is live");
-                break;
-            }
-        }
-    }
-
-    /// The room's governance transport of one device, over its real actor:
-    /// channel governance goes to the room's workspace host (and gossip) like
-    /// any collaboration message, and documents are collected on the side.
-    struct ActorChannelTransport {
-        cmd: mpsc::Sender<NetCmd>,
-        events: Mutex<mpsc::Receiver<NetEvent>>,
-        room: crate::shell::state::RoomId,
-        documents: Mutex<Vec<collab_types::SignedOp>>,
-        host_ready: std::sync::atomic::AtomicBool,
-    }
-
-    impl ActorChannelTransport {
-        fn new(
-            cmd: mpsc::Sender<NetCmd>,
-            events: mpsc::Receiver<NetEvent>,
-            room: crate::shell::state::RoomId,
-        ) -> Self {
-            Self {
-                cmd,
-                events: Mutex::new(events),
-                room,
-                documents: Mutex::new(Vec::new()),
-                host_ready: std::sync::atomic::AtomicBool::new(false),
-            }
-        }
-
-        fn host_ready(&self) -> bool {
-            self.host_ready.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    impl crate::shell::channel_encryption::GovernanceTransport for ActorChannelTransport {
-        fn publish(&self, msg: NeighbourMsg) -> bool {
-            self.cmd.try_send(NetCmd::Publish { ws: 42, msg }).is_ok()
-        }
-
-        fn take_inbound(&self) -> Vec<crate::shell::network::InboundChannelGovernance> {
-            use crate::shell::network::InboundChannelGovernance as Inbound;
-            let room = self.room;
-            let mut inbound = Vec::new();
-            let mut events = self.events.lock().unwrap();
-            while let Ok(event) = events.try_recv() {
-                let msg = match event {
-                    NetEvent::Msg { msg, .. } => msg,
-                    NetEvent::HostReady { .. } => {
-                        self.host_ready
-                            .store(true, std::sync::atomic::Ordering::SeqCst);
-                        continue;
-                    }
-                    _ => continue,
-                };
-                match msg {
-                    NeighbourMsg::MlsGovernance { frame, .. } => {
-                        inbound.push(Inbound::Frame { room, frame });
-                    }
-                    NeighbourMsg::MlsAccessRequest { request, .. } => {
-                        inbound.push(Inbound::AccessRequest {
-                            room,
-                            request,
-                            route: None,
-                        });
-                    }
-                    NeighbourMsg::MlsRoutedAccessRequest { request, route, .. } => {
-                        inbound.push(Inbound::AccessRequest {
-                            room,
-                            request,
-                            route: Some(route),
-                        });
-                    }
-                    NeighbourMsg::MlsGovernanceAck { ack, .. } => {
-                        inbound.push(Inbound::Ack { room, ack });
-                    }
-                    NeighbourMsg::AppDocument { envelope, .. } => {
-                        self.documents.lock().unwrap().push(*envelope);
-                    }
-                    _ => {}
-                }
-            }
-            inbound
-        }
-    }
-
-    fn channel_service(
-        key: &ed25519_dalek::SigningKey,
-        dir: &std::path::Path,
-        directory: crate::shell::channel_encryption::testing::Directory,
-    ) -> crate::shell::channel_encryption::ChannelEncryption {
-        crate::shell::channel_encryption::ChannelEncryption::open(
-            crate::shell::channel_encryption::ChannelEncryptionConfig {
-                root: dir.join("channels"),
-                vault: channel_crypto::VaultKey::new(key.to_bytes()),
-                device_key: key.clone(),
-            },
-            Box::new(directory),
-            Arc::new(Mutex::new(
-                crate::shell::collab_core::BrokerChannels::default(),
-            )),
-        )
-        .unwrap()
-    }
-
-    fn every_file(dir: &std::path::Path, out: &mut Vec<Vec<u8>>) {
-        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                every_file(&path, out);
-            } else if let Ok(bytes) = std::fs::read(&path) {
-                out.push(bytes);
-            }
-        }
-    }
-
-    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-        haystack
-            .windows(needle.len())
-            .any(|window| window == needle)
-    }
-
-    /// End to end through two real actors and a real workspace host:
-    ///
-    /// - a new channel is encrypted from creation, and what the relay stores
-    ///   (governance and document history alike) holds no plaintext;
-    /// - a member device whose network fails right after asking for access
-    ///   still joins: the host retained the steward's frames and the steward
-    ///   kept redelivering, so the restarted device gets its Welcome;
-    /// - it reads what the steward wrote; once the policy drops it, the
-    ///   removal commit rotates the keys and later content is closed to it.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one transcript across two devices, a host outage and a restart"
-    )]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn channel_encryption_runs_end_to_end_through_the_workspace_host() {
-        use crate::shell::channel_encryption::ChannelAccess;
-        use crate::shell::channel_encryption::testing::{Directory, Policy};
-        use std::time::Instant;
-
-        const SECRET: &[u8] = b"quarterly figures nobody outside may read";
-        const LATER: &[u8] = b"written after the laptop lost access";
-        let user_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
-        let (a_key, a_cert) = enrol(&user_root, DeviceCapabilities::primary(), "desktop");
-        let (b_key, b_cert) = enrol(&user_root, DeviceCapabilities::member(), "laptop");
-        let device = |key: &ed25519_dalek::SigningKey| {
-            collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes())
-        };
-        let (relay, relay_state, _host_cert) = spawn_pinned_relay_for_two_members(
-            &user_root,
-            a_key.verifying_key().to_bytes(),
-            b_key.verifying_key().to_bytes(),
-        )
-        .await;
-        let (a, lookup_a) = identified_endpoint(&a_key).await;
-        let (b, lookup_b) = identified_endpoint(&b_key).await;
-        let identity = |key: &ed25519_dalek::SigningKey, cert: &DeviceCert| HostIdentity {
-            device_cert: cert.clone(),
-            device_signing_key: key.clone(),
-            workspace_device_certs: HashMap::new(),
-            workspace_revocations: HashMap::new(),
-            identity_paths: None,
-        };
-        let (cmd_a, rx_a, cmd_b, rx_b) = join_workspace_and_await_host_ready(
-            a,
-            lookup_a,
-            identity(&a_key, &a_cert),
-            b,
-            lookup_b,
-            identity(&b_key, &b_cert),
-            &relay,
-            HEARTBEAT_INTERVAL,
-        )
-        .await;
-        let room = crate::shell::state::RoomId::new();
-        let workspace = room.to_string();
-        let channel = collab_types::document_channel_id("so.tilo.writer", &workspace, "q3");
-        let artifact = collab_types::document_artifact_id("so.tilo.writer", &workspace, "q3");
-        let policy = Policy::default();
-        policy.allowed.lock().unwrap().insert(device(&b_key));
-        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        let mut steward = channel_service(
-            &a_key,
-            a_dir.path(),
-            Directory {
-                governs: true,
-                steward: device(&a_key),
-                policy: policy.clone(),
-            },
-        );
-        let member_directory = || Directory {
-            governs: false,
-            steward: device(&a_key),
-            policy: Policy::default(),
-        };
-        let steward_transport = ActorChannelTransport::new(cmd_a.clone(), rx_a, room);
-        let first_laptop = ActorChannelTransport::new(cmd_b.clone(), rx_b, room);
-
-        // Encrypted from creation; the laptop waits and asks once.
-        assert!(matches!(
-            steward.access(room, channel, Instant::now()),
-            ChannelAccess::Ready(_)
-        ));
-        let generation = steward.generation();
-        let mut member = channel_service(&b_key, b_dir.path(), member_directory());
-        assert!(matches!(
-            member.access(room, channel, Instant::now()),
-            ChannelAccess::Waiting
-        ));
-        member.pump(&first_laptop, Instant::now(), 1_000);
-        let mut tick = tokio::time::interval(Duration::from_millis(100));
-        tilo_test_env::within("the steward admits the laptop from its request", async {
-            while steward.generation() == generation {
-                tick.tick().await;
-                steward.pump(&steward_transport, Instant::now(), 1_000);
-            }
-        })
-        .await;
-
-        // The laptop's network fails before it processes any answer: its
-        // session to the host goes down and the process with everything it
-        // had queued is gone.
-        cmd_b
-            .send(NetCmd::DisconnectHost {
-                id: relay.node_addr().id,
-            })
-            .await
-            .unwrap();
-        drop(member);
-        drop(first_laptop);
-        drop(cmd_b);
-
-        // The laptop restarts: a fresh actor on the same device key, its
-        // channel state reopened from disk.
-        let (b_again, lookup_again) = identified_endpoint(&b_key).await;
-        let (cmd_again, _task) = Actor::spawn_reporting_addrs(
-            b_again,
-            lookup_again,
-            Some(identity(&b_key, &b_cert)),
-            Arc::new(Mutex::new(Vec::new())),
-        );
-        let (events, events_rx) = mpsc::channel(64);
-        cmd_again
-            .send(NetCmd::JoinWorkspace {
-                ws: 42,
-                on_event: events,
-            })
-            .await
-            .unwrap();
-        cmd_again
-            .send(NetCmd::ConnectHost {
-                addr: relay.node_addr(),
-                expectation: None,
-            })
-            .await
-            .unwrap();
-        let laptop = ActorChannelTransport::new(cmd_again, events_rx, room);
-        let mut member = channel_service(&b_key, b_dir.path(), member_directory());
-        let member_keys = tilo_test_env::within(
-            "the restarted laptop joins from retained and redelivered frames",
-            async {
-                loop {
-                    tick.tick().await;
-                    steward.pump(&steward_transport, Instant::now(), 1_000);
-                    member.pump(&laptop, Instant::now(), 1_000);
-                    if laptop.host_ready()
-                        && let ChannelAccess::Ready(keys) =
-                            member.access(room, channel, Instant::now())
-                    {
-                        break keys;
-                    }
-                }
-            },
-        )
-        .await;
-
-        // The steward writes; the laptop reads it through the host.
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
-            panic!("steward keys");
-        };
-        let (metadata, ciphertext) = keys
-            .seal_content(artifact, collab_types::ContentRetention::Checkpoint, SECRET)
-            .unwrap();
-        let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
-            ciphertext.clone(),
-            artifact,
-            device(&a_key),
-            collab_types::AttestationId::default(),
-            collab_types::OpKind::Change,
-            std::time::SystemTime::now(),
-            1,
-            metadata,
-        );
-        collab_types::sign_op(&mut op, &a_key).unwrap();
-        cmd_a
-            .send(NetCmd::Publish {
-                ws: 42,
-                msg: NeighbourMsg::AppDocument {
-                    peer: 1,
-                    app_id: "so.tilo.writer".into(),
-                    cluster_id: workspace.clone(),
-                    record_id: "q3".into(),
-                    envelope: Box::new(op),
-                },
-            })
-            .await
-            .unwrap();
-        let received =
-            tilo_test_env::within("the document reaches the laptop through the host", async {
-                loop {
-                    tick.tick().await;
-                    member.pump(&laptop, Instant::now(), 1_000);
-                    let next = laptop.documents.lock().unwrap().pop();
-                    if let Some(op) = next {
-                        break op;
-                    }
-                }
-            })
-            .await;
-        assert_eq!(
-            member_keys
-                .open_content(artifact, &received.encryption.unwrap(), &received.payload)
-                .unwrap()
-                .as_slice(),
-            SECRET
-        );
-
-        // What the host stored: ciphertext, and never the plaintext.
-        let mut stored = Vec::new();
-        every_file(relay_state.path(), &mut stored);
-        assert!(
-            stored.iter().any(|file| contains(file, &ciphertext)),
-            "the host retains the encrypted checkpoint"
-        );
-        assert!(
-            stored.iter().all(|file| !contains(file, SECRET)),
-            "no stored byte of the host holds the plaintext"
-        );
-
-        // The laptop loses access: removal rotates the keys.
-        policy.allowed.lock().unwrap().clear();
-        tilo_test_env::within("the laptop learns of its removal", async {
-            loop {
-                tick.tick().await;
-                steward.pump(&steward_transport, Instant::now(), 1_000);
-                member.pump(&laptop, Instant::now(), 1_000);
-                if matches!(
-                    member.access(room, channel, Instant::now()),
-                    ChannelAccess::Removed
-                ) {
-                    break;
-                }
-            }
-        })
-        .await;
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
-            panic!("steward keys");
-        };
-        let (metadata, later) = keys
-            .seal_content(artifact, collab_types::ContentRetention::Delta, LATER)
-            .unwrap();
-        assert!(
-            member_keys
-                .open_content(artifact, &metadata, &later)
-                .is_err()
-        );
     }
 }

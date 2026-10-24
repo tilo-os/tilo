@@ -138,9 +138,7 @@ impl ShellNetwork {
     /// Whether this device holds `room`: its replica is installed here, not
     /// merely being joined.
     pub(super) fn holds_room(&self, room: RoomId) -> bool {
-        self.replica
-            .lock()
-            .is_ok_and(|replica| replica.tree.read().holds_room(room))
+        self.tree.read().holds_room(room)
     }
 
     /// Whether another host than the one `room` was joined at answers for

@@ -107,7 +107,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_custody() {
                 let rig = Rig::new(&env).await;
                 if member_worker {
                     let workers = rig.state.host_workers.lock().unwrap();
-                    let admitted = workers.get(&903).unwrap();
+                    let admitted = workers.only(903).unwrap();
                     assert!(admitted.host_scope.is_none());
                     assert!(admitted.worker_registration.is_some());
                 }

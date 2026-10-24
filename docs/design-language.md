@@ -38,18 +38,19 @@ no appearance to get wrong.
 | Role | Colour | Used for | Never used for |
 |---|---|---|---|
 | On state | green `intent.on_state` (OKLCH 0.62/0.15/150 dark, 0.58/0.15/150 light), white knob or mark | a switch's track, a checked checkbox or radio, an active Quick Settings tile, a "connected" dot | sliders, selection, buttons |
-| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint | hover, resize grips, window edges, icons at rest, borders |
+| Accent | one hue, by default **the person's own colour** (`Emphasis::You`), settable in Appearance (`Emphasis::Tinted`) | a primary button's fill (`intent.accent`, white label), the caret, the text selection, the keyboard focus ring, links (`intent.accent_ink`), the selected row's lift tint, a value's fill (`intent.value_fill`: a slider's filled track, a progress bar, a gauge) | hover, resize grips, window edges, icons at rest, borders |
 | Presence | the twelve presence hues | other people: avatars, cursors, their selection, what they are doing | anything that is not a person |
 | Status | muted danger, warning, success, info (C ≤ 0.13) | status text, badges, a destructive button's label | decoration |
-| Neutral | everything else | surfaces, ink, icons, hairlines, sliders and progress (`intent.neutral_fill`) | — |
+| Neutral | everything else | surfaces, ink, icons, hairlines | — |
 
 - **Focus ring:** keyboard focus only (`ui::focus_visible`), on every
   focusable control. A pointer press never shows it. A text field's focus is
   its caret.
 - **Window edge resize grip:** neutral ink at rest, primary ink while
   dragging; never the accent.
-- **Slider:** strong neutral ink on a raised track. A value is not an on
-  state.
+- **Slider and progress:** the value is the accent as a mark
+  (`intent.value_fill`) on a lift of the ground, never the text colour. A
+  value is not an on state.
 - **Buttons:** primary is the accent fill with a white label; secondary the
   raised level; quiet (`ButtonRole::Plain`) has no fill and lifts on hover;
   destructive is secondary with a danger label, filled only inside the
@@ -327,7 +328,7 @@ content, never geometry or colour (`ui::widget::primitives`).
 | `Chip` | people, tags and filters only |
 | `Toggle`, `Checkbox`, `Checkbox::radio` | the on-state green, keyboard-only focus ring |
 | `ToggleGroup` (segmented) | raised track, item-radius thumb |
-| `Slider` | neutral fill on a raised track |
+| `Slider` | the value fill on a lifted track |
 | `ListRow` | leading icon 16 / avatar 24 / avatar 40, a text stack, a trailing value, control or chevron; hover lifts, selection is the accent-tinted lift |
 | `DisclosureRow` | a row whose chevron turns and whose body opens in place on `motion::Disclose`; one open at a time in a `DisclosureGroup` |
 | `Section` | an optional heading and rows, separated from the next by space, never boxed |
