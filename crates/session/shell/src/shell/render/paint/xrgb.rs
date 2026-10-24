@@ -188,16 +188,21 @@ impl VelloDrmBridge {
     /// masks already deduplicate the raster work, while the copies below account for their actual
     /// (possibly overlapping) payload. A sparse dispatch with [`MAX_DAMAGE_RECTS`] distinct
     /// regions is first coalesced ([`coalesce_damage`]) and, with the output
-    /// [`damage_is_profitable`] no longer, remains a deliberate full-frame boundary.
+    /// [`damage_is_profitable`] no longer, remains a deliberate full-frame boundary. What counts
+    /// there is the pixels the rectangles cover, each once: overlapping damage repaints its
+    /// union, not its sum.
     pub(super) fn normalize_damage(
         damage: &[vello::FineDamageRect],
         size: (u32, u32),
     ) -> Option<Vec<vello::FineDamageRect>> {
-        let normalized = Self::normalize_unbounded(damage, size)?;
+        if damage.is_empty() || !damage.iter().all(|&rect| Self::inside(rect, size)) {
+            return None;
+        }
         let (width, height) = size;
         // More regions than one dispatch takes are merged, never refused: a repaint of a little
-        // more than the damage is still far cheaper than a dense frame.
-        let normalized = coalesce_damage(normalized, MAX_DAMAGE_RECTS);
+        // more than the damage is still far cheaper than a dense frame. Coalescing drops the
+        // rectangles another contains on the way.
+        let normalized = coalesce_damage(damage.to_vec(), MAX_DAMAGE_RECTS);
         let dirty_pixels = damage_area(&normalized);
         let full_pixels = u64::from(width).saturating_mul(u64::from(height));
         if !damage_is_profitable(dirty_pixels, full_pixels) {
@@ -226,16 +231,9 @@ impl VelloDrmBridge {
         if damage.is_empty() {
             return None;
         }
-        let (width, height) = size;
         let mut normalized = Vec::with_capacity(damage.len());
         for &rect in damage {
-            if rect.width == 0
-                || rect.height == 0
-                || rect.x >= width
-                || rect.y >= height
-                || rect.x.checked_add(rect.width).is_none_or(|x1| x1 > width)
-                || rect.y.checked_add(rect.height).is_none_or(|y1| y1 > height)
-            {
+            if !Self::inside(rect, size) {
                 return None;
             }
 
@@ -260,6 +258,14 @@ impl VelloDrmBridge {
             }
         }
         Some(normalized)
+    }
+
+    /// `rect` is non-empty and lies wholly inside a `size` target.
+    fn inside(rect: vello::FineDamageRect, (width, height): (u32, u32)) -> bool {
+        let fits = |start: u32, length: u32, limit: u32| {
+            length != 0 && start.checked_add(length).is_some_and(|end| end <= limit)
+        };
+        fits(rect.x, rect.width, width) && fits(rect.y, rect.height, height)
     }
 
     #[inline]

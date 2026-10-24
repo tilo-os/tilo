@@ -34,6 +34,7 @@ pub use super::xrgb_history::{
 };
 
 mod bridge;
+mod damage;
 mod diagnostics;
 mod output_view;
 mod retained_target;
@@ -48,6 +49,7 @@ mod tests;
 #[cfg(target_os = "linux")]
 mod window_cycle_memory_tests;
 mod xrgb;
+pub(crate) use damage::{coalesce_damage, damage_area};
 use diagnostics::DispatchStageObserver;
 use output_view::OutputSurface;
 pub use output_view::{OutputSignal, OutputTarget, OutputView};
@@ -271,77 +273,6 @@ pub(crate) const MAX_DAMAGE_RECTS: usize = 64;
 /// repaints its tile) is therefore sparse; only a near-whole-screen change renders densely.
 pub(crate) fn damage_is_profitable(dirty_pixels: u64, full_pixels: u64) -> bool {
     full_pixels != 0 && dirty_pixels.saturating_mul(4) < full_pixels.saturating_mul(3)
-}
-
-/// The pixels `rects` cover, an overlap counted once per rectangle.
-pub(crate) fn damage_area(rects: &[vello::FineDamageRect]) -> u64 {
-    rects.iter().fold(0_u64, |pixels, rect| {
-        pixels.saturating_add(u64::from(rect.width).saturating_mul(u64::from(rect.height)))
-    })
-}
-
-fn damage_union(a: vello::FineDamageRect, b: vello::FineDamageRect) -> vello::FineDamageRect {
-    let x = a.x.min(b.x);
-    let y = a.y.min(b.y);
-    let right = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
-    let bottom =
-        a.y.saturating_add(a.height)
-            .max(b.y.saturating_add(b.height));
-    vello::FineDamageRect {
-        x,
-        y,
-        width: right.saturating_sub(x),
-        height: bottom.saturating_sub(y),
-    }
-}
-
-/// `rects` without the ones another contains, merged down to at most `limit` rectangles when
-/// there are more. Each merge joins the pair whose union adds the least area, so a caret blinking
-/// at one place stays one small rectangle however many frames repeated it. Merging only ever
-/// repaints more than the damage, which is correct; it never loses a pixel.
-pub(crate) fn coalesce_damage(
-    rects: Vec<vello::FineDamageRect>,
-    limit: usize,
-) -> Vec<vello::FineDamageRect> {
-    let right = |rect: &vello::FineDamageRect| rect.x.saturating_add(rect.width);
-    let bottom = |rect: &vello::FineDamageRect| rect.y.saturating_add(rect.height);
-    let contains = |outer: &vello::FineDamageRect, inner: &vello::FineDamageRect| {
-        outer.x <= inner.x
-            && outer.y <= inner.y
-            && right(outer) >= right(inner)
-            && bottom(outer) >= bottom(inner)
-    };
-    let mut kept: Vec<vello::FineDamageRect> = Vec::with_capacity(rects.len());
-    for rect in rects {
-        if kept.iter().any(|existing| contains(existing, &rect)) {
-            continue;
-        }
-        kept.retain(|existing| !contains(&rect, existing));
-        kept.push(rect);
-    }
-    let limit = limit.max(1);
-    while kept.len() > limit {
-        let mut best: Option<(u64, usize, usize)> = None;
-        for (i, a) in kept.iter().enumerate() {
-            for (j, b) in kept.iter().enumerate().skip(i.saturating_add(1)) {
-                let union = damage_union(*a, *b);
-                let growth = damage_area(&[union])
-                    .saturating_sub(damage_area(&[*a]).saturating_add(damage_area(&[*b])));
-                if best.is_none_or(|(least, _, _)| growth < least) {
-                    best = Some((growth, i, j));
-                }
-            }
-        }
-        let Some((_, i, j)) = best else { break };
-        let (Some(a), Some(b)) = (kept.get(i).copied(), kept.get(j).copied()) else {
-            break;
-        };
-        kept.swap_remove(j);
-        if let Some(slot) = kept.get_mut(i) {
-            *slot = damage_union(a, b);
-        }
-    }
-    kept
 }
 
 /// Mapped readback layout needed by the direct XRGB swizzle.
