@@ -99,9 +99,9 @@ fn netns_role() {
     let mut service = service(&state, &role);
     match role.as_str() {
         "exit" => {
-            ip("link add upstream type dummy");
-            ip(&format!("address add {}/24 dev upstream", SERVER.ip()));
-            ip("link set upstream up");
+            // The far side of the exit: an address of its own, which the
+            // client's packets reach once the exit has forwarded them.
+            ip(&format!("address add {}/32 dev lo", SERVER.ip()));
             let fd = opened(service.handle(
                 caller,
                 Request::OpenExit {
@@ -256,14 +256,22 @@ fn machine_ready() -> Result<(), String> {
     if !Path::new("/dev/net/tun").exists() {
         return Err("no /dev/net/tun".into());
     }
+    // nftables over netlink is what sandboxes most often refuse, so ask for
+    // it in the very namespaces the roles run in.
     let status = Command::new("unshare")
-        .args(["--user", "--map-root-user", "--net", "--", "true"])
+        .args(["--user", "--map-root-user", "--net", "--"])
+        .arg(&config.nft)
+        .args(["list", "ruleset"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map_err(|error| format!("unshare: {error}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("unshare --user --map-root-user --net: {status}"))
+        Err(format!(
+            "nft in a namespace of unshare --user --map-root-user --net: {status}"
+        ))
     }
 }
 
