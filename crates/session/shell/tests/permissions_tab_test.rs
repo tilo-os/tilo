@@ -24,8 +24,8 @@ use shell::shell::build_tilo_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
-    Access, CapOverride, Capability, Expiry, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, Scope,
-    Subject, Workspace, WorkspaceId, WorkspaceTree,
+    Access, CapOverride, Capability, Expiry, GRANT_ALWAYS, GRANT_SESSION, GovernanceRequest,
+    ResourceRef, Scope, Subject, Workspace, WorkspaceId, WorkspaceTree,
 };
 use tilo_desktop::workspace_settings::{self, GrantDraft, SubjectKind};
 
@@ -144,6 +144,18 @@ fn authority(chrome: &Chrome) -> (Option<tilo_action_policy::RoomPolicy>, Vec<Ca
             .map(|ws| ws.sandbox.clone())
             .unwrap_or_default(),
     )
+}
+
+/// What the chrome asked the active room's governor for. Nothing a member
+/// control picks changes the room here: its governor's commit does, which
+/// the one-host scenario of the member controls drives.
+fn asked_of_governor(chrome: &Chrome) -> Vec<GovernanceRequest> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.governance_requests
+        .iter()
+        .map(|(_, request)| request.clone())
+        .collect()
 }
 
 /// Whether `person` may change the active room's contents outright.
@@ -290,7 +302,7 @@ is tied to st's borrow, so it can't be dropped before t's last use"
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
 fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
-    // Phase `clicking_grant_writes_a_capability_the_decision_function_honours`.
+    // Phase `clicking_grant_asks_the_governor_for_exactly_the_chosen_capability`.
     {
         let tree = tree_with_grants(vec![(
             "firefox",
@@ -345,22 +357,15 @@ fn grant_and_revoke_clicks_are_owner_only_and_deliberate() {
         let submit = host.grant_composer_rects().unwrap().submit;
         click(&mut host, submit);
 
-        let st = chrome.borrow();
-        let t = st.tree();
-        let ws = t.desktop.active_workspace().expect("active workspace");
+        let asked = asked_of_governor(&chrome);
+        let [GovernanceRequest::GrantSandbox(written)] = asked.as_slice() else {
+            panic!("submitting asks the room's governor for one capability: {asked:?}");
+        };
+        assert_eq!(written.subject, Subject::app("firefox"));
         assert!(
-            ws.allows(
-                &ws.actor_for_app("firefox"),
-                &ResourceRef::Device("microphone".into()),
-                Access::Read
-            ),
-            "the grant must start working, not merely start rendering"
+            matches!(&written.scope, Scope::Device(d) if d == "microphone"),
+            "the chosen capability is asked for"
         );
-        let written = ws
-            .sandbox
-            .iter()
-            .find(|c| matches!(&c.scope, Scope::Device(d) if d == "microphone"))
-            .expect("the capability is on the workspace");
         assert_eq!(
             written.expiry,
             Expiry::EndOfSession,
@@ -517,7 +522,7 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         }
     }
 
-    // Phase `role_chip_opens_an_explicit_choice_before_changing_what_the_member_may_do`.
+    // Phase `role_chip_opens_an_explicit_choice_before_asking_for_the_role`.
     {
         let tree = tree_with_members();
         let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
@@ -560,23 +565,26 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             }),
             "assistive technology must learn that a permission decision now owns focus"
         );
+        assert!(
+            asked_of_governor(&chrome).is_empty(),
+            "opening the chooser asks for nothing"
+        );
         let editor = host.member_sheet_option_rects_for_tests()[2];
         click(&mut host, editor);
 
-        let st = chrome.borrow();
-        let t = st.tree();
-        let ws = t.desktop.active_workspace().unwrap();
         assert_eq!(
-            ws.role_of("ada"),
-            Some(shell::shell::state::CapRole::Editor)
-        );
-        assert!(
-            may_change(ws, "ada"),
-            "promoting to Editor must actually grant write authority"
+            asked_of_governor(&chrome),
+            vec![GovernanceRequest::Policy(
+                tilo_action_policy::Change::SetRole {
+                    person: "ada".into(),
+                    role: tilo_action_policy::Role::Editor,
+                }
+            )],
+            "choosing Editor asks the room's governor for exactly that role"
         );
     }
 
-    // Phase `removing_a_member_takes_their_capabilities_with_them`.
+    // Phase `removing_a_member_asks_for_it_and_narrows_what_they_reached_here`.
     {
         let mut tree = tree_with_members();
         let owner = shell::shell::state::local_user_id_for_room(
@@ -605,22 +613,42 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             .cloned()
             .expect("ada is in the roster");
 
+        let held_by_ada: Vec<String> = capabilities(&chrome)
+            .into_iter()
+            .filter(|cap| cap.subject == Subject::person("ada"))
+            .map(|cap| cap.id)
+            .collect();
         click(&mut host, ada.2);
         assert!(host.member_sheet_is_open_for_tests());
         assert!(
             capabilities(&chrome)
                 .iter()
-                .any(|cap| cap.subject == Subject::person("ada")),
+                .any(|cap| cap.subject == Subject::person("ada"))
+                && asked_of_governor(&chrome).is_empty(),
             "the first click only opens the removal confirmation"
         );
         paint(&mut host);
         let confirm = host.member_sheet_option_rects_for_tests()[2];
         click(&mut host, confirm);
 
+        let mut expected = vec![GovernanceRequest::Policy(
+            tilo_action_policy::Change::RemoveMember {
+                person: "ada".into(),
+            },
+        )];
+        expected.extend(
+            held_by_ada
+                .into_iter()
+                .map(GovernanceRequest::RevokeSandbox),
+        );
+        assert_eq!(
+            asked_of_governor(&chrome),
+            expected,
+            "confirming asks the room's governor to remove the member and what they held"
+        );
         let st = chrome.borrow();
         let t = st.tree();
         let ws = t.desktop.active_workspace().unwrap();
-        assert_eq!(ws.role_of("ada"), None, "no longer a member");
         assert!(
             !ws.allows(
                 &ws.actor_for_person(&"ada".to_string()),
@@ -652,6 +680,10 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             authority(&chrome),
             before,
             "a non-owner driving the member controls must change nothing"
+        );
+        assert!(
+            asked_of_governor(&chrome).is_empty(),
+            "and asks the governor for nothing"
         );
     }
 
@@ -717,12 +749,15 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let editor = host.member_sheet_option_rects_for_tests()[2];
         click(&mut host, editor);
 
-        let st = chrome.borrow();
-        let t = st.tree();
         assert_eq!(
-            t.desktop.active_workspace().unwrap().role_of("ada"),
-            Some(shell::shell::state::CapRole::Editor),
-            "a delegated administrator's choice takes effect"
+            asked_of_governor(&chrome),
+            vec![GovernanceRequest::Policy(
+                tilo_action_policy::Change::SetRole {
+                    person: "ada".into(),
+                    role: tilo_action_policy::Role::Editor,
+                }
+            )],
+            "a delegated administrator's choice is asked of the governor"
         );
     }
 
@@ -826,30 +861,11 @@ fn an_app_allowed_another_apps_action_is_listed_under_app_actions_and_revocable(
     let confirm = host.member_sheet_option_rects_for_tests()[2];
     click(&mut host, confirm);
 
-    assert!(
-        authority(&chrome)
-            .0
-            .is_some_and(|policy| policy.grants.iter().all(|g| g.id.as_str() != granted)),
-        "revoking in Settings removes the grant"
+    assert_eq!(
+        asked_of_governor(&chrome),
+        vec![GovernanceRequest::Policy(
+            tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(granted))
+        )],
+        "revoking in Settings asks the room's governor to take the grant back"
     );
-    let still_allowed = chrome
-        .borrow()
-        .tree()
-        .desktop
-        .active_workspace()
-        .is_some_and(|ws| {
-            ws.subject_authority(tilo_action_policy::Subject::app("so.tilo.shortcuts"))
-                .decide(
-                    &ws.node()
-                        .app("so.tilo.agent")
-                        .kind("agent.transform")
-                        .resource("agent.transform:freeform")
-                        .action("freeform"),
-                    tilo_action_policy::ActionKind::Undoable,
-                    &tilo_desktop_model::context_at(tilo_clock::unix_now()),
-                )
-                .answer
-                == tilo_action_policy::Answer::Allow
-        });
-    assert!(!still_allowed, "the app may no longer use the action");
 }
