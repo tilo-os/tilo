@@ -1,4 +1,4 @@
-//! "Uninstall <name>?": the one question asked before an app leaves the
+//! "Uninstall \<name\>?": the one question asked before an app leaves the
 //! person's apps, whichever door it was asked from (Files, search, the
 //! Store).
 //!

@@ -503,7 +503,7 @@ impl PeerView {
     /// Run `wake` on a media thread each time a pushed picture finishes
     /// decoding, so the compositor loop wakes to collect it with
     /// [`Self::collect_late_picture`] the moment it is ready, instead of
-    /// polling every [`LATE_PICTURE_POLL`] while one is outstanding.
+    /// polling every `LATE_PICTURE_POLL` while one is outstanding.
     pub fn set_picture_wake(&mut self, wake: Option<media::realtime::PictureWake>) {
         self.decoder.set_picture_wake(wake.clone());
         self.picture_wake = wake;

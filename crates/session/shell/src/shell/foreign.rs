@@ -244,8 +244,8 @@ pub fn composites(code: Fourcc, modifier: Modifier) -> bool {
 
 /// Every format the importer composites, as the compositor advertises it: the
 /// single list behind `zwp_linux_dmabuf_v1` feedback, so a client can only pick
-/// what [`CpuLayout::for_fourcc`] reads. Each is `Linear`
-/// ([`modifier_is_cpu_readable`]).
+/// what `CpuLayout::for_fourcc` reads. Each is `Linear`
+/// (`modifier_is_cpu_readable`).
 #[cfg(target_os = "linux")]
 pub fn importable_formats() -> Vec<smithay::backend::allocator::Format> {
     use smithay::backend::allocator::Format;
@@ -3819,7 +3819,7 @@ impl ForeignFrameStore {
     }
 
     /// A person is dragging an edge of `id`'s window and `fixed` holds still
-    /// (`None`: nothing holds). See [`ForeignEntry::frame_rect`].
+    /// (`None`: nothing holds). See `ForeignEntry::frame_rect`.
     pub fn set_resize_anchor(&self, id: SurfaceId, fixed: Option<ui::widget::WindowEdge>) {
         self.with_entry(id, |e| {
             e.resize_anchor = fixed.map(|fixed| ResizeAnchor {
@@ -3869,7 +3869,7 @@ impl ForeignFrameStore {
     /// tile draws it. The window's geometry is drawn at the corner of
     /// [`Self::target_box`], so a shadow or resize border the client keeps
     /// around it lies off the tile, and the image is scaled as
-    /// [`ForeignSurfaceWidget::fit_rect`] scales it.
+    /// `ForeignSurfaceWidget::fit_rect` scales it.
     pub fn surface_point(&self, id: SurfaceId, tile: Rect, (x, y): (f64, f64)) -> (f64, f64) {
         let target = self.target_box(id, tile);
         let Some(layout) = self.layout(id) else {
