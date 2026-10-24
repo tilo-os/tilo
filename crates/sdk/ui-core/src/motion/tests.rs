@@ -411,8 +411,10 @@ fn ambient_chrome_leaves_at_once_and_arrives_gently_unless_asked() {
 }
 
 /// Every routine standard motion, for the rules they all keep.
-fn routine_specs() -> [MotionSpec; 10] {
+fn routine_specs() -> [MotionSpec; 12] {
     [
+        ControlChange::MOVE,
+        ControlChange::SHOW,
         Appear::SPEC,
         Drill::SPEC,
         Disclose::SPEC,
@@ -786,4 +788,133 @@ fn a_frame_reads_its_motions_at_one_instant_across_its_layout_passes() {
         frame_now() >= seen[0],
         "outside the frame the clock runs on"
     );
+}
+
+#[test]
+fn a_controls_thumb_retargets_mid_flight_from_where_it_is_drawn() {
+    let now = crate::time::now();
+    let mut thumb = Thumb::at(0.0);
+    thumb.go(1.0, on(), MotionSource::Pointer, now);
+    let mid = ms(now, 40);
+    let drawn = thumb.get(mid);
+    assert!(drawn > 0.0 && drawn < 1.0, "on its way: {drawn}");
+    // A second click mid-flight reverses from the drawn place, no jump.
+    thumb.go(0.0, on(), MotionSource::Pointer, mid);
+    assert!((thumb.get(mid) - drawn).abs() < 1e-9, "the reversal jumped");
+    assert_eq!(thumb.target(), 0.0);
+    let rest = thumb.settles_at().expect("moving");
+    assert_eq!(thumb.get(rest), 0.0, "it lands exactly");
+    assert!(!thumb.is_moving(rest));
+}
+
+#[test]
+fn a_key_or_an_action_lands_a_control_at_once() {
+    let now = crate::time::now();
+    for source in [MotionSource::Keyboard, MotionSource::Action] {
+        let mut thumb = Thumb::at(0.0);
+        thumb.go(1.0, on(), source, now);
+        assert_eq!(thumb.get(now), 1.0, "{source:?}");
+        assert!(!thumb.is_moving(now), "{source:?}");
+        let mut mark = Mark::at(false);
+        mark.set(true, on(), source, now);
+        assert_eq!(mark.level(now), 1.0, "{source:?}");
+        assert!(!mark.is_moving(now), "{source:?}");
+    }
+}
+
+#[test]
+fn reduced_motion_lands_a_controls_position_and_fades_what_it_shows() {
+    let now = crate::time::now();
+    let mut thumb = Thumb::at(0.0);
+    thumb.go(1.0, reduced(), MotionSource::Pointer, now);
+    assert_eq!(thumb.get(now), 1.0, "the knob lands");
+    assert!(!thumb.is_moving(now));
+    let mut mark = Mark::at(false);
+    mark.set(true, reduced(), MotionSource::Pointer, now);
+    let fast = Motion::default().durations.fast();
+    let level = mark.level(ms(now, 40));
+    assert!(level > 0.0 && level < 1.0, "the tint fades: {level}");
+    let rest = mark.settles_at().expect("fading");
+    assert!(rest <= now + fast + Duration::from_millis(1));
+}
+
+#[test]
+fn a_settled_control_wants_no_frames() {
+    testing_clean_frames();
+    let now = crate::time::now();
+    let mut thumb = Thumb::at(1.0);
+    let mut mark = Mark::at(true);
+    // Asking for where it already is starts nothing.
+    thumb.go(1.0, on(), MotionSource::Pointer, now);
+    mark.set(true, on(), MotionSource::Pointer, now);
+    assert!(thumb.settles_at().is_none() && mark.settles_at().is_none());
+    assert!(!frames_wanted(now), "a settled control asks for nothing");
+    // A click asks for frames until it settles, and not one after.
+    thumb.go(0.0, on(), MotionSource::Pointer, now);
+    mark.set(false, on(), MotionSource::Pointer, now);
+    let rest = thumb
+        .settles_at()
+        .into_iter()
+        .chain(mark.settles_at())
+        .max()
+        .expect("moving");
+    assert!(frames_wanted(ms(now, 10)));
+    assert!(!frames_wanted(rest));
+    assert!(!thumb.is_moving(rest) && !mark.is_moving(rest));
+}
+
+/// The frame wish of an earlier test on this thread is cleared.
+fn testing_clean_frames() {
+    let far = crate::time::now() + Duration::from_secs(3600);
+    let _ = frames_wanted(far);
+}
+
+#[test]
+fn a_held_thumb_is_where_the_hand_is_and_settles_with_its_velocity() {
+    let now = crate::time::now();
+    let mut thumb = Thumb::at(0.0);
+    // A click sends it on its way; the hand takes it mid-flight.
+    thumb.go(1.0, on(), MotionSource::Pointer, now);
+    for (i, hand) in [0.3, 0.42, 0.55, 0.61].into_iter().enumerate() {
+        thumb.track(hand);
+        let at = ms(now, 20 + 8 * u64::try_from(i).unwrap());
+        assert_eq!(thumb.get(at), hand, "1:1 with the hand");
+        assert!(!thumb.is_moving(at), "nothing runs while it is held");
+    }
+    // Let go moving right: it carries on toward the side it was thrown.
+    let released = ms(now, 60);
+    thumb.release(1.0, 4.0, on(), released);
+    let just_after = thumb.get(released + Duration::from_millis(8));
+    assert!(
+        just_after > 0.61,
+        "the release velocity carries: {just_after}"
+    );
+    let rest = thumb.settles_at().expect("settling");
+    assert_eq!(thumb.get(rest), 1.0);
+    // Never drawn past the end of its travel, even thrown hard.
+    let mut thrown = Thumb::at(0.9);
+    thrown.release(1.0, 40.0, on(), now);
+    assert!((0..200).all(|t| thrown.get(ms(now, t)) <= 1.0));
+    // Reduced motion: the release lands.
+    let mut calm = Thumb::at(0.4);
+    calm.release(1.0, 4.0, reduced(), now);
+    assert_eq!(calm.get(now), 1.0);
+}
+
+#[test]
+fn a_controls_mark_goes_quicker_than_it_comes() {
+    let now = crate::time::now();
+    let mut mark = Mark::at(false);
+    mark.set(true, on(), MotionSource::Pointer, now);
+    let came = mark.settles_at().expect("coming") - now;
+    let mut leaving = Mark::at(true);
+    leaving.set(false, on(), MotionSource::Pointer, now);
+    let went = leaving.settles_at().expect("going") - now;
+    assert!(went < came, "out {went:?} vs in {came:?}");
+    // Unchecked mid-way, it goes from what is drawn.
+    let mid = ms(now, 40);
+    let drawn = mark.level(mid);
+    mark.set(false, on(), MotionSource::Pointer, mid);
+    assert!((mark.level(mid) - drawn).abs() < 1e-6);
+    assert!(!mark.is_on());
 }

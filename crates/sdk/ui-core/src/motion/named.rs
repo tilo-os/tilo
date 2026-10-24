@@ -1169,3 +1169,185 @@ impl Attention {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 12. Controls
+// ---------------------------------------------------------------------------
+
+/// A control showing its new value: a switch's knob and tint, a checkbox's
+/// fill and mark, a slider's thumb gliding to where its track was pressed,
+/// a badge's count.
+///
+/// [`Self::MOVE`] is where the moving part is: `fast`, critically damped;
+/// reduced motion and a shortcut land it. [`Self::SHOW`] is what the control
+/// shows for its state (a tint, a fill, a mark): `fast`, still a fade at
+/// `fast` under reduced motion; a shortcut lands it. Only a click or a
+/// finger moves a control: a key, an assistive action or a value the person
+/// did not just cause (a sync) shows on the next frame.
+pub struct ControlChange;
+
+impl ControlChange {
+    pub const MOVE: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
+    pub const SHOW: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Fades,
+        shortcut: Shortcut::Lands,
+    };
+}
+
+/// Ask the frame pump for frames until a motion that just started settles.
+fn ask_frames_until(settles: Option<Instant>) {
+    if let Some(until) = settles {
+        super::clock::want_frames_until(until);
+    }
+}
+
+/// A control's moving part (a switch's knob, a slider's thumb) as a share
+/// of its travel, `0..=1`.
+///
+/// Sent somewhere by a click it moves on [`ControlChange::MOVE`], and a
+/// second click mid-flight retargets from where it is drawn. Held by the
+/// hand it is exactly where the hand is ([`Self::track`]); let go, it
+/// settles carrying the hand's velocity ([`Self::release`]). At rest it
+/// asks for nothing.
+#[derive(Clone, Copy, Debug)]
+pub struct Thumb {
+    at: MotionValue<f64>,
+}
+
+impl Default for Thumb {
+    fn default() -> Self {
+        Self::at(0.0)
+    }
+}
+
+impl Thumb {
+    /// Resting at `position`.
+    #[must_use]
+    pub fn at(position: f64) -> Self {
+        Self {
+            at: MotionValue::new(position.clamp(0.0, 1.0)),
+        }
+    }
+
+    /// Go to `to` as `source` asked: a click or a finger moves it, a key or
+    /// an action lands it.
+    #[track_caller]
+    pub fn go(&mut self, to: f64, motion: EffectiveMotion, source: MotionSource, now: Instant) {
+        let timing = ControlChange::MOVE.timing(Direction::Enter, motion, source);
+        self.at.set(to.clamp(0.0, 1.0), timing, now);
+        ask_frames_until(self.at.settles_at());
+    }
+
+    /// Held by the hand at `to`: drawn exactly there, from this frame.
+    pub fn track(&mut self, to: f64) {
+        self.at.snap(to.clamp(0.0, 1.0));
+    }
+
+    /// Let go, settling on `to` with the hand's `velocity` (travel per
+    /// second). Reduced motion lands it.
+    #[track_caller]
+    pub fn release(&mut self, to: f64, velocity: f64, motion: EffectiveMotion, now: Instant) {
+        let timing = ControlChange::MOVE.timing(Direction::Enter, motion, MotionSource::Gesture);
+        self.at.release(to.clamp(0.0, 1.0), velocity, timing, now);
+        ask_frames_until(self.at.settles_at());
+    }
+
+    /// Rest at `to` at once.
+    pub fn snap(&mut self, to: f64) {
+        self.at.snap(to.clamp(0.0, 1.0));
+    }
+
+    /// Where it is drawn at `now`, never past either end of its travel.
+    #[track_caller]
+    pub fn get(&self, now: Instant) -> f64 {
+        self.at.get(now).clamp(0.0, 1.0)
+    }
+
+    /// Where it is going (or is, at rest).
+    pub fn target(&self) -> f64 {
+        self.at.target()
+    }
+
+    #[track_caller]
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.at.is_moving(now)
+    }
+
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.at.settles_at()
+    }
+}
+
+/// What a control shows for its state, `0` (off) to `1` (on): a switch's
+/// tint, a checkbox's fill and mark, a radio's dot.
+///
+/// It comes in over `fast` and goes quicker (exits are shorter), on
+/// [`ControlChange::SHOW`]; under reduced motion it still fades at `fast`;
+/// a shortcut lands it. A change mid-flight continues from what is drawn.
+#[derive(Clone, Copy, Debug)]
+pub struct Mark {
+    level: MotionValue<f64>,
+}
+
+impl Default for Mark {
+    fn default() -> Self {
+        Self::at(false)
+    }
+}
+
+impl Mark {
+    /// How much quicker the mark goes than it comes: the cross-fade's
+    /// outgoing share.
+    const OUT_BY: f64 = 0.6;
+
+    /// Resting on or off.
+    #[must_use]
+    pub fn at(on: bool) -> Self {
+        Self {
+            level: MotionValue::new(if on { 1.0 } else { 0.0 }),
+        }
+    }
+
+    /// Show `on` as `source` asked.
+    #[track_caller]
+    pub fn set(&mut self, on: bool, motion: EffectiveMotion, source: MotionSource, now: Instant) {
+        let timing = match ControlChange::SHOW.timing(Direction::of(on), motion, source) {
+            Timing::Spring(spring) if !on => Timing::Spring(spring.slowed(Self::OUT_BY)),
+            timing => timing,
+        };
+        self.level.set(if on { 1.0 } else { 0.0 }, timing, now);
+        ask_frames_until(self.level.settles_at());
+    }
+
+    /// Rest on or off at once.
+    pub fn snap(&mut self, on: bool) {
+        self.level.snap(if on { 1.0 } else { 0.0 });
+    }
+
+    /// Whether it is on (or turning on).
+    pub fn is_on(&self) -> bool {
+        self.level.target() >= 0.5
+    }
+
+    /// How much of the on state shows at `now`, `0..=1`.
+    #[track_caller]
+    pub fn level(&self, now: Instant) -> f32 {
+        unit_opacity(self.level.get(now))
+    }
+
+    #[track_caller]
+    pub fn is_moving(&self, now: Instant) -> bool {
+        self.level.is_moving(now)
+    }
+
+    pub fn settles_at(&self) -> Option<Instant> {
+        self.level.settles_at()
+    }
+}
