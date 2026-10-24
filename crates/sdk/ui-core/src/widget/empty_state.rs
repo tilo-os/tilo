@@ -911,11 +911,17 @@ impl EmptyState {
     /// message and action label are resolved through the i18n layer, like
     /// [`Text`](crate::widget::Text).
     pub fn new(title: impl Into<String>) -> Self {
+        Self::new_owned(title.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(title: String) -> Self {
         let mut state = Self {
             icon: None,
             illustration: None,
             error: false,
-            title: title.into(),
+            title,
             message: None,
             action_label: None,
             action_id: None,

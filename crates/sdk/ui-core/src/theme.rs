@@ -116,7 +116,7 @@ pub const DOCUMENT_ROOM: f64 = 2.6;
 /// against a desktop display across the desk.
 pub const MAX_DOCUMENT_ZOOM: f32 = 1.5;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Theme {
     pub name: String,
     /// The document this theme was built from, as applied: after the
@@ -170,6 +170,55 @@ pub struct Theme {
     /// to edge. `None` when no host said; nothing then keeps out of corners.
     /// Set where the window is drawn, not part of the configured theme.
     pub surface: Option<SurfaceShape>,
+}
+
+// Written out rather than derived: a derived `eq` is `#[inline]`, so every
+// app whose generic toolkit code compares themes (a tree view's or an
+// embedded view's layout) compiled its own copy of this comparison, about
+// 7 KB each. The destructuring keeps it in step with the fields.
+impl PartialEq for Theme {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            name,
+            document,
+            tokens,
+            border_standard,
+            border_focus,
+            text_primary,
+            text_dim,
+            text_tertiary,
+            status_success,
+            radius_standard,
+            padding_standard,
+            gap_standard,
+            reduce_motion,
+            reduce_transparency,
+            text_scale,
+            ui_scale,
+            caret_width,
+            forced_colors,
+            surface,
+        } = self;
+        *name == other.name
+            && *document == other.document
+            && *tokens == other.tokens
+            && *border_standard == other.border_standard
+            && *border_focus == other.border_focus
+            && *text_primary == other.text_primary
+            && *text_dim == other.text_dim
+            && *text_tertiary == other.text_tertiary
+            && *status_success == other.status_success
+            && *radius_standard == other.radius_standard
+            && *padding_standard == other.padding_standard
+            && *gap_standard == other.gap_standard
+            && *reduce_motion == other.reduce_motion
+            && *reduce_transparency == other.reduce_transparency
+            && *text_scale == other.text_scale
+            && *ui_scale == other.ui_scale
+            && *caret_width == other.caret_width
+            && *forced_colors == other.forced_colors
+            && *surface == other.surface
+    }
 }
 
 impl Clone for Theme {

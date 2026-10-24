@@ -663,9 +663,15 @@ enum PropertyAction {
 
 impl Property {
     pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self::new_owned(label.into(), value.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String, value: String) -> Self {
         Self {
-            label: label.into(),
-            value: value.into(),
+            label,
+            value,
             kind: TextKind::Prose,
             tone: Tone::Neutral,
             accessible_value: None,

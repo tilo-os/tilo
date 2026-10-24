@@ -272,15 +272,27 @@ impl Button {
         self.on_native_scoped(kind, false, handler)
     }
 
+    fn on_native_scoped<F: FnMut() + 'static>(
+        self,
+        kind: tilo_actions::OperationKind,
+        own_device: bool,
+        handler: F,
+    ) -> Self {
+        self.on_native_boxed(kind, own_device, Box::new(handler))
+    }
+
+    /// [`Self::on_native_scoped`] once the handler is boxed: the toolkit
+    /// compiles publishing the press once, rather than every app once for
+    /// each closure it hands a button.
     #[expect(
         clippy::expect_used,
         reason = "String serialization and lookup of the just-created action are infallible"
     )]
-    fn on_native_scoped<F: FnMut() + 'static>(
+    fn on_native_boxed(
         mut self,
         kind: tilo_actions::OperationKind,
         own_device: bool,
-        handler: F,
+        handler: Box<dyn FnMut()>,
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
@@ -311,7 +323,7 @@ impl Button {
             .expect("the synthesized invoke action is nullary");
         self = self.on_action(binding);
         self.native_resource = Some(resource);
-        self.native_handler = Some(Box::new(handler));
+        self.native_handler = Some(handler);
         self
     }
 
