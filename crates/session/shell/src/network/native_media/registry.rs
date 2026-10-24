@@ -288,6 +288,7 @@ pub(super) fn rosters_of(calls: &[CallSummary], app: &str, record: &str) -> Vec<
                         avatar: bridged.avatar.clone(),
                         service: bridged.service.clone(),
                         linked: bridged.linked.map(hex::encode),
+                        muted: participant.showing.muted,
                     });
                 }
                 continue;

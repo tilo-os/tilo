@@ -288,7 +288,8 @@ test('a bridged call names the people it carries in as guests, never as the brid
     {app: 'so.tilo.chat', record: '', channel: 'voice', call: CALL, active: true, participants: [
       {user: ana, device: '1'},
       {user: bridge, device: '2', bridged: dana},
-      {user: bridge, device: '2', bridged: ben},
+      // Muted in Discord: everyone sees it.
+      {user: bridge, device: '2', bridged: ben, muted: true},
       {user: bridge, device: '2', bridged: own},
     ]},
     // The bridge listening on its own, before anyone joins.
@@ -299,7 +300,7 @@ test('a bridged call names the people it carries in as guests, never as the brid
     {channel_id: 'lounge', people: [], bridges: ['discord']},
     {channel_id: 'voice', people: [ana], bridges: ['discord'], guests: [
       {id: 'discord:80351110224678912', name: 'Dana', service: 'discord', avatar: 'd'.repeat(64)},
-      {id: 'discord:90351110224678912', name: 'Ben', service: 'discord', linked: ana},
+      {id: 'discord:90351110224678912', name: 'Ben', service: 'discord', linked: ana, muted: true},
     ]},
   ]);
   assert.equal(callIdOf({user: bridge, bridged: own}), null, 'the bridge itself is nobody in the call');

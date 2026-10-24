@@ -91,6 +91,7 @@ export function rostersOf(calls, app, record) {
           const guest = {id, name: bridged.name, service: bridged.service};
           if (bridged.avatar) guest.avatar = bridged.avatar;
           if (bridged.linked) guest.linked = bridged.linked;
+          if (participant.muted) guest.muted = true;
           roster.guests.set(id, guest);
         }
         continue;

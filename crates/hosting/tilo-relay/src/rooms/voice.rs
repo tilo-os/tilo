@@ -1486,12 +1486,31 @@ impl Rooms {
         participation: [u8; 32],
         showing: Showing,
     ) {
+        self.show(peer.device_public_key, call, participation, showing);
+    }
+
+    /// [`Self::voice_show`] for a participation a bridge on this host holds
+    /// for a person on another service: whether that person is muted there.
+    /// The host running the bridge calls this: no envelope reaches it.
+    #[cfg(feature = "agents")]
+    pub(crate) fn voice_show_bridged(
+        &self,
+        cert: &tilo_user_identity::DeviceCert,
+        call: [u8; 32],
+        participation: [u8; 32],
+        showing: Showing,
+    ) {
+        self.show(cert.device_public_key, call, participation, showing);
+    }
+
+    /// Set what participation `participation` of `device` in `call` shows.
+    fn show(&self, device: [u8; 32], call: [u8; 32], participation: [u8; 32], showing: Showing) {
         let calls = &self.inner.calls;
         let mut state = calls.state();
         let Some(existing) = state
             .participations
             .get_mut(&participation)
-            .filter(|existing| existing.call == call && existing.device == peer.device_public_key)
+            .filter(|existing| existing.call == call && existing.device == device)
         else {
             return;
         };
