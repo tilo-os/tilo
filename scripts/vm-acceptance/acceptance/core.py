@@ -1144,6 +1144,35 @@ grep -rIh -i -E "tilo-ush|ush\.sock|so\.tilo\.terminal" "$HOME/.local/state/tilo
 '''
 
 
+# What the shell runtime logs when it refuses to start an environment: an
+# image that ships no env-runtime, a store it cannot open (crates/runtime/ush).
+_UNBUILDABLE = "the environment cannot be built"
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def environment_refusal(journal: str) -> str | None:
+    """Why the shell runtime last refused an environment, from its journal, or None.
+
+    A run's report data is not published when the check fails, so a Terminal
+    with no shell has to say in its detail what stopped it."""
+    lines = [_ANSI.sub("", line) for line in journal.splitlines() if _UNBUILDABLE in _ANSI.sub("", line)]
+    if not lines:
+        return None
+    last = lines[-1]
+    reason = last.split("reason=", 1)[1] if "reason=" in last else last.split(_UNBUILDABLE, 1)[1]
+    return reason.strip().strip('"') or None
+
+
+def ush_environment_refusal(ctx) -> str | None:
+    """`environment_refusal` of the slot's `tilo-ush` journal."""
+    try:
+        journal = ctx.vm.exec("journalctl --user -u tilo-ush.service --no-pager -o cat -n 400 2>&1",
+                              timeout=60, check=False)
+    except VmError:
+        return None
+    return environment_refusal(journal)
+
+
 def ush_diagnostics(ctx) -> str:
     """The shell runtime's units, journal, process tree, per-thread CPU over 5 s,
     store layout and the session log's lines about it."""

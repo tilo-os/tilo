@@ -108,6 +108,22 @@ class ChromiumPlatformTests(unittest.TestCase):
             daily_apps._ozone_flag(ctx, SimpleNamespace(metrics={}), "wayland")
 
 
+class EnvironmentRefusalTests(unittest.TestCase):
+    # tilo-ush logs through tracing's default format, colours included.
+    REFUSED = ("\x1b[33m WARN\x1b[0m \x1b[2mush::supervisor\x1b[0m\x1b[2m:\x1b[0m ush: the environment "
+               "cannot be built \x1b[3mrecord\x1b[0m\x1b[2m=\x1b[0mdefault \x1b[3mreason\x1b[0m\x1b[2m=\x1b[0m"
+               "no environment can be built on this device: no env-runtime image is installed")
+
+    def test_the_last_refusal_names_why_no_shell_started(self):
+        journal = "\n".join(["Started tilo-ush.service.", self.REFUSED.replace("installed", "older"),
+                              self.REFUSED])
+        self.assertEqual(core.environment_refusal(journal),
+                         "no environment can be built on this device: no env-runtime image is installed")
+
+    def test_a_runtime_that_refused_nothing_names_nothing(self):
+        self.assertIsNone(core.environment_refusal("Started tilo-ush.service.\nush: session opened"))
+
+
 class ParseProcsTests(unittest.TestCase):
     def test_rows_keep_parent_session_cgroup_and_command(self):
         parsed = procs(TERMINAL)

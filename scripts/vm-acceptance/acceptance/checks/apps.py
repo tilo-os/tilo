@@ -374,8 +374,11 @@ def terminal(ctx, res):
     res.metrics["shell_ran_command"] = bool(found)
     if ready is None or not found:
         ctx.write("A01-ush.txt", core.ush_diagnostics(ctx))
+    refusal = core.ush_environment_refusal(ctx) if ready is None else None
     expect(ready is not None, f"no shell ran in Terminal's environment within {SHELL_READY_S} s "
-                              "of its window opening (A01-ush.txt shows the shell runtime)")
+                              "of its window opening " + (f"(the shell runtime refused it: {refusal})"
+                                                          if refusal else
+                                                          "(A01-ush.txt shows the shell runtime)"))
     expect(found, "a command typed into Terminal (control-socket type + Enter) never ran")
     _close(ctx, res, "A01-terminal", gid, procs, toasts0)
     core.assert_terminal_shell_performance(ready)
