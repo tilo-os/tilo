@@ -3344,6 +3344,17 @@ class ExtensionTabs {
     }
     if (display && *display != (displays_.count(extension) > 0)) {
       if (*display) displays_.insert(extension); else displays_.erase(extension);
+      // Turned on mid-page, or late (a worker's first call waits until the
+      // Browser says whose it is, while pages load), the count is what its
+      // rules did in each page so far, as Chromium counts it.
+      if (*display) {
+        const auto rules = RuleExtensions();
+        Attributions found;
+        for (const auto& each : tabs)
+          if (!each.panel)
+            for (const auto& [key, action] : counts_.Keyed(each.tab)) Attribute(extension, rules, each, key, action, found);
+        Settle(tabs, std::move(found));
+      }
       for (const auto& each : tabs) if (!each.panel) TellCount(extension, each.tab, each.id);
     }
     if (tab) {
@@ -3352,16 +3363,53 @@ class ExtensionTabs {
     }
     Succeed(reply, nullptr);
   }
-  // Requests rules acted on in the host's tabs: each counts for the page
-  // it belongs to, for an extension that shows its count, if its rules
-  // acted on it. A redirect names the extension whose file it went to; a
-  // block names none, so it is the one extension with rules, or else each
-  // extension's own rules are asked whether they match it.
-  void Acted(const std::vector<ExtensionTab>& tabs, CefRefPtr<CefListValue> requests) {
-    const auto rules = RuleExtensions();
+  // What rules acted on, counted or still to ask of an extension's own
+  // rules, by extension.
+  struct Attributions {
     std::set<std::pair<std::string, int>> changed;
     std::map<std::string, CefRefPtr<CefListValue>> asks;
     std::map<std::string, std::vector<std::pair<int, uint64_t>>> asked;
+  };
+  // Count the request `key` of the tab's page for the extension if its
+  // rules acted on it. A redirect names the extension whose file it went
+  // to; a block names none, so it is the one extension with rules, or else
+  // the extension's own rules are asked whether they match it.
+  void Attribute(const std::string& extension, const std::vector<std::string>& rules, const ExtensionTab& tab, uint64_t key, const RuleAction& action,
+                 Attributions& found) {
+    const auto& owner = action.owner;
+    const bool direct = owner.empty() ? rules.size() == 1 && rules.front() == extension : owner == extension;
+    if (direct) {
+      if (counts_.Count(tab.tab, key, extension)) found.changed.insert({extension, tab.tab});
+    } else if (owner.empty() && std::find(rules.begin(), rules.end(), extension) != rules.end()) {
+      auto& ask = found.asks[extension];
+      if (!ask) ask = CefListValue::Create();
+      ask->SetDictionary(ask->GetSize(), RequestOf(action, tab.id));
+      found.asked[extension].push_back({tab.tab, key});
+    }
+  }
+  // Tell the counts that changed, and ask each extension's rules about the
+  // rest: those they match count once they answer.
+  void Settle(const std::vector<ExtensionTab>& tabs, Attributions found) {
+    for (const auto& [extension, tab] : found.changed) if (const auto* each = Find(tabs, tab)) TellCount(extension, tab, each->id);
+    for (const auto& [extension, ask] : found.asks) {
+      InWorker(extension, "globalThis.__tiloExtensionTabs && __tiloExtensionTabs.matched ? __tiloExtensionTabs.matched(" + ToJson(Wrap(ask)) + ") : null", false,
+               [this, extension, keys = std::move(found.asked[extension])](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+        if (error || !value || value->GetType() != VTYPE_LIST || !displays_.count(extension)) return;
+        auto matched = value->GetList();
+        std::set<int> touched;
+        for (size_t i = 0; i < keys.size() && i < matched->GetSize(); ++i)
+          if (matched->GetType(i) == VTYPE_BOOL && matched->GetBool(i) && counts_.Count(keys[i].first, keys[i].second, extension)) touched.insert(keys[i].first);
+        const auto tabs = Tabs();
+        for (int tab : touched) if (const auto* each = Find(tabs, tab)) TellCount(extension, tab, each->id);
+      });
+    }
+  }
+  // Requests rules acted on in the host's tabs: each is kept for the page
+  // it belongs to, and counts for each extension that shows its count, if
+  // its rules acted on it.
+  void Acted(const std::vector<ExtensionTab>& tabs, CefRefPtr<CefListValue> requests) {
+    const auto rules = RuleExtensions();
+    Attributions found;
     for (size_t i = 0; requests && i < requests->GetSize() && i < kMaxActedBatch; ++i) {
       auto entry = requests->GetType(i) == VTYPE_DICTIONARY ? requests->GetDictionary(i) : nullptr;
       const auto* tab = ByExtensionId(tabs, IntOf(entry, "tabId"));
@@ -3373,32 +3421,9 @@ class ExtensionTabs {
         continue;
       const auto key = counts_.Add(tab->tab, action);
       if (!key) continue;
-      const auto& owner = action.owner;
-      for (const auto& extension : displays_) {
-        const bool direct = owner.empty() ? rules.size() == 1 && rules.front() == extension : owner == extension;
-        if (direct) {
-          if (counts_.Count(tab->tab, *key, extension)) changed.insert({extension, tab->tab});
-        } else if (owner.empty() && std::find(rules.begin(), rules.end(), extension) != rules.end()) {
-          auto& ask = asks[extension];
-          if (!ask) ask = CefListValue::Create();
-          ask->SetDictionary(ask->GetSize(), RequestOf(action, tab->id));
-          asked[extension].push_back({tab->tab, *key});
-        }
-      }
+      for (const auto& extension : displays_) Attribute(extension, rules, *tab, *key, action, found);
     }
-    for (const auto& [extension, tab] : changed) if (const auto* found = Find(tabs, tab)) TellCount(extension, tab, found->id);
-    for (const auto& [extension, ask] : asks) {
-      InWorker(extension, "globalThis.__tiloExtensionTabs && __tiloExtensionTabs.matched ? __tiloExtensionTabs.matched(" + ToJson(Wrap(ask)) + ") : null", false,
-               [this, extension, keys = asked[extension]](std::optional<std::string> error, CefRefPtr<CefValue> value) {
-        if (error || !value || value->GetType() != VTYPE_LIST || !displays_.count(extension)) return;
-        auto matched = value->GetList();
-        std::set<int> touched;
-        for (size_t i = 0; i < keys.size() && i < matched->GetSize(); ++i)
-          if (matched->GetType(i) == VTYPE_BOOL && matched->GetBool(i) && counts_.Count(keys[i].first, keys[i].second, extension)) touched.insert(keys[i].first);
-        const auto tabs = Tabs();
-        for (int tab : touched) if (const auto* found = Find(tabs, tab)) TellCount(extension, tab, found->id);
-      });
-    }
+    Settle(tabs, std::move(found));
   }
   // Tell the Browser the page's count on the extension's button, where it
   // shows one and set no text of its own for the page; a count of none
