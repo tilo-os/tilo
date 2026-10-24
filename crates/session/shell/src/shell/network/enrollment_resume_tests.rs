@@ -435,25 +435,19 @@ fn pending_proof(state: &serde_json::Value, room: &str) -> Vec<u8> {
     serde_json::from_value(state["native_authority"]["pending"][room]["intent"].clone()).unwrap()
 }
 
-/// The proof the enrolled `room` in `state` was enrolled with.
+/// The proof the enrolled `room` in `state` was enrolled with: the room
+/// record's enrollment is flattened into it, its proof base64 text.
 fn enrolled_proof(state: &serde_json::Value, room: &str) -> Vec<u8> {
-    let enrollment = &state["native_authority"]["rooms"][room]["enrollment"];
-    match &enrollment["enrollment_intent"] {
-        serde_json::Value::String(text) => {
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text).unwrap()
-        }
-        serde_json::Value::Array(_) => {
-            serde_json::from_value(enrollment["enrollment_intent"].clone()).unwrap()
-        }
-        _ => panic!(
-            "the enrolled room keeps no enrollment proof: {}",
-            serde_json::to_string(&state["native_authority"]["rooms"][room])
-                .unwrap()
-                .chars()
-                .take(2000)
-                .collect::<String>()
-        ),
-    }
+    let record = &state["native_authority"]["rooms"][room];
+    let text = record["enrollment_intent"].as_str().unwrap_or_else(|| {
+        panic!(
+            "the enrolled room keeps no enrollment proof; its fields: {:?}",
+            record
+                .as_object()
+                .map(|fields| fields.keys().collect::<Vec<_>>())
+        )
+    });
+    base64::Engine::decode(&base64::engine::general_purpose::STANDARD, text).unwrap()
 }
 
 /// Start the computer from the state a join `left` behind, custody holding
