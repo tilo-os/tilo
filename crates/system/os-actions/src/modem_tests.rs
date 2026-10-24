@@ -128,6 +128,10 @@ enum MobileEquipment {
 
 struct FakeModem(Shared);
 
+#[expect(
+    clippy::unused_self,
+    reason = "a D-Bus property is read through its object"
+)]
 #[zbus::interface(name = "org.freedesktop.ModemManager1.Modem")]
 impl FakeModem {
     #[zbus(property)]
@@ -207,6 +211,10 @@ impl FakeModem {
 
 struct FakeGpp(Shared);
 
+#[expect(
+    clippy::unused_self,
+    reason = "a D-Bus property is read through its object"
+)]
 #[zbus::interface(name = "org.freedesktop.ModemManager1.Modem.Modem3gpp")]
 impl FakeGpp {
     #[zbus(property)]
@@ -249,6 +257,10 @@ impl FakeSim {
     }
 }
 
+#[expect(
+    clippy::unused_self,
+    reason = "a D-Bus property is read through its object"
+)]
 #[zbus::interface(name = "org.freedesktop.ModemManager1.Sim")]
 impl FakeSim {
     #[zbus(property)]
@@ -259,7 +271,9 @@ impl FakeSim {
                 .slots
                 .iter()
                 .position(|slot| slot == self.path)
-                .is_some_and(|index| index + 1 == script.primary_slot as usize)
+                .is_some_and(|index| {
+                    index.checked_add(1) == usize::try_from(script.primary_slot).ok()
+                })
     }
     #[zbus(property)]
     fn sim_identifier(&self) -> String {
@@ -289,6 +303,7 @@ impl FakeSim {
         script.unlock_required = 1;
         script.pin_retries = 3;
         script.state = 8;
+        drop(script);
         Ok(())
     }
     fn send_puk(&self, puk: &str, pin: &str) -> Result<(), MobileEquipment> {
@@ -300,6 +315,7 @@ impl FakeSim {
         script.unlock_required = 1;
         script.pin_retries = 3;
         script.state = 8;
+        drop(script);
         Ok(())
     }
     fn enable_pin(&self, pin: &str, enabled: bool) -> Result<(), MobileEquipment> {
@@ -308,6 +324,7 @@ impl FakeSim {
             return Err(Self::refuse(&mut script));
         }
         script.pin_enabled = enabled;
+        drop(script);
         Ok(())
     }
     fn change_pin(&self, old_pin: &str, new_pin: &str) -> Result<(), MobileEquipment> {
@@ -316,6 +333,7 @@ impl FakeSim {
             return Err(Self::refuse(&mut script));
         }
         script.pin = new_pin.into();
+        drop(script);
         Ok(())
     }
 }
@@ -454,10 +472,10 @@ fn a_registered_modem_reports_operator_technology_signal_and_traffic() {
         }),
         "the totals ModemManager keeps, not the current connection's"
     );
-    let modes = modem.modes.unwrap();
-    assert_eq!(modes.generations(), [5, 4, 3, 2]);
-    assert_eq!(modes.preferred_generation(), Some(5));
-    assert_eq!(modes.key(), "5g-4g-3g-2g-prefer-5g");
+    let current = modem.modes.unwrap();
+    assert_eq!(current.generations(), [5, 4, 3, 2]);
+    assert_eq!(current.preferred_generation(), Some(5));
+    assert_eq!(current.key(), "5g-4g-3g-2g-prefer-5g");
     assert_eq!(modem.supported_modes.len(), 3);
     let sim = modem.active_sim().unwrap();
     assert_eq!(sim.path, SIM_1);
