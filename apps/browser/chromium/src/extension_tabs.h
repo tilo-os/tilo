@@ -3623,29 +3623,40 @@ class ExtensionTabs {
       hooks_.pipe("Target.detachFromTarget", Session(session), "", [](bool, CefRefPtr<CefDictionaryValue>) {});
     };
     if (queue->empty()) { detach(); return; }
-    Ready(session, 0, [this, queue, session, detach] {
+    Ready(session, 0, Scripted(extension), [this, queue, session, detach] {
       auto remaining = std::make_shared<size_t>(queue->size());
       for (auto& waiting : *queue) Run(session, std::move(waiting), [remaining, detach] { if (--*remaining == 0) detach(); });
     });
   }
+  // Whether the Browser wrote the tab script into the extension's worker:
+  // it gave the engine the token it wrote with it. The Browser's own
+  // extension holds a token too, and runs no tab script.
+  bool Scripted(const std::string& extension) const {
+    if (extension == identity_) return false;
+    for (const auto& [token, id] : tokens_) if (id == extension) return true;
+    return false;
+  }
   // Wait until the worker ran its first script, which registers its
   // listeners: a woken worker is attached to as it starts. One whose tab
-  // script runs is waited for while its first script does, up to ten
-  // seconds (a large extension's takes a while on a busy machine); one the
-  // Browser could not give the tab APIs no longer than a moment.
-  void Ready(const std::string& session, int tries, std::function<void()> then) {
+  // script runs (`scripted`) is waited for until its first script has run,
+  // up to ten seconds (a large extension's takes a while on a busy
+  // machine), also while it has not begun that script: a worker attached to
+  // as it starts may not have, and an event given it then would find no
+  // listener. One the Browser could not give the tab APIs is waited for no
+  // longer than a moment.
+  void Ready(const std::string& session, int tries, bool scripted, std::function<void()> then) {
     auto params = CefDictionaryValue::Create();
     // The Browser's own extension runs no tab script: its worker is ready
     // once it can tell tabs' ids.
     params->SetString("expression", "globalThis.__tiloExtensionTabs ? (__tiloExtensionTabs.ready ? 2 : 1) : (globalThis.__tiloTabIds ? 2 : 0)");
     params->SetBool("returnByValue", true);
-    hooks_.pipe("Runtime.evaluate", params, session, [this, session, tries, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
+    hooks_.pipe("Runtime.evaluate", params, session, [this, session, tries, scripted, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       auto remote = ok && result ? result->GetDictionary("result") : nullptr;
       const int state = IntOf(remote, "value").value_or(0);
-      if (state == 2 || tries >= (state == 1 ? 400 : 40)) { then(); return; }
-      CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::string session, int tries, std::function<void()> then) {
-        self->Ready(session, tries + 1, then);
-      }, this, session, tries, then), 25);
+      if (state == 2 || tries >= (state == 1 || scripted ? 400 : 40)) { then(); return; }
+      CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::string session, int tries, bool scripted, std::function<void()> then) {
+        self->Ready(session, tries + 1, scripted, then);
+      }, this, session, tries, scripted, then), 25);
     });
   }
   void Run(const std::string& session, Waiting waiting, std::function<void()> done) {
