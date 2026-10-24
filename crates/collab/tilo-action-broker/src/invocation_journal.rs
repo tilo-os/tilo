@@ -24,10 +24,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
+#[path = "invocation_journal/content_puts.rs"]
+mod content_puts;
 #[path = "invocation_journal/effect.rs"]
 mod effect;
 #[path = "invocation_journal/guarded.rs"]
 mod guarded;
+#[cfg(test)]
+pub(crate) use content_puts::CONTENT_PUTS_FILE;
+pub(crate) use content_puts::ContentPutRecord;
 pub(crate) use effect::PreparedEffect;
 #[cfg(test)]
 #[path = "invocation_journal/effect_tests.rs"]
