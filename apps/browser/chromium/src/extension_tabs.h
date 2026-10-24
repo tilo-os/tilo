@@ -673,6 +673,12 @@ class ExtensionTabs {
   // `from` for what the page's end of a port sends.
   static constexpr int kPageEnd = -1;
   static constexpr size_t kMaxPorts = 4096;
+  // One message or closing on its way to one of an extension's ends, as
+  // the arguments of `__tiloExtensionTabs.port` (extension_tabs.js).
+  struct Outgoing { std::string port; bool closing; std::string values; };
+  struct Outbox { std::vector<Outgoing> ops; bool sending = false; };
+  // At most this much script in one delivery to an end.
+  static constexpr size_t kMaxPortBatch = 4 * 1024 * 1024;
   // Something to evaluate in an extension's worker, and who waits for it.
   struct Waiting { std::string expression; bool gesture; Answer answer; };
 
@@ -1519,18 +1525,50 @@ class ExtensionTabs {
     values->SetString(3, error);
     Evaluate(inspector, open.context, "__tiloExtensionContent.port(..." + ToJson(Wrap(values)) + ")", [](std::optional<std::string>, CefRefPtr<CefValue>) {});
   }
-  // An end that no longer knows the port (its worker slept since) drops it.
+  // What the page's ends of ports send to one of the extension's ends goes
+  // in order, gathered: while one delivery is under way the next collects
+  // all that follows, so a burst wakes the worker once and costs it one
+  // evaluation, where one apiece overran the worker's queue and lost the
+  // port. It leaves on a later turn, so nothing a caller iterates changes
+  // under it.
   void ToEnd(const std::string& extension, int end, const std::string& port, const std::string& op, CefRefPtr<CefValue> message, const std::string& error) {
     auto values = CefListValue::Create();
     values->SetString(0, port);
     values->SetString(1, op);
     if (message) values->SetValue(2, message->Copy()); else values->SetNull(2);
     values->SetString(3, error);
-    const bool closing = op == "disconnect";
-    AtEnd(extension, end, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.port(..." + ToJson(Wrap(values)) + ") : false",
-          [this, port, end, closing](std::optional<std::string> error, CefRefPtr<CefValue> value) {
-      if (closing) return;
-      if (error || !value || value->GetType() != VTYPE_BOOL || !value->GetBool()) Gone(port, end);
+    auto& box = outboxes_[{extension, end}];
+    box.ops.push_back(Outgoing{port, op == "disconnect", ToJson(Wrap(values))});
+    if (box.sending) return;
+    box.sending = true;
+    std::weak_ptr<bool> alive = alive_;
+    CefPostTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::weak_ptr<bool> alive, std::string extension, int end) {
+      if (!alive.expired()) self->Flush(extension, end);
+    }, this, alive, extension, end));
+  }
+  // Deliver what gathered for the end, then what gathers meanwhile. An end
+  // that no longer knows a port (its worker slept since) drops it.
+  void Flush(const std::string& extension, int end) {
+    auto found = outboxes_.find({extension, end});
+    if (found == outboxes_.end()) return;
+    auto& queued = found->second.ops;
+    if (queued.empty()) { outboxes_.erase(found); return; }
+    std::vector<Outgoing> ops;
+    std::string expression = "(() => { const tabs = globalThis.__tiloExtensionTabs; return tabs ? [";
+    size_t taken = 0;
+    while (taken < queued.size() && (!taken || expression.size() + queued[taken].values.size() < kMaxPortBatch)) {
+      expression += (taken ? ", tabs.port(..." : "tabs.port(...") + queued[taken].values + ")";
+      ops.push_back(std::move(queued[taken++]));
+    }
+    queued.erase(queued.begin(), queued.begin() + static_cast<std::ptrdiff_t>(taken));
+    expression += "] : false; })()";
+    AtEnd(extension, end, expression, [this, extension, end, ops](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+      auto known = !error && value && value->GetType() == VTYPE_LIST ? value->GetList() : nullptr;
+      for (size_t i = 0; i < ops.size(); ++i) {
+        if (ops[i].closing) continue;
+        if (!known || i >= known->GetSize() || known->GetType(i) != VTYPE_BOOL || !known->GetBool(i)) Gone(ops[i].port, end);
+      }
+      Flush(extension, end);
     });
   }
   // The tab's document went: the worlds the host made in it, the ports to
@@ -1795,6 +1833,8 @@ class ExtensionTabs {
   // Extensions whose manifest names no worker: their pages alone answer.
   std::set<std::string> workerless_;
   std::map<std::string, Port> ports_;
+  // By extension and end (0 for its worker, else its page's tab).
+  std::map<std::pair<std::string, int>, Outbox> outboxes_;
   uint64_t port_ = 0;
   uint64_t generation_ = 0;
   ExtensionMenus menus_;

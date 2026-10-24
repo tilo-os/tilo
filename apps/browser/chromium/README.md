@@ -444,7 +444,8 @@ content scripts (with `sender.tab`) work without help.
   extension), storage and its `onChanged`. What the script sends reaches
   the extension's worker and its open pages alike, as in Chrome, so a popup
   answers when the worker does not. A port's messages go to the host in
-  order, batched while a request is under way.
+  order, batched while a request is under way, and on from the host to the
+  worker or page the same way, so a burst wakes the worker once.
 - `tabs.connect` also reaches an extension's declared content scripts,
   which Chromium cannot find by a tab it does not know: the host gives their
   world what a port needs, through the same binding.
