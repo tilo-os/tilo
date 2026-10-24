@@ -44,6 +44,7 @@ mod home_relay;
 mod idle_host;
 mod invite_join;
 mod live_frames;
+mod member_controls;
 mod old_rooms;
 mod own_devices;
 mod sealed_records;
