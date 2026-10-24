@@ -98,6 +98,8 @@ pub use browser_parts::native_blocker;
 pub use browser_parts::notice;
 pub mod omnibox;
 #[cfg(not(test))]
+pub use browser_parts::page_dialogs;
+#[cfg(not(test))]
 pub use browser_parts::page_menu;
 mod personal_bookmark_view;
 pub mod personal_bookmarks;
@@ -152,6 +154,7 @@ mod parts {
     pub mod library;
     pub mod native_blocker;
     pub mod notice;
+    pub mod page_dialogs;
     pub mod page_menu;
     pub mod page_popups;
     pub mod private_window;
@@ -169,9 +172,9 @@ pub(crate) use parts::service_sessions;
 pub use parts::{
     actions, address_controls, autofill, back_hold, blocker, browsing_mode, capabilities,
     credentials, crx, downloads, effects, engine_setup, extension_controller, extension_host,
-    extension_notices, extension_toolbar, extensions, library, native_blocker, notice, page_menu,
-    page_popups, private_window, rows, service_destinations, service_profiles, site_controls,
-    storage, web_store,
+    extension_notices, extension_toolbar, extensions, library, native_blocker, notice,
+    page_dialogs, page_menu, page_popups, private_window, rows, service_destinations,
+    service_profiles, site_controls, storage, web_store,
 };
 
 pub use browser_widget::BrowserWidget;

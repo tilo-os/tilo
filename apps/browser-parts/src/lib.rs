@@ -87,6 +87,8 @@ pub mod native_blocker;
 #[cfg(not(test))]
 pub mod notice;
 #[cfg(not(test))]
+pub mod page_dialogs;
+#[cfg(not(test))]
 pub mod page_menu;
 #[cfg(not(test))]
 pub mod page_popups;
