@@ -61,6 +61,7 @@
 #include "extension_sign_in.h"
 #include "extension_tabs_script.h"
 #include "match_pattern.h"
+#include "page_clipboard.h"
 
 namespace tilo {
 
@@ -291,6 +292,10 @@ class ExtensionTabs {
     // one, as Chrome counts a gesture for that page: a click elsewhere on a
     // web page that shows the extension in a frame is not.
     std::function<bool(int, const std::string&)> activated;
+    // What an extension's offscreen document copied, for the Browser to put
+    // on the system clipboard (page_clipboard.h): `text`, `html` when it
+    // has any, and `secret`. Unset where Chromium has a clipboard of its own.
+    std::function<void(CefRefPtr<CefDictionaryValue>)> clipboard;
     bool private_mode = false;
   };
   explicit ExtensionTabs(Hooks hooks) : hooks_(std::move(hooks)) {}
@@ -390,6 +395,12 @@ class ExtensionTabs {
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
+  // Whether the extension may write the clipboard at any time, as Chrome
+  // lets one with `clipboardWrite` (page_clipboard.h).
+  bool MayWriteClipboard(const std::string& extension) const { return Has(extension, "clipboardWrite"); }
+  // Whether its page may read the clipboard, as Chrome lets one with
+  // `clipboardRead`.
+  bool MayReadClipboard(const std::string& extension) const { return Has(extension, "clipboardRead"); }
 
   // A request to the bridge from `frame` of the host tab `caller`, or with
   // no tab (0) from a service worker: answered for the extension whose page
@@ -600,6 +611,8 @@ class ExtensionTabs {
       Button(extension, tabs, method == "action.get", args, reply);
     } else if (method.rfind("notifications.", 0) == 0) {
       Notify(extension, method, args, reply);
+    } else if (method == "offscreen.clipboard" || method == "clipboard.write") {
+      Clipboard(extension, method, args, reply);
     } else if (method.rfind("permissions.", 0) == 0) {
       Permissions(extension, caller, method, args, reply);
     } else if (method == "downloads.download") {
@@ -1584,6 +1597,46 @@ class ExtensionTabs {
       return;
     }
     Succeed(reply, answer);
+  }
+  // An offscreen document copies for its extension, as MV3 extensions copy
+  // (Chromium gives a worker no clipboard), and Chromium keeps the copy in
+  // the engine where it has no clipboard of its own. Once the document is
+  // made (`offscreen.clipboard`, from extension_tabs.js), the host runs
+  // page_clipboard.js in it, through the pipe, with the worker's token: a
+  // copy there reaches the bridge (`clipboard.write`) and the Browser. Only
+  // for an extension that may write the clipboard, as in Chrome.
+  void Clipboard(const std::string& extension, const std::string& method, CefRefPtr<CefDictionaryValue> args, const Reply& reply) {
+    if (!hooks_.clipboard || !Has(extension, "clipboardWrite")) { Succeed(reply, nullptr); return; }
+    if (method == "clipboard.write") {
+      const auto text = StringOf(args, "text");
+      auto html = StringOf(args, "html");
+      if (text.empty() || text.size() > kMaxClipboardText || args->GetType("secret") != VTYPE_BOOL) { Fail(reply, "Nothing to copy"); return; }
+      if (html.size() > kMaxClipboardHtml) html.clear();
+      auto copy = CefDictionaryValue::Create();
+      copy->SetString("text", text);
+      if (!html.empty()) copy->SetString("html", html);
+      copy->SetBool("secret", args->GetBool("secret"));
+      hooks_.clipboard(copy);
+      Succeed(reply, nullptr);
+      return;
+    }
+    std::string token;
+    for (const auto& [own, id] : tokens_) if (id == extension) token = own;
+    if (token.empty() || !Has(extension, "offscreen")) { Succeed(reply, nullptr); return; }
+    auto quoted = CefValue::Create();
+    quoted->SetString(token);
+    const std::string expression = "(() => { const key = Symbol.for('tilo.pageClipboard'); if (globalThis[key]) return true;"
+      " globalThis[key] = true; const post = fetch; (" + std::string(kPageClipboard) + ")((copy) => {"
+      " post('" + std::string(kExtensionBridge) + "clipboard.write', {method: 'POST', headers: {'Content-Type': 'text/plain'},"
+      " body: JSON.stringify({token: " + ToJson(quoted) + ", args: copy}), credentials: 'omit', cache: 'no-store'}).catch(() => {}); });"
+      " return true; })()";
+    OffscreenDocuments(extension, [this, expression, reply](std::vector<std::string> documents) {
+      if (documents.empty()) { Succeed(reply, nullptr); return; }
+      auto left = std::make_shared<size_t>(documents.size());
+      for (const auto& document : documents) InDocument(document, expression, [left, reply](std::optional<std::string>, CefRefPtr<CefValue>) {
+        if (--*left == 0) Succeed(reply, nullptr);
+      });
+    });
   }
   static NotificationOptions NotificationOptionsOf(CefRefPtr<CefDictionaryValue> options) {
     NotificationOptions read;

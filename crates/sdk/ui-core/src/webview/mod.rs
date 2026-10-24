@@ -523,6 +523,13 @@ pub enum WebViewCommand {
     CopySelection {
         request_id: u32,
     },
+    /// The system clipboard's text, answering
+    /// [`WebViewEvent::ClipboardRead`] with the same id: `None` when it holds
+    /// no text or could not be read, which leaves the page the engine's own.
+    AnswerClipboardRead {
+        request_id: u32,
+        text: Option<String>,
+    },
     /// Viewport size in physical pixels plus the display scale factor.
     Resize {
         width: u32,
@@ -993,6 +1000,23 @@ pub enum WebViewEvent {
         request_id: u32,
         text: String,
     },
+    /// What the page copied, where the engine cannot reach the system
+    /// clipboard itself (Linux): a script's copy, a site's copy button, the
+    /// person's Ctrl+C, an extension's. The embedder puts it on the system
+    /// clipboard, `html` as its formatting, and as a secret when `secret` (it
+    /// came from a password field).
+    ClipboardWrite {
+        text: String,
+        html: Option<String>,
+        secret: bool,
+    },
+    /// The page pastes or reads the clipboard (the person's Ctrl+V, a read
+    /// the person allowed), where the engine cannot reach the system
+    /// clipboard itself: answer with [`WebViewCommand::AnswerClipboardRead`]
+    /// and the same id, soon, as the page waits for it.
+    ClipboardRead {
+        request_id: u32,
+    },
     /// The address of the link under the pointer, or empty when it left
     /// the link. Sent by an engine showing sealed documents.
     LinkHovered(String),
@@ -1120,6 +1144,17 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_page_dialogs(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_page_dialogs();
+        }
+    }
+
+    /// Have what the page copies sent as [`WebViewEvent::ClipboardWrite`],
+    /// and its pastes and reads asked of the embedder
+    /// ([`WebViewEvent::ClipboardRead`]), where the engine cannot reach the
+    /// system clipboard itself. Until then, and in an engine that can or
+    /// cannot ask, the page's clipboard is the engine's own.
+    fn share_clipboard(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.share_clipboard();
         }
     }
 

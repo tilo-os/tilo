@@ -11,6 +11,7 @@ mod extension_permissions;
 mod extension_sign_in;
 pub mod install;
 mod menus;
+mod page_clipboard;
 mod protocol;
 pub mod runtime;
 mod service_session_probe;
@@ -76,6 +77,7 @@ struct Shared {
     dialogs_can: AtomicBool,
     dialogs_asked: AtomicBool,
     dialogs_told: AtomicBool,
+    clipboard: page_clipboard::Sharing,
     /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
     /// The endpoints of popups the page opened, not yet adopted: each is
@@ -624,6 +626,7 @@ impl UnavailableEngine {
                 dialogs_can: AtomicBool::default(),
                 dialogs_asked: AtomicBool::default(),
                 dialogs_told: AtomicBool::default(),
+                clipboard: page_clipboard::Sharing::default(),
                 popups: Mutex::default(),
                 unadopted: Mutex::default(),
                 cursor: Mutex::default(),
@@ -1411,6 +1414,13 @@ impl ChromiumEngine {
         }
     }
 
+    fn tell_clipboard(&self) {
+        (self.shared.clipboard).tell(|mut command| {
+            command["tab"] = json!(self.tab);
+            self.tx.push(command).is_ok()
+        });
+    }
+
     fn tell_document_size(&self) {
         let reports = &self.shared.document_size;
         let asked = reports.asked.load(Ordering::Acquire);
@@ -1562,6 +1572,11 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_page_dialogs(&self) {
         self.shared.dialogs_asked.store(true, Ordering::Release);
         self.tell_dialogs();
+    }
+
+    fn share_clipboard(&self) {
+        self.shared.clipboard.asked.store(true, Ordering::Release);
+        self.tell_clipboard();
     }
 
     fn take_popups(&self) -> Vec<super::Popup> {
@@ -1728,6 +1743,7 @@ impl WebViewEngine for ChromiumEngine {
         self.tell_document_size();
         self.tell_popups();
         self.tell_dialogs();
+        self.tell_clipboard();
         self.shared
             .events
             .lock()
@@ -1854,6 +1870,7 @@ fn route_native_event(
                 value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            (shared.clipboard.can).store(value["page_clipboard"] == true, Ordering::Release);
         }
         if event_name == "popup"
             && let Some(popup) = value["popup"]
@@ -2110,6 +2127,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
                 && value.get("selection_text").is_none_or(Value::is_boolean)
+                && value.get("page_clipboard").is_none_or(Value::is_boolean)
                 && value.get("sealed_documents").is_none_or(Value::is_boolean)
         }
         "tab_ready" => {
@@ -2124,6 +2142,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
         }
+        "clipboard" | "clipboard_read" => page_clipboard::decode(value).is_some(),
         "selection_text" => {
             value["request_id"]
                 .as_u64()
@@ -2634,6 +2653,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "clipboard" | "clipboard_read" => page_clipboard::decode(value)?,
         "selection_text" => WebViewEvent::SelectionText {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             text: value["text"].as_str()?.into(),
@@ -2890,6 +2910,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         }
         WebViewCommand::CopySelection { request_id } => {
             json!({"op":"selection_text","request_id":request_id})
+        }
+        WebViewCommand::AnswerClipboardRead { request_id, text } => {
+            page_clipboard::answer(request_id, text.as_deref())?
         }
         WebViewCommand::CancelNativeDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),

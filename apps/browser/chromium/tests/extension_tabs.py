@@ -123,6 +123,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   (chrome.offscreen) parses for its worker, which answers it for the tabs it
   has no API for, and a script the extension injected into the page reaches
   it, as in Chrome.
+- What an extension that may write the clipboard copies in its offscreen
+  document, as MV3 extensions copy, reaches the Browser to put on the
+  system clipboard, where the engine has no clipboard of its own.
 - An extension's side panel opens beside the page on a click on its button
   when it asked for that (openPanelOnActionClick), and the extension hears of
   no click; from its keyboard shortcut's listener (sidePanel.open), never
@@ -2201,6 +2204,22 @@ class ExtensionTabs(unittest.TestCase):
             'parsed': {'title': 'page /parsed', 'apis': ['runtime'], 'front': front},
             'direct': {'title': 'from the page', 'apis': ['runtime'], 'front': front},
             'closed': False})
+
+    def test_an_offscreen_documents_copy_reaches_the_browser(self):
+        host, ids = self.start('copier', access={'copier': (['offscreen', 'clipboardWrite', 'activeTab', 'scripting'], [])})
+        ready = next(e for e in host.seen if e['event'] == 'ready')
+        self.assertIs(ready.get('page_clipboard'), True, 'the engine has no clipboard of its own here')
+        # The Browser takes the page's copies.
+        host.send(op='page_clipboard')
+        page = self.url + '/copied'
+        host.navigate(page)
+        host.settle(1.0)
+        mark = len(host.seen)
+        host.send(op='extension_click', id=ids['copier'])
+        self.assertEqual(json.loads(self.title(host, 1, 'copier:')[len('copier:'):]), {'copied': True})
+        copy = next((e for e in host.seen[mark:] if e['event'] == 'clipboard'), None)
+        copy = copy or host.until(lambda e: e['event'] == 'clipboard')
+        self.assertEqual((copy['tab'], copy['text'], copy['secret']), (1, 'copied: ' + page, False))
 
     def side_panel_event(self, host, mark, mode):
         """The first `extension_side_panel` event of `mode` after `mark`."""

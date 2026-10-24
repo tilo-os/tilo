@@ -167,6 +167,60 @@ converts only their pixels, and repaints and uploads only them.
 inside its field, that the frame rebuilt from them is the frame the host sends
 whole, and prints the bytes per blink each way.
 
+### Page clipboard
+
+On Linux the engine runs with no display server (`ozone-platform=headless`),
+and Chromium's clipboard there is the engine's alone: a site's copy button, a
+script's `navigator.clipboard.writeText`, `document.execCommand('copy')`, the
+person's Ctrl+C and an extension's offscreen document all copied into it and
+no further, and a paste got only what the engine copied. The host bridges it
+(`src/page_clipboard.h`). `ready` (and `tab_ready`) then say
+`page_clipboard: true`, never for sealed documents, and an embedder that
+takes the page's clipboard sends `page_clipboard` (exactly `op` and `tab`)
+for a tab; a tab of one that does not keeps the engine's own.
+
+- Each renderer runs `src/page_clipboard.js` in every web document and
+  extension page before the page's scripts. Chromium decides what may copy,
+  as in Chrome: a copy or cut event fires only for a copy that may happen
+  (and a script's own event copies nothing), and `writeText` and `write`
+  resolve only once allowed. What the copy took (the selection with its
+  markup, the focused field's selected characters, or what a copy listener
+  set and cancelled the event for) goes to the host, which sends it as a
+  `clipboard` event with `text` (at most 4 MiB), `html` when it has markup
+  (at most 1 MiB, dropped when larger) and `secret`: true for a copy from a
+  password or one-time-code field, or of a password field's value, which the
+  Browser copies as a secret (kept out of clipboard history and device
+  sync). The host sends a page's copy only within five seconds of the
+  person's click, key or menu choice in the tab, as Chrome's activation
+  lasts; an extension's page with `clipboardWrite` copies at any time. A
+  page's popup and an extension's panel copy through the page they were
+  opened from.
+- A paste key (Ctrl+V, Ctrl+Shift+V, Shift+Insert) asks the embedder for the
+  system clipboard's text with `clipboard_read` (`request_id`), answered by
+  `clipboard_contents` with that `request_id` and `text`, or no `text` when
+  it holds none. The renderer keeps the text for the paste, then the key
+  goes on to the page, which sees its keydown as ever; the trusted paste
+  Chromium starts is replaced by one carrying the system clipboard's text
+  for the page's listeners, inserted into the focused field when no
+  listener took it. Keys pressed meanwhile follow in order. An answer that
+  does not come within three seconds leaves the paste to the engine.
+- `navigator.clipboard.readText` and `read` ask the person as Chromium does
+  (`permission_prompt`, `clipboard`); once allowed, they read the system
+  clipboard's text the same way. The host asks the embedder only for a page
+  the person can see, of a site whose clipboard setting allows reading (or
+  an extension's page with `clipboardRead`), whatever the page's script did.
+- An extension's offscreen document (`chrome.offscreen`, how MV3 extensions
+  copy) is no browser of the host's, so no renderer callback reaches it.
+  For an extension with `offscreen` and `clipboardWrite`, the tab script
+  asks the host once the document is made, and the host runs
+  `page_clipboard.js` there over the pipe with the worker's token: a copy
+  reaches the bridge (`clipboard.write`) and goes as `clipboard` through the
+  page the person used last.
+
+`tests/page_clipboard.py` covers the page and the person (a read the person
+allowed is not covered there: that node's Chromium refuses a site's read
+without asking); `tests/extension_tabs.py` the offscreen document.
+
 ## macOS packaging and sandbox
 
 The application follows CEF's Frameworks directory layout, including each
