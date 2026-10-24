@@ -90,6 +90,23 @@ impl HomeRelay {
     }
 }
 
+/// The home relay `device`'s Devices & Sync names, and each workspace it
+/// hosts with whether the relay hosts it too.
+fn on_relay(device: &Device) -> (Option<String>, Vec<(RoomId, bool)>) {
+    let hosting = device
+        .net()
+        .home_relay_hosting()
+        .unwrap_or_else(|error| panic!("the home relay hosting is read: {error}"));
+    (
+        hosting.relay,
+        hosting
+            .workspaces
+            .into_iter()
+            .map(|workspace| (RoomId::parse(&workspace.room).unwrap(), workspace.on_relay))
+            .collect(),
+    )
+}
+
 pub(super) fn holds(dir: &Path, needle: &[u8]) -> bool {
     std::fs::read_dir(dir)
         .into_iter()
@@ -163,11 +180,26 @@ fn a_home_relay_hosts_only_the_workspace_chosen_for_it_and_carries_it_while_its_
         "nothing reaches the relay before Ada chooses it"
     );
 
+    // Devices & Sync shows each workspace the desktop hosts, none of them
+    // on the relay yet.
+    assert_eq!(
+        on_relay(&first),
+        (
+            Some("Ada's home relay".to_owned()),
+            vec![(personal, false), (scratchpad, false)]
+        )
+    );
+
     // Ada chooses her home relay for the personal workspace.
     first
         .net()
-        .add_hosting_member(personal)
+        .set_home_relay_hosting(personal, true)
         .unwrap_or_else(|error| panic!("the relay is added as a host: {error}"));
+    assert_eq!(
+        on_relay(&first).1,
+        [(personal, true), (scratchpad, false)],
+        "the personal workspace's hosts name the relay"
+    );
     first.write_note(personal, "kept on the relay too");
     until(
         &[&first, &second],
@@ -220,8 +252,13 @@ fn a_home_relay_hosts_only_the_workspace_chosen_for_it_and_carries_it_while_its_
     // Turning the choice off takes the relay off as a host.
     first
         .net()
-        .remove_hosting_member(personal)
+        .set_home_relay_hosting(personal, false)
         .unwrap_or_else(|error| panic!("the relay is removed as a host: {error}"));
+    assert_eq!(
+        on_relay(&first).1,
+        [(personal, false), (scratchpad, false)],
+        "its hosts no longer name the relay"
+    );
     until(&[&first, &second], "the relay to stop hosting", || {
         relay.retained(personal).is_none().then_some(())
     });

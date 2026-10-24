@@ -1913,6 +1913,12 @@ pub fn native_services(
             })
             .into_iter()
             .flatten()
+            .chain(
+                membership
+                    .as_ref()
+                    .zip(network.clone())
+                    .map(|(tree, network)| super::home_relay_hosting::broker_door(tree, network)),
+            )
             .chain([super::settings_records::broker_door()])
             .collect(),
         legacy_workspace: membership.map(|tree| {
