@@ -9,11 +9,25 @@ use super::{RoomId, ShellNetwork};
 pub(crate) enum Placement {
     /// The native owner holds the room: its host serves it.
     Held,
-    /// The room is still to be placed, or its enrollment is running: the
-    /// network's events move it on.
-    Underway,
-    /// The placement ended without the room.
-    Failed(String),
+    /// The room waits to be placed on this device's host.
+    Placing,
+    /// The host made the room and this device's enrollment into it runs.
+    Enrolling,
+    /// The enrollment ended but the native owner does not hold the room's
+    /// replica, or the owner is not there to hold it: why, if known.
+    NotInstalled(String),
+}
+
+impl Placement {
+    /// The step a placement that stopped here was waiting on.
+    pub(crate) fn step(&self) -> &'static str {
+        match self {
+            Self::Held => "nothing",
+            Self::Placing => "the room being placed on this device's host",
+            Self::Enrolling => "this device's enrollment into the room",
+            Self::NotInstalled(_) => "the room's replica being installed",
+        }
+    }
 }
 
 impl ShellNetwork {
@@ -21,15 +35,17 @@ impl ShellNetwork {
     pub(crate) fn placement(&self, room: RoomId) -> Placement {
         let owner = match self.native_owner() {
             Ok(owner) => owner,
-            Err(error) => return Placement::Failed(error),
+            Err(error) => return Placement::NotInstalled(error),
         };
         if owner.rooms().contains(&room) {
-            return Placement::Held;
+            Placement::Held
+        } else if self.waits_for_placement(room) {
+            Placement::Placing
+        } else if self.enrolling_into(room).is_some() {
+            Placement::Enrolling
+        } else {
+            Placement::NotInstalled("the enrollment ended without the room".into())
         }
-        if self.waits_for_placement(room) || self.enrolling_into(room).is_some() {
-            return Placement::Underway;
-        }
-        Placement::Failed("the room's enrollment with this device's host ended without it".into())
     }
 
     /// Whether `room` still waits to be placed: a placement pass that failed
