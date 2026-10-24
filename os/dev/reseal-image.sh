@@ -88,10 +88,10 @@ if podman "${podman_args[@]}" cp "$container:/boot/tilo-target/tilo-target.efi" 
 fi
 podman "${podman_args[@]}" rm "$container" >/dev/null
 container=""
-build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
+build_args=(-t "$image" -f "$stage/Containerfile" --build-arg "BASE_IMAGE=$image")
 if [ -n "$iidfile" ]; then
   mapfile -t reproducible < <(podman_epoch_args "$epoch" "${podman_args[@]}")
-  build_args=(-f - --build-arg "BASE_IMAGE=$image" --iidfile "$iidfile"
+  build_args=(-f "$stage/Containerfile" --build-arg "BASE_IMAGE=$image" --iidfile "$iidfile"
     --pull=never --network=none "${reproducible[@]}")
 elif [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
   case "$SOURCE_DATE_EPOCH" in *[!0-9]*|'') die "SOURCE_DATE_EPOCH must be an integer" ;; esac
@@ -101,12 +101,15 @@ elif [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
 fi
 # An inherited epoch must not conflict with the explicit immutable-mode input.
 if [ -n "$iidfile" ]; then export SOURCE_DATE_EPOCH="$epoch"; fi
-podman "${podman_args[@]}" build "${build_args[@]}" "$stage" <<EOF
+# The Containerfile is a file in the build context, not stdin: podman resolves
+# `-f -` through /dev/stdin, which t's micro-VMs do not have.
+cat > "$stage/Containerfile" <<EOF
 ARG BASE_IMAGE
 FROM \${BASE_IMAGE}
 COPY uki.efi /boot/EFI/Linux/$uki_name
 $copy_target
 EOF
+podman "${podman_args[@]}" build "${build_args[@]}" "$stage"
 if [ -n "$iidfile" ]; then
   result=$(cat "$iidfile")
   [[ "$result" =~ ^sha256:[0-9a-f]{64}$ ]] || die "reseal did not return a full immutable image ID"
