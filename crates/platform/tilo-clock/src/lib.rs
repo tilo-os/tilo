@@ -115,6 +115,50 @@ pub mod testing {
         }
     }
 
+    thread_local! {
+        static FOLLOWED: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicU64>>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// The wall time pinned on the [`SharedWall`] this thread follows, in
+    /// milliseconds; `0` while it runs or the thread follows none.
+    pub(super) fn followed_ms() -> u64 {
+        FOLLOWED.with(|followed| {
+            followed
+                .borrow()
+                .as_ref()
+                .map_or(0, |wall| wall.load(std::sync::atomic::Ordering::Relaxed))
+        })
+    }
+
+    /// A wall clock a test pins and releases for threads it owns, such as a
+    /// runtime's workers that answer on its behalf: each follows it from
+    /// [`SharedWall::follow`] on. Threads that follow none keep their own
+    /// clock, so the other tests of the process are left alone.
+    #[derive(Clone, Debug, Default)]
+    pub struct SharedWall(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl SharedWall {
+        /// This thread reads this clock from now on: the pinned time while
+        /// pinned, its ordinary clock otherwise. A pin of
+        /// [`with_wall`] on the thread wins over it.
+        pub fn follow(&self) {
+            FOLLOWED.with(|followed| *followed.borrow_mut() = Some(self.0.clone()));
+        }
+
+        /// Every thread following this clock reads `at` until
+        /// [`Self::release`].
+        pub fn pin(&self, at: SystemTime) {
+            self.0
+                .store(super::wall_ms(at), std::sync::atomic::Ordering::Relaxed);
+        }
+
+        /// The threads following this clock read their ordinary clock again.
+        pub fn release(&self) {
+            self.0.store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// Run `operation` with the wall clock pinned to `at` on this thread
     /// alone, as [`super::freeze_wall`] pins it for a capture. Other threads
     /// (the other tests of one process) keep their own clock: a test of the
@@ -130,6 +174,30 @@ pub mod testing {
 #[cfg(test)]
 mod scoped_monotonic_tests {
     use super::*;
+
+    #[test]
+    fn a_shared_wall_pins_the_threads_following_it_until_released() {
+        // A time no other test of this crate pins process-wide.
+        const PINNED: u64 = 123_456;
+        let wall = testing::SharedWall::default();
+        let follower = {
+            let wall = wall.clone();
+            move || {
+                wall.follow();
+                unix_now()
+            }
+        };
+        assert_ne!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
+        wall.pin(UNIX_EPOCH + Duration::from_secs(PINNED));
+        assert_eq!(std::thread::spawn(follower.clone()).join().unwrap(), PINNED);
+        assert_ne!(
+            unix_now(),
+            PINNED,
+            "a thread following none keeps its clock"
+        );
+        wall.release();
+        assert_ne!(std::thread::spawn(follower).join().unwrap(), PINNED);
+    }
 
     #[test]
     fn scoped_time_is_thread_local_nested_and_restored_after_unwind() {
@@ -165,9 +233,24 @@ thread_local! {
 /// clock runs.
 fn frozen_ms() -> u64 {
     match FROZEN_HERE_MS.with(std::cell::Cell::get) {
-        0 => FROZEN_WALL_MS.load(Ordering::Relaxed),
+        0 => match followed_ms() {
+            0 => FROZEN_WALL_MS.load(Ordering::Relaxed),
+            followed => followed,
+        },
         here => here,
     }
+}
+
+/// The wall time of the test clock this thread follows
+/// ([`testing::SharedWall`]); `0` when none is pinned.
+#[cfg(any(test, feature = "test-support"))]
+fn followed_ms() -> u64 {
+    testing::followed_ms()
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+const fn followed_ms() -> u64 {
+    0
 }
 
 /// The current wall-clock time, for timestamps shown to people or persisted.

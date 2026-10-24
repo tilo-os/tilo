@@ -71,6 +71,9 @@ pub(super) fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
 /// front of it.
 pub(super) struct Site {
     pub runtime: tokio::runtime::Runtime,
+    /// The wall clock the host's threads read: their own, unless a test
+    /// pins it.
+    wall: tilo_clock::testing::SharedWall,
     pub relay: Option<tilo_relay::daemon::Relay>,
     pub web: Option<tilo_relay::web::WebHandle>,
     pub host_cert: DeviceCert,
@@ -229,8 +232,13 @@ fn door_join(
 
 impl Site {
     pub(super) fn start(dir: &std::path::Path) -> Self {
+        let wall = tilo_clock::testing::SharedWall::default();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
+            .on_thread_start({
+                let wall = wall.clone();
+                move || wall.follow()
+            })
             .enable_all()
             .build()
             .unwrap();
@@ -275,6 +283,7 @@ impl Site {
         let entry = url::Url::parse(&format!("{}/", door.url())).unwrap();
         Self {
             runtime,
+            wall,
             relay: Some(relay),
             web: Some(web),
             host_cert,
@@ -326,17 +335,25 @@ impl Site {
     /// does: the door pre-admits its person and the device redeems the
     /// invitation as itself.
     pub(super) fn admit_device(&self, cert: &DeviceCert, device: &SigningKey, name: &str) {
-        let reply = self.join_device(cert, device, name);
+        let (invitation, token) = self.door_admission(cert.user_public_key, name);
+        let reply = self
+            .runtime
+            .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+                self.http().as_ref(),
+                &invitation,
+                cert,
+                device,
+                random(),
+                name,
+                token.as_bytes(),
+            ))
+            .unwrap();
         assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     }
 
-    /// [`Self::admit_device`], answering how the room replied.
-    pub(super) fn join_device(
-        &self,
-        cert: &DeviceCert,
-        device: &SigningKey,
-        name: &str,
-    ) -> JoinReply {
+    /// The door's pre-admission of the person `user`: the invitation and
+    /// its one-time admission token.
+    fn door_admission(&self, user: [u8; 32], name: &str) -> (Vec<u8>, String) {
         let workspace = hosted_sites::SiteWorkspace {
             entry: self.entry.clone(),
             name: "Lounge".into(),
@@ -347,24 +364,42 @@ impl Site {
         };
         let answer = self
             .runtime
-            .block_on(hosted_sites::admit(&workspace, cert.user_public_key, name))
+            .block_on(hosted_sites::admit(&workspace, user, name))
             .unwrap();
         let invitation = base64::Engine::decode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             &answer.invitation,
         )
         .unwrap();
-        self.runtime
-            .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
-                self.http().as_ref(),
-                &invitation,
-                cert,
-                device,
-                random(),
-                name,
-                answer.admission_token.as_bytes(),
-            ))
-            .unwrap()
+        (invitation, answer.admission_token)
+    }
+
+    /// [`Self::admit_device`] with the door's `admission`, the host reading
+    /// its wall clock at `at` while it admits the device.
+    fn admit_device_at(
+        &self,
+        (invitation, token): &(Vec<u8>, String),
+        cert: &DeviceCert,
+        device: &SigningKey,
+        name: &str,
+        at: std::time::SystemTime,
+    ) {
+        self.wall.pin(at);
+        let reply = tilo_clock::testing::with_wall(at, || {
+            self.runtime
+                .block_on(tilo_browser_peer::invite::ask_to_join_pre_admitted(
+                    self.http().as_ref(),
+                    invitation,
+                    cert,
+                    device,
+                    random(),
+                    name,
+                    token.as_bytes(),
+                ))
+                .unwrap()
+        });
+        self.wall.release();
+        assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     }
 
     /// Whether `user` is a member of the room by its governance.
@@ -628,35 +663,30 @@ fn a_computer_joins_a_sites_workspace_whose_roster_holds_an_expired_guest() {
     let site = Site::start(dir.path());
     let room = RoomId::parse(&site.room).unwrap();
 
-    // The page's certificate must outlive its own admission and expire
-    // soon after. A loaded machine can take longer to admit it than it
-    // lives; such a page is refused as expired, so a fresh page tries again
-    // with a certificate that lives twice as long, within the hang bound.
+    // The page is admitted at a moment its certificate lives, as the host
+    // reads its clock, and the certificate has expired by the time the
+    // computer joins. The host admits it a millisecond before it expires,
+    // and no earlier than the door issued its invitation.
     let grace = key(2);
-    let deadline = tilo_test_env::hang_deadline();
-    let mut lifetime_ns: u64 = 1_500_000_000;
-    let mut seed = 3;
-    let expires = loop {
-        let page = key(seed);
-        let expires = tilo_clock::unix_now_ns() + lifetime_ns;
-        let mut cert = certify(
-            &grace,
-            &page,
-            "Watching visitor",
-            DeviceCapabilities::member(),
-        );
-        cert.expires_at_ns = Some(expires);
-        sign_device_cert(&mut cert, &grace).unwrap();
-        match site.join_device(&cert, &page, "Grace") {
-            JoinReply::Admitted { .. } => break expires,
-            refused => assert!(
-                tilo_clock::unix_now_ns() > expires && Instant::now() < deadline,
-                "the page is let in while its certificate lives: {refused:?}"
-            ),
-        }
-        lifetime_ns = lifetime_ns.saturating_mul(2);
-        seed += 1;
-    };
+    let page = key(3);
+    let admission = site.door_admission(grace.verifying_key().to_bytes(), "Grace");
+    let admitted_ms = tilo_clock::unix_now_ms() + 1;
+    let expires = (admitted_ms + 1) * 1_000_000;
+    let mut cert = certify(
+        &grace,
+        &page,
+        "Watching visitor",
+        DeviceCapabilities::member(),
+    );
+    cert.expires_at_ns = Some(expires);
+    sign_device_cert(&mut cert, &grace).unwrap();
+    site.admit_device_at(
+        &admission,
+        &cert,
+        &page,
+        "Grace",
+        std::time::UNIX_EPOCH + Duration::from_millis(admitted_ms),
+    );
     until("the page's certificate to expire", || {
         (tilo_clock::unix_now_ns() > expires).then_some(())
     });
