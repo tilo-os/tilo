@@ -68,7 +68,12 @@ struct Published {
     sandboxes: BTreeMap<u32, sandbox_revocation::Sandbox>,
     /// The exports of this writer's tree that are on their way here.
     exporting: Arc<Mutex<Vec<Exporting>>>,
+    /// Where the snapshot the published policy was exported from stands
+    /// among the snapshots of this writer's tree. An export of an earlier
+    /// snapshot that arrives after it is ignored.
+    snapshot: Option<Sequence>,
 }
+type Sequence = crate::shell::native_workspace_owner::store::StateSequence;
 #[derive(Clone)]
 struct SaveFailure {
     revision: u64,
@@ -160,7 +165,17 @@ static NEXT_EXPORT: AtomicU64 = AtomicU64::new(0);
 
 /// Capture policy for publication only after the normal state writer accepts
 /// this exact tree. Superseded/refused state writes never call `publish`.
-pub(crate) struct Export(BTreeMap<RoomId, RoomPolicy>, u64, Pending, Arc<Authority>);
+/// Exports of one tree reach [`Export::publish`] by different paths (a save
+/// of the tree, an owner publication, a direct publication), so they may
+/// arrive out of order; each carries where its snapshot stands among the
+/// tree's snapshots, and the policy never goes back to an earlier one.
+pub(crate) struct Export(
+    BTreeMap<RoomId, RoomPolicy>,
+    u64,
+    Pending,
+    Arc<Authority>,
+    Sequence,
+);
 
 /// An export's place among its writer's exports on their way, from when it
 /// is taken until it is published or dropped.
@@ -173,7 +188,13 @@ impl Drop for Pending {
 }
 
 impl Export {
+    /// Export `tree`, which the caller holds, as its snapshot now.
     pub(crate) fn of(tree: &crate::shell::state::WorkspaceTree) -> Self {
+        Self::at(tree, tree.native_runtime.next_sequence())
+    }
+
+    /// Export `tree`, a snapshot taken at `sequence` while its tree was held.
+    pub(crate) fn at(tree: &crate::shell::state::WorkspaceTree, sequence: Sequence) -> Self {
         let state = tree.native_runtime.action_authority();
         let runtime = tree.native_runtime.authority_witness();
         let authority = Arc::new(tree.native_authority.clone());
@@ -198,11 +219,20 @@ impl Export {
             tree.policy_revision,
             Pending(id, state.exporting.clone()),
             state,
+            sequence,
         )
     }
 
     pub(crate) fn publish(self) {
         let mut published = lock(&self.3.published);
+        if published.snapshot.is_some_and(|newest| self.4 < newest) {
+            // A later snapshot of the tree is already what observers hold,
+            // and it holds everything this one does. Publishing this one
+            // would take back what the tree granted since.
+            drop(self.2);
+            return;
+        }
+        published.snapshot = Some(self.4);
         published.revisions = self.0.keys().map(|room| (*room, self.1)).collect();
         published
             .failures
@@ -1139,7 +1169,6 @@ mod tests {
                 .contains_key(&child.id())
                 && super::super::proc_stat(child.id()).is_some()
         };
-        let before = Export::of(&tree.read());
 
         // The commit's export queues behind an earlier write on the writer
         // that publishes it. Held on this authority's own writer, the wait
@@ -1176,7 +1205,25 @@ mod tests {
         assert!(!running(&children[1]), "a withdrawn grant interrupts");
         assert!(running(&children[0]));
 
-        before.publish();
+        // An export of the record the writer then holds; a later commit's
+        // export never arrives (its queued publication is replaced by
+        // nothing), so the writer moves past that record with nothing newer
+        // on the way.
+        let moved_past = Export::of(&tree.read());
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let (started, starting) = std::sync::mpsc::channel();
+        writer.submit(PathBuf::from("earlier-write"), move || {
+            let _ = started.send(());
+            let _ = held.recv();
+        });
+        starting.recv().unwrap();
+        let (request, _) =
+            crate::shell::native_workspace_owner::test_document_edit(&owner, room, &key, now, 2);
+        owner.commit_document(request, now).unwrap();
+        writer.submit(authority.job_key("publication"), || {});
+        drop(release);
+        writer.flush();
+        moved_past.publish();
         assert!(
             !running(&children[0]),
             "an export of a record the writer moved past, with nothing newer pending, is stale"
