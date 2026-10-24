@@ -124,6 +124,39 @@ fn native_existing_writer_preserves_delegation_but_person_restriction_wins() {
 }
 
 #[test]
+fn a_member_opens_an_app_the_governor_authorized_before_its_document_arrives() {
+    let (_directory, owner, room, now, _key) = test_enrolled_owner();
+    let (certificate, governor) = owner
+        .with_current(room, |view| {
+            assert!(view.peer().document("so.tilo.notes", "").is_none());
+            assert!(
+                view.peer()
+                    .workspace()
+                    .check_workspace_administration(view.device().device_public_key, now)
+                    .is_err()
+            );
+            Ok((view.device().clone(), view.governor().user_public_key))
+        })
+        .unwrap();
+    assert!(native_app_open_access(&owner, room, &certificate, "so.tilo.notes").is_err());
+    signed_governance(
+        &owner,
+        room,
+        now,
+        &Governed::Grant(tilo_action_policy::roles::app_authorship(
+            &room.to_string(),
+            "so.tilo.notes",
+            tilo_action_policy::Subject::Person(hex::encode(governor)),
+        )),
+    );
+    assert!(matches!(
+        native_app_open_access(&owner, room, &certificate, "so.tilo.notes").unwrap(),
+        NativeAppOpenAccess::Author
+    ));
+    assert!(native_app_open_access(&owner, room, &certificate, "so.tilo.missing").is_err());
+}
+
+#[test]
 fn a_distinct_admitted_read_only_device_never_borrows_the_governors_app_write() {
     let (_directory, owner, room, now, _key) = test_enrolled_owner();
     signed_governance(
