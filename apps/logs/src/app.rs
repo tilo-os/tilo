@@ -441,10 +441,10 @@ impl LogsApp {
         }
     }
 
-    /// Open the inspector where it is a closed drawer, so choosing an entry
+    /// Open the inspector where it is a closed sheet, so choosing an entry
     /// on a narrow window shows it.
     fn reveal_inspector(&mut self) {
-        if self.shell.geometry().inspector == InspectorPlacement::Drawer
+        if self.shell.geometry().inspector == InspectorPlacement::Sheet
             && !self.shell.is_inspector_open()
         {
             self.shell.toggle_inspector();
@@ -1355,10 +1355,7 @@ mod tests {
         }
         let mut phone = captured((390, 844));
         surface(&mut phone, |viewer| {
-            assert_eq!(
-                viewer.shell.geometry().inspector,
-                InspectorPlacement::Drawer
-            );
+            assert_eq!(viewer.shell.geometry().inspector, InspectorPlacement::Sheet);
             assert!(!viewer.shell.is_inspector_open());
         });
         let entry = surface(&mut phone, |viewer| {

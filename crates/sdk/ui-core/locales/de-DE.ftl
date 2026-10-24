@@ -694,6 +694,11 @@ filter-menu-no-matches = Keine Treffer
 
 widget-sidebar-resize = Breite der Seitenleiste ändern
 widget-inspector-resize = Breite des Inspektors ändern
+widget-inspector = Inspektor
+widget-sheet-height = Höhe
+widget-sheet-peek = Abgesenkt
+widget-sheet-half = Halbe Höhe
+widget-sheet-full = Volle Höhe
 
 dictation-record-once = Einmal aufnehmen
 dictation-finish = Fertig

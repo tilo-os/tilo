@@ -9,6 +9,7 @@ mod adaptive;
 mod band;
 mod capabilities;
 mod hosted;
+mod inspector_sheet;
 mod nothing_listed;
 
 /// A pane that fills what it is given and counts the input it receives.
@@ -944,7 +945,7 @@ fn dragging_the_trailing_edge_resizes_and_below_its_minimum_hides() {
 }
 
 #[test]
-fn the_inspector_docks_beside_the_content_and_floats_when_narrow() {
+fn the_inspector_docks_beside_the_content_and_rises_as_a_sheet_when_narrow() {
     let shell = NavShell::new()
         .content(Probe::boxed("content").0)
         .inspector(Probe::boxed("inspector").0);
@@ -961,11 +962,11 @@ fn the_inspector_docks_beside_the_content_and_floats_when_narrow() {
 
     settle(&mut h, 600, 800);
     let g = geometry(&h);
-    assert_eq!(g.inspector, InspectorPlacement::Drawer);
+    assert_eq!(g.inspector, InspectorPlacement::Sheet);
     assert_eq!(
         g.inspector_column,
         Rect::ZERO,
-        "closed by default when it floats"
+        "closed by default as a sheet"
     );
     h.root_mut::<NavShell>().toggle_inspector();
     settle(&mut h, 600, 800);

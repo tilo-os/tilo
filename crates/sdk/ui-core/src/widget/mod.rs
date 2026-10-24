@@ -3041,6 +3041,8 @@ mod link;
 pub use link::{Link, os_open as open_external_url, try_os_open as try_open_external_url};
 mod flap;
 pub use flap::{FlapState, SplitLayout};
+mod bottom_sheet;
+pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
 mod sidebar;
 pub use sidebar::{
     DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
@@ -3077,8 +3079,8 @@ pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
-    ContentKind, InspectorPlacement, NavGeometry, NavMode, NavPane, NavShell, OverviewPlacement,
-    SidebarPlacement, WindowBarLink,
+    ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
+    NavShell, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
 };
 pub use window_header::{
     HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,

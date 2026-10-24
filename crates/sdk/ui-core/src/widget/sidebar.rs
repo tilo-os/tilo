@@ -19,6 +19,11 @@
 //! the toggle with [`SidebarDrawer::draw_toggle`], and its rows with
 //! [`crate::chrome::paint_nav_row`].
 //!
+//! An inspector that asks for it ([`SidebarDrawer::sheet_when_narrow`])
+//! does not float beside a narrow window's content: it rises as a sheet from
+//! the window's foot ([`crate::widget::BottomSheet`]), as `NavShell`'s
+//! inspector does, and the content above it stays live.
+//!
 //! Lifecycle per frame: [`SidebarDrawer::tick`] once from the draw path,
 //! then [`SidebarDrawer::resolve`] with the outer rect. On the event path
 //! call `resolve` alone so hit-tests match the last paint.
@@ -31,6 +36,8 @@ use crate::theme::Theme;
 use crate::tokens::{Metrics, Spacing};
 use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::{AuthoredExtent, SplitHandle, SplitOrientation, SplitRatio};
+
+mod sheet;
 
 /// The docked sidebar width every shell shares (`Metrics::sidebar_width`).
 pub const DEFAULT_DRAWER_DOCKED_WIDTH: f64 = Metrics::BASE.sidebar_width as f64;
@@ -104,8 +111,17 @@ pub struct SidebarDrawer {
     toggle: DrawerToggle,
     resize: SplitHandle,
     resize_min_width: f64,
+    /// The least width before larger text widens it: a sheet in a window
+    /// short of twice that opens at the whole height.
+    sheet_least_half: f64,
     resize_max_width: f64,
     resize_redraw: bool,
+    /// Too narrow to dock, the inspector is a sheet up from the window's
+    /// foot ([`Self::sheet_when_narrow`]); with what it shows while it peeks
+    /// (its header row) and its grip's height.
+    sheet: Option<crate::widget::BottomSheet>,
+    sheet_peek: f64,
+    sheet_grip: f64,
 }
 
 /// The drawer's show/hide button in a painted header row: its rect, hover
@@ -156,8 +172,12 @@ impl SidebarDrawer {
             toggle: DrawerToggle::default(),
             resize: SplitHandle::new(SplitOrientation::Horizontal, SplitRatio::default()),
             resize_min_width: f64::from(Metrics::BASE.sidebar_min_width),
+            sheet_least_half: f64::from(Metrics::BASE.sidebar_min_width),
             resize_max_width: f64::from(Metrics::BASE.sidebar_max_width),
             resize_redraw: false,
+            sheet: None,
+            sheet_peek: f64::from(Metrics::BASE.header_height),
+            sheet_grip: f64::from(Metrics::BASE.min_pointer_target),
         }
     }
 
@@ -288,8 +308,11 @@ impl SidebarDrawer {
         };
         let growth = f64::from(theme.text_growth());
         self.resize_min_width = f64::from(theme.tokens.metrics.sidebar_min_width) * growth;
+        self.sheet_least_half = f64::from(theme.tokens.metrics.sidebar_min_width);
         self.resize_max_width = f64::from(theme.tokens.metrics.sidebar_max_width) * growth;
         self.resize.set_rect(self.outer, theme);
+        self.sheet_peek = crate::chrome::HeaderRowFace::height(theme);
+        self.sheet_grip = f64::from(theme.tokens.metrics.min_pointer_target);
     }
 
     /// The icon rail's width inside the drawer ([`Self::with_rail`]), or 0.
@@ -410,7 +433,12 @@ impl SidebarDrawer {
     }
     /// `true` while the slide hasn't settled.
     pub fn is_animating(&self) -> bool {
-        self.animating || self.flap.is_animating(self.layout)
+        self.animating
+            || self.flap.is_animating(self.layout)
+            || self
+                .sheet
+                .as_ref()
+                .is_some_and(crate::widget::BottomSheet::is_moving)
     }
 
     /// The sidebar panel. An overlay drawer floats `s2` inside the outer
@@ -691,9 +719,11 @@ impl SidebarDrawer {
     /// ([`FlapState::advance`]). Call once per draw. Under reduced motion the
     /// reveal lands at once. Returns whether it is still animating.
     pub fn tick(&mut self, theme: &Theme) -> bool {
-        self.animating = self
-            .flap
-            .advance(self.layout, crate::motion::frame_now(), theme.motion());
+        let now = crate::motion::frame_now();
+        self.animating = self.flap.advance(self.layout, now, theme.motion());
+        if let Some(sheet) = self.sheet.as_mut() {
+            self.animating |= sheet.advance(now);
+        }
         self.recompute_rects();
         self.animating
     }
@@ -784,6 +814,7 @@ impl SidebarDrawer {
                 self.sidebar_rect = Rect::new(x0, top, x0 + w, o.y1);
                 self.scrim_rect = Rect::ZERO;
             }
+            SplitLayout::Overlay if self.rises_as_sheet() => self.place_sheet(o),
             SplitLayout::Overlay => {
                 // Content spans the full width; the drawer floats in over it.
                 self.content_rect = o;
@@ -940,6 +971,9 @@ impl SidebarDrawer {
     }
 
     pub fn sidebar_contains(&self, p: Point) -> bool {
+        if self.rises_as_sheet() {
+            return self.sheet.as_ref().is_some_and(|sheet| sheet.contains(p));
+        }
         self.sidebar_rect.width() > 0.0 && self.sidebar_rect.contains(p)
     }
     /// Whether `p` landed on the dismiss scrim of an open overlay drawer.
@@ -968,7 +1002,9 @@ impl SidebarDrawer {
     /// material with the panel radius and the floating shadow.
     pub fn paint_panel(&self, scene: &mut Scene, transform: Affine, theme: &Theme) -> Theme {
         let rect = self.sidebar_rect;
-        if self.is_overlay() && !self.is_push() {
+        if let Some(sheet) = self.sheet.as_ref().filter(|_| self.rises_as_sheet()) {
+            sheet.paint(scene, transform, theme)
+        } else if self.is_overlay() && !self.is_push() {
             paint_floating_drawer(scene, transform, rect, theme)
         } else {
             let region = match self.side {
