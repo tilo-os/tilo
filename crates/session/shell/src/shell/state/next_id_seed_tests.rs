@@ -154,13 +154,13 @@ fn next_ids_are_seeded_above_use_and_partitioned_by_peer_salt() {
 
             NEXT_ID_PEER_SALT.store(0x2222, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
-            let id_b = tree_b.append_empty_workspace("PeerB");
+            let id_b = tree_b.create_hosted_workspace("PeerB").0;
 
             // Peer A appends concurrently under its own salt. Without the
             // salt, both peers would mint id `1` here and collide.
             NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);
             NEXT_ID.store(1, AtomicOrdering::Relaxed);
-            let id_a = tree_a.append_empty_workspace("PeerA");
+            let id_a = tree_a.create_hosted_workspace("PeerA").0;
 
             assert_ne!(
                 id_a,

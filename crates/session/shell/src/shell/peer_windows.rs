@@ -469,7 +469,7 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
         // A governed room's window opens the record its owner created for
         // it; wait until this device has admitted it.
-        if !item.local && tree.requires_native_owner(workspace.room()) {
+        if !item.local {
             match prepare_hosted_record(tree, &item) {
                 Ok(true) => {}
                 Ok(false) => {
@@ -891,10 +891,7 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), Refusal> {
     stage_continuation_for_tab(tree, item);
     // The instance runs as the tab, whose saved view names the record the
     // room's owner created for it (`prepare_hosted_record`).
-    if !item.local
-        && tree.requires_native_owner(ws.room())
-        && tree.room_tab_record(ws.room(), item.tab).is_some()
-    {
+    if !item.local && tree.room_tab_record(ws.room(), item.tab).is_some() {
         launcher::stage_continuation_record(ws.room(), item.tab, item.tab);
     }
     let launched = launcher::launch_in_workspace(&item.app_id, ws)

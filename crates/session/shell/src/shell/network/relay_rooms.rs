@@ -24,9 +24,8 @@
 //!   its own effect receipt, and having the host create the empty record of
 //!   an app this device opens there first, on the room's session.
 use super::{
-    NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
-    personal_continuity_topic_id, registered_home_peer_addrs, relay_topics_for_home_peers,
-    room_topic_id,
+    NetCmd, PendingInvitation, ShellNetwork, persist_pending_invitations,
+    personal_continuity_topic_id, room_topic_id,
 };
 use crate::network::actor::room_governance::{Addressee, Request};
 use crate::network::invite::InviteRole;
@@ -42,10 +41,9 @@ use tilo_actions::remote::{
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_peer_state::join;
 use tilo_relay_session::rooms::{
-    CLAIM_TOPOLOGY_NAMESPACE, CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom,
-    GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS,
-    MEMBER_ACTIONS_PROVIDER, PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing,
-    member_resource,
+    CLAIM_TOPOLOGY_NAMESPACE, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP, HOST_ACTIONS_PROVIDER,
+    HOST_ROOMS_RESOURCE, IssuedInvitation, LIST_ROOMS, MEMBER_ACTIONS_PROVIDER,
+    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, RoomListing, member_resource,
 };
 
 /// How long one invocation on a room's own session may take.
@@ -60,18 +58,6 @@ const CANCEL_INVITATION: &str = "invitation.cancel";
 /// How long the invitation this device redeems into a room it just shared
 /// or entered stays redeemable.
 const OWN_INVITATION_SECONDS: u64 = 600;
-/// The longest room name a relay accepts.
-const ROOM_NAME_CHARS: usize = 80;
-
-fn home_for_workspace(user: [u8; 32], room: RoomId) -> Result<Option<RegisteredHomePeer>, String> {
-    // A fresh local workspace has never been registered on the relay. Its
-    // person's continuity topic locates the enrolled home before the room
-    // is created; the relay's own decision still governs admission.
-    let topics = relay_topics_for_home_peers([room], Some(user));
-    Ok(registered_home_peer_addrs(Some(user), &topics)?
-        .into_iter()
-        .next())
-}
 
 /// Set where the session holds every workspace that a configured host of
 /// its person governs (a company node's own session, which nobody sits at):
@@ -102,16 +88,6 @@ impl HeldRoom {
     pub(super) const fn room(&self) -> RoomId {
         self.room
     }
-}
-
-/// What moving a workspace onto the person's home relay made.
-pub(super) struct MovedRoom {
-    /// The room the relay governs now.
-    pub room: RoomId,
-    /// The first invitation, when one was asked for.
-    pub issued: Option<IssuedInvitation>,
-    /// This device's enrollment into the room, while it is installed.
-    pub enrollment: Option<u64>,
 }
 
 /// What an invitation a relay issues is for.
@@ -152,43 +128,6 @@ fn invite_arguments(terms: &RelayInvitation<'_>) -> serde_json::Map<String, serd
     }
     arguments.insert("expires_in_seconds".into(), terms.lifetime.into());
     arguments
-}
-
-/// The arguments of creating a room named `name`, with `first` as its first
-/// invitation when there is one.
-fn create_arguments(
-    name: &str,
-    first: Option<&RelayInvitation<'_>>,
-) -> serde_json::Map<String, serde_json::Value> {
-    let mut arguments = serde_json::Map::new();
-    arguments.insert("name".into(), name.into());
-    let Some(first) = first else {
-        return arguments;
-    };
-    arguments.insert("invite_role".into(), role_name(first.role).into());
-    if let Some(recipient) = first.recipient {
-        arguments.insert("invite_recipient".into(), hex::encode(recipient).into());
-    }
-    if let Some(invitee) = first.invitee() {
-        arguments.insert("invitee_name".into(), invitee.into());
-    }
-    arguments.insert("invite_expires_in_seconds".into(), first.lifetime.into());
-    arguments
-}
-
-/// The name a room shared from a workspace called `name` gets.
-fn room_name(name: &str) -> String {
-    let name: String = name
-        .trim()
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(ROOM_NAME_CHARS)
-        .collect();
-    if name.is_empty() {
-        "Shared workspace".to_owned()
-    } else {
-        name
-    }
 }
 
 /// The id and the signed invitation the governance invitation answered.
@@ -355,26 +294,6 @@ impl ShellNetwork {
             arguments,
         );
         self.invoke_relay(ws, Addressee::Host(relay), invoke, HOST_TIMEOUT)
-    }
-
-    /// Dial `home` as a workspace host if this session does not already.
-    fn connect_home(&self, home: &RegisteredHomePeer) {
-        let Ok(mut hosts) = self.host_addrs.lock() else {
-            return;
-        };
-        if hosts.iter().any(|known| known.id == home.addr.id) {
-            return;
-        }
-        if self
-            .cmd_tx
-            .try_send(NetCmd::ConnectHost {
-                addr: home.addr.clone(),
-                expectation: Some(home.expectation.clone()),
-            })
-            .is_ok()
-        {
-            hosts.push(home.addr.clone());
-        }
     }
 
     /// The device of the room's admitted governor when a host governs
@@ -694,107 +613,6 @@ impl ShellNetwork {
         Ok(true)
     }
 
-    /// Share the local workspace `local`, which is `room`, on this person's
-    /// home relay: the relay takes over governing that same room, named
-    /// `name`, with the invitation `first`, and admits this device as its
-    /// owner, and this device enrolls `local` into it. Answers the text of
-    /// `first`, or `None` when this device has no identity or its person no
-    /// home relay.
-    pub(super) fn share_on_home_relay(
-        &self,
-        local: WorkspaceId,
-        room: RoomId,
-        name: &str,
-        first: &RelayInvitation<'_>,
-    ) -> Result<Option<String>, String> {
-        let Some(moved) = self.move_to_home_relay(local, room, name, Some(first))? else {
-            return Ok(None);
-        };
-        if let Some(id) = moved.enrollment {
-            self.relay_rooms
-                .shared
-                .lock()
-                .map_err(|_| "shared room enrollments are unavailable")?
-                .push(id);
-        }
-        let issued = moved
-            .issued
-            .ok_or("the relay did not issue the invitation")?;
-        self.remember_relay_invitation(moved.room, &issued, first)
-            .map(Some)
-    }
-
-    /// Move the governance of the workspace `local`, which is `room` and is
-    /// called `name`, to this person's home relay, which governs it from
-    /// then on: the relay takes the room over under its own identity (a
-    /// workspace is its room, and keeps it when its governance moves),
-    /// issuing `first` with it when given, and this device holds the same
-    /// workspace as a member of the room the relay governs. `None` when the
-    /// person has no home relay. The caller finishes the returned
-    /// enrollment.
-    pub(super) fn move_to_home_relay(
-        &self,
-        local: WorkspaceId,
-        room: RoomId,
-        name: &str,
-        first: Option<&RelayInvitation<'_>>,
-    ) -> Result<Option<MovedRoom>, String> {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return Ok(None);
-        };
-        let (certificate, _) = identity.current_native_material(room_topic_id(room))?;
-        let user = certificate.user_public_key;
-        let Some(home) = home_for_workspace(user, room)? else {
-            return Ok(None);
-        };
-        self.connect_home(&home);
-        let mut arguments = create_arguments(&room_name(name), first);
-        arguments.insert("room".into(), room.to_string().into());
-        let created: CreatedRoom =
-            answer_of(self.host_action(home.addr.id, user, CREATE_ROOM, arguments)?)?;
-        if RoomId::parse(&created.room.room) != Some(room) {
-            return Err(
-                "the home relay made another room instead of taking this one over; it needs to update"
-                    .into(),
-            );
-        }
-        let issued = match first {
-            Some(_) => Some(
-                created
-                    .invitation
-                    .ok_or("the relay did not issue the invitation")?
-                    .decode()?,
-            ),
-            None => None,
-        };
-        let own = self.enter_host_room(home.addr.id, user, &created.room.room)?;
-        // The same workspace joins the room the relay governs now: it stays
-        // out of the shell's own engine from here, and says Joining… until
-        // the relay's replica installs into it.
-        let replica = self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?;
-        let joined = replica.tree.write().join_native_room(name, room);
-        drop(replica);
-        if joined != Some(local) {
-            return Err("the workspace moving to the home relay is gone".into());
-        }
-        let enrollment = match self.accept_invitation_via(
-            local,
-            &own,
-            crate::network::invite::enrollment_driver::Via::Iroh,
-        )? {
-            PeerSyncResponse::EnrollmentPending { id } => Some(id),
-            _ => None,
-        };
-        Ok(Some(MovedRoom {
-            room,
-            issued,
-            enrollment,
-        }))
-    }
-
     /// Enter `room` at the host at `relay` as this device of `user`, and
     /// answer the text of the invitation this device redeems to hold it.
     fn enter_host_room(
@@ -875,22 +693,10 @@ impl ShellNetwork {
         listing: &RoomListing,
     ) -> Result<(), String> {
         let room = RoomId::parse(&listing.room).ok_or("the host named an invalid room")?;
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         let (held, first) = {
             let tree = tree.read();
-            (
-                tree.holds_room(room),
-                !tree
-                    .desktop
-                    .workspaces
-                    .iter()
-                    .any(|workspace| tree.requires_native_owner(workspace.room())),
-            )
+            (tree.holds_room(room), tree.desktop.workspaces.is_empty())
         };
         if held {
             return Ok(());
@@ -1135,53 +941,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[serial_test::serial(process_env)]
-    fn fresh_workspace_finds_its_enrolled_home_on_the_person_topic() {
-        let temp = tempfile::tempdir().expect("temp");
-        let registry = temp.path().join("home-peers.json");
-        let user = super::super::decode_lower_hex_32(
-            "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241",
-        )
-        .expect("public person key");
-        let room = RoomId::parse("3291bed4-ee10-492a-877c-dbe6b8027a94").expect("fresh workspace");
-        let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
-        let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
-        let registered_topics = [
-            12_552_341_473_564_032_145_u64,
-            7_702_587_935_360_457_883,
-            4_296_909_156_967_491_521,
-        ];
-        assert!(!registered_topics.contains(&room_topic_id(room)));
-        assert!(registered_topics.contains(&super::super::personal_continuity_topic_id(&user)));
-        std::fs::write(
-            &registry,
-            serde_json::to_vec(&serde_json::json!([{
-                "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
-                "device_node_id": hex::encode(device.as_bytes()),
-                "relay_service_node_id": hex::encode(service.as_bytes()),
-                "label": "Enrolled home",
-                "user_public_key": hex::encode(user),
-                "relay_workspace_ids": registered_topics,
-            }]))
-            .expect("registry"),
-        )
-        .expect("write registry");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("TILO_HOME_PEERS_PATH", &registry);
-        let home = home_for_workspace(user, room)
-            .expect("lookup")
-            .expect("enrolled home exists before the room is created");
-        assert_eq!(home.addr.id, service);
-        assert_eq!(home.expectation.user_public_key, user);
-        assert_eq!(home.expectation.device_public_key, *device.as_bytes());
-        assert!(
-            home_for_workspace([0x44; 32], room)
-                .expect("other person")
-                .is_none()
-        );
-    }
-
-    #[test]
     fn an_invitation_asks_the_rooms_action_for_exactly_what_was_chosen() {
         let grace = RelayInvitation {
             role: InviteRole::Commenter,
@@ -1209,38 +968,8 @@ mod tests {
     }
 
     #[test]
-    fn moving_a_workspace_to_publish_it_creates_its_room_without_an_invitation() {
-        assert_eq!(
-            serde_json::Value::Object(create_arguments(&room_name("Coffee"), None)),
-            serde_json::json!({ "name": "Coffee" })
-        );
-    }
-
-    #[test]
-    fn sharing_creates_the_room_with_exactly_the_invitation_chosen() {
-        let grace = RelayInvitation {
-            role: InviteRole::Editor,
-            recipient: Some([9; 32]),
-            invitee: Some("Grace"),
-            lifetime: 3_600,
-        };
-        assert_eq!(
-            serde_json::Value::Object(create_arguments(&room_name(" Plans\u{7} "), Some(&grace))),
-            serde_json::json!({
-                "name": "Plans",
-                "invite_role": "editor",
-                "invite_recipient": hex::encode([9; 32]),
-                "invitee_name": "Grace",
-                "invite_expires_in_seconds": 3_600,
-            })
-        );
-        assert_eq!(room_name(" \n "), "Shared workspace");
-        assert_eq!(room_name(&"x".repeat(200)).chars().count(), ROOM_NAME_CHARS);
-    }
-
-    #[test]
     fn the_hosts_answers_read_as_the_rooms_they_name() {
-        let created: CreatedRoom = answer_of(serde_json::json!({
+        let created: tilo_relay_session::rooms::CreatedRoom = answer_of(serde_json::json!({
             "room": "3291bed4-ee10-492a-877c-dbe6b8027a94",
             "workspace_id": 7,
             "name": "Plans",

@@ -2118,7 +2118,7 @@ fn collaborator_dropdown_offers_gated_actions_and_clears_their_rects_on_close() 
 fn adopt_rooms(h: &Harness) {
     let st = h.chrome.borrow();
     st.tree_mut()
-        .adopt_ownerless_workspaces_with(crate::shell::state::local_user_id_for_room);
+        .own_workspaces_for_test(crate::shell::state::local_user_id_for_room);
 }
 
 /// A click anywhere inside the popover asks the network for nothing.

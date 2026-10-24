@@ -97,7 +97,7 @@ fn only_the_owner_administers_a_room() {
             "an unowned room must have no administrators, not only administrators"
         );
 
-        let adopted = tree.adopt_ownerless_workspaces(&ALICE.to_string());
+        let adopted = tree.own_workspaces_for_test(|_| ALICE.to_string());
         assert_eq!(adopted, vec![id]);
         assert!(ws_of(&tree, id).may_administer(&ALICE.to_string()));
         assert!(
@@ -110,11 +110,11 @@ fn only_the_owner_administers_a_room() {
     {
         let (mut tree, id) = room_owned_by(ALICE);
 
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Editor)
             .expect("the owner may admit a member");
 
         // Bob tries to widen his own authority. This must fail.
-        let escalation = tree.admit_in_workspace(id, &BOB.to_string(), "mallory", Role::Editor);
+        let escalation = tree.admit_here_for_test(id, &BOB.to_string(), "mallory", Role::Editor);
         assert_eq!(
             escalation, None,
             "a member who is not an administrator must not be able to grant, least of \
@@ -126,7 +126,7 @@ fn only_the_owner_administers_a_room() {
         );
 
         let carol_cap = tree
-            .grant_sandbox_in_workspace(
+            .grant_sandbox_here_for_test(
                 id,
                 &ALICE.to_string(),
                 CapOverride::grant(
@@ -137,7 +137,7 @@ fn only_the_owner_administers_a_room() {
             )
             .expect("owner grants");
         assert!(
-            !tree.revoke_sandbox_in_workspace(id, &BOB.to_string(), &carol_cap),
+            !tree.narrow_sandbox(id, &BOB.to_string(), &carol_cap),
             "a non-administrator must not be able to revoke"
         );
         assert!(
@@ -152,11 +152,11 @@ fn only_the_owner_administers_a_room() {
     clippy::too_many_lines,
     reason = "one scenario test keeps each merged phase and its fresh fixture visible"
 )]
-fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
+fn peer_capabilities_are_enforced_live_and_attributed() {
     // Phase `a_viewer_is_denied_changes_and_governance`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Viewer)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Viewer)
             .expect("owner admits a viewer");
 
         let ws = ws_of(&tree, id);
@@ -177,21 +177,28 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
         let (mut tree, id) = room_owned_by(ALICE);
         let bob = BOB.to_string();
 
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Viewer)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Viewer)
             .expect("owner admits");
         assert!(
             !may_change(ws_of(&tree, id), BOB),
             "read-only to begin with"
         );
 
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Editor)
             .expect("owner promotes");
         assert!(
             may_change(ws_of(&tree, id), BOB),
             "the promotion takes effect immediately"
         );
 
-        assert!(tree.remove_from_workspace(id, &ALICE.to_string(), BOB));
+        assert!(
+            tree.govern_here_for_test(
+                id,
+                &ALICE.to_string(),
+                vec![tilo_action_policy::Change::RemoveMember { person: BOB.into() }],
+            )
+            .is_ok()
+        );
         assert!(
             !may_read(ws_of(&tree, id), BOB),
             "ending the membership removes access outright"
@@ -202,111 +209,6 @@ fn peer_capabilities_are_enforced_live_attributed_and_replicated() {
             "and Bob is no longer a member"
         );
     }
-
-    // Phase `a_revoked_capability_stops_working_on_a_peer`.
-    {
-        let (mut host, id) = room_owned_by(ALICE);
-        let bob = BOB.to_string();
-
-        admit_editor(&mut host, id);
-
-        let mut peer = WorkspaceTree::default();
-        let changes = host.export_changes_since(&[]);
-        peer.apply_changes(&changes).expect("peer applies");
-
-        let peer_ws = ws_of(&peer, id);
-        assert!(
-            may_change(peer_ws, &bob),
-            "the peer must see the membership the host granted"
-        );
-
-        let heads = host.current_heads();
-        assert!(host.remove_from_workspace(id, &ALICE.to_string(), BOB));
-        let revoke_changes = host.export_changes_since(&heads);
-        assert!(
-            !revoke_changes.is_empty(),
-            "a revoke must produce replicable changes — a revoke that only mutates the \
-             local cache is invisible to every peer"
-        );
-        peer.apply_changes(&revoke_changes)
-            .expect("peer applies revoke");
-
-        let peer_ws = ws_of(&peer, id);
-        assert!(
-            !may_change(peer_ws, &bob),
-            "the revocation must take effect ON THE PEER, not merely be recorded on the host"
-        );
-        assert_eq!(
-            peer_ws.role_of(&bob),
-            None,
-            "and the membership must be gone from the peer's roster"
-        );
-    }
-
-    // Phase `a_peers_grant_replicates_to_the_host`.
-    {
-        // Replication is two-way: the host must also converge on a capability a
-        // co-owner issued.
-        let (mut host, id) = room_owned_by(ALICE);
-        let mut peer = WorkspaceTree::default();
-        peer.apply_changes(&host.export_changes_since(&[]))
-            .expect("hydrate");
-
-        delegate_granting(&mut host, id);
-        peer.apply_changes(&host.export_changes_since(&[]))
-            .expect("sync");
-
-        let heads = peer.current_heads();
-        peer.grant_sandbox_in_workspace(
-            id,
-            &BOB.to_string(),
-            CapOverride::grant(
-                Subject::person("carol"),
-                Scope::FsPath("/var/workspace/design".into()),
-                Access::Read,
-            )
-            .with_id("carol-read"),
-        )
-        .expect("a delegated administrator may grant");
-        let out = peer.export_changes_since(&heads);
-        host.apply_changes(&out).expect("host applies");
-
-        assert!(
-            ws_of(&host, id)
-                .sandbox
-                .iter()
-                .any(|c| c.id == "carol-read"),
-            "the host must converge on the capability the co-owner issued"
-        );
-    }
-}
-
-fn admit_editor(tree: &mut WorkspaceTree, id: WorkspaceId) {
-    tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
-        .expect("owner admits");
-}
-
-/// Bob, an editor, may also grant in the room: the owner delegated the
-/// room's grant action to him.
-fn delegate_granting(tree: &mut WorkspaceTree, id: WorkspaceId) {
-    admit_editor(tree, id);
-    let room = ws_of(tree, id).room().to_string();
-    tree.grant_in_workspace(
-        id,
-        &ALICE.to_string(),
-        tilo_action_policy::Grant::new(
-            "bob-grants",
-            tilo_action_policy::Subject::person(BOB),
-            tilo_action_policy::roles::governance_action(
-                &room,
-                tilo_action_policy::roles::governance::GRANT,
-            ),
-            tilo_action_policy::KindSet::ALL,
-            Answer::Allow,
-            tilo_action_policy::Subject::person(ALICE),
-        ),
-    )
-    .expect("owner delegates");
 }
 
 #[test]
@@ -448,7 +350,7 @@ fn capability_lifetimes_survive_restart_never_shorten_and_expire() {
     {
         let (mut tree, id) = room_owned_by(ALICE);
         let past = 1_000u64; // long before any plausible `now`
-        tree.grant_sandbox_in_workspace(
+        tree.grant_sandbox_here_for_test(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
@@ -488,7 +390,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
 
         let (mut tree, id) = room_owned_by(ALICE);
         tree.fs_acl_path = Some(acl_path.clone());
-        tree.grant_sandbox_in_workspace(
+        tree.grant_sandbox_here_for_test(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
@@ -501,7 +403,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
         .expect("grant a path");
         // Membership must NOT reach the filesystem as a path: it has no
         // business deciding room membership there.
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Editor)
             .expect("grant membership");
 
         persist::wait_for_saves();
@@ -525,7 +427,7 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
             "only path-scoped capabilities belong in the filesystem's list"
         );
 
-        assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "bob-design"));
+        assert!(tree.narrow_sandbox(id, &ALICE.to_string(), "bob-design"));
         persist::wait_for_saves();
         let raw = std::fs::read_to_string(&acl_path).expect("export still present");
         let exported: Vec<CapOverride> = serde_json::from_str::<collab_types::FsAuthority>(&raw)
@@ -620,9 +522,9 @@ fn filesystem_capabilities_export_exactly_and_inherit_to_the_boundary() {
     // Phase `file_capabilities_inherit_down_the_tree_and_stop_at_the_boundary`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Viewer)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Viewer)
             .expect("admit bob");
-        tree.grant_sandbox_in_workspace(
+        tree.grant_sandbox_here_for_test(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
@@ -713,9 +615,9 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
         let (mut tree, id) = room_owned_by(ALICE);
 
         // Bob is admitted to the room. Carol is only given one file.
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Editor)
             .expect("admit bob");
-        tree.grant_sandbox_in_workspace(
+        tree.grant_sandbox_here_for_test(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
@@ -774,20 +676,22 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
     // Phase `a_restriction_narrows_a_member_below_their_role`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.admit_in_workspace(id, &ALICE.to_string(), BOB, Role::Editor)
+        tree.admit_here_for_test(id, &ALICE.to_string(), BOB, Role::Editor)
             .expect("admit bob as editor");
         let finance = ws_of(&tree, id).node().app("finance");
-        tree.grant_in_workspace(
+        tree.govern_here_for_test(
             id,
             &ALICE.to_string(),
-            tilo_action_policy::Grant::new(
-                "bob-not-finance",
-                tilo_action_policy::Subject::person(BOB),
-                finance,
-                tilo_action_policy::KindSet::UNDOABLE,
-                Answer::Deny,
-                tilo_action_policy::Subject::person(ALICE),
-            ),
+            vec![tilo_action_policy::Change::Grant(
+                tilo_action_policy::Grant::new(
+                    "bob-not-finance",
+                    tilo_action_policy::Subject::person(BOB),
+                    finance,
+                    tilo_action_policy::KindSet::UNDOABLE,
+                    Answer::Deny,
+                    tilo_action_policy::Subject::person(ALICE),
+                ),
+            )],
         )
         .expect("narrow bob inside one app");
 
@@ -817,7 +721,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
     // Phase `a_bearer_token_carries_exactly_its_own_authority`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.grant_sandbox_in_workspace(
+        tree.grant_sandbox_here_for_test(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
@@ -852,7 +756,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             "a different token grants nothing"
         );
 
-        assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "share-link"));
+        assert!(tree.narrow_sandbox(id, &ALICE.to_string(), "share-link"));
         assert!(
             !ws_of(&tree, id).allows(&holder, &path, Access::Read),
             "a revoked link stops working"
@@ -862,7 +766,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
     // Phase `an_agent_holds_a_scoped_revocable_capability_set_like_an_app`.
     {
         let (mut tree, id) = room_owned_by(ALICE);
-        tree.grant_sandbox_in_workspace(
+        tree.grant_sandbox_here_for_test(
             id,
             &ALICE.to_string(),
             CapOverride::grant(
@@ -895,7 +799,7 @@ fn scoped_capabilities_carry_exactly_their_own_authority() {
             "and holds no role, so it never inherits room-wide authority"
         );
 
-        assert!(tree.revoke_sandbox_in_workspace(id, &ALICE.to_string(), "agent-notes"));
+        assert!(tree.narrow_sandbox(id, &ALICE.to_string(), "agent-notes"));
         assert!(
             !ws_of(&tree, id).allows(
                 &ws_of(&tree, id).actor_for_agent("assistant"),

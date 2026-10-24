@@ -1304,11 +1304,18 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
 
     // The owner revokes Bob's membership: the next fire starts nothing.
     let owner = owner_principal();
-    assert!(door.membership.write().remove_from_workspace(
-        crate::shell::state::WorkspaceId(1),
-        &owner,
-        BOB,
-    ));
+    assert!(
+        door.membership
+            .write()
+            .govern_here_for_test(
+                crate::shell::state::WorkspaceId(1),
+                &owner,
+                vec![tilo_action_policy::Change::RemoveMember {
+                    person: BOB.to_owned()
+                }],
+            )
+            .is_ok_and(|edit| !edit.is_empty())
+    );
     clock.advance(chrono::Duration::hours(1));
     let fired = tick(&mut triggers, &door, BOB);
     assert_eq!(fired.len(), 1, "the schedule itself still comes round");

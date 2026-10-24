@@ -1,42 +1,153 @@
-//! Governance writes that need this machine's workspace tree: whether it
-//! governs the room, and mirroring the change into the room document.
+//! Governance writes made at this device: checked against the room's
+//! policy as this device holds it, then asked of the room's governor, its
+//! host. Nothing changes here until the room's admitted document carries
+//! the change.
 
 use tilo_desktop::workspace_settings::{GovernanceOperation, apply_governance};
 
-use crate::shell::state::{WorkspaceId, WorkspaceTree};
+use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceId, WorkspaceTree};
 
-/// Apply a governance `operation` to `workspace_id` as `person`, mirrored
-/// into the room document and to disk. The room's policy decides: `person`
+/// Ask the governor of `workspace_id`'s room for a governance `operation`
+/// as `person`, after the room's policy as held here allows it: `person`
 /// must hold the governance action and may hand out no more than they hold.
 ///
 /// # Errors
 ///
-/// A refusal worded for the person: no authority, a room governed
-/// elsewhere, or arguments that name nothing grantable.
+/// A refusal worded for the person: no authority, or arguments that name
+/// nothing grantable.
 pub(crate) fn apply_governance_operation(
     tree: &mut WorkspaceTree,
     workspace_id: WorkspaceId,
     person: &str,
     operation: GovernanceOperation,
 ) -> Result<(), String> {
-    let room = tree
-        .room_of(workspace_id)
-        .ok_or_else(|| "no such workspace".to_string())?;
-    if !room.is_nil() && !tree.governs_room(room) {
-        return Err("this device is not the workspace governance authority".into());
-    }
-    let workspace = tree
+    let mut edited = tree
         .desktop
         .workspaces
-        .iter_mut()
+        .iter()
         .find(|workspace| workspace.id == workspace_id)
+        .cloned()
         .ok_or_else(|| "no such workspace".to_string())?;
-    let applied = apply_governance(workspace, person, operation, tilo_clock::unix_now())?;
-    if let Some(preset) = &applied.preset {
-        tree.doc_upsert_preset(workspace_id, preset);
-    }
-    tree.doc_write_policy(workspace_id, &applied.edit);
+    apply_governance(
+        &mut edited,
+        person,
+        operation.clone(),
+        tilo_clock::unix_now(),
+    )?;
+    let room = edited.room();
+    tree.request_governance(room, governance_request(room, operation)?);
     Ok(())
+}
+
+/// The request that asks `room`'s governor for `operation`: a grant or
+/// revocation is the room's policy, which the governor decides as it would
+/// for a person at its own screen; the rest are desktop commands it applies.
+///
+/// # Errors
+/// The operation names nothing the governor can be asked for.
+pub(crate) fn governance_request(
+    room: RoomId,
+    operation: GovernanceOperation,
+) -> Result<GovernanceRequest, String> {
+    use GovernanceOperation as Operation;
+    use tilo_desktop_model::commands::DesktopCommand;
+    let command = match operation {
+        // A grant is the room's policy, which the governor decides as it
+        // would for a person at its own screen.
+        operation @ Operation::Grant { .. } => {
+            let grant = governed_grant(room, operation)?;
+            return Ok(GovernanceRequest::Policy(
+                tilo_action_policy::Change::Grant(grant),
+            ));
+        }
+        Operation::Revoke { grant } => {
+            return Ok(GovernanceRequest::Policy(
+                tilo_action_policy::Change::Revoke(tilo_action_policy::GrantId::new(grant)),
+            ));
+        }
+        Operation::SavePreset {
+            name,
+            description,
+            rules,
+        } => DesktopCommand::SavePreset {
+            preset_json: serde_json::to_string(&tilo_action_policy::Preset {
+                name,
+                description,
+                rules,
+            })
+            .map_err(|error| error.to_string())?,
+        },
+        Operation::AssignPreset {
+            preset,
+            subject,
+            expires_unix,
+        } => {
+            let (subject_kind, subject) = match subject {
+                tilo_action_policy::Subject::Person(id) => ("person", id),
+                tilo_action_policy::Subject::App(id) => ("app", id),
+                tilo_action_policy::Subject::Agent(id) => ("agent", id),
+                _ => return Err("a grant set is assigned to a person, an app or an agent".into()),
+            };
+            DesktopCommand::AssignPreset {
+                preset,
+                subject_kind: subject_kind.into(),
+                subject,
+                expires_unix,
+            }
+        }
+        Operation::GrantAppAction {
+            app,
+            target_app,
+            resource,
+            action,
+            lifetime,
+        } => DesktopCommand::GrantAppAction {
+            app,
+            target_app,
+            resource,
+            action,
+            lifetime,
+        },
+        Operation::RevokeAppAction {
+            app,
+            target_app,
+            resource,
+            action,
+        } => DesktopCommand::RevokeAppAction {
+            app,
+            target_app,
+            resource,
+            action,
+        },
+    };
+    Ok(GovernanceRequest::Command(command))
+}
+
+/// The grant a governance `operation` gives in `room`; the governor records
+/// who gave it.
+fn governed_grant(
+    room: RoomId,
+    operation: GovernanceOperation,
+) -> Result<tilo_action_policy::Grant, String> {
+    let GovernanceOperation::Grant {
+        subject,
+        node,
+        kinds,
+        answer,
+        lifetime,
+    } = operation
+    else {
+        return Err("not a grant".into());
+    };
+    Ok(tilo_action_policy::Grant::new(
+        format!("grant:{}", uuid::Uuid::new_v4()),
+        subject,
+        tilo_action_policy::TreePath::room(room.to_string()).join(&node),
+        kinds,
+        answer,
+        tilo_action_policy::Subject::Person(String::new()),
+    )
+    .with_lifetime(lifetime.unwrap_or(tilo_action_policy::Lifetime::UntilRevoked)))
 }
 
 #[cfg(test)]
@@ -48,13 +159,14 @@ mod tests {
         APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID, governance_resource,
         is_governance_action,
     };
+    use tilo_desktop_model::commands::DesktopCommand;
 
     #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one grant's whole life: offered, refused to strangers, granted, scoped to its resource, revoked"
     )]
-    fn app_action_grants_are_typed_governance_actions_that_only_governors_apply() {
+    fn app_action_grants_are_typed_governance_actions_asked_of_the_governor() {
         let mut tree = WorkspaceTree::default();
         let mut ws = Workspace::new(WorkspaceId(93), "Research");
         let owner = "owner".to_string();
@@ -108,7 +220,31 @@ mod tests {
         );
         apply_governance_operation(&mut tree, id, &owner, grant("session", "so.tilo.agent"))
             .expect("the owner grants");
+        assert!(
+            matches!(
+                tree.take_governance_requests().as_slice(),
+                [(_, GovernanceRequest::Command(DesktopCommand::GrantAppAction { lifetime, .. }))]
+                    if lifetime == "session"
+            ),
+            "the grant is asked of the room's governor"
+        );
+        assert!(
+            tree.desktop.workspaces[0]
+                .policy
+                .grants
+                .iter()
+                .all(|grant| grant.subject != Subject::app("so.tilo.shortcuts")),
+            "nothing changes here before the room's admitted document carries it"
+        );
+        // What the governor applies and the admitted document carries.
         let now = tilo_clock::unix_now();
+        apply_governance(
+            &mut tree.desktop.workspaces[0],
+            &owner,
+            grant("session", "so.tilo.agent"),
+            now,
+        )
+        .expect("the governor grants");
         let ws = &tree.desktop.workspaces[0];
         let answer = |resource: &str, kind: ActionKind| {
             ws.subject_authority(Subject::app("so.tilo.shortcuts"))
@@ -158,6 +294,25 @@ mod tests {
             },
         )
         .expect("the owner revokes");
+        assert!(matches!(
+            tree.take_governance_requests().as_slice(),
+            [(
+                _,
+                GovernanceRequest::Command(DesktopCommand::RevokeAppAction { .. })
+            )]
+        ));
+        apply_governance(
+            &mut tree.desktop.workspaces[0],
+            &owner,
+            GovernanceOperation::RevokeAppAction {
+                app: "so.tilo.shortcuts".into(),
+                target_app: "so.tilo.agent".into(),
+                resource: "agent.transform:freeform".into(),
+                action: "freeform".into(),
+            },
+            now,
+        )
+        .expect("the governor revokes");
         let ws = &tree.desktop.workspaces[0];
         assert!(
             ws.policy

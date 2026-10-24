@@ -31,8 +31,7 @@ use ui::widget::{
 
 use super::{
     InviteRecipientPath, PeerSyncSnapshot, PendingInvitationSummary, RememberedInvitee,
-    elide_token, identity_fingerprint, parse_invite, peer_fingerprint, role_and_expiry, role_label,
-    short_pairing_link,
+    elide_token, identity_fingerprint, role_and_expiry, role_label, short_pairing_link,
 };
 use crate::network::invite::InviteRole;
 use crate::shell::i18n::{t, t_args};
@@ -175,8 +174,6 @@ impl Recipient {
 enum JoinDetail {
     /// Nothing typed: what to type.
     Hint,
-    /// An invitation: what it gives and the code it carries.
-    Invite { access: String, code: String },
     /// A site or a link the sheet understands.
     Understood(String),
     /// Something that is not a site or a link yet: how it begins and ends,
@@ -188,16 +185,6 @@ impl JoinDetail {
     fn of(typed: &str) -> Self {
         if typed.trim().is_empty() {
             return Self::Hint;
-        }
-        if let Some(invite) = parse_invite(typed) {
-            return Self::Invite {
-                access: role_and_expiry(
-                    "peer-sync-received-role-expires",
-                    invite.role,
-                    invite.expiry_unix_seconds,
-                ),
-                code: peer_fingerprint(&invite.owner_peer_id),
-            };
         }
         crate::shell::network::join_field::describe(typed).map_or_else(
             || {
@@ -599,37 +586,19 @@ impl Sheet {
         .push(Box::new(pending))
     }
 
-    /// The invite just made: who it is for, what it gives, and the code
-    /// they will see.
+    /// The invite just made: who it is for.
     fn created_body(&self, state: &PeerSyncSnapshot) -> Column {
-        let parsed = state.invite_token.as_deref().and_then(parse_invite);
         let anyone = t("peer-sync-invite-anyone");
         let who = state.invite_for.clone().unwrap_or(anyone);
-        let mut row = ListRow::new("peer-sync-created-for", who.clone());
-        if let Some(invite) = parsed.as_ref() {
-            row = row.secondary(role_and_expiry(
-                "peer-sync-role-expires",
-                invite.role,
-                invite.expiry_unix_seconds,
-            ));
-        }
-        row = if state.invite_for.is_some() {
+        let row = ListRow::new("peer-sync-created-for", who.clone());
+        let row = if state.invite_for.is_some() {
             row.avatar(who.clone(), who)
         } else {
             row.icon(ui::icons::Icon::Link)
         };
-        let mut body = column().push(Box::new(row));
-        if let Some(invite) = parsed {
-            body = body.push(Box::new(
-                ListRow::new(
-                    "peer-sync-created-code",
-                    peer_fingerprint(&invite.owner_peer_id),
-                )
-                .icon(ui::icons::Icon::Shield)
-                .secondary(t("peer-sync-code-hint")),
-            ));
-        }
-        body.push(Box::new(Banner::from_state(&self.error)))
+        column()
+            .push(Box::new(row))
+            .push(Box::new(Banner::from_state(&self.error)))
             .push(self.status_line())
     }
 
@@ -944,22 +913,6 @@ fn join_detail(detail: &JoinDetail) -> Element {
                 .with_rhythm(Rhythm::Related)
                 .push(caption(t("peer-sync-token-incomplete")))
                 .push(caption(summary.clone())),
-        ),
-        JoinDetail::Invite { access, code } => Box::new(
-            Column::new()
-                .with_intrinsic_height()
-                .with_no_padding()
-                .with_rhythm(Rhythm::Related)
-                .push(Box::new(
-                    ListRow::new("peer-sync-join-invite", t("peer-sync-invite-received"))
-                        .icon(ui::icons::Icon::Link)
-                        .secondary(access.clone()),
-                ))
-                .push(Box::new(
-                    ListRow::new("peer-sync-join-code", code.clone())
-                        .icon(ui::icons::Icon::Shield)
-                        .secondary(t("peer-sync-code-check")),
-                )),
         ),
     }
 }

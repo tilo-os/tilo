@@ -1146,24 +1146,42 @@ fn open_channel_encryption(
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let (authenticated, authenticated_changes): (
+    let (authenticated, authenticated_changes, stewards): (
         crate::shell::channel_policy::AuthenticatedDevices,
         crate::shell::channel_policy::AuthenticatedChanges,
+        crate::shell::channel_policy::Stewards,
     ) = match net {
         Some(net) => {
             let changes = Arc::clone(&net);
+            let stewards = Arc::clone(&net);
             (
                 Box::new(move |user| net.authenticated_devices_of(user)),
                 Box::new(move |after| changes.authenticated_devices_next_change(after)),
+                Box::new(move |room| {
+                    stewards
+                        .opened_native_owner()?
+                        .with_current(room, |view| {
+                            Ok((
+                                view.device().device_public_key,
+                                view.governor().device_public_key,
+                            ))
+                        })
+                        .ok()
+                }),
             )
         }
-        None => (Box::new(|_| Vec::new()), Box::new(|_| None)),
+        None => (
+            Box::new(|_| Vec::new()),
+            Box::new(|_| None),
+            Box::new(|_| None),
+        ),
     };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
         crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
     )
-    .with_authenticated_changes(authenticated_changes);
+    .with_authenticated_changes(authenticated_changes)
+    .with_stewards(stewards);
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {
             root: vault.channel_state_root(),
