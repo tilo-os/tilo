@@ -61,13 +61,15 @@ actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
   || die "$in/oci is not an $arch image"
 
 # Refuse a base that cannot become this medium before spending the disk build on it.
-podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -ec '
-  test -x /usr/libexec/tilo/tilo-installer
-  test -x /usr/libexec/tilo-session-select
-  test -x /usr/libexec/tilo-uki-cmdline
+podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c '
+  status=0
+  for tool in /usr/libexec/tilo/tilo-installer /usr/libexec/tilo-session-select /usr/libexec/tilo-uki-cmdline; do
+    test -x "$tool" || { echo "missing: $tool ($(ls -ld "$tool" 2>&1))" >&2; status=1; }
+  done
   set -- /boot/EFI/Linux/*.efi
-  test "$#" -eq 1 && test -f "$1"
-' >/dev/null || die "$in/oci has no graphical installer or no single sealed UKI"
+  test "$#" -eq 1 && test -f "$1" || { echo "UKIs under /boot/EFI/Linux: $*" >&2; status=1; }
+  exit "$status"
+' || die "$in/oci has no graphical installer or no single sealed UKI"
 
 source_epoch=$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$id" 2>/dev/null || true)
 if ! [[ $source_epoch =~ ^[1-9][0-9]*$ ]] && git cat-file -e "$revision^{commit}" 2>/dev/null; then
