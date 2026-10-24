@@ -64,6 +64,8 @@ mod governed_rooms;
 mod governed_workspace_access;
 #[path = "hosting_cost.rs"]
 mod hosting_cost;
+#[path = "hosting_member.rs"]
+mod hosting_member;
 #[cfg(target_os = "linux")]
 #[path = "legacy_on_kvm.rs"]
 mod legacy_on_kvm;

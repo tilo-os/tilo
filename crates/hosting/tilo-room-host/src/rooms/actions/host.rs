@@ -20,13 +20,15 @@ use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::rooms::{
-    ActionInvitation, CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, GRANT_APP_AUTHORSHIP,
-    GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, LIST_ROOMS, RoomListing,
+    ATTACH_HOST, ActionInvitation, CREATE_ROOM, CreatedRoom, DETACH_HOST, ENTER_ROOM, EnteredRoom,
+    GRANT_APP_AUTHORSHIP, GrantAppAuthorshipRequest, HOST_ACTIONS_PROVIDER, HOST_ROOM,
+    HOST_ROOMS_RESOURCE, HostedRoom, LIST_ROOMS, RoomListing, UNHOST_ROOM,
 };
 use tilo_user_identity::DeviceCert;
 
 use super::{
-    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, refused, request_id,
+    Args, DEFAULT_INVITATION_HOURS, HOUR_NS, Publisher, ROLES, SECOND_NS, Verb, invalid, refused,
+    request_id,
 };
 use crate::host_authority::HostOperation;
 use crate::rooms::authority::RoomOp;
@@ -47,7 +49,7 @@ const OWN_INVITATION_SECONDS: u64 = 600;
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 4] = [
+const HOST_VERBS: [(Verb, HostOperation); 8] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -88,7 +90,111 @@ const HOST_VERBS: [(Verb, HostOperation); 4] = [
         },
         HostOperation::GrantAppAuthorship,
     ),
+    (
+        Verb {
+            id: ATTACH_HOST,
+            label: "Have a host serve a room",
+            gate: ATTACH_HOST,
+            kind: roles::GOVERNANCE_KIND,
+            params: attach_params,
+        },
+        HostOperation::AttachHost,
+    ),
+    (
+        Verb {
+            id: DETACH_HOST,
+            label: "Stop a host serving a room",
+            gate: DETACH_HOST,
+            kind: roles::GOVERNANCE_KIND,
+            params: detach_params,
+        },
+        HostOperation::DetachHost,
+    ),
+    (
+        Verb {
+            id: HOST_ROOM,
+            label: "Serve a room for its governor",
+            gate: HOST_ROOM,
+            kind: roles::GOVERNANCE_KIND,
+            params: host_room_params,
+        },
+        HostOperation::HostRoom,
+    ),
+    (
+        Verb {
+            id: UNHOST_ROOM,
+            label: "Stop serving a room for its governor",
+            gate: UNHOST_ROOM,
+            kind: roles::GOVERNANCE_KIND,
+            params: room_params,
+        },
+        HostOperation::UnhostRoom,
+    ),
 ];
+
+fn room_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "room",
+        ParamType::Text,
+        "The room, as listing rooms names it.",
+    )]
+}
+
+fn host_param() -> ActionParam {
+    ActionParam::required(
+        "host",
+        ParamType::Text,
+        "The host's device key, 64 hex characters: a certified host of this person.",
+    )
+}
+
+fn attach_params() -> Vec<ActionParam> {
+    vec![
+        room_params().remove(0),
+        host_param(),
+        ActionParam::required(
+            "host_addr",
+            ParamType::Object,
+            "The host's endpoint address.",
+        ),
+    ]
+}
+
+fn detach_params() -> Vec<ActionParam> {
+    vec![
+        room_params().remove(0),
+        host_param(),
+        ActionParam::optional(
+            "host_addr",
+            ParamType::Object,
+            "Where to ask the host to stop; the address it last answered when omitted.",
+        ),
+    ]
+}
+
+fn host_room_params() -> Vec<ActionParam> {
+    vec![
+        room_params().remove(0),
+        ActionParam::required("workspace_id", ParamType::Integer, "The room's workspace."),
+        ActionParam::required(
+            "governor_hint",
+            ParamType::Text,
+            "The governor's signed address for the room, postcard in hex.",
+        ),
+        ActionParam::required(
+            "bootstrap",
+            ParamType::Text,
+            "The room as a joining member gets it, this host's device admitted, postcard in hex.",
+        ),
+    ]
+}
+
+/// `value`, postcard in hex, as the host operations carry signed values.
+fn hex_postcard(value: &impl serde::Serialize) -> Result<String, ActionHostError> {
+    postcard::to_stdvec(value)
+        .map(hex::encode)
+        .map_err(|error| refused(&error))
+}
 
 fn create_params() -> Vec<ActionParam> {
     vec![
@@ -303,6 +409,87 @@ impl Rooms {
                     .await
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "generation": done.generation }))
+            }
+            HostOperation::AttachHost
+            | HostOperation::DetachHost
+            | HostOperation::HostRoom
+            | HostOperation::UnhostRoom => self.serving_invoke(device, operation, &args, now).await,
+            _ => Err(ActionHostError::UnknownAction),
+        }
+    }
+
+    /// The host operations that have one host of the person serve a room
+    /// another governs ([`crate::hosted`]), already permitted to `device`.
+    async fn serving_invoke(
+        &self,
+        device: &DeviceCert,
+        operation: HostOperation,
+        args: &Args,
+        now: u64,
+    ) -> Result<Value, ActionHostError> {
+        match operation {
+            HostOperation::AttachHost => {
+                let addr = args
+                    .object("host_addr")?
+                    .ok_or_else(|| invalid("`host_addr` is required"))?;
+                let hint = self
+                    .attach_host(
+                        args.required_text("room")?,
+                        device,
+                        args.required_key("host")?,
+                        addr,
+                    )
+                    .await
+                    .map_err(|error| refused(&error))?;
+                answer(&HostedRoom {
+                    host_hint: hex_postcard(&hint)?,
+                })
+            }
+            HostOperation::DetachHost => {
+                let confirmed = self
+                    .detach_host(
+                        args.required_text("room")?,
+                        device,
+                        args.required_key("host")?,
+                        args.object("host_addr")?,
+                    )
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(serde_json::json!({ "confirmed": confirmed }))
+            }
+            HostOperation::HostRoom => {
+                self.authorize(device, None, RoomOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                let request = crate::hosted::HostRoomRequest {
+                    room: args.required_text("room")?.to_owned(),
+                    workspace_id: args
+                        .integer("workspace_id")?
+                        .ok_or_else(|| invalid("`workspace_id` is required"))?,
+                    governor_hint: crate::hosted::decode_hex(args.required_text("governor_hint")?)
+                        .map_err(|error| invalid(format!("`governor_hint`: {error}")))?,
+                    bootstrap: crate::hosted::decode_hex(args.required_text("bootstrap")?)
+                        .map_err(|error| invalid(format!("`bootstrap`: {error}")))?,
+                };
+                let hint = self
+                    .inner
+                    .hosting
+                    .host_room(device, &request)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                answer(&HostedRoom {
+                    host_hint: hex_postcard(&hint)?,
+                })
+            }
+            HostOperation::UnhostRoom => {
+                self.authorize(device, None, RoomOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                let stopped = self
+                    .inner
+                    .hosting
+                    .unhost_room(device, args.required_text("room")?)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(serde_json::json!({ "stopped": stopped }))
             }
             _ => Err(ActionHostError::UnknownAction),
         }

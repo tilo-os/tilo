@@ -285,42 +285,39 @@ pub fn print_phase_diagnostic() {
 
 /// The app surfaces a process decides received changes against
 /// (`tilo_peer_state::decide_with_surfaces`) are one per process, and a
-/// single-process `cargo test` run shares them across this binary's tests.
-/// A test that installs surfaces holds [`install_process_surfaces`]'s guard;
-/// one that depends on none holds [`no_process_surfaces`]. Neither runs
-/// beside the other, and the surfaces are taken off again when the guard
-/// drops.
-pub struct ProcessSurfaces {
-    _lock: std::sync::MutexGuard<'static, ()>,
-}
-
-fn process_surfaces_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Decide every change of this process against `surfaces`, naming `of`'s
-/// surface for each app, until the guard drops.
+/// relay or replica reads them when it starts. A test that installs some
+/// runs in a process of its own ([`in_own_process`]), so no other test of
+/// this binary ever runs under them.
 pub fn install_process_surfaces(
     surfaces: collab_types::Surfaces,
     of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
-) -> ProcessSurfaces {
-    let lock = process_surfaces_lock();
+) {
     tilo_peer_state::decide_with_surfaces(surfaces, of);
-    ProcessSurfaces { _lock: lock }
 }
 
-/// Run with no process-wide app surfaces installed: changes are decided by
-/// their record.
-pub fn no_process_surfaces() -> ProcessSurfaces {
-    let lock = process_surfaces_lock();
-    tilo_peer_state::decide_with_surfaces(collab_types::Surfaces::default(), |_| None);
-    ProcessSurfaces { _lock: lock }
-}
+/// Names the one test a process of its own runs, see [`in_own_process`].
+const OWN_PROCESS: &str = "TILO_RELAY_TEST_OWN_PROCESS";
 
-impl Drop for ProcessSurfaces {
-    fn drop(&mut self) {
-        tilo_peer_state::decide_with_surfaces(collab_types::Surfaces::default(), |_| None);
+/// Whether the test `test` (its path in this binary) is to run its body
+/// here: in the process this binary started for it alone. Anywhere else the
+/// test runs this binary again for itself, waits for it to pass, and answers
+/// `false`, leaving nothing more to do.
+pub fn in_own_process(test: &str) -> bool {
+    if std::env::var_os(OWN_PROCESS).is_some_and(|own| own == test) {
+        return true;
     }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture", "--test-threads=1"])
+        .env(OWN_PROCESS, test)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    eprintln!("{stdout}");
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed"),
+        "{test} did not pass in its own process: {}",
+        output.status
+    );
+    false
 }

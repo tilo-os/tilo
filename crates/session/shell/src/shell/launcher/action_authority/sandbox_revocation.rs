@@ -438,7 +438,7 @@ mod tests {
         tree.desktop.workspaces[0].sandbox.push(grant.clone());
         super::super::Export::of(&tree).publish();
         let mut process = Process::new();
-        {
+        let status = {
             let mut published = super::super::lock(&authority.published);
             process.register(
                 &mut published,
@@ -446,11 +446,9 @@ mod tests {
                 "so.tilo.reader",
                 std::slice::from_ref(&grant),
             );
-            assert_eq!(
-                published.sandboxes[&process.0.id()].authorization_status(&published),
-                Ok(())
-            );
-        }
+            published.sandboxes[&process.0.id()].authorization_status(&published)
+        };
+        assert_eq!(status, Ok(()));
         earlier.publish();
         let mut published = super::super::lock(&authority.published);
         assert!(
