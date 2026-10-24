@@ -751,23 +751,16 @@ fn grants_in_the_runtimes_own_workspace_are_recorded_by_its_administrator_and_sa
     assert!(grants.may_grant(&room, "owner"));
     assert!(!grants.may_grant(&room, "stranger"));
     assert!(!grants.may_grant(&RoomId::new().to_string(), "owner"));
-    assert!(
-        grants
-            .record(
-                &consent(&room, "stranger"),
-                app_grant(&room),
-                AppActionConsent::Always
-            )
-            .is_none()
-    );
-
-    let id = grants
-        .record(
-            &consent(&room, "owner"),
+    let recorded = |person: &str| {
+        tilo_rt::app().handle().block_on(grants.record(
+            &consent(&room, person),
             app_grant(&room),
             AppActionConsent::Always,
-        )
-        .unwrap();
+        ))
+    };
+    assert!(recorded("stranger").is_err());
+
+    let id = recorded("owner").unwrap();
     let saved = read_tree(&temp.path().join(STANDALONE_WORKSPACE)).unwrap();
     let workspace = &saved.workspaces[0];
     assert!(
