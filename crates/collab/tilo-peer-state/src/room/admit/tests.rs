@@ -538,3 +538,102 @@ fn refusals_keep_the_peer_state_messages() {
         assert_eq!(refusal.to_string(), message);
     }
 }
+
+/// The changes saving `shortcut` makes on top of `before`.
+fn saving(before: &AutoCommit, shortcut: tilo_automation::Shortcut) -> Vec<Vec<u8>> {
+    changes_after(before, |doc| {
+        tilo_desktop_model::projection::project_workspace_shortcuts(doc, &[shortcut]).unwrap();
+    })
+}
+
+#[test]
+fn a_shortcut_names_as_its_saver_only_whose_device_signed_it() {
+    use crate::room::saved_shortcut::tests::{device, shortcut};
+    assert_eq!(
+        crate::room::saved_shortcut::ns_at(NOW),
+        crate::room::saved_shortcut::tests::NOW_NS
+    );
+    let before = governed();
+    let authority = key(0xA0);
+    let writer = key(0x02);
+    let salted = ContentOwnership::Salted { local_salt: 0x0001 };
+    let owner = device(0x11, 0xA0);
+    let editor = device(0x22, 0x02);
+    let governor = AuthorityPin::Device(&authority);
+    let as_editor = || member(&writer, EDITOR);
+    let as_governor = || member(&authority, OWNER);
+
+    // The editor's device names the owner as who saved it.
+    let mut forged = editor.saves(ROOM, shortcut("water"));
+    forged.saved_by = Some(owner.person());
+    let mut unproven = shortcut("water");
+    unproven.saved_by = Some(owner.person());
+    for batch in [saving(&before, forged), saving(&before, unproven)] {
+        assert_eq!(
+            admit(Some(&before), as_editor(), governor, salted, &batch).unwrap_err(),
+            RoomRefusal::ShortcutAuthorship("water".into()),
+            "a member cannot save a shortcut as another person"
+        );
+    }
+
+    // The governor is no exception: it names the editor without the
+    // editor's device having signed.
+    let mut forged = owner.saves(ROOM, shortcut("ferns"));
+    forged.saved_by = Some(editor.person());
+    let mut unproven = shortcut("ferns");
+    unproven.saved_by = Some(editor.person());
+    for batch in [saving(&before, forged), saving(&before, unproven)] {
+        assert_eq!(
+            admit(Some(&before), as_governor(), governor, salted, &batch).unwrap_err(),
+            RoomRefusal::ShortcutAuthorship("ferns".into()),
+            "the governor cannot save a shortcut as a member"
+        );
+    }
+
+    // A proof from another room does not move with the shortcut.
+    let copied = saving(
+        &before,
+        editor.saves("5e1d9a40-3c2b-4f6e-8a7d-1b2c3d4e5f60", shortcut("lamp")),
+    );
+    assert_eq!(
+        admit(Some(&before), as_editor(), governor, salted, &copied).unwrap_err(),
+        RoomRefusal::ShortcutAuthorship("lamp".into()),
+    );
+
+    // The person's own device saves it; the governor relaying that change is
+    // judged by the device that signed it, not by itself.
+    let own = saving(&before, editor.saves(ROOM, shortcut("water")));
+    admit(Some(&before), as_editor(), governor, salted, &own)
+        .expect("the editor's own device saves as the editor");
+    let relayed = admit(Some(&before), as_governor(), governor, salted, &own)
+        .expect("a relayed member change is judged by its signer")
+        .candidate;
+    assert!(
+        admit(
+            Some(&before),
+            as_editor(),
+            governor,
+            salted,
+            &saving(&before, shortcut("nobody")),
+        )
+        .is_ok(),
+        "a shortcut that names no saver arms nowhere"
+    );
+
+    // A shortcut held unchanged, even one saved before proofs existed, is
+    // not written by an unrelated edit.
+    let mut legacy = shortcut("lights");
+    legacy.saved_by = Some(owner.person());
+    let mut held = relayed;
+    tilo_desktop_model::projection::project_workspace_shortcuts(
+        &mut held,
+        &[editor.saves(ROOM, shortcut("water")), legacy],
+    )
+    .unwrap();
+    held.commit();
+    let edit = changes_after(&held, |doc| strip_name(doc, "0002000000000001", "Edited"));
+    assert!(
+        admit(Some(&held), as_editor(), governor, salted, &edit).is_ok(),
+        "a shortcut held unchanged is not a write"
+    );
+}

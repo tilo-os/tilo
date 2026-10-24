@@ -357,6 +357,7 @@ impl Draft {
             grant,
             triggers: program.triggers,
             saved_by: None,
+            saved_proof: None,
         }
     }
 }
