@@ -23,6 +23,14 @@ ignore = [
     # this exact advisory acknowledged while tests reject RSA decryption and
     # regressions to RustCrypto private signing in tilo-crypto.
     "RUSTSEC-2023-0071",
+    # crypto-bigint timing variability: 0.7.6 fixes it and the 0.7 line is
+    # pinned there, but no patched 0.5 release exists as of 2026-10-23.
+    # crypto-bigint 0.5 arrives only through elliptic-curve 0.13 for the NIST
+    # curves hpke-rs-rust-crypto 0.7 (behind openmls_rust_crypto and tilo-seal)
+    # compiles in. Tilo never selects them: tilo-seal uses DhKem25519 and
+    # channel-crypto's one MLS ciphersuite is X25519/Ed25519. The bans below
+    # keep crypto-bigint 0.5 behind elliptic-curve and refuse vulnerable 0.7.
+    "RUSTSEC-2026-0387",
 ]
 # Maintenance notices remain actionable when Tilo selects the crate directly.
 # Transitive maintenance changes require their owning upstream to migrate, and
@@ -91,6 +99,8 @@ allow-wildcard-paths = true
 deny = [
     { crate = "quick-xml@0.38.4", wrappers = ["citationberg"], reason = "Typst's current citationberg release has not adopted fixed quick-xml 0.41" },
     { crate = "quick-xml@0.39.4", wrappers = ["zbus_xml"], reason = "AccessKit's current zbus_xml release has not adopted fixed quick-xml 0.41" },
+    { crate = "crypto-bigint@0.5.5", wrappers = ["elliptic-curve"], reason = "RUSTSEC-2026-0387 has no patched 0.5 release; only elliptic-curve 0.13's unused NIST curves may keep it" },
+    { crate = "crypto-bigint:>=0.6, <0.7.6", reason = "RUSTSEC-2026-0387: constant-time fixes need crypto-bigint 0.7.6" },
 ]
 
 [sources]
