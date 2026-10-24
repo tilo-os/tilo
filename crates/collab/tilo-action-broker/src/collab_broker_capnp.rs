@@ -8286,6 +8286,14 @@ impl collab_service::Server for CapnpCollabService {
             .map_err(|error| {
                 capnp::Error::failed(format!("collaboration join identity rejected: {error}"))
             })?;
+            if let Some(reason) = state
+                .services
+                .workspace_memberships
+                .as_ref()
+                .and_then(|memberships| memberships.room_unavailable(&route.cluster_id))
+            {
+                return Err(capnp::Error::failed(reason));
+            }
             if let Some(app) = self.lease.local_media.as_ref()
                 && verified_identity
                     .verified
