@@ -5,8 +5,8 @@ use tilo_ui::chart_palette::ChartPalette;
 use tilo_ui::num::f64_of_usize;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::{
-    AxisLabelFormat, Candle, CandlestickChart, Card, CardGrid, CartesianAnnotation, CartesianPan,
-    CartesianPlot, CartesianRenderingStyle, CartesianStyle, Category, CategoryChart,
+    AxisLabelFormat, AxisTick, Candle, CandlestickChart, Card, CardGrid, CartesianAnnotation,
+    CartesianPan, CartesianPlot, CartesianRenderingStyle, CartesianStyle, Category, CategoryChart,
     CategoryLayout, CategorySeries, ChartItem, ChartLink, ChartNode, ChordChart, ChordSelection,
     Column, DistributionChart, DistributionSeries, FunnelChart, Heatmap, HeatmapCell, Histogram,
     MarkerShape, PieChart, PieSlice, PlotAxis, PlotDatum, PlotSeries, PolarAreaChart,
@@ -151,6 +151,24 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         pan: CartesianPan::XY,
         ..Default::default()
     })
+    .with_height(CHART_HEIGHT);
+
+    let waiting = CartesianPlot::new(vec![
+        PlotSeries::new("charge", "Charge", c[0], Vec::new()).kind(SeriesKind::Area),
+    ])
+    .with_style(CartesianStyle {
+        x_axis: PlotAxis::default().fixed(0.0, 24.0).with_ticks([
+            AxisTick::new(0.0, "Midnight"),
+            AxisTick::new(24.0, "Now, at the edge"),
+        ]),
+        y_axis: PlotAxis::default()
+            .fixed(0.0, 1.0)
+            .formatted(AxisLabelFormat::Percent(0)),
+        legend: tilo_ui::widget::LegendPosition::Hidden,
+        ..Default::default()
+    })
+    .with_empty_message("No history yet")
+    .described("Charge over the last day", "No history yet")
     .with_height(CHART_HEIGHT);
 
     let mut histogram = Histogram::new(
@@ -404,6 +422,7 @@ fn build_scene(theme: &Theme, inspected: bool) -> Box<dyn Widget> {
         card("Donut · selectable slices", pie),
         card("Mixed Cartesian · smooth + gapped area", cartesian),
         card("Log axes · orders of magnitude", logarithmic),
+        card("Empty Cartesian · waiting for data", waiting),
         card("Histogram · raw samples", histogram),
         card("Categories · stacked bars", bars),
         card("Heatmap · dense matrix", heatmap),

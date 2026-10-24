@@ -1,7 +1,7 @@
 //! The battery's charge over the last day or week: the charge as a line
-//! over time with the area under it, the stretches spent plugged in marked
-//! along the bottom, hours or days along the time axis, and the charge at
-//! any moment under the pointer.
+//! over time with the area under it, the stretches spent plugged in shaded,
+//! hours or days along the time axis, and the charge at any moment under
+//! the pointer. The library's plot draws it; this module says what to plot.
 //!
 //! The history is the shell's power monitor's (`power-history.json`: one
 //! point per quarter hour at most). Where the machine was off or asleep
@@ -10,13 +10,13 @@
 use std::collections::HashMap;
 
 use os_actions::BatteryHistoryPoint;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
-use ui::widget::{TaffyTreeExt, Widget};
-use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
-use vello::peniko::Fill;
-use winit::event::WindowEvent;
+use ui::widget::{
+    AxisTick, CartesianAnnotation, CartesianPlot, CartesianStyle, LegendPosition, PlotAxis,
+    PlotDatum, PlotSeries, SeriesKind, Widget,
+};
+use vello::peniko::Color;
 
 use crate::i18n::{t, t_args};
 use ui::i18n::ArgValue;
@@ -52,7 +52,8 @@ const GAP_MINUTES: u64 = 50;
 /// The chart's height at the default text size.
 const HEIGHT: f32 = ui::tokens::Metrics::BASE.chart_height;
 
-/// The charge chart.
+/// The charge chart: the library's plot, built again when the theme's
+/// ink or chart height changes.
 pub struct HistoryChart {
     points: Vec<BatteryHistoryPoint>,
     span: Span,
@@ -61,8 +62,9 @@ pub struct HistoryChart {
     /// This device's offset from UTC in seconds, for the hour and day
     /// labels.
     local_offset: i64,
-    rect: Rect,
-    hover: Option<Point>,
+    plot: CartesianPlot,
+    /// The ink, the plugged-in tint and the height the plot was built with.
+    built_for: Option<(Color, Color, f32)>,
 }
 
 impl HistoryChart {
@@ -77,33 +79,9 @@ impl HistoryChart {
             span,
             now,
             local_offset,
-            rect: Rect::ZERO,
-            hover: None,
+            plot: CartesianPlot::new(Vec::new()),
+            built_for: None,
         }
-    }
-
-    /// Where the plot sits: the reading under the pointer takes a line
-    /// above it, the time labels a line under it and the charge labels a
-    /// column on its right.
-    fn plot(&self, theme: &Theme) -> Rect {
-        let caption = f64::from(theme.text(ui::TextRole::Caption).line_height_px());
-        let gutter = f64::from(theme.tokens.spacing.s8) + f64::from(theme.tokens.spacing.s2);
-        Rect::new(
-            self.rect.x0,
-            self.rect.y0 + caption + f64::from(theme.tokens.spacing.s2),
-            (self.rect.x1 - gutter).max(self.rect.x0 + 1.0),
-            (self.rect.y1 - caption - f64::from(theme.tokens.spacing.s2))
-                .max(self.rect.y0 + caption),
-        )
-    }
-
-    fn x_of(&self, plot: Rect, minute: u64) -> f64 {
-        let from = self.now.saturating_sub(self.span.minutes());
-        plot.x0 + (minute.saturating_sub(from)) as f64 / self.span.minutes() as f64 * plot.width()
-    }
-
-    fn y_of(plot: Rect, capacity: u32) -> f64 {
-        plot.y1 - f64::from(capacity.min(100)) / 100.0 * plot.height()
     }
 
     /// The runs of points with no gap between them.
@@ -150,20 +128,6 @@ impl HistoryChart {
             at += step;
         }
         ticks
-    }
-
-    /// The point nearest the pointer, while it is over the plot.
-    fn hovered(&self, theme: &Theme) -> Option<&BatteryHistoryPoint> {
-        let pointer = self.hover?;
-        let plot = self.plot(theme);
-        if !plot.inflate(0.0, 8.0).contains(pointer) {
-            return None;
-        }
-        self.points.iter().min_by(|a, b| {
-            let da = (self.x_of(plot, a.unix_minute) - pointer.x).abs();
-            let db = (self.x_of(plot, b.unix_minute) - pointer.x).abs();
-            da.total_cmp(&db)
-        })
     }
 
     fn time_label(&self, minute: u64) -> String {
@@ -213,6 +177,126 @@ impl HistoryChart {
             ],
         )
     }
+    /// The charge as plotted: each run of points, a missing point between
+    /// runs so the line breaks where the machine was off.
+    fn charge(&self) -> Vec<PlotDatum> {
+        let mut data = Vec::with_capacity(self.points.len());
+        for (index, run) in self.runs().into_iter().enumerate() {
+            if index > 0
+                && let Some(first) = run.first()
+            {
+                data.push(PlotDatum::missing(
+                    format!("gap-{index}"),
+                    first.unix_minute as f64,
+                ));
+            }
+            data.extend(run.iter().map(|point| self.datum(point)));
+        }
+        data
+    }
+
+    fn datum(&self, point: &BatteryHistoryPoint) -> PlotDatum {
+        PlotDatum::new(
+            point.unix_minute.to_string(),
+            point.unix_minute as f64,
+            f64::from(point.capacity),
+        )
+        .labelled(ui::format::percent(f64::from(point.capacity) / 100.0))
+        .with_detail(self.time_label(point.unix_minute))
+    }
+
+    /// The stretches spent plugged in, from the first reading on power to
+    /// the reading after the last.
+    fn plugged(&self) -> Vec<(u64, u64)> {
+        let mut stretches: Vec<(u64, u64)> = Vec::new();
+        for run in self.runs() {
+            for pair in run.windows(2) {
+                if let [a, b] = pair
+                    && a.on_ac
+                {
+                    match stretches.last_mut() {
+                        Some(last) if last.1 == a.unix_minute => last.1 = b.unix_minute,
+                        _ => stretches.push((a.unix_minute, b.unix_minute)),
+                    }
+                }
+            }
+        }
+        stretches
+    }
+
+    fn build(&self, theme: &Theme, height: f32) -> CartesianPlot {
+        let colors = &theme.tokens.colors;
+        let from = self.now.saturating_sub(self.span.minutes());
+        let x_axis = PlotAxis::default()
+            .fixed(from as f64, self.now as f64)
+            .with_ticks(
+                self.ticks()
+                    .into_iter()
+                    .map(|(minute, label)| AxisTick::new(minute as f64, label)),
+            );
+        let y_axis = PlotAxis::default()
+            .fixed(0.0, 100.0)
+            .with_ticks([0_u32, 50, 100].map(|charge| {
+                AxisTick::new(
+                    f64::from(charge),
+                    ui::format::percent(f64::from(charge) / 100.0),
+                )
+            }))
+            // Empty, half and full stay labelled however short the plot is.
+            .with_tick_density(3, f64::from(theme.tokens.spacing.s6));
+        // A reading with no neighbour on either side is a dot, not an
+        // invisible line.
+        let lone: Vec<PlotDatum> = self
+            .runs()
+            .into_iter()
+            .filter(|run| run.len() == 1)
+            .flatten()
+            .map(|point| self.datum(point))
+            .collect();
+        let name = t("power-battery-title");
+        // A charge level is a value: the accent as a mark, never the text
+        // colour (docs/design-language.md, "Slider and progress").
+        let value = colors.intent.value_fill;
+        let mut series = vec![
+            PlotSeries::new("charge", name.clone(), value, self.charge())
+                .kind(SeriesKind::Area)
+                .fill_alpha(26)
+                .connect_gaps(false),
+        ];
+        if !lone.is_empty() {
+            series.push(PlotSeries::new("lone", name, value, lone).kind(SeriesKind::Scatter));
+        }
+        CartesianPlot::new(series)
+            .with_annotations(self.plugged().into_iter().enumerate().map(
+                |(index, (start, end))| {
+                    CartesianAnnotation::x_band(
+                        format!("plugged-{index}"),
+                        start as f64,
+                        end as f64,
+                        colors.semantic.success,
+                    )
+                    .fill_alpha(48)
+                    .interactive(false)
+                },
+            ))
+            .with_style(CartesianStyle {
+                x_axis,
+                y_axis,
+                legend: LegendPosition::Hidden,
+                interactive_legend: false,
+                ..CartesianStyle::default()
+            })
+            .with_height(height)
+            .with_empty_message(t("power-history-empty"))
+            .described(
+                t_args(
+                    "power-history-name",
+                    &[("span", ArgValue::from(self.span.label()))],
+                ),
+                self.summary(),
+            )
+            .with_id("power.history")
+    }
 }
 
 /// The short name of the weekday of local day `day` (days since 1970-01-01,
@@ -226,187 +310,17 @@ fn weekday_label(day: i64) -> String {
         .unwrap_or_default()
 }
 
-/// What one frame of the chart paints with.
-struct Painter<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut ui::text_render::TextRenderer,
-    theme: &'a Theme,
-    plot: Rect,
-}
+impl ui::widget::Decorator for HistoryChart {
+    type Inner = CartesianPlot;
 
-impl Painter<'_> {
-    fn caption(&self) -> ui::text_render::TextStyle {
-        self.theme.text(ui::TextRole::Caption)
+    fn inner(&self) -> &CartesianPlot {
+        &self.plot
     }
 
-    fn rule(&mut self, from: (f64, f64), to: (f64, f64), color: vello::peniko::Color) {
-        // ratchet-allow(raw_paint): the charge chart draws measured battery data, content rather than chrome
-        self.scene.stroke(
-            &Stroke::new(1.0),
-            self.transform,
-            color,
-            None,
-            &Line::new(from, to),
-        );
+    fn inner_mut(&mut self) -> &mut CartesianPlot {
+        &mut self.plot
     }
 
-    fn label(&mut self, label: &str, at: (f64, f64), color: vello::peniko::Color) {
-        let caption = self.caption();
-        self.text.draw_style(
-            self.scene,
-            label,
-            color,
-            self.transform * Affine::translate(at),
-            None,
-            &caption,
-        );
-    }
-
-    fn width_of(&mut self, label: &str) -> f64 {
-        let caption = self.caption();
-        f64::from(self.text.measure_style(label, None, &caption).0)
-    }
-
-    fn centred(&mut self, message: &str) {
-        let width = self.width_of(message);
-        let line = f64::from(self.caption().line_height_px());
-        let at = (
-            self.plot.center().x - width / 2.0,
-            self.plot.center().y - line / 2.0,
-        );
-        self.label(message, at, self.theme.tokens.colors.text_dim);
-    }
-
-    fn fill(&mut self, shape: &impl vello::kurbo::Shape, color: vello::peniko::Color) {
-        self.scene
-            .fill(Fill::NonZero, self.transform, color, None, shape);
-    }
-}
-
-impl HistoryChart {
-    /// The charge scale (rules at empty, half and full, labelled on the
-    /// right) and the time axis.
-    fn draw_scale(&self, painter: &mut Painter<'_>) {
-        let colors = &painter.theme.tokens.colors;
-        let (subtle, tertiary) = (colors.overlay_border_subtle, colors.text_tertiary);
-        let plot = painter.plot;
-        let gap = f64::from(painter.theme.tokens.spacing.s2);
-        let line = f64::from(painter.caption().line_height_px());
-        for capacity in [0_u32, 50, 100] {
-            let y = Self::y_of(plot, capacity);
-            painter.rule((plot.x0, y), (plot.x1, y), subtle);
-            let label = ui::format::percent(f64::from(capacity) / 100.0);
-            painter.label(&label, (plot.x1 + gap, y - line / 2.0), tertiary);
-        }
-        for (minute, label) in self.ticks() {
-            let x = self.x_of(plot, minute);
-            painter.rule((x, plot.y0), (x, plot.y1), subtle);
-            let width = painter.width_of(&label);
-            let left = (x - width / 2.0).clamp(plot.x0, (plot.x1 - width).max(plot.x0));
-            painter.label(&label, (left, plot.y1 + gap), tertiary);
-        }
-    }
-
-    /// The stretches plugged in along the bottom, then the area under each
-    /// run of the charge and its line.
-    fn draw_charge(&self, painter: &mut Painter<'_>) {
-        let colors = &painter.theme.tokens.colors;
-        let (plugged, ink, content) = (
-            colors.semantic.success,
-            colors.text_primary,
-            // ratchet-allow(literal_alpha): the charge chart draws measured battery data, content rather than chrome
-            colors.text_primary.multiply_alpha(0.10),
-        );
-        let plot = painter.plot;
-        let band = f64::from(painter.theme.tokens.spacing.s1).max(3.0);
-        let runs = self.runs();
-        for run in &runs {
-            for pair in run.windows(2) {
-                if let [a, b] = pair
-                    && a.on_ac
-                {
-                    let (x0, x1) = (
-                        self.x_of(plot, a.unix_minute),
-                        self.x_of(plot, b.unix_minute),
-                    );
-                    painter.fill(&Rect::new(x0, plot.y1 - band, x1, plot.y1), plugged);
-                }
-            }
-        }
-        let mut line = BezPath::new();
-        for run in &runs {
-            let at = |point: &BatteryHistoryPoint| {
-                Point::new(
-                    self.x_of(plot, point.unix_minute),
-                    Self::y_of(plot, point.capacity),
-                )
-            };
-            let (Some(first), Some(last)) = (run.first(), run.last()) else {
-                continue;
-            };
-            if run.len() == 1 {
-                // A lone reading is a dot, not an invisible line.
-                painter.fill(&Circle::new(at(first), 2.0), ink);
-                continue;
-            }
-            let mut area = BezPath::new();
-            area.move_to((at(first).x, plot.y1));
-            line.move_to(at(first));
-            for point in *run {
-                area.line_to(at(point));
-                line.line_to(at(point));
-            }
-            area.line_to((at(last).x, plot.y1));
-            area.close_path();
-            painter.fill(&area, content);
-        }
-        // ratchet-allow(raw_paint): the charge chart draws measured battery data, content rather than chrome
-        painter.scene.stroke(
-            &Stroke::new(1.75)
-                .with_join(vello::kurbo::Join::Round)
-                .with_caps(vello::kurbo::Cap::Round),
-            painter.transform,
-            ink,
-            None,
-            &line,
-        );
-    }
-
-    /// The charge at the moment under the pointer: a rule and a dot on the
-    /// line, and the charge and the time in the line above the plot.
-    fn draw_reading(&self, painter: &mut Painter<'_>, point: &BatteryHistoryPoint) {
-        let colors = &painter.theme.tokens.colors;
-        let (strong, content, ink) = (
-            colors.overlay_border_strong,
-            colors.surfaces.content,
-            colors.text_primary,
-        );
-        let plot = painter.plot;
-        let at = Point::new(
-            self.x_of(plot, point.unix_minute),
-            Self::y_of(plot, point.capacity),
-        );
-        painter.rule((at.x, plot.y0), (at.x, plot.y1), strong);
-        painter.fill(&Circle::new(at, 5.0), content);
-        painter.fill(&Circle::new(at, 3.5), ink);
-        let label = t_args(
-            "power-history-reading",
-            &[
-                (
-                    "charge",
-                    ArgValue::from(ui::format::percent(f64::from(point.capacity) / 100.0)),
-                ),
-                ("time", ArgValue::from(self.time_label(point.unix_minute))),
-            ],
-        );
-        let width = painter.width_of(&label);
-        let left = (at.x - width / 2.0).clamp(plot.x0, (plot.x1 - width).max(plot.x0));
-        painter.label(&label, (left, self.rect.y0), ink);
-    }
-}
-
-impl Widget for HistoryChart {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -415,85 +329,13 @@ impl Widget for HistoryChart {
     ) -> NodeId {
         let height = HEIGHT * theme.tokens.metrics.min_pointer_target
             / ui::tokens::Metrics::BASE.min_pointer_target;
-        let style = Style {
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::length(height),
-            },
-            min_size: Size {
-                width: Dimension::length(0.0),
-                height: Dimension::auto(),
-            },
-            flex_shrink: 0.0,
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    ui::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &Theme,
-        _presence: &ui::presence::PresenceCtx,
-    ) {
-        let plot = self.plot(theme);
-        let mut painter = Painter {
-            scene,
-            transform,
-            text,
-            theme,
-            plot,
-        };
-        self.draw_scale(&mut painter);
-        if self.points.is_empty() {
-            painter.centred(&t("power-history-empty"));
-            return;
+        let colors = &theme.tokens.colors;
+        let key = (colors.intent.value_fill, colors.semantic.success, height);
+        if self.built_for != Some(key) {
+            self.plot = self.build(theme, height);
+            self.built_for = Some(key);
         }
-        self.draw_charge(&mut painter);
-        if let Some(point) = self.hovered(theme) {
-            self.draw_reading(&mut painter, point);
-        }
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                let at = ctx.logical(position);
-                let hover = self.rect.contains(at).then_some(at);
-                if hover != self.hover {
-                    self.hover = hover;
-                    *ctx.handled = true;
-                }
-            }
-            WindowEvent::CursorLeft { .. } if self.hover.is_some() => {
-                self.hover = None;
-                *ctx.handled = true;
-            }
-            _ => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "BatteryHistoryChart"
-    }
-
-    fn test_id(&self) -> Option<&str> {
-        Some("power.history")
-    }
-
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        Some(
-            ui::a11y::AccessNode::new(ui::a11y::Role::Image)
-                .with_name(t_args(
-                    "power-history-name",
-                    &[("span", ArgValue::from(self.span.label()))],
-                ))
-                .with_value(self.summary()),
-        )
+        Widget::build_layout(&mut self.plot, taffy, theme, node_map)
     }
 }
 
@@ -551,5 +393,58 @@ mod tests {
         // 1970-01-01 was a Thursday; 2026-03-20 is a Friday.
         assert_eq!(weekday_label(0), weekday_label(7));
         assert_ne!(weekday_label(0), weekday_label(1));
+    }
+
+    #[test]
+    fn the_plot_breaks_at_gaps_and_shades_the_time_plugged_in() {
+        let now = 100_000;
+        let points = [
+            point(now - 200, 85, false),
+            point(now - 60, 80, true),
+            point(now - 45, 82, true),
+            point(now - 30, 84, false),
+            point(now - 15, 83, false),
+        ];
+        let chart = HistoryChart::new(&points, Span::Day, now, 0);
+        let charge = chart.charge();
+        assert_eq!(
+            charge.len(),
+            points.len() + 1,
+            "one missing point at the gap"
+        );
+        assert!(
+            charge[1].y.is_nan(),
+            "the line breaks after the lone reading"
+        );
+        assert_eq!(
+            chart.plugged(),
+            [(now - 60, now - 30)],
+            "consecutive readings on power are one stretch"
+        );
+        let plot = chart.build(&ui::theme::Theme::dark(), HEIGHT);
+        assert_eq!(plot.annotations().len(), 1);
+        assert_eq!(Widget::test_id(&plot), Some("power.history"));
+        let node = Widget::accessibility(&plot).expect("plot semantics");
+        assert_eq!(node.value.as_deref(), Some(chart.summary().as_str()));
+    }
+
+    #[test]
+    fn the_charge_is_drawn_in_the_value_fill_in_either_theme() {
+        let now = 100_000;
+        let points = [
+            point(now - 200, 85, false),
+            point(now - 30, 84, false),
+            point(now - 15, 83, false),
+        ];
+        let chart = HistoryChart::new(&points, Span::Day, now, 0);
+        for theme in [ui::theme::Theme::light(), ui::theme::Theme::dark()] {
+            let plot = chart.build(&theme, HEIGHT);
+            let value = theme.tokens.colors.intent.value_fill;
+            assert_ne!(value, theme.tokens.colors.text_primary);
+            assert_eq!(plot.series().len(), 2, "the run and the lone reading");
+            for series in plot.series() {
+                assert_eq!(series.color, value, "{}", series.id);
+            }
+        }
     }
 }

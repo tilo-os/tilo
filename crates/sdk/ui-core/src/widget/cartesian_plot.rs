@@ -691,6 +691,12 @@ pub struct CartesianPlot {
     bands: Bands,
     /// Keyboard inspection only while the plot has focus.
     focused: bool,
+    /// Said in the plot where there is nothing to draw.
+    empty_message: String,
+    /// The name and value assistive technology reads, without a drawn
+    /// title.
+    description: Option<(String, String)>,
+    id: Option<String>,
 }
 
 /// The space around a plot: tick labels, axis titles, the chart's title and
@@ -774,6 +780,9 @@ impl CartesianPlot {
             touch: ChartTouchTracker::default(),
             bands: Bands::STOCK,
             focused: false,
+            empty_message: String::new(),
+            description: None,
+            id: None,
         }
     }
 
@@ -790,6 +799,9 @@ impl CartesianPlot {
         self.annotations = annotations.into_iter().collect();
         self
     }
+    pub fn series(&self) -> &[PlotSeries] {
+        &self.series
+    }
     pub fn annotations(&self) -> &[CartesianAnnotation] {
         &self.annotations
     }
@@ -805,6 +817,43 @@ impl CartesianPlot {
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height.max(100.0);
         self
+    }
+    /// What the plot says, centred in it, while no series has a point to
+    /// draw ("No history yet").
+    #[must_use]
+    pub fn with_empty_message(mut self, message: impl Into<String>) -> Self {
+        self.empty_message = message.into();
+        self
+    }
+    /// What assistive technology calls the plot and reads as its value (a
+    /// summary of what it shows), for a plot that draws no title.
+    #[must_use]
+    pub fn described(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.description = Some((name.into(), value.into()));
+        self
+    }
+    /// Name the plot for tests and automation.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+    /// Where an x tick's label starts: centred on its tick, but never past
+    /// the plot's own edges.
+    fn tick_label_left(x: f64, width: f64, (x0, x1): (f64, f64)) -> f64 {
+        (x - width / 2.0).clamp(x0, (x1 - width).max(x0))
+    }
+    /// Whether any shown series has a point inside the axes' scales.
+    fn has_points(&self) -> bool {
+        let (x_scale, y_scale) = (self.style.x_axis.scale, self.style.y_axis.scale);
+        self.series
+            .iter()
+            .filter(|series| !self.toggles.is_hidden(&series.id))
+            .flat_map(|series| &series.data)
+            .any(|datum| {
+                Self::transform(datum.x, x_scale).is_some()
+                    && Self::transform(datum.y, y_scale).is_some()
+            })
     }
     pub fn set_series(&mut self, series: Vec<PlotSeries>) {
         if self.series == series {
@@ -1792,13 +1841,13 @@ impl CartesianPlot {
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
             }
-            let (width, _) = tr.measure_style(&tick.label, None, &size);
+            let width = f64::from(tr.measure_style(&tick.label, None, &size).0);
+            let left = Self::tick_label_left(x, width, (self.rect.x0, self.rect.x1));
             tr.draw_style(
                 scene,
                 &tick.label,
                 theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + self.bands.gap)),
+                transform * Affine::translate((left, plot.y1 + self.bands.gap)),
                 None,
                 &size,
             );
@@ -2871,6 +2920,10 @@ fn format_bytes(value: f64, places: u8) -> String {
 impl Widget for CartesianPlot {
     crate::widget::chart_navigation::chart_leaf!();
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     fn draw(
         &mut self,
         scene: &mut Scene,
@@ -2932,6 +2985,22 @@ impl Widget for CartesianPlot {
             y_domain: yd,
         });
         self.draw_series(scene, transform, plot, xd, yd, now);
+        if !self.empty_message.is_empty() && !self.has_points() {
+            let style = theme.text(TextRole::Caption);
+            let (width, height) = tr.measure_style(&self.empty_message, None, &style);
+            tr.draw_style(
+                scene,
+                &self.empty_message,
+                theme.tokens.colors.text_dim,
+                transform
+                    * Affine::translate((
+                        plot.center().x - f64::from(width) / 2.0,
+                        plot.center().y - f64::from(height) / 2.0,
+                    )),
+                None,
+                &style,
+            );
+        }
         if let Some(brush) = self.brush_rect() {
             scene.fill(
                 Fill::NonZero,
@@ -3110,15 +3179,12 @@ impl Widget for CartesianPlot {
                         .with_state(AccessState::new().focusable(true))
                 }),
         );
-        Some(
-            AccessNode::new(Role::Canvas)
-                .with_name(if self.title.is_empty() {
-                    "Plot"
-                } else {
-                    &self.title
-                })
-                .with_children(children),
-        )
+        let node = AccessNode::new(Role::Canvas).with_children(children);
+        Some(match &self.description {
+            Some((name, value)) => node.with_name(name.as_str()).with_value(value.as_str()),
+            None if self.title.is_empty() => node.with_name("Plot"),
+            None => node.with_name(self.title.as_str()),
+        })
     }
     fn perform_action(
         &mut self,
@@ -3816,5 +3882,62 @@ mod tests {
         brush_converts_pixels_to_x_domain();
         xy_brush_converts_inverted_y_domain();
         tiny_brushes_are_ignored();
+    }
+
+    fn drawn(plot: &mut CartesianPlot, theme: &Theme) -> Scene {
+        plot.rect = Rect::new(0.0, 0.0, 480.0, 200.0);
+        let mut scene = Scene::new();
+        let mut text = TextRenderer::new();
+        plot.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            theme,
+            &PresenceCtx::default(),
+        );
+        scene
+    }
+
+    #[test]
+    fn a_described_plot_says_what_it_shows_and_when_it_has_nothing() {
+        let theme = Theme::dark();
+        let series = |data| PlotSeries::new("charge", "Charge", Color::WHITE, data);
+        let mut empty = CartesianPlot::new(vec![series(Vec::new())])
+            .with_empty_message("No history yet")
+            .described("Charge over the last day", "No history yet")
+            .with_id("power.history");
+        let mut silent = CartesianPlot::new(vec![series(Vec::new())]);
+        let runs = |scene: &Scene| scene.encoding().resources.glyph_runs.len();
+        assert_eq!(
+            runs(&drawn(&mut empty, &theme)),
+            runs(&drawn(&mut silent, &theme)) + 1,
+            "an empty plot says its message"
+        );
+        let mut filled = CartesianPlot::new(vec![series(vec![PlotDatum::new("a", 0.0, 1.0)])])
+            .with_empty_message("No history yet");
+        let mut filled_silent =
+            CartesianPlot::new(vec![series(vec![PlotDatum::new("a", 0.0, 1.0)])]);
+        assert_eq!(
+            runs(&drawn(&mut filled, &theme)),
+            runs(&drawn(&mut filled_silent, &theme)),
+            "a plot with points says nothing over them"
+        );
+        let node = empty.accessibility().expect("plot semantics");
+        assert_eq!(node.name.as_deref(), Some("Charge over the last day"));
+        assert_eq!(node.value.as_deref(), Some("No history yet"));
+        assert_eq!(empty.test_id(), Some("power.history"));
+        assert_eq!(
+            silent.accessibility().unwrap().name.as_deref(),
+            Some("Plot")
+        );
+    }
+
+    #[test]
+    fn x_tick_labels_stay_inside_the_plot() {
+        let bounds = (0.0, 480.0);
+        assert_eq!(CartesianPlot::tick_label_left(240.0, 40.0, bounds), 220.0);
+        assert_eq!(CartesianPlot::tick_label_left(478.0, 40.0, bounds), 440.0);
+        assert_eq!(CartesianPlot::tick_label_left(2.0, 40.0, bounds), 0.0);
+        assert_eq!(CartesianPlot::tick_label_left(10.0, 600.0, bounds), 0.0);
     }
 }
