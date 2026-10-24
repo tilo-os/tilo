@@ -707,6 +707,7 @@ impl CaptureStudio {
         self.screenshot_receipt = None;
         self.screenshot_pin_pending = false;
         self.options_menu = None;
+        self.close_send_menu();
         self.open = true;
         self.opened_at = Some(crate::time::now());
         self.regions.clear();

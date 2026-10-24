@@ -6,7 +6,10 @@ use crate::a11y::Action;
 use crate::headless::FrameHarness;
 use crate::state::State;
 use crate::theme::Theme;
-use crate::widget::{CaptureMode, CaptureStudio, SourceMode};
+use crate::widget::{
+    AudioCaptureMode, CaptureMode, CapturePreview, CaptureStudio, ScreenshotCommand,
+    ScreenshotKept, SourceMode,
+};
 
 fn harness() -> FrameHarness {
     let mut studio = CaptureStudio::default();
@@ -94,4 +97,76 @@ fn a_shutter_with_nothing_to_capture_is_disabled_and_refuses_activation() {
     );
     assert!(h.perform_a11y_action(shutter, &Action::Activate).is_err());
     assert!(h.root_mut::<CaptureStudio>().take_intents().is_empty());
+}
+
+#[test]
+fn a_receipt_action_from_the_tree_leaves_no_send_menu_behind() {
+    let mut h = harness();
+    {
+        let studio = h.root_mut::<CaptureStudio>();
+        studio.set_screenshot_finished(
+            ScreenshotKept::SAVED,
+            800,
+            600,
+            CapturePreview {
+                columns: 1,
+                rows: 1,
+                pixels: vec![[20, 40, 60, 255]],
+            },
+        );
+        studio.set_screenshot_transition_progress(1_000);
+    }
+    h.relayout_at((1600, 1000)).expect("layout");
+
+    activate(&mut h, "Send\u{2026}");
+    assert!(studio(&h).send_menu_open(), "Send opens its menu");
+    activate(&mut h, "Copy");
+    let commands: Vec<_> = h
+        .root_mut::<CaptureStudio>()
+        .take_intents()
+        .into_iter()
+        .filter_map(|intent| intent.screenshot_command)
+        .collect();
+    assert_eq!(commands, vec![ScreenshotCommand::CopyLast]);
+    assert!(
+        !studio(&h).send_menu_open(),
+        "the send menu closes with the receipt it belongs to"
+    );
+
+    // Nor does a menu left over from an earlier receipt reach the next
+    // capture, where it would take Enter and send the last screenshot.
+    let studio_mut = h.root_mut::<CaptureStudio>();
+    studio_mut.set_screenshot_finished(
+        ScreenshotKept::SAVED,
+        800,
+        600,
+        CapturePreview {
+            columns: 1,
+            rows: 1,
+            pixels: vec![[20, 40, 60, 255]],
+        },
+    );
+    studio_mut.set_screenshot_transition_progress(1_000);
+    h.relayout_at((1600, 1000)).expect("layout");
+    activate(&mut h, "Send\u{2026}");
+    h.root_mut::<CaptureStudio>().open();
+    assert!(
+        !studio(&h).send_menu_open(),
+        "a new capture opens without the last receipt's send menu"
+    );
+}
+
+#[test]
+fn keeping_the_last_30_seconds_is_not_announced_as_a_recording() {
+    let mut h = harness();
+    activate(&mut h, "Recording");
+    h.root_mut::<CaptureStudio>()
+        .set_replay_active(true, AudioCaptureMode::None);
+    h.relayout_at((1600, 1000)).expect("layout");
+    assert!(
+        h.a11y_node_named("Keep last 30 s").is_some(),
+        "the status bar is named for what it keeps"
+    );
+    assert!(h.a11y_node_named("Stop keeping the last 30 s").is_some());
+    assert!(h.a11y_node_named("Recording").is_none());
 }
