@@ -275,21 +275,23 @@ impl PasswordsModel {
         Ok(id)
     }
     /// Finish writing what [`Self::save_item`] and [`Self::remove`] left in
-    /// flight: `Ok(false)` while a browser page is still writing it to its
-    /// storage, `Ok(true)` once it is kept.
+    /// flight: `Ok(false)` while a browser page or the frame loop's writer
+    /// thread is still writing it, `Ok(true)` once it is kept.
     ///
     /// # Errors
     ///
     /// Returns an error when the write failed; the edits stay in this
     /// window and the next flush writes them again.
     pub fn flush(&mut self) -> Result<bool, String> {
-        match self.store.as_ref() {
-            Some(Vault::Local(store)) => store
-                .flush()
-                .map(|saved| saved == accounts::Saved::Durable)
-                .map_err(|error| format!("{error:?}")),
-            Some(Vault::Shared(_)) | None => Ok(true),
+        if self.store.is_none() {
+            return Ok(true);
         }
+        // The device's vault, shared or this window's own, is written from
+        // the frame loop by a writer thread, and an edit made while one is
+        // under way waits in memory until the vault is flushed again.
+        self.read(SecretStore::flush)?
+            .map(|saved| saved == accounts::Saved::Durable)
+            .map_err(|error| format!("{error:?}"))
     }
     /// Remove one stored login.
     ///
