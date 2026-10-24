@@ -504,3 +504,38 @@ test('worklet drop reports are surfaced without being presented as successful pl
   assert.deepEqual(reports, [{type: 'drop', stage: 'playback-buffer', count: 3}]);
   await session.stop();
 });
+
+test('a microphone that goes away hands capture to the default one without failing the call', async () => {
+  const f = lifecycleEnvironment(), errors = [], lost = [], inputs = [];
+  const session = await createBrowserAudio({environment: f.environment}).start({inputId: 'usb-mic', muted: false, onFrame() {},
+    onError: error => errors.push(error), onCaptureLost: error => lost.push(error), onInputChanged: id => inputs.push(id)});
+  assert.equal(f.streams[0].id, 'usb-mic');
+  f.streams[0].track.dispatchEvent(new Event('ended'));
+  await drain();
+  assert.deepEqual(errors, [], 'losing the microphone is not an audio failure');
+  assert.deepEqual(inputs, [undefined]);
+  assert.equal(f.streams[1].id, 'default', 'the default microphone took its place');
+  assert.equal(session.captureActive, true);
+  assert.equal(session.inputId, undefined);
+  // The default one ends at once as well: no microphone is left.
+  f.streams[1].track.dispatchEvent(new Event('ended'));
+  await drain();
+  assert.equal(lost.length, 1);
+  assert.equal(lost[0].name, 'NotFoundError');
+  assert.equal(session.captureActive, false);
+  assert.equal(f.streams.length, 2, 'no endless reacquiring');
+  assert.deepEqual(errors, []);
+  assert.equal(f.workers[0].terminated, undefined, 'the others are still heard');
+  await session.stop();
+});
+
+test('a microphone that goes away while muted asks for nothing', async () => {
+  const f = lifecycleEnvironment(), lost = [];
+  const session = await createBrowserAudio({environment: f.environment}).start({muted: false, onFrame() {}, onCaptureLost: error => lost.push(error)});
+  await session.setMuted(true);
+  f.streams[0].track.dispatchEvent(new Event('ended'));
+  await drain();
+  assert.equal(f.streams.length, 1);
+  assert.deepEqual(lost, []);
+  await session.stop();
+});
