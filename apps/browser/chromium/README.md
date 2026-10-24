@@ -443,6 +443,11 @@ content scripts (with `sender.tab`) work without help.
 - The worker tells the host of storage changes while such worlds exist, so
   they hear of a change made anywhere; once none is left the host says so
   and the worker stops listening, and is not woken for changes again.
+- An extension added while a page is open and running its script there, as
+  High Contrast and dark modes do once installed, follows the settings
+  changed in its popup; a shortcut a content script takes counts each press,
+  on macOS too, where the host stamps the keys it forwards with their time.
+  `tests/site_extensions.py` covers both.
 - `tabs.captureVisibleTab` encodes the frame the host last painted of the
   tab, PNG or JPEG at the quality asked for (90 by default), off the UI
   thread. As in Chrome it needs a click on the extension's button over the

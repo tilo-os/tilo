@@ -103,8 +103,15 @@
     getURL: (path) => `chrome-extension://${content.id}/${String(path).replace(/^\//, '')}`,
     getManifest: () => JSON.parse(JSON.stringify(content.manifest || {})),
     sendMessage: api((...args) => {
-      // sendMessage([extensionId,] message [, options])
-      if (args.length > 1 && typeof args[0] === 'string' && args[0] === content.id) args.shift();
+      // sendMessage([extensionId,] message [, options]), bound as Chrome
+      // binds it: of two, the first is the extension's id when it can be one
+      // (a string or null), else the second is the options.
+      if (args.length > 2 || (args.length === 2 && (args[0] === null || typeof args[0] === 'string'))) {
+        const target = args.shift();
+        if (target !== null && target !== undefined && target !== content.id) {
+          return Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'));
+        }
+      }
       return call('sendMessage', {message: args[0]});
     }),
     // connect([extensionId,] [connectInfo])

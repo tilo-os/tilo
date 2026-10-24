@@ -1357,6 +1357,8 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/extension_tabs.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/site_extensions.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/sealed_documents.py target/chromium/tilo-chromium-host
