@@ -5072,7 +5072,7 @@ impl ShellNetwork {
         match route {
             InviteRoute::Relay => {
                 let held = self
-                    .administered_room(ws.room())
+                    .relay_governed_room(ws.room())
                     .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
                 return self.issue_relay_invitation(&held, &terms);
             }

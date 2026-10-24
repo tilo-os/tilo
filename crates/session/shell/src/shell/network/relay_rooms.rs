@@ -260,16 +260,21 @@ impl ShellNetwork {
                 if view.governor().user_public_key != certificate.user_public_key {
                     return Err("another person governs the room".into());
                 }
-                let (hint, _) =
-                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
-                        .map_err(|error| error.to_string())?;
-                if !view.governor().capabilities.can_act_as_host
-                    || &hint.host_device_certificate != view.governor()
-                {
-                    return Err("no relay governs the room".into());
-                }
-                let host = iroh::EndpointId::from_bytes(&view.governor().device_public_key)
-                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .ok()?;
+        self.relay_governed_room(room)
+    }
+
+    /// The relay governing `room`, whoever's it is, when this device holds
+    /// the room: a member asks it for what the room's policy lets them do,
+    /// such as inviting someone, and the relay decides.
+    pub(super) fn relay_governed_room(&self, room: RoomId) -> Option<HeldRoom> {
+        let owner = self.native_owner().ok()?;
+        owner
+            .with_current(room, |view| {
+                let host = crate::shell::invite_policy::governing_relay(view)
+                    .ok_or("no relay governs the room")?;
                 Ok(HeldRoom { room, host })
             })
             .ok()
