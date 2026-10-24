@@ -22,6 +22,7 @@ path = "src/lib.rs"
 # unit-testable without a bus, and a thin async zbus layer over it.
 
 [dependencies]
+futures-util.workspace = true
 tracing = "0.1"
 # Match `shell`'s zbus pin (4, tokio, no async-io default) so the workspace
 # lock collapses to one copy.
@@ -31,6 +32,8 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { version = "1.53.3", features = ["full", "test-util"] }
+# A fake `BlueZ` served over a socket pair.
+zbus = { workspace = true, features = ["tokio", "p2p"] }
 
 [lints]
 workspace = true
