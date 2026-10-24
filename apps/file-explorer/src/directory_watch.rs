@@ -6,10 +6,12 @@
 //! window with an unchanged directory has nothing to do and no deadline.
 //!
 //! A watch only sees changes made through this machine's kernel. Where the
-//! filesystem can change underneath it (a FUSE mount such as tilo-fs, whose
-//! remote edits arrive over gossip, or a network filesystem), the watch is
+//! filesystem can change underneath it (a network filesystem, or a FUSE mount
+//! that does not tell the kernel of its remote edits), the watch is
 //! [`Coverage::Partial`]: local edits still show at once, and the caller keeps
-//! polling for the rest. The watch never opens a file, so it hydrates nothing.
+//! polling for the rest. tilo-fs tells the kernel of each edit a peer made,
+//! so a watch there is [`Coverage::Complete`]. The watch never opens a file,
+//! so it hydrates nothing.
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -111,8 +113,8 @@ impl DirectoryWatch {
         self.coverage
     }
 
-    /// Treat the live watch as covering only local edits, as on a tilo-fs
-    /// mount, whose remote edits arrive underneath the kernel.
+    /// Treat the live watch as covering only local edits, as on a FUSE
+    /// mount whose remote edits arrive underneath the kernel.
     #[cfg(test)]
     pub(crate) fn assume_partial_coverage(&mut self) {
         if self.watch.is_some() {
@@ -254,6 +256,71 @@ impl AwaitedDirectoryWatch {
     }
 }
 
+/// Watches on a few directories, each standing for something read from it,
+/// such as the record catalogue, whose generation a mount moves by changing
+/// its root.
+pub(crate) struct RootsWatch {
+    watches: Vec<DirectoryWatch>,
+    waker: Waker,
+}
+
+impl RootsWatch {
+    pub(crate) fn new(wake: ui::WakeHandle) -> Self {
+        Self {
+            watches: Vec::new(),
+            waker: Waker::from(Arc::new(UiWake(wake))),
+        }
+    }
+
+    /// Watch each of `dirs`; pointing at the same directories keeps their
+    /// watches. Returns `true` when a new watch started: changes made before
+    /// it are not reported, so the caller reads once more.
+    pub(crate) fn point_at(&mut self, dirs: &[PathBuf]) -> bool {
+        let same = self.watches.len() == dirs.len()
+            && self
+                .watches
+                .iter()
+                .zip(dirs)
+                .all(|(watch, dir)| watch.target() == Some(dir.as_path()));
+        if same {
+            return false;
+        }
+        self.watches = dirs
+            .iter()
+            .map(|dir| {
+                let mut watch = DirectoryWatch::with_waker(self.waker.clone());
+                let _ = watch.point_at(Some(dir));
+                watch
+            })
+            .collect();
+        self.watches.iter().any(|watch| watch.watch.is_some())
+    }
+
+    /// The least any of the watches reports; [`Coverage::None`] without any.
+    pub(crate) fn coverage(&self) -> Coverage {
+        self.watches
+            .iter()
+            .map(DirectoryWatch::coverage)
+            .min_by_key(|coverage| match coverage {
+                Coverage::None => 0,
+                Coverage::Partial => 1,
+                Coverage::Complete => 2,
+            })
+            .unwrap_or(Coverage::None)
+    }
+
+    /// Drain every watch and re-arm its wake. `true` when any reported a
+    /// change.
+    pub(crate) fn take_changes(&self) -> bool {
+        // Every watch is drained, so each re-arms its wake.
+        let mut changed = false;
+        for watch in &self.watches {
+            changed |= watch.take_changes();
+        }
+        changed
+    }
+}
+
 fn coverage_of(dir: &Path) -> Coverage {
     if tilo_files::native::watch_sees_every_change(dir) {
         Coverage::Complete
@@ -339,6 +406,25 @@ mod tests {
         );
         assert!(watch.watches_target());
         assert!(!watch.take_changes(), "nothing changed yet");
+    }
+
+    #[test]
+    fn a_change_in_any_watched_root_is_reported() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let roots = [first.path().to_path_buf(), second.path().to_path_buf()];
+        let mut watch = RootsWatch::new(ui::WakeHandle::detached());
+        assert_eq!(watch.coverage(), Coverage::None, "nothing watched yet");
+        assert!(watch.point_at(&roots));
+        assert!(!watch.point_at(&roots), "the same roots keep their watches");
+        assert_ne!(watch.coverage(), Coverage::None);
+        assert!(!watch.take_changes(), "nothing changed yet");
+        std::fs::create_dir(second.path().join("new")).unwrap();
+        tilo_test_env::wait_until("the second root's change is reported", || {
+            watch.take_changes()
+        });
+        assert!(!watch.point_at(&[]));
+        assert_eq!(watch.coverage(), Coverage::None);
     }
 
     #[test]

@@ -63,6 +63,7 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
             kind: AppKind::Other("Test".into()),
             label: format!("G{gid}"),
         },
+        app_title: None,
     };
     let groups: Vec<WindowGroup> = group_ids
         .iter()
@@ -627,6 +628,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
                         kind: AppKind::Other("T".into()),
                         label: "A".into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 2,
@@ -635,6 +637,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
                         kind: AppKind::Other("T".into()),
                         label: "B".into(),
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: 3,
@@ -643,6 +646,7 @@ fn group_and_tab_drags_reorder_the_tree_and_reconstruct_after_close() {
                         kind: AppKind::Other("T".into()),
                         label: "C".into(),
                     },
+                    app_title: None,
                 },
             ];
             g.active_tab = 1;
@@ -1107,6 +1111,7 @@ fn expand_restore_and_workspace_switch_change_what_is_rendered() {
                 kind: AppKind::Other(label.into()),
                 label: label.into(),
             },
+            app_title: None,
         };
         let group_300 = WindowGroup {
             id: 300,
@@ -1221,6 +1226,7 @@ fn focus_scrolls_groups_into_view_but_the_wheel_does_not_pan() {
                             kind: AppKind::Other("Launched".into()),
                             label: "Launched".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tab_id,
                     width: WindowWidth::Normal,

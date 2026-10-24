@@ -25,9 +25,12 @@ pub fn exec_attach_intent(container_id: &str) -> ToolIntent {
     }
 }
 
-/// Ask the shell to open `intent` in Terminal.
+/// Ask the shell to open `intent` in Terminal, for the broker invocation
+/// being handled when an agent asked for it. Call it where the action is
+/// handled, on the thread that dispatches it.
 pub fn open(intent: ToolIntent) -> Result<(), String> {
-    runtime_portal::tools::open_tool(intent)
+    let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
+    runtime_portal::tools::open_tool(intent, on_behalf_of)
 }
 
 #[cfg(test)]

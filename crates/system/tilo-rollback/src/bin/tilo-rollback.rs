@@ -20,8 +20,8 @@ use clap::{Args, Parser, Subcommand};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tilo_rollback::{
-    Config, approval, certify, confirm, counter, exec, generation, keyslots, lockout, policy,
-    token::RollbackToken,
+    Config, approval, certify, confirm, counter, dual_boot, exec, generation, keyslots, lockout,
+    policy, token::RollbackToken,
 };
 use zeroize::Zeroizing;
 
@@ -89,7 +89,7 @@ enum Cmd {
         /// Where to record the generated reset authorisation. Must be on the encrypted root.
         #[arg(long, default_value = "/var/lib/tilo/rollback/lockout-auth")]
         auth_file: PathBuf,
-        #[arg(long, default_value_t = 8)]
+        #[arg(long, default_value_t = 10)]
         max_tries: u32,
         #[arg(long, default_value_t = 7200)]
         recovery_time: u32,
@@ -362,7 +362,7 @@ fn run() -> Result<()> {
 fn dispatch_provisioning(cli: &Cli, env: &Env<'_>) -> Result<()> {
     let runner = env.runner;
     match &cli.cmd {
-        Cmd::TpmStatus { json } => cmd_tpm_status(runner, *json),
+        Cmd::TpmStatus { json } => cmd_tpm_status(runner, *json, windows_is_installed()),
         Cmd::Harden {
             auth_file,
             max_tries,
@@ -378,6 +378,7 @@ fn dispatch_provisioning(cli: &Cli, env: &Env<'_>) -> Result<()> {
                 lockout_recovery: *lockout_recovery,
             },
             *i_have_a_recovery_key,
+            windows_is_installed(),
         ),
         Cmd::Enroll {
             device,
@@ -489,7 +490,12 @@ fn dispatch_authority(cli: &Cli, env: &Env<'_>) -> Result<()> {
     }
 }
 
-fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
+/// Read once per command, from the firmware's own boot entries.
+fn windows_is_installed() -> bool {
+    dual_boot::windows_is_installed(Path::new(dual_boot::EFIVARS))
+}
+
+fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool, shared_with_windows: bool) -> Result<()> {
     let params = lockout::read(runner)?;
     let a = lockout::assess(params, lockout::Target::default());
     if json {
@@ -502,6 +508,7 @@ fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
                 "failure_counter": params.counter,
                 "reset_auth_set": params.lockout_auth_set,
                 "in_lockout": params.in_lockout,
+                "shared_with_windows": shared_with_windows,
                 "pin_is_defensible": a.pin_is_defensible(),
                 "critical": a.critical,
                 "warnings": a.warnings,
@@ -523,6 +530,9 @@ fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
         }
     );
     println!("  in lockout          {}", params.in_lockout);
+    if shared_with_windows {
+        println!("  shared with         Windows, which manages these settings");
+    }
     for c in &a.critical {
         println!("\nCRITICAL: {c}");
     }
@@ -531,6 +541,11 @@ fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
     }
     if a.pin_is_defensible() {
         println!("\nA short PIN is defensible on this TPM.");
+    } else if shared_with_windows && !params.lockout_auth_set {
+        println!(
+            "\nA short PIN is NOT defensible on this TPM yet. Windows sets the reset \
+             authorisation the next time it starts."
+        );
     } else {
         println!("\nA short PIN is NOT defensible on this TPM as configured. Run `harden`.");
     }
@@ -542,6 +557,7 @@ fn cmd_harden(
     auth_file: &Path,
     target: lockout::Target,
     have_recovery_key: bool,
+    shared_with_windows: bool,
 ) -> Result<()> {
     let before = lockout::read(runner)?;
     println!(
@@ -555,6 +571,18 @@ fn cmd_harden(
             "empty"
         }
     );
+
+    // The settings are global to the TPM, and Windows provisions them itself when it finds
+    // them empty. Taking them first would leave Windows unable to provision its TPM or reset
+    // a lockout, with "Clear TPM" — which also wipes Tilo's keyslots — as its only remedy.
+    // Nothing is recorded, so the next boot looks again.
+    if !before.lockout_auth_set && shared_with_windows {
+        println!(
+            "this TPM is shared with Windows, which sets the reset authorisation and the \
+             lockout parameters the next time it starts; leaving them to Windows"
+        );
+        return Ok(());
+    }
 
     if !before.lockout_auth_set && !have_recovery_key {
         bail!(

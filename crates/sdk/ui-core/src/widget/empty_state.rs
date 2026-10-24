@@ -751,6 +751,11 @@ impl PaintedEmptyStates {
             buttons_in(node, &mut described);
         }
         content.for_each_child(&mut |child| buttons_under(child, &mut described));
+        // A group joins the content's own children, so it is addressed as
+        // they are: keyed beside keyed controls, by position otherwise.
+        let keyed = node
+            .as_ref()
+            .is_some_and(|node| node.children.iter().any(|child| child.key.is_some()));
         let missing = self
             .painted
             .iter()
@@ -768,6 +773,9 @@ impl PaintedEmptyStates {
                     .with_bounds(action.area);
                 if let Some(message) = &action.message {
                     group = group.with_description(message.clone());
+                }
+                if keyed {
+                    group = group.with_hashed_key(format!("{PAINTED_TARGET}{index}"));
                 }
                 group.with_children(vec![
                     AccessNode::new(Role::Button)
@@ -2764,6 +2772,50 @@ mod tests {
         assert!(
             paint(&mut scene).is_some(),
             "a room with no host is the app's"
+        );
+    }
+
+    #[test]
+    fn a_painted_state_is_addressed_as_the_controls_beside_it_are() {
+        use crate::a11y::{AccessNode, Role};
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut scene = Scene::new();
+        let content = EmptyStateContent {
+            action_label: Some("Choose camera"),
+            ..EmptyStateContent::new("Camera unavailable")
+        };
+        let mut painted = PaintedEmptyStates::default();
+        painted.draw(Affine::IDENTITY, || {
+            EmptyState::paint(
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
+                Rect::new(0.0, 0.0, 500.0, 400.0),
+                &content,
+                Point::new(-1.0, -1.0),
+            );
+        });
+        let host = EmptyState::new("host");
+        let control = || AccessNode::new(Role::Button).with_name("Take photo");
+
+        let keyed = AccessNode::new(Role::Window)
+            .with_children(vec![control().with_action_target("camera.shutter")]);
+        let keyed = painted.describe(Some(keyed), &host).unwrap();
+        assert_eq!(
+            keyed.children.len(),
+            2,
+            "the painted state joins the controls"
+        );
+        assert!(
+            keyed.children.iter().all(|child| child.key.is_some()),
+            "beside keyed controls it is keyed too"
+        );
+
+        let positional = AccessNode::new(Role::Window).with_children(vec![control()]);
+        let positional = painted.describe(Some(positional), &host).unwrap();
+        assert_eq!(positional.children.len(), 2);
+        assert!(
+            positional.children.iter().all(|child| child.key.is_none()),
+            "beside position-addressed controls it is addressed by position"
         );
     }
 }

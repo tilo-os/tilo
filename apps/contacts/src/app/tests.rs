@@ -482,17 +482,24 @@ fn the_sort_control_orders_the_list() {
 #[test]
 fn the_list_selects_by_pointer_keyboard_and_semantics() {
     let mut harness = harness((1280, 800));
-    let (target, center) = {
+    let ((other, other_center), (target, center)) = {
         let app = &*harness;
         let bridge = app.shared.borrow();
-        let (id, rect) = bridge.painted[1];
-        (id, rect.center())
+        let row = |index: usize| {
+            let (id, rect) = bridge.painted[index];
+            (id, rect.center())
+        };
+        (row(2), row(1))
     };
-    harness.harness_mut().click_at(center.x, center.y);
-    assert_eq!(harness.selected, Some(target));
-    assert_eq!(harness.mode, Mode::View);
+    harness
+        .harness_mut()
+        .click_at(other_center.x, other_center.y);
+    assert_eq!(harness.selected, Some(other));
+    assert_eq!(harness.mode, Mode::View, "a single press only selects");
 
-    harness.harness_mut().click_at(center.x, center.y);
+    // A double press on another row selects it and opens it, however long
+    // a slow host takes to draw the frame between the two presses.
+    harness.harness_mut().double_click_at(center.x, center.y);
     let app = &*harness;
     assert_eq!(
         app.mode,
@@ -640,23 +647,10 @@ fn the_contact_menu_runs_the_canonical_actions() {
         "the sensitive export waits for the person's consent"
     );
     assert!(
-        app.harness_mut()
-            .a11y_nodes()
-            .iter()
-            .any(|(_, node)| node.role() == ui::accesskit::Role::Dialog
-                && node.label() == Some("Action confirmation")),
+        host_confirmation_is_up(&mut app),
         "the actual host confirms the contact menu's sensitive operation"
     );
-    act_named(
-        &mut app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    assert!(
-        app.export.is_none(),
-        "typing the consent phrase does not itself export the contact"
-    );
-    act_named(&mut app, "Confirm", &ui::a11y::Action::Activate);
+    confirm_on_host(&mut app);
     if app.export.is_none() {
         eprintln!(
             "Contacts menu export after explicit confirmation: controls={:?}; failures={:?}; refusal={:?}",
@@ -4601,23 +4595,18 @@ fn peer_applies(doc: &mut ui::tilo_resource::Doc, invoke: Invoke<Contacts>) {
 }
 
 fn host_confirmation_is_up(app: &mut Live) -> bool {
-    app.harness_mut().a11y_nodes().iter().any(|(_, node)| {
-        node.role() == ui::accesskit::Role::Dialog && node.label() == Some("Action confirmation")
-    })
+    app.settle();
+    app.harness_mut().asking().is_some()
 }
 
-/// Confirm the action the host asks about, as the person does.
+/// Confirm the action the host asks about, as the person does: its
+/// dialog's button named for the verb.
 fn confirm_on_host(app: &mut Live) {
     assert!(
         host_confirmation_is_up(app),
         "the host asks to confirm the action"
     );
-    act_named(
-        app,
-        "Confirmation",
-        &ui::a11y::Action::SetValue("CONFIRM".into()),
-    );
-    act_named(app, "Confirm", &ui::a11y::Action::Activate);
+    assert!(app.harness_mut().confirm_asked().is_some());
     app.settle();
 }
 
@@ -4661,13 +4650,7 @@ fn closing_a_dialog_while_the_host_asks_to_confirm_is_safe() {
             .unwrap();
     });
     app.settle();
-    assert!(
-        app.harness().a11y_nodes().iter().any(|(_, node)| {
-            node.role() == ui::accesskit::Role::Dialog
-                && node.label() == Some("Action confirmation")
-        }),
-        "the host asks to confirm the merge"
-    );
+    assert!(app.asking().is_some(), "the host asks to confirm the merge");
 }
 
 /// A narrow window opens on the list, which stands alone: an empty book says

@@ -14,7 +14,7 @@ use tilo_rich_text::FieldOutcome;
 
 use crate::app::{
     AttachmentImportPending, AttachmentImportResult, AttachmentPickerResult, ChatApp, Focus, Hit,
-    MenuAction, MenuTarget, RowSwipe,
+    MenuAction, MenuTarget,
 };
 use crate::messages::{NewMessage, chat_part};
 use crate::model::{ChannelKind, Id};
@@ -99,11 +99,6 @@ impl ChatApp {
         if self.thread_open.is_some() && self.thread_body.contains(self.last_mouse) {
             return;
         }
-        if self.nav_viewport.contains(self.last_mouse) {
-            // Clamped against the tree's height when painted.
-            self.nav_scroll = (self.nav_scroll - dy).max(0.0);
-            return;
-        }
         self.scroll += dy;
         // A positive offset moves away from the live edge. Do this at event
         // time rather than waiting for paint: `sync` may run between the
@@ -158,8 +153,8 @@ impl ChatApp {
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 self.handle_wheel(delta, scale);
-                // The wheel moved a view (the timeline, the sidebar, the
-                // emoji grid) and nothing the app publishes: the timeline's
+                // The wheel moved a view (the timeline, the emoji grid) and
+                // nothing the app publishes: the timeline's
                 // read receipt follows when it arrives at its newest edge.
                 ui::widget::note_view_only_pan();
                 *handled = true;
@@ -176,7 +171,7 @@ impl ChatApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_release(event, scale, modifiers, doc, handled);
+                self.handle_left_release(event, scale, modifiers, doc);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -253,8 +248,8 @@ impl ChatApp {
             )
     }
 
-    /// A pointer move: live-drags the floating call overlay or an in-progress
-    /// channel-row swipe, then forwards hover state to both composers.
+    /// A pointer move: live-drags the floating call overlay, then forwards
+    /// hover state to both composers.
     fn handle_cursor_moved(&mut self, last_mouse: Point, dispatch: EventDispatch<'_, '_>) {
         let EventDispatch {
             event,
@@ -318,18 +313,14 @@ impl ChatApp {
             self.call_hovered = hovered;
             *handled = true;
         }
-        if let Some(sw) = &mut self.swipe {
-            sw.current = self.last_mouse;
-            *handled = true;
-        }
         // Keep every shared input's hover/drag state current so clicks place
         // carets and press-drags extend selections on inline editors too.
         self.forward_pointer_to_text_inputs(event, scale, modifiers, doc);
     }
 
-    /// A left-button press: begins a call-overlay drag, arms a channel-row
-    /// swipe, or resolves an ordinary hit (forwarding the press into a
-    /// composer that was just focused by it).
+    /// A left-button press: begins a call-overlay drag, or resolves an
+    /// ordinary hit (forwarding the press into a composer that was just
+    /// focused by it).
     fn handle_left_press(
         &mut self,
         event: &WindowEvent,
@@ -366,27 +357,10 @@ impl ChatApp {
                 self.begin_agent_conversation_drag(self.last_mouse);
                 *handled = true;
             }
-            Some(Hit::Channel(id)) => {
-                // Arm a potential swipe on the row; a plain click still
-                // resolves on release if it didn't travel.
-                if let Some(idx) = self.ws_channels().iter().position(|c| c.id == id) {
-                    self.swipe = Some(RowSwipe {
-                        channel_index: idx,
-                        origin: self.last_mouse,
-                        current: self.last_mouse,
-                    });
-                }
-                // Defer the open to release so a swipe isn't a click.
-                *handled = true;
-            }
             Some(hit) => {
                 let text_input_hit = matches!(
                     hit,
-                    Hit::FocusMain
-                        | Hit::FocusThread
-                        | Hit::FocusRename
-                        | Hit::FocusEdit
-                        | Hit::FocusEmojiSearch
+                    Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit | Hit::FocusEmojiSearch
                 );
                 self.on_hit(hit, doc);
                 // A click in a composer focuses it (via `on_hit`) and
@@ -407,37 +381,18 @@ impl ChatApp {
     }
 
     /// A left-button release: ends any overlay drag or composer
-    /// drag-selection, and resolves an in-progress channel-row swipe (commit
-    /// on a long swipe, click on a short one).
+    /// drag-selection.
     fn handle_left_release(
         &mut self,
         event: &WindowEvent,
         scale: f64,
         modifiers: Modifiers,
         doc: &mut ui::widget::Edits<'_>,
-        handled: &mut bool,
     ) {
         self.call.placement.end_drag(self.desktop_floating_bounds());
         self.end_agent_conversation_drag();
         // End any composer drag-selection in progress.
         self.forward_pointer_to_text_inputs(event, scale, modifiers, doc);
-        if let Some(sw) = self.swipe.take() {
-            let channel = self
-                .ws_channels()
-                .get(sw.channel_index)
-                .map(|c| c.id.clone());
-            if let Some(id) = channel {
-                if sw.dx() >= self.chrome.swipe_commit && self.keeps_layout() {
-                    // Swipe-left commits the channel's primary action,
-                    // which is exactly the context menu's first item.
-                    self.apply_channel_action(&id, MenuAction::channel_swipe_left(), doc);
-                } else if sw.dx() < 6.0 {
-                    // Didn't travel — treat as a click on the channel.
-                    self.on_hit(Hit::Channel(id), doc);
-                }
-            }
-            *handled = true;
-        }
     }
 
     /// A pressed key: inline shared inputs win while open; otherwise the
@@ -450,15 +405,6 @@ impl ChatApp {
             doc,
             handled,
         } = dispatch;
-        if self.rename.is_some() {
-            if matches!(logical_key, Key::Named(NamedKey::Escape)) {
-                self.cancel_rename();
-            } else {
-                self.route_rename_input(event, scale, modifiers, doc);
-            }
-            *handled = true;
-            return;
-        }
         if self.editing.is_some() {
             if matches!(logical_key, Key::Named(NamedKey::Escape)) {
                 self.cancel_edit();
@@ -512,7 +458,6 @@ impl ChatApp {
         // An open `@` list in the composer takes Tab to pick someone.
         if matches!(logical_key, Key::Named(NamedKey::Tab))
             && self.editing.is_none()
-            && self.rename.is_none()
             && self.focused_composer().is_focused()
             && self.focused_composer().mention_picker_open()
         {
@@ -558,8 +503,8 @@ impl ChatApp {
     }
 
     /// Route an IME event to whichever shared input owns focus. Composer
-    /// commits still splice into the collaborative draft; inline edit/rename
-    /// buffers remain local until their explicit Save/Enter boundary.
+    /// commits still splice into the collaborative draft; an inline edit's
+    /// buffer remains local until its explicit Save boundary.
     fn handle_text_input_event(
         &mut self,
         event: &WindowEvent,
@@ -567,10 +512,7 @@ impl ChatApp {
         modifiers: Modifiers,
         doc: &mut ui::widget::Edits<'_>,
     ) -> bool {
-        if self.rename.is_some() {
-            self.route_rename_input(event, scale, modifiers, doc);
-            true
-        } else if self.editing.is_some() {
+        if self.editing.is_some() {
             self.route_edit_input(event, scale, modifiers, doc);
             true
         } else if self.emoji_open {
@@ -586,21 +528,6 @@ impl ChatApp {
             true
         } else {
             false
-        }
-    }
-
-    fn route_rename_input(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut ui::widget::Edits<'_>,
-    ) {
-        drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
-        if self.rename_input.take_submit() {
-            self.commit_rename(doc);
-        } else {
-            let _ = self.rename_input.take_dirty();
         }
     }
 
@@ -712,7 +639,6 @@ impl ChatApp {
     ) {
         self.composer_main.handle(event, scale, modifiers, doc);
         self.composer_thread.handle(event, scale, modifiers, doc);
-        drive_text_input(&mut self.rename_input, event, scale, modifiers, doc);
         self.edit_input.handle(event, scale, modifiers, doc);
         if self.emoji_open {
             drive_text_input(&mut self.emoji_search, event, scale, modifiers, doc);
@@ -736,8 +662,6 @@ impl ChatApp {
             // A press elsewhere on the panel leaves typing in the query.
             self.emoji_search.set_focused(true);
             handled
-        } else if self.rename.is_some() {
-            drive_text_input(&mut self.rename_input, event, scale, modifiers, doc)
         } else if self.editing.is_some() {
             self.edit_input.handle(event, scale, modifiers, doc)
         } else {
@@ -746,25 +670,11 @@ impl ChatApp {
         }
     }
 
-    /// Right-click opens a context menu for the channel or category under
-    /// the cursor, else for the room.
+    /// Right-click opens a context menu for the message under the cursor,
+    /// else for the room. The sidebar's rows ask for theirs through the
+    /// shell ([`crate::sidebar`]).
     fn on_right_click(&mut self, hit: Hit) {
         let menu = match hit {
-            Hit::Channel(id) | Hit::VoiceChannel(id) if self.keeps_layout() => {
-                Some(self.context_menu(
-                    MenuTarget::Channel(id),
-                    self.last_mouse,
-                    MenuAction::for_channel().to_vec(),
-                ))
-            }
-            Hit::Channel(_) | Hit::VoiceChannel(_) => None,
-            Hit::CategoryToggle(id) | Hit::AddChannel { category: id, .. } => {
-                Some(self.context_menu(
-                    MenuTarget::Category(id),
-                    self.last_mouse,
-                    self.layout_menu(MenuAction::for_category().to_vec()),
-                ))
-            }
             // One of your own messages — offer the message actions (Edit).
             Hit::MessageMenu { msg } => {
                 let mine = self.message(&msg).is_some_and(|m| self.is_me(&m.author));
@@ -817,6 +727,7 @@ impl ChatApp {
         match hit {
             Hit::Channel(id) => self.on_hit_channel(id, doc),
             Hit::DirectPerson(public_key) => {
+                self.call.expanded = false;
                 if let Err(error) = self.open_person_conversation(&public_key) {
                     self.person_error = Some(error);
                 }
@@ -828,15 +739,13 @@ impl ChatApp {
                     self.float_agent_conversation();
                 }
             }
-            Hit::VoiceChannel(id) => self.join_voice(&id, doc),
-            Hit::CategoryToggle(id) => self.toggle_category(&id),
             Hit::EditSave => self.commit_edit(doc),
             Hit::EditCancel => self.cancel_edit(),
             Hit::AddChannel { category } if self.keeps_layout() => {
                 self.on_hit_add_channel(&category);
             }
             Hit::AddCategory if self.keeps_layout() => self.on_hit_add_to_room(),
-            Hit::FocusRename | Hit::FocusEdit => self.set_composer_focus(),
+            Hit::FocusEdit => self.set_composer_focus(),
             Hit::Reaction { msg, emoji } => self.on_hit_reaction(&msg, &emoji, doc),
             Hit::AddReaction { msg, anchor } => self.open_emoji_picker(Some(msg), anchor),
             Hit::OpenThread(id) => self.on_hit_open_thread(id),
@@ -925,7 +834,6 @@ impl ChatApp {
                 self.request_relayout();
             }
             Hit::CallLeave => self.leave_voice(doc),
-            Hit::ToggleLeftFlap => self.left_flap.toggle(),
             Hit::ToggleRightFlap => {
                 if self.pins_open && self.right_flap_open() && self.thread_open.is_none() {
                     self.pins_open = false;
@@ -964,14 +872,15 @@ impl ChatApp {
         if kind == Some(ChannelKind::Voice) {
             self.join_voice(&id, doc);
         } else {
+            if self.call.expanded {
+                // The conversation chosen shows; the call floats over it.
+                self.call.expanded = false;
+                self.request_relayout();
+            }
             self.active_channel = id;
             self.thread_open = None;
             self.reset_timeline_to_latest();
             self.focus = Focus::Main;
-            // Picking a channel in overlay mode closes the left flap.
-            if self.left_overlay() {
-                self.left_flap.close();
-            }
             // Navigation is the user-visible read boundary. Other controls in
             // an already-open room must not append a second MarkRead action
             // after their own canonical action or obscure it in history.
@@ -986,7 +895,7 @@ impl ChatApp {
         ));
     }
 
-    /// The sidebar header's "+": what can be made in the room.
+    /// The window bar's Create: what can be made in the room.
     fn on_hit_add_to_room(&mut self) {
         self.menu = Some(self.context_menu(
             MenuTarget::Room,
@@ -998,7 +907,6 @@ impl ChatApp {
     /// Ask what to make or change in `sheet`, over everything else.
     pub(crate) fn open_channel_sheet(&mut self, sheet: crate::channel_sheet::ChannelSheet) {
         self.menu = None;
-        self.rename = None;
         self.emoji_open = false;
         self.attach_open = false;
         self.channel_sheet = Some(sheet);
@@ -1128,7 +1036,7 @@ impl ChatApp {
     }
 
     /// Add a channel named `name` to `category` now, as an insert under an
-    /// id minted here, so its inline rename can follow at once.
+    /// id minted here, so what follows can name it at once.
     pub(crate) fn create_channel_now(
         &mut self,
         doc: &mut ui::widget::Edits<'_>,
@@ -1242,8 +1150,6 @@ impl ChatApp {
             self.emoji_target = None;
         } else if self.history_open.is_some() {
             self.history_open = None;
-        } else if self.left_overlay() && self.left_flap_open() {
-            self.left_flap.close();
         } else if self.right_overlay() && self.right_flap_open() {
             self.right_flap.close();
         }
@@ -1424,7 +1330,12 @@ impl ChatApp {
                 doc,
                 Chat::DELETE_CATEGORY.with(chat::DeleteCategory { category: item(id) }),
             ),
-            MenuAction::ToggleCollapse => self.toggle_category(id),
+            MenuAction::ToggleCollapse => {
+                let open = self.collapsed.contains(id);
+                self.toggle_category(id);
+                self.places
+                    .set_open(&crate::sidebar::category_place(id), open);
+            }
             MenuAction::NewChannelHere => self.open_channel_sheet(
                 crate::channel_sheet::ChannelSheet::new_channel(id, ChannelKind::Text),
             ),
@@ -1436,58 +1347,50 @@ impl ChatApp {
         self.reload(doc);
     }
 
-    /// Open the inline rename editor for a target, seeded with its current
-    /// name.
+    /// Name a channel or category anew, in place in the sidebar: the
+    /// event that asked hands it the keyboard, and the name comes back
+    /// through [`Self::rename_place`].
     fn begin_rename(&mut self, target: MenuTarget) {
-        let current = match &target {
-            MenuTarget::Channel(id) => self.channel(id).map(|c| c.name.clone()),
-            MenuTarget::Category(id) => self.category(id).map(|c| c.name.clone()),
+        self.sidebar_rename = match target {
+            MenuTarget::Channel(id) => Some(crate::sidebar::channel_place(&id)),
+            MenuTarget::Category(id) => Some(crate::sidebar::category_place(&id)),
             MenuTarget::Message(_) | MenuTarget::Room => None,
-        }
-        .unwrap_or_default();
-        self.rename_input.set_text(&current);
-        self.rename_input.set_cursor_pos(current.len());
-        self.rename = Some(target);
-        self.set_composer_focus();
+        };
     }
 
-    /// Commit the inline rename to the CRDT and close the editor.
-    fn commit_rename(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        if let Some(target) = self.rename.take() {
-            let text = self.rename_input.value().trim().to_string();
-            if !text.is_empty() {
-                match target {
-                    MenuTarget::Channel(id) => {
-                        self.apply_now(
-                            doc,
-                            Chat::RENAME_CHANNEL.with(chat::RenameChannel {
-                                channel: item(&id),
-                                name: text,
-                            }),
-                        );
-                    }
-                    MenuTarget::Category(id) => {
-                        self.apply_now(
-                            doc,
-                            Chat::RENAME_CATEGORY.with(chat::RenameCategory {
-                                category: item(&id),
-                                name: text,
-                            }),
-                        );
-                    }
-                    MenuTarget::Message(_) | MenuTarget::Room => {}
-                }
+    /// Give the channel or category `target` the name `name`.
+    pub(crate) fn rename_place(
+        &mut self,
+        target: &MenuTarget,
+        name: &str,
+        doc: &mut ui::widget::Edits<'_>,
+    ) {
+        let name = name.trim().to_owned();
+        if name.is_empty() {
+            return;
+        }
+        match target {
+            MenuTarget::Channel(id) => {
+                self.apply_now(
+                    doc,
+                    Chat::RENAME_CHANNEL.with(chat::RenameChannel {
+                        channel: item(id),
+                        name,
+                    }),
+                );
             }
-            self.rename_input.set_text("");
-            self.set_composer_focus();
-            self.reload(doc);
+            MenuTarget::Category(id) => {
+                self.apply_now(
+                    doc,
+                    Chat::RENAME_CATEGORY.with(chat::RenameCategory {
+                        category: item(id),
+                        name,
+                    }),
+                );
+            }
+            MenuTarget::Message(_) | MenuTarget::Room => {}
         }
-    }
-
-    fn cancel_rename(&mut self) {
-        self.rename = None;
-        self.rename_input.set_text("");
-        self.set_composer_focus();
+        self.reload(doc);
     }
 
     fn on_key(&mut self, key: &Key, modifiers: Modifiers, doc: &mut ui::widget::Edits<'_>) -> bool {

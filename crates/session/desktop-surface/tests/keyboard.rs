@@ -502,6 +502,7 @@ fn keyboard_tab(id: u64) -> Tab {
             label: "Keyboard".into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 

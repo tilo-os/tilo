@@ -140,9 +140,12 @@ fn bootc_status_field_bytes(bytes: &[u8], selector: &str) -> Result<String, Stri
         "booted-version" => ("booted", &["image", "version"]),
         "staged-version" => ("staged", &["image", "version"]),
         "rollback-version" => ("rollback", &["image", "version"]),
+        "booted-timestamp" => ("booted", &["image", "timestamp"]),
+        "staged-timestamp" => ("staged", &["image", "timestamp"]),
         "rollback-timestamp" => ("rollback", &["image", "timestamp"]),
         "booted-composefs" => ("booted", &["composefs", "verity"]),
         "staged-composefs" => ("staged", &["composefs", "verity"]),
+        "rollback-composefs" => ("rollback", &["composefs", "verity"]),
         _ => return Err(format!("unsupported bootc status selector: {selector}")),
     };
     let Some(mut value) = status.get(deployment) else {
@@ -1111,6 +1114,23 @@ mod tests {
             assert_eq!(
                 bootc_status_field_bytes(rollback, "rollback-timestamp").unwrap(),
                 "2026-10-18T04:12:00Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
+                ""
+            );
+            let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(dated, "booted-timestamp").unwrap(),
+                "2026-10-09T13:20:59Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(dated, "staged-timestamp").unwrap(),
+                "2026-10-20T08:00:00Z"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(dated, "rollback-composefs").unwrap(),
+                "abc"
             );
             assert!(bootc_status_field_bytes(status, "arbitrary-expression").is_err());
         }

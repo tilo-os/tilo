@@ -10,8 +10,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::toggle_group::Segment;
 use ui::widget::{
-    Button, Column, Element, EmptyState, ListRow, Row, Section, SectionHeader, SegmentedStyle,
-    Spacer, Text, ToggleGroup, Widget,
+    Button, Column, Element, EmptyState, ListRow, Row, Section, SectionHeader, Spacer, Text, Widget,
 };
 
 use super::{BrowserWidget, LibrarySection, library_filter_matches};
@@ -361,14 +360,13 @@ impl BrowserWidget {
         )));
 
         let queue = self.pending_commands.clone();
-        let tabs = ToggleGroup::new(
+        let tabs = ui::widget::ViewTabs::new(
             SECTIONS
                 .iter()
                 .map(|(_, label, _)| Segment::new(*label))
                 .collect(),
             current,
         )
-        .with_style(SegmentedStyle::Tabs)
         .on_view("browser.library.sections", move |index| {
             if let Some((_, _, resource)) = SECTIONS.get(index) {
                 queue.update(|commands| commands.push(((*resource).to_owned(), "show".to_owned())));

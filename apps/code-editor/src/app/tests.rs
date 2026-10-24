@@ -441,17 +441,19 @@ fn opening_another_file_over_unsaved_edits_asks_first() {
 }
 
 fn the_window_bar_names_the_shown_file_and_marks_unsaved_edits() {
-    fn location(app: &CodeApp) -> Option<String> {
-        app.window_toolbar().location.map(|location| location.label)
+    fn location(app: &CodeApp) -> Option<(String, bool)> {
+        app.window_toolbar()
+            .location
+            .map(|location| (location.label, location.edited))
     }
     let mut sample = synced_sample();
-    sample.editor(|app| assert_eq!(location(app).as_deref(), Some("main.rs")));
+    sample.editor(|app| assert_eq!(location(app), Some(("main.rs".to_owned(), false))));
     sample.with_doc(|app, doc| {
         app.editor.insert_for_test(doc, "X");
         app.dispatch_editor_text_edits(doc);
     });
     sample.app.settle();
-    sample.editor(|app| assert_eq!(location(app).as_deref(), Some("main.rs \u{2022}")));
+    sample.editor(|app| assert_eq!(location(app), Some(("main.rs".to_owned(), true))));
 }
 
 fn the_editor_has_no_tab_strip_and_leaves_ctrl_w_to_the_desktop() {

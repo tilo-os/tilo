@@ -46,6 +46,7 @@ fn tree() -> WorkspaceTree {
                     kind: AppKind::Other("Test".into()),
                     label: "Editor".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab,
             width: WindowWidth::Normal,

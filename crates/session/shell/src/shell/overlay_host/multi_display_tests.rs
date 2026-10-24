@@ -53,6 +53,7 @@ fn group(id: GroupId) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: format!("W{id}"),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Fraction(600),

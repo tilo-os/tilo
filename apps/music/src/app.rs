@@ -507,6 +507,8 @@ pub struct MusicApp {
     places: NavFeed,
     /// What plays, as the transport in the shell's band shows it.
     transport: TransportFeed,
+    /// What the transport's actions read when they are invoked.
+    playing_now: std::sync::Arc<shell::Playing>,
     /// The shell's own buttons in the window's bar; none outside a shell.
     bar: Option<WindowBarLink>,
     /// The shell's front screen in a narrow window.
@@ -914,6 +916,7 @@ impl MusicApp {
             content_height: 0.0,
             places: NavFeed::new(),
             transport: TransportFeed::new(),
+            playing_now: std::sync::Arc::default(),
             bar: None,
             pane: None,
             shown_view: None,
@@ -2680,16 +2683,58 @@ impl MusicApp {
     }
 
     fn on_toggle_mute(&mut self, state: &mut ui::widget::Edits<'_>) {
-        if self.pb.volume > 0 {
-            self.premute_volume = Some(self.pb.volume);
-            self.pb.volume = 0;
-        } else {
-            // Restore the pre-mute level (default to a sensible level if
-            // we were already at zero with nothing captured).
-            self.pb.volume = self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80);
-        }
+        self.pb.volume = self.toggled_mute();
         self.audio.set_volume(f32::from(self.pb.volume) / 100.0);
         self.persist_playback(state);
+    }
+
+    /// The song that plays on this device now, if any.
+    pub(crate) fn playing_track(&self) -> Option<String> {
+        self.pb.current.clone()
+    }
+
+    /// The volume a mute toggle leaves: zero, keeping the level to come
+    /// back to, or that level again (a sensible one if there is none).
+    fn toggled_mute(&mut self) -> u8 {
+        if self.pb.volume > 0 {
+            self.premute_volume = Some(self.pb.volume);
+            0
+        } else {
+            self.premute_volume.take().filter(|&v| v > 0).unwrap_or(80)
+        }
+    }
+
+    /// The playback `effect` (next, previous or mute) steps to, by the
+    /// steps the person's own controls take: next and previous follow this
+    /// device's shuffle order, previous starts a song that has played a
+    /// while over, and mute keeps the level to come back to. The playback
+    /// itself is left for the effect to apply.
+    pub(crate) fn stepped_playback(
+        &mut self,
+        effect: &crate::actions::MusicEffect,
+    ) -> crate::model::Playback {
+        use crate::actions::MusicEffect;
+        let before = self.pb.clone();
+        let (playhead, bound) = (self.playhead_ms, self.bound_track.clone());
+        match effect {
+            MusicEffect::Next => self.advance(false),
+            MusicEffect::Previous => self.previous(),
+            MusicEffect::ToggleMute => self.pb.volume = self.toggled_mute(),
+            _ => {}
+        }
+        let mut next = std::mem::replace(&mut self.pb, before);
+        if matches!(effect, MusicEffect::Next | MusicEffect::Previous) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a position within the song, in whole milliseconds"
+            )]
+            let position_ms = self.playhead_ms.max(0.0) as u64;
+            next.position_ms = position_ms;
+        }
+        self.playhead_ms = playhead;
+        self.bound_track = bound;
+        next
     }
 
     fn on_pick_playlist_cover(&mut self, playlist_id: String) {
@@ -3164,6 +3209,17 @@ impl MusicApp {
                 Some(serde_json::json!({ "replacement_request": replacement_request })),
             );
         }
+    }
+
+    /// A newer playback choice (Next pressed again, another song chosen)
+    /// settles the stream start still resolving as superseded: the newest
+    /// choice is the one that plays.
+    pub(super) fn supersede_pending_stream_start(&mut self) {
+        self.fail_resource_stream(
+            "music.stream_start_superseded",
+            "A newer playback choice superseded this stream start.",
+            None,
+        );
     }
 
     /// Time out a hosted stream start if neither the resolver nor the audio
@@ -5408,6 +5464,9 @@ mod spotify;
 mod track_table;
 mod window_bar;
 
+#[cfg(test)]
+#[path = "app/stream_start_tests.rs"]
+mod stream_start_tests;
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests;

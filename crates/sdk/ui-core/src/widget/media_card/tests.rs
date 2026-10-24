@@ -276,7 +276,7 @@ fn overlay_badges_paint_legible_ink_in_every_theme() {
                         .tokens
                         .colors
                         .intent
-                        .neutral_fill
+                        .value_fill
                         .premultiply()
                         .to_rgba8()
                         .to_u32()

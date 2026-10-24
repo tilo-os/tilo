@@ -3,6 +3,7 @@
 #include "include/cef_permission_handler.h"
 #include "include/cef_request_context.h"
 #include "site_policy.h"
+#include "download_name.h"
 #include "download_slots.h"
 #include "download_space.h"
 #include "include/base/cef_callback.h"
@@ -43,14 +44,7 @@ class Downloads final : public CefDownloadHandler {
     for(int id:slots_.EarlyForOwner(tab)) CancelEarly(id,"cancelled","");
     return std::any_of(transfers_.begin(),transfers_.end(),[tab](const auto& entry){return entry.second.owner==tab && entry.second.approved;});
   }
-  static std::string FileName(std::string name) {
-    for(auto& c:name) if(c=='\\') c='/';
-    name=std::filesystem::path(name).filename().string();
-    for(auto& c:name) if(static_cast<unsigned char>(c)<32 || c==127) c='_';
-    if(name.empty() || name=="." || name=="..") name="download";
-    if(name.size()>180) name="download";
-    return name;
-  }
+  static std::string FileName(std::string name) {return DownloadFileName(std::move(name));}
   bool CanDownload(CefRefPtr<CefBrowser> browser,const CefString& url,const CefString& method) override {
     const int owner=owner_(browser);if(!accepting_ || !owner || !eligible_(owner)) return false;
     provenance_.Record(owner,url.ToString(),method.ToString());
@@ -268,30 +262,43 @@ class Capabilities final : public CefPermissionHandler {
   }
   // `dismissed`: set aside unanswered (Escape, a click elsewhere, no answer
   // in time), which Chromium does not remember as a block, so the site may
-  // ask again.
+  // ask again. A refusal is remembered, for the camera and microphone as for
+  // any other permission, until the person has the site ask again.
   void PermissionDecision(int id,bool allow,bool dismissed=false) {
-    auto it=permissions_.find(id);if(it==permissions_.end()) return;
-    auto p=it->second;permissions_.erase(it);
-    if(p.permission) p.permission->Continue(allow?CEF_PERMISSION_RESULT_ACCEPT:dismissed?CEF_PERMISSION_RESULT_DISMISS:CEF_PERMISSION_RESULT_DENY);
-    if(p.media) {
-      // A different tab may revoke the origin while this prompt is pending.
-      allow=allow && !MediaBlocked(p.context,p.origin,p.mask);
-      if(allow) {
-        for(const auto& device:kMediaSettings) if(p.mask & device.mask)
-          p.context->SetContentSetting(p.origin,p.origin,device.type,CEF_CONTENT_SETTING_VALUE_ALLOW);
-        p.media->Continue(p.mask);
-      } else p.media->Cancel();
-    }
-    Closed(id);
+    Settle(id,allow?CEF_PERMISSION_RESULT_ACCEPT:dismissed?CEF_PERMISSION_RESULT_DISMISS:CEF_PERMISSION_RESULT_DENY);
   }
+  // The questions no one answered are withdrawn: the page moved on, its tab
+  // closed, or its permissions were blocked. That is no refusal, so nothing
+  // is remembered for the site.
   void Close() {
-    while(!permissions_.empty()) PermissionDecision(permissions_.begin()->first,false);
+    while(!permissions_.empty()) Settle(permissions_.begin()->first,CEF_PERMISSION_RESULT_IGNORE);
   }
  private:
   struct MediaSetting {uint32_t mask;cef_content_setting_types_t type;};
   inline static constexpr MediaSetting kMediaSettings[]={
     {CEF_MEDIA_PERMISSION_DEVICE_AUDIO_CAPTURE,CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_MIC},
     {CEF_MEDIA_PERMISSION_DEVICE_VIDEO_CAPTURE,CEF_CONTENT_SETTING_TYPE_MEDIASTREAM_CAMERA}};
+  void Settle(int id,cef_permission_request_result_t result) {
+    auto it=permissions_.find(id);if(it==permissions_.end()) return;
+    auto p=it->second;permissions_.erase(it);
+    if(p.permission) p.permission->Continue(result);
+    if(p.media) {
+      // A different tab may revoke the origin while this prompt is pending.
+      if(result==CEF_PERMISSION_RESULT_ACCEPT && !MediaBlocked(p.context,p.origin,p.mask)) {
+        SetMedia(p,CEF_CONTENT_SETTING_VALUE_ALLOW);
+        p.media->Continue(p.mask);
+      } else {
+        if(result==CEF_PERMISSION_RESULT_DENY) SetMedia(p,CEF_CONTENT_SETTING_VALUE_BLOCK);
+        p.media->Cancel();
+      }
+    }
+    Closed(id);
+  }
+  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;};
+  static void SetMedia(const Permission& p,cef_content_setting_values_t value) {
+    for(const auto& device:kMediaSettings) if(p.mask & device.mask)
+      p.context->SetContentSetting(p.origin,p.origin,device.type,value);
+  }
   static bool MediaBlocked(CefRefPtr<CefRequestContext> context,const std::string& origin,uint32_t mask) {
     for(const auto& device:kMediaSettings) if((mask & device.mask) && context->GetContentSetting(origin,origin,device.type)==CEF_CONTENT_SETTING_VALUE_BLOCK) return true;
     return false;
@@ -306,7 +313,6 @@ class Capabilities final : public CefPermissionHandler {
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Capabilities> self,int id){self->PermissionDecision(id,false,true);},CefRefPtr<Capabilities>(this),id),60000);
   }
   void Closed(int id) {auto d=CefDictionaryValue::Create();d->SetInt("id",id);emit_("permission_closed",d);}
-  struct Permission {CefRefPtr<CefPermissionPromptCallback> permission;CefRefPtr<CefMediaAccessCallback> media;uint32_t mask;uint64_t prompt;CefRefPtr<CefRequestContext> context;std::string origin;};
   Emit emit_;int sequence_=0;
   std::map<int,Permission> permissions_;
   IMPLEMENT_REFCOUNTING(Capabilities);

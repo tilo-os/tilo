@@ -7,10 +7,11 @@
 //! 2. **Waiting on you**: calls, messages and questions addressed to the
 //!    person.
 //! 3. **Continue**: what they opened lately, opening where it was.
-//! 4. **Apps**: every app the person has, installed Tilo apps and the
-//!    device's own, the ones they use most first, then the rest by what they
-//!    are for. Apps the catalogue offers but the person does not have
-//!    (Flathub's, Tilo's not yet downloaded) are found by typing, never
+//! 4. **Apps**: the few apps the person uses most, newest use first; on a
+//!    device where few or none are used yet, Tilo's starting points fill
+//!    the rest. Every other app is one "All apps" away, which the palette
+//!    puts under them. Apps the catalogue offers but the person does not
+//!    have (Flathub's, Tilo's not yet downloaded) are found by typing, never
 //!    listed here.
 //!
 //! A section with nothing real to show is left out. Each section is filled
@@ -26,13 +27,10 @@ use std::collections::BTreeMap;
 use crate::shell::chrome_state::SearchScope;
 use crate::shell::i18n::t;
 
-use super::{
-    KindGroup, QueryArgs, ResourceKind, ResourceKindText as _, SearchContext, SearchRegistry,
-    SearchResult,
-};
+use super::{KindGroup, QueryArgs, ResourceKind, SearchContext, SearchRegistry, SearchResult};
 
-/// The apps the launcher leads its Apps section with: the ones used most.
-pub const MOST_USED_APPS: usize = 6;
+/// How many apps the launcher's Apps section lists.
+pub const LISTED_APPS: usize = 6;
 
 /// One section of the launcher, in the order they are shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -74,94 +72,15 @@ impl LauncherSection {
     }
 }
 
-/// What an app is for, as the launcher groups the apps not used most.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum AppPurpose {
-    Office,
-    Internet,
-    Media,
-    Development,
-    Games,
-    Learning,
-    Utilities,
-    System,
-    Other,
-}
-
-impl AppPurpose {
-    /// The purpose of an app whose categories are `categories`, as desktop
-    /// files and Tilo manifests declare them (freedesktop main categories,
-    /// one or several separated by `;`).
-    #[must_use]
-    pub fn of(categories: Option<&str>) -> Self {
-        categories
-            .into_iter()
-            .flat_map(|categories| categories.split(';'))
-            .map(str::trim)
-            .find_map(|category| {
-                Some(match category.to_ascii_lowercase().as_str() {
-                    "office" => Self::Office,
-                    "network" | "chat" | "email" | "webbrowser" | "instantmessaging" => {
-                        Self::Internet
-                    }
-                    "audiovideo" | "audio" | "video" | "multimedia" | "graphics" | "music"
-                    | "photography" => Self::Media,
-                    "development" => Self::Development,
-                    "game" | "games" => Self::Games,
-                    "education" | "science" => Self::Learning,
-                    "utility" | "accessibility" => Self::Utilities,
-                    "system" | "settings" => Self::System,
-                    _ => return None,
-                })
-            })
-            .unwrap_or(Self::Other)
-    }
-
-    /// The group's header, in the desktop's language.
-    #[must_use]
-    pub fn label(self) -> String {
-        t(match self {
-            Self::Office => "search-launcher-apps-office",
-            Self::Internet => "search-launcher-apps-internet",
-            Self::Media => "search-launcher-apps-media",
-            Self::Development => "search-launcher-apps-development",
-            Self::Games => "search-launcher-apps-games",
-            Self::Learning => "search-launcher-apps-learning",
-            Self::Utilities => "search-launcher-apps-utilities",
-            Self::System => "search-launcher-apps-system",
-            Self::Other => "search-launcher-apps-other",
-        })
-    }
-}
-
-/// The section a launcher group labelled `label` is in: a section's own
-/// group, or the apps for one purpose, in Apps.
+/// The section a launcher group labelled `label` is.
 #[must_use]
 pub fn section_of(label: &str) -> Option<LauncherSection> {
-    const PURPOSES: [AppPurpose; 9] = [
-        AppPurpose::Office,
-        AppPurpose::Internet,
-        AppPurpose::Media,
-        AppPurpose::Development,
-        AppPurpose::Games,
-        AppPurpose::Learning,
-        AppPurpose::Utilities,
-        AppPurpose::System,
-        AppPurpose::Other,
-    ];
     LauncherSection::ALL
         .into_iter()
         .find(|section| section.label() == label)
-        .or_else(|| {
-            PURPOSES
-                .iter()
-                .any(|purpose| purpose.label() == label)
-                .then_some(LauncherSection::Apps)
-        })
 }
 
-/// One group of launcher rows under its header. A section is one group,
-/// except Apps: its most used apps, then one group per purpose.
+/// One section of launcher rows under its header.
 #[derive(Debug)]
 pub struct LauncherGroup {
     pub section: LauncherSection,
@@ -191,8 +110,7 @@ pub fn wanted(args: &QueryArgs<'_>) -> bool {
 /// The launcher's groups for `args`, top to bottom, leaving out every
 /// section with nothing to show.
 pub fn groups(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<LauncherGroup> {
-    let mut sections: BTreeMap<LauncherSection, Vec<(SearchResult, Option<String>)>> =
-        BTreeMap::new();
+    let mut sections: BTreeMap<LauncherSection, Vec<SearchResult>> = BTreeMap::new();
     for provider in registry.providers_iter() {
         let Some(section) = provider.launcher_section() else {
             continue;
@@ -207,28 +125,24 @@ pub fn groups(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<LauncherGr
             doc: args.doc,
             doc_root: args.doc_root,
         });
-        let rows = rows.into_iter().map(|row| {
-            let category = provider.app_category(&row);
-            (row, category)
-        });
         sections.entry(section).or_default().extend(rows);
     }
-    let mut out = Vec::new();
-    for (section, rows) in sections {
-        if rows.is_empty() {
-            continue;
-        }
-        if section == LauncherSection::Apps {
-            out.extend(app_groups(rows));
-        } else {
-            out.push(LauncherGroup {
+    sections
+        .into_iter()
+        .map(|(section, rows)| {
+            let rows = if section == LauncherSection::Apps {
+                listed_apps(rows)
+            } else {
+                rows
+            };
+            LauncherGroup {
                 section,
                 label: section.label(),
-                rows: rows.into_iter().map(|(row, _)| row).collect(),
-            });
-        }
-    }
-    out
+                rows,
+            }
+        })
+        .filter(|group| !group.rows.is_empty())
+        .collect()
 }
 
 /// Every row `provider` answers `ctx` with, past its first page: the Apps
@@ -262,83 +176,34 @@ pub fn kind_groups(registry: &SearchRegistry, args: &QueryArgs<'_>) -> Vec<KindG
         .collect()
 }
 
-/// The launcher's groups cut to the `row_budget` rows the card has room
-/// for: what is going on, what waits and what to continue keep every row
-/// (each section's provider answers with only its few), and the apps share
-/// what is left, front to back, a purpose cut short offering the rest in
-/// place. A zero budget keeps everything.
-#[must_use]
-pub fn trim(
-    groups: Vec<KindGroup>,
-    row_budget: usize,
-    expanded: &[ResourceKind],
-) -> Vec<KindGroup> {
-    let (front, apps): (Vec<KindGroup>, Vec<KindGroup>) = groups.into_iter().partition(|group| {
-        section_of(&group.kind.localized_label()) != Some(LauncherSection::Apps)
-    });
-    let shown: usize = front.iter().map(|group| group.results.len()).sum();
-    let budget = if row_budget == 0 {
-        0
-    } else {
-        row_budget.saturating_sub(shown).max(apps.len())
-    };
-    front
-        .into_iter()
-        .chain(ui::search::system::trim_groups(apps, budget, expanded))
-        .collect()
-}
-
-/// The Apps section: the apps used most, newest use breaking ties, under
-/// the section's own header; then every other app, one row each, grouped by
-/// what it is for and named in order within a group.
-fn app_groups(rows: Vec<(SearchResult, Option<String>)>) -> Vec<LauncherGroup> {
+/// The Apps section's rows: the apps used most, newest use breaking ties,
+/// then Tilo's starting points the person has, up to [`LISTED_APPS`]. One
+/// row per app.
+fn listed_apps(rows: Vec<SearchResult>) -> Vec<SearchResult> {
     let mut seen = std::collections::HashSet::new();
-    let mut apps: Vec<(SearchResult, Option<String>, f32)> = rows
+    let (mut used, rest): (Vec<_>, Vec<_>) = rows
         .into_iter()
-        .filter(|(row, _)| seen.insert((row.provider_id.clone(), row.id.clone())))
-        .map(|(row, category)| {
-            let row = described(row);
+        .filter(|row| seen.insert((row.provider_id.clone(), row.id.clone())))
+        .map(|row| {
             let share = super::usage::share(&row.provider_id, &row.id);
-            (row, category, share)
+            (row, share)
         })
-        .collect();
-    apps.sort_by(|a, b| {
-        b.2.total_cmp(&a.2)
+        .partition(|(_, share)| *share > 0.0);
+    used.sort_by(|a, b| {
+        b.1.total_cmp(&a.1)
             .then_with(|| a.0.title.to_lowercase().cmp(&b.0.title.to_lowercase()))
     });
-    let used = apps
-        .iter()
-        .take(MOST_USED_APPS)
-        .take_while(|(_, _, share)| *share > 0.0)
-        .count();
-    let rest = apps.split_off(used);
-    let mut out = Vec::new();
-    if !apps.is_empty() {
-        out.push(LauncherGroup {
-            section: LauncherSection::Apps,
-            label: LauncherSection::Apps.label(),
-            rows: apps
-                .into_iter()
-                .map(|(row, _, _)| with_last_use(row))
-                .collect(),
-        });
-    }
-    let mut by_purpose: BTreeMap<AppPurpose, Vec<SearchResult>> = BTreeMap::new();
-    for (row, category, _) in rest {
-        by_purpose
-            .entry(AppPurpose::of(category.as_deref()))
-            .or_default()
-            .push(row);
-    }
-    for (purpose, mut rows) in by_purpose {
-        rows.sort_by_cached_key(|row| row.title.to_lowercase());
-        out.push(LauncherGroup {
-            section: LauncherSection::Apps,
-            label: purpose.label(),
-            rows,
-        });
-    }
-    out
+    let mut starting: Vec<SearchResult> = rest
+        .into_iter()
+        .map(|(row, _)| row)
+        .filter(|row| ui::search::system::starting_point_rank(&row.id) > 0)
+        .collect();
+    starting.sort_by_key(|row| std::cmp::Reverse(ui::search::system::starting_point_rank(&row.id)));
+    used.into_iter()
+        .map(|(row, _)| with_last_use(described(row)))
+        .chain(starting.into_iter().map(described))
+        .take(LISTED_APPS)
+        .collect()
 }
 
 /// An app row with a second line: what the app is when its source says.
@@ -379,20 +244,3 @@ fn with_last_use(mut row: SearchResult) -> SearchResult {
 #[cfg(test)]
 #[path = "launcher_tests.rs"]
 mod launcher_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_app_is_grouped_by_the_first_purpose_its_categories_name() {
-        assert_eq!(AppPurpose::of(Some("Office")), AppPurpose::Office);
-        assert_eq!(
-            AppPurpose::of(Some("GTK;Network;WebBrowser;")),
-            AppPurpose::Internet
-        );
-        assert_eq!(AppPurpose::of(Some("AudioVideo;Player")), AppPurpose::Media);
-        assert_eq!(AppPurpose::of(Some("Qt;KDE")), AppPurpose::Other);
-        assert_eq!(AppPurpose::of(None), AppPurpose::Other);
-    }
-}

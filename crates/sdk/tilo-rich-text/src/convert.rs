@@ -95,7 +95,7 @@ pub(crate) const CALLOUT: &str = "alert";
 pub(crate) const PAGE_LINK_PREFIX: &str = "#page-";
 
 /// The editor mark a tilo-doc mark shows as, when it has one.
-fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
+pub fn editor_mark(name: &str, value: &MarkValue) -> Option<Mark> {
     match (name, value) {
         (_, MarkValue::Bool(false)) => None,
         ("strong", _) => Some(Mark::Bold),

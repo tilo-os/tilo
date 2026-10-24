@@ -43,6 +43,7 @@ mod workspace_activity {
                     label: title.into(),
                     note: String::new(),
                 },
+                app_title: None,
             });
             tilo_desktop_model::projection::project_owned_contents(
                 &mut doc,

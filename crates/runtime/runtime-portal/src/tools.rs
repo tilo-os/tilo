@@ -386,6 +386,25 @@ pub struct ToolRequest {
     pub protocol: u32,
     pub workspace_id: String,
     pub intent: ToolIntent,
+    /// The broker invocation the app makes this request for, when one the
+    /// broker delivered is running (an agent asked the app to open another
+    /// one): its id as 32 lowercase hex digits. The shell admits the request
+    /// as that invocation's caller; without it, only the person's own press
+    /// in the app is behind the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
+}
+
+/// The wire form of [`ToolRequest::on_behalf_of`].
+#[must_use]
+pub fn invocation_hex(invocation: [u8; 16]) -> String {
+    use std::fmt::Write as _;
+    invocation
+        .iter()
+        .fold(String::with_capacity(32), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,9 +426,13 @@ pub struct ToolReply {
 /// Returns an error message if `intent` fails [`ToolIntent::validate`], the process is not
 /// attached to a Tilo workspace or its tool service, the request is too large to send, or the
 /// shell rejects or fails to answer the request.
-pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
+///
+/// `on_behalf_of` is the broker invocation the request is made for
+/// ([`ToolRequest::on_behalf_of`]): `ui::invocation_scope::delivered_invocation`
+/// read where the app decided to ask, `None` for the person's own press.
+pub fn open_tool(intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String> {
     intent.validate()?;
-    send_tool_request(intent).map(drop)
+    send_tool_request(intent, on_behalf_of).map(drop)
 }
 
 /// The NTFS drives the shell can open, for an app's list of places.
@@ -418,7 +441,7 @@ pub fn open_tool(intent: ToolIntent) -> Result<(), String> {
 ///
 /// As [`open_tool`].
 pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
-    send_tool_request(ToolIntent::Drives).map(|reply| reply.drives)
+    send_tool_request(ToolIntent::Drives, None).map(|reply| reply.drives)
 }
 
 /// The person's apps, for Files' Applications place.
@@ -427,16 +450,22 @@ pub fn list_drives() -> Result<Vec<DriveEntry>, String> {
 ///
 /// As [`open_tool`].
 pub fn list_applications() -> Result<Vec<AppEntry>, String> {
-    send_tool_request(ToolIntent::Applications).map(|reply| reply.applications)
+    send_tool_request(ToolIntent::Applications, None).map(|reply| reply.applications)
 }
 
 #[cfg(not(unix))]
-fn send_tool_request(_intent: ToolIntent) -> Result<ToolReply, String> {
+fn send_tool_request(
+    _intent: ToolIntent,
+    _on_behalf_of: Option<[u8; 16]>,
+) -> Result<ToolReply, String> {
     Err("The shell tool service is unavailable".to_string())
 }
 
 #[cfg(unix)]
-fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
+fn send_tool_request(
+    intent: ToolIntent,
+    on_behalf_of: Option<[u8; 16]>,
+) -> Result<ToolReply, String> {
     let workspace_id = std::env::var("TILO_WORKSPACE_ID")
         .map_err(|_| "This app is not attached to a Tilo workspace".to_string())?;
     let raw_fd: i32 = std::env::var(TOOL_SERVICE_FD_ENV)
@@ -448,6 +477,7 @@ fn send_tool_request(intent: ToolIntent) -> Result<ToolReply, String> {
         protocol: TOOL_PROTOCOL_VERSION,
         workspace_id,
         intent,
+        on_behalf_of: on_behalf_of.map(invocation_hex),
     };
     // SAFETY: the launcher keeps the service descriptor open for the
     // process's lifetime; it is only borrowed for this exchange.
@@ -540,6 +570,7 @@ mod tests {
                             protocol: TOOL_PROTOCOL_VERSION,
                             workspace_id: format!("{caller}-{turn}"),
                             intent: ToolIntent::Drives,
+                            on_behalf_of: None,
                         };
                         let reply = exchange(client.as_fd(), &request).unwrap();
                         assert_eq!(reply.message, request.workspace_id);

@@ -64,6 +64,24 @@ mod native_editing_tests {
         assert_eq!(packet[5], 6, "physical input did not revoke original lease");
     }
 
+    /// At a native editor prompt, dictation still needs the editor's
+    /// acknowledgement, but an ordinary commit (the on-screen keyboard's
+    /// letters) becomes the editor's own acknowledged edit, so hosts serve the
+    /// prompt to standard text input and the on-screen keyboard opens.
+    #[test]
+    fn a_native_editor_prompt_takes_ordinary_commits() {
+        let (widget, _producer) = fixture().expect("qualified native editor fixture");
+        assert!(
+            widget.ime_requires_deferred_ack(),
+            "dictation stays acknowledged"
+        );
+        assert!(
+            !widget.ime_refuses_ordinary_commits(),
+            "the on-screen keyboard's commits reach the prompt"
+        );
+        assert!(ui::ime::ImeWindowState::from_widget(&widget).is_some());
+    }
+
     #[test]
     fn native_editor_ordinary_ime_waits_for_exact_ack_without_pty_fallback() {
         let (mut widget, producer) = fixture().expect("qualified native editor fixture");

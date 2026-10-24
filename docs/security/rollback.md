@@ -127,6 +127,23 @@ after boot. It remains early, but TPM probing, LUKS discovery, and key generatio
 do not hold `multi-user.target` or the first greeter open. Its service conditions
 skip later boots once the authorization is durably recorded.
 
+The reset authorization and the lockout parameters belong to the whole TPM, not to
+one operating system. Windows sets them itself whenever it starts and finds the
+reset authorization empty. If Tilo took them first, Windows could neither
+provision its TPM nor reset a lockout; its only remedy, "Clear TPM", also erases
+Tilo's sealed keyslots and its floor. So when a firmware boot entry is Windows'
+boot manager (`\EFI\Microsoft\Boot\bootmgfw.efi`), `harden` leaves an empty
+authorization to Windows and records nothing, and the next boot checks again.
+`tpm-status` reports `shared_with_windows`. Until Windows has started once, it
+also says a short PIN is not yet defensible. An authorization someone else already
+set is never touched, on any machine.
+
+Three things stay shared regardless:
+- **Failure counter:** wrong PINs count against both systems.
+- **Clearing the TPM:** a clear from either side erases both systems' keys.
+- **Firmware updates:** an update Windows installs changes the measurements Tilo
+  is sealed to, so Tilo's next boot unlocks with the passphrase or the recovery key.
+
 `--retain N` sets the window (default 3: the current generation plus the two
 before it). `--floor-at-least N` on `confirm` jumps the floor past a
 known-vulnerable generation instead of leaving it inside the window.

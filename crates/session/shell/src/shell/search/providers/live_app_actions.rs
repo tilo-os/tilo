@@ -2824,7 +2824,10 @@ impl SearchProvider for LiveAppActionsProvider {
             }
         }
         if self.projection.get() != QueryProjection::LocalOnly
-            && (needle.is_empty() || "jobs status progress".contains(&needle))
+            && (needle.is_empty()
+                || ["jobs", "status", "progress"].iter().any(|word| {
+                    tilo_search::locate(&needle, word, tilo_search::FieldWeight::KEYWORD).is_some()
+                }))
         {
             for (id, update, lifecycle) in self.owned_jobs(&ctx) {
                 results.push(Self::job_result(

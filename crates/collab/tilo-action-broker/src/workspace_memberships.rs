@@ -60,6 +60,10 @@ impl CapnpBrokerState {
                 );
                 (WORKSPACE.into(), "revoke", Some(argument))
             }
+            WorkspaceMembershipCommand::RetiredGrantForTask { .. }
+            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. } => {
+                return Err(tilo_peer_state::workspace_membership::RETIRED_TASK_GRANTS.into());
+            }
             WorkspaceMembershipCommand::InstallBot(_)
             | WorkspaceMembershipCommand::RenewBot(_)
             | WorkspaceMembershipCommand::AdoptBot(_)

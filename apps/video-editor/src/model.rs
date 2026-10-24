@@ -2767,9 +2767,18 @@ impl Project {
         let track = clip.track;
         let after = clip.start;
         self.clips.retain(|c| c.id != id);
-        let mut moved = Vec::new();
-        for c in &mut self.clips {
-            if c.track == track && c.start >= after - 1e-9 {
+        // Picked first and changed by position, so only the clips that
+        // shift are handed out to change.
+        let shifting: Vec<usize> = self
+            .clips
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.track == track && c.start >= after - 1e-9)
+            .map(|(at, _)| at)
+            .collect();
+        let mut moved = Vec::with_capacity(shifting.len());
+        for at in shifting {
+            if let Some(c) = self.clips.at_mut(at) {
                 c.start = (c.start - gap).max(0.0);
                 moved.push(c.id);
             }

@@ -463,14 +463,6 @@ impl SearchProvider for HostApplicationsProvider {
     fn launcher_section(&self) -> Option<crate::shell::search::launcher::LauncherSection> {
         Some(crate::shell::search::launcher::LauncherSection::Apps)
     }
-    fn app_category(&self, result: &SearchResult) -> Option<String> {
-        let snapshot = self.snapshot()?;
-        snapshot
-            .apps
-            .iter()
-            .find(|app| app.desktop_id == result.id)
-            .map(|app| app.categories.join(";"))
-    }
     fn resource_kinds(&self) -> &[ResourceKind] {
         &self.kinds
     }
@@ -504,6 +496,12 @@ impl SearchProvider for HostApplicationsProvider {
     fn refresh_search_index(&self, _ctx: &SearchContext<'_>) {
         self.index
             .refresh(|| self.source_generation(), self.builder());
+    }
+
+    /// Until the first index is built the host apps are missing from every
+    /// answer, so a caller that waits for settled indexes waits for it.
+    fn index_settling(&self, _ctx: &SearchContext<'_>) -> bool {
+        self.snapshot().is_none()
     }
 
     /// An address is looked up in the whole snapshot. An empty query's first
