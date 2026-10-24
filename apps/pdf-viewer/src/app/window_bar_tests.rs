@@ -611,11 +611,16 @@ fn note(app: &mut TestApp<PdfViewerShell>) -> String {
     })
 }
 
-fn wait_for_note(app: &mut TestApp<PdfViewerShell>, starts: &str) {
-    tilo_test_env::wait_until(format!("the bar to say {starts}…"), || {
+fn wait_for_note(app: &mut TestApp<PdfViewerShell>, says: &str) {
+    tilo_test_env::wait_until(format!("the bar to say {says}"), || {
         app.settle();
-        note(app).starts_with(starts)
+        note(app) == says
     });
+}
+
+/// The name the reader suggests for its saved copy.
+fn suggested_name(app: &mut TestApp<PdfViewerShell>) -> String {
+    reader_state(app, |pdf| pdf.suggested_save_name())
 }
 
 /// A save that failed carries Try again: pressed by pointer or through its
@@ -636,8 +641,9 @@ fn a_failed_saves_try_again_saves_again() {
             }));
         let _host = ui::host::enter(&services);
         let (_directory, mut app) = reader();
+        let name = suggested_name(&mut app);
         press(&mut app, action(SAVE));
-        wait_for_note(&mut app, "Save failed: the disk is full");
+        wait_for_note(&mut app, &crate::app::save_failed_note(&name));
         let buttons: Vec<String> = app
             .harness()
             .window_bar_notice(width)
@@ -655,7 +661,7 @@ fn a_failed_saves_try_again_saves_again() {
         };
         pressed.expect("Try again stands in the bar");
         app.settle();
-        wait_for_note(&mut app, "Saved annotated PDF to ");
+        wait_for_note(&mut app, &crate::app::saved_note(&name));
         assert_eq!(
             *asked.lock().unwrap(),
             2,
@@ -737,7 +743,7 @@ fn a_failed_imports_try_again_imports_again() {
         let _host = ui::host::enter(&services);
         let pages = reader_state(&mut app, |pdf| pdf.doc.page_count());
         reader_state(&mut app, PdfApp::request_import_via_portal);
-        wait_for_note(&mut app, "Import failed: ");
+        wait_for_note(&mut app, &crate::t("pdf-note-import-failed"));
         let buttons: Vec<String> = app
             .harness()
             .window_bar_notice(width)
@@ -755,7 +761,10 @@ fn a_failed_imports_try_again_imports_again() {
         };
         pressed.expect("Try again stands in the bar");
         app.settle();
-        wait_for_note(&mut app, "Imported pages are shared");
+        wait_for_note(
+            &mut app,
+            &crate::t_args("pdf-note-imported", &[("count", 1_usize.into())]),
+        );
         assert_eq!(
             reader_state(&mut app, |pdf| pdf.doc.page_count()),
             pages.saturating_add(1),
