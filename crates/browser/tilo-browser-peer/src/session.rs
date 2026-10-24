@@ -507,6 +507,9 @@ enum Command {
         Result<channel_crypto::ChannelContentKeys, String>,
     ),
     Reconnect,
+    /// The network is back: a session waiting out its backoff tries again
+    /// now; a connected or failed one stays as it is.
+    Retry,
     Refresh,
     Close,
 }
@@ -1031,6 +1034,14 @@ impl PeerHandle {
     /// Drop the connection and reconnect now, also after a failure.
     pub fn reconnect(&self) -> Result<(), String> {
         self.send(Command::Reconnect)
+    }
+
+    /// The network is back (the browser is online again, or the host just
+    /// answered on another connection): a session waiting out its backoff
+    /// tries again now instead of up to [`MAX_BACKOFF`] later. A connected
+    /// session is left as it is.
+    pub fn retry_now(&self) -> Result<(), String> {
+        self.send(Command::Retry)
     }
 
     /// Ask the host for every joined room's shared state again: the rooms
@@ -1606,7 +1617,7 @@ impl Task {
                     biased;
                     command = commands.recv() => match command {
                         None | Some(Command::Close) => return self.closed(),
-                        Some(Command::Reconnect) => break,
+                        Some(Command::Reconnect | Command::Retry) => break,
                         Some(Command::Refresh) => {
                             self.positions.clear();
                             self.received.clear();
@@ -1835,6 +1846,10 @@ impl Task {
 
     /// Apply one command; `client` is the live session, if any. Returns
     /// `false` when the session could not take a durable envelope.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one arm per command, each handing off to its own method"
+    )]
     async fn apply(&mut self, command: Command, client: Option<&Link>) -> bool {
         let Some(command) = self.unless_watching(command) else {
             return true;
@@ -1933,9 +1948,11 @@ impl Task {
                 true
             }
             // Handled by the caller's loop, and keys by `unless_watching`.
-            Command::Reconnect | Command::Refresh | Command::Close | Command::WatchedKeys(..) => {
-                true
-            }
+            Command::Reconnect
+            | Command::Retry
+            | Command::Refresh
+            | Command::Close
+            | Command::WatchedKeys(..) => true,
         }
     }
 

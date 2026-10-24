@@ -2317,6 +2317,13 @@ impl WasmPeer {
         self.handle.reconnect().map_err(js_error)
     }
 
+    /// The network is back: a session waiting to reconnect tries now; a
+    /// connected one stays as it is.
+    #[wasm_bindgen(js_name = retryNow)]
+    pub fn retry_now(&self) -> Result<(), JsError> {
+        self.handle.retry_now().map_err(js_error)
+    }
+
     /// Ask the host for the joined rooms' shared state again.
     pub fn refresh(&self) -> Result<(), JsError> {
         self.handle.refresh().map_err(js_error)
