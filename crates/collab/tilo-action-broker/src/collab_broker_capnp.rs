@@ -3445,7 +3445,7 @@ struct NativeContext {
 }
 
 /// Per-channel subscriber registry, keyed by `join_channel(id)`. A
-/// `channelId` carries the whole address ([`ui::collaboration::channel_key`]
+/// `channelId` carries the whole address ([`runtime_collab::route::channel_key`]
 /// encodes `(app, cluster, record)`), decoded via
 /// [`CrdtRoute::from_channel_key`]; delivery is [`CrdtRoute::delivers_to`].
 #[derive(Default)]
