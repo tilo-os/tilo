@@ -1780,6 +1780,11 @@ impl DataTableCore {
     }
 
     pub(crate) fn set_rows(&mut self, rows: Vec<Box<AnyRow>>) {
+        // Rows a keyed table's host hands in again in another order (a
+        // queue the person reordered) move from where they were drawn.
+        if self.row_key.is_some() && self.model.is_none() {
+            self.capture_reorder_motion();
+        }
         let anchor = self.capture_view_anchor();
         self.model = None;
         self.model_sort = None;
@@ -2765,7 +2770,7 @@ impl DataTableCore {
         // A sort the person clicked moves the shown rows to their new
         // places; rows coming from off-screen fade in at theirs. A sort a
         // key asked for lands.
-        self.capture_sort_motion();
+        self.capture_reorder_motion();
         if self.model.is_some() {
             let ascending = match &self.model_sort {
                 Some((active, ascending)) if active == &key => !ascending,

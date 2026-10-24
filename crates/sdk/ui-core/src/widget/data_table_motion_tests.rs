@@ -308,3 +308,26 @@ fn a_table_its_view_builds_again_after_a_header_click_moves_its_rows_on() {
         .offset(now);
     assert!((again - offset).abs() < 0.5);
 }
+
+#[test]
+fn a_keyed_table_whose_host_reorders_its_rows_moves_them() {
+    let _frame = crate::motion::pin_frame();
+    let theme = Theme::dark();
+    let mut table = table(rows(&["00", "01", "02", "03"]));
+    settled_frames(&mut table, &theme);
+    let before_02 = table.viewport.item_view_top(2).expect("shown");
+
+    // The person moves 02 to the top; the host hands the rows in again.
+    crate::motion::note_source(MotionSource::Pointer);
+    table.set_rows(rows(&["02", "00", "01", "03"]));
+    frame(&mut table, &theme);
+    let now = crate::motion::frame_now();
+    let after_02 = table.viewport.item_view_top(0).expect("shown");
+    let moving = table.moving.rows.get(&key("02")).expect("02 moves up");
+    assert!(
+        (moving.offset(now) - (before_02 - after_02)).abs() < 2.0,
+        "02 is drawn where it stood"
+    );
+    let pushed = table.moving.rows.get(&key("00")).expect("00 makes room");
+    assert!(pushed.offset(now) < 0.0, "00 is drawn above its new place");
+}
