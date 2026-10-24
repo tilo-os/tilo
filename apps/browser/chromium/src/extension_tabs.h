@@ -438,6 +438,11 @@ class ExtensionTabs {
   // reaches it.
   void Respond(const std::string& extension, int caller, const std::string& method, CefRefPtr<CefDictionaryValue> args, Reply reply) {
     if (method == "listen" || method == "listening") { Handle(extension, caller, method, ToJson(Wrap(args)), reply); return; }
+    // A tab id no tab answers to, which the extension had from Chromium (a
+    // message's `sender.tab.id`): a tab that could not be identified on its
+    // page may be that one, asked about as it changed pages before Chromium
+    // listed it there. Those are asked about again.
+    if (const auto named = IntOf(args, "tabId"); named && !unknown_.empty() && !ByExtensionId(Tabs(), named)) unknown_.clear();
     Ensure([this, extension, caller, method, args, reply] { Handle(extension, caller, method, ToJson(Wrap(args)), reply); });
   }
   // Answer one request of an extension's script. `caller` is the host tab of
