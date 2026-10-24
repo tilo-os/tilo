@@ -1173,6 +1173,8 @@ impl PeerPresence {
             }
         }
         let (changed, room, tree) = self.derive_roster(presence, inputs.tree);
+        // The room the roster was derived for is the active one at `tree`.
+        *self.active_room.lock_recover() = Some((tree, (!room.is_empty()).then(|| room.clone())));
         *seen = Some(RosterSeen {
             inputs: RosterInputs { tree, ..inputs },
             presence: roster_presence_print(
