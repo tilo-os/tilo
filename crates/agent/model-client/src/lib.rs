@@ -972,6 +972,36 @@ pub fn transform(
         .ok_or_else(|| ClientError::Protocol("gateway returned no transform answer".into()))
 }
 
+/// [`transform`] for a caller that may stop wanting the answer (its
+/// invocation was cancelled): once `stop` says so (it is asked every
+/// [`STOP_POLL`]), the gateway is told to stop the provider call, which
+/// then no longer holds the process's one gateway channel.
+///
+/// # Errors
+/// As [`transform`]; a stopped transform fails as
+/// [`ErrorKind::Cancelled`](agent_provider_config::protocol::ErrorKind::Cancelled).
+pub fn transform_until(
+    (profile_id, model_id): (&str, &str),
+    (instructions, input): (&str, &str),
+    max_output_tokens: u32,
+    timeout: Duration,
+    stop: &(dyn Fn() -> bool + Sync),
+) -> Result<String, ClientError> {
+    streaming_request(
+        Request::Transform {
+            profile_id: profile_id.to_string(),
+            model_id: model_id.to_string(),
+            instructions: instructions.to_string(),
+            input: input.to_string(),
+            max_output_tokens,
+            timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        },
+        false,
+        &mut |_, _| {},
+        Some(stop),
+    )
+}
+
 /// Request a fixed-schema visual analysis through the launcher-issued gateway
 /// descriptor. This operation can only be authorized for Photos by the
 /// gateway; callers cannot provide a URL, arbitrary prompt, or timeout.
