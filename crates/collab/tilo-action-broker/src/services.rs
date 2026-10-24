@@ -1051,7 +1051,22 @@ pub trait RealtimeServices: Send + Sync {
 pub trait SpeakerServices: Send + Sync {
     /// Runs one validated speaker-group command.
     fn command(&self, command: runtime_collab::SpeakerCommand) -> runtime_collab::SpeakerReply;
+
+    /// Resolves once what a [`runtime_collab::SpeakerCommand::Snapshot`]
+    /// would show may have changed since `after` (0 at first, then the value
+    /// the previous wait returned), with the value to wait from next. It
+    /// names nothing: Settings asks for a snapshot, which the host checks as
+    /// it checks every command. `None` when the host cannot say when its
+    /// speaker groups change; the broker then answers unimplemented.
+    fn changed(&self, after: u64) -> Option<SpeakerChange> {
+        let _ = after;
+        None
+    }
 }
+
+/// A wait for the speaker groups' next change, as [`SpeakerServices::changed`]
+/// returns it.
+pub type SpeakerChange = NearbyTransferChange;
 /// The host's Wi-Fi credential continuity across the person's devices: the
 /// broker admits only the certified Settings route, bounds and validates the
 /// command, and hands it here. A host without Wi-Fi radios installs none.
