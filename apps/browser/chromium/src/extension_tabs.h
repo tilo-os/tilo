@@ -543,12 +543,7 @@ class ExtensionTabs {
         Succeed(reply, zoom);
         return;
       }
-      // Chromium's zoom belongs to the site (host.cc), in Chrome's terms.
-      auto settings = CefDictionaryValue::Create();
-      settings->SetString("mode", "automatic");
-      settings->SetString("scope", "per-origin");
-      settings->SetDouble("defaultZoomFactor", 1);
-      Succeed(reply, Wrap(settings));
+      Succeed(reply, Wrap(ZoomSettings()));
     } else if (method == "action.set" || method == "action.get") {
       Button(extension, tabs, method == "action.get", args, reply);
     } else if (method.rfind("notifications.", 0) == 0) {
@@ -786,7 +781,7 @@ class ExtensionTabs {
     if (known != native_.end()) for (const auto& extension : displays_) TellCount(extension, tab, known->second);
   }
   void Focused(int tab) {
-    if (!Listened("tabs.onActivated") && !Listened("windows.onFocusChanged")) return;
+    if (!Listened("tabs.onActivated") && !Listened("tabs.onHighlighted") && !Listened("windows.onFocusChanged")) return;
     Ensure([this, tab] { FocusedNow(tab); });
   }
   void FocusedNow(int tab) {
@@ -801,6 +796,18 @@ class ExtensionTabs {
         auto args = CefListValue::Create();
         args->SetDictionary(0, info);
         Push(extension, "tabs.onActivated", args, false);
+      }
+      // Each tab is its window's only one: activating it highlights it
+      // alone, which Chrome tells as well.
+      if (events.count("tabs.onHighlighted")) {
+        auto info = CefDictionaryValue::Create();
+        info->SetInt("windowId", found->id);
+        auto ids = CefListValue::Create();
+        ids->SetInt(0, found->id);
+        info->SetList("tabIds", ids);
+        auto args = CefListValue::Create();
+        args->SetDictionary(0, info);
+        Push(extension, "tabs.onHighlighted", args, false);
       }
       if (events.count("windows.onFocusChanged")) {
         auto args = CefListValue::Create();
@@ -824,6 +831,41 @@ class ExtensionTabs {
       Push(extension, "tabs.onCreated", args, false);
     }
   }
+  // The tab's zoom changed from `before` to `after` (factors, 1 unzoomed):
+  // the Browser zoomed the page, or one of its site, or the tab showed a
+  // site zoomed otherwise.
+  void Zoomed(int tab, double before, double after) {
+    if (!Listened("tabs.onZoomChange")) return;
+    Ensure([this, tab, before, after] {
+      const auto tabs = Tabs();
+      const auto* found = Find(tabs, tab);
+      if (!found || found->panel) return;
+      for (const auto& [extension, events] : listening_) {
+        if (!events.count("tabs.onZoomChange")) continue;
+        auto info = CefDictionaryValue::Create();
+        info->SetInt("tabId", found->id);
+        info->SetDouble("oldZoomFactor", before);
+        info->SetDouble("newZoomFactor", after);
+        info->SetDictionary("zoomSettings", ZoomSettings());
+        auto args = CefListValue::Create();
+        args->SetDictionary(0, info);
+        Push(extension, "tabs.onZoomChange", args, false);
+      }
+    });
+  }
+  // A page asked for `url` in a new tab (a link to a new tab, or
+  // `window.open`) from its main frame, or from a frame showing
+  // `frame_url`: the host tab `target` when the host made it already (a
+  // popup), else the next tab the Browser opens on `url`.
+  void Opening(int source, bool main_frame, const std::string& frame_url, const std::string& url, int target) {
+    const auto now = std::chrono::steady_clock::now();
+    targets_.erase(std::remove_if(targets_.begin(), targets_.end(), [&](const Target& pending) {
+      return now - pending.asked > std::chrono::seconds(10);
+    }), targets_.end());
+    if (targets_.size() >= 32) targets_.erase(targets_.begin());
+    targets_.push_back(Target{source, target, main_frame, frame_url, url, now});
+  }
+
   // Before the tab leaves the host's list.
   void Removed(int tab) {
     const auto tabs = Tabs();
@@ -831,6 +873,11 @@ class ExtensionTabs {
     sign_in_.Closed(tab, ExtensionSignIn::Clock::now());
     native_.erase(tab);
     unknown_.erase(tab);
+    openers_.erase(tab);
+    for (auto it = openers_.begin(); it != openers_.end();) it = it->second == tab ? openers_.erase(it) : std::next(it);
+    targets_.erase(std::remove_if(targets_.begin(), targets_.end(), [tab](const Target& pending) {
+      return pending.source == tab || pending.target == tab;
+    }), targets_.end());
     Drop(tab);
     buttons_on_.erase(tab);
     counts_.Removed(tab);
@@ -862,6 +909,7 @@ class ExtensionTabs {
   // A page created a tab that opens `url`: answers an extension waiting on
   // the tab it asked for.
   void Opened(int tab, const std::string& url) {
+    Targeted(tab, url);
     for (auto it = creating_.begin(); it != creating_.end(); ++it) {
       if (it->url != url && !(url.rfind(it->url, 0) == 0)) continue;
       if (!Find(hooks_.tabs(), tab)) return;
@@ -909,6 +957,61 @@ class ExtensionTabs {
   }
   struct Creating { std::string extension, url; bool window; Reply reply; };
   struct Held { std::string token, method; CefRefPtr<CefDictionaryValue> args; Reply reply; };
+  // A page's request for a new tab (Opening), until the tab shows it.
+  struct Target {
+    int source = 0, target = 0;
+    bool main_frame = true;
+    std::string frame_url, url;
+    std::chrono::steady_clock::time_point asked;
+  };
+  // The tab a page asked for shows its first address: it was opened by
+  // that page (`openerTabId`), and extensions that follow navigations hear
+  // of it (`webNavigation.onCreatedNavigationTarget`), as in Chrome.
+  void Targeted(int tab, const std::string& url) {
+    const auto now = std::chrono::steady_clock::now();
+    auto found = std::find_if(targets_.begin(), targets_.end(), [&](const Target& pending) {
+      if (now - pending.asked > std::chrono::seconds(10)) return false;
+      if (pending.target) return pending.target == tab;
+      return pending.source != tab && !openers_.count(tab) && (url == pending.url || url.rfind(pending.url, 0) == 0);
+    });
+    if (found == targets_.end()) return;
+    const auto pending = *found;
+    targets_.erase(found);
+    if (pending.source == tab || !Find(hooks_.tabs(), pending.source)) return;
+    openers_[tab] = pending.source;
+    if (!Listened("webNavigation.onCreatedNavigationTarget")) return;
+    Ensure([this, tab, pending] {
+      const auto tabs = Tabs();
+      const auto* opened = Find(tabs, tab);
+      const auto* source = Find(tabs, pending.source);
+      if (!opened || !source || opened->panel) return;
+      const double stamp = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
+      for (const auto& [extension, events] : listening_) {
+        if (!events.count("webNavigation.onCreatedNavigationTarget") || !Has(extension, "webNavigation")) continue;
+        auto details = CefDictionaryValue::Create();
+        details->SetInt("sourceTabId", source->id);
+        // The frame's id and its process are Chromium's: the tab script
+        // reads them from the source tab's frames (extension_tabs.js).
+        details->SetInt("sourceProcessId", -1);
+        details->SetInt("sourceFrameId", 0);
+        if (!pending.main_frame) details->SetString("sourceFrameUrl", pending.frame_url);
+        details->SetInt("tabId", opened->id);
+        details->SetString("url", pending.url);
+        details->SetDouble("timeStamp", stamp);
+        auto args = CefListValue::Create();
+        args->SetDictionary(0, details);
+        Push(extension, "webNavigation.onCreatedNavigationTarget", args, false);
+      }
+    });
+  }
+  // Chromium's zoom belongs to the site (host.cc), in Chrome's terms.
+  static CefRefPtr<CefDictionaryValue> ZoomSettings() {
+    auto settings = CefDictionaryValue::Create();
+    settings->SetString("mode", "automatic");
+    settings->SetString("scope", "per-origin");
+    settings->SetDouble("defaultZoomFactor", 1);
+    return settings;
+  }
   // Calls of a token no extension was given in time are no extension's.
   void Unheld(const std::string& token) {
     for (auto it = held_.begin(); it != held_.end();) {
@@ -1121,7 +1224,8 @@ class ExtensionTabs {
     }
   }
   static bool Listenable(const std::string& name) {
-    static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged",
+    static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated",
+                                             "tabs.onHighlighted", "tabs.onZoomChange", "tabs.onRemoved", "windows.onFocusChanged", "webNavigation.onCreatedNavigationTarget",
                                              "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed",
                                              "permissions.onAdded", "permissions.onRemoved"};
     return names.count(name) > 0;
@@ -1514,6 +1618,11 @@ class ExtensionTabs {
     object->SetBool("frozen", false);
     object->SetBool("incognito", hooks_.private_mode);
     object->SetInt("groupId", -1);
+    // The tab whose page opened this one, while it is open.
+    if (auto opener = openers_.find(tab.tab); opener != openers_.end()) {
+      const auto known = native_.find(opener->second);
+      if (known != native_.end()) object->SetInt("openerTabId", known->second);
+    }
     object->SetString("status", tab.loading ? "loading" : "complete");
     object->SetInt("width", tab.width);
     object->SetInt("height", tab.height);
@@ -3053,6 +3162,10 @@ class ExtensionTabs {
   std::map<int, int> native_;
   // Each tab the host could not identify, by the address it showed then.
   std::map<int, std::string> unknown_;
+  // Pages' requests for new tabs not yet shown (Opening), and the tab each
+  // tab was opened by, by host tab.
+  std::vector<Target> targets_;
+  std::map<int, int> openers_;
   std::map<int, std::vector<std::function<void()>>> identifying_;
   // The worlds the host made for extensions' scripts, by tab and extension.
   std::map<std::pair<int, std::string>, int> content_worlds_;

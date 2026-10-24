@@ -17,6 +17,12 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   extension's own page, once it shows a web page: the one Chromium gives
   that page's messages.
 - A worker hears of a page that finished loading.
+- An extension that follows navigations (webNavigation) hears of each
+  frame's by the ids the tab APIs give and finds the page's frames; a page's
+  link that opens a tab, in its main frame or in a frame, tells it which
+  page and frame opened which tab, which knows its opener. A change of zoom
+  and a tab made active (highlighted, as the only one of its window) are
+  told as well, and a tab is never said to move or to be replaced.
 - A click reaches a worker that went to sleep, which wakes for it.
 - A script a click injects where the extension has no content script of its
   own gets a content script's storage, i18n and messaging, both ways.
@@ -375,6 +381,13 @@ MENU_PAGE = """<!doctype html><title>menus</title><body style="margin:0">
 # A page that shows each key it gets in its title.
 KEYS_PAGE = (b'<!doctype html><title>keys</title><body>keys'
              b"<script>addEventListener('keydown', (e) => { document.title = 'key:' + e.key; });</script>")
+# A page with a link that opens a new tab, across its top, and a frame
+# below with one of its own, each where the test clicks it, in CSS pixels.
+OPENER_PAGE = (b'<!doctype html><title>opener</title><body style="margin:0">'
+               b'<a href="/opened" target="_blank" style="display:block;width:400px;height:100px">open</a>'
+               b'<iframe src="/opener-frame" style="position:absolute;left:0;top:150px;width:400px;height:200px;border:0"></iframe>')
+OPENER_FRAME = (b'<!doctype html><title>frame</title><body style="margin:0">'
+                b'<a href="/from-frame" target="_blank" style="display:block;width:400px;height:200px">open</a>')
 IMAGE = b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'
 # A file served under /download/, slowly enough to pause it on its way.
 DOWNLOAD = bytes(range(256)) * (4 * 4096)
@@ -424,6 +437,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body, kind = IMAGE, 'image/svg+xml'
         elif self.path == '/keys':
             body = KEYS_PAGE
+        elif self.path == '/opener':
+            body = OPENER_PAGE
+        elif self.path == '/opener-frame':
+            body = OPENER_FRAME
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
@@ -1009,6 +1026,100 @@ class ExtensionTabs(unittest.TestCase):
             # Read while the worker is still awake.
             self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
         self.assertRegex(title, r'^watched:\d+$')
+
+    def test_an_extension_follows_navigations_and_tab_events_by_the_tabs_ids(self):
+        host, ids = self.start('navigator', access={'navigator': (['webNavigation', 'tabs'], [])})
+        heard = lambda: json.loads(self.in_worker(host, ids['navigator'], 'JSON.stringify(heard)'))
+
+        def until(what, found):
+            """What the worker heard once `found` (of it) holds."""
+            deadline = time.monotonic() + HANG_BOUND
+            while True:
+                seen = heard()
+                if found(seen):
+                    return seen
+                if time.monotonic() > deadline:
+                    self.fail(f'the worker never heard {what}: {seen}')
+                host.settle(0.25)
+
+        def details(seen, name, **match):
+            return [h['args'][0] for h in seen if h['name'] == name
+                    and all(h['args'][0].get(key) == value for key, value in match.items())]
+
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['navigator'], 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        framed = self.url + '/framed'
+        host.navigate(framed)
+        until('the framed page load', lambda seen: details(seen, 'webNavigation.onCompleted', frameId=0, url=framed))
+        [first] = json.loads(self.in_worker(host, ids['navigator'], 'chrome.tabs.query({}).then((tabs) => JSON.stringify(tabs))'))
+        tab = first['id']
+        seen = until('both frames load', lambda seen: len(details(seen, 'webNavigation.onCompleted')) >= 3)
+        # Every frame's navigation, by the id the tab APIs know the tab by.
+        navigations = [h['args'][0] for h in seen if h['name'].startswith('webNavigation.')]
+        self.assertEqual({n['tabId'] for n in navigations}, {tab})
+        frames = json.loads(self.in_worker(host, ids['navigator'],
+                                           f'chrome.webNavigation.getAllFrames({{tabId: {tab}}}).then(JSON.stringify)'))
+        port = self.server.server_port
+        self.assertEqual(sorted((f['url'], f['parentFrameId'] if f['frameId'] else -1) for f in frames), [
+            (framed, -1), (self.url + '/inner', 0), (f'http://localhost:{port}/outer', 0)])
+        main = json.loads(self.in_worker(host, ids['navigator'],
+                                         f'chrome.webNavigation.getFrame({{tabId: {tab}, frameId: 0}}).then(JSON.stringify)'))
+        self.assertEqual(main['url'], framed)
+
+        # The Browser zooms the page.
+        host.send(op='zoom', level=1.0)
+        [zoom] = details(until('the zoom', lambda seen: details(seen, 'tabs.onZoomChange')), 'tabs.onZoomChange')
+        self.assertEqual(zoom['tabId'], tab)
+        self.assertAlmostEqual(zoom['oldZoomFactor'], 1)
+        self.assertAlmostEqual(zoom['newZoomFactor'], 1.2)
+        self.assertEqual(zoom['zoomSettings']['scope'], 'per-origin')
+        host.send(op='zoom', level=0.0)
+        until('the zoom back', lambda seen: len(details(seen, 'tabs.onZoomChange')) == 2)
+
+        # A link in the page opens a tab, which the Browser opens beside, as
+        # here the test does; then one in the page's frame.
+        opener = self.url + '/opener'
+        host.navigate(opener)
+        seen = until('the opener load', lambda seen: details(seen, 'webNavigation.onCompleted', url=self.url + '/opener-frame'))
+        [committed] = details(seen, 'webNavigation.onCommitted', url=opener)
+        [in_frame] = details(seen, 'webNavigation.onCommitted', url=self.url + '/opener-frame')
+        host.settle(0.5)
+        opened_ids = {}
+        for new, (x, y), path in ((3, (40, 30), '/opened'), (4, (40, 200), '/from-frame')):
+            mark = len(host.seen)
+            host.send(op='mouse_button', button='left', down=True, x=x, y=y)
+            host.send(op='mouse_button', button='left', down=False, x=x, y=y)
+            asked = next((e for e in host.seen[mark:] if e['event'] == 'open_tab'), None) or host.until(lambda e: e['event'] == 'open_tab')
+            self.assertEqual(asked['url'], self.url + path)
+            host.send(op='create_tab', tab=new)
+            host.until(lambda e, new=new: e['event'] == 'tab_ready' and e.get('tab') == new)
+            host.send(op='navigate', tab=new, url=asked['url'])
+            seen = until('the opened tab', lambda seen, path=path: details(seen, 'webNavigation.onCreatedNavigationTarget', url=self.url + path))
+            [target] = details(seen, 'webNavigation.onCreatedNavigationTarget', url=self.url + path)
+            opened_ids[new] = target['tabId']
+            source = committed if new == 3 else in_frame
+            self.assertEqual({key: target[key] for key in ('sourceTabId', 'sourceFrameId', 'sourceProcessId')},
+                             {'sourceTabId': tab, 'sourceFrameId': source['frameId'], 'sourceProcessId': source['processId']})
+            self.assertNotIn('sourceFrameUrl', target)
+            # The tab told of is the one the tab APIs and its navigations know.
+            until('the opened tab load', lambda seen, path=path: details(seen, 'webNavigation.onCommitted', url=self.url + path))
+            [loaded] = details(heard(), 'webNavigation.onCommitted', url=self.url + path)
+            self.assertEqual(loaded['tabId'], target['tabId'])
+            got = json.loads(self.in_worker(host, ids['navigator'], f"chrome.tabs.get({target['tabId']}).then(JSON.stringify)"))
+            self.assertEqual((got['url'], got['openerTabId']), (self.url + path, tab))
+        self.assertNotEqual(opened_ids[3], opened_ids[4])
+        self.assertTrue({opened_ids[3], opened_ids[4]} <= {t['id'] for t in details(heard(), 'tabs.onCreated')})
+
+        # The person goes to the first opened tab: active, and highlighted.
+        host.send(op='focus', tab=3, focused=True)
+        seen = until('the tab made active', lambda seen: details(seen, 'tabs.onHighlighted', windowId=opened_ids[3]))
+        self.assertEqual(details(seen, 'tabs.onHighlighted', windowId=opened_ids[3]), [{'windowId': opened_ids[3], 'tabIds': [opened_ids[3]]}])
+        self.assertIn({'tabId': opened_ids[3], 'windowId': opened_ids[3]}, details(seen, 'tabs.onActivated'))
+        # Each tab stays in a window of its own, as it was made.
+        never = {'tabs.onReplaced', 'tabs.onAttached', 'tabs.onDetached', 'tabs.onMoved', 'webNavigation.onTabReplaced'}
+        self.assertEqual([h for h in heard() if h['name'] in never], [])
 
     def test_an_extension_that_may_connect_only_to_its_own_servers_finds_its_tabs(self):
         # Before the person focused any page, as when the Browser starts: the

@@ -438,7 +438,23 @@ content scripts (with `sender.tab`) work without help.
   no tab API counts the second: as in Chrome, content scripts on every page
   let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
-  `tabs.getZoom` the page's zoom.
+  `tabs.getZoom` the page's zoom. `tabs.onZoomChange` fires when a tab's
+  zoom changes from its first page on: the Browser zoomed it or another
+  page of its site, or it went to a site zoomed otherwise.
+- Tab events: `onCreated`, `onUpdated`, `onRemoved`, and on focus
+  `onActivated` with `onHighlighted` (the tab alone, being its window's only
+  one) and `windows.onFocusChanged`. A tab never moves to another window and
+  is never replaced, so `onAttached`, `onDetached`, `onMoved` and
+  `onReplaced` never fire.
+- `webNavigation` is Chromium's own: its events, `getFrame` and
+  `getAllFrames` know each tab by the id the tab APIs give it. Chromium does
+  not see a page open a tab here (the Browser opens it), so the host tells
+  of it: when the tab the page asked for (a link to a new tab,
+  `window.open`) shows its address, it is given the page's tab as
+  `openerTabId`, and `webNavigation.onCreatedNavigationTarget` fires to
+  extensions with `webNavigation`, after the new tab's first navigation
+  events rather than before them. The tab script reads the opening frame's
+  id and process from the page's frames, by the frame's address.
 - The toolbar button's look for every tab is Chromium's, and so are its
   getters; the script tells the host of each change Chromium accepted. For
   one tab (an ad blocker's count for the page) Chromium finds no tab and

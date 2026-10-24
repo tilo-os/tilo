@@ -280,8 +280,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OpenTab(const CefString& url,bool background) {
     if(url.length()>8192) return;auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetBool("background",background);Event("open_tab",d);
   }
-  bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,const CefString& url,cef_window_open_disposition_t disposition,bool) override {
-    if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) { OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true; }return false;
+  bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url,cef_window_open_disposition_t disposition,bool) override {
+    if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) {
+      if(extension_tabs && url.length()<=8192)extension_tabs->Opening(id_,!frame || frame->IsMain(),frame?frame->GetURL().ToString():std::string(),url.ToString(),0);
+      OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
+    }
+    return false;
   }
   CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
   CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return this; }
@@ -298,7 +302,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     return false;
 #endif
   }
-  void PublishZoom() { if(browser_) { auto d=CefDictionaryValue::Create();d->SetDouble("level",browser_->GetHost()->GetZoomLevel());Event("zoom",d); } }
+  void PublishZoom() {
+    if(!browser_) return;
+    const double level=browser_->GetHost()->GetZoomLevel();
+    auto d=CefDictionaryValue::Create();d->SetDouble("level",level);Event("zoom",d);
+    // Extensions hear of a change: from a tab's first page on.
+    if(published_zoom_ && *published_zoom_!=level && extension_tabs)extension_tabs->Zoomed(id_,std::pow(1.2,*published_zoom_),std::pow(1.2,level));
+    published_zoom_=level;
+  }
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
   void OnBeforeContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model) override {
     if(!params->GetLinkUrl().empty()) { model->AddItem(26501,"Open link in new tab");model->AddItem(26502,"Copy link address"); }
@@ -571,7 +582,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
-  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
     // A popup window the page opens (window.open with a size: a sign-in, a
     // payment) stays its popup, so it can answer the page that opened it.
@@ -584,8 +595,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto d=CefDictionaryValue::Create();d->SetInt("popup",id);d->SetString("url",url);
       d->SetInt("width",features.widthSet?std::clamp(features.width,0,10000):0);d->SetInt("height",features.heightSet?std::clamp(features.height,0,10000):0);
       Event("popup",d);
+      if(extension_tabs)extension_tabs->Opening(id_,!frame || frame->IsMain(),frame?frame->GetURL().ToString():std::string(),url.ToString(),id);
       return false;
     }
+    if(extension_tabs && url.length()<=8192)extension_tabs->Opening(id_,!frame || frame->IsMain(),frame?frame->GetURL().ToString():std::string(),url.ToString(),0);
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false);favicon_.clear();
@@ -1429,6 +1442,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
   std::optional<std::chrono::steady_clock::time_point> activated_;
+  // The zoom level last told of (PublishZoom), none before the first page.
+  std::optional<double> published_zoom_;
   CefRefPtr<tilo::TabInspector> inspector_;CefRefPtr<tilo::DocumentScripts> extension_scripts_;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;

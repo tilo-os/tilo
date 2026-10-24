@@ -250,17 +250,40 @@
       },
       // The host tells the extension of a tab event: every listener runs.
       dispatch(name, args) {
-        for (const listener of listeners.get(name) || []) {
-          try {
-            listener(...args);
-          } catch (error) {
-            console.error(error);
+        const run = () => {
+          for (const listener of listeners.get(name) || []) {
+            try {
+              listener(...args);
+            } catch (error) {
+              console.error(error);
+            }
           }
-        }
-        return (listeners.get(name) || new Set()).size;
+          return (listeners.get(name) || new Set()).size;
+        };
+        return name === 'webNavigation.onCreatedNavigationTarget' ? sourceFrame(args[0]).then(run) : run();
       },
     }),
   });
+
+  // A page that opened a tab is known to the host by its tab, and by its
+  // frame's address if that was not the main frame: the frame's id and its
+  // process are Chromium's, as is the page's frame list here.
+  const sourceFrame = async (details) => {
+    const frameUrl = details.sourceFrameUrl;
+    delete details.sourceFrameUrl;
+    let frames = null;
+    try {
+      frames = await chrome.webNavigation.getAllFrames({tabId: details.sourceTabId});
+    } catch (error) {
+      // The page is gone: the main frame, process unknown.
+    }
+    const frame = (frames || []).find((each) => (frameUrl === undefined ? each.frameId === 0 : each.url === frameUrl))
+      || (frames || []).find((each) => each.frameId === 0);
+    if (frame) {
+      details.sourceFrameId = frame.frameId;
+      details.sourceProcessId = frame.processId;
+    }
+  };
 
   // The host asks which frame of a page the extension's world there is, by
   // a port from that world: Chromium tells only the extension
@@ -339,8 +362,13 @@
   event(tabs, 'onCreated', 'tabs.onCreated');
   event(tabs, 'onUpdated', 'tabs.onUpdated');
   event(tabs, 'onActivated', 'tabs.onActivated');
+  event(tabs, 'onHighlighted', 'tabs.onHighlighted');
+  event(tabs, 'onZoomChange', 'tabs.onZoomChange');
   event(tabs, 'onRemoved', 'tabs.onRemoved');
   event(windows, 'onFocusChanged', 'windows.onFocusChanged');
+  // Chromium follows a tab's navigations itself and tells of them by the
+  // ids these APIs give; a page opening a tab it cannot see, the host does.
+  event(chrome.webNavigation, 'onCreatedNavigationTarget', 'webNavigation.onCreatedNavigationTarget');
   event(action, 'onClicked', 'action.onClicked');
   event(chrome.browserAction, 'onClicked', 'action.onClicked');
 
