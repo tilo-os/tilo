@@ -39,7 +39,7 @@ use ui::tokens::Spacing;
 use ui::widget::{InspectorPlacement, NavShell, TaffyTreeExt, Widget};
 
 use crate::actions::{self, JournalEffect};
-use crate::journal::JournalLoadError;
+use crate::journal::{JournalLoadError, Page};
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::{JournalFixture, Logs};
 use crate::view::{Bridge, JournalPane, JournalRow, Placeholder, Request, Shared};
@@ -49,7 +49,16 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The most recent journal records read.
 const JOURNAL_LIMIT: usize = 2000;
 
-type JournalRead = Result<Vec<LogEntry>, JournalLoadError>;
+/// A finished read of the journal.
+#[derive(Debug)]
+enum Read {
+    /// The most recent records, which replace what the window shows.
+    Whole(Page),
+    /// What live tail found after the newest record shown.
+    Tail(Page),
+}
+
+type JournalRead = Result<Read, JournalLoadError>;
 
 /// An `Instant` at least `POLL_INTERVAL` in the past, so writing it into
 /// `last_poll` makes the next poll-due check fire immediately. Falls back to
@@ -122,6 +131,9 @@ pub struct LogsApp {
     source_loading: bool,
     /// The journal read in flight off the UI thread, if any.
     reading: Option<Receiver<JournalRead>>,
+    /// Where the newest record shown sits in the journal: live tail reads
+    /// only what was written after it. `None` reads the whole page again.
+    tail_cursor: Option<String>,
     /// Whether an export's Save dialog is open. Neither the chosen path nor
     /// log content is published through resources or collaboration state.
     exporting: bool,
@@ -191,6 +203,7 @@ impl LogsApp {
             source_error: None,
             source_loading: false,
             reading: None,
+            tail_cursor: None,
             exporting: false,
             export_status: None,
             rect: Rect::ZERO,
@@ -537,8 +550,13 @@ impl LogsApp {
         }
         let (sender, receiver) = std::sync::mpsc::channel();
         let waker = self.waker.clone();
+        let after = self.tail_after();
         drop(ui::rt::app().spawn_blocking(move || {
-            let _ = sender.send(crate::journal::load_live(JOURNAL_LIMIT));
+            let read = match after {
+                Some(cursor) => crate::journal::load_after(&cursor, JOURNAL_LIMIT).map(Read::Tail),
+                None => crate::journal::load_live(JOURNAL_LIMIT).map(Read::Whole),
+            };
+            let _ = sender.send(read);
             if let Some(waker) = waker {
                 waker.wake();
             }
@@ -547,6 +565,14 @@ impl LogsApp {
         if self.entries.is_empty() {
             self.source_loading = true;
         }
+    }
+
+    /// The cursor the next read starts after: live tail reads only what is
+    /// new once the window shows a page, and the whole page otherwise.
+    fn tail_after(&self) -> Option<String> {
+        self.tail_cursor
+            .clone()
+            .filter(|_| !self.entries.is_empty())
     }
 
     /// Show a finished read, if one finished.
@@ -579,7 +605,7 @@ impl LogsApp {
             JournalEffect::Refresh => {
                 self.source_loading = true;
                 Ok(cx.thread(
-                    |_| crate::journal::load_live(JOURNAL_LIMIT),
+                    |_| crate::journal::load_live(JOURNAL_LIMIT).map(Read::Whole),
                     |app: &mut Self, read: JournalRead, _| {
                         let failed = read.as_ref().err().copied();
                         app.show_read(read);
@@ -909,14 +935,52 @@ impl LogsApp {
     fn show_read(&mut self, read: JournalRead) {
         self.source_loading = false;
         match read {
-            Ok(entries) => self.show_entries(entries),
+            Ok(Read::Whole(page)) => {
+                // A tail read still in flight started from the page this
+                // replaces: its records would be shown twice.
+                self.reading = None;
+                self.tail_cursor = page.cursor;
+                self.show_entries(page.entries);
+            }
+            Ok(Read::Tail(page)) => self.show_tail(page),
             Err(error) => {
+                self.tail_cursor = None;
                 self.source_error = Some(error);
                 self.publish();
                 self.dirty = true;
             }
         }
     }
+    /// Add what live tail found to the page, keeping its newest
+    /// `JOURNAL_LIMIT` records. A quiet journal changes nothing: no rows are
+    /// rebuilt and nothing is published again.
+    fn show_tail(&mut self, page: Page) {
+        // A full answer may have left records behind it: the next read takes
+        // the newest page whole rather than falling further behind.
+        let caught_up = page.entries.len() < JOURNAL_LIMIT;
+        if caught_up {
+            if let Some(cursor) = page.cursor {
+                self.tail_cursor = Some(cursor);
+            }
+        } else {
+            self.tail_cursor = None;
+        }
+        if page.entries.is_empty() {
+            if self.source_error.take().is_some() {
+                self.publish();
+                self.dirty = true;
+            }
+            return;
+        }
+        let mut entries = std::mem::take(&mut self.entries);
+        entries.extend(page.entries);
+        // Nearly sorted already: records arrive in the journal's order.
+        entries.sort_by_key(|entry| entry.realtime_us);
+        let excess = entries.len().saturating_sub(JOURNAL_LIMIT);
+        entries.drain(..excess);
+        self.show_entries(entries);
+    }
+
     pub(crate) fn stage_scenario(&mut self, scenario: Option<&str>) {
         if scenario == Some("detail") {
             self.shots_show_detail();
@@ -942,6 +1006,13 @@ mod tests {
         app.harness().resize(viewport).unwrap();
         app.settle();
         app
+    }
+    /// A whole-journal read of `entries`, with no cursor to tail from.
+    fn whole(entries: Vec<LogEntry>) -> Read {
+        Read::Whole(Page {
+            entries,
+            cursor: None,
+        })
     }
     fn surface<T>(app: &mut TestApp<LogsShell>, visit: impl FnOnce(&mut LogsApp) -> T) -> T {
         app.with_surface(visit)
@@ -976,7 +1047,9 @@ mod tests {
         entries[1].message = "Updated middle record".into();
         entries[1].unit = "updated.service".into();
         entries[1].priority = Priority::Crit;
-        surface(&mut app, |viewer| viewer.show_read(Ok(entries.clone())));
+        surface(&mut app, |viewer| {
+            viewer.show_read(Ok(whole(entries.clone())));
+        });
         app.settle();
         surface(&mut app, |viewer| {
             let bridge = viewer.shared.borrow();
@@ -987,12 +1060,90 @@ mod tests {
             assert!(bridge.units.contains(&"updated.service".to_owned()));
         });
         let revision = surface(&mut app, |viewer| viewer.shared.borrow().rows_revision);
-        surface(&mut app, |viewer| viewer.show_read(Ok(entries)));
+        surface(&mut app, |viewer| viewer.show_read(Ok(whole(entries))));
         assert_eq!(
             surface(&mut app, |viewer| viewer.shared.borrow().rows_revision),
             revision,
             "an unchanged poll does not rebuild the table"
         );
+    }
+
+    /// Live tail reads only what was written after the newest record shown
+    /// and adds it to the page; a quiet journal rebuilds and republishes
+    /// nothing, and the page keeps its newest records.
+    #[test]
+    fn live_tail_adds_what_is_new_and_a_quiet_journal_changes_nothing() {
+        let mut app = captured((1280, 800));
+        let entries = surface(&mut app, |viewer| viewer.entries.clone());
+        let newest = entries.last().unwrap().realtime_us;
+        surface(&mut app, |viewer| {
+            viewer.show_read(Ok(Read::Whole(Page {
+                entries: entries.clone(),
+                cursor: Some("s=x;i=1".into()),
+            })));
+            assert_eq!(viewer.tail_after().as_deref(), Some("s=x;i=1"));
+        });
+        app.settle();
+        let revision = surface(&mut app, |viewer| viewer.shared.borrow().rows_revision);
+        surface(&mut app, |viewer| {
+            viewer.dirty = false;
+            viewer.show_read(Ok(Read::Tail(Page::default())));
+            assert!(!viewer.dirty, "a quiet journal asks for no frame");
+            assert_eq!(viewer.tail_after().as_deref(), Some("s=x;i=1"));
+        });
+        app.settle();
+        assert_eq!(
+            surface(&mut app, |viewer| viewer.shared.borrow().rows_revision),
+            revision,
+            "a quiet journal rebuilds no rows"
+        );
+
+        let mut fresh = entries[0].clone();
+        fresh.realtime_us = newest + 1;
+        fresh.message = "Written just now".into();
+        surface(&mut app, |viewer| {
+            viewer.show_read(Ok(Read::Tail(Page {
+                entries: vec![fresh.clone()],
+                cursor: Some("s=x;i=2".into()),
+            })));
+            assert_eq!(viewer.entries.len(), entries.len() + 1);
+            assert_eq!(viewer.entries.last(), Some(&fresh));
+            assert_eq!(viewer.tail_after().as_deref(), Some("s=x;i=2"));
+        });
+        app.settle();
+        surface(&mut app, |viewer| {
+            assert_ne!(viewer.shared.borrow().rows_revision, revision);
+        });
+
+        // A full answer may have left records behind: the next read is the
+        // newest page whole, and the window never holds more than a page.
+        let burst: Vec<LogEntry> = (0..JOURNAL_LIMIT as u64)
+            .map(|i| {
+                let mut entry = fresh.clone();
+                entry.realtime_us = newest + 2 + i;
+                entry
+            })
+            .collect();
+        surface(&mut app, |viewer| {
+            viewer.show_read(Ok(Read::Tail(Page {
+                entries: burst,
+                cursor: Some("s=x;i=3".into()),
+            })));
+            assert_eq!(viewer.entries.len(), JOURNAL_LIMIT);
+            assert_eq!(
+                viewer.entries.first().map(|entry| entry.realtime_us),
+                Some(newest + 2),
+                "the oldest records leave the page"
+            );
+            assert_eq!(viewer.tail_after(), None);
+        });
+
+        // A failed read starts again from the whole page.
+        surface(&mut app, |viewer| {
+            viewer.tail_cursor = Some("s=x;i=4".into());
+            viewer.show_read(Err(JournalLoadError::Failed));
+            assert_eq!(viewer.tail_after(), None);
+        });
     }
 
     #[test]
@@ -1009,7 +1160,9 @@ mod tests {
         })
         .unwrap();
         entries.remove(0);
-        surface(&mut app, |viewer| viewer.show_read(Ok(entries.clone())));
+        surface(&mut app, |viewer| {
+            viewer.show_read(Ok(whole(entries.clone())));
+        });
         app.settle();
         surface(&mut app, |viewer| {
             assert_eq!(viewer.effective_selected(), Some(0));
@@ -1017,7 +1170,7 @@ mod tests {
             assert_eq!(viewer.inspected, Inspected::Entry(id.clone()));
         });
         entries.remove(0);
-        surface(&mut app, |viewer| viewer.show_read(Ok(entries)));
+        surface(&mut app, |viewer| viewer.show_read(Ok(whole(entries))));
         app.settle();
         surface(&mut app, |viewer| {
             assert_eq!(viewer.selected_entry.as_deref(), Some(id.as_str()));
