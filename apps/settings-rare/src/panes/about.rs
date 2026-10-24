@@ -61,11 +61,7 @@ pub enum AboutEffect {
     },
 }
 
-/// Answer `effect` by opening the tool it names.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "every area answers through the effect vocabulary's one signature"
-)]
+/// Answer `effect` by opening the tool or the page it names.
 pub(crate) fn answer(
     app: &SettingsApp,
     effect: AboutEffect,
