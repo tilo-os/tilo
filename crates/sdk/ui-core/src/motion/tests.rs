@@ -411,12 +411,13 @@ fn ambient_chrome_leaves_at_once_and_arrives_gently_unless_asked() {
 }
 
 /// Every routine standard motion, for the rules they all keep.
-fn routine_specs() -> [MotionSpec; 12] {
+fn routine_specs() -> [MotionSpec; 13] {
     [
         ControlChange::MOVE,
         ControlChange::SHOW,
         Appear::SPEC,
         Drill::SPEC,
+        Drill::WORKSPACE,
         Disclose::SPEC,
         PanelSlide::SPEC,
         CROSS_FADE,
@@ -1156,4 +1157,34 @@ fn the_settled_clock_shows_a_scroll_jump_arrived() {
     let _settled = testing::settled();
     assert!(!to.is_moving(start));
     assert_eq!(to.offset(start), Some(down(400.0)));
+}
+
+#[test]
+fn a_workspace_switch_by_pointer_is_whole_view_motion_and_a_shortcut_lands() {
+    let response = |t: Timing| match t {
+        Timing::Spring(s) => s.response,
+        Timing::Instant => 0.0,
+    };
+    let slow = SpringSpec::settling_within(Motion::default().durations.slow()).response;
+    let pointer = response(Drill::WORKSPACE.timing(Direction::Enter, on(), MotionSource::Pointer));
+    assert!(
+        (pointer - slow).abs() < 1e-9,
+        "toward a later workspace: slow"
+    );
+    let back = response(Drill::WORKSPACE.timing(Direction::Exit, on(), MotionSource::Pointer));
+    assert!(back > 0.0 && back < pointer, "back is quicker");
+    for source in [MotionSource::Keyboard, MotionSource::Action] {
+        assert!(
+            Drill::WORKSPACE
+                .timing(Direction::Enter, on(), source)
+                .is_instant()
+        );
+    }
+    let fast = SpringSpec::settling_within(Motion::default().durations.fast()).response;
+    let reduced_fade =
+        response(Drill::WORKSPACE.timing(Direction::Enter, reduced(), MotionSource::Pointer));
+    assert!(
+        (reduced_fade - fast).abs() < 1e-9,
+        "reduced: a fast cross-fade"
+    );
 }

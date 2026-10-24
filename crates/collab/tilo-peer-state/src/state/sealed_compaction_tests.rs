@@ -89,7 +89,11 @@ fn fixture() -> Fixture {
     let mut host =
         StatePeer::new(ROOM, authority.clone(), roster, RevocationList::new(), now).unwrap();
     host.select_admission_v5().unwrap();
-    for message in native.bootstrap_messages(&owner, now).unwrap() {
+    for message in native
+        .publication_mut()
+        .bootstrap_messages(&owner, now)
+        .unwrap()
+    {
         host.receive_from(origin(&owner), message, now).unwrap();
     }
     let group = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap()).unwrap();
@@ -269,7 +273,7 @@ fn mint(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    peer.compact_sealed_history(
+    peer.publication_mut().compact_sealed_history(
         APP,
         RECORD,
         &mut |op| open(keys, op),
@@ -467,6 +471,7 @@ fn minting_aborts_without_a_trace_when_any_write_cannot_be_compacted() {
     for (why, mut open, mut seal) in attempts {
         assert!(
             f.host
+                .publication_mut()
                 .compact_sealed_history(APP, RECORD, &mut *open, &mut *seal, &f.owner, now)
                 .is_err(),
             "{why} is compacted"
@@ -528,6 +533,7 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
 
     let opened = f
         .host
+        .publication()
         .opened_document(APP, RECORD, &mut read_write)
         .unwrap()
         .expect("the record is held");
@@ -563,6 +569,7 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
     let early = write(&restored, &f.owner, &keys, &first, now);
     admit(&mut restored, &f.owner, early, now);
     let opened = restored
+        .publication()
         .opened_document(APP, RECORD, &mut read_write)
         .unwrap()
         .unwrap();
@@ -962,12 +969,12 @@ fn a_history_near_its_bound_is_due_for_compaction() {
     let mut author = Author::new(&f.host);
     let first = write(&f.host, &f.editor, &keys, &author.edit("value", "1"), now);
     admit(&mut f.host, &f.editor, first, now);
-    assert!(f.host.sealed_records_to_compact().is_empty());
+    assert!(f.host.publication().sealed_records_to_compact().is_empty());
     let one = held(&f.host).remove(0);
     f.host.core.documents.get_mut(&route()).unwrap().sealed =
         vec![one; MAX_SEALED_OPS / 4 * 3].into();
     assert_eq!(
-        f.host.sealed_records_to_compact(),
+        f.host.publication().sealed_records_to_compact(),
         vec![(APP.to_owned(), RECORD.to_owned())]
     );
 }
@@ -991,7 +998,7 @@ fn a_half_full_admission_index_makes_every_sealed_history_due() {
         );
         admit(&mut f.host, &f.other, next, now);
     }
-    assert!(f.host.sealed_records_to_compact().is_empty());
+    assert!(f.host.publication().sealed_records_to_compact().is_empty());
     let mut sequence = 0;
     while !f.host.core.exact_admissions.pressed() {
         sequence += 1;
@@ -1011,7 +1018,7 @@ fn a_half_full_admission_index_makes_every_sealed_history_due() {
             .unwrap();
     }
     assert_eq!(
-        f.host.sealed_records_to_compact(),
+        f.host.publication().sealed_records_to_compact(),
         vec![(APP.to_owned(), RECORD.to_owned())]
     );
     let before = f.host.core.exact_admissions.len();
@@ -1047,6 +1054,7 @@ fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
 
     let mutation = host
         .clone()
+        .publication_mut()
         .durable_mutation_messages(&before, &f.owner, now, 2)
         .unwrap();
     assert_eq!(sealed(&mutation), vec![compaction.clone()]);
@@ -1057,6 +1065,7 @@ fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
     );
     let bootstrap = host
         .clone()
+        .publication_mut()
         .durable_bootstrap_messages(&f.owner, now, 2)
         .unwrap();
     assert_eq!(sealed(&bootstrap), vec![compaction]);
@@ -1064,6 +1073,7 @@ fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
         sealed(
             &host
                 .clone()
+                .publication_mut()
                 .durable_mutation_messages(&host, &f.owner, now, 2)
                 .unwrap()
         )
@@ -1071,7 +1081,13 @@ fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
         "a compaction already published is not published again"
     );
     assert!(
-        sealed(&before.durable_bootstrap_messages(&f.owner, now, 2).unwrap()).is_empty(),
+        sealed(
+            &before
+                .publication_mut()
+                .durable_bootstrap_messages(&f.owner, now, 2)
+                .unwrap()
+        )
+        .is_empty(),
         "other devices' sealed writes travel as themselves, never republished"
     );
 }
@@ -1106,6 +1122,7 @@ fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
 
     let mut published = host.clone();
     let messages = published
+        .publication_mut()
         .durable_mutation_messages(&before, &f.owner, now, 2)
         .unwrap();
     assert!(
@@ -1118,6 +1135,7 @@ fn the_governor_acknowledges_sealed_writes_without_a_cleartext_checkpoint() {
 
     let mut bootstrapped = published.clone();
     let messages = bootstrapped
+        .publication_mut()
         .durable_bootstrap_messages(&f.owner, now, 3)
         .unwrap();
     assert!(!documents(&messages));
@@ -1536,12 +1554,13 @@ fn the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on() {
     let f = fixture();
     let keys = f.keys();
     let mut host = f.host.clone();
-    assert!(!host.is_sealed_record(APP, RECORD));
+    assert!(!host.publication().is_sealed_record(APP, RECORD));
     let mut document = AutoCommit::load(&host.document(APP, RECORD).unwrap()).unwrap();
     let heads = document.get_heads();
     document.put(ROOT, "value", "sealed").unwrap();
     document.commit_edit("fixture", "value");
     let message = host
+        .publication_mut()
         .publish_sealed_incremental(
             APP,
             RECORD,
@@ -1552,8 +1571,9 @@ fn the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on() {
         )
         .unwrap();
     assert!(envelope_of(&message).encryption.is_some());
-    assert!(host.is_sealed_record(APP, RECORD));
+    assert!(host.publication().is_sealed_record(APP, RECORD));
     let opened = host
+        .publication()
         .opened_document(APP, RECORD, &mut |op| open(&keys, op))
         .unwrap()
         .unwrap();
@@ -1568,13 +1588,14 @@ fn the_key_holder_seals_a_record_held_in_the_clear_from_its_next_write_on() {
         "\"sealed\""
     );
     assert!(
-        host.publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
+        host.publication_mut()
+            .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
             .is_err()
     );
 
     let mut keyless = f.host.clone();
     admit(&mut keyless, &f.owner, message, f.now);
-    assert!(keyless.is_sealed_record(APP, RECORD));
+    assert!(keyless.publication().is_sealed_record(APP, RECORD));
 }
 
 /// A record is born from its owner's checkpoint, which holds nothing; its
@@ -1593,9 +1614,11 @@ fn the_key_holder_writes_a_new_records_genesis_sealed() {
     genesis.put(ROOT, "value", "born sealed").unwrap();
     genesis.commit_edit("fixture", "value");
     let mut host = f.host.clone();
-    host.publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
+    host.publication_mut()
+        .publish_document(APP, record, AutoCommit::new().save(), &f.owner, f.now)
         .unwrap();
     let message = host
+        .publication_mut()
         .publish_sealed_incremental(
             APP,
             record,
@@ -1605,7 +1628,7 @@ fn the_key_holder_writes_a_new_records_genesis_sealed() {
             f.now,
         )
         .unwrap();
-    assert!(host.is_sealed_record(APP, record));
+    assert!(host.publication().is_sealed_record(APP, record));
     assert_eq!(
         AutoCommit::load(&host.document(APP, record).unwrap())
             .unwrap()
@@ -1613,6 +1636,7 @@ fn the_key_holder_writes_a_new_records_genesis_sealed() {
         Vec::new()
     );
     let opened = host
+        .publication()
         .opened_document(APP, record, &mut |op| open(&keys, op))
         .unwrap()
         .unwrap();
@@ -1628,15 +1652,19 @@ fn a_record_its_key_holder_seals_is_never_published_in_the_clear_again() {
     let f = fixture();
     let mut host = f.host.clone();
     assert!(host.seal_record(APP, RECORD));
-    assert!(host.is_sealed_record(APP, RECORD));
+    assert!(host.publication().is_sealed_record(APP, RECORD));
     assert!(
         host.clone()
+            .publication_mut()
             .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
             .is_err()
     );
     let restored = f.restore(&host.durable().unwrap()).unwrap();
-    assert!(restored.is_sealed_record(APP, RECORD));
-    let messages = host.durable_bootstrap_messages(&f.owner, f.now, 2).unwrap();
+    assert!(restored.publication().is_sealed_record(APP, RECORD));
+    let messages = host
+        .publication_mut()
+        .durable_bootstrap_messages(&f.owner, f.now, 2)
+        .unwrap();
     assert!(!messages.iter().any(
         |message| matches!(message, NeighbourMsg::AppDocument { record_id, .. } if record_id == RECORD)
     ));

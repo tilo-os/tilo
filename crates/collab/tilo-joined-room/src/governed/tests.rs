@@ -68,6 +68,7 @@ fn a_room_this_device_creates_is_governed_here_takes_its_writes_and_reopens() {
             let NeighbourMsg::AppDocument { envelope, .. } = view
                 .peer()
                 .clone()
+                .publication_mut()
                 .publish_incremental(APP, "", chat.save_after(&before), &key, now)?
             else {
                 return Err("not a document write".into());

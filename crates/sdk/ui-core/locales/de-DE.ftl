@@ -871,3 +871,10 @@ text-menu-numbered-list = Nummerierte Liste
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = { $label } öffnen
+
+# A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
+signal-meter-unknown = Signalstärke unbekannt
+signal-meter-weak = Schwaches Signal
+signal-meter-fair = Mittleres Signal
+signal-meter-good = Gutes Signal
+signal-meter-strong = Starkes Signal

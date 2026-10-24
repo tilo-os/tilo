@@ -41,14 +41,10 @@ mod tests {
     fn outer_resources_preserve_signed_boxed_publication_and_refuse_small_limits() {
         let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
         peer.select_admission_v5().unwrap();
+        let current_document = peer.document("test.app", "tab:1").unwrap();
         let message = peer
-            .publish_document(
-                "test.app",
-                "tab:1",
-                peer.document("test.app", "tab:1").unwrap(),
-                &key,
-                now,
-            )
+            .publication_mut()
+            .publish_document("test.app", "tab:1", current_document, &key, now)
             .unwrap();
         let bytes = postcard::to_allocvec(&message).unwrap();
         let decoded: NeighbourMsg = outer::decode(&bytes, limits()).unwrap();

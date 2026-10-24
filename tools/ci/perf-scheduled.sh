@@ -87,9 +87,13 @@ case $group in
     python3 tools/perf/record.py env --profile release --renderer none --virtualization none \
       --runner none --hardware "apps.tilo.so registry index" > "$out/env.json"
     python3 tools/perf/adapters.py tapp-sizes --env-json "$out/env.json" "$out/entries.json" > "$out/footprint.jsonl"
+    # The registry serves the last release until the next one publishes, so its packages are
+    # held to the budgets of the commit that built them, fetched from the forge.
+    release=(--git-dir "$TMPDIR/release.git" --fetch-from https://code.tilo.so/tilo/tilo.git)
     status=0
-    python3 tools/perf/tapp_size_ratchet.py fleet "$out/entries.json" --summary "$out/summary.md" || status=1
-    python3 tools/perf/runtime_size_ratchet.py published "$out/entries.json" \
+    python3 tools/perf/tapp_size_ratchet.py fleet "$out/entries.json" "${release[@]}" \
+      --summary "$out/summary.md" || status=1
+    python3 tools/perf/runtime_size_ratchet.py published "$out/entries.json" "${release[@]}" \
       --measurements "$out/runtime.json" --summary "$out/summary.md" || status=1
     [[ -s $out/runtime.json ]] || exit 1
     python3 tools/perf/adapters.py runtime-sizes --env-json "$out/env.json" "$out/runtime.json" \

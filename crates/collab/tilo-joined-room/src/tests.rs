@@ -95,7 +95,7 @@ fn edit_from_view(
     let before = chat.get_heads();
     chat.put(ROOT, "topic", topic).unwrap();
     chat.commit_edit("fixture", "topic");
-    let message = view.peer().clone().publish_incremental(
+    let message = view.peer().clone().publication_mut().publish_incremental(
         APP,
         "",
         chat.save_after(&before),
@@ -229,6 +229,7 @@ fn with_pending_original(joined: &Enrolled) {
     );
     joined.owner.commit_document(original, joined.now).unwrap();
     for message in remote
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, joined.now, 600)
         .unwrap()
     {
@@ -468,6 +469,7 @@ fn a_read_between_the_frames_of_one_checkpoint_is_pending_not_refused() {
         .with_current(joined.room, |view| Ok(view.peer().clone()))
         .unwrap();
     let frames = remote
+        .publication_mut()
         .durable_bootstrap_messages(&governor_key, joined.now, 600)
         .unwrap();
     let read = |reader| {

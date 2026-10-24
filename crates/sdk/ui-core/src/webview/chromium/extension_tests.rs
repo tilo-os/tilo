@@ -8,12 +8,14 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
         permissions: vec!["tabs".into()],
         hosts: vec!["https://*/*".into()],
         token: Some("f".repeat(48)),
+        commands: Some(json!({"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}})),
     };
     assert!(command_within_limits(&access));
     assert_eq!(
         encode_command(access),
         Some(
-            json!({"op":"extension_access","id":id,"permissions":["tabs"],"hosts":["https://*/*"],"token":"f".repeat(48)})
+            json!({"op":"extension_access","id":id,"permissions":["tabs"],"hosts":["https://*/*"],"token":"f".repeat(48),
+                "commands":{"_execute_action":{"suggested_key":{"default":"Ctrl+Shift+Y"}}}})
         )
     );
     assert_eq!(
@@ -44,12 +46,29 @@ fn the_engine_is_told_what_extensions_may_do_with_its_tabs() {
             permissions: Vec::new(),
             hosts: Vec::new(),
             token: Some("f".into()),
+            commands: None,
         },
         WebViewCommand::ExtensionAccess {
             id: id.into(),
             permissions: vec![String::new(); 513],
             hosts: Vec::new(),
             token: None,
+            commands: None,
+        },
+        // Commands that are no manifest's object, or past any manifest's size.
+        WebViewCommand::ExtensionAccess {
+            id: id.into(),
+            permissions: Vec::new(),
+            hosts: Vec::new(),
+            token: None,
+            commands: Some(json!(["_execute_action"])),
+        },
+        WebViewCommand::ExtensionAccess {
+            id: id.into(),
+            permissions: Vec::new(),
+            hosts: Vec::new(),
+            token: None,
+            commands: Some(json!({"long": {"description": "x".repeat(70 * 1024)}})),
         },
     ] {
         assert!(!command_within_limits(&bad), "{bad:?}");
@@ -108,6 +127,10 @@ fn an_extensions_button_state_arrives_for_one_tab_or_every_tab() {
         Some(WebViewEvent::ExtensionActionReset)
     );
     assert_eq!(
+        event(json!({"event":"extension_execute_action","tab":2,"id":id})),
+        Some(WebViewEvent::ExtensionExecuteAction { id: id.into() })
+    );
+    assert_eq!(
         event(json!({"event":"extension_open_popup","tab":2,"id":id,
             "url":format!("chrome-extension://{id}/popup.html")})),
         Some(WebViewEvent::ExtensionOpenPopup {
@@ -127,6 +150,7 @@ fn an_extensions_button_state_arrives_for_one_tab_or_every_tab() {
         json!({"event":"extension_action","id":id,"global":true,"change":{"icon":{"width":200,"height":200,"data":""}}}),
         json!({"event":"extension_action","id":id,"global":true,"change":{"icon":{"path":"on.png"}}}),
         json!({"event":"extension_action","id":"short","global":true,"change":{}}),
+        json!({"event":"extension_execute_action","id":"short"}),
     ] {
         assert_eq!(event(bad.clone()), None, "{bad}");
     }

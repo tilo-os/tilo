@@ -111,7 +111,10 @@ impl Recovery {
                 now,
             )
             .unwrap();
-        let cp1 = owner.durable_bootstrap_messages(key, now, 1).unwrap();
+        let cp1 = owner
+            .publication_mut()
+            .durable_bootstrap_messages(key, now, 1)
+            .unwrap();
         let observer = owner.clone();
         let NeighbourMsg::AppDocument { envelope: op, .. } = &cp1[1] else {
             panic!()
@@ -134,7 +137,10 @@ impl Recovery {
         owner
             .admit_local_app_document("selector.app", "one", *op, now)
             .unwrap();
-        let cp2 = owner.durable_bootstrap_messages(key, now, 2).unwrap();
+        let cp2 = owner
+            .publication_mut()
+            .durable_bootstrap_messages(key, now, 2)
+            .unwrap();
         let mut b = automerge::AutoCommit::load(&baseline).unwrap();
         b.set_actor(automerge::ActorId::from(vec![72]));
         let heads = b.get_heads();

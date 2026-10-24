@@ -161,7 +161,7 @@ export function createWorkspaceActions({
     const text = await peer.createInvitation({role: 'editor'});
     await ui.share({
       title: `Invite ${person.contact}`,
-      body: `Send this link to ${person.contact}. They join “${workspaceName ?? 'this workspace'}” with it, and you let them in here. Take them off the wait list once you have sent it.`,
+      body: `Send this link to ${person.contact}. They join ${workspaceName ? `“${workspaceName}”` : 'this workspace'} with it, and you let them in here. Take them off the wait list once you have sent it.`,
       link: inviteLink(text),
     });
   };

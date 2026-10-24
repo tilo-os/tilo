@@ -197,6 +197,7 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
     doc.put(ROOT, "title", "First note").unwrap();
     doc.commit_edit("fixture", "title");
     let bootstrap = member_peer
+        .publication_mut()
         .publish_incremental(
             OPENED,
             "",
@@ -235,7 +236,8 @@ async fn an_admitted_member_has_the_relay_create_an_authored_apps_empty_record()
         let heads = doc.get_heads();
         doc.put(ROOT, "title", title).unwrap();
         doc.commit_edit("fixture", "title");
-        peer.publish_incremental(OPENED, "", doc.save_after(&heads), key, SystemTime::now())
+        peer.publication_mut()
+            .publish_incremental(OPENED, "", doc.save_after(&heads), key, SystemTime::now())
             .unwrap()
     };
     // The viewer's own replica refuses to sign the write, so the page

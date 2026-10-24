@@ -58,7 +58,10 @@ fn fixture() -> (PublicEnrollment, Vec<Source>, SigningKey) {
         )
         .unwrap();
     super::peer_fixture::fixture_writer_insert(&mut state, &key, "Recovery test", now).unwrap();
-    let messages = state.bootstrap_messages(&key, now).unwrap();
+    let messages = state
+        .publication_mut()
+        .bootstrap_messages(&key, now)
+        .unwrap();
     let mut directory = WorkspaceDirectory::new(cert.user_public_key, cert.device_public_key);
     directory.add_workspace(workspace, "archive test").unwrap();
     directory

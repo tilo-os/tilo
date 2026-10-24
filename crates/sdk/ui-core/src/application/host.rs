@@ -523,11 +523,10 @@ fn action_authority_context(
     app: &str,
     person: &UserId,
 ) -> Result<PermissionContext, String> {
+    // Current for as long as the host holds it: the source reads a policy
+    // the host let go of as absent.
     let projection = read_action_authority_projection(source, room, app, person)?;
     let now_ms = crate::time::try_unix_now_ms().ok_or("host action policy time is unavailable")?;
-    if !projection.is_current_at(now_ms) {
-        return Err("host action policy is not current".into());
-    }
     let mut standing = crate::permissions::Standing::person(projection.policy, person.0.clone());
     if projection.foreign {
         standing = standing.on_foreign_device();
@@ -1418,17 +1417,11 @@ mod native_process_tests {
         let room = "3f2b1c00-0000-4000-8000-000000000001";
         let app = "so.tilo.store";
         let author = UserId("person-a".into());
-        // The projection is current for three seconds of wall time: hold the
-        // clock so a loaded runner cannot outlast it between the checks.
-        crate::time::freeze_wall(crate::time::wall());
-        let now_ms = crate::time::try_unix_now_ms().unwrap();
         let original = AppActionAuthorityProjection::project(
             &tilo_action_policy::RoomPolicy::new(room, author.0.clone()),
             app,
             &author.0,
             false,
-            now_ms,
-            now_ms + 3_000,
         );
         let bytes = Arc::new(Mutex::new(Some(serde_json::to_vec(&original).unwrap())));
         let source: tilo_host::action_authority::AuthoritySource = {
@@ -1462,7 +1455,7 @@ mod native_process_tests {
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         {
             let mut invalid = original.clone();
-            invalid.valid_until_unix_ms = invalid.issued_at_unix_ms;
+            invalid.schema_version = 2;
             *bytes.lock().unwrap() = Some(serde_json::to_vec(&invalid).unwrap());
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         }
@@ -1482,16 +1475,6 @@ mod native_process_tests {
             assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
             assert!(permissions.directory_witness().is_err());
         }
-        let mut expired = original.clone();
-        expired.issued_at_unix_ms = now_ms - 4_000;
-        expired.valid_until_unix_ms = now_ms - 1_000;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&expired).unwrap());
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
-        let mut future = original.clone();
-        future.issued_at_unix_ms = now_ms + 30_000;
-        future.valid_until_unix_ms = now_ms + 33_000;
-        *bytes.lock().unwrap() = Some(serde_json::to_vec(&future).unwrap());
-        assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Deny);
         *bytes.lock().unwrap() = Some(serde_json::to_vec(&original).unwrap());
         assert_eq!(permissions.answer(&own, ActionKind::Outside), Answer::Allow);
         assert_eq!(permissions.directory_witness().unwrap(), allowed);

@@ -36,8 +36,8 @@ Three gates, as for the per-app tapp budgets (tapp_size_ratchet.py):
   is over its budget.
 - **The published runtime, nightly.** `published ENTRIES_JSON` reads the
   registry index, fetches the newest `so.tilo.runtime` of each architecture,
-  measures its dylib and holds it to the same budgets (t's perf-footprint,
-  footprint group). `--measurements FILE` writes what it measured, which
+  measures its dylib and holds it to the budgets of the commit that built it
+  (t's perf-footprint, footprint group). `--measurements FILE` writes what it measured, which
   `adapters.py runtime-sizes` turns into `footprint.runtime.*` records.
 - **The change.** `check-budget --base REV` (t's `changes` check) fails when a
   budget grows beyond what raise files new in the change add.
@@ -666,6 +666,9 @@ def main(argv: list[str] | None = None) -> int:
     published_parser.add_argument("--registry", default=REGISTRY)
     published_parser.add_argument("--measurements", type=pathlib.Path)
     published_parser.add_argument("--summary", type=pathlib.Path)
+    published_parser.add_argument("--git-dir", type=pathlib.Path, default=REPO,
+                                  help="where to read the release commit's budgets (default: this checkout)")
+    published_parser.add_argument("--fetch-from", help="fetch the release commit from this repository when missing")
     checked = commands.add_parser("check-budget", help="budgets only decrease without a raise file")
     checked.add_argument("--base", required=True)
     commands.add_parser("apps-without-media", help="the apps budget.toml lists as playing no media, one a line")
@@ -686,7 +689,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "published":
             entries = json.loads(args.entries.read_text(encoding="utf-8"))
-            status, lines, values = published(entries, current, args.registry.rstrip("/"))
+            commit = tapp.release_commit(newest_runtimes(entries).values())
+            tapp.fetch_commit(commit, args.git_dir, args.fetch_from)
+            released = load_at(commit, args.git_dir)
+            if released is None:
+                raise ValueError(f"{commit} has no {DIRECTORY}/budget.toml")
+            status, lines, values = published(entries, released, args.registry.rstrip("/"))
+            lines.insert(1, f"held to the budgets of {commit}, which built the newest runtime")
             if args.measurements is not None:
                 document = {"sequence": entries.get("sequence"), "runtimes": values}
                 args.measurements.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")

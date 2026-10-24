@@ -283,6 +283,9 @@ pub struct AgentParticipant {
     /// Who last changed each message record, by device: whom what a
     /// waiting task waited for came from.
     news_from: BTreeMap<DocumentRoute, [u8; 32]>,
+    /// What each record of [`Self::news`] held before the change that made
+    /// it news: what arrived since is what the re-plan is told.
+    news_before: BTreeMap<DocumentRoute, Arc<str>>,
     left: bool,
     /// Bumped whenever what the open records publish may have changed; the
     /// revision remote catalogues are issued at.
@@ -408,6 +411,7 @@ impl AgentParticipant {
             last_merge: None,
             news: Vec::new(),
             news_from: BTreeMap::new(),
+            news_before: BTreeMap::new(),
             left: false,
             generation: 0,
             remote: Vec::new(),
@@ -574,6 +578,9 @@ impl AgentParticipant {
                     self.news_from
                         .insert(document.route.clone(), document.author);
                     if !self.news.contains(&document.route) {
+                        // Read before the change merges below.
+                        let before = self.record_text(&document.route).unwrap_or_default();
+                        self.news_before.insert(document.route.clone(), before);
                         self.news.push(document.route.clone());
                     }
                 }
@@ -859,6 +866,7 @@ impl AgentParticipant {
         // What arrived before the task began is in the room it is planned on.
         self.news.clear();
         self.news_from.clear();
+        self.news_before.clear();
         self.plan(id, &text, None);
     }
 

@@ -58,11 +58,14 @@ use crate::mesh::DeviceKey;
 pub use crate::offload_content::{BindError, ReplicaContent, WorkspaceContent};
 pub use crate::offload_device::{
     DeviceOffload, DeviceOffloadConfig, DeviceRevocations, OffloadIdentity, OffloadRelay,
-    REVOCATION_CHECK, RouteTrust, START_TIMEOUT, home_relay, start_route,
+    REVOCATION_CHECK, RouteTrust, START_TIMEOUT, home_relay, room_relays, start_route,
 };
 pub use crate::offload_media::{MediaFuture, RoomMedia, SessionMedia};
 pub use crate::offload_placement::{
     ComputePlacement, PLACEMENT_TIMEOUT, Placed, PlacementAnswer, PlacementQuery, RelayPlacement,
+};
+pub use crate::offload_rooms::{
+    RETRY_AFTER, RoomOffload, RoomPlacements, RoomRelays, START_WAIT, StartRoute,
 };
 pub use crate::offload_route::OffloadRoute;
 use tilo_lock::MutexRecover as _;

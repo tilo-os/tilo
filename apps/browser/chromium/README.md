@@ -459,9 +459,9 @@ content scripts (with `sender.tab`) work without help.
   its own, which the host attaches to on the pipe for as long as the call
   takes, and only when the frames named are not all in the page's own
   process; the pipe carries a script whole, up to 16 MiB. `allFrames`
-  passes over a frame the script cannot run in, as Chrome does: one whose
-  page the extension's content scripts do not match keeps its id but has
-  no world of the extension.
+  passes over a frame the script cannot run in, as Chrome does: one that
+  went to another site's page the extension's content scripts do not match
+  keeps its id but has no world of the extension in its new process.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
   tab an extension was told of before the host learnt its id among
@@ -490,6 +490,23 @@ content scripts (with `sender.tab`) work without help.
   with Chrome's info and the tab, and grants `activeTab`. The items and their
   checked state are kept in the profile (`Extension Menus.json`, never for a
   private window), since an extension makes them once, when installed.
+- Keyboard shortcuts (`commands`): the Browser tells the host each
+  extension's manifest `commands` with its access, in the order the
+  extensions were installed, and `src/extension_commands.h` gives each
+  command the key suggested for the platform as Chrome does: Ctrl or Alt
+  (Command or MacCtrl on macOS), maybe Shift, and one key, never Ctrl with
+  Alt; at most four an extension; a key two extensions suggest stays with the
+  first; and none the Browser keeps for itself (Find, bookmark, reload, the
+  address, its tab keys), which it answers before a page sees them. A key
+  the Browser forwards into a page is looked up first: a command's runs it
+  and the page gets neither its press nor its release. A named command fires
+  `commands.onCommand` with the tab, waking the worker, and grants
+  `activeTab`; the button's own (`_execute_action`, or MV2's
+  `_execute_browser_action`) asks the Browser to act as a click on the
+  button (`extension_execute_action`), which opens its popup or fires
+  `action.onClicked`. `commands.getAll` lists the button's command first,
+  then the rest by name, each with its key as Chrome shows it ("Ctrl+Shift+Y"
+  on Linux) or none, and its description localized.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -501,9 +518,12 @@ content scripts (with `sender.tab`) work without help.
 
 ## Remaining integration work
 
-- Extensions' keyboard shortcuts (`commands`) and side panels are not
-  offered. Their context menu items show no checkmark and no submenu, and
-  appear only in a page's menu, not the toolbar button's.
+- Extensions' side panels are not offered. Their keyboard shortcuts run while
+  a page has the keyboard, not while the address bar or a popup has it; the
+  suggested keys are the ones given (there is no page to change them), and
+  `global` shortcuts work only in the Browser. Their context menu items show
+  no checkmark and no submenu, and appear only in a page's menu, not the
+  toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.

@@ -710,6 +710,48 @@ fn dictation_terminal_purpose_requires_a_qualified_inner_editing_target() {
     drop(h);
 }
 
+/// A terminal input that offers acknowledged edits (a native editor prompt,
+/// which confirms each edit against its own lease) takes dictation; the same
+/// terminal without the offer refuses it.
+#[test]
+fn dictation_takes_a_terminal_only_while_it_offers_acknowledged_edits() {
+    use shell::compositor::dictation::DictationError;
+    let mut h = Harness::new();
+    let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
+    let field = h.field(Some((
+        zwp_text_input_v3::ContentHint::empty(),
+        zwp_text_input_v3::ContentPurpose::Terminal,
+    )));
+    let now = Instant::now();
+    assert_eq!(
+        h.state.begin_dictation(now),
+        Err(DictationError::UnsupportedField),
+        "a bare terminal refuses"
+    );
+    let client = &h.clients[field.client];
+    let manager = client.bind::<tilo_text_input_manager_v1::TiloTextInputManagerV1>(
+        "tilo_text_input_manager_v1",
+        1,
+    );
+    let private = manager.get_field(&field.objects.0, &client.queue.handle(), ());
+    private.update(vec![7; 32]);
+    h.pump();
+    let id = h
+        .state
+        .begin_dictation(now)
+        .expect("a terminal offering acknowledged edits takes dictation");
+    assert!(h.state.cancel_dictation(id));
+    private.update(Vec::new());
+    h.pump();
+    assert_eq!(
+        h.state.begin_dictation(now),
+        Err(DictationError::UnsupportedField),
+        "withdrawing the offer refuses again"
+    );
+    assert!(h.peer(&field).committed.is_empty());
+    drop(h);
+}
+
 #[test]
 fn dictation_editable_to_terminal_transition_cancels_and_does_not_revive() {
     use shell::compositor::dictation::DictationError;
@@ -795,10 +837,13 @@ fn dictation_private_warm_ack_does_not_mask_a_changed_targets_refusal() {
     let mut h = Harness::new();
     let (_osk, _input_method) = h.own_seat_with_on_screen_keyboard();
     for (hint, purpose, expected) in [
+        // A terminal takes dictation only while it offers acknowledged
+        // edits; withdrawing that offer changes the target the warm ack was
+        // for.
         (
             zwp_text_input_v3::ContentHint::empty(),
             zwp_text_input_v3::ContentPurpose::Terminal,
-            DictationError::UnsupportedField,
+            DictationError::TargetChanged,
         ),
         (
             zwp_text_input_v3::ContentHint::HiddenText,
@@ -822,6 +867,10 @@ fn dictation_private_warm_ack_does_not_mask_a_changed_targets_refusal() {
         assert_eq!(kind, u32::from(tilo_text_input_v1::Kind::Prepare));
         field.text_input().set_content_type(hint, purpose);
         field.text_input().commit();
+        if purpose == zwp_text_input_v3::ContentPurpose::Terminal {
+            // A terminal that offers no acknowledged edits: a bare PTY.
+            private.update(Vec::new());
+        }
         private.acknowledge(serial, tilo_text_input_v1::Outcome::Accepted);
         h.pump();
         assert_eq!(

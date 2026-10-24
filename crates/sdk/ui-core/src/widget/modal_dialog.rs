@@ -2629,17 +2629,21 @@ impl Widget for ModalDialog<dyn Widget> {
         self.open
     }
 
+    // A closed dialog is hidden from the tree.
+    fn accessibility_hidden(&self) -> bool {
+        !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The title is the accessible name (FTL-resolved). A closed dialog
-        // is hidden from the tree.
+        // The title is the accessible name (FTL-resolved).
         let title = crate::i18n!(&self.title);
         let name = (!title.is_empty()).then_some(title);
         let mut node = AccessNode::new(Role::Dialog)
             .with_optional_name(name)
             .with_state(AccessState {
                 modal: true,
-                hidden: !self.open,
+                hidden: self.accessibility_hidden(),
                 ..Default::default()
             });
         // Footer actions a host laid out are buttons of their own focus

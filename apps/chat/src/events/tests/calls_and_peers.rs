@@ -911,6 +911,29 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
 }
 
 #[test]
+fn someone_alone_in_a_room_can_still_unmute_and_leave_the_call() {
+    let (mut app, _doc, _live) = connected_call();
+    // A fresh room: nobody else has written, so Chat knows no one else.
+    let me = app.me.id.clone();
+    app.users.retain(|user| user.id == me);
+    assert!(!app.has_other_collaborator());
+    render_frame(&mut app, 1280.0, 720.0);
+    let ids: Vec<String> = ui::window_toolbar::declared()
+        .map(|toolbar| {
+            toolbar
+                .actions
+                .into_iter()
+                .map(|action| action.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        ids.iter().any(|id| id == "call-mute") && ids.iter().any(|id| id == "call-leave"),
+        "the call's microphone and Leave are at hand in any room: {ids:?}"
+    );
+}
+
+#[test]
 fn a_browser_that_cannot_join_calls_says_so_plainly() {
     let (mut app, mut doc) = app_with_doc();
     app.on_hit(

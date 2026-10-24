@@ -289,8 +289,18 @@ impl ShellOverlayHost {
         let Some((desktop, failures)) = rebuild else {
             return false;
         };
+        let shown_before = self.content_built_for_ws;
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
+            // A chord announced its switch before making it; any other
+            // switch follows the input the person last used (a click in the
+            // workspace menu, a key on its row).
+            let made_by = if self.workspace_switch_holding() {
+                self.workspace_switch_source
+            } else {
+                self.input_source
+            };
+            self.slide_workspace(shown_before, &desktop, made_by);
             // A chord already started this switch's frames, before demand
             // was sampled; keep its source rather than lengthening them.
             let source = if self.workspace_switch_holding() {

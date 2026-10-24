@@ -398,6 +398,7 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         RowLeading::Media(MediaArt::Placeholder, MediaAspect::Wide),
         RowLeading::Checkbox { checked: true },
         RowLeading::Swatch(theme.tokens.colors.semantic.info),
+        RowLeading::Signal(crate::widget::SignalLevel::Good),
         RowLeading::Paint(&painter),
     ];
     for kind in kinds {
@@ -578,6 +579,43 @@ fn on_view_publishes_the_row_as_an_action_instead_of_a_callback() {
     .unwrap();
     assert!(started.is_some());
     assert_eq!(opened.get(), 1);
+}
+
+/// A row's own chevron button lines up with the disclosure chevrons of
+/// the rows around it.
+#[test]
+fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
+    let rows = Column::new()
+        .with_no_padding()
+        .push(Box::new(
+            ListRow::new("all", "Show all")
+                .disclosure()
+                .on_activate(|| {}),
+        ))
+        .push(Box::new(
+            ListRow::new("home", "Home")
+                .on_activate(|| {})
+                .trailing_disclosure(Box::new(crate::widget::Button::icon_only(
+                    "home.open",
+                    crate::icons::Icon::ChevronRight,
+                    "Open Home",
+                ))),
+        ));
+    let harness = FrameHarness::new(crate::State::new(), Box::new(rows), (600, 300));
+    let root = harness.inspection().root;
+    let row = rect_of(find(&root, "ListRow").unwrap());
+    let button = rect_of(find(&root, "Button").unwrap());
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let chevron = row.x1 - m.icon / 2.0;
+    assert!(
+        (button.center().x - chevron).abs() < 0.5,
+        "centred on the chevron column: {button:?} vs {chevron}"
+    );
+    assert!(
+        button.x1 <= row.x1 + m.bleed + 0.5,
+        "inside the row's bleed: {button:?} in {row:?}"
+    );
 }
 
 #[test]

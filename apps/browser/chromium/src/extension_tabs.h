@@ -17,7 +17,9 @@
 // answers from its own tabs, within the access the extension was granted, and
 // runs scripts in the extension's own isolated world of a page, where content
 // scripts run, through the page's inspector, and captures a tab from the frame
-// the host last painted of it. Events (a click, a tab loading)
+// the host last painted of it, and runs extensions' keyboard shortcuts
+// (extension_commands.h) on the keys the Browser forwards into a page. Events
+// (a click, a command, a tab loading)
 // reach a service worker through the DevTools pipe, which wakes it if it
 // sleeps; the host attaches only for as long as that takes, so an extension's
 // worker still sleeps when idle.
@@ -46,6 +48,7 @@
 #include "include/cef_scheme.h"
 #include "include/cef_task.h"
 #include "include/wrapper/cef_closure_task.h"
+#include "extension_commands.h"
 #include "extension_menus.h"
 #include "extension_tabs_script.h"
 #include "match_pattern.h"
@@ -255,8 +258,11 @@ class ExtensionTabs {
   // What the extension may do, from its manifest as installed.
   // `token` is what its worker shows the bridge: the Browser wrote it with
   // the tab APIs into the extension's worker, which alone can read it.
-  void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, const std::string& token) {
+  // `commands` are its manifest's (`commands`), keyboard shortcuts.
+  void SetAccess(const std::string& id, std::set<std::string> permissions, std::vector<std::string> hosts, const std::string& token,
+                 CefRefPtr<CefDictionaryValue> commands) {
     access_[id] = Access{std::move(permissions), std::move(hosts)};
+    commands_.Set(id, CommandsOf(commands));
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     if (token.empty()) return;
     tokens_[token] = id;
@@ -270,6 +276,7 @@ class ExtensionTabs {
   }
   void Forget(const std::string& id) {
     access_.erase(id);
+    commands_.Forget(id);
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     listening_.erase(id);
     for (auto it = granted_.begin(); it != granted_.end();) it = it->first == id ? granted_.erase(it) : std::next(it);
@@ -463,6 +470,16 @@ class ExtensionTabs {
       Succeed(reply, Wrap(settings));
     } else if (method == "action.set" || method == "action.get") {
       Button(extension, tabs, method == "action.get", args, reply);
+    } else if (method == "commands.getAll") {
+      auto list = CefListValue::Create();
+      for (const auto& command : commands_.All(extension)) {
+        auto entry = CefDictionaryValue::Create();
+        entry->SetString("name", command.name);
+        entry->SetString("description", command.description);
+        entry->SetString("shortcut", command.shortcut);
+        list->SetDictionary(list->GetSize(), entry);
+      }
+      Succeed(reply, Wrap(list));
     } else {
       Fail(reply, "Tilo does not support " + method + " yet");
     }
@@ -526,6 +543,36 @@ class ExtensionTabs {
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
     Push(extension, "action.onClicked", args, true);
+  }
+
+  // The person pressed a key on the page of `tab` (no extension's panel):
+  // whether it is an extension's keyboard shortcut, which the page then does
+  // not get. The extension hears of its command with the page, which it may
+  // then script until the page navigates if it asked for activeTab, as in
+  // Chrome; the toolbar button's own command acts as a click on the button
+  // does, so the Browser is asked to (`extension_execute_action`): it opens
+  // the button's popup, or tells the extension of the click.
+  bool Key(int tab, const Shortcut& shortcut) {
+    auto found = commands_.Find(shortcut);
+    if (!found || !access_.count(found->first)) return false;
+    Ensure([this, tab, command = *found] { CommandNow(command.first, command.second, tab); });
+    return true;
+  }
+  void CommandNow(const std::string& extension, const std::string& name, int tab) {
+    const auto tabs = Tabs();
+    const auto* found = Find(tabs, tab);
+    if (!found || found->panel || !access_.count(extension)) return;
+    if (ActionCommand(name)) {
+      auto fields = CefDictionaryValue::Create();
+      fields->SetString("id", extension);
+      if (hooks_.event) hooks_.event(tab, "extension_execute_action", fields);
+      return;
+    }
+    if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
+    auto args = CefListValue::Create();
+    args->SetString(0, name);
+    args->SetDictionary(1, TabObject(extension, *found));
+    Push(extension, "commands.onCommand", args, true);
   }
 
   // The tab can be told of things: what extensions set for their buttons on
@@ -652,6 +699,30 @@ class ExtensionTabs {
 
  private:
   struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; };
+  // A manifest's `commands`, each with the key it suggests on this
+  // platform: its own (`mac`, `linux`), else its `default`, or one for all.
+  static std::vector<ExtensionCommand> CommandsOf(CefRefPtr<CefDictionaryValue> commands) {
+    std::vector<ExtensionCommand> declared;
+    CefDictionaryValue::KeyList names;
+    if (!commands || !commands->GetKeys(names)) return declared;
+#if defined(OS_MAC)
+    const char* platform = "mac";
+#else
+    const char* platform = "linux";
+#endif
+    for (const auto& name : names) {
+      if (declared.size() >= 256 || commands->GetType(name) != VTYPE_DICTIONARY) continue;
+      auto command = commands->GetDictionary(name);
+      std::string suggested;
+      if (command->GetType("suggested_key") == VTYPE_STRING) {
+        suggested = command->GetString("suggested_key").ToString();
+      } else if (auto keys = command->GetDictionary("suggested_key")) {
+        suggested = keys->HasKey(platform) ? StringOf(keys, platform) : StringOf(keys, "default");
+      }
+      declared.push_back(ExtensionCommand{name.ToString(), StringOf(command, "description"), suggested});
+    }
+    return declared;
+  }
   struct Creating { std::string extension, url; bool window; Reply reply; };
   struct Held { std::string token, method; CefRefPtr<CefDictionaryValue> args; Reply reply; };
   // Calls of a token no extension was given in time are no extension's.
@@ -769,7 +840,7 @@ class ExtensionTabs {
     });
   }
   static bool Listenable(const std::string& name) {
-    static const std::set<std::string> names{"action.onClicked", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged"};
+    static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged"};
     return names.count(name) > 0;
   }
   static bool Populate(CefRefPtr<CefDictionaryValue> args) {
@@ -1861,7 +1932,8 @@ class ExtensionTabs {
     auto name = CefValue::Create();
     name->SetString(event);
     InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.dispatch(" + ToJson(name) + ", " + ToJson(Wrap(args)) + ") : -1",
-             event == "action.onClicked" || event == "contextMenus.onClicked", [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+             event == "action.onClicked" || event == "commands.onCommand" || event == "contextMenus.onClicked",
+             [](std::optional<std::string>, CefRefPtr<CefValue>) {});
   }
   // Evaluate `expression` in the extension's service worker, waking it if
   // it sleeps, and answer with its value (a promise's, once it settles).
@@ -2102,6 +2174,11 @@ class ExtensionTabs {
   uint64_t port_ = 0;
   uint64_t generation_ = 0;
   ExtensionMenus menus_;
+#if defined(OS_MAC)
+  ExtensionCommands commands_{true};
+#else
+  ExtensionCommands commands_{false};
+#endif
   bool saving_ = false;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
 };

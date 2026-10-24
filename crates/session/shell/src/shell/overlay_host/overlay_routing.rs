@@ -156,6 +156,27 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        if self.now_playing_card.scrubbing() {
+            match event {
+                WindowEvent::CursorMoved { .. } => {
+                    if let Some(point) = self.last_cursor {
+                        self.drag_now_playing_seek(point);
+                    }
+                    *handled = true;
+                    return true;
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                } => {
+                    self.release_now_playing_seek();
+                    *handled = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if !self.qs_root.drag_active() {
             return false;
         }
@@ -205,12 +226,24 @@ impl ShellOverlayHost {
     fn route_qs_slider_touch(&mut self, touch: &winit::event::Touch, scale_factor: f64) -> bool {
         use ui::widget::SliderTouchStep;
         let mut finger = self.qs_slider_touch;
-        let step = finger.step(touch, scale_factor, |point| self.qs_slider_face_at(point));
+        let step = finger.step(touch, scale_factor, |point| {
+            self.qs_slider_face_at(point) || self.now_playing_seek_at(point)
+        });
         self.qs_slider_touch = finger;
         match step {
             SliderTouchStep::Press(point) => {
                 let p = self.untransform_quick_settings_pointer(point, Instant::now());
-                self.handle_shell_quick_settings_root_click(p);
+                if !self.handle_now_playing_click(p) {
+                    self.handle_shell_quick_settings_root_click(p);
+                }
+                true
+            }
+            SliderTouchStep::Move(point) if self.now_playing_card.scrubbing() => {
+                self.drag_now_playing_seek(point);
+                true
+            }
+            SliderTouchStep::Release if self.now_playing_card.scrubbing() => {
+                self.release_now_playing_seek();
                 true
             }
             SliderTouchStep::Move(point) => {

@@ -92,7 +92,7 @@ impl ShellOverlayHost {
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray.
+        // off the clock/tray, and the windows' bars keep them lower still.
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -101,6 +101,11 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
+            // Under the top bar is where the windows' bars are: banners
+            // start below the ones under the corner, so an incoming call
+            // never hides a window's History, maximize or close.
+            let bars = self.window_bars_on_screen();
+            self.notification_stack.keep_clear_of(&bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
@@ -230,20 +235,60 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
+        let slide = self.workspace_slide_poses(theme);
+        if let Some((from, leaving, _)) = slide {
+            self.draw_leaving_workspace(
+                from,
+                leaving,
+                workspace_scene,
+                transform,
+                (text_renderer, theme, presence),
+            );
+        }
+        let clip = self.rect;
         let Some(surface) = self.desktop_surface_mut() else {
             self.content
                 .draw(backdrop_scene, transform, text_renderer, theme, presence);
             return None;
         };
-        let bounds = surface.draw_sections(
-            backdrop_scene,
-            topbar_scene,
-            workspace_scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        )?;
+        let bounds = if let Some((_, _, arriving)) = slide {
+            // A workspace switch by pointer: the windows arrive along the
+            // slide's axis; the bar and the backdrop stay.
+            let bounds = surface.draw_chrome_sections(
+                backdrop_scene,
+                topbar_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )?;
+            workspace_scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                arriving.opacity,
+                transform,
+                &clip,
+            );
+            let drawn = surface.draw_workspace_area(
+                workspace_scene,
+                transform.pre_translate(arriving.transform.translation()),
+                text_renderer,
+                theme,
+                presence,
+            );
+            workspace_scene.pop_layer();
+            drawn.map(|()| bounds)?
+        } else {
+            surface.draw_sections(
+                backdrop_scene,
+                topbar_scene,
+                workspace_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )?
+        };
         // The compact bars of the other displays share the top bar's scene.
         let bars = surface
             .display_chrome()

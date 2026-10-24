@@ -726,9 +726,9 @@ fn paint_message(ctx: &mut PaintCtx<'_>, rect: Rect, text: &str) {
     );
 }
 
-/// A network: its signal as the Wi-Fi glyph lit by strength, its name with
-/// a lock when it has a password, and "Connected", "Connecting…" or
-/// "Saved" on the trailing side.
+/// A network: its signal as the shared signal meter, its name with a lock
+/// when it has a password, and "Connected", "Connecting…" or "Saved" on the
+/// trailing side.
 fn paint_network(
     ctx: &mut PaintCtx<'_>,
     rect: Rect,
@@ -739,31 +739,10 @@ fn paint_network(
     let Some(network) = p.state.wifi_networks.get(index) else {
         return;
     };
-    let theme = ctx.theme;
-    let ink = theme.tokens.colors.text_primary;
-    // An unlit arc of the signal: the quietest ink.
-    let faint = theme.tokens.colors.text_tertiary;
-    let signal = network.signal;
-    let side = f64::from(theme.tokens.metrics.icon_md);
-    let bars = move |c: &mut PaintCtx<'_>, slot: Rect| {
-        ui::icons::draw_icon_layered(
-            c.scene,
-            c.transform,
-            Rect::from_center_size(slot.center(), (side, side)),
-            ui::icons::Icon::Wifi,
-            ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-            // [dot, outer, middle, inner]: a weak network lights fewer arcs.
-            |arc| {
-                let needed = match arc {
-                    0 => 1,
-                    1 => 4,
-                    2 => 3,
-                    _ => 2,
-                };
-                if signal >= needed { ink } else { faint }
-            },
-        );
-    };
+    let level = ui::widget::SignalLevel::from_bars(network.signal);
+    // The other rows of the list share this column, so every title starts
+    // on one edge.
+    let column = f64::from(ctx.theme.tokens.metrics.icon_lg);
     let joining = p.state.wifi_joining.as_deref() == Some(network.ssid.as_str());
     let value = if joining {
         Some(t("qs-connecting"))
@@ -775,7 +754,8 @@ fn paint_network(
         None
     };
     let mut face = ListRowFace::new(&network.ssid)
-        .leading(RowLeading::Paint(&bars))
+        .leading(RowLeading::Signal(level))
+        .leading_column(column)
         .selected(network.connected)
         .interaction(Interaction {
             hovered: hovered && !network.connected,

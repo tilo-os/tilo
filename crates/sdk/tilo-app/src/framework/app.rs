@@ -7,8 +7,8 @@ use std::sync::{Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
-    AppComponent, ApplicationDefinition, ComponentBehaviour, HostContext, LaunchTarget,
-    RestoreInput,
+    AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, HostContext,
+    LaunchTarget, RestoreInput,
 };
 use ui_core::history_mode::checked_files::FileHistorySource;
 use ui_core::i18n::EmbeddedCatalog;
@@ -381,17 +381,25 @@ pub(crate) fn leaked<T: Send + Sync + 'static>(
     key: TypeId,
     make: impl FnOnce() -> T,
 ) -> &'static T {
-    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
-    let table = TABLE.get_or_init(Mutex::default);
-    let mut table = table.lock_recover();
-    let entry = *table
-        .entry(key)
-        .or_insert_with(|| Box::leak(Box::new(make())) as Leaked);
-    drop(table);
+    let mut make = Some(make);
+    let entry = leaked_entry(key, &mut || match make.take() {
+        Some(make) => Box::leak(Box::new(make())) as Leaked,
+        None => unreachable_definition(),
+    });
     // One value per (type, T) key is ever inserted, so the downcast holds.
     entry
         .downcast_ref::<T>()
         .unwrap_or_else(|| unreachable_definition())
+}
+
+/// The value kept under `key`, made by `make` the first time. Not generic,
+/// so the table is compiled once rather than for every app and key.
+#[inline(never)]
+fn leaked_entry(key: TypeId, make: &mut dyn FnMut() -> Leaked) -> Leaked {
+    static TABLE: OnceLock<Mutex<HashMap<TypeId, Leaked>>> = OnceLock::new();
+    let table = TABLE.get_or_init(Mutex::default);
+    let mut table = table.lock_recover();
+    *table.entry(key).or_insert_with(make)
 }
 
 #[allow(
@@ -414,21 +422,33 @@ pub fn definition<A: ResourceApp>() -> &'static ApplicationDefinition {
 }
 
 fn definition_of<A: ResourceApp>() -> ApplicationDefinition {
+    // An app's library and settings are one record per workspace: every
+    // window of it there opens the same data, across closing, reopening and
+    // restarts, and keeps only its view of it (scroll, selection). An app
+    // whose windows each show a resource of their own (a document, a
+    // session) keeps that per window.
+    application_definition(hooks::<A>(), A::OPENS, !A::WINDOW_RESOURCE, create::<A>)
+}
+
+/// The toolkit definition of the app `app` describes. Not generic, so it is
+/// compiled once rather than for every app.
+#[inline(never)]
+fn application_definition(
+    app: &AppHooks,
+    opens: &'static [&'static str],
+    room_record: bool,
+    create: ComponentFactory,
+) -> ApplicationDefinition {
     ApplicationDefinition {
-        app_id: A::ID,
-        title: A::TITLE,
-        icon: icon(hooks::<A>()),
-        record_kind: RecordKind::new(<A::Resource as Resource>::KIND),
+        app_id: app.id,
+        title: app.title,
+        icon: icon(app),
+        record_kind: RecordKind::new(app.kind),
         required: vec![],
         optional: vec![],
-        opens: A::OPENS,
-        // An app's library and settings are one record per workspace: every
-        // window of it there opens the same data, across closing, reopening
-        // and restarts, and keeps only its view of it (scroll, selection).
-        // An app whose windows each show a resource of their own (a
-        // document, a session) keeps that per window.
-        room_record: !A::WINDOW_RESOURCE,
-        create: create::<A>,
+        opens,
+        room_record,
+        create,
     }
 }
 
@@ -1053,7 +1073,7 @@ pub(crate) fn data_dir_host(
     author: &UserId,
     permissions: Rc<RefCell<PermissionContext>>,
 ) -> Result<ApplicationHost, LaunchError> {
-    let root = std::path::absolute(directory).map_err(operation)?;
+    let root = std::path::absolute(directory).map_err(super::headless::operation)?;
     ApplicationHost::new(
         root,
         "local-device".into(),
@@ -1069,11 +1089,6 @@ pub(crate) fn data_dir_host(
 /// later role change reaches the running app.
 pub(crate) fn role_permissions(author: &str, role: Role) -> Rc<RefCell<PermissionContext>> {
     Rc::new(RefCell::new(PermissionContext::member(author, role)))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn operation(error: impl std::fmt::Display) -> LaunchError {
-    LaunchError::Operation(error.to_string())
 }
 
 /// Prepare `definition` on `host`: the record a launch named, else the one
@@ -1356,7 +1371,7 @@ fn prepare_named(
         let profile = tempfile::Builder::new()
             .prefix("tilo-capture-")
             .tempdir()
-            .map_err(operation)?;
+            .map_err(super::headless::operation)?;
         let root = profile.path().join("state");
         let profile_root = profile.path().to_path_buf();
         let content = profile_content(profile.path());
@@ -1380,19 +1395,19 @@ fn prepare_named(
                 .provide_capture(Capture::new(args.scenario.clone()));
             // The theme the capture draws in is the stored choice its
             // controls show.
-            ui_core::storage::SettingsDocument::File(super::testing::profile_settings(
+            ui_core::storage::SettingsDocument::File(super::headless::profile_settings(
                 &profile_root,
             ))
             .update_section(
                 ui_core::theme::APPEARANCE_SECTION,
                 ui_core::launch::capture_appearance(args),
             )
-            .map_err(operation)?;
+            .map_err(super::headless::operation)?;
         }
         if private {
             prepared.context.provide_private();
         }
-        return Ok(super::testing::in_profile(
+        return Ok(super::headless::in_profile(
             prepared,
             &profile_root,
             definition.app_id,
@@ -1409,10 +1424,10 @@ fn prepare_named(
             |mut prepared| {
                 prepared
                     .context
-                    .provide_content(super::testing::data_dir_content(directory.as_ref()));
-                super::testing::in_profile(
+                    .provide_content(super::headless::data_dir_content(directory.as_ref()));
+                super::headless::in_profile(
                     prepared,
-                    &super::testing::data_dir_root(directory.as_ref()),
+                    &super::headless::data_dir_root(directory.as_ref()),
                     definition.app_id,
                 )
             },
@@ -1591,7 +1606,7 @@ pub fn run<A: ResourceApp>() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
-        print_surface_report(&super::testing::surface_report::<A>());
+        print_surface_report(&super::headless::surface_report::<A>());
     }
     if let Some(code) = run_helper::<A>(&args) {
         #[allow(
@@ -1604,7 +1619,7 @@ pub fn run<A: ResourceApp>() {
 }
 
 /// The flag that makes an app's binary print its
-/// [`surface_report`](super::testing::surface_report)
+/// [`surface_report`](super::headless::surface_report)
 /// instead of running: what `tilo-app surface` and `tilo-app check` read.
 pub const SURFACE_FLAG: &str = "--surface";
 

@@ -125,14 +125,10 @@ mod tests {
     fn admitted() -> (StatePeer, SignedOp, SigningKey, DeviceCert, SystemTime) {
         let (mut peer, key, other, certificate, now) = crate::admission_tests::seeded();
         peer.select_admission_v5().unwrap();
+        let current_document = peer.document("test.app", "tab:1").unwrap();
         let NeighbourMsg::AppDocument { envelope, .. } = peer
-            .publish_document(
-                "test.app",
-                "tab:1",
-                peer.document("test.app", "tab:1").unwrap(),
-                &key,
-                now,
-            )
+            .publication_mut()
+            .publish_document("test.app", "tab:1", current_document, &key, now)
             .unwrap()
         else {
             panic!("expected actual signed document publication")
@@ -147,6 +143,7 @@ mod tests {
         let bytes = peer.document("test.app", "tab:1").unwrap();
         let NeighbourMsg::AppDocument { envelope, .. } = peer
             .clone()
+            .publication_mut()
             .publish_document("test.app", "tab:1", bytes, &key, now)
             .unwrap()
         else {
@@ -223,6 +220,7 @@ mod tests {
             envelope: first, ..
         } = peer
             .clone()
+            .publication_mut()
             .publish_document("test.app", "tab:1", original.clone(), &key, now)
             .unwrap()
         else {
@@ -236,6 +234,7 @@ mod tests {
             envelope: stale, ..
         } = peer
             .clone()
+            .publication_mut()
             .publish_document("test.app", "tab:1", changed.save(), &key, now)
             .unwrap()
         else {
@@ -263,6 +262,7 @@ mod tests {
             envelope: fresh, ..
         } = peer
             .clone()
+            .publication_mut()
             .publish_document("test.app", "tab:1", changed.save(), &key, now)
             .unwrap()
         else {

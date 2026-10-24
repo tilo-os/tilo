@@ -336,7 +336,7 @@ fn observe(window: &ObservedWindow) {
     #[cfg(target_os = "linux")]
     {
         if let Some(expected) = window.pid_start_time
-            && crate::shell::launcher::proc_stat(window.pid).map(|(_, start)| start)
+            && crate::shell::host_runtime::proc_stat(window.pid).map(|(_, start)| start)
                 != Some(expected)
         {
             return;

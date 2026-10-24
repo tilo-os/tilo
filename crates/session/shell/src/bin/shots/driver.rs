@@ -32,6 +32,7 @@ use taffy::prelude::NodeId;
 mod desktop_control;
 mod downloaded_scene;
 mod invite_scenes;
+mod now_playing_fixture;
 mod scene_catalogue;
 mod search_seed;
 mod two_groups_scene;
@@ -93,6 +94,8 @@ pub enum LockVisualState {
     Verifying,
     Error,
     Notifications,
+    /// The compact now-playing card under the credential panel.
+    NowPlaying,
 }
 
 impl ShellDriver {
@@ -624,6 +627,7 @@ impl ShellDriver {
                 self.fb.scene_size(),
                 None,
             );
+            let lock_player = now_playing_fixture::shots_player();
             let view = match state {
                 LockVisualState::Default => shell::compositor::lock_screen::LockView {
                     clock: "12:34",
@@ -653,6 +657,12 @@ impl ShellDriver {
                     clock: "12:34",
                     date: "Monday, 7 September",
                     notification_count: 3,
+                    ..Default::default()
+                },
+                LockVisualState::NowPlaying => shell::compositor::lock_screen::LockView {
+                    clock: "12:34",
+                    date: "Monday, 7 September",
+                    now_playing: Some(&lock_player),
                     ..Default::default()
                 },
             };
@@ -1299,8 +1309,12 @@ impl ShellDriver {
     /// this one, and three people here, one with a status line they wrote,
     /// one whose machine generated theirs, one with none, each on a window.
     pub fn seed_desk_for_shots(&mut self) {
+        use shell::shell::now_playing::FixturePlayers;
         use shell::shell::state::Collaborator;
-        self.seed_now_playing_for_shots();
+        let mut player = now_playing_fixture::shots_player();
+        player.artwork = None;
+        self.host_mut()
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
         let handle = self.chrome_handle();
         let room = {
             let st = handle.borrow();
@@ -1350,28 +1364,13 @@ impl ShellDriver {
         }
     }
 
-    /// A music player playing, as the now-playing card reads it.
+    /// A song playing with its cover, for the now-playing cards.
     pub fn seed_now_playing_for_shots(&mut self) {
-        use shell::shell::now_playing::{FixturePlayers, PlaybackStatus, PlayerSnapshot};
-        let player = PlayerSnapshot {
-            bus_name: "org.mpris.MediaPlayer2.spotify.instance7".to_string(),
-            identity: "Spotify".to_string(),
-            status: PlaybackStatus::Playing,
-            title: Some("Teardrop".to_string()),
-            artist: Some("Massive Attack".to_string()),
-            artwork: None,
-            track_id: Some("/org/tilo/shots/track/1".to_string()),
-            length_us: Some(330_000_000),
-            position_us: 94_000_000,
-            can_play: true,
-            can_pause: true,
-            can_seek: true,
-            can_go_next: true,
-            can_go_previous: true,
-            observed_at: Instant::now(),
-        };
+        use shell::shell::now_playing::FixturePlayers;
         self.host_mut()
-            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![player])));
+            .set_now_playing_source_for_shots(std::rc::Rc::new(FixturePlayers::new(vec![
+                now_playing_fixture::shots_player(),
+            ])));
     }
 
     /// Three people and an agent here, as the live shell folds them: Ada
@@ -2123,6 +2122,7 @@ impl ShellDriver {
             "notifications-one" => self.scene_notifications_one(),
             "notifications-dnd" => self.scene_notifications_dnd(),
             "notifications-graphics" => self.scene_notifications_graphics(),
+            "notifications-call" => return self.scene_notifications_call(),
             "multi-group" => self.scene_multi_group(),
             "maximized" => return self.scene_maximized(),
             "two-groups-focus" => self.scene_two_groups_focus(),
@@ -3691,6 +3691,30 @@ impl ShellDriver {
                     .with_shown_at(settled_at),
             );
         });
+    }
+
+    /// An incoming call over a maximized window: the call's card stands
+    /// below the window's bar, never over its History, restore or close,
+    /// and offers its answers on the card.
+    fn scene_notifications_call(&mut self) -> Result<(), String> {
+        use tilo_desktop::notifications::{Addressed, Notification};
+        self.scene_maximized()?;
+        let settled_at = Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        self.with_chrome(|st| {
+            let mut call = Notification::new("Jonas is calling", "Video call")
+                .with_from("Jonas", "peer:jonas")
+                .with_addressed(Addressed::IncomingCall)
+                .with_dismiss_after(Duration::from_secs(60))
+                .with_shown_at(settled_at);
+            call.actions = vec![
+                ("answer".into(), "Answer".into()),
+                ("decline".into(), "Decline".into()),
+            ];
+            st.push_notification_full(call);
+        });
+        Ok(())
     }
 
     /// The notice a desktop shows once it gave a dead GPU up for software, as the

@@ -36,7 +36,7 @@ use fuser::{
 use libc::{
     EBUSY, EDQUOT, EEXIST, EFBIG, EINVAL, EIO, EISDIR, ENOENT, ENOSPC, ENOTDIR, ENOTEMPTY, EROFS,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
@@ -5914,6 +5914,9 @@ async fn reconcile_pinned_hydration(
 ) -> PinnedPassOutcome {
     let has_pinned_policy = registry.lock_recover().has_pinned_policy();
     if !has_pinned_policy {
+        // Nothing is kept offline any more: what was goes back to the cache
+        // budget. An in-memory pass over the area, no namespace walk.
+        keep_offline_only(&hydrator, HashSet::new()).await;
         return PinnedPassOutcome::default();
     }
     let candidates = {
@@ -5979,7 +5982,26 @@ async fn reconcile_pinned_hydration(
         ));
     }
     while in_flight.join_next().await.is_some() {}
+    // The pins decide what the cache budget may take: a file already here
+    // when it was pinned is held from now on, and what no pin covers any
+    // more (unpinned, an earlier version, a deleted file) is cache again.
+    let kept = pinned_files
+        .iter()
+        .filter_map(|candidate| candidate.hash.map(|hash| *hash.as_bytes()))
+        .collect();
+    keep_offline_only(&hydrator, kept).await;
     plan.outcome
+}
+
+/// Holds exactly the file-backed content in `kept` against the cache budget
+/// ([`crate::store::area::FileArea::keep_offline_only`]), off the async
+/// runtime's workers: it records every change it makes.
+async fn keep_offline_only(hydrator: &Hydrator, kept: HashSet<[u8; 32]>) {
+    let files = Arc::clone(hydrator.store.files());
+    let applied = tokio::task::spawn_blocking(move || files.keep_offline_only(&kept)).await;
+    if let Ok(Err(error)) = applied {
+        eprintln!("could not record which content is kept offline: {error}");
+    }
 }
 
 /// Run one member of a bounded scheduler batch.  All members observe the same

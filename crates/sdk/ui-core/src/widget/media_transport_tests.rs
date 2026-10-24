@@ -3,7 +3,7 @@
 use super::*;
 use crate::headless::FrameHarness;
 use crate::state::State;
-use crate::widget::{ContentKind, NavShell};
+use crate::widget::{ContentKind, NavShell, Text};
 use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 

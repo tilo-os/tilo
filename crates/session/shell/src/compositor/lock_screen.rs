@@ -31,7 +31,7 @@ use crate::compositor::lock_auth::UNAVAILABLE_MSG;
 use crate::shell::i18n::{t, t_args};
 use crate::shell::now_playing::PlayerSnapshot;
 use crate::shell::quick_settings::now_playing::{
-    Transport, paint_artwork, paint_transport, transport_rects,
+    Transport, paint_song_at_rest, paint_transport, transport_rects,
 };
 
 // `ui::accesskit_bridge` reserves 0, low ids, 1<<60, 2<<60, 1<<62 and
@@ -1192,62 +1192,22 @@ fn draw_lock_media(
         None,
         &card,
     );
-    let image = player.artwork.as_ref().map(|art| {
-        ui::raster::rgba8(
-            vello::peniko::Blob::new(art.rgba.clone()),
-            art.width,
-            art.height,
-        )
-    });
-    paint_artwork(
-        scene,
-        Affine::IDENTITY,
-        text,
-        theme,
-        media.art,
-        player,
-        image.as_ref(),
-    );
     let type_scale = ui::tokens::Typography::default();
-    let title_size = scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
-    let caption_size =
-        scaled_text_size(type_scale.size(ui::TextRole::Caption), layout.scale, theme);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "lock output geometry is bounded to compositor dimensions; f32 width is sufficient for text shaping"
-    )]
-    let width = media.text.width().max(1.0) as f32;
-    let title = text.elide_to_width(player.headline(), title_size, width);
-    let subline = player
-        .subline()
-        .map(|subline| text.elide_to_width(subline, caption_size, width));
-    let (_, title_h) = text.measure(&title, title_size, None);
-    let caption_h = subline.as_ref().map_or(0.0, |line| {
-        f64::from(text.measure(line, caption_size, None).1)
-    });
-    let top = media.text.center().y - f64::midpoint(f64::from(title_h), caption_h);
-    text.draw_text(
-        scene,
-        &title,
-        title_size,
-        theme.text_primary,
-        Affine::translate((media.text.x0, top)),
-        None,
+    let title = ui::text_render::TextStyle::new(scaled_text_size(
+        type_scale.size(ui::TextRole::Caption),
+        layout.scale,
+        theme,
+    ));
+    let caption = title.clone();
+    paint_song_at_rest(
+        &mut ui::paint::PaintCtx::new(scene, Affine::IDENTITY, text, theme),
+        player,
+        media.art,
+        Some((media.text, &title, &caption)),
     );
-    if let Some(subline) = subline {
-        text.draw_text(
-            scene,
-            &subline,
-            caption_size,
-            theme.text_dim,
-            Affine::translate((media.text.x0, top + f64::from(title_h))),
-            None,
-        );
-    }
     paint_transport(
         scene,
         Affine::IDENTITY,
-        text,
         theme,
         &media.transport,
         player,

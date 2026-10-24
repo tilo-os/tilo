@@ -623,6 +623,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
     let state = room.collaboration().clone();
     let mut candidate = room.peer().clone();
     candidate
+        .publication_mut()
         .publish_document("notes", "plan", large(), &key, SystemTime::now())
         .unwrap();
     room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
@@ -659,6 +660,7 @@ fn a_large_record_is_stored_apart_and_written_only_when_it_changes() {
         automerge::AutoCommit::load(&room.peer().document("notes", "plan").unwrap()).unwrap();
     edited.put(automerge::ROOT, "edited", true).unwrap();
     candidate
+        .publication_mut()
         .publish_document("notes", "plan", edited.save(), &key, SystemTime::now())
         .unwrap();
     room.commit(candidate, &key, SystemTime::now(), |_, _| Ok(state.clone()))
