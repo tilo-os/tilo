@@ -104,8 +104,20 @@ with tempfile.TemporaryDirectory(prefix='tilo-cef-sealed-') as profile:
         assert ready.get('selection_text') is True, ready
         send({'op': 'resize', 'width': 800, 'height': 400, 'scale_factor': 1.0})
         send({'op': 'navigate', 'url': URL})
-        until(lambda e: e['event'] == 'loaded' and e['url'] == URL, what='loaded')
-        until(lambda e: e['event'] == 'frame', what='a painted frame')
+        # A frame of the document, which may come before it says it loaded:
+        # the page is painted once, and nothing on it changes after.
+        until(lambda e: e['event'] == 'uri' and e['url'] == URL, what='the document')
+        painted = []
+
+        def loaded(event):
+            """Whether the document loaded; a frame on the way is kept."""
+            if event['event'] == 'frame':
+                painted.append(event)
+            return event['event'] == 'loaded' and event['url'] == URL
+
+        until(loaded, what='loaded')
+        if not painted:
+            until(lambda e: e['event'] == 'frame', what='a painted frame')
         # The refresh and the frame had their chance: nothing was opened.
         until(lambda e: False, timeout=2.0)
         assert not [e for e in seen if e['event'] == 'open_tab'], 'a refresh opened something'

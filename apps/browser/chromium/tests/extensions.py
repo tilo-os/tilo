@@ -7,15 +7,25 @@ from pathlib import Path
 import unittest
 from capabilities import Capabilities
 from native_regressions import Host
+# What the fixture's content script says first, before it asks its worker.
+CONTENT_RAN = 'content script ran'
+
+
 def extension_page(host, url, attempts=20):
     """The fixture's report on `url`, once the extension has registered:
     an extension loads in the background, and a page opened before it is
-    ready runs without its content script."""
+    ready runs without its content script, so it is opened again. Once the
+    content script ran, its worker's answer is waited for there: a worker
+    starting for the first time takes its time, and a page left before it
+    answers never hears back."""
+    report = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('{')
+    ran = lambda e: report(e) or (e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'] == CONTENT_RAN)
     for attempt in range(attempts):
+        mark = len(host.seen)
         host.navigate(url + ('&' if '?' in url else '?') + 'attempt=' + str(attempt))
-        title = host.latest_title()
-        if title.startswith('{'):
-            return json.loads(title)
+        if any(ran(e) for e in host.seen[mark:]):
+            found = next((e for e in host.seen[mark:] if report(e)), None) or host.until(report)
+            return json.loads(found['title'])
         time.sleep(.25)
     raise AssertionError('the extension never ran on ' + url + ': ' + host.latest_title())
 

@@ -1373,7 +1373,11 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/page_popups.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/tabs.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/navigation.py target/chromium/tilo-chromium-host
+HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
+  python3 apps/browser/chromium/tests/native_regressions.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/page_dialogs.py target/chromium/tilo-chromium-host
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \

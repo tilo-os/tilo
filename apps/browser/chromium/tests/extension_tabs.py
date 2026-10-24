@@ -1207,7 +1207,9 @@ class ExtensionTabs(unittest.TestCase):
         # The engine blocks with the extension's rules before it first runs
         # its worker, and requests before the worker listens go uncounted,
         # as in Chrome: the page loads once it listens.
-        listens = "typeof chrome.webRequest == 'object' && chrome.webRequest.onErrorOccurred.hasListeners()"
+        # A worker attached to as it starts has no `chrome` yet.
+        listens = ("typeof globalThis.chrome == 'object' && typeof chrome.webRequest == 'object'"
+                   " && chrome.webRequest.onErrorOccurred.hasListeners()")
         deadline = time.monotonic() + HANG_BOUND
         while self.in_worker(host, ids['shield'], listens) is not True:
             self.assertLess(time.monotonic(), deadline, 'the worker never listened')
