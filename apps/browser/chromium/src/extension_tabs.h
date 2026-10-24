@@ -1143,11 +1143,22 @@ class ExtensionTabs {
   // of it (`webNavigation.onCreatedNavigationTarget`), as in Chrome.
   void Targeted(int tab, const std::string& url) {
     const auto now = std::chrono::steady_clock::now();
-    auto found = std::find_if(targets_.begin(), targets_.end(), [&](const Target& pending) {
-      if (now - pending.asked > std::chrono::seconds(10)) return false;
-      if (pending.target) return pending.target == tab;
-      return pending.source != tab && !openers_.count(tab) && (url == pending.url || url.rfind(pending.url, 0) == 0);
-    });
+    // The popup the host made for the request, else the request for this
+    // very address, else the oldest whose address this one extends. Tabs
+    // opened at once show their pages in any order: one asked for on
+    // `/a/b` showing first must not take the request for `/a`.
+    const auto fit = [&](const Target& pending) {
+      if (now - pending.asked > std::chrono::seconds(10)) return 0;
+      if (pending.target) return pending.target == tab ? 3 : 0;
+      if (pending.source == tab || openers_.count(tab)) return 0;
+      if (url == pending.url) return 2;
+      return !pending.url.empty() && url.rfind(pending.url, 0) == 0 ? 1 : 0;
+    };
+    auto found = targets_.end();
+    int best = 0;
+    for (auto it = targets_.begin(); it != targets_.end(); ++it) {
+      if (const int rank = fit(*it); rank > best) { best = rank; found = it; }
+    }
     if (found == targets_.end()) return;
     const auto pending = *found;
     targets_.erase(found);
