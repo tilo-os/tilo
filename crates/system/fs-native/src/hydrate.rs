@@ -691,6 +691,16 @@ impl Shared {
         let mut files = self.files.lock().map_err(|_| poisoned())?;
         let mut filled = 0u64;
         loop {
+            let Some(st) = files.get_mut(&key) else {
+                return Ok(filled);
+            };
+            let missing = st.missing.intersect(want);
+            if missing.is_empty() {
+                // Even for a reader failed at its deadline: a fetch that
+                // landed late may have made the whole file resident, and
+                // only this path drops its mark and its entry.
+                break;
+            }
             if reader.is_some_and(Blocked::answered) {
                 // The reader was failed at its deadline: nothing more is
                 // fetched for it. A fetch already made is kept.
@@ -698,13 +708,6 @@ impl Shared {
                     io::ErrorKind::TimedOut,
                     "the access was failed at its deadline",
                 ));
-            }
-            let Some(st) = files.get_mut(&key) else {
-                return Ok(filled);
-            };
-            let missing = st.missing.intersect(want);
-            if missing.is_empty() {
-                break;
             }
             let mut claim = Vec::new();
             for m in &missing {

@@ -729,3 +729,66 @@ fn a_quiet_peer_fails_blocked_readers_at_the_bound_and_blocks_no_one_else() {
     assert_eq!(&edited, b"local edit");
     h.stop();
 }
+
+#[test]
+fn a_fetch_that_lands_after_its_reader_timed_out_still_releases_the_file() {
+    let Some(s) = fanotify_scratch("hydrate_late_landing") else {
+        return;
+    };
+    let bound = Duration::from_millis(500);
+    let granule = 256 * 1024;
+    let source = Arc::new(QuietSource {
+        pattern: PatternFetcher::new(Duration::ZERO),
+        quiet: std::sync::Mutex::new(true),
+        resumed: std::sync::Condvar::new(),
+    });
+    let h = Hydrator::start(
+        Arc::clone(&source) as Arc<dyn fs_native::hydrate::Fetcher>,
+        HydratorConfig {
+            granule,
+            workers: 2,
+            readahead_max: 0,
+            access_bound: bound,
+            ..HydratorConfig::default()
+        },
+    )
+    .unwrap();
+    // One granule: the fetch the reader gave up on is the one that makes
+    // the whole file resident.
+    let path = s.live.join("note.txt");
+    h.create_placeholder(&path, &spec(11, granule)).unwrap();
+    let mut buf = vec![0u8; 4096];
+    let err = File::open(&path)
+        .unwrap()
+        .read_exact_at(&mut buf, 0)
+        .expect_err("bytes a quiet peer holds cannot be read");
+    assert_eq!(err.raw_os_error(), Some(libc::EIO), "{err}");
+
+    // The peer speaks again and the abandoned fetch lands: the file is
+    // resident, so it stops being served as a placeholder. Its residency
+    // record goes last, after its mark.
+    source.set_quiet(false);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while h.residency(&path).unwrap() != Residency::Resident || fs_native_xattr(&path).is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "a fully fetched file is still tracked as {:?}",
+            h.residency(&path).unwrap()
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // Its mark is gone too: reading it raises no event at all.
+    let events = h.stats().events.load(Ordering::Relaxed);
+    File::open(&path)
+        .unwrap()
+        .read_exact_at(&mut buf, 0)
+        .unwrap();
+    assert_eq!(buf, pattern(11, 0, 4096));
+    assert_eq!(
+        h.stats().events.load(Ordering::Relaxed),
+        events,
+        "a resident file still raises an event per read"
+    );
+    assert_eq!(source.pattern.calls(), [(0, granule)]);
+    h.stop();
+}
