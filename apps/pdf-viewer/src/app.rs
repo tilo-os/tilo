@@ -3,7 +3,7 @@
 //! It is a single full-window widget that manages its own internal layout
 //! (thumbnail rail, page canvas, comments/outline/signatures sidebar) and
 //! draws each region itself; its controls are slots in the window's bar
-//! ([`window_bar`]) and find is the window bar's search. This
+//! (`window_bar`) and find is the window bar's search. This
 //! gives pixel control over the reader chrome, mirroring the custom-draw
 //! approach the toolkit uses for things like the status bar, while keeping
 //! all durable markup — annotations, comments, signatures — in the shared
@@ -5335,7 +5335,7 @@ impl Widget for PdfApp {
             || self.review.is_resizing()
     }
 
-    /// See [`PdfApp::scroll_damage`].
+    /// See `PdfApp::scroll_damage`.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.scroll_damage(regions);
     }

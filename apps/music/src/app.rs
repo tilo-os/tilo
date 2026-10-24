@@ -4,7 +4,7 @@
 //! grids, track lists, detail pages, search and the now-playing transport
 //! bar), so the app owns its layout math and hit-testing rather than
 //! composing stock taffy widgets. User-authored library state is the
-//! [`Library`](crate::model::Library) resource; `sync` refreshes that render
+//! [`Library`] resource; `sync` refreshes that render
 //! snapshot each frame. Playback, downloads and other device effects stay
 //! local so one device can never start audio or consume another device's disk.
 

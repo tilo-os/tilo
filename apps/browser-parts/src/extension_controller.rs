@@ -3,9 +3,9 @@
 //!
 //! The controller owns no widget state the document needs; it is the
 //! window's local, device-only view of the profile's extensions. Interface
-//! closures queue [`Command`]s, `sync` runs them and starts the slow parts
+//! closures queue `Command`s, `sync` runs them and starts the slow parts
 //! (download, verify, unpack) on worker threads whose results come back
-//! through [`Outcome`]s, so nothing here blocks a frame. The profile itself
+//! through `Outcome`s, so nothing here blocks a frame. The profile itself
 //! (which extensions are installed, approved and pinned, their manifests and
 //! icons) is read and written on one worker of its own, in order, since the
 //! window may be drawn on the compositor's frame loop.

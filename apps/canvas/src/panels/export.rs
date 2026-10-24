@@ -248,7 +248,7 @@ pub fn encode_raster(
 }
 
 /// About how many bytes the export of `region` of `art` comes to, without
-/// making all of it: pictures up to [`SAMPLED`] pixels on a side are made
+/// making all of it: pictures up to `SAMPLED` pixels on a side are made
 /// whole; a larger one is made at two small sizes, and the way its bytes
 /// grew between them carries on to its own size (flat vector art grows
 /// with its edges, a painting or photo with its area).

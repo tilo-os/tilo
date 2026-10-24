@@ -2,14 +2,14 @@
 //!
 //! A hex editor is fundamentally a dense, fixed-pitch grid with a cursor
 //! synced across two parallel columns; that is a canvas, not a composition of
-//! stock form widgets, so the view paints the grid itself ([`paint`]) and
+//! stock form widgets, so the view paints the grid itself (`paint`) and
 //! reads every colour and metric from the `Theme`. Everything around the
 //! grid is the toolkit's:
 //!
 //!   * window bar — the file name as the window's location, Overwrite and
 //!     Insert as its views, the inspector's toggle as its action
-//!     ([`window_bar`]); the window's search finds and replaces in the bytes
-//!     ([`find`]) and its History control opens the record's History
+//!     (`window_bar`); the window's search finds and replaces in the bytes
+//!     (`find`) and its History control opens the record's History
 //!   * body      — offset gutter | hex byte columns | ASCII column
 //!   * inspector — a [`SidebarDrawer`] at the trailing edge: docked beside
 //!     the content when there is room, a floating drawer when there is not,

@@ -567,7 +567,7 @@ pub fn rotate_page_action(id: &str, degrees: i32) -> Invoke<PdfMarkup> {
     )
 }
 
-/// The presentation context the reader hands [`provide_resources`] so the
+/// The presentation context the reader hands `provide_resources` so the
 /// document-level "Add note" action can be built from the live reading position
 /// and author — state that lives in the app, not the document.
 #[derive(Debug, Clone)]
