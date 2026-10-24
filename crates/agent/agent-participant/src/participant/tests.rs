@@ -1269,3 +1269,46 @@ fn a_step_brief_leaves_inlined_pictures_out() {
     assert!(!brief.contains("iVBORw0KGgo"), "{brief}");
     assert!(brief.contains("(data:image/png,"), "{brief}");
 }
+
+/// A member who lacks content the room's records reference and asks the
+/// room for it is answered from the room's store, where the content an
+/// agent's records imported is kept: the pieces make up the bytes asked
+/// for. Content of another room, or none, is word that it is not here.
+#[test]
+fn a_member_asking_for_room_content_is_answered_from_the_rooms_store() {
+    use tilo_browser_peer::content::ContentWants;
+
+    const ROOM: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+    let (agent, person) = ([7_u8; 32], [9_u8; 32]);
+    let store = tilo_content::ContentStore::memory();
+    // More than one piece's worth, so the answer is several.
+    let footage: Vec<u8> = (0..700_000_u32)
+        .map(|i| u8::try_from(i % 251).unwrap())
+        .collect();
+    let hash = store.put(&footage).unwrap();
+
+    let mut wants = ContentWants::default();
+    let ask = |wants: &mut ContentWants<()>, room: &str, hash: &str| {
+        wants
+            .ask(&person, (), ("so.tilo.video-editor", room), hash, 1)
+            .unwrap()
+    };
+    let request = ask(&mut wants, ROOM, &hash);
+    let frames = room_content::answer(&agent, &person, &request, ROOM, &store);
+    assert!(frames.len() > 1, "the footage comes in pieces");
+    let arrived: Vec<_> = frames
+        .iter()
+        .filter_map(|frame| wants.piece(&person, frame))
+        .collect();
+    assert_eq!(arrived.len(), 1);
+    assert_eq!(arrived[0].hash, hash);
+    assert_eq!(arrived[0].bytes, footage, "the bytes the room keeps");
+
+    let other_room = ask(&mut wants, "0b5e3c1a-9f0d-4e2b-8a7c-3d6f1e2a4b5c", &hash);
+    let missing = ask(&mut wants, ROOM, &"ab".repeat(32));
+    for request in [other_room, missing] {
+        let frames = room_content::answer(&agent, &person, &request, ROOM, &store);
+        assert_eq!(frames.len(), 1, "one word that it is not here");
+        assert!(wants.piece(&person, &frames[0]).is_none());
+    }
+}

@@ -48,6 +48,7 @@ mod logs;
 mod parts;
 mod planning;
 mod records;
+mod room_content;
 mod running;
 pub(crate) mod unopened;
 mod waits;
@@ -649,6 +650,13 @@ impl AgentParticipant {
                 active,
             } if workspace_id == self.workspace_id => {
                 self.live.member(device, active);
+            }
+            PeerEvent::ContentWanted {
+                workspace_id,
+                from,
+                request,
+            } if workspace_id == self.workspace_id && from != self.device() => {
+                self.content_wanted(from, &request);
             }
             _ => {}
         }
