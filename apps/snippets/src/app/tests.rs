@@ -219,9 +219,7 @@ fn controls_submit_library_actions_as_one_undo_step_each() {
     // the person confirms what the host asks.
     press_bar(&mut app, window_bar::DELETE);
     assert_eq!(app.state().snippets.len(), 3, "deleting waits for consent");
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    assert!(app.confirm_asked().is_some(), "the host asks");
     assert!(
         app.state().snippets.get(&made).is_none(),
         "the confirmed delete applied: {:?}",
