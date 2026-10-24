@@ -1335,7 +1335,7 @@ command -v cmake >/dev/null || dnf install -y cmake
 python3 scripts/browser/build-host.py --jobs 8
 ctest --test-dir target/chromium-build --output-on-failure
 # Chromium refuses root, and the host never turns its sandbox off: the page tests run as a user.
-chmod -R a+rX target/chromium apps/browser/chromium/tests apps/browser/chromium/src apps/browser-parts/assets/extension-manager
+chmod -R a+rX target/chromium apps/browser/chromium/tests apps/browser/chromium/src apps/browser-parts/assets/extension-manager apps/browser-parts/src/extension_toolbar.rs
 mkdir -p -m 1777 /tmp/host-test
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/document_size.py target/chromium/tilo-chromium-host
@@ -1371,7 +1371,7 @@ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-g
 HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- \
   python3 apps/browser/chromium/tests/resize_frames.py target/chromium/tilo-chromium-host
 """
-inputs = ["apps/browser/chromium/**", "apps/browser/tilo-app.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
+inputs = ["apps/browser/chromium/**", "apps/browser-parts/assets/extension-manager/**", "apps/browser-parts/src/extension_toolbar.rs", "apps/browser/tilo-app.toml", "scripts/browser/build-host.py", "scripts/browser/cef-lock.json", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock", "tools/ci/ensure-browser-dependencies.sh"]
 writable_sources = true
 cost = "heavy"
 timeout_secs = 5400

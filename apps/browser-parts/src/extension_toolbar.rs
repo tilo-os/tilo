@@ -329,9 +329,13 @@ pub fn detach_request(session: &str) -> (&'static str, Value) {
     ("Target.detachFromTarget", json!({"sessionId": session}))
 }
 
-/// Reads the badge and title from `chrome.action`.
+/// Reads the badge and title from `chrome.action`: those the extension set
+/// for the page the person is on, else its own. The engine's tab script in
+/// the worker knows the page (`extension_tabs.js`).
 const READ_ACTION: &str = "(async()=>{const a=chrome.action||chrome.browserAction;\
-const [text,title]=await Promise.all([a.getBadgeText({}),a.getTitle({})]);\
+let d={};try{const[t]=await chrome.tabs.query({active:true,lastFocusedWindow:true});\
+if(t&&Number.isInteger(t.id))d={tabId:t.id}}catch(e){}\
+const [text,title]=await Promise.all([a.getBadgeText(d),a.getTitle(d)]);\
 return JSON.stringify({text,title})})()";
 
 pub fn evaluate_request() -> (&'static str, Value) {

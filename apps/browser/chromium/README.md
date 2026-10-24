@@ -399,9 +399,11 @@ content scripts (with `sender.tab`) work without help.
 `src/extension_tabs.h` answers the rest from the host's own tabs:
 
 - `src/extension_tabs.js` runs in each extension's service worker (the Browser
-  makes the worker run it first, `extensions.rs` `prepare_tabs`) and in its
-  own pages (a document script). It answers `tabs`, `windows`,
-  `action.onClicked`, `contextMenus` and `scripting` by asking the host at
+  makes the worker run it first, `extensions.rs` `prepare_tabs`, without
+  moving the worker: extensions read their worker's address and load their
+  helpers against it) and in its own pages (a document script). It answers
+  `tabs`, `windows`, `action.onClicked`, `contextMenus`, the button's look
+  for one tab and `scripting` by asking the host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
   written into it; a page cannot show either.
@@ -411,6 +413,12 @@ content scripts (with `sender.tab`) work without help.
 - What a tab shows an extension follows Chrome: its address and title with
   `tabs`, access to the site, or a click on the extension's button over it
   (`activeTab`), which also lets it script the page until the page navigates.
+- `tabs.detectLanguage` answers the language the page declares, and
+  `tabs.getZoom` the page's zoom.
+- A badge, title, popup or state an extension sets for one tab lasts until the
+  tab navigates or closes, and the toolbar shows the badge and title of the
+  page the person is on. It shows the extension's own icon, so an icon or
+  badge colour for one tab is accepted and not shown.
 - `scripting.executeScript` runs in the extension's own world in the page,
   where its content scripts run. Where it has none, the host makes a world
   that gets a content script's `runtime`, `storage` and `i18n`
@@ -454,6 +462,7 @@ content scripts (with `sender.tab`) work without help.
 - Extensions' keyboard shortcuts (`commands`) and side panels are not
   offered. Their context menu items show no checkmark and no submenu, and
   appear only in a page's menu, not the toolbar button's.
+- `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs
