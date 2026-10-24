@@ -8,6 +8,9 @@ use ui::{
 };
 
 pub(crate) const FIND_INPUT: &str = "browser.find.input";
+/// The smallest and largest zoom levels, `1.2` times apart each.
+const MIN_ZOOM: f64 = -5.0;
+const MAX_ZOOM: f64 = 9.0;
 #[derive(Clone, Copy)]
 pub(crate) enum Action {
     Open,
@@ -75,7 +78,7 @@ impl DailyControls {
                 self.zoom = if step == 0 {
                     0.0
                 } else {
-                    (self.zoom + f64::from(step)).clamp(-5.0, 9.0)
+                    (self.zoom + f64::from(step)).clamp(MIN_ZOOM, MAX_ZOOM)
                 };
                 engine.send(WebViewCommand::SetZoomLevel(self.zoom));
             }
@@ -160,12 +163,58 @@ impl DailyControls {
         // bottom edge. The 32px face left a step down on either side of them.
         move || pending.set(Some(action))
     }
-    /// The zoom row's label: the page's zoom level is always stated while it
-    /// is not the default.
     /// The page's zoom as a factor of its default size (`1.2` per level).
     pub fn zoom_factor(&self) -> f32 {
         ui::num::f32_of_f64(1.2_f64.powf(self.zoom))
     }
+    /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own
+    /// size (`0`), as the menu's zoom rows do.
+    ///
+    /// # Errors
+    /// Returns the page's size when the step would not change it.
+    pub fn zoom_by(&mut self, step: i32, engine: &SharedEngine) -> Result<(), String> {
+        if !self.can_zoom(step) {
+            return Err(format!("The page is at {}% already", self.zoom_percent()));
+        }
+        self.act(Action::Zoom(step), engine);
+        Ok(())
+    }
+    /// The page's zoom actions, each offered while it would change the
+    /// page's size, as the menu's zoom rows are.
+    pub fn zoom_actions(&self) -> Vec<ui::tilo_actions::ActionSpec> {
+        use crate::effects::BrowserEffect as E;
+        use ui::tilo_resource::Effect as _;
+        [
+            (E::ZoomIn, 1, "The page is at its largest"),
+            (E::ZoomOut, -1, "The page is at its smallest"),
+            (E::ResetZoom, 0, "The page is at its own size"),
+        ]
+        .into_iter()
+        .map(|(zoom, step, limit)| {
+            let zoom = zoom.bound();
+            if self.can_zoom(step) {
+                zoom
+            } else {
+                zoom.unavailable("zoom_limit", limit)
+            }
+        })
+        .collect()
+    }
+    /// The page's size in percent of its own, rounded.
+    pub fn zoom_percent(&self) -> f64 {
+        (100.0 * 1.2_f64.powf(self.zoom)).round()
+    }
+    /// Whether a zoom `step` would change the page's size: in (`1`) below
+    /// the largest, out (`-1`) above the smallest, back (`0`) while zoomed.
+    pub fn can_zoom(&self, step: i32) -> bool {
+        match step.signum() {
+            1 => self.zoom < MAX_ZOOM,
+            -1 => self.zoom > MIN_ZOOM,
+            _ => self.zoom.abs() >= f64::EPSILON,
+        }
+    }
+    /// The zoom row's label: the page's zoom level is always stated while it
+    /// is not the default.
     pub fn zoom_label(&self) -> String {
         let catalog = &crate::resource::CATALOG;
         if self.zoom.abs() < f64::EPSILON {
@@ -173,10 +222,7 @@ impl DailyControls {
         } else {
             catalog.t_args(
                 "browser-menu-actual-size-zoomed",
-                &[(
-                    "percent",
-                    ui::i18n::ArgValue::Number((100.0 * 1.2_f64.powf(self.zoom)).round()),
-                )],
+                &[("percent", ui::i18n::ArgValue::Number(self.zoom_percent()))],
             )
         }
     }

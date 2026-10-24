@@ -57,6 +57,8 @@ use ui::lock::MutexRecover as _;
 use ui::tilo_resource::Invoke;
 use ui::tilo_resource::Resource as _;
 
+#[cfg(test)]
+mod action_surface_tests;
 mod continuity;
 mod library;
 pub(crate) mod personal;
@@ -1978,6 +1980,11 @@ impl BrowserWidget {
             }
             BrowserOperation::Extension(request) => {
                 self.extensions.request(&request)?;
+                self.structure_dirty = true;
+            }
+            BrowserOperation::AddExtension => self.extensions.offer_store_item()?,
+            BrowserOperation::Zoom { step } => {
+                self.daily.zoom_by(step, &self.engine)?;
                 self.structure_dirty = true;
             }
             BrowserOperation::RevealDownload { id } => {
@@ -5476,6 +5483,7 @@ impl BrowserWidget {
         } else {
             reader.unavailable("no_web_page", "Open a web page first")
         });
+        page.actions.extend(self.daily.zoom_actions());
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage, &[][..]),
@@ -5652,6 +5660,7 @@ impl BrowserWidget {
         let mut extensions =
             Resource::new("browser.extensions", "browser.extensions", "Extensions");
         extensions.actions.push(E::ShowExtensions.bound());
+        extensions.actions.extend(self.extensions.add_action());
         // Each installed extension, as the window last read the profile,
         // with what its Library row offers: no disk read per publication.
         extensions.children.extend(self.extensions.resources());
@@ -6023,6 +6032,7 @@ impl BrowserWidget {
         if !is_navigation {
             let is_history_pause_toggle =
                 matches!(&operation, BrowserOperation::ToggleHistoryPause);
+            let is_zoom = matches!(&operation, BrowserOperation::Zoom { .. });
             let output = match &operation {
                 BrowserOperation::ClearHistory => local_output("Browsing history cleared."),
                 BrowserOperation::BookmarkPersonalPage { .. }
@@ -6064,6 +6074,8 @@ impl BrowserWidget {
                 } else {
                     "History resumed in this window."
                 })
+            } else if is_zoom {
+                local_output(format!("The page is at {}%", self.daily.zoom_percent()))
             } else {
                 output
             };
