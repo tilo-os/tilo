@@ -15,15 +15,13 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{
-    Container, Element, EmptyState, EmptyStateContent, ListRow, Scrollable, Section, TabBar,
-    TabDescriptor, Widget,
+    Container, Element, EmptyState, ListRow, Scrollable, Section, TabBar, TabDescriptor, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -133,6 +131,9 @@ pub struct BottomPanel {
     /// none.
     list: Option<Scrollable>,
     list_node: Option<NodeId>,
+    /// The body's empty state when the tab showing has nothing else, and
+    /// what it says.
+    empty: Option<((ui::icons::Icon, String), EmptyState)>,
     /// The scroll position, kept when the list is rebuilt for new problems.
     list_offset: Rc<Cell<(f32, f32)>>,
     /// The index of the row the user activated, read and cleared by the app.
@@ -160,6 +161,7 @@ impl BottomPanel {
             analysis: None,
             list: None,
             list_node: None,
+            empty: None,
             list_offset: Rc::new(Cell::new((0.0, 0.0))),
             activated: Rc::new(Cell::new(None)),
             strip_height: 0.0,
@@ -392,68 +394,47 @@ impl BottomPanel {
         self.tabs_node = None;
     }
 
-    /// The Problems body: the shared zero-state when there is nothing to
-    /// show (distinguishing "not analysed yet" from "analysed and clean"),
-    /// otherwise one row per diagnostic.
-    fn draw_problems(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        if let Some(list) = self.list.as_mut() {
-            list.draw(scene, transform, text_renderer, theme, presence);
-            return;
+    /// What the body says when the tab showing has nothing else to show.
+    fn body_empty(&self) -> Option<(ui::icons::Icon, String)> {
+        match self.tab {
+            PanelTab::Problems | PanelTab::Search if self.list.is_none() => {
+                // An empty list means two different things, and the panel
+                // must not state the wrong one. While a language server is
+                // still working nothing has been analysed yet; only once it
+                // has answered is "no problems" a finding. Scoped to the
+                // open file, because that is what was actually checked: the
+                // linter reads the active buffer, not every file under the
+                // root.
+                Some(match &self.analysis {
+                    Some(note) => (ui::icons::Icon::RotateCw, note.clone()),
+                    None => (
+                        ui::icons::Icon::Check,
+                        "No problems in this file".to_owned(),
+                    ),
+                })
+            }
+            // The embedded `TerminalWidget` renders a live body over
+            // `content_rect()`; nothing stale goes underneath it.
+            PanelTab::Terminal if !self.has_live_terminal => self
+                .terminal_note
+                .clone()
+                .map(|note| (ui::icons::Icon::Terminal, note)),
+            PanelTab::Problems | PanelTab::Search | PanelTab::Terminal => None,
         }
-        let body = self.content_rect();
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        // An empty list means two different things, and the panel must
-        // not state the wrong one. While a language server is still
-        // working nothing has been analysed yet; only once it has
-        // answered is "no problems" a finding. Scoped to the open file,
-        // because that is what was actually checked — the linter reads
-        // the active buffer, not every file under the root.
-        let (icon, title) = match &self.analysis {
-            Some(note) => (ui::icons::Icon::RotateCw, note.as_str()),
-            None => (ui::icons::Icon::Check, "No problems in this file"),
-        };
-        EmptyState::paint(
-            &mut ctx,
-            body,
-            &EmptyStateContent {
-                icon: Some(icon),
-                ..EmptyStateContent::new(title)
-            },
-            Point::new(-1.0, -1.0),
-        );
     }
 
-    fn draw_terminal_note(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        if self.has_live_terminal {
-            // The embedded `TerminalWidget` renders the body over
-            // `content_rect()`; leave it to the app so we don't paint stale
-            // text underneath the live grid.
-            return;
+    /// Keep the body's empty state on what the tab says, in the body.
+    fn sync_empty(&mut self) {
+        let wanted = self.body_empty();
+        if wanted.as_ref() != self.empty.as_ref().map(|(shown, _)| shown) {
+            self.empty = wanted.map(|(icon, title)| {
+                let state = EmptyState::new(title.clone()).with_icon(icon);
+                ((icon, title), state)
+            });
         }
-        if let Some(note) = &self.terminal_note {
-            let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-            EmptyState::paint(
-                &mut ctx,
-                self.content_rect(),
-                &EmptyStateContent {
-                    icon: Some(ui::icons::Icon::Terminal),
-                    ..EmptyStateContent::new(note)
-                },
-                Point::new(-1.0, -1.0),
-            );
+        let body = self.content_rect();
+        if let Some((_, empty)) = self.empty.as_mut() {
+            empty.apply_layout_external(body);
         }
     }
 }
@@ -505,6 +486,7 @@ impl Widget for BottomPanel {
         if let (Some(list), Some(n)) = (self.list.as_mut(), self.list_node) {
             list.apply_layout(taffy, n, origin);
         }
+        self.sync_empty();
     }
 
     fn draw(
@@ -528,11 +510,14 @@ impl Widget for BottomPanel {
         );
         self.tabs
             .draw(scene, transform, text_renderer, theme, presence);
-        match self.tab {
-            PanelTab::Problems | PanelTab::Search => {
-                self.draw_problems(scene, transform, text_renderer, theme, presence);
-            }
-            PanelTab::Terminal => self.draw_terminal_note(scene, transform, text_renderer, theme),
+        self.sync_empty();
+        if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
+            && let Some(list) = self.list.as_mut()
+        {
+            list.draw(scene, transform, text_renderer, theme, presence);
+        }
+        if let Some((_, empty)) = self.empty.as_mut() {
+            empty.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -579,6 +564,9 @@ impl Widget for BottomPanel {
         {
             out.push(list);
         }
+        if let Some((_, empty)) = &self.empty {
+            out.push(empty);
+        }
         out
     }
 
@@ -589,6 +577,9 @@ impl Widget for BottomPanel {
         {
             out.push(list);
         }
+        if let Some((_, empty)) = self.empty.as_mut() {
+            out.push(empty);
+        }
         out
     }
 
@@ -596,6 +587,10 @@ impl Widget for BottomPanel {
         self.dirty
             || self.tabs.needs_redraw()
             || self.list.as_ref().is_some_and(Widget::needs_redraw)
+            || self
+                .empty
+                .as_ref()
+                .is_some_and(|(_, empty)| empty.needs_redraw())
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -611,6 +606,9 @@ impl Widget for BottomPanel {
         self.tabs.mark_drawn();
         if let Some(list) = self.list.as_mut() {
             list.mark_drawn();
+        }
+        if let Some((_, empty)) = self.empty.as_mut() {
+            empty.mark_drawn();
         }
     }
 }
@@ -714,6 +712,36 @@ mod tests {
                 .search_summary()
                 .contains("search limit reached after 40 files")
         );
+    }
+
+    #[test]
+    fn an_empty_body_says_why_through_the_shared_empty_state() {
+        fn said(panel: &mut BottomPanel) -> Option<String> {
+            panel.sync_empty();
+            Widget::children(panel)
+                .into_iter()
+                .find(|child| child.name() == "EmptyState")
+                .and_then(Widget::accessibility)
+                .and_then(|node| node.name)
+        }
+        let mut panel = BottomPanel::new();
+        assert_eq!(
+            said(&mut panel).as_deref(),
+            Some("No problems in this file")
+        );
+        panel.set_analysis(Some("Checking this file".into()));
+        assert_eq!(
+            said(&mut panel).as_deref(),
+            Some("Checking this file"),
+            "nothing analysed yet is not a clean file"
+        );
+        panel.set_problems(vec![diagnostic(Severity::Error, 3)]);
+        assert_eq!(said(&mut panel), None, "a list has no empty state");
+        panel.set_tab(PanelTab::Terminal);
+        panel.set_terminal_note(Some("No terminal is running".into()));
+        assert_eq!(said(&mut panel).as_deref(), Some("No terminal is running"));
+        panel.set_has_live_terminal(true);
+        assert_eq!(said(&mut panel), None, "a live terminal owns the body");
     }
 
     #[test]
