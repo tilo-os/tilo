@@ -601,16 +601,7 @@ impl Registration {
                 display_name: app.display_name,
                 command,
             },
-            |held| {
-                super::start_launch(
-                    held.package_id,
-                    held.display_name,
-                    held.command,
-                    &session,
-                    held.authority,
-                    held.retained,
-                )
-            },
+            |held| super::room_hold::admit(&session, held, super::start_held),
             |event| session.push(event),
         )
     }

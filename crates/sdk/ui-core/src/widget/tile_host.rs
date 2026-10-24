@@ -3754,8 +3754,18 @@ pub fn paint_opening_card(
         Widget::draw(spinner, scene, transform, tr, theme, presence);
     }
     if !status.is_empty() {
+        // A line as long as a reason wraps within a readable measure inside
+        // the card, so a narrow tile still shows all of it.
         let style = theme.text(TextRole::Body);
-        let (tw, _) = tr.measure_style(status, None, &style);
+        let gutter = f64::from(theme.tokens.spacing.s4);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a text width in logical pixels"
+        )]
+        let measure = (rect.width() - gutter * 2.0)
+            .clamp(1.0, f64::from(theme.tokens.metrics.message_measure))
+            as f32;
+        let (tw, _) = tr.measure_style(status, Some(measure), &style);
         tr.draw_style(
             scene,
             status,
@@ -3763,7 +3773,7 @@ pub fn paint_opening_card(
             transform.pre_translate(
                 (cx - f64::from(tw) / 2.0, indicator.y1 + OPENING_SPINNER_GAP).into(),
             ),
-            None,
+            Some(measure),
             &style,
         );
     }

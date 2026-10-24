@@ -415,6 +415,8 @@ pub(crate) fn close_tab_unrecorded(
     let launch_key = foreign
         .as_ref()
         .map(|(app_id, surface_id)| host_launch_key(app_id, *surface_id));
+    #[cfg(any(test, target_os = "linux"))]
+    let waiting = waiting_launch_of(&st.tree().desktop, tab_id);
     // A confined/native client may defer close to save or show a decision.
     // Its surface, tab and focus stay live until the real destroy callback.
     // A restored/layout-only tab has no live client to answer and is removed
@@ -454,6 +456,14 @@ pub(crate) fn close_tab_unrecorded(
     st.hosted_inputs.prune_documents(&mut st.tree_mut());
     // Close is durable before the client is asked to exit.
     st.tree().queue_save();
+    // A window still to open in a room not ready yet: its launch goes with
+    // its last place, so nothing starts once the room is.
+    #[cfg(any(test, target_os = "linux"))]
+    if let Some((app_id, room)) = waiting
+        && !local_app_remains_in(&st.tree().desktop, &app_id, room)
+    {
+        crate::shell::launcher::room_hold::cancel(&app_id, room);
+    }
     if let Some((_, surface_id)) = foreign {
         st.request_surface_close(surface_id);
     }
@@ -486,6 +496,45 @@ pub(crate) fn close_tab_unrecorded(
     }
     st.bump();
     Ok(())
+}
+
+/// The app `tab_id` is still to open, and the room it opens in.
+#[cfg(any(test, target_os = "linux"))]
+fn waiting_launch_of(
+    desktop: &crate::shell::state::DesktopTree,
+    tab_id: TabId,
+) -> Option<(String, crate::shell::state::RoomId)> {
+    desktop.workspaces.iter().find_map(|workspace| {
+        workspace
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter())
+            .find(|tab| tab.id == tab_id)
+            .and_then(|tab| match &tab.tile {
+                TileContent::LocalApp { app_id, .. } => Some((app_id.clone(), workspace.room())),
+                _ => None,
+            })
+    })
+}
+
+/// Whether a place for `app_id` is still open in `room`.
+#[cfg(any(test, target_os = "linux"))]
+fn local_app_remains_in(
+    desktop: &crate::shell::state::DesktopTree,
+    app_id: &str,
+    room: crate::shell::state::RoomId,
+) -> bool {
+    desktop
+        .workspaces
+        .iter()
+        .filter(|workspace| workspace.room() == room)
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .any(
+            |tab| matches!(&tab.tile, TileContent::LocalApp { app_id: open, .. } if open == app_id),
+        )
 }
 
 fn host_launch_key(app_id: &str, surface_id: u64) -> String {
