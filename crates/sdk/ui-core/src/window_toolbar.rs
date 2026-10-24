@@ -186,6 +186,12 @@ pub struct ToolbarNavigation {
 pub struct ToolbarLocation {
     /// What the bar shows at rest: a page's domain, a folder, a document.
     pub label: String,
+    /// Narrower forms of the label, widest first, each saying the same (a
+    /// period's `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the
+    /// label does not fit, the bar shows the widest of them that does, and
+    /// elides only the last.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shorter: Vec<String>,
     /// What an edit starts from: the whole address. Empty means the label.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub value: String,
@@ -330,6 +336,29 @@ pub struct LocationSuggestion {
 }
 
 impl ToolbarLocation {
+    /// A location naming `period` ([`crate::format::Period`]), in its
+    /// widest form, with its narrower ones for a narrow bar.
+    #[must_use]
+    pub fn period(period: crate::format::Period) -> Self {
+        let mut forms = period.forms().into_iter();
+        Self {
+            label: forms.next().unwrap_or_default(),
+            shorter: forms.collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The widest of the label and its narrower forms that `fits`, else
+    /// the narrowest, to be elided.
+    #[must_use]
+    pub fn fitting(&self, mut fits: impl FnMut(&str) -> bool) -> &str {
+        std::iter::once(&self.label)
+            .chain(&self.shorter)
+            .find(|form| fits(form))
+            .or_else(|| self.shorter.last())
+            .unwrap_or(&self.label)
+    }
+
     /// The text an edit starts from.
     #[must_use]
     pub fn edit_value(&self) -> &str {

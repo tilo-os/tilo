@@ -7,6 +7,7 @@
 //! the calendar file are in its menu. Search is the bar's own.
 
 use chrono::NaiveDate;
+use ui::format::Period;
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
 };
@@ -40,21 +41,33 @@ pub(crate) enum BarAction {
     Import,
 }
 
-/// The period `view` shows around `anchor`, as the window's location names
-/// it.
-pub(crate) fn period_title(view: View, anchor: NaiveDate) -> String {
+/// The period `view` shows around `anchor` (none: Tasks, which shows no
+/// span of days).
+pub(crate) fn period(view: View, anchor: NaiveDate) -> Option<Period> {
     match view {
-        View::Tasks => crate::resource::t("calendar-tasks-title"),
-        View::Month => date::month_title(anchor),
+        View::Tasks => None,
+        View::Month => Some(Period::Month(anchor)),
         View::Week => {
             let week = date::week_days(anchor);
             let first = week.first().copied().unwrap_or(anchor);
             let last = week.last().copied().unwrap_or(anchor);
-            date::week_range_long(first, last)
+            Some(Period::Days(first, last))
         }
-        View::Day => date::fmt_day_long(anchor),
-        View::Agenda => date::week_range_long(anchor, crate::agenda::last_day(anchor)),
+        View::Day => Some(Period::Day(anchor)),
+        View::Agenda => Some(Period::Days(anchor, crate::agenda::last_day(anchor))),
     }
+}
+
+/// The window's location for `view` around `anchor`: its period, in the
+/// widest form the bar has room for, or the task list's title.
+fn location(view: View, anchor: NaiveDate) -> ToolbarLocation {
+    period(view, anchor).map_or_else(
+        || ToolbarLocation {
+            label: crate::resource::t("calendar-tasks-title"),
+            ..ToolbarLocation::default()
+        },
+        ToolbarLocation::period,
+    )
 }
 
 /// The window bar's slots for `view` around `anchor`, the sidebar shown or
@@ -62,10 +75,7 @@ pub(crate) fn period_title(view: View, anchor: NaiveDate) -> String {
 pub(crate) fn window_toolbar(view: View, anchor: NaiveDate, sidebar_open: bool) -> WindowToolbar {
     let mut toolbar = WindowToolbar {
         sidebar: Some(sidebar_open),
-        location: Some(ToolbarLocation {
-            label: period_title(view, anchor),
-            ..ToolbarLocation::default()
-        }),
+        location: Some(location(view, anchor)),
         views: Some(ToolbarViews {
             name: "View".into(),
             choices: View::ALL

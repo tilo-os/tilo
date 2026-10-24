@@ -2499,7 +2499,8 @@ fn paint_location(
     lift: LocationLift,
 ) -> Option<Rect> {
     if !location.editable && !location.choices.is_empty() {
-        let (shown, ink) = location_shown(location, theme);
+        let chrome = picker_width(0.0, theme);
+        let (shown, ink) = location_shown(location, (tr, theme), rect.width() - chrome);
         return Some(paint_picker(
             scene,
             transform,
@@ -2537,7 +2538,7 @@ fn paint_location(
         }
         return None;
     }
-    let (shown, ink) = location_shown(location, theme);
+    let (shown, ink) = location_shown(location, (tr, theme), text_rect.width());
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
@@ -2547,19 +2548,23 @@ fn paint_location(
     None
 }
 
-/// What the location says, in its ink: its label, else its placeholder.
-fn location_shown<'a>(
+/// What the location says in `room`, in its ink: the widest form of its
+/// label that fits ([`crate::window_toolbar::ToolbarLocation::fitting`]),
+/// else its placeholder.
+pub(crate) fn location_shown<'a>(
     location: &'a crate::window_toolbar::ToolbarLocation,
-    theme: &Theme,
+    (tr, theme): (&mut TextRenderer, &Theme),
+    room: f64,
 ) -> (&'a str, vello::peniko::Color) {
     if location.label.is_empty() {
-        (
+        return (
             location.placeholder.as_str(),
             theme.tokens.colors.text_tertiary,
-        )
-    } else {
-        (location.label.as_str(), theme.tokens.colors.text_primary)
+        );
     }
+    let style = theme.text(TextRole::Body);
+    let shown = location.fitting(|form| f64::from(tr.measure_style(form, None, &style).0) <= room);
+    (shown, theme.tokens.colors.text_primary)
 }
 
 /// How wide a picker ([`paint_picker`]) whose label is `label_w` wide
