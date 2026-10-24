@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use crate::daemon::{Relay, RelayIdentity};
 
-/// One record channel after [`reseal`].
+/// One record channel after `reseal`.
 #[derive(Clone, Debug)]
 pub struct SealedRecord {
     pub workspace_id: u64,

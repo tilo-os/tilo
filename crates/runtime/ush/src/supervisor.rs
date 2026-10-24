@@ -566,7 +566,7 @@ pub enum ServeRequest {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         editor_protocol: Option<u8>,
         /// Explicit opt-in: before a relay session's lease closes, tell the
-        /// app on it how the session ended ([`EndReport`]): its shell exited,
+        /// app on it how the session ended (`EndReport`): its shell exited,
         /// the connection to the relay was lost, or another terminal took
         /// it over. Existing clients get a lease that only closes.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

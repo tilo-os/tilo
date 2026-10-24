@@ -11,7 +11,7 @@
 //! - one library resource, `shortcuts`, carrying `create`, `update`,
 //!   `delete` and `list`, which take and return the shortcut's JSON.
 //!
-//! A shortcut is saved only after [`tilo_automation::check`] accepts it
+//! A shortcut is saved only after [`tilo_automation::check()`] accepts it
 //! against the catalogue the saving person is offered at that moment, and
 //! the host stores it through its [`ShortcutLibraryServices`]. It runs as the
 //! person who invoked it, inside its own grant, through the same broker;

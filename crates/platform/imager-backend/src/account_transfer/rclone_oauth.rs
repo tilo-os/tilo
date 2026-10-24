@@ -1,6 +1,6 @@
 //! Selected rclone user refresh grants retain their original client registration.
-//! Provenance: https://github.com/rclone/rclone/blob/master/lib/oauthutil/oauthutil.go
-//! Provider defaults: https://github.com/rclone/rclone/tree/master/backend
+//! Provenance: <https://github.com/rclone/rclone/blob/master/lib/oauthutil/oauthutil.go>
+//! Provider defaults: <https://github.com/rclone/rclone/tree/master/backend>
 //! No arbitrary token endpoints, service accounts, sovereign clouds or app-only grants.
 use std::collections::BTreeMap;
 

@@ -12,7 +12,7 @@
 //!   client frames (presence, ops, ops subscriptions). Answered `204`.
 //! * `POST /peer/v3/live/fallback/resume`, header `x-tilo-live-session`: a new
 //!   response stream for the same session (stream rotation, reconnect). The
-//!   session survives a detached stream for [`RESUME_GRACE`].
+//!   session survives a detached stream for [`RESUME_GRACE`](crate::live::fallback::RESUME_GRACE).
 //!
 //! Bridging. A fallback publisher is attached to its namespace slot exactly
 //! like a WebTransport publisher: a private in-process ingress origin with the

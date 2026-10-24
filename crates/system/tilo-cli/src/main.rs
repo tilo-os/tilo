@@ -12,7 +12,7 @@
 //! `tilo --help` lists only what works where it runs (see [`Here`]): no
 //! desktop commands without a desktop session, no `system` off Tilo OS.
 //! A command typed anyway answers with one sentence saying what it needs.
-//! The same program answers as `system` and `action` (argv[0]), and as
+//! The same program answers as `system` and `action` (`argv[0]`), and as
 //! `tilo-<noun>`.
 //!
 //! ## Why the system half is thin
@@ -504,7 +504,7 @@ fn package_command(here: Here) -> clap::Command {
     )
 }
 
-/// The noun an argv[0] names: `device` (also the old `system`), `action`,
+/// The noun an `argv[0]` names: `device` (also the old `system`), `action`,
 /// `package`, `agent`, each also as `tilo-<noun>` (and `tilo-app`, `app`
 /// being its own program). `None` for `tilo` itself.
 fn noun_of(args: &[OsString]) -> Option<String> {

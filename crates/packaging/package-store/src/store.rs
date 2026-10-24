@@ -979,7 +979,7 @@ impl PackageStore {
 
     /// Remove every payload tree and record under `pkgs/` that no registry
     /// row and no image names: left by a crash between a commit and retiring
-    /// the replaced tree, or kept by [`Self::retire_tree`] while a running
+    /// the replaced tree, or kept by `Self::retire_tree` while a running
     /// app had it mounted or a launch held it. A tree `in_use` holds or a
     /// launch holds stays. Then empty `tmp/` of the staging crashed
     /// installs left.

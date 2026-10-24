@@ -15,7 +15,7 @@
 //!
 //! The daemon binds a single iroh endpoint. Every inbound
 //! connection speaks a Tilo relay ALPN and performs a small
-//! authenticated handshake ([`transport::hello`]):
+//! authenticated handshake ([`Hello`](tilo_relay_protocol::auth::Hello)):
 //!
 //! 1. Client sends its `DeviceCert` + a challenge nonce.
 //! 2. Server verifies the cert chains to *this relay's* user

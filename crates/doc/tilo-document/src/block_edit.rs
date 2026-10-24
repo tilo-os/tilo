@@ -2,7 +2,7 @@
 //! kind or done flag, indent, move, delete, and replace the body from
 //! Markdown by diffing it against what is there.
 //!
-//! These are the [`RichTextAction`](crate::RichTextAction) variants an agent
+//! These are the [`RichTextAction`] variants an agent
 //! or script reaches through the declared actions of
 //! [`block_actions`](crate::block_actions). They name blocks by the ids
 //! [`block_markdown`](crate::block_markdown) reads (a unique prefix is

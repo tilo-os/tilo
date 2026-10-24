@@ -1,5 +1,5 @@
 //! GNU PAX sparse 0.1: the map is metadata; member bytes concatenate its extents.
-//! https://www.gnu.org/software/tar/manual/html_node/PAX-0.html
+//! <https://www.gnu.org/software/tar/manual/html_node/PAX-0.html>
 use super::{changed, check_cancel};
 use sha2::{Digest, Sha256};
 use std::{

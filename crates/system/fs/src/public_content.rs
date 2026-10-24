@@ -7,7 +7,7 @@
 //!   address it is fetched from and the most it may weigh. An app names a
 //!   source; it never hands the daemon an address to fetch.
 //! - **The copy** is ordinary content in the content store's file area, keyed
-//!   by the BLAKE3 of its bytes, with [`Retention::Fetchable`]: the budget
+//!   by the BLAKE3 of its bytes, with [`Retention::Fetchable`](crate::store::Retention::Fetchable): the budget
 //!   evicts it like any cached content, in the same order, and only its
 //!   bytes go. The entry keeps where it came from, so a read of an evicted
 //!   copy fetches it again.

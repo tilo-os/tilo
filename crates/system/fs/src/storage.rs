@@ -384,7 +384,7 @@ impl StorageAuthority {
     }
 
     /// What this device holds of the workspace, split by what losing the
-    /// device would cost ([`classify`]). It is answered to the person's own
+    /// device would cost (`classify`). It is answered to the person's own
     /// devices, so it carries counts and never a path.
     pub async fn residency(&self) -> ResidencySummary {
         let logical = self.logical_files();

@@ -2,9 +2,9 @@
 //!
 //! A `read()` resolves an inode to its content id via the namespace, then
 //! asks the [`Hydrator`]. Small content is loose blobs: the missing ones are
-//! fetched in batched `GetMany` requests ([`batch`]). File-backed content is
+//! fetched in batched `GetMany` requests (`batch`). File-backed content is
 //! read from the store's area, and the missing byte ranges are fetched into
-//! it with ranged, BAO-verified `GET`s of the content id ([`ranges`]).
+//! it with ranged, BAO-verified `GET`s of the content id (`ranges`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};

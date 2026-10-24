@@ -906,5 +906,4 @@ pub mod __private {
     }
 }
 
-/// Bounded observations of named scopes on this thread.
 pub mod profiling;
