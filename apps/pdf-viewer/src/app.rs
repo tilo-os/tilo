@@ -2433,23 +2433,10 @@ impl PdfApp {
         }
         let (image_key, (pgw, pgh)) = self.region_source(region);
         let Some(image) = self.raster_images.get(&image_key) else {
-            let Some(document) = self.raster_document.as_ref() else {
+            if self.raster_document.is_none() {
                 return false;
-            };
-            let document_id = document.id;
-            // Asked for on its own, outside the frame's render batch, so a
-            // batch that moves on with the view never cancels it.
-            let asked = self.raster_handle.as_ref().is_some_and(|handle| {
-                handle
-                    .request_render(RenderRequest {
-                        document_id,
-                        page: image_key.0,
-                        target_width: image_key.1,
-                    })
-                    .is_ok()
-            });
-            if asked {
-                self.region_waiting = Some((document_id, region));
+            }
+            if self.ask_region_render(region) {
                 self.status_note
                     .show_progress(crate::t("pdf-note-copying-area"));
             } else {
@@ -2472,6 +2459,55 @@ impl PdfApp {
         }));
         self.dirty = true;
         true
+    }
+
+    /// Ask for the page render a crop of `region` is cut from, on its own,
+    /// outside the frame's render batch, so a batch that moves on with the
+    /// view never cancels it; the marquee waits for it. Whether it was
+    /// asked for (a marquee that could not ask waits for nothing).
+    fn ask_region_render(&mut self, region: RegionSelect) -> bool {
+        let Some(document_id) = self.raster_document.as_ref().map(|document| document.id) else {
+            self.region_waiting = None;
+            return false;
+        };
+        let (page, target_width) = self.region_source(region).0;
+        let asked = self.raster_handle.as_ref().is_some_and(|handle| {
+            handle
+                .request_render(RenderRequest {
+                    document_id,
+                    page,
+                    target_width,
+                })
+                .is_ok()
+        });
+        self.region_waiting = asked.then_some((document_id, region));
+        asked
+    }
+
+    /// Ask again for the render a waiting marquee needs, when the result it
+    /// waited for was lost on the way (the bounded result queue let it go,
+    /// or an open that then failed dropped the queued request): nothing
+    /// else would ever bring it, and the copy would wait for good.
+    fn ask_again_for_waiting_region(&mut self) {
+        let Some((document_id, region)) = self.region_waiting else {
+            return;
+        };
+        let current = self
+            .raster_document
+            .as_ref()
+            .is_some_and(|document| document.id == document_id);
+        if !current
+            || self
+                .raster_images
+                .contains_key(&self.region_source(region).0)
+        {
+            // Settled by `copy_waiting_region` this frame.
+            return;
+        }
+        if !self.ask_region_render(region) {
+            self.status_note.show(crate::t("pdf-note-area-not-copied"));
+            self.dirty = true;
+        }
     }
 
     /// Copy a released marquee whose page render has arrived. One whose
@@ -2680,7 +2716,8 @@ impl PdfApp {
             return false;
         }
         let Some(document) = self.raster_document.as_ref() else {
-            self.status_note.show(save_failed_note(&display_name(path)));
+            // No folder or name would help: there is no PDF to save yet.
+            self.status_note.show(crate::t("pdf-note-save-no-document"));
             self.dirty = true;
             return false;
         };
@@ -4087,6 +4124,7 @@ impl PdfApp {
             .as_ref()
             .map(RasterHandle::drain_events)
             .unwrap_or_default();
+        let mut lost_region_render = false;
         for event in events {
             match event {
                 RasterEvent::Opened {
@@ -4169,6 +4207,9 @@ impl PdfApp {
                         .is_some_and(|pending| pending.id == request.id) =>
                 {
                     self.pending_open = None;
+                    // The open dropped the queued page work, a waiting
+                    // marquee's render with it.
+                    lost_region_render = true;
                     self.record_open_failure(&request.path, &error);
                     self.finish_portal_action(false, Some(error));
                 }
@@ -4202,6 +4243,7 @@ impl PdfApp {
                     self.raster_tile_batch.clear();
                     self.raster_render_batch.clear();
                     self.text_requests_dropped();
+                    lost_region_render = true;
                     self.dirty = true;
                 }
                 RasterEvent::Rendered { request, image }
@@ -4217,6 +4259,16 @@ impl PdfApp {
                     self.raster_render_pending.remove(&key);
                     if let Some(image) = image {
                         self.raster_images.insert(key, image);
+                    } else if self
+                        .region_waiting
+                        .is_some_and(|(_, region)| self.region_source(region).0 == key)
+                    {
+                        // The engine could not draw the page for the crop:
+                        // the marquee waiting for it is not copied, and
+                        // the person is told.
+                        self.region_waiting = None;
+                        self.status_note.show(crate::t("pdf-note-area-not-copied"));
+                        self.dirty = true;
                     }
                     if request.target_width > crate::tiles::THUMB_MAX_PX {
                         self.delivered_pages.push(request.page);
@@ -4522,6 +4574,9 @@ impl PdfApp {
                 }
                 _ => {}
             }
+        }
+        if lost_region_render {
+            self.ask_again_for_waiting_region();
         }
     }
 
