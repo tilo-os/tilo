@@ -706,6 +706,7 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     native_.erase(tab);
+    unknown_.erase(tab);
     Drop(tab);
     buttons_on_.erase(tab);
     if (!found || found->panel) return;
@@ -859,7 +860,12 @@ class ExtensionTabs {
   void Ensure(std::function<void()> then) {
     std::vector<int> missing;
     if (!identity_.empty())
-      for (const auto& tab : hooks_.tabs()) if (!tab.panel && !native_.count(tab.tab)) missing.push_back(tab.tab);
+      for (const auto& tab : hooks_.tabs()) {
+        // One that could not be identified is asked about again once it
+        // shows another page, not on every call.
+        const auto failed = unknown_.find(tab.tab);
+        if (!tab.panel && !native_.count(tab.tab) && (failed == unknown_.end() || failed->second != tab.url)) missing.push_back(tab.tab);
+      }
     if (missing.empty()) { then(); return; }
     auto left = std::make_shared<size_t>(missing.size());
     auto shared = std::make_shared<std::function<void()>>(std::move(then));
@@ -879,6 +885,16 @@ class ExtensionTabs {
   // that extension the tab the message came from.
   void Identify(const std::vector<int>& tabs) {
     auto finish = [this, tabs] {
+      // An extension's page may have been between documents when asked: it
+      // is asked again on the next call.
+      const auto open = hooks_.tabs();
+      const std::string own = "chrome-extension://" + identity_ + "/";
+      for (int tab : tabs) {
+        const auto* entry = Find(open, tab);
+        const bool page = entry && entry->url.rfind("chrome-extension://", 0) == 0 && entry->url.rfind(own, 0) != 0;
+        if (entry && !page && !native_.count(tab)) unknown_[tab] = entry->url;
+        else unknown_.erase(tab);
+      }
       for (int tab : tabs) {
         auto callbacks = std::move(identifying_[tab]);
         identifying_.erase(tab);
@@ -2441,6 +2457,8 @@ class ExtensionTabs {
   std::string identity_;
   // Each tab's id among Chromium's, once learnt; it lasts the tab's life.
   std::map<int, int> native_;
+  // Each tab the host could not identify, by the address it showed then.
+  std::map<int, std::string> unknown_;
   std::map<int, std::vector<std::function<void()>>> identifying_;
   // The worlds the host made for extensions' scripts, by tab and extension.
   std::map<std::pair<int, std::string>, int> content_worlds_;
