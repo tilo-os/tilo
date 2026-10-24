@@ -35,6 +35,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   the page and closes at once, and the page loads its trackers.
 - A popup that starts a script on the page and closes at once still starts
   it, as uBlock Origin Lite's element zapper does.
+- A worker that runs the tab script keeps its address, which extensions read
+  and load their helpers against, and its strictness.
 """
 import base64
 import hashlib
@@ -59,10 +61,52 @@ MANAGER = Path(__file__).parents[3].joinpath('browser-parts/assets/extension-man
 SCRIPT = Path(__file__).parents[1].joinpath('src/extension_tabs.js').read_text()
 
 
+def prologue_end(text):
+    """Where a script's own statements start: after a byte-order mark and its
+    directive prologue, as extensions.rs `prologue_end` finds it."""
+    end = 3 if text.startswith(b'\xef\xbb\xbf') else 0
+    while True:
+        at = end
+        while True:
+            if text[at:at + 1] in (b' ', b'\t', b'\n', b'\r'):
+                at += 1
+            elif text[at:at + 2] == b'//':
+                newline = text.find(b'\n', at)
+                at = len(text) if newline < 0 else newline
+            elif text[at:at + 2] == b'/*':
+                close = text.find(b'*/', at + 2)
+                at = len(text) if close < 0 else close + 2
+            else:
+                break
+        quote = text[at:at + 1]
+        if quote not in (b'"', b"'"):
+            return end
+        i = at + 1
+        while True:
+            c = text[i:i + 1]
+            if c in (b'', b'\n', b'\r'):
+                return end
+            if c == b'\\':
+                i += 2
+            elif c == quote:
+                break
+            else:
+                i += 1
+        i += 1
+        while text[i:i + 1] in (b' ', b'\t'):
+            i += 1
+        if text[i:i + 1] == b';':
+            end = i + 1
+        elif text[i:i + 1] in (b'', b'\n', b'\r'):
+            end = i
+        else:
+            return end
+
+
 def prepare(source, into):
     """A copy of the fixture at `source` set up as the Browser sets up an
-    extension it installs (extensions.rs, prepare_tabs): its worker runs the
-    tab script first, with a token the engine is told of."""
+    extension it installs (extensions.rs, prepare_tabs): its own worker runs
+    the tab script first, with a token the engine is told of."""
     target = Path(shutil.copytree(source, into / source.name)).resolve()
     manifest = json.loads((target / 'manifest.json').read_text())
     worker = manifest.get('background', {}).get('service_worker')
@@ -70,14 +114,14 @@ def prepare(source, into):
         return target, None
     token = secrets.token_hex(24)
     (target / 'tilo-extension-tabs.js').write_text(f'globalThis.__tiloBridgeToken = "{token}";\n' + SCRIPT)
-    own = worker.lstrip('/')
+    own = target / worker.lstrip('/')
     if manifest['background'].get('type') == 'module':
-        runs = f"import '/tilo-extension-tabs.js';\nimport '/{own}';\n"
+        runs = b";import '/tilo-extension-tabs.js';"
     else:
-        runs = f"importScripts('/tilo-extension-tabs.js', '/{own}');\n"
-    (target / 'tilo-worker.js').write_text(f"// The extension's own worker: {own}\n" + runs)
-    manifest['background']['service_worker'] = 'tilo-worker.js'
-    (target / 'manifest.json').write_text(json.dumps(manifest))
+        runs = b";typeof importScripts=='function'&&importScripts('/tilo-extension-tabs.js');"
+    text = own.read_bytes()
+    at = prologue_end(text)
+    own.write_bytes(text[:at] + runs + text[at:])
     return target, token
 
 
@@ -301,6 +345,15 @@ class ExtensionTabs(unittest.TestCase):
         host.send(op='extension_click', id=ids['clicker'])
         # Its second script sees what its first returned.
         self.title(host, 1, 'clicked:true|clicked:true')
+
+    def test_a_worker_keeps_its_own_address(self):
+        host, ids = self.start('located', access={'located': (['activeTab', 'scripting'], [])})
+        host.navigate(self.url + '/located')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['located'])
+        found = json.loads(self.title(host, 1, 'located:')[len('located:'):])
+        self.assertEqual(found, {'background': True, 'path': '/background/worker.js',
+                                 'manifest': 'background/worker.js', 'helper': True, 'strict': True})
 
     def test_a_popup_finds_the_page_it_was_opened_over(self):
         host, ids = self.start('asker', 'plain', access={'asker': (['tabs'], [])})

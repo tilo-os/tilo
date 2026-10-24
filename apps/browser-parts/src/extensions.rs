@@ -1002,15 +1002,20 @@ pub fn startup_paths() -> Vec<PathBuf> {
 /// here: the engine answers them (`extension_tabs.h` in the engine host).
 const TABS_SCRIPT: &str = include_str!("../../browser/chromium/src/extension_tabs.js");
 const TABS_FILE: &str = "tilo-extension-tabs.js";
+/// The worker earlier Browsers put in place of the extension's own, which
+/// named it on its first line after [`WORKER_MARK`].
 const WORKER_FILE: &str = "tilo-worker.js";
 const WORKER_MARK: &str = "// The extension's own worker: ";
+/// How much of a worker's start is read to tell it runs the tab script.
+const WORKER_HEAD_BYTES: u64 = 64 * 1024;
 
-/// Give the extension at `root` the tab APIs. Its service worker becomes one
-/// that runs the tab script first, then the extension's own, and the tab
-/// script carries a token by which the engine knows the worker as this
-/// extension's (no other extension or page can read it). Returns the token,
-/// or `None` for an extension without a worker: the engine knows its pages
-/// by their address.
+/// Give the extension at `root` the tab APIs. Its own service worker runs the
+/// tab script first, and the tab script carries a token by which the engine
+/// knows the worker as this extension's (no other extension or page can read
+/// it). The worker keeps its address: extensions read it (`location`,
+/// `getManifest().background`) and resolve their own scripts against it.
+/// Returns the token, or `None` for an extension without a worker: the engine
+/// knows its pages by their address.
 pub fn prepare_tabs(root: &Path) -> Option<String> {
     let manifest_path = root.join("manifest.json");
     let shipped = read_manifest(&manifest_path).ok()?;
@@ -1041,33 +1046,136 @@ pub fn prepare_tabs(root: &Path) -> Option<String> {
         .and_then(|text| tabs_token(&text))
         .or_else(new_token)?;
     let script = format!("globalThis.__tiloBridgeToken = \"{token}\";\n{TABS_SCRIPT}");
-    let wrapper = if module {
-        format!("{WORKER_MARK}{own}\nimport '/{TABS_FILE}';\nimport '/{own}';\n")
-    } else {
-        format!("{WORKER_MARK}{own}\nimportScripts('/{TABS_FILE}', '/{own}');\n")
-    };
-    for (name, text) in [(TABS_FILE, &script), (WORKER_FILE, &wrapper)] {
-        if std::fs::read_to_string(root.join(name)).ok().as_deref() != Some(text.as_str()) {
-            std::fs::write(root.join(name), text).ok()?;
-        }
+    if std::fs::read_to_string(root.join(TABS_FILE))
+        .ok()
+        .as_deref()
+        != Some(script.as_str())
+    {
+        std::fs::write(root.join(TABS_FILE), &script).ok()?;
     }
-    if worker != WORKER_FILE {
-        background.insert("service_worker".into(), WORKER_FILE.into());
-        let prepared = serde_json::to_string_pretty(&manifest).ok()?;
-        // The person agreed to the manifest as it shipped; wrapping its
-        // worker asks for nothing more, so that agreement holds for the
-        // wrapped one. Without this an extension turned on is off again
-        // at its next read: just after it is added, after each update.
+    run_tabs_first(&root.join(&own), module)?;
+    if worker == WORKER_FILE {
+        // Back to the extension's own worker, now that it runs the script.
+        background.insert("service_worker".into(), own.into());
+        let restored = serde_json::to_string_pretty(&manifest).ok()?;
+        // The person agreed to the manifest with its worker replaced; its
+        // own worker back asks for nothing more, so the agreement holds.
         let approval = approval_path_of(root);
         let approved = approval.as_ref().is_some_and(|path| {
             std::fs::read_to_string(path).is_ok_and(|digest| digest == digest_of(&shipped))
         });
-        std::fs::write(&manifest_path, &prepared).ok()?;
+        std::fs::write(&manifest_path, &restored).ok()?;
         if approved && let Some(path) = approval {
-            std::fs::write(path, digest_of(&prepared)).ok()?;
+            std::fs::write(path, digest_of(&restored)).ok()?;
         }
+        let _ = std::fs::remove_file(root.join(WORKER_FILE));
     }
     Some(token)
+}
+
+/// The statement that runs the tab script, first in a worker. It adds no
+/// line, so the worker's own lines keep their numbers, and does nothing in a
+/// page of the extension that loads the same script (pages have the tab
+/// script already).
+fn tabs_statement(module: bool) -> String {
+    if module {
+        format!(";import '/{TABS_FILE}';")
+    } else {
+        format!(";typeof importScripts=='function'&&importScripts('/{TABS_FILE}');")
+    }
+}
+
+/// Make the worker at `path` run the tab script before anything of its own,
+/// once. Only its start is read when it does already.
+fn run_tabs_first(path: &Path, module: bool) -> Option<()> {
+    use std::io::Read as _;
+    let statement = tabs_statement(module);
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(WORKER_HEAD_BYTES)
+        .read_to_end(&mut head)
+        .ok()?;
+    if runs_first(&head, &statement) {
+        return Some(());
+    }
+    let mut text = std::fs::read(path).ok()?;
+    let at = prologue_end(&text);
+    text.splice(at..at, statement.bytes());
+    let partial = path.with_file_name(format!(".{TABS_FILE}.partial"));
+    std::fs::write(&partial, &text).ok()?;
+    std::fs::rename(&partial, path).ok()
+}
+
+/// Whether the worker starting with `head` runs `statement` first already.
+fn runs_first(head: &[u8], statement: &str) -> bool {
+    // Where a directive ended without a semicolon, the statement's own
+    // semicolon now ends it, so the statement may start one byte earlier.
+    let end = prologue_end(head);
+    let start = end.saturating_sub(1);
+    head.get(start..(end + statement.len()).min(head.len()))
+        .is_some_and(|window| {
+            window
+                .windows(statement.len())
+                .any(|w| w == statement.as_bytes())
+        })
+}
+
+/// Where a script's own statements start: after a byte-order mark and its
+/// directive prologue (`"use strict";`), which only applies while first.
+fn prologue_end(text: &[u8]) -> usize {
+    let mut end = if text.starts_with(b"\xEF\xBB\xBF") {
+        3
+    } else {
+        0
+    };
+    loop {
+        let at = skip_blank(text, end);
+        let Some(&quote) = text.get(at).filter(|byte| matches!(**byte, b'"' | b'\'')) else {
+            return end;
+        };
+        let mut i = at + 1;
+        loop {
+            match text.get(i) {
+                None | Some(b'\n' | b'\r') => return end,
+                Some(b'\\') => i += 2,
+                Some(&byte) if byte == quote => break,
+                Some(_) => i += 1,
+            }
+        }
+        i += 1;
+        while matches!(text.get(i), Some(b' ' | b'\t')) {
+            i += 1;
+        }
+        // A directive is a string alone, up to a semicolon or its line's end.
+        end = match text.get(i) {
+            Some(b';') => i + 1,
+            None | Some(b'\n' | b'\r') => i,
+            Some(_) => return end,
+        };
+    }
+}
+
+/// Past whitespace and comments.
+fn skip_blank(text: &[u8], mut at: usize) -> usize {
+    loop {
+        match (text.get(at), text.get(at + 1)) {
+            (Some(b' ' | b'\t' | b'\n' | b'\r'), _) => at += 1,
+            (Some(b'/'), Some(b'/')) => {
+                while !matches!(text.get(at), None | Some(b'\n')) {
+                    at += 1;
+                }
+            }
+            (Some(b'/'), Some(b'*')) => {
+                let rest = text.get(at + 2..).unwrap_or_default();
+                match rest.windows(2).position(|pair| pair == b"*/") {
+                    Some(close) => at += close + 4,
+                    None => return text.len(),
+                }
+            }
+            _ => return at,
+        }
+    }
 }
 
 /// The worker token the extension's tab script carries.
@@ -1434,34 +1542,42 @@ mod tabs_tests {
         root
     }
 
+    fn read(root: &tempfile::TempDir, name: &str) -> String {
+        std::fs::read_to_string(root.path().join(name)).unwrap()
+    }
+
+    fn worker_of(root: &tempfile::TempDir) -> serde_json::Value {
+        serde_json::from_str::<serde_json::Value>(&read(root, "manifest.json")).unwrap()
+            ["background"]["service_worker"]
+            .clone()
+    }
+
+    const RUNS_TABS: &str =
+        ";typeof importScripts=='function'&&importScripts('/tilo-extension-tabs.js');";
+
     #[test]
     fn an_extensions_worker_runs_the_tab_script_first_with_its_token() {
         let root = extension(
             r#"{"manifest_version":3,"background":{"service_worker":"bg/main.js"}}"#,
-            &[("bg/main.js", "self.mine = 1;")],
+            &[("bg/main.js", "self.mine = 1;\nself.two = 2;\n")],
         );
         let token = prepare_tabs(root.path()).expect("a worker is given the tab APIs");
-        let manifest: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(root.path().join("manifest.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(manifest["background"]["service_worker"], WORKER_FILE);
-        let wrapper = std::fs::read_to_string(root.path().join(WORKER_FILE)).unwrap();
-        assert!(
-            wrapper.ends_with("importScripts('/tilo-extension-tabs.js', '/bg/main.js');\n"),
-            "{wrapper}"
+        // The worker keeps its address: an extension reads it and resolves
+        // its own scripts against it.
+        assert_eq!(worker_of(&root), "bg/main.js");
+        let worker = read(&root, "bg/main.js");
+        assert_eq!(
+            worker,
+            format!("{RUNS_TABS}self.mine = 1;\nself.two = 2;\n")
         );
-        let script = std::fs::read_to_string(root.path().join(TABS_FILE)).unwrap();
+        let script = read(&root, TABS_FILE);
         assert!(script.starts_with(&format!("globalThis.__tiloBridgeToken = \"{token}\";\n")));
         assert!(script.ends_with(TABS_SCRIPT));
         assert_eq!(tabs_token_of(root.path()).as_deref(), Some(token.as_str()));
-        // Again, as at every start: the same token, the extension's own
-        // worker still run.
+        // Again, as at every start: the same token, the script run once.
         assert_eq!(prepare_tabs(root.path()), Some(token));
-        assert_eq!(
-            std::fs::read_to_string(root.path().join(WORKER_FILE)).unwrap(),
-            wrapper
-        );
+        assert_eq!(read(&root, "bg/main.js"), worker);
+        assert!(!root.path().join(WORKER_FILE).exists());
     }
 
     #[test]
@@ -1510,14 +1626,91 @@ mod tabs_tests {
     fn a_module_worker_imports_the_tab_script_first() {
         let root = extension(
             r#"{"background":{"service_worker":"/worker.js","type":"module"}}"#,
-            &[("worker.js", "export {};")],
+            &[("worker.js", "import './lib.js';\nexport {};")],
         );
         assert!(prepare_tabs(root.path()).is_some());
-        assert!(
-            std::fs::read_to_string(root.path().join(WORKER_FILE))
-                .unwrap()
-                .ends_with("import '/tilo-extension-tabs.js';\nimport '/worker.js';\n")
+        assert_eq!(worker_of(&root), "/worker.js");
+        assert_eq!(
+            read(&root, "worker.js"),
+            ";import '/tilo-extension-tabs.js';import './lib.js';\nexport {};"
         );
+        assert!(prepare_tabs(root.path()).is_some());
+        assert_eq!(
+            read(&root, "worker.js"),
+            ";import '/tilo-extension-tabs.js';import './lib.js';\nexport {};"
+        );
+    }
+
+    #[test]
+    fn a_strict_worker_stays_strict() {
+        // A directive applies only while it comes first; a byte-order mark
+        // and comments may precede it.
+        for (own, prepared) in [
+            (
+                "\u{feff}/* (c) */\n'use strict';\nx();",
+                format!("\u{feff}/* (c) */\n'use strict';{RUNS_TABS}\nx();"),
+            ),
+            (
+                "\"use strict\"\n\"use asm\"; x();",
+                format!("\"use strict\"\n\"use asm\";{RUNS_TABS} x();"),
+            ),
+            (
+                "\"use strict\"\nx();",
+                format!("\"use strict\"{RUNS_TABS}\nx();"),
+            ),
+            (
+                "// header\n'not'.split(''); \"use strict\";",
+                format!("{RUNS_TABS}// header\n'not'.split(''); \"use strict\";"),
+            ),
+        ] {
+            let root = extension(
+                r#"{"background":{"service_worker":"w.js"}}"#,
+                &[("w.js", own)],
+            );
+            assert!(prepare_tabs(root.path()).is_some());
+            assert_eq!(read(&root, "w.js"), prepared, "{own:?}");
+            assert!(prepare_tabs(root.path()).is_some());
+            assert_eq!(read(&root, "w.js"), prepared, "again: {own:?}");
+        }
+    }
+
+    #[test]
+    fn a_worker_an_earlier_browser_replaced_gets_its_address_back() {
+        // Turned on by the person while an earlier Browser had replaced its
+        // worker in the manifest.
+        let profile = tempfile::tempdir().unwrap();
+        let root = profile.path().join("keeper");
+        for (name, text) in [
+            (
+                "manifest.json",
+                r#"{"manifest_version":3,"name":"Keeper","version":"1",
+                "background":{"service_worker":"tilo-worker.js"}}"#,
+            ),
+            (
+                WORKER_FILE,
+                "// The extension's own worker: js/bg.js\nimportScripts('/tilo-extension-tabs.js', '/js/bg.js');\n",
+            ),
+            ("js/bg.js", "go();"),
+        ] {
+            std::fs::create_dir_all(root.join(name).parent().unwrap()).unwrap();
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        set_approved(&list_in(profile.path()).pop().unwrap(), true).unwrap();
+        let token = prepare_tabs(&root).expect("the worker is given the tab APIs");
+        let manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(root.join("manifest.json")).unwrap())
+                .unwrap();
+        assert_eq!(manifest["background"]["service_worker"], "js/bg.js");
+        assert_eq!(
+            std::fs::read_to_string(root.join("js/bg.js")).unwrap(),
+            format!("{RUNS_TABS}go();")
+        );
+        assert!(!root.join(WORKER_FILE).exists());
+        assert!(
+            is_approved(&list_in(profile.path()).pop().unwrap()),
+            "still on"
+        );
+        assert_eq!(prepare_tabs(&root), Some(token));
     }
 
     #[test]
