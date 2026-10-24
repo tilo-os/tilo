@@ -54,6 +54,11 @@ topbar-capture-privacy = Datenschutzeinstellungen für aktive Aufnahme
 topbar-control = Steuerelement der oberen Leiste
 topbar-invite = Einladen
 topbar-waved-at-you = { $name } hat dir zugewunken
+topbar-arrived-one = { $name } ist da
+topbar-arrived-more = { $name } und { $count ->
+    [one] eine weitere Person
+   *[other] { $count } weitere
+} sind da
 topbar-clock-resume = Fortsetzen
 topbar-clock-pause = Pausieren
 topbar-clock-lap = Runde
@@ -72,20 +77,7 @@ topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
-topbar-strips = Leisten in diesem Arbeitsbereich
-topbar-strip-go = Zu { $name } wechseln, { $count ->
-    [0] niemand dort
-    [one] eine Person dort
-   *[other] { $count } Personen dort
-}
 topbar-strip-name = Leisten zeigen, gerade { $strip }
-topbar-strip-add = Leiste hinzufügen
-topbar-strips-more-label = +{ $count }
-topbar-strips-more = { $count ->
-    [one] Eine weitere Leiste
-   *[other] { $count } weitere Leisten
-}, zu { $name } wechseln
-topbar-strip-name-placeholder = Neue Leiste benennen
 topbar-workspace-name-placeholder = Arbeitsbereich benennen
 topbar-workspace-menu = { $workspace }: Arbeitsbereiche, Übersicht und Leisten
 topbar-profile = { $name } (du): dein Profil
@@ -1122,3 +1114,5 @@ strip-switcher-rename-named = { $name } umbenennen
 strip-switcher-name-placeholder = Name der Leiste
 strip-switcher-refused = Die Leiste konnte nicht geändert werden
 strip-switcher-remove-named = { $name } entfernen
+strip-switcher-rename = Umbenennen
+strip-switcher-remove = Entfernen

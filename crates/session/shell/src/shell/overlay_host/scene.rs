@@ -71,7 +71,6 @@ impl ShellOverlayHost {
                 window_previews: self.window_previews.changed(),
                 peer_sync: self.peer_sync_overlay.needs_animation_frame(),
                 directory_sheet: self.directory_sheet.needs_animation_frame(),
-                arrival_line: self.arrival_line.needs_animation_frame(),
             },
         )
     }
@@ -767,6 +766,10 @@ impl ShellOverlayHost {
             ),
             ("top-bar-reveal", self.top_bar_reveal.deadline()),
             (
+                "fullscreen-bar-reveal",
+                self.fullscreen_bar_reveal.deadline(),
+            ),
+            (
                 "launchpad-app",
                 self.pending_launchpad_app
                     .as_ref()
@@ -780,7 +783,6 @@ impl ShellOverlayHost {
             ),
             ("shortcut-schedule", self.held_firings_wake_deadline(now)),
             ("desk", self.desk_wake_deadline(now)),
-            ("arrival", self.arrival_line.deadline()),
             (
                 "display-identify",
                 self.display_identify.next_wake_deadline(now),

@@ -1,33 +1,36 @@
-//! The strip switcher: the strip ribbon grown into labels when the pointer
-//! means it. Shared by every desktop host, so strips are listed, switched,
-//! made, named and removed the same way on the native shell and in a page.
+//! The strip switcher: the strip ribbon grown into labels. Shared by every
+//! desktop host, so strips are listed, switched, made, named and removed the
+//! same way on the native shell and in a page. It is the one place strips are
+//! picked: the top bar only names the strip shown, and opens this.
 //!
 //! It has one job, the strips of the workspace shown. At rest it is the
 //! ribbon on the content's right edge: one small mark per strip, the focused
-//! one long, and the face of whoever else is on a strip beside its mark.
-//! Reaching for it lays each strip's name out as a label level with its mark
+//! one long. Opened, each strip's name stands as a label level with its mark
 //! (no panel around them: the labels are the switcher), with the faces of the
-//! people on it, and a "New strip" label under the last. Workspaces are not
-//! here; they are switched, made and joined from the workspace menu.
+//! people on it (the only place the strips say who is where), and a "New
+//! strip" label under the last. Workspaces are not here; they are switched,
+//! made and joined from the workspace menu.
 //!
-//! - A wheel or two-finger scroll over the ribbon or its labels moves to the
-//!   strip above or below.
-//! - A click on a mark or a label moves to that strip.
-//! - A double click on a label renames its strip in place; "New strip" makes
-//!   a strip, moves to it and puts its name in place for typing.
-//! - An empty strip (not the workspace's last) shows a remove mark at its
-//!   label's start under the pointer or the keyboard; a click on it, or
-//!   Delete, removes the strip. Nothing is lost: a strip with windows is
-//!   never offered for removal.
+//! Every action is a tap or a long-press, the same for a finger and a
+//! pointer; hovering only gets there sooner:
 //!
-//! Opening follows aim, not contact ([`EdgeAim`]): a pointer that comes to
-//! rest on the ribbon opens the labels, one sweeping past the screen edge on
-//! its way somewhere else does not, and a label lights under the pointer only
-//! once it settles there. The labels go the moment the pointer leaves them,
-//! unless a name is being typed: a name field never lives in a surface that
-//! hover alone keeps up, so naming pins the labels until Enter, Escape or a
-//! press elsewhere. Super+S opens them for the keyboard: arrows choose,
-//! Enter takes, F2 renames, Escape closes.
+//! - A tap on the ribbon opens the labels, pinned until a choice, Escape or
+//!   a tap elsewhere. A pointer that comes to rest on the ribbon opens them
+//!   too, following aim, not contact ([`EdgeAim`]): one sweeping past the
+//!   screen edge on its way somewhere else does not, and they go the moment
+//!   it leaves them.
+//! - A tap on a label moves to that strip; a wheel or two-finger scroll over
+//!   the ribbon or its labels moves to the strip above or below.
+//! - A long-press (or a secondary click) on a label puts its strip's actions
+//!   beside it: Rename, and Remove for an empty strip that is not the
+//!   workspace's last (nothing is lost: a strip with windows is never
+//!   offered for removal). A double click renames too.
+//! - "New strip" makes a strip, moves to it and puts its name in place for
+//!   typing. A name field never lives in a surface that hover alone keeps
+//!   up, so naming pins the labels until Enter, Escape or a press elsewhere.
+//!
+//! Super+S opens them for the keyboard: arrows choose, Enter takes, F2
+//! renames, Delete removes, Escape closes.
 //!
 //! The state is pure: every method takes the instant it reasons about, and
 //! the host turns a returned [`Command`] into the change on the desktop.
@@ -40,7 +43,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::text_selection::Selection;
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
-use ui::widget::{EdgeAim, FieldFace, TextInput, Widget as _};
+use ui::widget::{
+    Button, ButtonFace, ButtonRole, ControlSize, EdgeAim, FieldFace, TextInput, Widget as _,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -87,16 +92,9 @@ const AVATAR: f64 = ui::tokens::Layout::BASE.avatar as f64;
 const AVATAR_STEP: f64 = ui::tokens::Layout::BASE.compact_avatar_step as f64;
 /// More people than this on a strip collapse into "+N".
 const AVATARS_SHOWN: usize = 3;
-/// A face beside a ribbon mark at rest: what fits the gutter beside it.
-const REST_FACE: f64 = ui::tokens::Spacing::BASE.s4 as f64;
-/// Between a face at rest and its mark.
-const REST_FACE_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
-/// How far inside its square a face at rest's disc sits, and how far past
-/// the square its ring (2 px, with a pixel of ground either side) reaches.
-const REST_FACE_INSET: f64 = ui::presence::Face::GROUND_GAP;
-const REST_FACE_RING: f64 = ui::presence::Face::REACH - REST_FACE_INSET;
-/// How far left of the marks the faces at rest reach.
-pub const REST_FACES_REACH: f64 = REST_FACE + REST_FACE_GAP + REST_FACE_RING;
+/// Between a strip's actions, and between them and its label.
+const ACTION_GAP: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+/// The icon in "New strip".
 const ICON: f64 = ui::tokens::Metrics::BASE.icon_sm as f64;
 /// One wheel notch, in the pixels a touchpad reports: a strip per notch, and
 /// per a bar's height of two-finger travel.
@@ -259,7 +257,9 @@ pub enum Row {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
     Row(Row),
-    /// The remove mark on strip `i`'s label.
+    /// Strip `i`'s Rename, beside its label after a long-press.
+    Rename(usize),
+    /// Strip `i`'s Remove, beside its label after a long-press.
     Remove(usize),
     /// The name field while a name is typed.
     Field,
@@ -312,6 +312,9 @@ struct Opened {
     /// Opened by Super+S: stays until a choice or Escape, and the keyboard
     /// is the switcher's.
     by_keyboard: bool,
+    /// Opened by a tap (or for a long-press): stays until a choice, Escape
+    /// or a press elsewhere, without a pointer resting on it.
+    pinned: bool,
 }
 
 /// Where everything in the open switcher sits.
@@ -439,6 +442,11 @@ pub struct StripSwitcher {
     name_when_listed: bool,
     /// The last press on a label and when, for a double click.
     last_press: Option<(Row, Instant)>,
+    /// The strip whose actions (Rename, Remove) stand beside its label,
+    /// after a long-press on it.
+    armed: Option<usize>,
+    /// Rename's and Remove's measured widths, as of the last paint.
+    action_widths: Option<(f64, f64)>,
     /// Scroll travel not yet turned into a step, and when it last moved.
     scroll: (f64, Option<Instant>),
     /// The ribbon the labels were last laid out beside, and where its long
@@ -471,6 +479,14 @@ impl StripSwitcher {
             && !self.model.strips.iter().any(|s| s.id == id)
         {
             self.naming = None;
+        }
+        if self.armed.is_some_and(|i| {
+            self.model
+                .strips
+                .get(i)
+                .is_none_or(|s| !s.renamable && !s.removable)
+        }) {
+            self.armed = None;
         }
         if std::mem::take(&mut self.name_when_listed)
             && let Some(i) = self
@@ -538,35 +554,61 @@ impl StripSwitcher {
             return *w;
         }
         match row {
-            Row::Strip(i) => {
-                estimated_width(
-                    &self.model.shown_name(i),
-                    self.model.strips.get(i).map_or(0, |s| s.people.len()),
-                ) + self.remove_room(i)
-            }
+            Row::Strip(i) => estimated_width(
+                &self.model.shown_name(i),
+                self.model.strips.get(i).map_or(0, |s| s.people.len()),
+            ),
             Row::NewStrip => estimated_width(&t("strip-switcher-new-strip"), 0) + ICON + INNER_GAP,
         }
     }
 
-    /// What strip `i`'s label keeps at its start for the remove mark.
-    fn remove_room(&self, i: usize) -> f64 {
-        if self.model.strips.get(i).is_some_and(|s| s.removable) {
-            ICON + INNER_GAP
-        } else {
-            0.0
+    /// What strip `i` offers beside its label after a long-press: Rename
+    /// when this machine names it, Remove when it may go.
+    fn actions_of(&self, i: usize) -> Vec<Target> {
+        let Some(strip) = self.model.strips.get(i) else {
+            return Vec::new();
+        };
+        let mut actions = Vec::new();
+        if strip.renamable {
+            actions.push(Target::Rename(i));
+        }
+        if strip.removable {
+            actions.push(Target::Remove(i));
+        }
+        actions
+    }
+
+    /// An action's width: as measured at the last paint, else estimated.
+    fn action_width(&self, target: Target) -> f64 {
+        let (rename, remove) = self.action_widths.unwrap_or_else(|| {
+            (
+                estimated_width(&t("strip-switcher-rename"), 0),
+                estimated_width(&t("strip-switcher-remove"), 0),
+            )
+        });
+        match target {
+            Target::Remove(_) => remove,
+            _ => rename,
         }
     }
 
-    /// Where strip `i`'s remove mark sits, when it may go.
-    fn remove_rect(&self, i: usize) -> Option<Rect> {
-        if self.remove_room(i) <= 0.0 || self.is_renaming(i) {
-            return None;
+    /// Where the armed strip's actions stand: left of its label and level
+    /// with it, Rename nearest the label.
+    fn action_rects(&self) -> Vec<(Target, Rect)> {
+        let Some(i) = self.armed.filter(|i| !self.is_renaming(*i)) else {
+            return Vec::new();
+        };
+        let Some(label) = self.layout.label_rect(Row::Strip(i)) else {
+            return Vec::new();
+        };
+        let mut x1 = label.x0 - ACTION_GAP;
+        let mut out = Vec::new();
+        for target in self.actions_of(i) {
+            let w = self.action_width(target);
+            out.push((target, Rect::new(x1 - w, label.y0, x1, label.y1)));
+            x1 -= w + ACTION_GAP;
         }
-        let label = self.layout.label_rect(Row::Strip(i))?;
-        Some(Rect::from_center_size(
-            Point::new(label.x0 + LABEL_PAD_X + ICON / 2.0, label.center().y),
-            (ICON, ICON),
-        ))
+        out
     }
 
     pub fn layout(&self) -> &Layout {
@@ -577,16 +619,25 @@ impl StripSwitcher {
         self.open.is_some()
     }
 
-    /// The keyboard is the switcher's: opened by Super+S, or a name is
-    /// typed.
+    /// The keyboard is the switcher's: opened by Super+S or a tap, a
+    /// strip's actions are out, or a name is typed. Escape closes.
     pub fn takes_keys(&self) -> bool {
-        self.naming.is_some() || self.open.is_some_and(|o| o.by_keyboard)
+        self.naming.is_some()
+            || self.armed.is_some()
+            || self.open.is_some_and(|o| o.by_keyboard || o.pinned)
     }
 
     /// Whether the labels stay without the pointer on them: opened for the
-    /// keyboard, or a name is being typed.
+    /// keyboard or by a tap, a strip's actions are out, or a name is being
+    /// typed.
     fn pinned(&self) -> bool {
         self.takes_keys()
+    }
+
+    /// Whether strip `i`'s actions stand beside its label.
+    #[cfg(test)]
+    pub fn armed(&self) -> Option<usize> {
+        self.armed
     }
 
     #[cfg(test)]
@@ -615,7 +666,7 @@ impl StripSwitcher {
     pub fn lit_strip(&self) -> Option<usize> {
         self.open?;
         match (self.hover, self.selected) {
-            (Some(Target::Row(Row::Strip(i)) | Target::Remove(i)), _)
+            (Some(Target::Row(Row::Strip(i)) | Target::Rename(i) | Target::Remove(i)), _)
             | (_, Some(Row::Strip(i))) => Some(i),
             _ => None,
         }
@@ -623,7 +674,10 @@ impl StripSwitcher {
 
     fn open_at(&mut self, now: Instant, by_keyboard: bool) {
         if self.open.is_none() {
-            self.open = Some(Opened { by_keyboard });
+            self.open = Some(Opened {
+                by_keyboard,
+                pinned: false,
+            });
             let source = if by_keyboard {
                 ui::tokens::MotionSource::Keyboard
             } else {
@@ -637,11 +691,22 @@ impl StripSwitcher {
         }
     }
 
+    /// Open the labels pinned, as a tap on the ribbon does: they stay
+    /// without a pointer resting on them, until a choice, Escape or a press
+    /// elsewhere.
+    pub fn open_pinned(&mut self, now: Instant) {
+        self.open_at(now, false);
+        if let Some(open) = self.open.as_mut() {
+            open.pinned = true;
+        }
+    }
+
     /// Close the labels, dropping a name being typed.
     pub fn close(&mut self) {
         if self.open.take().is_some() {
             self.disarmed = true;
         }
+        self.armed = None;
         self.naming = None;
         self.name_when_listed = false;
         self.hover = None;
@@ -703,9 +768,18 @@ impl StripSwitcher {
         before != (self.open, self.hover)
     }
 
-    /// Whether `p` is on the ribbon or the labels, with grace.
+    /// Whether `p` is on the ribbon, the labels or a strip's actions, with
+    /// grace.
     fn on_switcher(&self, p: Point, zone: Rect) -> bool {
-        zone.contains(p) || self.layout.bounds.inflate(GRACE, GRACE).contains(p)
+        zone.contains(p) || self.extent().inflate(GRACE, GRACE).contains(p)
+    }
+
+    /// The labels and the armed strip's actions.
+    fn extent(&self) -> Rect {
+        self.action_rects()
+            .into_iter()
+            .map(|(_, rect)| rect)
+            .fold(self.layout.bounds, |all, rect| all.union(rect))
     }
 
     pub fn pointer_left(&mut self) -> bool {
@@ -763,14 +837,14 @@ impl StripSwitcher {
         {
             return Some(Target::Field);
         }
-        let row = self.layout.rows.iter().find(|(_, r)| r.contains(p))?.0;
-        if let Row::Strip(i) = row
-            && self
-                .remove_rect(i)
-                .is_some_and(|mark| mark.inflate(INNER_GAP / 2.0, INNER_GAP / 2.0).contains(p))
+        if let Some((target, _)) = self
+            .action_rects()
+            .into_iter()
+            .find(|(_, rect)| rect.contains(p))
         {
-            return Some(Target::Remove(i));
+            return Some(target);
         }
+        let row = self.layout.rows.iter().find(|(_, r)| r.contains(p))?.0;
         Some(Target::Row(row))
     }
 
@@ -792,13 +866,22 @@ impl StripSwitcher {
         };
         let row = match target {
             Target::Row(row) => row,
+            Target::Rename(i) => {
+                self.armed = None;
+                self.last_press = None;
+                self.begin_rename(i);
+                return Press::Consumed;
+            }
             Target::Remove(i) => {
+                self.armed = None;
                 self.naming = None;
                 self.last_press = None;
                 return self.remove(i);
             }
             Target::Field => return Press::Consumed,
         };
+        // A tap on a label puts a strip's actions away.
+        self.armed = None;
         let double = self.last_press.is_some_and(|(last, at)| {
             last == row && now.saturating_duration_since(at) < ui::gesture::multi_click_interval()
         });
@@ -814,7 +897,40 @@ impl StripSwitcher {
             self.begin_rename(i);
             return Press::Consumed;
         }
-        self.activate(row)
+        let answer = self.activate(row);
+        // Labels a tap opened go with the choice made in them.
+        if matches!(answer, Press::Command(Command::Focus(_)))
+            && self.open.is_some_and(|o| o.pinned && !o.by_keyboard)
+        {
+            self.close();
+        }
+        answer
+    }
+
+    /// A long-press, or a secondary click, at `p`: on a strip's label it
+    /// puts that strip's actions (Rename, Remove) beside it, where a tap
+    /// takes them. The labels stay while they are out.
+    pub fn secondary_press(&mut self, p: Point) -> Press {
+        let Some(target) = self.target_at(p) else {
+            return Press::Outside;
+        };
+        let (Target::Row(Row::Strip(i)) | Target::Rename(i) | Target::Remove(i)) = target else {
+            return Press::Consumed;
+        };
+        self.naming = None;
+        self.last_press = None;
+        self.armed = (!self.actions_of(i).is_empty()).then_some(i);
+        self.relayout();
+        Press::Consumed
+    }
+
+    /// The workspace menu's New strip: open the labels pinned and make a
+    /// strip, whose name then goes in place for typing.
+    pub fn begin_new_strip(&mut self, now: Instant) -> Press {
+        self.open_pinned(now);
+        self.naming = None;
+        self.armed = None;
+        self.activate(Row::NewStrip)
     }
 
     fn activate(&mut self, row: Row) -> Press {
@@ -979,7 +1095,10 @@ impl StripSwitcher {
                 KeyAnswer::Consumed
             }
             Key::Named(NamedKey::Escape) => {
-                self.close();
+                // A strip's actions go first, then the labels.
+                if self.armed.take().is_none() {
+                    self.close();
+                }
                 KeyAnswer::Consumed
             }
             Key::Named(NamedKey::Delete | NamedKey::Backspace) => match self.selected {
@@ -1087,7 +1206,7 @@ impl StripSwitcher {
                 .map_or(0.0, |w| w + INNER_GAP);
             widths.push((
                 Row::Strip(i),
-                (f64::from(w) + LABEL_PAD_X * 2.0 + faces + self.remove_room(i)).min(LABEL_MAX_W),
+                (f64::from(w) + LABEL_PAD_X * 2.0 + faces).min(LABEL_MAX_W),
             ));
         }
         let style = label_style(cx.theme, false);
@@ -1102,6 +1221,15 @@ impl StripSwitcher {
             self.widths = widths;
             self.relayout();
         }
+        let action = |label: &str, cx: &mut DrawCx<'_>| {
+            ButtonFace::new(Rect::ZERO, label)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(cx.text, cx.theme)
+        };
+        self.action_widths = Some((
+            action(&t("strip-switcher-rename"), cx),
+            action(&t("strip-switcher-remove"), cx),
+        ));
     }
 
     /// Paint the open labels. The host paints the ribbon over its band.
@@ -1125,6 +1253,7 @@ impl StripSwitcher {
         for (row, rect) in self.layout.labels.clone() {
             self.draw_label(cx, row, rect);
         }
+        self.draw_actions(cx);
         if let Some(target) = self.naming.as_ref().map(|n| n.target)
             && let Some(field) = self.field_rect(target)
         {
@@ -1137,7 +1266,31 @@ impl StripSwitcher {
 
     /// Everything the open labels paint, shadows included, for damage.
     pub fn bounds(&self) -> Rect {
-        self.layout.bounds.inflate(32.0, 32.0)
+        self.extent().inflate(32.0, 32.0)
+    }
+
+    /// The armed strip's actions, each a button on the floating ground the
+    /// labels stand on.
+    fn draw_actions(&self, cx: &mut DrawCx<'_>) {
+        for (target, rect) in self.action_rects() {
+            let (label, role) = match target {
+                Target::Remove(_) => (t("strip-switcher-remove"), ButtonRole::Destructive),
+                _ => (t("strip-switcher-rename"), ButtonRole::Secondary),
+            };
+            let radius = ui::chrome::ChromeRole::Control.radius(cx.theme, rect.height());
+            ui::widget::floating_surface::paint_rounded(
+                cx.scene,
+                cx.transform,
+                rect,
+                radius,
+                cx.theme,
+            );
+            let face = ButtonFace::new(rect, &label)
+                .control_size(ControlSize::Small)
+                .role(role)
+                .hovered(self.hover == Some(target));
+            Button::paint(cx.scene, cx.transform, cx.text, cx.theme, &face);
+        }
     }
 
     fn row_state(&self, row: Row) -> (bool, bool) {
@@ -1145,7 +1298,7 @@ impl StripSwitcher {
         let hover = self.selected == Some(row)
             || match (self.hover, row) {
                 (Some(Target::Row(on)), _) => on == row,
-                (Some(Target::Remove(on)), Row::Strip(i)) => on == i,
+                (_, Row::Strip(i)) => self.armed == Some(i),
                 _ => false,
             };
         (active, hover)
@@ -1200,26 +1353,11 @@ impl StripSwitcher {
                 } else {
                     x_end - INNER_GAP
                 };
-                if hover && let Some(mark) = self.remove_rect(i) {
-                    let ink = if self.hover == Some(Target::Remove(i)) {
-                        colors.text_primary
-                    } else {
-                        colors.text_dim
-                    };
-                    ui::icons::draw_icon(
-                        cx.scene,
-                        cx.transform,
-                        mark,
-                        ui::icons::Icon::X,
-                        ink,
-                        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                    );
-                }
                 let style = label_style(cx.theme, active);
                 draw_line(
                     cx,
                     &self.model.shown_name(i),
-                    Rect::new(inner.x0 + self.remove_room(i), rect.y0, text_x1, rect.y1),
+                    Rect::new(inner.x0, rect.y0, text_x1, rect.y1),
                     ink,
                     &style,
                 );
@@ -1294,51 +1432,6 @@ impl StripSwitcher {
         );
     }
 
-    /// The faces of the others on each strip, beside its mark, while the
-    /// labels are closed: who is where shows at a glance, as faces.
-    pub fn draw_rest_faces(
-        &self,
-        cx: &mut DrawCx<'_>,
-        (ribbon, focus): (&StripRibbon, Option<f64>),
-        alpha: f32,
-    ) {
-        if self.open.is_some() || alpha <= 0.0 {
-            return;
-        }
-        let ground = ui::widget::SurfaceLevel::Ground.color(cx.theme);
-        let mut paint = ui::paint::PaintCtx::new(cx.scene, cx.transform, cx.text, cx.theme);
-        for (i, strip) in self.model.strips.iter().enumerate() {
-            let seg = match focus {
-                Some(focus) => ribbon.segment_rect_at(i, focus),
-                None => ribbon.segment_rect(i),
-            };
-            let (Some(person), Some(seg)) = (strip.people.first(), seg) else {
-                continue;
-            };
-            let rect = Rect::from_center_size(
-                Point::new(seg.x0 - REST_FACE_GAP - REST_FACE / 2.0, seg.center().y),
-                (REST_FACE, REST_FACE),
-            );
-            paint.scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                alpha,
-                paint.transform,
-                &rect.inflate(REST_FACE_RING, REST_FACE_RING),
-            );
-            // One face per strip fits the gutter; the label lists them all.
-            // The one face people have everywhere: one initial (or the agent
-            // mark) in a ring of their colour, the ring reaching just past
-            // the gutter's square.
-            ui::presence::Face {
-                is_agent: person.is_agent,
-                ..ui::presence::Face::new(&person.label, &person.id, person.color)
-            }
-            .paint(&mut paint, rect.inset(-REST_FACE_INSET), ground);
-            paint.scene.pop_layer();
-        }
-    }
-
     /// Named targets for harnesses: the ribbon, and each label when open.
     pub fn test_rects(&self, zone: Rect) -> Vec<(String, Rect)> {
         if self.open.is_none() {
@@ -1352,13 +1445,13 @@ impl StripSwitcher {
             };
             out.push((name, *rect));
         }
-        for i in 0..self.model.strips.len() {
-            if let Some(mark) = self.remove_rect(i) {
-                out.push((
-                    format!("strip_switcher.remove.{}", i.saturating_add(1)),
-                    mark,
-                ));
-            }
+        for (target, rect) in self.action_rects() {
+            let name = match target {
+                Target::Rename(i) => format!("strip_switcher.rename.{}", i.saturating_add(1)),
+                Target::Remove(i) => format!("strip_switcher.remove.{}", i.saturating_add(1)),
+                Target::Row(_) | Target::Field => continue,
+            };
+            out.push((name, rect));
         }
         if let Some(field) = self.naming.as_ref().and_then(|n| self.field_rect(n.target)) {
             out.push(("strip_switcher.name_field".into(), field));
@@ -1371,6 +1464,7 @@ impl StripSwitcher {
         match target {
             Target::Row(Row::Strip(i)) => format!("{TARGET_PREFIX}strip:{i}"),
             Target::Row(Row::NewStrip) => format!("{TARGET_PREFIX}new-strip"),
+            Target::Rename(i) => Self::rename_target_name(i),
             Target::Remove(i) => format!("{TARGET_PREFIX}remove:{i}"),
             Target::Field => format!("{TARGET_PREFIX}field"),
         }
@@ -1392,10 +1486,12 @@ impl StripSwitcher {
                 Some(self.activate(Row::Strip(i)))
             }
             Some(("rename", i)) => {
+                self.armed = None;
                 self.begin_rename(index(i)?);
                 Some(Press::Consumed)
             }
             Some(("remove", i)) => {
+                self.armed = None;
                 self.naming = None;
                 Some(self.remove(index(i)?))
             }
@@ -1436,6 +1532,15 @@ impl StripSwitcher {
                             .focused(self.selected == Some(*row)),
                     ),
             );
+            // A strip's actions are always there for assistive technology,
+            // where the armed ones stand, else on the label.
+            let actions = self.action_rects();
+            let bounds_of = |target: Target| {
+                actions
+                    .iter()
+                    .find(|(t, _)| *t == target)
+                    .map_or(*rect, |(_, r)| *r)
+            };
             if let Row::Strip(i) = row
                 && self.model.strips.get(*i).is_some_and(|s| s.renamable)
             {
@@ -1445,7 +1550,7 @@ impl StripSwitcher {
                             "strip-switcher-rename-named",
                             &[("name", self.model.shown_name(*i).into())],
                         ))
-                        .with_bounds(*rect)
+                        .with_bounds(bounds_of(Target::Rename(*i)))
                         .with_action_target(Self::rename_target_name(*i)),
                 );
             }
@@ -1458,7 +1563,7 @@ impl StripSwitcher {
                             "strip-switcher-remove-named",
                             &[("name", self.model.shown_name(*i).into())],
                         ))
-                        .with_bounds(self.remove_rect(*i).unwrap_or(*rect))
+                        .with_bounds(bounds_of(Target::Remove(*i)))
                         .with_action_target(Self::target_name(Target::Remove(*i))),
                 );
             }
@@ -1547,10 +1652,6 @@ fn draw_line(
 /// but there, so the switcher can be found, once there is more than one
 /// strip to switch between.
 pub const RIBBON_REST_ALPHA: f32 = 0.35;
-
-/// The faces beside the marks keep this much while the marks rest: who is
-/// here is worth a glance even when nothing moves.
-pub const PEOPLE_REST_ALPHA: f32 = 0.85;
 
 #[cfg(test)]
 mod tests {

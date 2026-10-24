@@ -4339,8 +4339,18 @@ impl FrameBuilder {
     /// fold found anything — someone who joined but hasn't moved their
     /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
+        // Arriving where people are pulses their faces in the bar, as a
+        // wave does the waver's.
+        let arrived = self.host.take_arrival_pulses();
+        for person in &arrived {
+            self.presence.bounce(
+                ui::permissions::UserId(person.clone()),
+                self.theme.motion(),
+                Instant::now(),
+            );
+        }
         let Some(relay) = self.peer_presence.as_ref() else {
-            return false;
+            return !arrived.is_empty();
         };
         let tiles = self.host.tab_tiles();
         relay.set_shown_strip(self.host.shown_strip());

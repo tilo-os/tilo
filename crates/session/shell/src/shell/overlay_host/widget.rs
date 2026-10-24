@@ -1258,21 +1258,6 @@ impl ShellOverlayHost {
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, ctx.scale_factor);
         self.observe_window_focus();
-        // A press on the line under the top bar was taken when it landed
-        // ([`Self::note_pointer_press`]); nothing beneath gets it.
-        if self.presence_notice_press && matches!(event, WindowEvent::MouseInput { .. }) {
-            if matches!(
-                event,
-                WindowEvent::MouseInput {
-                    state: ElementState::Released,
-                    ..
-                }
-            ) {
-                self.presence_notice_press = false;
-            }
-            *ctx.handled = true;
-            return;
-        }
         let people_open = self.overlay_flags().collaborators;
         if self
             .collaborators_overlay
@@ -1486,6 +1471,11 @@ impl ShellOverlayHost {
                     }
                     _ => {}
                 }
+            }
+            // A swipe down from a display's top edge reveals what hides
+            // there: the top bar the person hides, a fullscreen window's bar.
+            if !shell_owned {
+                claimed |= self.top_edge_swipe(touch.id, point, touch.phase);
             }
             if claimed || shell_owned {
                 *ctx.handled = true;

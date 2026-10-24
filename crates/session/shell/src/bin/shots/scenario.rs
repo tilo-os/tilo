@@ -21,6 +21,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use vello::kurbo::Point;
+use winit::event::MouseButton;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
@@ -35,6 +36,7 @@ pub mod film;
 mod launcher;
 mod motion_gallery;
 mod motion_review;
+mod one_place;
 mod window_search;
 
 /// One tab of a window seeded for the window-bar shots.
@@ -120,6 +122,15 @@ pub enum Action {
     CompositorPointer(Point),
     /// Turn "hide the top bar until the pointer is near it" on or off.
     HideTopBar(bool),
+    /// A secondary click on the named target: what a long-press by touch
+    /// becomes.
+    SecondaryClickNamed(&'static str),
+    /// A finger dragged from one point to the other, as raw touch.
+    TouchSwipe(Point, Point),
+    /// A notification banner arrives: title and body.
+    Notify(&'static str, &'static str),
+    /// The focused window goes full screen, or leaves it.
+    FullScreenFocused(bool),
     /// Synthesise a left-button `Pressed` at the current cursor.
     /// Caller owns the matching `MouseRelease`.
     MousePress,
@@ -971,6 +982,37 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::IdentifyDisplays => {
             let snapshot = identify_snapshot(driver.host().output_geometry());
             driver.host_mut().identify_displays_now(&snapshot);
+        }
+        Action::SecondaryClickNamed(name) => match driver.resolve_named_centre(name) {
+            Some(p) => {
+                driver.move_cursor(p);
+                driver.dispatch(
+                    &ui::synthetic_input::PointerAction::Press(MouseButton::Right).event(1.0),
+                );
+                driver.dispatch(
+                    &ui::synthetic_input::PointerAction::Release(MouseButton::Right).event(1.0),
+                );
+            }
+            None => eprintln!("scenario: could not resolve named target '{name}'"),
+        },
+        Action::TouchSwipe(from, to) => one_place::touch_swipe(driver, *from, *to),
+        Action::Notify(title, body) => {
+            driver
+                .chrome_handle()
+                .borrow_mut()
+                .push_notification(*title, *body);
+        }
+        Action::FullScreenFocused(on) => {
+            let handle = driver.chrome_handle();
+            let group = {
+                let st = handle.borrow();
+                let tree = st.tree();
+                let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+                strip.and_then(|strip| tree.desktop.active_group_for(strip))
+            };
+            handle
+                .borrow_mut()
+                .set_user_fullscreen_group(if *on { group } else { None });
         }
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
@@ -3718,9 +3760,10 @@ fn build_scenarios() -> Vec<Scenario> {
         Scenario {
             name: "strip_switcher",
             description: "The strip switcher on three strips with people on two: the ribbon \
-             at rest with faces beside its marks, the pointer coming to rest on it laying \
-             out the strips' names, a label lit under the pointer, New strip making a \
-             strip and naming it in place, and Super+S for the keyboard.",
+             at rest (its marks only; who is where shows in the labels), the pointer coming \
+             to rest on it laying out the strips' names with the faces of the people on \
+             each, a label lit under the pointer, New strip making a strip and naming it in \
+             place, and Super+S for the keyboard.",
             actions: vec![
                 Action::SeedStripsWithPeople,
                 Action::MoveCursor(Point::new(800.0, 500.0)),
@@ -3774,6 +3817,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Snapshot("07-closed"),
             ],
         },
+        one_place::one_place(),
         Scenario {
             name: "strip_deck",
             description: "Four strips, each a full-height screen: the first fills the work \

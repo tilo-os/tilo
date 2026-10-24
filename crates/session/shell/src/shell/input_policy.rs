@@ -849,8 +849,14 @@ pub fn chrome_captures_pointer(fb: &FrameBuilder) -> bool {
 /// exactly when it would take the pointer standing there
 /// ([`chrome_captures_pointer`]). Touch equals pointer: a contact on an
 /// overlay is the overlay's, never also the window's beneath.
+///
+/// A finger landing on a display's top edge while something hides there (the
+/// top bar the person hides, a fullscreen window's bar) is the shell's too: a
+/// swipe down from it reveals what hides there, and no client sees it.
 pub fn chrome_captures_touch_at(fb: &FrameBuilder, point: vello::kurbo::Point) -> bool {
-    input_capture(fb).pointer.at(point) || fb.host().chrome_band_captures_pointer_at(Some(point))
+    input_capture(fb).pointer.at(point)
+        || fb.host().chrome_band_captures_pointer_at(Some(point))
+        || fb.host().takes_top_edge_touch(point)
 }
 
 // Seat delivery — the actual `wl_keyboard`/`wl_pointer` traffic.

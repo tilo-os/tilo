@@ -917,6 +917,9 @@ pub struct ChromeState {
     /// as the people panel reads them from presence: what search's
     /// Happening now offers to join ([`Self::publish_live_calls`]).
     pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
+    /// The person arrived where others are: the bar pulses their faces and
+    /// slides a short name out of them (`overlay_host::arrival`).
+    pub(crate) arrival_notice: Option<tilo_desktop::chrome::ArrivalNotice>,
     activity_focus_request: Option<ActivityFocus>,
     /// Activity was asked to open; the overlay host launches its app.
     activity_open_request: bool,
@@ -1270,6 +1273,7 @@ impl ChromeState {
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
             live_calls: Vec::new(),
+            arrival_notice: None,
             activity_focus_request: None,
             activity_open_request: false,
             workspace_view_request: None,
@@ -3528,17 +3532,6 @@ impl ChromeState {
             self.bump();
         }
         changed
-    }
-
-    /// Add a strip named `name` at the bottom of the active workspace and
-    /// move to it, as the workspace menu's New strip asks, once the
-    /// desktop's policy allows it. `false` when it does not, or the model
-    /// refuses the name.
-    pub fn add_named_strip(&mut self, name: &str) -> bool {
-        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
-            name: name.to_owned(),
-        };
-        self.may_command_on_active(&command) && self.create_strip(name).is_ok()
     }
 
     /// Whether the person may add a strip to the active workspace here: the

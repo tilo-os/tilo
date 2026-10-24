@@ -334,10 +334,6 @@ impl OverlayStack {
         ]
     }
 
-    pub(crate) fn any_shown(&self) -> bool {
-        self.layers().into_iter().any(ShellLayer::is_shown)
-    }
-
     /// The stacked layer for `id`, or `None` while the host still routes it.
     pub(crate) fn layer(&self, id: LayerId) -> Option<&dyn ShellLayer> {
         self.layers().into_iter().find(|layer| layer.id() == id)
