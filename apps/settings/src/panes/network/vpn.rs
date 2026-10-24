@@ -41,6 +41,17 @@ use crate::widgets::{
 
 mod devices;
 
+/// A key, under its label: a key is longer than the room a trailing value
+/// has beside a label, so it takes the row's measure and breaks across two
+/// lines in a narrow window.
+fn key_row(label: &str, key: &str) -> Item {
+    row(Box::new(
+        ListRow::new(format!("setting/{label}"), label)
+            .secondary(key)
+            .secondary_lines(2),
+    ))
+}
+
 crate::effects::effect_family!(VpnEffect => answer);
 
 /// The VPN list.
@@ -1469,7 +1480,7 @@ impl NetworkModel {
             ),
         ];
         if let Some(public) = &form.public_key {
-            tunnel.push(value_row(&t("net-vpn-public-key"), public));
+            tunnel.push(key_row(&t("net-vpn-public-key"), public));
         }
         tunnel.extend([
             self.secret_row(
@@ -1863,7 +1874,7 @@ impl NetworkModel {
         let keyed = |uuid: &str| uuid.to_owned();
         let mut out = Vec::new();
         if let Some(key) = &settings.peer_public_key {
-            out.push(value_row(&t("net-vpn-server-key"), key));
+            out.push(key_row(&t("net-vpn-server-key"), key));
         }
         out.extend([
             field_row(
