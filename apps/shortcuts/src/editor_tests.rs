@@ -250,30 +250,30 @@ fn a_step_is_titled_by_what_it_does_and_placed_by_where_it_acts() {
 /// actions could not be read: the editor says what is missing instead.
 #[test]
 fn the_save_status_says_what_is_missing() {
-    use crate::door::Loaded;
     use crate::view::{EditorInput, save_blocker};
+    use ui::Arrival;
     let id = ui::prelude::Id::from_raw("d");
-    let input = |steps: Vec<Step>, catalogue: Loaded<()>| EditorInput {
+    let input = |steps: Vec<Step>, catalogue: Arrival<()>| EditorInput {
         draft: Some((id.clone(), draft(steps))),
         catalogue,
         ..EditorInput::default()
     };
     assert_eq!(
-        save_blocker(&input(Vec::new(), Loaded::Ready(()))).as_deref(),
+        save_blocker(&input(Vec::new(), Arrival::Ready(()))).as_deref(),
         Some("Add a step to save this shortcut"),
         "an empty draft does nothing"
     );
     assert!(
-        save_blocker(&input(vec![list()], Loaded::Loading))
+        save_blocker(&input(vec![list()], Arrival::local()))
             .is_some_and(|why| why.starts_with("Reading")),
         "steps wait for the actions they choose from"
     );
     assert!(
-        save_blocker(&input(vec![list()], Loaded::Failed("x".into())))
+        save_blocker(&input(vec![list()], Arrival::Failed("x".into())))
             .is_some_and(|why| why.starts_with("Can't save here")),
         "an unreadable catalogue is said plainly"
     );
-    assert_eq!(save_blocker(&input(vec![list()], Loaded::Ready(()))), None);
+    assert_eq!(save_blocker(&input(vec![list()], Arrival::Ready(()))), None);
 }
 
 /// A catalogue read nothing answered is explained in the person's words,

@@ -15,7 +15,7 @@
 //! after it.
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::InvokeArgument;
-use ui::{InvocationCall, LocalState, RemoteActions, RemoteCall};
+use ui::{Arrival, InvocationCall, RemoteActions};
 
 use crate::app::ChatApp;
 
@@ -39,7 +39,7 @@ pub(crate) struct Navigation {
     /// Links asked for ahead of a click, by message.
     prefetched: std::collections::HashMap<String, Asked>,
     /// The resource being opened, and the message that shares it.
-    opening: Option<(String, LocalState<InvocationCall>)>,
+    opening: Option<(String, InvocationCall)>,
     /// The messages whose controls the last paint showed.
     shown: std::cell::RefCell<Vec<String>>,
 }
@@ -49,7 +49,7 @@ struct Asked {
     reference: tilo_reference::ResourceRef,
     provider: String,
     started: ui::time::Instant,
-    call: LocalState<InvocationCall>,
+    call: InvocationCall,
 }
 
 struct Status {
@@ -81,9 +81,9 @@ struct Pending {
 
 /// What `call` came to: the link, why there is none, or `None` while it
 /// runs.
-fn answer(call: &LocalState<InvocationCall>) -> Option<Result<String, String>> {
+fn answer(call: &InvocationCall) -> Option<Result<String, String>> {
     call.with(|call| match call {
-        RemoteCall::Done(InvocationUpdate::Succeeded { output, .. }) => Some(
+        Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => Some(
             output
                 .value
                 .as_ref()
@@ -92,29 +92,25 @@ fn answer(call: &LocalState<InvocationCall>) -> Option<Result<String, String>> {
                 .map(str::to_owned)
                 .ok_or_else(|| "The resource's app answered without a link".to_owned()),
         ),
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
-            Some(Err(error.message.clone()))
-        }
-        RemoteCall::Done(InvocationUpdate::Cancelled { .. }) => {
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(Err(error.message.clone())),
+        Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
             Some(Err("The link request was cancelled".into()))
         }
-        RemoteCall::Refused(error) => Some(Err(error.to_string())),
-        RemoteCall::Done(_) | RemoteCall::Pending => None,
+        Arrival::Failed(error) => Some(Err(error.to_string())),
+        Arrival::Ready(_) | Arrival::Pending { .. } => None,
     })
 }
 
 /// What opening came to, or `None` while it runs.
-fn opened(call: &LocalState<InvocationCall>) -> Option<Result<(), String>> {
+fn opened(call: &InvocationCall) -> Option<Result<(), String>> {
     call.with(|call| match call {
-        RemoteCall::Done(InvocationUpdate::Succeeded { .. }) => Some(Ok(())),
-        RemoteCall::Done(InvocationUpdate::Failed { error, .. }) => {
-            Some(Err(error.message.clone()))
-        }
-        RemoteCall::Done(InvocationUpdate::Cancelled { .. }) => {
+        Arrival::Ready(InvocationUpdate::Succeeded { .. }) => Some(Ok(())),
+        Arrival::Ready(InvocationUpdate::Failed { error, .. }) => Some(Err(error.message.clone())),
+        Arrival::Ready(InvocationUpdate::Cancelled { .. }) => {
             Some(Err("Opening was cancelled".into()))
         }
-        RemoteCall::Refused(error) => Some(Err(error.to_string())),
-        RemoteCall::Done(_) | RemoteCall::Pending => None,
+        Arrival::Failed(error) => Some(Err(error.to_string())),
+        Arrival::Ready(_) | Arrival::Pending { .. } => None,
     })
 }
 
