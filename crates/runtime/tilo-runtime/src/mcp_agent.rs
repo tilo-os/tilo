@@ -852,6 +852,10 @@ struct Resolved {
     children: Vec<Node>,
     /// The nodes this resolution passed through, root first.
     chain: Vec<Node>,
+    /// The directory levels the resolution read, which what the call does
+    /// next (finding the action that reads the target) reads again from
+    /// here rather than asking the app twice.
+    levels: Levels,
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -1111,12 +1115,22 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// Resolve a whole path.
     async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
-        let (app_id, provider) = match self.app_ref(&parsed.app).await? {
-            AppRef::Running { app_id, provider } => (app_id, provider),
-            AppRef::Installed { .. } => {
-                return Ok(Err(Self::not_running_note(&parsed.app)));
+        match self.app_ref(&parsed.app).await? {
+            AppRef::Running { app_id, provider } => {
+                Ok(Ok(self.resolve_in(parsed, app_id, provider).await?))
             }
-        };
+            AppRef::Installed { .. } => Ok(Err(Self::not_running_note(&parsed.app))),
+        }
+    }
+
+    /// Resolve the segments of `parsed` in the running app `app_id`, whose
+    /// instance is `provider`.
+    async fn resolve_in(
+        &self,
+        parsed: &ParsedPath,
+        app_id: String,
+        provider: String,
+    ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
         let mut levels = Levels::new();
         let (chain, here) = self
@@ -1152,7 +1166,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             siblings = self.level(&provider, &node.id, &mut levels).await?.children;
             previous = Some(node.clone());
         }
-        Ok(Ok(Resolved {
+        Ok(Resolved {
             app_id,
             provider,
             path: written,
@@ -1169,7 +1183,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             },
             children: here.children,
             chain,
-        }))
+            levels,
+        })
     }
 
     fn not_running_note(name: &str) -> String {
@@ -1360,12 +1375,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
         }
-        let resolved = match self.resolve(&parsed).await? {
+        let mut resolved = match self.resolve(&parsed).await? {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
         let provider = resolved.provider.clone();
-        let mut levels = Levels::new();
+        let mut levels = std::mem::take(&mut resolved.levels);
         let Some((owner, reader)) = self.reader(&resolved, &mut levels).await? else {
             let mut text = format!(
                 "{} has no read action; its actions: {}",
@@ -1563,15 +1578,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let action = parsed.action.clone().ok_or_else(|| {
             format!("name the action: {path}#<action>; tilo_ls {path} lists them")
         })?;
-        if let AppRef::Installed { app_id } = self.app_ref(&parsed.app).await? {
-            return self
-                .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
-                .await;
-        }
-        let resolved = match self.resolve(&parsed).await? {
-            Ok(resolved) => resolved,
-            Err(note) => return Err(note),
+        // The app is looked up once: resolving the path in it does not ask
+        // again which apps run.
+        let (app_id, provider) = match self.app_ref(&parsed.app).await? {
+            AppRef::Installed { app_id } => {
+                return self
+                    .launch(&parsed, &app_id, &action, arguments, invocation, wait_ms)
+                    .await;
+            }
+            AppRef::Running { app_id, provider } => (app_id, provider),
         };
+        let resolved = self.resolve_in(&parsed, app_id, provider).await?;
         let descriptor = pick_action(&action, &resolved.actions, &resolved.path)
             .map_err(|error| format!("{error}; tilo_ls {} lists them", resolved.path))?
             .clone();
