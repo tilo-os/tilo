@@ -281,6 +281,7 @@ pub mod resources;
 pub mod retained_present;
 pub mod retained_raster;
 pub mod richtext;
+pub mod save_status;
 pub mod scale;
 pub mod scene_parts;
 pub mod screen_reader;
@@ -294,7 +295,6 @@ pub mod shell_tabs;
 mod standalone_history;
 mod standalone_history_host;
 pub mod state;
-pub mod status_bubble;
 pub mod surface;
 pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
@@ -512,8 +512,9 @@ pub use history_source::runs::{
     AgentRun, RunStep, forget_run, read_runs, record_run, record_run_with_details, run_starting_at,
 };
 pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use status_bubble::{
-    SAVE_GIVE_UP, SAVE_STALL, SaveAction, SaveNotice, SaveState, SaveStatusSurface, StatusBubble,
+pub use save_status::{
+    SAVE_GIVE_UP, SAVE_RETRY_ACTION, SAVE_STALL, SaveAction, SaveNotice, SaveState,
+    SaveStatusSurface,
 };
 pub use text_edit::{
     CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,

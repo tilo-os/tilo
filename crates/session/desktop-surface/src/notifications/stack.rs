@@ -1,5 +1,5 @@
 //! The live banner stack: title + body cards pinned top-right, sliding in,
-//! fading out and auto-dismissing. Richer than `ui::widget::toast::ToastStack`:
+//! fading out and auto-dismissing, each on the shared `ui::widget::toast::ToastCard`:
 //! dual-line layout, a severity tint, a close affordance, a card for the
 //! banners that do not fit, keyboard focus on request and the
 //! locked-session redaction.

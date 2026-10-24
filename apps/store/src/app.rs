@@ -557,10 +557,11 @@ pub struct StoreApp {
     scroll_offset: Rc<Cell<(f32, f32)>>,
     /// The transient status bubble: an operation's result, shown once when
     /// it changes.
-    status_bubble: ui::StatusBubble,
-    /// Last pointer position (window coords), tracked from `CursorMoved`
-    /// so the bubble can stay open while the pointer rests on it.
-    last_cursor: Point,
+    /// The latest outcome (installed, removed, …), said in the window's bar
+    /// for a while; work under way and failures say themselves in place.
+    status_notice: ui::widget::toast::Transient<String>,
+    /// The status line last said in the bar, so only a change is news.
+    status_said: String,
     /// Shared async, bounded decoded-artwork cache. `None` for hermetic shots.
     images: Option<ui::ImageStore>,
 }
@@ -627,8 +628,8 @@ impl StoreApp {
             safety_open: false,
             reports: Vec::new(),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
-            status_bubble: ui::StatusBubble::new(),
-            last_cursor: Point::ZERO,
+            status_notice: ui::widget::toast::Transient::new(),
+            status_said: String::new(),
             images: None,
         }
     }
@@ -1342,21 +1343,24 @@ impl StoreApp {
             .collect()
     }
 
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        if !self.worker_busy && self.operation_error.is_none() && !self.status_line.is_empty() {
-            self.status_bubble.show(&self.status_line, now);
+    /// Say a new outcome in the window's bar; work under way and failures
+    /// say themselves in place.
+    fn publish_status(&mut self) {
+        if !self.worker_busy
+            && self.operation_error.is_none()
+            && self.status_line != self.status_said
+        {
+            self.status_said.clone_from(&self.status_line);
+            if self.status_said.is_empty() {
+                self.status_notice.dismiss();
+            } else {
+                self.status_notice.show(self.status_said.clone());
+            }
         }
-        self.status_bubble
-            .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
-        self.status_bubble
-            .paint(scene, transform, tr, theme, self.rect, now);
+        self.status_notice.expire();
+        self.status_notice.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 }
 
@@ -1423,6 +1427,16 @@ impl Widget for StoreApp {
             root.sync(state, path);
         }
         self.request_from_worker();
+        self.publish_status();
+    }
+
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
+        self.root
+            .as_ref()
+            .and_then(|root| root.next_wake_deadline())
+            .into_iter()
+            .chain(self.status_notice.deadline())
+            .min()
     }
 
     fn build_layout(
@@ -1527,12 +1541,9 @@ impl Widget for StoreApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Child overlays first, then the transient status bubble on top of
-        // the content.
         if let Some(root) = self.root.as_mut() {
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.draw_status_bubble(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -1540,11 +1551,6 @@ impl Widget for StoreApp {
         event: &winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Track the pointer so the bubble stays open while it rests on it
-        // (coords are window-space, unscaled).
-        if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = ctx.logical(position);
-        }
         if let (Some(root), Ok(children)) = (self.root.as_mut(), ctx.taffy.children(ctx.node_id))
             && let Some(&child_node) = children.first()
         {
@@ -1610,7 +1616,6 @@ impl Widget for StoreApp {
         self.root
             .as_ref()
             .is_some_and(|r| r.needs_animation_frame())
-            || self.status_bubble.needs_frame(ui::time::now())
             || self
                 .images
                 .as_ref()

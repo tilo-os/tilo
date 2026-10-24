@@ -2,34 +2,26 @@
 //! two homes").
 //!
 //! Saving is the system's job, so a framework app says nothing about it.
-//! The root of every framework window holds one [`SaveStatusSurface`] over
-//! its view and feeds it the durability the host reports for the window's
-//! record; no app wires it. A save that lands, however slowly, shows nothing.
-//! Only a save still unconfirmed after [`SAVE_STALL`](ui_core::SAVE_STALL)
-//! ("Couldn't save yet. Retrying…", then "Not saved" with "Try again") or one
-//! that failed (an error card with "Try again") appears, and the save that
-//! ends either says "Saved" once.
+//! The root of every framework window holds one [`SaveStatusSurface`] and
+//! feeds it the durability the host reports for the window's record; no
+//! app wires it. A save that lands, however slowly, says nothing. Only a
+//! save still unconfirmed after [`SAVE_STALL`](ui_core::SAVE_STALL)
+//! ("Couldn't save yet. Retrying…", then "Not saved" with "Try again") or
+//! one that failed (an error with "Try again", held until a save succeeds)
+//! is said, in the window's bar, and the save that ends either says
+//! "Saved" once.
 //!
 //! An app that also persists outside its record (a file it writes) reports
 //! those saves through [`Saves`] ([`RecordEnv::saves`](super::RecordEnv::saves)),
-//! and the same surface presents them. It never paints a save pill, a
-//! "Saving…" line or a "Saved" toast of its own.
+//! and the same surface says them. It never shows a save pill, a "Saving…"
+//! line or a "Saved" notice of its own.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use ui_core::Theme;
-use ui_core::a11y::AccessNode;
 use ui_core::record::RecordSaveStatus;
-use ui_core::text_render::TextRenderer;
 use ui_core::time::Instant;
-use ui_core::vello::Scene;
-use ui_core::vello::kurbo::{Affine, Point, Rect};
 use ui_core::{SaveAction, SaveState, SaveStatusSurface};
-
-/// The action target prefix of the surface's buttons for assistive
-/// technology: `tilo.save-status.retry` and `tilo.save-status.dismiss`.
-const TARGET: &str = "tilo.save-status";
 
 /// Saves an app makes outside its record, for the window's save status.
 ///
@@ -80,11 +72,10 @@ impl Saves {
     }
 
     /// The view presents the window's save status itself, on a
-    /// [`SaveStatusSurface`] it places (in its header row, beside the
-    /// document's title) and feeds from
+    /// [`SaveStatusSurface`] of its own it feeds from
     /// [`RecordEnv::save_status`](super::RecordEnv::save_status); the
-    /// framework then paints none over it. The view keeps the same rules:
-    /// it says nothing for a save that lands.
+    /// framework then says none. The view keeps the same rules: it says
+    /// nothing for a save that lands.
     pub fn shown_by_view(&self) {
         self.0.borrow_mut().shown_by_view = true;
     }
@@ -119,8 +110,9 @@ fn unsettled(state: &SaveState) -> bool {
     matches!(state, SaveState::Saving | SaveState::Failed(_))
 }
 
-/// The save status a framework root presents over its view: the record's
-/// durability and the app's own [`Saves`], on one [`SaveStatusSurface`].
+/// The save status a framework root says in the window's bar: the
+/// record's durability and the app's own [`Saves`], on one
+/// [`SaveStatusSurface`].
 pub(crate) struct SaveIndicator {
     surface: SaveStatusSurface,
     /// What the host last reported of the record; `None` before it did
@@ -130,25 +122,6 @@ pub(crate) struct SaveIndicator {
     /// The record's save is to be submitted again, not yet taken by the
     /// host.
     retry_record: bool,
-    /// Where the surface last painted.
-    drawn: Option<Rect>,
-    /// Where the surface was before this frame painted it.
-    replaced: Replaced,
-    /// What the surface shows changed since the last frame.
-    dirty: bool,
-    /// Where the pointer last was.
-    pointer: Point,
-}
-
-/// Where the save status was before the frame painted it over.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Replaced {
-    /// Nothing painted it since the last frame.
-    NotYet,
-    /// Painted, replacing what was here (`None`: nothing).
-    From(Option<Rect>),
-    /// Where it was is forgotten (a capture reset it).
-    Unknown,
 }
 
 impl SaveIndicator {
@@ -158,10 +131,6 @@ impl SaveIndicator {
             record: None,
             saves,
             retry_record: false,
-            drawn: None,
-            replaced: Replaced::NotYet,
-            dirty: false,
-            pointer: Point::ZERO,
         }
     }
 
@@ -192,12 +161,30 @@ impl SaveIndicator {
             return;
         }
         if let Some(state) = self.merged() {
-            self.dirty |= self.surface.set(state, now);
+            self.surface.set(state, now);
         }
-        self.dirty |= self.surface.advance(now);
+        self.surface.advance(now);
         if self.surface.take_retry() {
             self.ask_retry();
         }
+    }
+
+    /// On every sync of the window: run "Try again" pressed in the window's
+    /// bar, bring the surface up to `now`, and keep the bar saying it.
+    pub(crate) fn sync(&mut self, now: Instant) {
+        if self.inert() {
+            return;
+        }
+        if let Some(action) = self.surface.take_bar_action() {
+            self.acted(action);
+        }
+        self.follow(now);
+        self.surface.publish();
+    }
+
+    /// The window drew a frame: the person can see what its bar says.
+    pub(crate) fn seen(&mut self) {
+        self.surface.seen();
     }
 
     /// Present the save state as it stands at `now`, forgetting how long it
@@ -211,10 +198,10 @@ impl SaveIndicator {
     pub(crate) fn settle_for_capture(&mut self, now: Instant) {
         self.surface = SaveStatusSurface::new();
         self.retry_record = false;
-        self.drawn = None;
-        self.replaced = Replaced::Unknown;
-        self.dirty = true;
         self.follow(now);
+        if !self.inert() {
+            self.surface.publish();
+        }
     }
 
     /// Submit again whichever save is unsettled: the record's, the app's,
@@ -232,79 +219,11 @@ impl SaveIndicator {
         if action == SaveAction::Retry {
             self.ask_retry();
         }
-        self.dirty = true;
     }
 
     /// Whether the record's save is to be submitted again, once.
     pub(crate) fn take_record_retry(&mut self) -> bool {
         std::mem::take(&mut self.retry_record)
-    }
-
-    /// Paint what the surface shows over `area`, the view's rect.
-    pub(crate) fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        now: Instant,
-    ) {
-        if self.inert() {
-            return;
-        }
-        self.follow(now);
-        if self.replaced == Replaced::NotYet {
-            self.replaced = Replaced::From(self.drawn);
-        }
-        self.drawn = self
-            .surface
-            .paint(scene, transform, tr, theme, area, now)
-            .map(|rect| ui_core::widget::floating_surface::painted_bounds(rect, theme));
-    }
-
-    /// The pointer moved to `p`; whether the hovered button changed.
-    pub(crate) fn pointer_moved(&mut self, p: Point) -> bool {
-        self.pointer = p;
-        if self.inert() {
-            return false;
-        }
-        let changed = self.surface.pointer_moved(p);
-        self.dirty |= changed;
-        changed
-    }
-
-    /// A press where the pointer is: whether it was the surface's.
-    pub(crate) fn press(&mut self) -> bool {
-        let p = self.pointer;
-        if self.inert() || !self.surface.contains(p) {
-            return false;
-        }
-        if let Some(action) = self.surface.click(p) {
-            self.acted(action);
-        }
-        true
-    }
-
-    /// The surface for assistive technology, when it says anything.
-    pub(crate) fn accessibility(&self) -> Option<AccessNode> {
-        if self.inert() {
-            return None;
-        }
-        self.surface.accessibility(TARGET)
-    }
-
-    /// Assistive technology activated `target`; whether it was the
-    /// surface's.
-    pub(crate) fn perform(&mut self, target: &str) -> bool {
-        if self.inert() || !target.starts_with(TARGET) {
-            return false;
-        }
-        let Some(action) = self.surface.perform(TARGET, target) else {
-            return false;
-        };
-        self.acted(action);
-        true
     }
 
     /// When the surface next moves along by itself.
@@ -315,63 +234,23 @@ impl SaveIndicator {
         self.surface.next_wake_deadline()
     }
 
-    /// Whether the next frame shows something different.
+    /// Whether the window needs a sync for the bar to say what changed.
     pub(crate) fn needs_redraw(&self, now: Instant) -> bool {
         if self.inert() {
             return false;
         }
-        self.dirty
-            || self.surface.needs_frame(now)
-            || self
-                .merged()
-                .is_some_and(|state| self.surface.state() != Some(&state))
+        self.merged()
+            .is_some_and(|state| self.surface.state() != Some(&state))
             || self.next_wake_deadline().is_some_and(|due| due <= now)
     }
 
-    /// Whether something is showing at `now`.
-    pub(crate) fn is_visible(&self, now: Instant) -> bool {
-        !self.inert() && self.surface.is_visible(now)
-    }
-
-    /// Where the next frame differs: where the surface was while it only
-    /// fades; when what it shows changed, where it was and is once this
-    /// frame painted it, and all of `area` before (its new place is known
-    /// only once it paints).
-    pub(crate) fn collect_damage(&self, area: Rect, now: Instant, regions: &mut Vec<Rect>) {
-        if !self.needs_redraw(now) {
-            return;
-        }
-        if let (true, Replaced::From(was)) = (self.dirty, self.replaced) {
-            regions.extend(was);
-            regions.extend(self.drawn);
-            return;
-        }
-        let fading = !self.dirty
-            && self.surface.needs_frame(now)
-            && self
-                .merged()
-                .is_none_or(|state| self.surface.state() == Some(&state));
-        match self.drawn {
-            Some(drawn) if fading => regions.push(drawn),
-            drawn => {
-                regions.extend(drawn);
-                regions.push(area);
-            }
-        }
-    }
-
-    pub(crate) fn mark_drawn(&mut self) {
-        self.dirty = false;
-        self.replaced = Replaced::NotYet;
-    }
-
-    /// What the bubble says, for a test.
+    /// What the window's bar says of the save, for a test.
     #[cfg(test)]
-    pub(crate) fn bubble_text(&self) -> &str {
-        self.surface.bubble_text()
+    pub(crate) fn said(&self) -> Option<String> {
+        self.surface.notice().map(|notice| notice.text)
     }
 
-    /// The failure showing, for a test.
+    /// The failure that stands, for a test.
     #[cfg(test)]
     pub(crate) fn failure(&self) -> Option<&str> {
         self.surface.failure()
@@ -390,6 +269,7 @@ mod tests {
 
     fn init() {
         ui_core::i18n::I18nManager::init("en-US");
+        ui_core::window_toolbar::notify(None);
     }
 
     #[test]
@@ -398,20 +278,15 @@ mod tests {
         let t0 = ui_core::time::now();
         let mut indicator = SaveIndicator::new(Saves::default());
         indicator.record(&RecordSaveStatus::Saving, t0);
-        indicator.follow(at(t0, 9));
-        assert_eq!(indicator.bubble_text(), "", "nothing before the stall");
-        assert!(!indicator.is_visible(at(t0, 9)));
-        assert!(
-            indicator.accessibility().is_none(),
-            "silent for assistive technology too"
-        );
+        indicator.sync(at(t0, 9));
+        assert_eq!(indicator.said(), None, "nothing before the stall");
+        assert_eq!(ui_core::window_toolbar::notice(), None, "the bar is quiet");
         indicator.record(&RecordSaveStatus::Saved, at(t0, 9));
         assert_eq!(
-            indicator.bubble_text(),
-            "",
+            indicator.said(),
+            None,
             "no Saved for a save nobody waited on"
         );
-        assert!(!indicator.is_visible(at(t0, 9)));
         assert!(!indicator.take_record_retry());
     }
 
@@ -427,15 +302,21 @@ mod tests {
             "the window wakes at the stall, not before"
         );
         let stalled = at(t0, SAVE_STALL.as_secs());
-        assert!(indicator.needs_redraw(stalled), "the due stall is a frame");
-        indicator.follow(stalled);
-        assert_eq!(indicator.bubble_text(), "Couldn't save yet. Retrying…");
+        assert!(indicator.needs_redraw(stalled), "the due stall is a sync");
+        indicator.sync(stalled);
+        assert_eq!(
+            ui_core::window_toolbar::notice()
+                .map(|notice| notice.text)
+                .as_deref(),
+            Some("Couldn't save yet. Retrying…"),
+            "the window's bar says it"
+        );
         assert!(indicator.take_record_retry(), "the stall submits once more");
         assert!(!indicator.take_record_retry());
         indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
         assert_eq!(
-            indicator.bubble_text(),
-            "Saved",
+            indicator.said().as_deref(),
+            Some("Saved"),
             "the waited-on save ends with Saved"
         );
     }
@@ -451,10 +332,9 @@ mod tests {
         indicator.record(&RecordSaveStatus::Saving, t0);
         indicator.follow(at(t0, SAVE_STALL.as_secs()));
         indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
-        assert_eq!(indicator.bubble_text(), "Saved");
+        assert_eq!(indicator.said().as_deref(), Some("Saved"));
         indicator.settle_for_capture(at(t0, 12));
-        assert_eq!(indicator.bubble_text(), "", "a landed save says nothing");
-        assert!(!indicator.is_visible(at(t0, 12)));
+        assert_eq!(indicator.said(), None, "a landed save says nothing");
         assert!(!indicator.take_record_retry(), "the stall's retry is gone");
 
         let mut failed = SaveIndicator::new(Saves::default());
@@ -467,76 +347,54 @@ mod tests {
         );
     }
 
-    /// Once a frame painted the bubble, a change to it repaints where it
-    /// was and is, not the view under it: a keystroke whose save says
-    /// nothing repaints nothing of the status.
-    #[test]
-    fn a_painted_change_damages_the_bubble_not_the_view() {
-        init();
-        let t0 = ui_core::time::now();
-        let area = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let mut text = ui_core::text_render::TextRenderer::new();
-        let theme = ui_core::Theme::dark();
-        let mut indicator = SaveIndicator::new(Saves::default());
-        let mut frame = |indicator: &mut SaveIndicator, now: Instant| {
-            let mut scene = ui_core::vello::Scene::new();
-            indicator.paint(&mut scene, Affine::IDENTITY, &mut text, &theme, area, now);
-            let mut regions = Vec::new();
-            indicator.collect_damage(area, now, &mut regions);
-            indicator.mark_drawn();
-            regions
-        };
-        indicator.record(&RecordSaveStatus::Saving, t0);
-        let stalled = at(t0, SAVE_STALL.as_secs());
-        indicator.follow(stalled);
-        let mut before = Vec::new();
-        indicator.collect_damage(area, stalled, &mut before);
-        assert!(
-            before.contains(&area),
-            "unpainted, its new place is unknown"
-        );
-        let shown = frame(&mut indicator, stalled);
-        let bubble = indicator.drawn.expect("the stall shows a bubble");
-        assert_eq!(shown, vec![bubble], "the bubble came where it is");
-        indicator.record(&RecordSaveStatus::Saved, at(t0, 12));
-        let saved = frame(&mut indicator, at(t0, 12));
-        assert!(saved.contains(&bubble), "where it was: {saved:?}");
-        assert!(!saved.contains(&area), "not the view: {saved:?}");
-        indicator.record(&RecordSaveStatus::Saving, at(t0, 40));
-        indicator.record(&RecordSaveStatus::Saved, at(t0, 40));
-        let quiet = frame(&mut indicator, at(t0, 41));
-        assert!(!quiet.contains(&area), "a silent save: {quiet:?}");
+    /// "Try again" pressed in the window's bar.
+    fn press_try_again() {
+        ui_core::window_toolbar::deliver(ui_core::window_toolbar::ToolbarEvent::Action {
+            id: ui_core::SAVE_RETRY_ACTION.to_owned(),
+        });
     }
 
     #[test]
-    fn a_failed_save_offers_try_again_which_reaches_the_record() {
+    fn a_failed_save_holds_try_again_in_the_bar_which_reaches_the_record() {
         init();
         let t0 = ui_core::time::now();
         let mut indicator = SaveIndicator::new(Saves::default());
         indicator.record(&RecordSaveStatus::Failed("The disk is full".into()), t0);
+        indicator.sync(t0);
         assert_eq!(indicator.failure(), Some("The disk is full"));
-        let node = indicator.accessibility().expect("a failure is announced");
-        let retry = node
-            .children
-            .iter()
-            .find_map(|child| {
-                child
-                    .action_target
-                    .clone()
-                    .filter(|t| t == "tilo.save-status.retry")
-            })
-            .expect("a Try again button");
-        assert!(indicator.perform(&retry));
+        let held = ui_core::window_toolbar::notice().expect("the bar says the failure");
+        assert_eq!(held.text, "Save failed: The disk is full");
+        assert_eq!(
+            held.action.as_ref().map(|action| action.name.as_str()),
+            Some("Try again")
+        );
+        indicator.sync(at(t0, 600));
+        assert_eq!(
+            ui_core::window_toolbar::notice().as_ref(),
+            Some(&held),
+            "held for as long as the failure stands"
+        );
+        press_try_again();
+        indicator.sync(at(t0, 601));
         assert!(
             indicator.take_record_retry(),
             "Try again submits the record again"
         );
-        indicator.record(&RecordSaveStatus::Saving, at(t0, 1));
-        indicator.record(&RecordSaveStatus::Saved, at(t0, 2));
+        indicator.record(&RecordSaveStatus::Saving, at(t0, 602));
+        indicator.sync(at(t0, 602));
+        assert_eq!(
+            ui_core::window_toolbar::notice().as_ref(),
+            Some(&held),
+            "it stands through the retry"
+        );
+        indicator.record(&RecordSaveStatus::Saved, at(t0, 603));
+        indicator.sync(at(t0, 603));
         assert_eq!(indicator.failure(), None);
         assert_eq!(
-            indicator.bubble_text(),
-            "Saved",
+            ui_core::window_toolbar::notice()
+                .map(|notice| notice.text)
+                .as_deref(),
+            Some("Saved"),
             "the save that ends a failure says so once"
         );
     }
@@ -549,27 +407,17 @@ mod tests {
         let mut indicator = SaveIndicator::new(saves.clone());
         indicator.record(&RecordSaveStatus::Saved, t0);
         saves.saving();
-        indicator.follow(at(t0, 3));
-        assert_eq!(indicator.bubble_text(), "");
+        indicator.sync(at(t0, 3));
+        assert_eq!(indicator.said(), None);
         saves.failed("The folder is read-only");
         assert!(
             indicator.needs_redraw(at(t0, 4)),
-            "a reported failure is a frame"
+            "a reported failure is a sync"
         );
-        indicator.follow(at(t0, 4));
+        indicator.sync(at(t0, 4));
         assert_eq!(indicator.failure(), Some("The folder is read-only"));
-        let node = indicator.accessibility().expect("announced");
-        let retry = node
-            .children
-            .iter()
-            .find_map(|child| {
-                child
-                    .action_target
-                    .clone()
-                    .filter(|t| t == "tilo.save-status.retry")
-            })
-            .expect("a Try again button");
-        assert!(indicator.perform(&retry));
+        press_try_again();
+        indicator.sync(at(t0, 4));
         assert!(saves.take_retry(), "the app is asked to save again");
         assert!(!saves.take_retry());
         assert!(
@@ -577,20 +425,21 @@ mod tests {
             "the record was stored; only the app's save retries"
         );
         saves.saved();
-        indicator.follow(at(t0, 5));
+        indicator.sync(at(t0, 5));
         assert_eq!(indicator.failure(), None);
     }
 
     #[test]
-    fn a_view_that_shows_the_status_itself_gets_nothing_painted_over_it() {
+    fn a_view_that_shows_the_status_itself_gets_nothing_said_for_it() {
         init();
         let t0 = ui_core::time::now();
         let saves = Saves::default();
         saves.shown_by_view();
         let mut indicator = SaveIndicator::new(saves);
         indicator.record(&RecordSaveStatus::Failed("The disk is full".into()), t0);
-        assert!(!indicator.is_visible(t0));
-        assert!(indicator.accessibility().is_none());
+        indicator.sync(t0);
+        assert_eq!(indicator.said(), None);
+        assert_eq!(ui_core::window_toolbar::notice(), None);
         assert_eq!(indicator.next_wake_deadline(), None);
     }
 }
@@ -640,29 +489,10 @@ mod window_tests {
         SAVES.with_borrow(|saves| saves.clone().unwrap())
     }
 
-    /// The labels of every node about saving the window exports.
-    fn save_labels(app: &mut TestApp<DraftApp>) -> Vec<String> {
-        app.harness()
-            .a11y_nodes()
-            .into_iter()
-            .filter_map(|(_, node)| node.label().map(str::to_owned))
-            .filter(|label| {
-                ["Saved", "Saving…", "Save failed", "Not saved", "Try again"]
-                    .contains(&label.as_str())
-                    || label.contains("save")
-            })
-            .collect()
-    }
-
-    /// What the window's save bubble says.
-    fn bubble(app: &mut TestApp<DraftApp>) -> String {
-        app.harness()
-            .with_widget_mut(|root: &mut crate::framework::root::ResourceRoot| {
-                crate::framework::root::RootModel::save_indicator(root)
-                    .bubble_text()
-                    .to_owned()
-            })
-            .unwrap()
+    /// What the window's bar says, and the button beside it.
+    fn bar() -> Option<(String, Option<String>)> {
+        ui_core::window_toolbar::notice()
+            .map(|notice| (notice.text, notice.action.map(|action| action.name)))
     }
 
     /// Bring the window's save status to `at`, as its wake there would,
@@ -681,53 +511,45 @@ mod window_tests {
         ui_core::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<DraftApp>::new().unwrap();
         app.settle();
-        assert!(
-            save_labels(&mut app).is_empty(),
-            "a stored record says nothing"
-        );
+        assert_eq!(bar(), None, "a stored record says nothing");
 
         saves().saving();
         let t0 = ui_core::time::now();
         let after = |secs| t0.checked_add(Duration::from_secs(secs)).unwrap();
         frame_at(&mut app, t0);
         frame_at(&mut app, after(9));
-        assert_eq!(bubble(&mut app), "", "nothing while a save may still land");
-        assert!(save_labels(&mut app).is_empty(), "no Saving… for anyone");
+        assert_eq!(bar(), None, "nothing while a save may still land");
 
         frame_at(&mut app, after(10));
         assert_eq!(
-            bubble(&mut app),
-            "Couldn't save yet. Retrying…",
+            bar(),
+            Some(("Couldn't save yet. Retrying…".to_owned(), None)),
             "the stall speaks at ten seconds"
         );
         assert!(saves().take_retry(), "and asks the app to save again");
 
         saves().failed("The disk is full");
         frame_at(&mut app, after(11));
-        let labels = save_labels(&mut app);
-        assert!(
-            labels.contains(&"Save failed".to_owned()) && labels.contains(&"Try again".to_owned()),
-            "a failure is announced with Try again: {labels:?}"
-        );
+        let held = Some((
+            "Save failed: The disk is full".to_owned(),
+            Some("Try again".to_owned()),
+        ));
+        assert_eq!(bar(), held, "a failure is said with Try again");
+        frame_at(&mut app, after(600));
+        assert_eq!(bar(), held, "and held while it stands");
         app.harness()
-            .perform_semantic_named(
-                "tilo.save-status.retry",
-                None,
-                &ui_core::a11y::Action::Activate,
-            )
-            .unwrap();
+            .press_window_slot(ui_core::window_toolbar::ToolbarEvent::Action {
+                id: ui_core::SAVE_RETRY_ACTION.to_owned(),
+            });
+        app.settle();
         assert!(saves().take_retry(), "Try again reaches the app");
 
         saves().saved();
-        frame_at(&mut app, after(13));
+        frame_at(&mut app, after(601));
         assert_eq!(
-            bubble(&mut app),
-            "Saved",
-            "the save that ends a failure says so once"
-        );
-        assert!(
-            !save_labels(&mut app).contains(&"Save failed".to_owned()),
-            "the failure is gone"
+            bar(),
+            Some(("Saved".to_owned(), None)),
+            "the save that ends a failure says so once; the failure is gone"
         );
     }
 }

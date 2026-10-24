@@ -595,18 +595,6 @@ fn find_hit(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Point> {
             pred(&action)
         })
         .or_else(|| {
-            [
-                (ReaderBubbleAction::PreviousPage, Action::PrevPage),
-                (ReaderBubbleAction::NextPage, Action::NextPage),
-            ]
-            .into_iter()
-            .find_map(|(bubble_action, action)| {
-                pred(&action)
-                    .then(|| app.reader_bubble.action_center(bubble_action))
-                    .flatten()
-            })
-        })
-        .or_else(|| {
             app.hits
                 .iter()
                 .rev()
@@ -2289,20 +2277,14 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
     // --- phase: next_page_advances_position ---
     {
         let mut app = app_with_sample();
-        // The page-nav stepper now lives on the floating page bubble, which is
-        // transient — arm it open so its next chevron registers a NextPage hit,
-        // then click that chevron on the real hit-testing path.
-        app.arm_reader_bubble_for_shots();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let (c0, p0) = (app.chapter, app.page);
-        let next = find_hit(&app, |a| matches!(a, Action::NextPage))
-            .expect("next chevron on the page bubble");
-        assert!(click(&mut app, &mut doc, next), "next handled");
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         assert_eq!(
             (app.chapter, app.page),
             (c0, p0 + 1),
-            "the visible chevron turns exactly one page, never seeks underneath"
+            "Next page turns exactly one page"
         );
         assert!(
             !app.progress_dragging,
@@ -2310,43 +2292,28 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
         );
     }
 
-    // --- phase: page_bubble_surfaces_on_a_page_change ---
-    // The floating page bubble is hidden on a settled reader and surfaced by
-    // a page change without leaving an invisible navigation hit behind.
+    // --- phase: a_page_change_is_said_in_the_bar ---
+    // A settled reader says nothing; a page change says the reading
+    // position in the window's bar, and the page's foot stays the slider's.
     {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Settled reader: the bubble is not up, and no NextPage hit is exposed in
-        // the bottom band (an invisible bubble never eats a click there).
         assert!(
             !app.needs_animation_frame(),
             "a settled reader schedules no animation frames"
         );
-        assert!(
-            find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
-            "the hidden bubble exposes no page-nav hit"
-        );
-        // A page turn pokes the bubble; the next frame draws it (its chevrons are
-        // hit-testable) and it keeps requesting frames so it can fade on its own.
+        assert!(!app.page_notice.is_shown(), "opening a book is not news");
         app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(
-            find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
-            "a page change surfaces the bubble's next chevron"
+        assert_eq!(
+            app.page_notice.get().cloned(),
+            Some(app.page_line()),
+            "a page change says where the reader is"
         );
         assert!(
-            app.reader_bubble.needs_frame(ui::time::now()),
-            "the visible bubble schedules its own fade-out frames"
-        );
-        // The bubble shares the foot's band with the progress slider:
-        // reaching for the slider gives the band back to it at once.
-        let track = app.progress_slider_track;
-        app.cursor = Point::new(track.x0 + 2.0, track.center().y);
-        frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(
-            find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
-            "the pointer on the slider hides the page bubble"
+            find_hit(&app, |a| matches!(a, Action::SeekProgress)).is_some(),
+            "the foot is the progress slider's"
         );
     }
 

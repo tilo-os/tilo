@@ -266,13 +266,21 @@ fn named(harness: &Live, name: &str) -> bool {
     contains(&**harness, name)
 }
 
-fn announced(app: &ContactsApp, message: &str) -> bool {
-    let node = app
-        .shell
-        .children()
-        .last()
-        .and_then(|child| child.accessibility());
-    node.is_some_and(|node| node.live.is_some() && node.value.as_deref() == Some(message))
+/// Whether the window's bar says `message`: its notice, which the bar
+/// reads out as a live region.
+fn announced(_app: &ContactsApp, message: &str) -> bool {
+    ui::window_toolbar::notice().is_some_and(|notice| notice.text == message)
+}
+
+/// Press the button `name` beside the notice in the window's bar.
+fn press_notice_button(app: &mut Live, name: &str) {
+    app.settle();
+    let button = ui::window_toolbar::notice()
+        .and_then(|notice| notice.action)
+        .unwrap_or_else(|| panic!("the window's bar offers {name} beside its notice"));
+    assert_eq!(button.name, name);
+    ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: button.id });
+    app.settle();
 }
 
 fn toast(app: &ContactsApp) -> Option<&str> {
@@ -548,7 +556,7 @@ fn list_keys_delete_edit_and_create() {
         toast(&harness)
     );
     // The notice's Undo asks the host for the undo Ctrl+Z performs.
-    act_named(&mut harness, "Undo", &ui::a11y::Action::Activate);
+    press_notice_button(&mut harness, "Undo");
     harness.settle();
     assert!(
         harness.store.contact(selected).is_some(),
@@ -1866,7 +1874,7 @@ fn deleting_your_contact_is_the_palette_action_and_undo_takes_it_back() {
         !h.book().iter().any(|c| c.id == id),
         "and it actually deleted the contact",
     );
-    act_named(&mut h.app, "Undo", &ui::a11y::Action::Activate);
+    press_notice_button(&mut h.app, "Undo");
     h.app.settle();
     assert_eq!(h.book(), before, "Undo leaves the book as it was");
     assert!(h.app.store.contact(id).is_some(), "the contact is back");
@@ -1972,9 +1980,6 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
 
             let deadline = app
                 .shell
-                .children()
-                .last()
-                .expect("the showing notice is the shell's final owned child")
                 .next_wake_deadline()
                 .expect("the production notice exposes its expiry deadline");
             let host_deadline = app
@@ -2014,7 +2019,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
                     toast(&app).is_none(),
                     "the toast auto-dismisses once its lifetime elapses; first host wake {:?}, shared notice lifetime {:?}",
                     deadline.duration_since(shown),
-                    ui::widget::toast::DEFAULT_TTL
+                    ui::widget::toast::NOTICE_LIFETIME
                 );
             });
             // Allow the real host to finish any action animation; never force

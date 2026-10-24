@@ -127,9 +127,6 @@ fn rename_stem_end(name: &str, is_dir: bool) -> Option<usize> {
     name.rfind('.').filter(|&dot| dot > 0)
 }
 
-pub fn status_bubble_safe_inset(theme: &ui::Theme) -> f32 {
-    theme.tokens.spacing.s16
-}
 /// Close up a menu spec: a separator stands only between two groups, and a
 /// group of one is not a group, so it joins its neighbour rather than being
 /// fenced off by a hairline. (A separator is an item with no label and no
@@ -748,12 +745,14 @@ pub struct FileExplorerWidget {
     bar_query: Option<String>,
     /// What the bar's slots were last declared from.
     declared_bar: Option<window_bar::BarKey>,
-    /// Transient floating status bubble (bottom-right) — the item count /
-    /// operation status + selection summary, surfaced on a real change or on
-    /// hover then faded, in place of a permanent bottom footer strip so the
-    /// file list spans to the window bottom.
-    status_bubble: ui::StatusBubble,
-    shots_status: bool,
+    /// News ([`Self::status`], or that an archive is read-only on entering
+    /// it) said in the window's bar for a while; the item and selection
+    /// counts are the window's accessible status, not news.
+    status_notice: ui::widget::toast::Transient<String>,
+    /// The status last said in the bar, so only a change is news.
+    status_said: Option<String>,
+    /// The archive last said to be read-only, so entering one says it once.
+    archive_said: Option<PathBuf>,
     staged_hover: Option<usize>,
     staged_move_drag: bool,
     /// The user's template files, for the "New File" menus and the
@@ -1878,10 +1877,11 @@ impl FileExplorerWidget {
             header_in_bar: false,
             bar_query: None,
             declared_bar: None,
-            status_bubble: ui::StatusBubble::new(),
             state_spinner: Spinner::new(),
             state_retry,
-            shots_status: false,
+            status_notice: ui::widget::toast::Transient::new(),
+            status_said: None,
+            archive_said: None,
             staged_hover: None,
             staged_move_drag: false,
             templates: crate::templates::Catalog::new(
@@ -3056,14 +3056,12 @@ impl FileExplorerWidget {
             .with_item_rects(self.item_rects.clone())
             .with_thumbs(self.thumb_ctx())
             .with_folder_counts(Some(Arc::clone(&self.folder_counts)), self.show_hidden)
-            .with_list(self.list_slot.clone())
-            .with_bottom_inset(f64::from(status_bubble_safe_inset(theme)));
+            .with_list(self.list_slot.clone());
         // A plain (percent-height) column: this pane is the content column of
         // the shell, so it must FILL that rect (`percent(1.0)` height).
         let mut view_col = Column::new().with_vertical_padding(sp.s1);
         match self.view_mode {
-            // The list is a table that scrolls itself and keeps the status
-            // lane clear below its rows.
+            // The list is a table that scrolls itself.
             ViewMode::List => {
                 view_col = view_col.push(crate::views::list_view::build_list(
                     view,
@@ -3081,12 +3079,6 @@ impl FileExplorerWidget {
                         .fill_parent_height()
                         .with_persisted_offset(self.scroll_offset.clone())
                         .with_cursor(self.last_cursor)
-                        // The status pill is intentionally outside the
-                        // scrollable's interactive viewport. Besides making the
-                        // count easy to scan, that means it cannot obscure a
-                        // file name, target, or keyboard focus ring at the
-                        // bottom of a compact grid.
-                        .with_bottom_content_inset(status_bubble_safe_inset(theme))
                         .with_child(crate::views::grid_view::build_grid(view))
                         .into_widget(),
                 );
@@ -3483,46 +3475,31 @@ impl FileExplorerWidget {
         self.footer_label()
     }
 
-    /// `--shots`: stage the status bubble the way a change would, resting on
-    /// it, so a single headless frame captures the floating chip.
-    pub fn debug_show_status_bubble(&mut self) {
-        let now = ui::time::now();
-        let label = self.footer_label();
-        self.status_bubble.show(&label, now);
-        self.status_bubble.set_hover(true, now);
-    }
-
-    /// Paint the transient floating status bubble at the window's
-    /// bottom-right, the reclaimed home of the old footer strip. It surfaces
-    /// when there is news (a status) or while the pointer rests on its
-    /// corner, then fades.
-    fn draw_status_bubble(
-        &mut self,
-        scene: &mut vello::Scene,
-        transform: vello::kurbo::Affine,
-        tr: &mut ui::text_render::TextRenderer,
-        theme: &ui::Theme,
-    ) {
-        let now = ui::time::now();
-        // Only news pops the bubble. The item and selection counts follow
-        // along and show when the pointer rests on the corner; selecting a
-        // file never flashes a bubble.
-        match &self.status {
-            Some(status) => {
-                self.status_bubble.show(status, now);
+    /// Say news in the window's bar: a new status, or that the archive just
+    /// entered is read-only until extracted.
+    fn publish_status(&mut self) {
+        if self.status != self.status_said {
+            self.status_said.clone_from(&self.status);
+            match self.status.clone() {
+                Some(status) => self.status_notice.show(status),
+                None => {
+                    self.status_notice.dismiss();
+                }
             }
-            None => self.status_bubble.set_text(&self.footer_label()),
         }
-        // Archive browsing is deliberately read-only. Unlike transient file
-        // operation feedback, that fact remains visible for the whole visit.
-        if self.shots_status || crate::archive::location(&self.current_path).is_some() {
-            self.status_bubble.set_hover(true, now);
-        } else {
-            self.status_bubble
-                .pointer_moved(self.rect, self.last_cursor, tr, theme, now);
+        let archive = crate::archive::location(&self.current_path)
+            .is_some()
+            .then(|| self.current_path.clone());
+        if archive != self.archive_said {
+            if archive.is_some() && self.status.is_none() {
+                self.status_notice.show(t("files-archive-read-only"));
+            }
+            self.archive_said = archive;
         }
-        self.status_bubble
-            .paint(scene, transform, tr, theme, self.rect, now);
+        self.status_notice.expire();
+        self.status_notice.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
     }
 
     /// Whether the content column is narrower than the direct toolbar
@@ -5866,9 +5843,9 @@ impl FileExplorerWidget {
             Some("select") => {
                 self.debug_select(&[9, 10]);
                 self.staged_hover = Some(12);
-                self.arm_status_bubble_for_shots();
+                self.arm_status_for_shots();
             }
-            Some("status") => self.arm_status_bubble_for_shots(),
+            Some("status") => self.arm_status_for_shots(),
             Some("rename") => {
                 self.debug_select(&[11]);
                 self.begin_rename();
@@ -9741,6 +9718,7 @@ impl FileExplorerWidget {
             .chain(self.drives.next_wake())
             .chain(self.applications.next_wake())
             .chain(self.notice.deadline())
+            .chain(self.status_notice.deadline())
             .chain((!self.incoming.is_empty()).then(Instant::now))
             .chain(
                 self.preview
@@ -10050,7 +10028,15 @@ impl Widget for FileExplorerWidget {
         {
             self.rename_buffer = value;
         }
-        // The notice says so in the window's bar while it is up.
+        // The notice says so in the window's bar while it is up; its
+        // button pressed there acts as the card's did.
+        if ui::window_toolbar::take_notice_press(notice::NOTICE_ACTION)
+            && let Some(action) = self.notice.press()
+        {
+            self.act_on_notice(action);
+            self.structure_dirty = true;
+        }
+        self.publish_status();
         self.notice.publish();
     }
 
@@ -10089,9 +10075,7 @@ impl Widget for FileExplorerWidget {
         self.refresh_cloud_header();
         self.nav.set_content(self.build_content_pane(theme));
 
-        // The shell fills the window; the item count / selection status floats
-        // in a reserved bottom lane inside the body (see `draw_status_bubble`),
-        // leaving the rest of the body available to the file viewport.
+        // The shell fills the window.
         let nav_node = self.nav.build_layout(taffy, theme, node_map);
         let style = taffy::Style {
             display: taffy::Display::Flex,
@@ -10151,13 +10135,6 @@ impl Widget for FileExplorerWidget {
         // above everything.
         self.nav
             .draw_overlay(scene, transform, text_renderer, theme, presence);
-        // Floating status bubble (item count / status + selection), above the
-        // content but below any open menus / drag ghost, and only while the
-        // file view is on screen (not while a narrow window shows the places
-        // screen). A notice is the window bar's.
-        if self.nav.geometry().content_column.width() > 0.0 {
-            self.draw_status_bubble(scene, transform, text_renderer, theme);
-        }
         self.draw_collab_panel(scene, transform, text_renderer, theme);
         let window = self.rect;
         if let Some(preview) = self.preview.as_mut() {
@@ -10378,7 +10355,6 @@ impl Widget for FileExplorerWidget {
             || self.cloud_import_pending()
             || self.nav.needs_animation_frame()
             || (self.is_loading && self.state_spinner.needs_animation_frame())
-            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -10807,8 +10783,10 @@ impl FileExplorerWidget {
         true
     }
 
-    pub fn arm_status_bubble_for_shots(&mut self) {
-        self.shots_status = true;
-        self.debug_show_status_bubble();
+    /// `--shots`: say the item and selection counts in the window's bar,
+    /// so a single headless frame shows them.
+    pub fn arm_status_for_shots(&mut self) {
+        let label = self.footer_label();
+        self.status_notice.show(label);
     }
 }

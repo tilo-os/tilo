@@ -144,10 +144,6 @@ impl Notice {
         self.shown.take().is_some()
     }
 
-    pub(crate) fn is_shown(&self) -> bool {
-        self.shown.is_some()
-    }
-
     /// What the notice says, as one line: its title, then its reason.
     pub(crate) fn line(&self) -> Option<String> {
         let shown = self.shown.as_ref()?;
@@ -252,7 +248,7 @@ mod tests {
         );
         assert!(notice.offers_undo());
         assert_eq!(notice.press(), Some(NoticeAction::Undo));
-        assert!(!notice.is_shown(), "acting on a notice takes it down");
+        assert_eq!(notice.line(), None, "acting on a notice takes it down");
         assert_eq!(notice.press(), None, "a second press asks for nothing");
         notice.publish();
         assert_eq!(ui::window_toolbar::notice(), None);
@@ -275,7 +271,7 @@ mod tests {
                     shown_at + ui::widget::toast::NOTICE_LIFETIME + Duration::from_millis(1)
                 )
             );
-            assert!(!notice.is_shown());
+            assert_eq!(notice.line(), None);
         }
     }
 }

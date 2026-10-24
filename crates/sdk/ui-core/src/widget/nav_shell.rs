@@ -1620,9 +1620,6 @@ pub struct NavShell {
     /// The window's sync status, quiet text before the trailing controls
     /// of the row History stands in.
     sync_status: crate::widget::HeaderStatus,
-    /// The room that row leaves before the sync status, where a document
-    /// says how its save is going ([`Self::header_status_slot`]).
-    status_slot: Rect,
     /// The status changed since the last frame drawn: only where it was
     /// ([`Self::status_drawn`]) and where it is repaint, not the whole shell.
     status_dirty: bool,
@@ -1728,7 +1725,6 @@ impl NavShell {
             notice: crate::widget::toast::Transient::new(),
             notice_pressed: None,
             sync_status: crate::widget::HeaderStatus::default(),
-            status_slot: Rect::ZERO,
             status_dirty: false,
             status_drawn: Rect::ZERO,
             status_span: Rect::ZERO,
@@ -3377,7 +3373,6 @@ impl NavShell {
     /// one reaching the window's trailing edge): after its title and before
     /// its trailing controls, wherever the row has room.
     fn paint_sync_status(&mut self, f: &mut Frame<'_>) {
-        self.status_slot = Rect::ZERO;
         self.status_span = Rect::ZERO;
         let g = &self.geometry;
         let column = g.status_column();
@@ -3427,25 +3422,6 @@ impl NavShell {
         }
         self.sync_status
             .paint(f.scene, f.transform, f.text, f.theme, row, x0, x1);
-        let said = self.sync_status.get_rect();
-        let x1 = if said.is_zero_area() {
-            x1
-        } else {
-            said.x0 - gap
-        };
-        if x1 > x0 {
-            self.status_slot = Rect::new(x0, row.y0, x1, row.y1);
-        }
-    }
-
-    /// Where a document's transient status goes in the header row that
-    /// carries the sync status: after the title and before the trailing
-    /// controls and the sync status, the row's height. Empty until the
-    /// shell paints, and when the row has no room. A save status shown
-    /// here covers none of the document.
-    #[must_use]
-    pub fn header_status_slot(&self) -> Rect {
-        self.status_slot
     }
 
     /// Whether `part` is in the host tree this frame: only those were laid

@@ -510,12 +510,15 @@ pub struct PhotosApp {
     /// (hit-testing and accessibility bounds).
     layout_theme: Theme,
     pending: Rc<Cell<Option<Hit>>>,
-    /// Where the last export went, or why it failed. Shown once in the status
-    /// bubble so an action is never silent.
+    /// Where the last export went, or why it failed. Said in the window's
+    /// bar so an action is never silent.
     notice: Option<String>,
+    /// [`Self::notice`] in the window's bar for a while once it changes.
+    notice_said: ui::widget::toast::Transient<String>,
+    /// The notice last said, so only a change is news.
+    notice_last: Option<String>,
     /// The last copy, whose outcome can arrive after its notice.
     pub(crate) copy: ui::CopyWatch,
-    status_bubble: ui::StatusBubble,
     /// The empty state's one action, where it was painted.
     empty_state: Option<EmptyState>,
     /// What the empty state shows: its title, body, whether it reports an
@@ -932,8 +935,9 @@ impl PhotosApp {
             layout_theme: Theme::dark(),
             pending,
             notice: None,
+            notice_said: ui::widget::toast::Transient::new(),
+            notice_last: None,
             copy: ui::CopyWatch::default(),
-            status_bubble: ui::StatusBubble::new(),
             empty_state: None,
             empty_state_key: None,
             rect: Rect::ZERO,

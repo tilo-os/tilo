@@ -206,11 +206,11 @@ pub struct HexView {
     io: Option<(FileIo, EffectReply)>,
     /// A failed open or save: its title and the reason, shown as the bar's
     /// notice for a notice's lifetime.
-    problem: Transient<(String, String)>,
+    /// What the window's bar says for a while: a result or a failure.
+    said: Transient<(String, ToastKind)>,
 
     /// "Opened": a change worth noticing once, floating at the
     /// content's bottom-trailing corner and fading by itself.
-    status_bubble: ui::StatusBubble,
     /// The canvas is keyboard-focusable even though it is custom drawn.
     focused: bool,
     /// Where edits and effects go, once the framework attached the view.
@@ -261,8 +261,7 @@ impl HexView {
             expect_open: false,
             path: None,
             io: None,
-            problem: Transient::new(),
-            status_bubble: ui::StatusBubble::new(),
+            said: Transient::new(),
             focused: false,
             dispatch: None,
             live: None,
@@ -366,17 +365,16 @@ impl HexView {
         }
     }
 
-    /// A change worth noticing once ("Opened"): the bubble.
+    /// A change worth noticing once ("Opened"): the bar's notice.
     fn notice(&mut self, message: &str) {
-        let now = ui::time::now();
-        self.status_bubble.show(message, now);
-        self.status_bubble.poke(now);
+        self.said.show((message.to_owned(), ToastKind::Success));
         self.dirty = true;
     }
 
     /// A failed open or save: the bar's notice, with the reason.
     fn problem(&mut self, title: &str, reason: impl Into<String>) {
-        self.problem.show((title.to_owned(), reason.into()));
+        self.said
+            .show((format!("{title}: {}", reason.into()), ToastKind::Error));
         self.dirty = true;
     }
 
@@ -808,11 +806,10 @@ impl Widget for HexView {
         // submitted before this frame lays out.
         self.drain_chooser();
 
-        // A failure says so in the window's bar while it lasts.
-        self.problem.expire();
-        self.problem.publish(|(title, reason)| {
-            ToolbarNotice::new(format!("{title}: {reason}"), ToastKind::Error)
-        });
+        // A result or a failure says so in the window's bar while it lasts.
+        self.said.expire();
+        self.said
+            .publish(|(text, kind)| ToolbarNotice::new(text.clone(), *kind));
     }
 
     fn settle(&mut self, _edits: &mut ui::widget::Edits<'_>, _path: &automerge::ObjId) {
@@ -820,7 +817,7 @@ impl Widget for HexView {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.problem.deadline()
+        self.said.deadline()
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -829,13 +826,8 @@ impl Widget for HexView {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while a portal pick is in flight (so it drains
-        // once the host dialog closes), while a failure toast is counting
-        // down, while the bubble is lingering / fading so it hides itself
-        // without needing a stray pointer event, and while the inspector
-        // slides.
-        self.is_busy()
-            || self.status_bubble.needs_frame(ui::time::now())
-            || (self.has_file && self.drawer.is_animating())
+        // once the host dialog closes) and while the inspector slides.
+        self.is_busy() || (self.has_file && self.drawer.is_animating())
     }
 
     fn build_layout(
