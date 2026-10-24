@@ -985,6 +985,45 @@ fn a_column_without_a_shell_has_no_header_row() {
     );
 }
 
+/// A header row stands over a column only while that column's header
+/// holds something: beside a docked sidebar's titled header, an empty
+/// content header leaves the content at the window's top, and the row
+/// comes back over it once the header has a title.
+#[test]
+fn an_empty_content_header_holds_no_row_beside_the_sidebars() {
+    for (title, holds) in [("", false), ("Draft", true)] {
+        let mut shell = notes_shell().content_header(title, Vec::new());
+        shell.set_sidebar_toggle_in_window_bar(true);
+        let mut h = harness(shell, 1280, 800, Theme::dark());
+        settle(&mut h, 1280, 800);
+        let g = geometry(&h);
+        assert_eq!(g.sidebar, SidebarPlacement::Docked);
+        assert!(
+            g.sidebar_header().height() > 0.0,
+            "{title:?}: the sidebar keeps its header"
+        );
+        let content = child_rect(&h, "content").expect("the content is laid out");
+        if holds {
+            assert!((g.content_header().height() - g.header_height).abs() < 1e-9);
+            assert!(
+                (content.y0 - g.header_height).abs() < 1e-9,
+                "{title:?}: the content starts under its header"
+            );
+        } else {
+            assert_eq!(
+                g.content_header(),
+                Rect::ZERO,
+                "{title:?}: no content header"
+            );
+            assert!(
+                content.y0.abs() < 1e-9,
+                "{title:?}: the content starts at the top, at {}",
+                content.y0
+            );
+        }
+    }
+}
+
 #[test]
 fn history_is_one_glyph_in_the_window_top_trailing_corner() {
     // Case `only_where_the_host_gives_the_shell_history`.
