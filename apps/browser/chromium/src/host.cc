@@ -448,7 +448,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     return false;
   }
   // Answer a page menu still open: Chromium closing the browser with it
-  // pending crashes.
+  // pending crashes the host, a tab closed alone as much as the host's
+  // last.
   void CancelMenu() { if(context_callback_){auto callback=context_callback_;context_callback_=nullptr;callback->Cancel();} }
   void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
@@ -1218,7 +1219,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // as long as Chromium counts it as their activation of the page.
   bool activated() const {return activated_ && std::chrono::steady_clock::now()-*activated_<=std::chrono::seconds(5);}
   bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
-  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
+  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;CancelMenu();browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
   void DetachVisible() {
     if(transfer_owner_ || native_closing_)return;const bool retained=downloads->Detach(id_);if(!retained){CloseNative();return;}
     // Every busy visible owner reserved this slot at admission, so detaching
