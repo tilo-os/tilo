@@ -24,7 +24,7 @@ launcher = { path = "../../packaging/launcher" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 parking_lot.workspace = true
 automerge.workspace = true
-runtime-identity = { path = "../../runtime/runtime-identity" }
+runtime-identity = { package = "tilo-identity-client", path = "../../runtime/tilo-identity-client" }
 registry-types = { path = "../../packaging/registry-types" }
 # The host's pinned registry configuration, never an app-supplied trust anchor.
 app-cli = { path = "../../packaging/app-cli" }
@@ -73,6 +73,7 @@ tracing.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 [dev-dependencies]
+runtime-identity-host = { package = "runtime-identity", path = "../../runtime/runtime-identity" }
 # The disclosure regression reaches the real verifier and durable registry store over HTTPS.
 registry-server = { path = "../../packaging/registry-server" }
 rcgen.workspace = true

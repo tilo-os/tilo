@@ -2,7 +2,7 @@
 name = "tilo-startup-metrics"
 version = "0.1.0"
 edition = "2024"
-license.workspace = true
+license = "MIT"
 publish = true
 repository.workspace = true
 homepage.workspace = true

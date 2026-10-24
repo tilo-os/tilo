@@ -1,4 +1,7 @@
+use capnp_rpc::rpc_twoparty_capnp;
 use std::collections::{HashMap, HashSet};
+use std::os::fd::IntoRawFd;
+use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::Mutex;
 
 use super::*;
@@ -126,6 +129,25 @@ impl BlobBackend for MemoryBackend {
                 .map(|bytes| bytes.len() as u64)
         })
     }
+}
+
+#[test]
+fn mit_app_blob_client_cannot_mint_another_scope() {
+    let harness = Harness::start();
+    let app: tilo_fs_client::blobs::BlobClient = harness.app("room-1", "so.tilo.photos");
+    assert_eq!(
+        app.scope("room-2", "so.tilo.photos").unwrap_err(),
+        BlobError::InvalidScope
+    );
+    assert_eq!(app.refresh_public(), Err(BlobError::InvalidScope));
+    let stored = app.put(b"scoped bytes", "").unwrap();
+    assert_eq!(
+        app.read_all(&stored.hash).unwrap(),
+        ReadOutcome::Ready {
+            bytes: b"scoped bytes".to_vec(),
+            total_len: 12,
+        }
+    );
 }
 
 struct Harness {

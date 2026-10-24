@@ -43,7 +43,7 @@ impl ModelConfig {
         if self.session_token.trim().is_empty() {
             return Err("model session is required".into());
         }
-        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
+        tilo_model_client::transport::check_endpoint(&self.endpoint)?;
         let choice = match (&self.profile_id, &self.model_id) {
             (None, None) => None,
             (Some(profile), Some(model))
@@ -75,7 +75,7 @@ impl ProviderManagementConfig {
         if self.session_token.trim().is_empty() {
             return Err("provider management session is required".into());
         }
-        tilo_model_gateway::transport::check_endpoint(&self.endpoint)?;
+        tilo_model_client::transport::check_endpoint(&self.endpoint)?;
         Ok(ui::models::ProviderAdministration::new(Arc::new(
             LazyAdministration {
                 endpoint: self.endpoint.clone(),
@@ -119,7 +119,7 @@ pub fn builtin_model_clients() -> ModelClients {
         session_token: String,
         choice: Option<(String, String)>,
     ) -> Result<Rc<dyn ModelBackend>, String> {
-        use tilo_model_gateway::transport::{FetchTransport, ModelClient};
+        use tilo_model_client::transport::{FetchTransport, ModelClient};
         let transport = FetchTransport::new(endpoint, session_token)?;
         let timeout = std::time::Duration::from_secs(120);
         Ok(Rc::new(match choice {
@@ -131,7 +131,7 @@ pub fn builtin_model_clients() -> ModelClients {
         endpoint: &str,
         session_token: String,
     ) -> Result<Arc<dyn ProviderAdmin>, String> {
-        use tilo_model_gateway::transport::{AdministrationClient, FetchTransport};
+        use tilo_model_client::transport::{AdministrationClient, FetchTransport};
         let transport = FetchTransport::new(endpoint, session_token)?;
         Ok(Arc::new(AdministrationClient::new(transport)))
     }
