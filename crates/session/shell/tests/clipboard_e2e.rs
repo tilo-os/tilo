@@ -5503,6 +5503,7 @@ fn assert_tiled_drag_clients_visible(compositor: &Compositor) {
 /// pointer scans; a single test thread must service both applications.
 #[test]
 fn pointer_discovery_keeps_another_tiled_client_connected() {
+    const SCANS: u32 = 512;
     let compositor = Compositor::start();
     compositor.place_next_window("org.tilo.test.pointer-discovery-peer");
     let mut peer = TestClient::new(compositor.connect(), "org.tilo.test.pointer-discovery-peer");
@@ -5523,12 +5524,18 @@ fn pointer_discovery_keeps_another_tiled_client_connected() {
     peer.clear_touch_and_pointer_trace();
 
     let started = Instant::now();
-    for _ in 0..512 {
+    // The bound covers the whole loop, so a failure has to say whether one
+    // scan stalled (a hang) or every scan ran slow (the compositor's turn
+    // per pointer move and client sync grew under load).
+    let mut slowest = Duration::ZERO;
+    for scan in 1..=SCANS {
+        let scan_started = Instant::now();
         let found = target.scan_pointer_grid_with_peer(
             &compositor,
             |x, y| x == point.0 && (y == point.1 || y == point.1 + 40.0),
             &mut peer,
         );
+        slowest = slowest.max(scan_started.elapsed());
         if found.is_some() {
             peer.pump();
         }
@@ -5536,9 +5543,12 @@ fn pointer_discovery_keeps_another_tiled_client_connected() {
             found.is_none(),
             "pointer scans over the peer must not enter this tiled client"
         );
+        let elapsed = started.elapsed();
         assert!(
-            started.elapsed() < deadline(),
-            "pointer discovery exceeded its existing hang bound"
+            elapsed < deadline(),
+            "pointer discovery exceeded its existing hang bound: {scan} of {SCANS} scans took \
+             {elapsed:?}, {:?} on average and {slowest:?} for the slowest",
+            elapsed.checked_div(scan).unwrap_or_default(),
         );
     }
     peer.pump();
