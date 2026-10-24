@@ -385,7 +385,8 @@ pub(crate) struct Core {
     pub(crate) backup_portal: Option<crate::transfer::Saving>,
     pub(crate) restore_portal: Option<crate::transfer::Choosing>,
     pub(crate) transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
-    /// A browser page is still writing a save or delete to its storage.
+    /// The vault is still writing an edit: a browser page to its storage,
+    /// or the frame loop's writer thread to the disk.
     pub(crate) writing: bool,
     pub(crate) backup_password: Zeroizing<String>,
     pub(crate) backup_confirmation: Zeroizing<String>,
@@ -683,6 +684,7 @@ impl Core {
                 self.toast(error);
                 return;
             }
+            self.flush_vault();
             self.refresh();
         } else if let Some(item) = self.items.iter_mut().find(|item| &item.id == id) {
             if was {
@@ -1399,6 +1401,7 @@ impl Core {
                         restored = restored.saturating_add(1);
                     }
                 }
+                self.flush_vault();
                 self.refresh();
                 self.toast(if restored == count {
                     format!("Restored {restored} items")
@@ -1469,6 +1472,7 @@ impl Core {
                 skipped = skipped.saturating_add(1);
             }
         }
+        self.flush_vault();
         self.refresh();
         self.toast(match (imported, skipped) {
             (1, 0) => "Imported 1 login".to_owned(),
@@ -1516,8 +1520,9 @@ impl Core {
     }
 
     /// Learn whether the vault's last edits are kept yet: a browser page
-    /// writes its storage asynchronously, so a save is kept a moment after
-    /// it shows. A failed write is said, not dropped.
+    /// writes its storage asynchronously, and on the frame loop a writer
+    /// thread writes the disk, so a save is kept a moment after it shows. A
+    /// failed write is said, not dropped.
     pub(crate) fn flush_vault(&mut self) {
         let Some(model) = self.model.as_mut() else {
             self.writing = false;
@@ -1527,9 +1532,7 @@ impl Core {
             Ok(kept) => self.writing = !kept,
             Err(error) => {
                 self.writing = false;
-                self.toast(format!(
-                    "Couldn't keep your last change in this browser's storage: {error}"
-                ));
+                self.toast(format!("Couldn't keep your last change: {error}"));
             }
         }
     }

@@ -435,3 +435,76 @@ fn a_window_on_the_frame_loop_opens_the_vault_on_a_thread_of_its_own() {
         "the window shows the vault once it is open"
     );
 }
+
+/// On the frame loop a vault edit is written by a writer thread, and an edit
+/// made while one is under way waits in memory for the next write. An import
+/// or a restore makes many edits at once: every one of them reaches the disk,
+/// not only those the first writer took.
+#[test]
+fn every_imported_and_restored_item_reaches_the_disk_from_the_frame_loop() {
+    use crate::transfer::ImportLogin;
+    use zeroize::Zeroizing;
+
+    const ROWS: usize = 12;
+    const PASSPHRASE: &str = "synthetic backup passphrase";
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().to_owned();
+    let owner = CredentialOwner::deferred(&"11".repeat(32), "test-device", move || {
+        SecretStore::open_in(&path)
+    })
+    .unwrap();
+    let backup = crate::transfer::export_encrypted_backup(
+        &(0..ROWS)
+            .map(|i| SecretItem::login(format!("Restored {i}"), "ada", format!("restored-{i}-A7")))
+            .collect::<Vec<_>>(),
+        PASSPHRASE,
+    )
+    .unwrap();
+    let kept = |prefix: &str| {
+        SecretStore::open_in(root.path())
+            .list()
+            .iter()
+            .filter(|item| item.title.starts_with(prefix))
+            .count()
+    };
+    let settle = |core: &mut crate::vault::Core| {
+        tilo_test_env::wait_until("the vault's edits to be written", || {
+            core.poll_transfers();
+            !core.transfers_pending()
+        });
+    };
+    let mut core = crate::vault::Core::with_model(crate::PasswordsModel::shared(owner));
+    core.refresh_model();
+
+    {
+        let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+        let rows = (0..ROWS)
+            .map(|i| ImportLogin {
+                title: Zeroizing::new(format!("Imported {i}")),
+                username: Zeroizing::new("ada".into()),
+                origin: Zeroizing::new(String::new()),
+                password: Zeroizing::new(format!("imported-{i}-A7")),
+                notes: Zeroizing::new(String::new()),
+            })
+            .collect();
+        core.dialog = Some(crate::vault::Dialog::ImportPreview {
+            rows,
+            skipped: vec![false; ROWS],
+        });
+        core.apply_import();
+        settle(&mut core);
+    }
+    assert_eq!(kept("Imported"), ROWS, "every imported login is on disk");
+
+    {
+        let _loop = ui::storage::waiting::forbid_strictly_on_this_thread();
+        core.backup_password = Zeroizing::new(PASSPHRASE.into());
+        core.dialog = Some(crate::vault::Dialog::Restore {
+            bytes: backup,
+            error: None,
+        });
+        core.apply_encrypted_restore();
+        settle(&mut core);
+    }
+    assert_eq!(kept("Restored"), ROWS, "every restored item is on disk");
+}
