@@ -1377,6 +1377,33 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
     }
 }
 
+/// Who stewards each room's channels, as `net`'s admitted view of the room
+/// names them: this device and the room's governor.
+pub(crate) fn stewards_of(
+    net: Arc<crate::shell::network::ShellNetwork>,
+) -> crate::shell::channel_policy::Stewards {
+    Box::new(move |room| {
+        net.opened_native_owner()?
+            .with_current(room, |view| {
+                Ok((
+                    view.device().device_public_key,
+                    view.governor().device_public_key,
+                ))
+            })
+            .ok()
+    })
+}
+
+/// The keys of the channels of rooms `net`'s own room host governs, from
+/// that host's steward.
+pub(crate) fn hosted_channel_keys_of(
+    net: Arc<crate::shell::network::ShellNetwork>,
+) -> crate::shell::channel_policy::HostedChannelKeys {
+    Box::new(move |room, channel, route, create| {
+        net.hosted_channel_keys(room, channel, route, create)
+    })
+}
+
 #[cfg(test)]
 #[allow(
     clippy::significant_drop_tightening,
@@ -1839,31 +1866,4 @@ mod tests {
         a_name_already_announced_is_said_again_for_an_app_that_missed_it();
         a_remote_peer_is_one_id_across_presence_and_deltas();
     }
-}
-
-/// Who stewards each room's channels, as `net`'s admitted view of the room
-/// names them: this device and the room's governor.
-pub(crate) fn stewards_of(
-    net: Arc<crate::shell::network::ShellNetwork>,
-) -> crate::shell::channel_policy::Stewards {
-    Box::new(move |room| {
-        net.opened_native_owner()?
-            .with_current(room, |view| {
-                Ok((
-                    view.device().device_public_key,
-                    view.governor().device_public_key,
-                ))
-            })
-            .ok()
-    })
-}
-
-/// The keys of the channels of rooms `net`'s own room host governs, from
-/// that host's steward.
-pub(crate) fn hosted_channel_keys_of(
-    net: Arc<crate::shell::network::ShellNetwork>,
-) -> crate::shell::channel_policy::HostedChannelKeys {
-    Box::new(move |room, channel, route, create| {
-        net.hosted_channel_keys(room, channel, route, create)
-    })
 }
