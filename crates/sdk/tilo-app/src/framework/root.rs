@@ -142,7 +142,7 @@ impl ui_core::component_lifecycle::WindowActivation for ResourceRoot {
 
 /// The operation type of the framework's `open` view: show the item at an
 /// anchor, as picking a search hit does.
-pub(crate) const OPEN_TYPE: &str = "tilo.app.open";
+pub(crate) const OPEN_TYPE: &str = tilo_actions::remote::APPLICATION_OPEN_TYPE;
 
 /// The parameter of `open` naming what to show.
 const OPEN_ANCHOR: &str = "anchor";
@@ -1961,9 +1961,15 @@ impl ResourceSearch {
                 {
                     result = result.with_icon(icon);
                 }
-                if !entry.text.is_empty() {
-                    result = result.with_preview(entry.text.clone());
-                }
+                result = match &entry.preview {
+                    Some(preview) => result.with_preview(ui_core::search::SearchPreview {
+                        title: preview.title.clone(),
+                        facts: preview.facts.clone(),
+                        lines: preview.lines.clone(),
+                        body: preview.body.clone(),
+                    }),
+                    None => result.with_preview(entry.text.clone()),
+                };
                 if let Some(within) = &entry.within {
                     result = result.within(within.clone());
                 }

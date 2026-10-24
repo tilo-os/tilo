@@ -822,7 +822,14 @@ fn search_finds_an_item_by_its_codes_and_variants() {
     .unwrap();
     let entries = Library::search(&library.state().unwrap());
     assert_eq!(entries.len(), 1);
-    assert!(entries[0].text.contains("rust"), "{:?}", entries[0].text);
+    assert!(
+        entries[0]
+            .fields
+            .iter()
+            .any(|(text, _)| text.contains("rust")),
+        "{:?}",
+        entries[0].fields
+    );
 }
 
 /// A path names the object its value is stored in, through the items of a

@@ -34,6 +34,9 @@ use serde::{Deserialize, Serialize};
 pub const APPLICATION_ACTIVATE_ACTION: &str = "activate-window";
 /// Encoded operation of [`APPLICATION_ACTIVATE_ACTION`].
 pub const APPLICATION_ACTIVATE_TYPE: &str = "tilo.app.activate-window";
+/// Encoded operation of the shared view action that shows the item at an
+/// anchor, as picking that item's search hit does.
+pub const APPLICATION_OPEN_TYPE: &str = "tilo.app.open";
 
 mod catalogue;
 mod content_put;

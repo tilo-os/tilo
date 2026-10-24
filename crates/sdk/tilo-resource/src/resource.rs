@@ -2,6 +2,7 @@
 //! history, undo, collaboration, permissions, palette/agent/script exposure,
 //! search and replay without writing any of them.
 
+use crate::search_preview::SearchPreview;
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1083,6 +1084,9 @@ pub struct SearchEntry {
     pub group: Option<String>,
     pub subtitle: Option<String>,
     pub icon: Option<String>,
+    /// What the palette shows of the hit while a person is on it; `None`
+    /// shows its `text`, and an entry with neither shows no preview.
+    pub preview: Option<SearchPreview>,
     pub boost: i32,
     pub body: Option<SearchBody>,
     /// More short text the entry is found by, each ranked by its own
@@ -1108,6 +1112,7 @@ impl Clone for SearchEntry {
             group: self.group.clone(),
             subtitle: self.subtitle.clone(),
             icon: self.icon.clone(),
+            preview: self.preview.clone(),
             boost: self.boost,
             body: self.body.clone(),
             fields: self.fields.clone(),
@@ -1128,6 +1133,7 @@ impl PartialEq for SearchEntry {
             && self.group == other.group
             && self.subtitle == other.subtitle
             && self.icon == other.icon
+            && self.preview == other.preview
             && self.boost == other.boost
             && self.body == other.body
             && self.fields == other.fields
@@ -1317,6 +1323,14 @@ impl SearchEntry {
     #[must_use]
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// What the palette shows of the hit while a person is on it, in place
+    /// of its text.
+    #[must_use]
+    pub fn previewed(mut self, preview: SearchPreview) -> Self {
+        self.preview = Some(preview);
         self
     }
 
@@ -2421,8 +2435,11 @@ fn group_spec(vocabulary: &'static Vocabulary) -> ActionSpec {
 
 /// The default search entries of a record: one per item with a
 /// `#[model(label)]`, anchored at its item resource, or else all of its text
-/// in one entry. A `#[resource(search = path)]` function extends it by
-/// calling it.
+/// in one entry, found by its text. Items of a record holding several collections are listed
+/// under each collection's title (its doc comment's first line: "Folders",
+/// "Articles"), so the kinds read apart. An item is found by all of its
+/// text, which is no preview of it: the palette shows none for it. A
+/// `#[resource(search = path)]` function extends it by calling it.
 #[must_use]
 pub fn default_search<R: crate::Resource + crate::Fields>(
     label: &str,
@@ -2433,22 +2450,41 @@ pub fn default_search<R: crate::Resource + crate::Fields>(
     if items.is_empty() {
         record.collect_text(&mut text);
     }
-    default_search_of(R::KIND, label, items, &text)
+    let titles: &[crate::shape::FieldShape] = match <R as crate::Model>::SHAPE {
+        crate::Shape::Record(fields) => fields,
+        _ => &[],
+    };
+    default_search_of(R::KIND, label, items, &text, titles)
 }
 
 /// [`default_search`] of a record of the kind `kind` holding `items`, or
-/// else the text `text`.
+/// else the text `text`; `fields` names its collections.
 fn default_search_of(
     kind: &str,
     label: &str,
     items: Vec<crate::items::ItemText>,
     text: &[String],
+    fields: &[crate::shape::FieldShape],
 ) -> Vec<crate::SearchEntry> {
     if !items.is_empty() {
+        let several = items
+            .iter()
+            .any(|item| items.first().is_some_and(|first| first.field != item.field));
+        let title_of = |field: &str| {
+            fields
+                .iter()
+                .find(|shape| shape.name == field)
+                .map(|shape| shape.title)
+        };
         let mut entries = Vec::with_capacity(items.len());
         for item in items {
             let anchor = crate::items::item_resource_id_in(kind, item.field, &item.id);
-            entries.push(crate::SearchEntry::new(item.label, item.text).anchored(anchor));
+            let mut entry = crate::SearchEntry::new(item.label, String::new()).anchored(anchor);
+            entry.fields.push((item.text, crate::SearchWeight::Body));
+            if several && let Some(title) = title_of(item.field) {
+                entry = entry.grouped(title);
+            }
+            entries.push(entry);
         }
         return entries;
     }
@@ -2458,7 +2494,7 @@ fn default_search_of(
     vec![crate::SearchEntry {
         anchor: None,
         title: text.first().cloned().unwrap_or_else(|| label.to_owned()),
-        text: text.join("\n"),
+        fields: vec![(text.join("\n"), crate::SearchWeight::Body)],
         ..Default::default()
     }]
 }
