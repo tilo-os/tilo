@@ -453,6 +453,10 @@ pub struct JoinBootstrap {
     pub records: Vec<DocumentRow>,
     pub governance_messages: Vec<Vec<u8>>,
     pub generation: u64,
+    /// Every host of the room, each its own signed address, the governor's
+    /// first: a member reaches the room at any of them.
+    #[serde(default)]
+    pub hosts: Vec<TransportHint>,
 }
 
 /// Owner-specific bootstrap data. Authority is established only by admitting
