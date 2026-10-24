@@ -35,16 +35,24 @@ SKOPEO = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4
 # The tools every root action builds and verifies through.
 TOOLS = ["os/image/build-layer.sh", "os/image/layers.toml", "os/image/args.Containerfile",
          "tools/ci/os/pieces.py", "tools/ci/os/oci_layers.py", "tools/ci/publish/lib.sh",
-         "os/base-snapshot.env", "os/kernel-snapshot.env", "os/dev/build-image.sh", "keys/cosign.pub"]
+         "os/base-snapshot.env", "os/dev/build-image.sh", "keys/cosign.pub"]
+# The kernel pin and what verifies it, which only an action whose Containerfile builds FROM
+# the pinned kernel reads: build-image.sh resolves and verifies the kernel for no other
+# (TILO_LAYER_TARGET). So a new kernel pin reruns the kernel layer and the layers above it,
+# never the OS builder, the side builds, the compiles or the package transaction.
+KERNEL_PIN = "os/kernel-snapshot.env"
+KERNEL_VERIFIER = "os/dev/verify-kernel-provenance.sh"
+KERNEL_FROM = "FROM ${KERNEL_RPMS_REF}"
 # What measures a built image and judges it against os/image-size-budget.toml.
 IMAGE_SIZE_TOOLS = ["tools/ci/os/image-size.sh", "tools/perf/image_size.py",
                     "os/tests/image_size_budget.py", "os/image-size-budget.toml"]
 
 
-def scripts_of(paths, depth=3):
+def scripts_of(paths, depth=3, skip=()):
     """The os/ scripts the given scripts run, transitively: build-image.sh resolves and
-    verifies every pin through them, so they key every layer."""
-    found, todo = set(), list(paths)
+    verifies every pin through them, so they key every layer. A script in `skip` is left out
+    with what only it runs."""
+    found, todo = set(skip), list(paths)
     pat = re.compile(r"(?:\$TILO_OS_DIR|\$\{TILO_OS_DIR\}|os)/((?:dev|tests|scripts)/[A-Za-z0-9_.-]+\.(?:sh|py))")
     for _ in range(depth):
         nxt = []
@@ -60,7 +68,22 @@ def scripts_of(paths, depth=3):
                     found.add(q)
                     nxt.append(q)
         todo = nxt
-    return sorted(found)
+    return sorted(found - set(skip))
+
+
+def kernel_tools():
+    """What keys an action that installs the pinned kernel, beyond TOOLS."""
+    return [KERNEL_PIN, KERNEL_VERIFIER] + scripts_of([KERNEL_VERIFIER])
+
+
+def reads_kernel(containerfile):
+    """Whether an action's Containerfile builds FROM the pinned kernel."""
+    return KERNEL_FROM in containerfile
+
+
+def reads_generation(text):
+    """Whether a piece bakes in the generation build-layer.sh asks the registry for."""
+    return re.search(r"^ARG TILO_GENERATION\b", text, re.M) is not None
 
 
 # The verified, read-only fixture cache every build that ships takes (TILO_TEST_ASSET_SEED):
@@ -173,6 +196,8 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
             extra.append("os/publication.env")
         if board:
             extra.append("os/hardware/**")
+        if reads_kernel(pieces.containerfile(lname, given)):
+            extra += kernel_tools()
         files = sorted(set(tools + piece_files(lname, given) + pieces.inputs(lname, given) + extra))
         needs = [f"os-base-{arch}", "os-assets", "signing-tools", f"image-rpms-{arch}"] + below
         for g in l.get("given", []):
@@ -193,8 +218,15 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
             ("outputs", arr([f"/target/os/{arch}/{dirs}/{lname}/**"]))]
         if env:
             fields.append(("env", env))
+        # A development or release layer reads no commit (the clock is the base's and the
+        # snapshot's, the build context leaves .git out), so its files and the layers below key
+        # it and an unchanged layer is reused on every later commit. A piece that bakes in the
+        # generation, which build-layer.sh allocates from the published series rather than
+        # from any file, stays per commit, and so does a board's layer, whose update origin
+        # names the commit.
+        if board or reads_generation(pieces.action_text(lname)):
+            fields.append(("git", "true"))
         out.append(check(fields + [
-            ("git", "true"),
             ("requires", req), ("isolation", '"vm"'), ("writable_sources", "true"),
             ("cost", '"heavy"'), ("requirement", requirement(8, "16GiB")), ("timeout_secs", "7200"),
             ("default", "false")]))
@@ -228,7 +260,7 @@ def flavour_checks(plan, arch, req, tools, flavour, layer):
 
 def block():
     plan = pieces.plan()
-    tools = TOOLS + scripts_of(TOOLS)
+    tools = TOOLS + scripts_of(TOOLS, skip=[KERNEL_VERIFIER])
     out = ["""# The OS image as layer actions (os/image/layers.toml, os/image/build-layer.sh): per
 # architecture the assembler the actions run in, the pinned base, the OS builder and the side
 # builds, the compile in the OS builder with t's compiler cache and warm build directories, one
@@ -270,7 +302,8 @@ def block():
             name = img["name"]
             files = sorted(set(tools + [f"os/image/helpers/{h}.Containerfile" for h in
                                         pieces.needed_helpers(pieces.action_text(name), set())]
-                               + pieces.inputs(name, set())))
+                               + pieces.inputs(name, set())
+                               + (kernel_tools() if reads_kernel(pieces.containerfile(name, set())) else [])))
             out.append(check([
                 ("name", f'"os-{name}-{arch}"'),
                 ("image", ASSEMBLER_IMAGE.format(arch=arch)),
