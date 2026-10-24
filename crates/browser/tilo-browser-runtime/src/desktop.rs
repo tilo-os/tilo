@@ -1032,6 +1032,17 @@ impl Tiles {
     }
 }
 
+/// Where an app's code comes from: the host that served this page, by
+/// the name its address gives it.
+fn code_host() -> ui::arriving::Source {
+    let host = js_sys::Reflect::get(&js_sys::global(), &"location".into())
+        .and_then(|location| js_sys::Reflect::get(&location, &"host".into()))
+        .ok()
+        .and_then(|host| host.as_string())
+        .unwrap_or_default();
+    ui::arriving::Source::host(host)
+}
+
 /// Why a window cannot show its app yet.
 enum Unready {
     /// The app's code is still being fetched.
@@ -1055,7 +1066,7 @@ impl Tiles {
 
     fn private_feedback(&self, instance: TabId) -> Result<AppComponent, String> {
         // Only reached once the composer's code is in: a deferred composer's
-        // window holds its place with the opening card until then (`ready_app`).
+        // window reserves its place until then (`ready_app`).
         let code = crate::feedback_composer::code()
             .ok_or_else(|| "Feedback could not be loaded".to_owned())?;
         let services = self
@@ -1192,9 +1203,11 @@ impl TileSource for Tiles {
                 self.shared.waiting.borrow_mut().remove(&tab.id);
                 TileHost::from_component(component)
             }
-            // The app's code is on its way: its window holds the place with
-            // the opening card, and the app takes it over once built.
-            Err(Unready::Arriving) => TileHost::new(ui::widget::TileContent::Arriving),
+            // The app's code is on its way: its window reserves the place,
+            // and the app goes on with that arrival once built.
+            Err(Unready::Arriving) => {
+                TileHost::new(ui::widget::TileContent::Arriving).arriving_from(code_host())
+            }
             Err(Unready::Notice(detail)) => {
                 if self.shared.records.borrow().contains_key(&tab.id) {
                     self.shared.waiting.borrow_mut().insert(tab.id);

@@ -85,8 +85,8 @@ pub(crate) fn settle_install(tree: &mut WorkspaceTree, package_id: &str, detail:
 }
 
 /// Visual review: a peer's window whose app is being fetched from the
-/// registry here, without starting a real install — the card a slow
-/// fetch shows, at the placement a launch would get.
+/// registry here, without starting a real install: the place a slow fetch
+/// holds, at the placement a launch would get.
 pub fn show_install_under_way_for_shots(
     tree: &mut WorkspaceTree,
     app_id: &str,
@@ -133,6 +133,16 @@ pub fn show_install_bytes_for_shots(app_id: &str, received: u64, total: u64) {
             total: Some(total),
         }),
     );
+}
+
+/// Visual review: the start of `package_id`, whose place a launch holds,
+/// fails with `detail`, as a launch whose process failed does: the place
+/// shows the failure, and the launch is over (no window will claim the
+/// place, and no deadline is left to expire).
+pub fn fail_launch_for_shots(tree: &mut WorkspaceTree, package_id: &str, detail: &str) -> bool {
+    launcher::clear_pending_placement(package_id);
+    let _ = crate::shell::catalogue::take_pending_launch(package_id);
+    settle_local_restore(tree, package_id, detail)
 }
 
 /// Tabs whose card's install button was pressed, drained by [`examine`].
@@ -231,7 +241,7 @@ pub(crate) fn reopen_local_restore(
 }
 
 /// None is a stale/nonlocal target; Some says whether this exact local card
-/// changed. Queued and opening cards are accepted without another reset.
+/// changed. Queued and opening places are accepted without another reset.
 fn reset_local_restore(
     tree: &mut WorkspaceTree,
     tab_id: TabId,
@@ -1329,7 +1339,7 @@ mod tests {
     }
 
     #[test]
-    fn orphaned_local_opening_card_settles_once_without_losing_its_saved_record() {
+    fn orphaned_local_opening_place_settles_once_without_losing_its_saved_record() {
         let app = "dev.tilo.orphaned-saved-card";
         let (mut tree, orphan) = tree_with_local_app(app);
         set_note(&mut tree, orphan, OPENING.into());
@@ -1352,7 +1362,7 @@ mod tests {
         launcher::set_pending_placement(app, Placement::IntoTab(live));
         assert!(
             examine(&mut tree),
-            "an opening card with no exact launch must become recoverable"
+            "a pending place with no exact launch must become recoverable"
         );
         assert_eq!(
             local_app_note(&tree, orphan),
@@ -1382,7 +1392,7 @@ mod tests {
         let tile = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0]
             .tile
             .clone();
-        let ui::widget::TileContent::App(mut card) =
+        let ui::widget::TileContent::App(card) =
             crate::shell::to_ui_tile_for_tab_with_inputs(&tile, tab, &inputs)
         else {
             panic!("the saved failure card must offer recovery, not only static text");
@@ -1397,25 +1407,24 @@ mod tests {
                 .iter()
                 .any(|binding| binding.control_id == id)
         );
-        let mut doc = automerge::AutoCommit::new();
-        assert!(!card.perform_semantic_action(
-            "reopen-window:wrong",
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
-        assert!(card.perform_semantic_action(
-            &id,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
-        assert!(card.perform_semantic_action(
-            &id,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
-            &automerge::ROOT
-        ));
+        assert!(
+            !ui::widget::controls::control_action_bindings(card.as_ref())
+                .iter()
+                .any(|binding| binding.control_id == "reopen-window:wrong")
+        );
+        let card: Box<dyn ui::widget::Widget> = card;
+        let mut harness = ui::headless::FrameHarness::new(ui::State::new(), card, (456, 500));
+        harness.relayout();
+        assert!(
+            harness
+                .perform_named("reopen-window:wrong", &ui::a11y::Action::Activate)
+                .is_err()
+        );
+        for _ in 0..2 {
+            harness
+                .perform_named(&id, &ui::a11y::Action::Activate)
+                .expect("the exact recovery control");
+        }
         assert!(
             examine(&mut tree),
             "explicit recovery examines this saved tab"
@@ -1573,7 +1582,7 @@ mod tests {
             let app = "dev.tilo.recovery-input-fixture";
             let (mut tree, tab) = tree_with_local_app(app);
             set_note(&mut tree, tab, "The launch was interrupted.".into());
-            let card = crate::shell::app_notice_card::AppNoticeCard::retry(
+            let card = crate::shell::app_notice_card::ReopenCard::new(
                 tab,
                 app,
                 "Saved window",
@@ -1611,25 +1620,19 @@ mod tests {
                     .into_iter()
                     .find(|resource| {
                         resource.label == crate::shell::i18n::t("shell-window-retry")
-                            && resource
-                                .actions
-                                .iter()
-                                .any(|action| action.id == "activate")
+                            && resource.actions.iter().any(|action| action.id == "invoke")
                     })
                     .expect("recovery is published through the native resource door");
                 harness
                     .invoke_action(
-                        &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
+                        &tilo_actions::ActionAddress::new(resource.id.as_str(), "invoke"),
                         &serde_json::Map::new(),
                         false,
                         None,
                     )
                     .expect("advertised saved-window recovery");
             } else {
-                let button = harness
-                    .root_widget()
-                    .synthetic_accessibility_rect(&[0])
-                    .expect("shared recovery button rectangle");
+                let button = harness.targets()[&format!("reopen-window:{tab}")];
                 harness.click_at(button.center().x, button.center().y);
             }
             assert!(

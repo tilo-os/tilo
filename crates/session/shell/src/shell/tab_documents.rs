@@ -155,9 +155,12 @@ mod tests {
             widget.for_each_child(&mut |child| descriptions(child, out));
         }
         for (phase, detail) in [
-            // The opening card: the app's name over the moving indicator,
-            // which a screen reader hears as "Opening…".
-            ("opening", crate::shell::i18n::t("shell-window-opening")),
+            // The window's place while it arrives: the app's name, busy, and
+            // heard as loading.
+            (
+                "opening",
+                ui::i18n::I18nManager::lookup_plain("arriving-loading"),
+            ),
             ("failed", crate::shell::i18n::t("launch-failed-stopped")),
             (
                 "timeout",
@@ -217,10 +220,17 @@ mod tests {
             descriptions(frame.host(), &mut spoken);
             drop(frame);
             crate::shell::launcher::clear_pending_placements();
+            // While it arrives the place is the app's; once it failed, the
+            // failure face says what failed (the tab names the app).
+            let named = if phase == "opening" {
+                "Browser".to_owned()
+            } else {
+                crate::shell::i18n::t("shell-window-open-failed")
+            };
             assert!(
                 spoken
                     .iter()
-                    .any(|(name, description)| name == "Browser" && description == &detail),
+                    .any(|(name, description)| *name == named && description == &detail),
                 "{phase}: actual notice must describe launch state, got {spoken:?}"
             );
             assert!(

@@ -39,6 +39,10 @@ pub enum SkeletonShape {
     /// A page: the whole space the region is given, its content filling it
     /// (and scrolling inside it). Lines of body text fill the skeleton.
     Page,
+    /// Content whose shape is not known (a window that declared none): its
+    /// ground and nothing on it. The placeholder never guesses what will
+    /// stand there.
+    Ground,
 }
 
 impl SkeletonShape {
@@ -82,6 +86,7 @@ impl SkeletonFace {
     /// The height the replaced content will take at `width`.
     pub fn height(&self, text: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         match self.shape {
+            SkeletonShape::Ground => 0.0,
             SkeletonShape::Text { lines } => {
                 let line = f64::from(
                     text.measure_style("Ag", None, &theme.text(TextRole::Body))
@@ -163,6 +168,7 @@ impl SkeletonFace {
             }
         };
         match self.shape {
+            SkeletonShape::Ground => {}
             SkeletonShape::Text { lines: count } => lines(ctx, usize::from(count.max(1))),
             SkeletonShape::Page => {
                 #[allow(

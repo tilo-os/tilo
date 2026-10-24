@@ -1,6 +1,7 @@
 //! App status cards share the toolkit `EmptyState`: install a missing peer app,
-//! get a saved window's app that this computer doesn't have, or explicitly
-//! reopen a failed saved window in its existing tab.
+//! or get a saved window's app that this computer doesn't have. A saved
+//! window that did not open shows the framework's failure face instead
+//! ([`ReopenCard`]), with Reopen for the exact window in its existing tab.
 
 use std::collections::HashMap;
 
@@ -20,7 +21,6 @@ use crate::shell::state::TabId;
 enum Primary {
     /// Install the peer window's app and open it here.
     Install,
-    Reopen(String),
     /// Open the Store on this saved window's app.
     Get(String),
 }
@@ -96,28 +96,12 @@ impl AppNoticeCard {
         }
     }
 
-    /// Reopen the exact saved window; this card owns no document itself.
-    pub fn retry(tab: TabId, app_id: &str, title: &str, detail: &str) -> Self {
-        Self {
-            tab,
-            title: title.to_owned(),
-            primary: Primary::Reopen(app_id.to_owned()),
-            card: EmptyState::new(title)
-                .with_message(detail)
-                .with_action(crate::shell::i18n::t("shell-window-retry"))
-                .with_action_id(format!("reopen-window:{tab}")),
-            close: None,
-            close_changed: false,
-        }
-    }
-
     /// Hand an explicit card action to the shell's next reconciliation.
     fn forward_action(&mut self) {
         use crate::shell::peer_windows::{CardRequest, request};
         if self.card.take_action() {
             match &self.primary {
                 Primary::Install => crate::shell::peer_windows::request_install(self.tab),
-                Primary::Reopen(app_id) => request(CardRequest::Reopen, self.tab, app_id),
                 Primary::Get(app_id) => request(CardRequest::Get, self.tab, app_id),
             }
         }
@@ -339,6 +323,73 @@ impl Widget for AppNoticeCard {
 }
 
 impl AppWidget for AppNoticeCard {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+
+    fn app_kind(&self) -> AppKind {
+        AppKind::Settings
+    }
+
+    fn app_title(&self) -> &str {
+        &self.title
+    }
+
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("󰏗")
+    }
+}
+
+/// A saved window that did not open, in the framework's one failure face:
+/// what failed, why, and Reopen for the exact window in its tab. This card
+/// owns no document itself.
+pub struct ReopenCard {
+    title: String,
+    face: ui::widget::WindowFailure,
+}
+
+impl ReopenCard {
+    /// The card for `tab`, whose window of `app_id` is called `title`;
+    /// `reason` says why it did not open.
+    pub fn new(tab: TabId, app_id: &str, title: &str, reason: &str) -> Self {
+        let app_id = app_id.to_owned();
+        let id = format!("reopen-window:{tab}");
+        let retry = ui::widget::Button::new(&id, &crate::shell::i18n::t("shell-window-retry"))
+            .on_view(move || {
+                crate::shell::peer_windows::request(
+                    crate::shell::peer_windows::CardRequest::Reopen,
+                    tab,
+                    &app_id,
+                );
+            });
+        let face =
+            ui::widget::arrival_failure(crate::shell::i18n::t("shell-window-open-failed"), reason)
+                .with_id(format!("window-failed:{tab}"))
+                .with_action(retry);
+        Self {
+            title: title.to_owned(),
+            face: ui::widget::WindowFailure::new(face),
+        }
+    }
+}
+
+impl ui::widget::Decorator for ReopenCard {
+    type Inner = ui::widget::WindowFailure;
+
+    fn inner(&self) -> &Self::Inner {
+        &self.face
+    }
+
+    fn inner_mut(&mut self) -> &mut Self::Inner {
+        &mut self.face
+    }
+
+    fn name(&self) -> &'static str {
+        "ReopenCard"
+    }
+}
+
+impl AppWidget for ReopenCard {
     fn uses_host_record(&self) -> bool {
         false
     }
