@@ -94,6 +94,7 @@ pub mod desk_widgets;
 pub mod desktop_control;
 pub mod device_class;
 pub mod device_displays;
+pub mod device_vpn;
 pub mod dictation;
 pub mod display_control;
 pub mod display_identify;
