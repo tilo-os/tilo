@@ -27,9 +27,25 @@ function fakeWindow(href) {
     get index() { return index; },
     addEventListener(type, fn) { listeners.set(type, fn); },
     removeEventListener(type) { listeners.delete(type); },
-    back() { index -= 1; return listeners.get('popstate')?.(); },
-    forward() { index += 1; return listeners.get('popstate')?.(); },
+    // A fragment typed into the address bar: a new entry, announced as a
+    // browser does (popstate, then hashchange).
+    edit(url) {
+      entries.splice(index + 1);
+      entries.push({url, state: null});
+      return traverse(index + 1, entries[index].url);
+    },
+    back() { return traverse(index - 1); },
+    forward() { return traverse(index + 1); },
   };
+  // As a browser goes back or forward within the page: popstate, and when
+  // the fragment changed, hashchange as well, in a task of its own that does
+  // not wait for what the popstate listener started.
+  function traverse(to, from = entries[index].url) {
+    index = to;
+    const heard = [listeners.get('popstate')?.()];
+    if (new URL(from).hash !== new URL(entries[index].url).hash) heard.push(listeners.get('hashchange')?.());
+    return Promise.all(heard);
+  }
   return window;
 }
 
@@ -160,6 +176,26 @@ test('Back shows the URL target without writing history', async () => {
   assert.deepEqual(shown.at(-1), {mode: 'app', target: first});
   assert.deepEqual(window.writes, []);
   assert.deepEqual(router.route, {mode: 'app', target: first});
+});
+
+test('a move the browser announces twice shows its target once', async () => {
+  const shown = [];
+  const notes = {scope, app: 'so.tilo.notes'};
+  const message = {...chat, resource: {kind: 'chat.message', id: 'chat.message:1'}};
+  const window = fakeWindow(link.format({mode: 'desktop', target: notes}));
+  const router = startRouter({window, link, initial: {mode: 'desktop', target: notes}, show: async next => { shown.push(next.target); }});
+  // A link to a message, typed over the address: its view action runs once.
+  await window.edit(link.format({mode: 'desktop', target: message}));
+  assert.deepEqual(shown, [message]);
+  await window.back();
+  assert.deepEqual(shown, [message, notes], 'Back shows the window before, once');
+  await window.forward();
+  assert.deepEqual(shown, [message, notes, message], 'and Forward the message again, once');
+  // Coming back to an address shown before is a move of its own.
+  await router.open({mode: 'desktop', target: chat});
+  await window.back();
+  assert.deepEqual(shown, [message, notes, message, chat, message]);
+  router.stop();
 });
 
 test('an entry of the other mode loads that page', async () => {
