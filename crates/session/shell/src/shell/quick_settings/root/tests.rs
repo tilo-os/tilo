@@ -410,17 +410,13 @@ fn the_wifi_section_turns_wifi_on_and_joins_networks_or_asks_for_a_password() {
         "Cafe",
     ));
     root.settle_sections(&state);
-    let field = root
-        .wifi_password_field_rect(&state)
-        .expect("the field is inside the section");
+    let prompt = root
+        .wifi_password_rect(&state)
+        .expect("the prompt is inside the section");
     let cafe = root.stop_rect(RootStop::Section(SectionStop::Network(1)), &state);
-    assert!(field.y0 > cafe.y1);
-    let connect = root.stop_rect(RootStop::Section(SectionStop::PasswordConnect), &state);
-    assert!(connect.y0 > field.y1);
-    assert_eq!(
-        root.handle_click(connect.center(), PANEL, &mut state),
-        RootAction::Wifi(WifiIntent::SubmitPassword)
-    );
+    assert!(prompt.y0 > cafe.y1);
+    let settings = root.stop_rect(RootStop::Section(SectionStop::Settings), &state);
+    assert!(settings.y0 >= prompt.y1, "the rows below make room for it");
 }
 
 #[test]

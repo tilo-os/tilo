@@ -481,7 +481,7 @@ fn navigation(
     // With nobody and no group to list, and neither setup nor a group
     // open, how to start is the whole window's, not a narrow list's.
     if nobody && entries.is_none() && !setup.visible() && !groups.visible() {
-        return shell.nothing_listed(empty("messages-empty-heading", "messages-empty-hint"));
+        return shell.nothing_listed(start_in_contacts(actions));
     }
     let overview: Element = match entries {
         Some(entries) => Box::new(Column::new().push(entries).push(people)),
@@ -781,6 +781,23 @@ fn composer(
             ))
             .push(Box::new(send)),
     )
+}
+
+/// How to start with nobody to message: add people in Contacts, which the
+/// button opens ([`crate::open_contacts_action`]).
+fn start_in_contacts(actions: &Actions<Messages>) -> Element {
+    let state = EmptyState::new("messages-empty-heading")
+        .with_icon(Icon::MessageSquare)
+        .with_message("messages-empty-hint");
+    match actions.spec_binding(&crate::open_contacts_action()) {
+        Some(binding) => Box::new(
+            state
+                .with_action("messages-open-contacts")
+                .with_action_id("messages.open-contacts")
+                .on_action(binding),
+        ),
+        None => Box::new(state),
+    }
 }
 
 pub(crate) fn empty(title: &str, hint: &str) -> Element {

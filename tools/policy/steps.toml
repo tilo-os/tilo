@@ -218,6 +218,12 @@ run = "python3 tools/policy/check_ui_clock_contract.py"
 inputs = ["crates/sdk/ui-core/**", "crates/sdk/tilo-host/**", "clippy.toml"]
 
 [[step]]
+name = "no-transient-cards"
+label = "Transient notices are the window bar's"
+run = "python3 tools/policy/check_no_transient_cards.py"
+inputs = ["apps/**", "crates/**", "examples/**"]
+
+[[step]]
 name = "motion-library"
 label = "Animations are composed from the motion library"
 run = "python3 tools/policy/check_motion_library.py"
@@ -397,12 +403,6 @@ tests = true
 inputs = ["t.toml", ".forgejo/workflows/**", "os/dev/**", "os/Containerfile.builder", "tools/ci/**",
           "dist/ci/install-build-deps.sh", "crates/agent/agent-participant/tests/host_agents.rs"]
 
-[[step]]
-name = "signed-development-board"
-label = "Signed development board dispatch and policy tests"
-run = "python3 os/tests/test_signed_development_board.py"
-tests = true
-inputs = [".forgejo/workflows/build-image.yml", "os/**", "keys/cosign.pub"]
 
 [[step]]
 name = "codex-hooks"

@@ -114,6 +114,7 @@ fn responses() -> Vec<JoinTransportResponse> {
         revocations: peer.revocations(),
         records: peer.rows(),
         governance_messages: peer
+            .publication_mut()
             .bootstrap_messages(&governor, now)
             .unwrap()
             .iter()

@@ -227,6 +227,31 @@ fn states() -> Vec<State> {
             },
         },
         State {
+            name: "terminal",
+            build: terminal,
+            after_layout: none,
+        },
+        State {
+            name: "terminal-ctrl-held",
+            build: terminal,
+            after_layout: |osk| tap_tool(osk, "ctrl", 1),
+        },
+        State {
+            name: "terminal-ctrl-locked-alt-held",
+            build: terminal,
+            after_layout: |osk| {
+                tap_tool(osk, "ctrl", 2);
+                tap_tool(osk, "alt", 1);
+            },
+        },
+        State {
+            name: "terminal-pressed-up",
+            build: terminal,
+            after_layout: |osk| {
+                osk.pressed_tool = osk.toolbar.iter().position(|item| item.id == "up");
+            },
+        },
+        State {
             name: "hits-start",
             build: plain,
             after_layout: |osk| osk.hit_overlay = true,
@@ -248,6 +273,19 @@ fn states() -> Vec<State> {
             },
         },
     ]
+}
+
+fn terminal() -> OskWidget {
+    OskWidget::new().with_purpose(crate::layout::InputPurpose::Terminal)
+}
+
+/// Tap the toolbar item `id` `times` times.
+fn tap_tool(osk: &mut OskWidget, id: &str, times: usize) {
+    if let Some(index) = osk.toolbar.iter().position(|item| item.id == id) {
+        for _ in 0..times {
+            osk.activate_tool(index);
+        }
+    }
 }
 
 fn key_labelled(

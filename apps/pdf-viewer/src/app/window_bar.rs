@@ -1,9 +1,9 @@
 //! The reader's controls, as slots in the window's bar
 //! ([`ui::window_toolbar`]): the bar's sidebar toggle shows and hides the
 //! pages, its location names the open document, and its actions carry the
-//! annotation tools, the marker colour, the review panel, zoom, Open and
-//! Save. Each slot runs the reader's published [`PdfEffect`] through the
-//! same handler the palette and agents reach. The window's search finds in
+//! annotation tools, the marker colour, the review panel, zoom, page
+//! stepping, Open and Save. Each slot runs the reader's published
+//! [`PdfEffect`] through the same handler the palette and agents reach. The window's search finds in
 //! the pages (the reader is its [`ui::widget::Findable`]) and its History
 //! control opens the record's History; the reader draws no toolbar row.
 
@@ -25,6 +25,8 @@ pub(crate) const ZOOM_IN: &str = "pdf.zoom-in";
 pub(crate) const ZOOM_OUT: &str = "pdf.zoom-out";
 pub(crate) const FIT_PAGE: &str = "pdf.fit-page";
 pub(crate) const FIT_WIDTH: &str = "pdf.fit-width";
+pub(crate) const PREVIOUS_PAGE: &str = "pdf.previous-page";
+pub(crate) const NEXT_PAGE: &str = "pdf.next-page";
 pub(crate) const OPEN: &str = "pdf.open";
 pub(crate) const SAVE: &str = "pdf.save";
 
@@ -58,6 +60,8 @@ fn bar_effect(id: &str) -> Option<PdfEffect> {
         ZOOM_OUT => PdfEffect::ZoomOut,
         FIT_PAGE => PdfEffect::FitPage,
         FIT_WIDTH => PdfEffect::FitWidth,
+        PREVIOUS_PAGE => PdfEffect::PreviousPage,
+        NEXT_PAGE => PdfEffect::NextPage,
         OPEN => PdfEffect::OpenPdf { path: None },
         SAVE => PdfEffect::SaveAs { path: None },
         _ => {
@@ -138,6 +142,16 @@ impl PdfApp {
                 ToolbarAction::new(ZOOM, ui::icons::Icon::Plus.name(), "Zoom")
                     .with_items(zoom)
                     .in_menu(),
+                ToolbarAction::new(
+                    PREVIOUS_PAGE,
+                    ui::icons::Icon::ChevronLeft.name(),
+                    "Previous page",
+                )
+                .enabled(self.current_page > 1)
+                .in_menu(),
+                ToolbarAction::new(NEXT_PAGE, ui::icons::Icon::ChevronRight.name(), "Next page")
+                    .enabled(self.current_page < self.doc.page_count())
+                    .in_menu(),
                 open,
                 ToolbarAction::new(SAVE, ui::icons::Icon::Download.name(), "Save annotated PDF")
                     .enabled(self.raster_active())
@@ -153,6 +167,7 @@ impl PdfApp {
         for event in ui::window_toolbar::take_events() {
             self.run_window_bar_event(&event);
         }
+        self.take_note_action();
         ui::window_toolbar::declare(Some(self.window_toolbar()));
     }
 

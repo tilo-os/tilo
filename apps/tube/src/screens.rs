@@ -15,8 +15,8 @@ use ui::widget::{
     Avatar, AvatarSize, Badge, Banner, Button, ButtonRole, Chip, ChipLead, ChipStyle, Column,
     Container, Dropdown, Element, EmptyState, Field, Form, FormSection, ListRow, MediaAspect,
     MediaCard, MediaGrid, MediaSize, MediaSource, OwnedBadge, Row, Scrollable, Section,
-    SectionHeader, Skeleton, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone,
-    card_column_width, card_columns,
+    SectionHeader, SkeletonShape, Spacer, Text, TextInput, Toggle, Tone, card_column_width,
+    card_columns,
 };
 
 use crate::action::{self, Action, ActionBus, SettingFlag};
@@ -42,6 +42,41 @@ pub struct Ui<'a> {
     pub imgs: Imgs<'a>,
     /// Width of the shell's content column, which sizes the media grids.
     pub content_width: f64,
+    /// When the videos a screen waits for were first waited for.
+    pub waiting: &'a Waiting,
+}
+
+/// When the videos the screens wait for were first waited for, kept across
+/// the rebuilds of the screens meanwhile: their placeholders step on from
+/// then, not from each rebuild.
+#[derive(Debug, Default)]
+pub struct Waiting {
+    since: std::cell::Cell<Option<ui::time::Instant>>,
+    shown: std::cell::Cell<bool>,
+}
+
+impl Waiting {
+    /// A build of the screen starts.
+    pub fn begin_build(&self) {
+        self.shown.set(false);
+    }
+
+    /// The build finished: when it waited for nothing, the wait is over.
+    pub fn end_build(&self) {
+        if !self.shown.get() {
+            self.since.set(None);
+        }
+    }
+
+    /// The build shows a placeholder: since when it has.
+    fn since(&self) -> ui::time::Instant {
+        self.shown.set(true);
+        self.since.get().unwrap_or_else(|| {
+            let now = ui::time::now();
+            self.since.set(Some(now));
+            now
+        })
+    }
 }
 
 impl Ui<'_> {
@@ -208,12 +243,19 @@ fn video_grid<'v>(ui: Ui<'_>, videos: impl IntoIterator<Item = &'v Video>) -> El
     Box::new(MediaGrid::new(cards))
 }
 
-/// The loading state of a video grid: two rows of card-shaped placeholders
-/// in the grid's own columns, each as tall as a card with its two title
-/// lines and meta, so the arriving cards replace them without moving
-/// anything.
+/// The videos on their way: two rows of the framework's placeholders in the
+/// grid's own columns, each as tall as a card with its two title lines and
+/// meta, so the arriving cards replace them without moving anything.
 fn skeleton_grid(ui: Ui<'_>) -> Column {
     let theme = ui.theme;
+    let since = ui.waiting.since();
+    let placeholder = |shape| {
+        ui::widget::ArrivingView::placeholder_since(
+            ui::arriving::Source::host("YouTube"),
+            since,
+            shape,
+        )
+    };
     let (columns, column) = grid_columns(ui);
     let mut grid = stack().with_rhythm(ui::tokens::Rhythm::Group);
     for _ in 0..2 {
@@ -229,10 +271,8 @@ fn skeleton_grid(ui: Ui<'_>) -> Column {
                     .with_child(Box::new(
                         stack()
                             .with_gap(theme.tokens.spacing.s0)
-                            .push(Box::new(Skeleton::new(SkeletonShape::Media(
-                                MediaAspect::Wide,
-                            ))))
-                            .push(Box::new(Skeleton::new(SkeletonShape::Text { lines: 2 }))),
+                            .push(placeholder(SkeletonShape::Media(MediaAspect::Wide)))
+                            .push(placeholder(SkeletonShape::Text { lines: 2 })),
                     )),
             ));
         }

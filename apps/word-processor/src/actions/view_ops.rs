@@ -1,11 +1,11 @@
 //! Per-participant view operations: `move-caret`, `select-range`,
 //! `select-block`, `select-all` and `find-text`.
 //!
-//! They change only the invoking participant's [`ParticipantView`] (caret,
+//! They change only the invoking participant's [`ParticipantView`](crate::actions::participant::ParticipantView) (caret,
 //! selection, Find), never the document; they are published as the
 //! participant view effects of [`crate::effects::WordProcessorEffect`]. The
-//! request is applied with [`apply`] against the current document, which
-//! runs the same [`super::editing`] function the keyboard/mouse path uses.
+//! request is applied with [`apply`](crate::actions::view_ops::apply) against the current document, which
+//! runs the same [`editing`](crate::actions::editing) function the keyboard/mouse path uses.
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};

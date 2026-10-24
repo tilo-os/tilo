@@ -30,10 +30,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from acceptance import core, records, report  # noqa: E402
-from acceptance.checks import (agent, apps, basics, daily_apps, input_devices,  # noqa: E402,F401
-                               provenance, resources, search, startup, ui, window)
-# Last: it sets the VM's clock back and steps it forward again.
-from acceptance.checks import clock  # noqa: E402,F401
+from acceptance.checks import (agent, apps, basics, clock, daily_apps,  # noqa: E402,F401
+                               input_devices, provenance, resources, search, startup, ui, window)
 from acceptance.context import Context  # noqa: E402
 from management import start_management  # noqa: E402
 from layer_artifacts import identities, verify as verify_artifacts  # noqa: E402
@@ -85,7 +83,7 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
-    # The installed-desktop gates build-image.yml runs on a KVM guest: kernel and userspace
+    # The installed-desktop gates os-acceptance-{arch} runs on a KVM guest: kernel and userspace
     # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
@@ -107,7 +105,8 @@ DE_PASS = ("U03", "U04", "S03")
 # shares a workspace on a relay it starts for the run, so it comes late, but before R07, A16
 # and R05, which judge the apps it opens too. R08 signs the dev account in at seat0's
 # greeter, which starts a second compositor: it runs after every check that measures or
-# renders the slot's session.
+# renders the slot's session. K01 sets the VM's clock back and restarts the session, so it
+# runs after the checks that judge what the run opened, and before R08.
 ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "W01", "W02", "W03", "W04", "W05", "W06", "W07", "W08", "W09", "W10", "W11", "W12",
          "W13", "W14", "W15", "W16", "W17", "W18", "W19", "W20", "W21",
@@ -116,7 +115,7 @@ ORDER = ["P01", "P02", "R06", "R01", "A14", "R02", "R03", "A15", "A17", "R04",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
          "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06",
          "M01", "M02", "M03", "M04", "I01", "I02", "I03", "I04", "I05", "I06", "I07", "I08",
-         "R09", "R07", "A16", "R05", "R08", "P03"]
+         "R09", "R07", "A16", "R05", "K01", "R08", "P03"]
 
 
 def git(*args: str, repo: Path = REPO) -> str:

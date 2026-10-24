@@ -17,13 +17,11 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use ui::LocalState;
 use ui::icons::Icon;
 use ui::tokens::{Metrics, Spacing, SpacingStep};
-use ui::widget::data_table::{
-    ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange, TableRowState,
-};
+use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange};
 use ui::widget::{Button, ButtonRole, Checkbox, Column, Element, Spacer, TextInput, TextInputKind};
+use ui::{Arrival, LocalState};
 
 use crate::commands::{Cmd, RowEdit, Sink, Table};
 use crate::model::KeyValue;
@@ -115,10 +113,10 @@ impl TableModel for KvModel {
         self.rows.iter().position(|row| identity(&row.id) == key)
     }
 
-    fn row_state(&self, index: usize) -> TableRowState<'_, KvRow> {
+    fn row_state(&self, index: usize) -> Arrival<&KvRow, &str> {
         self.rows
             .get(index)
-            .map_or(TableRowState::Loading, TableRowState::Ready)
+            .map_or_else(Arrival::local, Arrival::Ready)
     }
 
     fn poll_changes(&mut self) -> Vec<TableModelChange> {

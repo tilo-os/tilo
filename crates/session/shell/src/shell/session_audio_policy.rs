@@ -440,7 +440,7 @@ impl PolicyEnv for LiveEnv {
 /// Where a `PipeWire` client connects: `PIPEWIRE_REMOTE` (`pipewire-0`
 /// unless set), in `PIPEWIRE_RUNTIME_DIR` or else `XDG_RUNTIME_DIR` unless
 /// it is a path of its own.
-fn pipewire_socket() -> Option<std::path::PathBuf> {
+pub(crate) fn pipewire_socket() -> Option<std::path::PathBuf> {
     let set = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
     let remote =
         std::path::PathBuf::from(set("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into()));

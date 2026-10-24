@@ -36,6 +36,12 @@ int main() {
     assert(U32(routed.data()+5)==7 && U32(routed.data()+9)==2 && U32(routed.data()+13)==3 && routed.substr(17)==pixels);
     assert(FramePacket(1,2,3,pixels.data(),23).empty()); assert(FramePacket(0,2,3,pixels.data(),24).empty()); }
   { std::istringstream in(EncodePacket(99,"x")); Packet p; assert(ReadPacket(in,p)==ReadResult::Error); }
+  // A page's question is kept to its bound without cutting a character.
+  assert(BoundedText("short",16)=="short");
+  assert(BoundedText("abcdef",3)=="abc");
+  assert(BoundedText("a\xc3\xa9" "b",2)=="a");
+  assert(BoundedText("a\xc3\xa9" "b",3)=="a\xc3\xa9");
+  assert(BoundedText("\xe2\x82\xac",2).empty());
   {
     ViewGeometry geometry;
     assert(geometry.ResizePhysical(800,452,1.0)==ResizeEffect::Changed);

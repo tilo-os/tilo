@@ -4,7 +4,12 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod audio;
+mod extension_notification;
+mod extension_omnibox;
+mod extension_permissions;
+mod extension_sign_in;
 pub mod install;
+mod menus;
 mod protocol;
 pub mod runtime;
 mod service_session_probe;
@@ -25,6 +30,7 @@ use super::{
     FrameSlot, KeyInput, MouseButton, NavigationCommand, WebViewCommand, WebViewEngine,
     WebViewEvent,
 };
+use menus::{MENU_ROWS, decode_context_items, decode_extension_menu};
 use serde_json::{Value, json};
 use tilo_lock::MutexRecover as _;
 
@@ -64,6 +70,11 @@ struct Shared {
     popups_can: AtomicBool,
     popups_asked: AtomicBool,
     popups_told: AtomicBool,
+    /// Whether the host sends the page's own questions, whether this tab
+    /// asked for them, and whether the host was told.
+    dialogs_can: AtomicBool,
+    dialogs_asked: AtomicBool,
+    dialogs_told: AtomicBool,
     /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
     /// The endpoints of popups the page opened, not yet adopted: each is
@@ -575,6 +586,9 @@ impl UnavailableEngine {
                 popups_can: AtomicBool::default(),
                 popups_asked: AtomicBool::default(),
                 popups_told: AtomicBool::default(),
+                dialogs_can: AtomicBool::default(),
+                dialogs_asked: AtomicBool::default(),
+                dialogs_told: AtomicBool::default(),
                 popups: Mutex::default(),
                 unadopted: Mutex::default(),
                 cursor: Mutex::default(),
@@ -1029,12 +1043,7 @@ fn valid_context_menu(value: &Value) -> bool {
                 .as_f64()
                 .is_some_and(|v| v.is_finite() && v.abs() < 100_000.0)
         })
-        && value["items"].as_array().is_some_and(|items| {
-            items.len() <= 24
-                && items.iter().all(|item| {
-                    valid_id(item) && item["label"].as_str().is_some_and(|s| s.len() <= 4096)
-                })
-        })
+        && decode_context_items(&value["items"], 1, &mut { MENU_ROWS }).is_some()
 }
 
 impl ChromiumEngine {
@@ -1339,6 +1348,25 @@ impl ChromiumEngine {
         }
     }
 
+    /// Tell the host this tab answers the page's questions, once it asked
+    /// and the host said it can.
+    fn tell_dialogs(&self) {
+        let shared = &self.shared;
+        if !shared.dialogs_asked.load(Ordering::Acquire)
+            || !shared.dialogs_can.load(Ordering::Acquire)
+            || shared.dialogs_told.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        if self
+            .tx
+            .push(json!({"op":"js_dialogs","tab":self.tab,"enabled":true}))
+            .is_err()
+        {
+            shared.dialogs_told.store(false, Ordering::Release);
+        }
+    }
+
     fn tell_document_size(&self) {
         let reports = &self.shared.document_size;
         let asked = reports.asked.load(Ordering::Acquire);
@@ -1485,6 +1513,11 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_popups(&self) {
         self.shared.popups_asked.store(true, Ordering::Release);
         self.tell_popups();
+    }
+
+    fn accept_page_dialogs(&self) {
+        self.shared.dialogs_asked.store(true, Ordering::Release);
+        self.tell_dialogs();
     }
 
     fn take_popups(&self) -> Vec<super::Popup> {
@@ -1650,6 +1683,7 @@ impl WebViewEngine for ChromiumEngine {
     fn drain_events(&self) -> Vec<WebViewEvent> {
         self.tell_document_size();
         self.tell_popups();
+        self.tell_dialogs();
         self.shared
             .events
             .lock()
@@ -1768,6 +1802,10 @@ fn route_native_event(
             shared
                 .popups_can
                 .store(value["popups"].as_bool() == Some(true), Ordering::Release);
+            shared.dialogs_can.store(
+                value["js_dialogs"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.selection_text.store(
                 value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
@@ -1870,177 +1908,6 @@ fn valid_id(value: &Value) -> bool {
         .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
 }
 
-fn valid_site_event(value: &Value, event: &str) -> bool {
-    let header = value["request_id"]
-        .as_u64()
-        .is_some_and(|n| n > 0 && i32::try_from(n).is_ok())
-        && value["origin"].as_str().is_some_and(|s| s.len() <= 8192)
-        && value["generation"].as_f64().is_some_and(|n| {
-            n.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&n) && n.fract() == 0.0
-        });
-    header
-        && if event == "site_result" {
-            value["success"].is_boolean()
-                && value["action"].as_str().is_some_and(|s| {
-                    matches!(
-                        s,
-                        "status" | "clear" | "revoke" | "reset" | "enable" | "disable" | "reload"
-                    )
-                })
-                && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
-        } else {
-            ["global_enabled", "excepted", "effective"]
-                .iter()
-                .all(|k| value[*k].is_boolean())
-                && value["blocked"].as_f64().is_some_and(|n| {
-                    n.is_finite()
-                        && (0.0..=9_007_199_254_740_991.0).contains(&n)
-                        && n.fract() == 0.0
-                })
-                && matches!(
-                    value["security"].as_str(),
-                    Some("insecure" | "secure" | "unverified")
-                )
-                && ["subject", "issuer"]
-                    .iter()
-                    .all(|k| value[*k].as_str().is_some_and(|s| s.len() <= 512))
-                && ["certificate_status", "tls_version", "content_status"]
-                    .iter()
-                    .all(|k| value[*k].as_u64().is_some_and(|n| u32::try_from(n).is_ok()))
-                && value["expires"].as_f64().is_some_and(f64::is_finite)
-                && value["permissions"].as_object().is_some_and(|p| {
-                    p.len() == 4
-                        && ["camera", "microphone", "location", "notifications"]
-                            .iter()
-                            .all(|k| {
-                                matches!(
-                                    p.get(*k).and_then(Value::as_str),
-                                    Some("allowed" | "blocked" | "ask")
-                                )
-                            })
-                })
-        }
-}
-
-/// An `extension_action` or `extension_open_popup` event, when every part of
-/// it is what the host sends: the extension's id, its own pages, bounded
-/// text and an icon of at most 128 pixels a side.
-fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
-    // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
-    // or the event is refused.
-    macro_rules! field {
-        ($change:ident, $key:literal, $read:expr) => {
-            match $change.get($key) {
-                None => None,
-                Some(Value::Null) => Some(None),
-                Some(value) => Some(Some($read(value)?)),
-            }
-        };
-    }
-    let id = value["id"].as_str().filter(|id| extension_id(id))?;
-    let own = |url: &str| {
-        url.len() <= 2048
-            && url
-                .strip_prefix("chrome-extension://")
-                .and_then(|rest| rest.strip_prefix(id))
-                .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if value["event"] == "extension_open_popup" {
-        let url = value["url"].as_str().filter(|url| own(url))?;
-        return Some(WebViewEvent::ExtensionOpenPopup {
-            id: id.into(),
-            url: url.into(),
-        });
-    }
-    let change = value["change"].as_object()?;
-    let text = |value: &Value| {
-        value
-            .as_str()
-            .filter(|text| text.len() <= 1024)
-            .map(str::to_owned)
-    };
-    let icon = |value: &Value| {
-        if let Some(path) = value["path"].as_str() {
-            return (path.starts_with('/') && path.len() <= 2048)
-                .then(|| super::ExtensionActionIcon::Path(path.into()));
-        }
-        let side = |key: &str| {
-            u32::try_from(value[key].as_u64()?)
-                .ok()
-                .filter(|side| (1..=128).contains(side))
-        };
-        let (width, height) = (side("width")?, side("height")?);
-        let length = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
-        let rgba = decode_base64_bounded(value["data"].as_str()?, length)?;
-        (rgba.len() == length).then_some(super::ExtensionActionIcon::Pixels {
-            width,
-            height,
-            rgba,
-        })
-    };
-    let popup = |value: &Value| {
-        value
-            .as_str()
-            .filter(|url| url.is_empty() || own(url))
-            .map(str::to_owned)
-    };
-    if change.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "badge" | "title" | "popup" | "enabled" | "icon"
-        )
-    }) {
-        return None;
-    }
-    Some(WebViewEvent::ExtensionAction {
-        id: id.into(),
-        global: value["global"].as_bool()?,
-        change: super::ExtensionActionChange {
-            badge: field!(change, "badge", text),
-            title: field!(change, "title", text),
-            popup: field!(change, "popup", popup),
-            enabled: field!(change, "enabled", Value::as_bool),
-            icon: field!(change, "icon", icon),
-        },
-    })
-}
-
-fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
-    Some(match event {
-        "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
-            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
-            origin: value["origin"].as_str()?.into(),
-            generation: wire_u64(&value["generation"])?,
-            blocked: wire_u64(&value["blocked"])?,
-            global_enabled: value["global_enabled"].as_bool()?,
-            excepted: value["excepted"].as_bool()?,
-            effective: value["effective"].as_bool()?,
-            security: value["security"].as_str()?.into(),
-            certificate_status: u32::try_from(value["certificate_status"].as_u64()?).ok()?,
-            tls_version: u32::try_from(value["tls_version"].as_u64()?).ok()?,
-            content_status: u32::try_from(value["content_status"].as_u64()?).ok()?,
-            subject: value["subject"].as_str()?.into(),
-            issuer: value["issuer"].as_str()?.into(),
-            expires: value["expires"].as_f64()?,
-            permissions: value["permissions"]
-                .as_object()?
-                .iter()
-                .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
-                .collect::<Option<Vec<_>>>()?,
-            can_reset: value["can_reset"].as_bool().unwrap_or(false),
-        }),
-        "site_result" => WebViewEvent::SiteResult {
-            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
-            origin: value["origin"].as_str()?.into(),
-            generation: wire_u64(&value["generation"])?,
-            action: value["action"].as_str()?.into(),
-            success: value["success"].as_bool()?,
-            message: value["message"].as_str()?.into(),
-        },
-        _ => return None,
-    })
-}
-
 fn decode_favicon(value: &Value) -> Option<WebViewEvent> {
     let width = u32::try_from(value["width"].as_u64()?).ok()?;
     let height = u32::try_from(value["height"].as_u64()?).ok()?;
@@ -2117,7 +1984,18 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
-        "extension_action" | "extension_open_popup" => decode_extension_event(value).is_some(),
+        "extension_action"
+        | "extension_open_popup"
+        | "extension_execute_action"
+        | "extension_notification"
+        | "extension_sign_in"
+        | "extension_omnibox_suggestions"
+        | "extension_omnibox_default"
+        | "extension_side_panel" => decode_extension_event(value).is_some(),
+        "extension_menu" => decode_extension_menu(value).is_some(),
+        "extension_permission_request" | "extension_permissions" => {
+            extension_permissions::decode(value).is_some()
+        }
         "devtools_result" => {
             value["request_id"]
                 .as_u64()
@@ -2127,7 +2005,8 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|body| body.len() <= 1024 * 1024)
         }
-        "context_closed" | "permission_closed" => valid_id(value),
+        "context_closed" | "permission_closed" | "js_dialog_closed" => valid_id(value),
+        "js_dialog" => decode_page_dialog(value).is_some(),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
             valid_id(value)
@@ -2210,6 +2089,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_some_and(|text| text.len() <= 1024 * 1024)
         }
         "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
+        "extension_download_open" => valid_id(value) && value["reveal"].is_boolean(),
         "find_selection" => {
             valid_id(value)
                 && ["x", "y", "width", "height"].iter().all(|key| {
@@ -2349,6 +2229,13 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::Find { id, text, .. } => {
             *id > 0 && i32::try_from(*id).is_ok() && text.len() <= 4096
         }
+        WebViewCommand::AnswerPageDialog { id, text, .. } => {
+            *id > 0
+                && i32::try_from(*id).is_ok()
+                && text
+                    .as_ref()
+                    .is_none_or(|text| text.len() <= super::MAX_PAGE_DIALOG_ANSWER)
+        }
         WebViewCommand::SetZoomLevel(level) => level.is_finite() && (-5.0..=9.0).contains(level),
         WebViewCommand::RequestNavigationHistory { request_id, .. }
         | WebViewCommand::PaintCapture { request_id } => {
@@ -2375,20 +2262,57 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             id,
             permissions,
             hosts,
+            scriptable,
             token,
+            commands,
         } => {
             extension_id(id)
                 && token
                     .as_ref()
                     .is_none_or(|token| (32..=128).contains(&token.len()))
-                && [permissions, hosts]
+                && [permissions, hosts, scriptable]
                     .iter()
                     .all(|list| list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048))
+                && commands.as_ref().is_none_or(|commands| {
+                    commands.is_object() && commands.to_string().len() <= 64 * 1024
+                })
+        }
+        WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted,
+        } => {
+            extension_id(id)
+                && [optional, granted].iter().all(|set| {
+                    [&set.permissions, &set.origins].iter().all(|list| {
+                        list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048)
+                    })
+                })
+        }
+        WebViewCommand::ExtensionPermissionDecision { request, .. } => {
+            *request > 0 && i32::try_from(*request).is_ok()
         }
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
-        | WebViewCommand::ExtensionClick { id } => extension_id(id),
+        | WebViewCommand::ExtensionClick { id }
+        | WebViewCommand::ExtensionOpenSidePanel { id } => extension_id(id),
+        WebViewCommand::ExtensionMenuChoice { id, key } => {
+            extension_id(id) && !key.is_empty() && key.len() <= 1024
+        }
         WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
+        WebViewCommand::ExtensionNotificationChosen {
+            id,
+            notification,
+            button,
+        } => {
+            extension_id(id) && notification.len() <= 500 && button.is_none_or(|button| button < 2)
+        }
+        WebViewCommand::ExtensionSignInPanel { id, flow } => {
+            extension_id(id) && *flow > 0 && i32::try_from(*flow).is_ok()
+        }
+        WebViewCommand::ExtensionOmnibox { id, input } => {
+            extension_id(id) && extension_omnibox::within_limits(input)
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2538,8 +2462,22 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
-        "extension_action" | "extension_open_popup" => decode_extension_event(value)?,
+        "extension_action"
+        | "extension_open_popup"
+        | "extension_execute_action"
+        | "extension_notification"
+        | "extension_sign_in"
+        | "extension_omnibox_suggestions"
+        | "extension_omnibox_default"
+        | "extension_side_panel" => decode_extension_event(value)?,
+        "extension_permission_request" | "extension_permissions" => {
+            extension_permissions::decode(value)?
+        }
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
+        "extension_download_open" => WebViewEvent::ExtensionDownloadOpen {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            reveal: value["reveal"].as_bool()?,
+        },
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             ok: value["ok"].as_bool()?,
@@ -2548,22 +2486,18 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "context_closed" => WebViewEvent::ContextMenuClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
+        "js_dialog" => WebViewEvent::PageDialog(decode_page_dialog(value)?),
+        "js_dialog_closed" => WebViewEvent::PageDialogClosed {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+        },
         "context_menu" => WebViewEvent::ContextMenu {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             x: value["x"].as_f64()?,
             y: value["y"].as_f64()?,
             link: value["link"].as_str()?.into(),
-            items: value["items"]
-                .as_array()?
-                .iter()
-                .map(|item| {
-                    Some((
-                        u32::try_from(item["id"].as_u64()?).ok()?,
-                        item["label"].as_str()?.into(),
-                    ))
-                })
-                .collect::<Option<Vec<_>>>()?,
+            items: decode_context_items(&value["items"], 1, &mut { MENU_ROWS })?,
         },
+        "extension_menu" => decode_extension_menu(value)?,
         "find_result" => WebViewEvent::FindResult {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             count: i32::try_from(value["count"].as_i64()?).ok()?,
@@ -2803,14 +2737,30 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             id,
             permissions,
             hosts,
+            scriptable,
             token,
+            commands,
         } => {
-            let mut command =
-                json!({"op":"extension_access","id":id,"permissions":permissions,"hosts":hosts});
+            let mut command = json!({"op":"extension_access","id":id,
+                "permissions":permissions,"hosts":hosts,"scriptable":scriptable});
             if let Some(token) = token {
                 command["token"] = json!(token);
             }
+            if let Some(commands) = commands {
+                command["commands"] = commands;
+            }
             command
+        }
+        WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted,
+        } => {
+            let set = |set: &super::ExtensionPermissionSet| json!({"permissions":set.permissions,"hosts":set.origins});
+            json!({"op":"extension_grants","id":id,"optional":set(&optional),"granted":set(&granted)})
+        }
+        WebViewCommand::ExtensionPermissionDecision { request, allow } => {
+            json!({"op":"extension_permission_decision","request":request,"allow":allow})
         }
         WebViewCommand::ExtensionForget { id } => json!({"op":"extension_forget","id":id}),
         WebViewCommand::ExtensionIdentity { id } => json!({"op":"extension_identity","id":id}),
@@ -2819,6 +2769,27 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             None => json!({"op":"extension_panel"}),
         },
         WebViewCommand::ExtensionClick { id } => json!({"op":"extension_click","id":id}),
+        WebViewCommand::ExtensionMenuChoice { id, key } => {
+            json!({"op":"extension_menu_action","id":id,"key":key})
+        }
+        WebViewCommand::ExtensionNotificationChosen {
+            id,
+            notification,
+            button,
+        } => match button {
+            Some(button) => json!({"op":"extension_notification_chosen","id":id,
+                "notification":notification,"button":button}),
+            None => {
+                json!({"op":"extension_notification_chosen","id":id,"notification":notification})
+            }
+        },
+        WebViewCommand::ExtensionSignInPanel { id, flow } => {
+            json!({"op":"extension_sign_in_panel","id":id,"flow":flow})
+        }
+        WebViewCommand::ExtensionOmnibox { id, input } => extension_omnibox::encode(&id, input),
+        WebViewCommand::ExtensionOpenSidePanel { id } => {
+            json!({"op":"extension_side_panel","id":id})
+        }
         WebViewCommand::DevTools {
             request_id,
             method,
@@ -2864,6 +2835,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ContextMenuAction { id, command } => {
             json!({"op":"context_action","id":id,"command":command})
         }
+        WebViewCommand::AnswerPageDialog { id, accept, text } => match text {
+            Some(text) => json!({"op":"js_dialog_reply","id":id,"accept":accept,"text":text}),
+            None => json!({"op":"js_dialog_reply","id":id,"accept":accept}),
+        },
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::ReportDocumentSize(enabled) => {
@@ -2902,6 +2877,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
     })
 }
 
+mod event_decoding;
+use event_decoding::{
+    decode_extension_event, decode_page_dialog, decode_site_event, valid_site_event,
+};
 #[cfg(test)]
 mod extension_tests;
 #[cfg(test)]

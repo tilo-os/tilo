@@ -1818,7 +1818,20 @@ impl Renderer {
     pub async fn new_async_deferring(
         device: &Device,
         options: RendererOptions,
+        deferral: PipelineDeferral,
+    ) -> Result<Self> {
+        Self::new_async_deferring_reporting(device, options, deferral, &mut || {}).await
+    }
+
+    /// [`Self::new_async_deferring`], calling `built` each time one of the
+    /// awaited pipelines is compiled (Tilo patch): a caller bounding how long
+    /// the start may take can tell a slow compile that keeps finishing
+    /// pipelines from one that stopped.
+    pub async fn new_async_deferring_reporting(
+        device: &Device,
+        options: RendererOptions,
         mut deferral: PipelineDeferral,
+        built: &mut dyn FnMut(),
     ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
         engine.initialize_gpu_timestamps(device);
@@ -1831,7 +1844,7 @@ impl Renderer {
         let shaders = shaders::full_shaders(device, &mut engine, &options);
         engine.set_pipeline_deferral(PipelineDeferral::None);
         let shaders = shaders?;
-        engine.build_shaders_async(device).await;
+        engine.build_shaders_async(device, built).await;
         Self::with_engine(device, options, engine, shaders)
     }
 

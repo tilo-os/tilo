@@ -1002,7 +1002,8 @@ impl ContextMenu {
     }
 
     /// A pick in a nested menu as `(row, nested row)`, exactly once. The
-    /// nested row's action has already run.
+    /// nested row's action has already run. For a pick in a menu nested
+    /// deeper still, the nested row is the one whose menu held it.
     pub fn take_submenu_selection(&mut self) -> Option<(usize, usize)> {
         self.submenu_selection.take()
     }
@@ -1025,7 +1026,7 @@ impl ContextMenu {
         let over = self
             .submenu
             .as_ref()
-            .is_some_and(|(_, menu)| menu.contains([p.x, p.y]));
+            .is_some_and(|(_, menu)| menu.contains_nested([p.x, p.y]));
         let key = match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -1068,7 +1069,8 @@ impl ContextMenu {
         true
     }
 
-    /// Drain a pick the nested menu just made: the whole menu closes.
+    /// Drain a pick the nested menu just made, or one in a menu nested in
+    /// it: the whole menu closes.
     fn drain_submenu(&mut self) {
         let Some((row, menu)) = self.submenu.as_mut() else {
             return;
@@ -1077,9 +1079,21 @@ impl ContextMenu {
         if let Some(pick) = menu.take_selection() {
             self.submenu_selection = Some((row, pick));
             self.close();
+        } else if let Some((deeper, _)) = menu.take_submenu_selection() {
+            self.submenu_selection = Some((row, deeper));
+            self.close();
         } else if !menu.is_open() {
             self.close_submenu();
         }
+    }
+
+    /// Whether `point` is over this menu or a menu nested in it.
+    fn contains_nested(&self, point: [f64; 2]) -> bool {
+        self.contains(point)
+            || self
+                .submenu
+                .as_ref()
+                .is_some_and(|(_, menu)| menu.contains_nested(point))
     }
 
     /// Returns `Some(idx)` exactly once per selection, then `None`. The
@@ -1823,6 +1837,10 @@ impl Widget for ContextMenu {
         self.rect
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        !self.open
+    }
+
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // Menu items are painted rows rather than child widgets, so publish
@@ -1892,7 +1910,7 @@ impl Widget for ContextMenu {
             AccessNode::new(Role::Menu)
                 .with_state(AccessState {
                     expanded: Some(self.open),
-                    hidden: !self.open,
+                    hidden: self.accessibility_hidden(),
                     ..Default::default()
                 })
                 .with_children(children),
@@ -3153,6 +3171,62 @@ mod nested_and_anchored_tests {
         let node = Widget::accessibility(&m).unwrap();
         assert_eq!(node.children[1].state.expanded, Some(false));
         assert_eq!(node.children[0].description.as_deref(), Some("Ctrl+O"));
+    }
+
+    /// A menu nested in a nested menu (a password manager's logins under
+    /// Autofill under its own item) follows the pointer and takes a pick.
+    #[test]
+    fn a_pick_two_menus_deep_runs_and_closes_the_whole_menu() {
+        let _settled = crate::motion::testing::settled();
+        let fired = Arc::new(AtomicU32::new(0));
+        let login = Arc::clone(&fired);
+        let mut m = ContextMenu::with_items(vec![
+            MenuItem::action("Reload", || {}),
+            MenuItem::submenu(
+                "Passwords",
+                vec![
+                    MenuItem::action("Generate", || {}),
+                    MenuItem::submenu(
+                        "Fill in",
+                        vec![MenuItem::action("Personal", move || {
+                            login.fetch_add(1, Ordering::SeqCst);
+                        })],
+                    ),
+                ],
+            ),
+        ]);
+        m.open_anchored(Rect::new(100.0, 40.0, 140.0, 72.0), WINDOW);
+        paint(&mut m);
+        let row = m.item_rect(1).unwrap();
+        dispatch(&mut m, &cursor_at(row.center()));
+        paint(&mut m);
+        let row = m
+            .submenu
+            .as_ref()
+            .and_then(|(_, menu)| menu.item_rect(1))
+            .unwrap();
+        dispatch(&mut m, &cursor_at(row.center()));
+        paint(&mut m);
+        let deepest = m
+            .submenu
+            .as_ref()
+            .and_then(|(_, menu)| menu.submenu.as_ref())
+            .map(|(_, menu)| menu)
+            .expect("hover opens the menu nested in the nested one");
+        let target = deepest.item_rect(0).unwrap();
+        assert!(
+            !m.submenu
+                .as_ref()
+                .unwrap()
+                .1
+                .contains([target.center().x, target.center().y]),
+            "fixture: the row is outside the first nested menu"
+        );
+        dispatch(&mut m, &cursor_at(target.center()));
+        dispatch(&mut m, &mouse_press());
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(m.take_submenu_selection(), Some((1, 1)));
+        assert!(!m.is_open(), "the whole menu closes");
     }
 
     /// A filter's value lists how many results share it at the row's end,

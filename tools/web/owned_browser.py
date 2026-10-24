@@ -184,4 +184,12 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    code = main()
+    # Interpreter shutdown puts the default TERM and INT actions back. A close
+    # request landing then (the caller sends TERM after a grace period, which
+    # a loaded host can make overlap a clean exit) would end the supervisor by
+    # that signal after it proved every descendant reaped, and its caller
+    # reads an exit by signal as a failed shutdown. Every descendant is
+    # already reaped here, so the request has nothing left to stop.
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    sys.exit(code)

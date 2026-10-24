@@ -11,5 +11,7 @@
 mod render_smoke;
 #[path = "shots_smoke.rs"]
 mod shots_smoke;
+#[path = "terminal_row.rs"]
+mod terminal_row;
 #[path = "touch.rs"]
 mod touch;

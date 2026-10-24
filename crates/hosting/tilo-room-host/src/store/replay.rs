@@ -106,6 +106,28 @@ impl Drop for CaptureLease {
         }
     }
 }
+/// What classifying a retained lineage read of its current generation
+/// ([`WorkspaceStore::leaves_out`]), for a capture to list without opening
+/// the lineage's CURRENT again.
+enum CurrentRead {
+    /// Classifying the lineage read nothing: it was known already.
+    Unread,
+    /// The lineage's current generation, `None` while its first checkpoint
+    /// is staged but not committed.
+    Read(Option<PathBuf>),
+}
+
+impl CurrentRead {
+    /// The current generation of `lineage`, read now unless classifying it
+    /// did.
+    fn or_read(self, lineage: &Path) -> Result<Option<PathBuf>, StoreError> {
+        match self {
+            Self::Read(read) => Ok(read),
+            Self::Unread => Ok(retained::current(lineage)?),
+        }
+    }
+}
+
 impl WorkspaceStore {
     /// Wake `owner` when the last capture lease ends with collections
     /// waiting for it.
@@ -147,34 +169,43 @@ impl WorkspaceStore {
     /// lineages it leaves out: a room keeps far more lineages than a
     /// newcomer is replayed (each author's part of every record, on-demand
     /// ones included), and stepping over one is not a step of work.
+    /// With it, the lineage's current generation when classifying it read
+    /// that ([`Self::leaves_out`]), for the capture to list.
     fn next_listed(
         &self,
         outer: &mut Option<fs::ReadDir>,
         phase: u8,
         every_record: bool,
-    ) -> Result<Option<fs::DirEntry>, StoreError> {
+    ) -> Result<Option<(fs::DirEntry, CurrentRead)>, StoreError> {
         loop {
             let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
                 return Ok(None);
             };
             let entry = entry?;
+            let mut current = CurrentRead::Unread;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
                 if self.leaves_out_member_layout(&name)
-                    || self.leaves_out(&name, &entry.path())?
+                    || self.leaves_out(&name, &entry.path(), &mut current)?
                     || (!every_record && self.leaves_out_on_demand(&name)?)
                 {
                     continue;
                 }
             }
-            return Ok(Some(entry));
+            return Ok(Some((entry, current)));
         }
     }
 
     /// Whether a capture leaves the retained lineage `name` at `lineage`
     /// out. A lineage is classified by its checkpoint once, then from
-    /// memory: no capture reads it again.
-    fn leaves_out(&self, name: &std::ffi::OsStr, lineage: &Path) -> Result<bool, StoreError> {
+    /// memory: no capture reads it again. The lineage's current generation,
+    /// when this read it, goes to `current`, for the capture to list.
+    fn leaves_out(
+        &self,
+        name: &std::ffi::OsStr,
+        lineage: &Path,
+        current: &mut CurrentRead,
+    ) -> Result<bool, StoreError> {
         /// A larger checkpoint is no access request or acknowledgement.
         const MAX_CLASSIFIED_BYTES: u64 = 1024 * 1024;
         if !self.capture_leases.steward_here.load(Ordering::SeqCst) {
@@ -191,7 +222,9 @@ impl WorkspaceStore {
         }
         // A lineage with no generation yet is not classified: its first
         // frame is still being retained.
-        let Some(active) = retained::current(lineage)? else {
+        let read = retained::current(lineage)?;
+        *current = CurrentRead::Read(read.clone());
+        let Some(active) = read else {
             return Ok(false);
         };
         let checkpoint = active.join("checkpoint.delta");
@@ -362,6 +395,9 @@ pub struct ReplaySummary {
     /// Of `total_frames`, those replayed from the device's pending queue
     /// rather than retained history.
     pub pending_frames: u64,
+    /// Pending entries the replay's cleanup unlinks once it is written: none
+    /// needs the owner's cleanup turn ([`WorkspaceStore::cleanup_replay_step`]).
+    pub cleanup_entries: u64,
 }
 /// A caller shares this budget across all owners; the batch keeps its permit
 /// through writes, including `transport::encode`'s payload + output overlap.
@@ -718,6 +754,8 @@ pub struct ReplaySnapshot {
     ready: bool,
     count: u64,
     pending_count: u64,
+    /// Entries in `cleanup.manifest`.
+    cleanup_count: u64,
     read_offset: u64,
     cleanup_offset: u64,
     batch_number: u64,
@@ -755,7 +793,7 @@ impl ReplaySnapshot {
             }
             if &winner != receipt {
                 if meta.pending {
-                    write_meta(&mut self.cleanup, &meta)?;
+                    self.clean_up(&meta)?;
                 }
                 return Ok(());
             }
@@ -856,6 +894,17 @@ impl ReplaySnapshot {
         });
         Ok(())
     }
+    /// Have the replay's cleanup unlink the pending entry `meta` once the
+    /// replay is written. A final cut's held commits are not unlinked one by
+    /// one: they are its session's alone, no later cut reads them, and they
+    /// go with the catch-up's held directory once it is written.
+    fn clean_up(&mut self, meta: &Meta) -> Result<(), StoreError> {
+        if self.held_root.is_some() && meta.source.parent() == self.held_root.as_deref() {
+            return Ok(());
+        }
+        write_meta(&mut self.cleanup, meta)?;
+        increment(&mut self.cleanup_count)
+    }
     fn winner_path(&self, group: &str) -> PathBuf {
         self.root.join("index").join(format!(
             "{}.winner",
@@ -901,7 +950,7 @@ impl ReplaySnapshot {
             held,
         } = candidate;
         if meta.pending {
-            write_meta(&mut self.cleanup, &meta)?;
+            self.clean_up(&meta)?;
         }
         if !duplicate {
             if !meta.pending || continuity.is_some() {
@@ -952,6 +1001,28 @@ impl WorkspaceStore {
             return Err(invalid("held catch-up outside the store's work"));
         }
         self.start_replay_capture_at(id, device, Some(held.to_owned()))
+    }
+    /// Move the work directory of replay `id`, written and cleaned up, aside
+    /// under a fresh name, so its catch-up's final cut can take the name over
+    /// at once; the returned discard removes it wherever it is stepped.
+    /// Discarded in place, in the owner's turn, it unlinked every pin and
+    /// index of the first replay in front of every queued job.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be renamed or listed.
+    pub(crate) fn retire_replay_work(&self, id: ReplayId) -> Result<WorkDiscard, StoreError> {
+        let work = self.root.join(WORK_DIR);
+        let current = work.join(format!("replay-{}", hex::encode(id.0)));
+        let retired = work.join(format!(
+            "replay-{}",
+            hex::encode(rand::random::<[u8; 16]>())
+        ));
+        match fs::rename(&current, &retired) {
+            Ok(()) => WorkDiscard::new(retired),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => WorkDiscard::new(current),
+            Err(error) => Err(error.into()),
+        }
     }
     fn start_replay_capture_at(
         &self,
@@ -1014,7 +1085,7 @@ impl WorkspaceStore {
     /// Invoke under one owner operation until Done; later mutations must not
     /// interleave before every selected source has its immutable hardlink,
     /// or, for a retained frame, is listed under the capture's lease (it is
-    /// pinned when the snapshot is prepared: [`CaptureLeases`]).
+    /// pinned when the snapshot is prepared: `CaptureLeases`).
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
@@ -1127,6 +1198,7 @@ impl WorkspaceStore {
                     ready: false,
                     count: 0,
                     pending_count: 0,
+                    cleanup_count: 0,
                     read_offset: 0,
                     cleanup_offset: 0,
                     batch_number: 0,
@@ -1244,7 +1316,7 @@ impl WorkspaceStore {
                         }
                     }
                 }
-            } else if let Some(entry) =
+            } else if let Some((entry, current)) =
                 self.next_listed(&mut build.outer, build.phase, build.every_record)?
             {
                 let name = entry.file_name();
@@ -1252,39 +1324,30 @@ impl WorkspaceStore {
                 match build.phase {
                     2 if kind.is_dir() => {
                         let lineage = entry.path();
-                        if !self.leaves_out(&name, &lineage)?
-                            && (build.every_record || !self.leaves_out_on_demand(&name)?)
+                        // `next_listed` stepped over the lineages a capture
+                        // leaves out. Counted: lineages listed from memory
+                        // and from their generation.
+                        build.child = if let Some((generation, frames)) = self.known_listing(&name)
                         {
-                            // Counted: lineages listed from memory and
-                            // from their generation.
-                            build.child =
-                                if let Some((generation, frames)) = self.known_listing(&name) {
-                                    crate::timing::window(
-                                        "capture.lineage_known",
-                                        crate::timing::start(),
-                                    );
-                                    Some(Lineage::Known {
-                                        channel: name,
-                                        generation,
-                                        frames: frames.into_iter(),
-                                    })
-                                } else if let Some(active) = retained::current(&lineage)? {
-                                    crate::timing::window(
-                                        "capture.lineage_read",
-                                        crate::timing::start(),
-                                    );
-                                    Some(Lineage::Reading {
-                                        channel: name,
-                                        entries: fs::read_dir(&active)?,
-                                        generation: active,
-                                        learned: Some(Vec::new()),
-                                    })
-                                } else {
-                                    // A lineage whose first checkpoint is staged
-                                    // but not committed yet.
-                                    None
-                                };
-                        }
+                            crate::timing::window("capture.lineage_known", crate::timing::start());
+                            Some(Lineage::Known {
+                                channel: name,
+                                generation,
+                                frames: frames.into_iter(),
+                            })
+                        } else if let Some(active) = current.or_read(&lineage)? {
+                            crate::timing::window("capture.lineage_read", crate::timing::start());
+                            Some(Lineage::Reading {
+                                channel: name,
+                                entries: fs::read_dir(&active)?,
+                                generation: active,
+                                learned: Some(Vec::new()),
+                            })
+                        } else {
+                            // A lineage whose first checkpoint is staged
+                            // but not committed yet.
+                            None
+                        };
                         None
                     }
                     3 if kind.is_file() && name.to_string_lossy().ends_with(".delta") => {
@@ -1440,6 +1503,7 @@ impl WorkspaceStore {
             return Ok(Step::Done(ReplaySummary {
                 total_frames: snapshot.count,
                 pending_frames: snapshot.pending_count,
+                cleanup_entries: snapshot.cleanup_count,
             }));
         }
         snapshot.stats.last_step_work = 0;
@@ -1570,6 +1634,7 @@ impl WorkspaceStore {
                 return Ok(Step::Done(ReplaySummary {
                     total_frames: snapshot.count,
                     pending_frames: snapshot.pending_count,
+                    cleanup_entries: snapshot.cleanup_count,
                 }));
             }
         }

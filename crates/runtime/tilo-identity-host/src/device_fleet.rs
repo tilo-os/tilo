@@ -196,7 +196,7 @@ impl DeviceFleetStore {
     /// action and broker call. The verified fleet is served from memory while
     /// none of its backing files (the fleet file and the home-peer registry)
     /// changed: one `stat` each instead of reading, parsing and verifying
-    /// them. Every writer replaces the fleet file by rename and [`Self::save`]
+    /// them. Every writer replaces the fleet file by rename and `Self::save`
     /// drops the entry, and a file another process rewrites in place changes
     /// its length or modification time, so a revocation is seen by the very
     /// next call. A fleet whose files changed within the last two seconds is

@@ -2,7 +2,7 @@
 //!
 //! [`PaintSource`] runs where the engine runs. It asks the engine for its
 //! layout whenever the page may have changed, converts it into a
-//! [`Frame`](tilo_paint_stream::Frame), resolves image URLs to content hashes
+//! [`Frame`], resolves image URLs to content hashes
 //! (reading the bytes from the engine's own cache, never fetching again) and
 //! emits the frame with the [`Patch`] from the previous one. [`PaintEngine`]
 //! wraps any [`WebViewEngine`] with one, so a WebView draws the list.

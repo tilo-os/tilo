@@ -33,9 +33,6 @@ pub enum Action {
     TogglePlay,
     /// Ask for the open video's stream again after no source played it.
     RetryPlayback,
-    /// Skip to `to` seconds, offered for a `Show`-mode segment the playhead
-    /// is currently inside.
-    SkipSegment(f64),
     SubmitSearch,
     Share(VideoId),
     /// A change to the shared library, submitted as it is through the

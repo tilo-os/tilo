@@ -6,7 +6,7 @@
 //! only the desktop, which changes when the wallpaper, the displays or the
 //! theme's blur do. The desktop's painter publishes it blurred once per
 //! such change ([`publish`], [`blurred_cover`]); a strip fills its body
-//! with that picture and the material's tint ([`fill`]). The strip is then
+//! with that picture and the material's tint (`fill`). The strip is then
 //! an ordinary image fill: it encodes the same while nothing behind it
 //! changed, a hover on a tab damages only the tab, and a presenter that
 //! moves a strip's retained pixels during a pan moves its frosting with

@@ -762,6 +762,101 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
 }
 
 #[test]
+fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 2);
+    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+    let me = app.me.id.clone();
+    let roster = &mut app.native_voice.snapshot.rosters[0];
+    roster.people.push(me.clone());
+    roster.people.sort();
+    roster.muted = vec![second.clone()];
+    app.refresh_native_streams();
+    let muted = |app: &ChatApp, person: &str| {
+        app.voice_in("c_huddle")
+            .iter()
+            .find(|member| member.user == person)
+            .expect("in the call")
+            .muted
+    };
+    assert!(muted(&app, &second), "the room says they are muted");
+    assert!(!muted(&app, &first));
+    // The room has not heard this person's mute yet: their own word holds.
+    app.call.muted = true;
+    app.refresh_native_streams();
+    assert!(muted(&app, &me));
+    app.call.muted = false;
+    app.refresh_native_streams();
+    assert!(!muted(&app, &me));
+    render_frame(&mut app, 1280.0, 800.0);
+}
+
+#[test]
+fn deafen_is_in_the_bar_and_asks_the_service() {
+    let (mut app, mut doc, mut live) = connected_call();
+    render_frame(&mut app, 1280.0, 720.0);
+    let deafen = || {
+        ui::window_toolbar::declared()
+            .and_then(|toolbar| {
+                toolbar
+                    .actions
+                    .into_iter()
+                    .find(|action| action.id == "call-deafen")
+            })
+            .expect("deafen is at hand while in a call")
+    };
+    assert_eq!(deafen().icon, "headphones");
+    app.on_hit(Hit::CallDeafen, &mut ui::widget::Edits::lend(&mut doc));
+    assert!(
+        app.call.deafened && app.call.muted,
+        "deafened and muted at once"
+    );
+    live.deafened = true;
+    let sent = answer_voice(&mut app, &live);
+    assert!(sent.contains(&ui::native_media::Command::SetDeafened { deafened: true }));
+    assert!(app.call.deafened);
+    render_frame(&mut app, 1280.0, 720.0);
+    assert_eq!(
+        deafen().icon,
+        "headphone-off",
+        "the bar says how to hear again"
+    );
+    app.on_hit(Hit::CallDeafen, &mut ui::widget::Edits::lend(&mut doc));
+    live.deafened = false;
+    let sent = answer_voice(&mut app, &live);
+    assert!(sent.contains(&ui::native_media::Command::SetDeafened { deafened: false }));
+    assert!(!app.call.deafened);
+}
+
+#[test]
+fn everyone_sees_who_is_deafened() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 2);
+    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+    let roster = &mut app.native_voice.snapshot.rosters[0];
+    roster.muted = vec![first.clone(), second.clone()];
+    roster.deafened = vec![second.clone()];
+    app.refresh_native_streams();
+    let member = |app: &ChatApp, person: &str| {
+        let member = app
+            .voice_in("c_huddle")
+            .iter()
+            .find(|member| member.user == person)
+            .expect("in the call");
+        (member.muted, member.deafened)
+    };
+    assert_eq!(
+        member(&app, &second),
+        (true, true),
+        "the room says they hear nothing"
+    );
+    assert_eq!(member(&app, &first), (true, false));
+    render_frame(&mut app, 1280.0, 800.0);
+}
+
+#[test]
 fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 2);
@@ -876,6 +971,63 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
         mute_name(&mut app).as_deref(),
         Some("No microphone"),
         "the window bar's microphone names why"
+    );
+}
+
+#[test]
+fn someone_alone_in_a_room_can_still_unmute_and_leave_the_call() {
+    let (mut app, _doc, _live) = connected_call();
+    // A fresh room: nobody else has written, so Chat knows no one else.
+    let me = app.me.id.clone();
+    app.users.retain(|user| user.id == me);
+    assert!(!app.has_other_collaborator());
+    render_frame(&mut app, 1280.0, 720.0);
+    let ids: Vec<String> = ui::window_toolbar::declared()
+        .map(|toolbar| {
+            toolbar
+                .actions
+                .into_iter()
+                .map(|action| action.id)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        ids.iter().any(|id| id == "call-mute") && ids.iter().any(|id| id == "call-leave"),
+        "the call's microphone and Leave are at hand in any room: {ids:?}"
+    );
+}
+
+#[test]
+fn a_browser_that_cannot_join_calls_says_so_plainly() {
+    let (mut app, mut doc) = app_with_doc();
+    app.on_hit(
+        Hit::Channel("c_standup".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    let mut refused = ui::native_media::Snapshot::unavailable();
+    refused.state = ui::native_media::State::Ended;
+    refused.issue = Some(ui::native_media::Issue::Unsupported);
+    answer_voice(&mut app, &refused);
+    render_frame(&mut app, 1280.0, 720.0);
+    let said = crate::i18n::t("chat-call-issue-unsupported");
+    assert!(said.contains("browser"), "{said}");
+    assert_eq!(app.media_error.as_deref(), Some(said.as_str()));
+    let root = app.accessibility().expect("chat semantics");
+    let status = root
+        .children
+        .iter()
+        .find(|node| {
+            matches!(node.role, ui::a11y::Role::StaticText)
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("in call"))
+        })
+        .and_then(|node| node.description.clone());
+    assert_eq!(
+        status.as_deref(),
+        Some(said.as_str()),
+        "the call panel says why, not a call that never connects"
     );
 }
 

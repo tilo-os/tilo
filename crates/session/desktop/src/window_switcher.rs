@@ -214,12 +214,6 @@ impl WindowApp {
                     glyph: Icon::AppWindow,
                 }
             }
-            TileContent::WorkspaceActivity => Self {
-                key: "workspace-activity".into(),
-                kind,
-                icon: None,
-                glyph: Icon::AppWindow,
-            },
         }
     }
 }

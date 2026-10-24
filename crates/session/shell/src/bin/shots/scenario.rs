@@ -13,7 +13,7 @@
 //!   - **window mode** — runs the scenario as a "pre-roll" before
 //!     handing control to the live winit event loop.
 //!
-//! Built-in catalogue is the [`SCENARIOS`] table at the bottom: name,
+//! Built-in catalogue is the [`scenarios()`] table at the bottom: name,
 //! description, and an action list. `--list-scenarios` and `--scenario NAME`
 //! read that table. The apply engine above stays code; the scenes are data.
 
@@ -220,25 +220,8 @@ pub enum Action {
         from: u32,
         to: u32,
     },
-    /// Seed real collaborative room changes and open one of the two history
-    /// surfaces. `explore = false` captures outcome-first Catch up;
-    /// `true` captures the full three-panel browser.
-    SeedRoomActivity {
-        explore: bool,
-    },
-    /// Focus a recap outcome already present in the responsive render. Enter
-    /// remains the production activation path.
-    FocusFirstRoomActivityWorkSession,
-    /// Seed two context-grouped sessions without writing named ranges. Used
-    /// to prove the first human seam correction materializes shared bounds.
-    SeedAutomaticWorkSessions,
-    ExpandAutomaticWorkSession,
-    CorrectAutomaticWorkSession,
-    /// Switch the seeded causal history into workspace replay.
-    ShowRoomActivityReplay,
-    /// Narrow the open activity surface to Ada's real authored changes so a
-    /// collaboration proof cannot accidentally show only the local author.
-    FilterRoomActivityToAda,
+    /// Seed real collaborative room changes, a second person's among them.
+    SeedRoomHistory,
     /// Add two present collaborators and representative shares to the active
     /// workspace through the production capability path.
     SeedSharedWorkspace,
@@ -309,8 +292,6 @@ pub enum Action {
     /// The driver retains the same identity and capability record rather
     /// than replacing the row with a screenshot-only fake.
     AdmitInvitedCollaborator,
-    /// Select a real timeline row so provenance and comparison are exercised.
-    SelectRoomActivityEntry(usize),
     /// Apply a real forward revert to an earlier room-history entry.
     RevertRoomActivity,
     /// Move the named live collaborator to Files and focus that native app,
@@ -538,6 +519,8 @@ pub enum Action {
     /// A player in another workspace and three people here, for the desk
     /// widgets.
     SeedDesk,
+    /// Quick Settings open on its root page.
+    OpenQuickSettings,
     /// A key reached the focused window.
     DeskTyping,
     /// Super alone: tapped, held, released.
@@ -927,6 +910,9 @@ fn apply_motion_cue(driver: &mut ShellDriver, cue: &MotionCue) {
 fn apply_desk(driver: &mut ShellDriver, action: &Action) {
     match action {
         Action::SeedDesk => driver.seed_desk_for_shots(),
+        Action::OpenQuickSettings => {
+            driver.with_chrome(ShellDriver::seed_laptop_quick_settings);
+        }
         Action::DeskTyping => driver.desk_typing_for_shots(),
         Action::Super(gesture) => driver.super_gesture_for_shots(*gesture),
         Action::SetTextCaret(caret) => driver.set_text_caret_for_shots(*caret),
@@ -1125,27 +1111,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
         Action::ReduceTransparency(on) => driver.set_reduce_transparency(*on),
-        Action::SeedRoomActivity { explore } => {
-            driver.seed_room_activity_for_shots(*explore);
-        }
-        Action::FocusFirstRoomActivityWorkSession => assert!(
-            driver.focus_first_room_activity_work_session_for_shots(),
-            "scenario: the settled recap must render a focusable work session"
-        ),
-        Action::SeedAutomaticWorkSessions => driver.seed_automatic_work_sessions_for_shots(),
-        Action::ExpandAutomaticWorkSession => assert!(
-            driver.expand_automatic_work_session_for_shots(),
-            "scenario: automatic work session must be available to expand"
-        ),
-        Action::CorrectAutomaticWorkSession => assert!(
-            driver.correct_automatic_work_session_for_shots(),
-            "scenario: automatic work-session seam correction must succeed"
-        ),
-        Action::ShowRoomActivityReplay => driver.show_room_activity_replay_for_shots(),
-        Action::FilterRoomActivityToAda => assert!(
-            driver.filter_room_activity_to_ada_for_shots(),
-            "scenario: attributed history requires a real change authored by Ada"
-        ),
+        Action::SeedRoomHistory => driver.seed_room_history_for_shots(),
         Action::SeedSharedWorkspace => driver.seed_shared_workspace_for_shots(),
         Action::SeedLauncherFresh => driver.seed_launcher_fresh_for_shots(),
         Action::SeedLauncherBusy => driver.seed_launcher_busy_for_shots(),
@@ -1183,9 +1149,6 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             driver.admit_invited_collaborator_for_shots(),
             "scenario: collaboration journey cannot show live editing before Ada's pending invite is admitted"
         ),
-        Action::SelectRoomActivityEntry(index) => {
-            driver.select_room_activity_entry(*index);
-        }
         Action::RevertRoomActivity => assert!(
             driver.revert_room_activity_for_shots(),
             "scenario: collaboration journey cannot label a frame 'reverted' without a forward revert"
@@ -2126,11 +2089,6 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
                 .collect()
         })
         .collect();
-    let room_activity_view = match host.room_activity().view() {
-        shell::shell::room_activity::ActivityView::CatchUp => "catch_up",
-        shell::shell::room_activity::ActivityView::Explore => "explore",
-        shell::shell::room_activity::ActivityView::Replay => "replay",
-    };
     serde_json::json!({
         "scenario_step": "",
         "active_workspace_id": active,
@@ -2141,11 +2099,6 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         "overlay_ws_settings": st.overlays.ws_settings,
         "overlay_collaborators": st.overlays.collaborators,
         "overlay_room_activity": st.overlays.room_activity,
-        "workspace_activity_open":
-            shell::shell::tab_binding::active_workspace_activity_tab(&st.tree()).is_some(),
-        "room_activity_view": room_activity_view,
-        "room_activity_compared": host.room_activity().has_comparison(),
-        "room_activity_focus": host.room_activity().focused_control_label().unwrap_or_default(),
         "qs_level": qs_level,
         "qs_section": format!("{:?}", st.quick_settings.section),
         "ws_settings_tab": ws_tab,
@@ -2681,6 +2634,19 @@ fn build_scenarios() -> Vec<Scenario> {
                 ),
                 Action::Relayout,
                 Action::Snapshot("12-tour-start"),
+            ],
+        },
+        Scenario {
+            name: "now_playing_cards",
+            description: "What plays, as Quick Settings and the lock screen show it.",
+            actions: vec![
+                Action::Step(film::Step::NowPlaying),
+                Action::OpenQuickSettings,
+                Action::Wait(30),
+                Action::Relayout,
+                Action::Snapshot("01-quick-settings"),
+                Action::SetLockVisual(super::driver::LockVisualState::NowPlaying),
+                Action::Snapshot("02-lock-screen"),
             ],
         },
         Scenario {
@@ -4004,7 +3970,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "collaboration_product_proof",
-            description: "Prove solo work, a pending invite, live editing, attributed history, forward revert, and cross-app presence.",
+            description: "Prove solo work, a pending invite, live editing, a forward revert, and cross-app presence.",
             actions: vec![
                 Action::Wait(4),
                 Action::Relayout,
@@ -4015,18 +3981,13 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::AdmitInvitedCollaborator,
                 Action::Wait(2),
                 Action::Snapshot("03-ada-editing-notes"),
-                Action::SeedRoomActivity { explore: true },
-                Action::FilterRoomActivityToAda,
-                Action::Wait(2),
-                Action::Snapshot("04-attributed-history"),
-                Action::SelectRoomActivityEntry(0),
-                Action::Snapshot("05-history-comparison"),
+                Action::SeedRoomHistory,
                 Action::RevertRoomActivity,
                 Action::Wait(18),
-                Action::Snapshot("06-reverted-forward"),
+                Action::Snapshot("04-reverted-forward"),
                 Action::ShowCollaboratorInFiles,
                 Action::Wait(2),
-                Action::Snapshot("07-ada-in-files"),
+                Action::Snapshot("05-ada-in-files"),
             ],
         },
         Scenario {
@@ -4441,7 +4402,7 @@ fn build_scenarios() -> Vec<Scenario> {
         },
         Scenario {
             name: "room_activity_from_palette",
-            description: "Search 'workspace activity' in the palette and open the sheet from the result.",
+            description: "Search 'workspace activity' in the palette and find the command that opens it.",
             actions: vec![
                 Action::Snapshot("01-desktop"),
                 Action::OpenPalette,
@@ -4449,112 +4410,6 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::Type("workspace activity"),
                 Action::Wait(2),
                 Action::Snapshot("02-palette-result"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(20),
-                Action::Snapshot("03-room-activity-open"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_catch_up_keyboard",
-            description: "Open the tiled recap, expand a high-level outcome, then follow it into Full history.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: false },
-                // Opening a tiled window first reconciles it into the retained
-                // group row, then eases the focused group into view. Capture the
-                // settled destination, not the first frame at the strip edge.
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("01-recap"),
-                Action::Modifiers(ModifiersState::SUPER | ModifiersState::SHIFT),
-                Action::Key(Key::Named(NamedKey::ArrowLeft)),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Modifiers(ModifiersState::SUPER),
-                Action::Key(Key::Character("-".into())),
-                Action::Modifiers(ModifiersState::empty()),
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("02-window-reordered-and-resized"),
-                Action::FocusFirstRoomActivityWorkSession,
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(12),
-                Action::Relayout,
-                Action::Snapshot("03-outcome-expanded"),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Relayout,
-                Action::Snapshot("04-full-history"),
-            ],
-        },
-        Scenario {
-            name: "automatic_work_session_correction",
-            description: "Expand two automatically grouped work sessions, then move their seam and persist the human correction.",
-            actions: vec![
-                Action::SeedAutomaticWorkSessions,
-                Action::Relayout,
-                Action::Snapshot("01-automatic-sessions"),
-                Action::ExpandAutomaticWorkSession,
-                Action::Relayout,
-                Action::Snapshot("02-automatic-seam"),
-                Action::CorrectAutomaticWorkSession,
-                Action::Relayout,
-                Action::Snapshot("03-human-correction-shared"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_explore_keyboard",
-            description: "Open responsive Explorer and traverse lenses; capture at wide and narrow sweep viewports.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: true },
-                // As in the recap: let the strip ease the new group into view.
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("01-explorer-three-panel"),
-                Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Snapshot("02-explorer-browse-focus-visible"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_explore_detail_compare",
-            description: "Select a real history action, show provenance, and materialize its exact comparison.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: true },
-                Action::SelectRoomActivityEntry(0),
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Key(Key::Named(NamedKey::Home)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::ArrowRight)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Snapshot("01-selected-detail"),
-                Action::Key(Key::Named(NamedKey::End)),
-                Action::Key(Key::Named(NamedKey::ArrowLeft)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(2),
-                Action::Snapshot("02-exact-comparison"),
-            ],
-        },
-        Scenario {
-            name: "room_activity_replay",
-            description: "Replay exact causal workspace layouts with checkpoint controls and presence trails.",
-            actions: vec![
-                Action::SeedRoomActivity { explore: true },
-                Action::ShowRoomActivityReplay,
-                Action::Relayout,
-                Action::Wait(20),
-                Action::Snapshot("01-replay-checkpoint"),
-                Action::Key(Key::Named(NamedKey::End)),
-                Action::Key(Key::Named(NamedKey::Enter)),
-                Action::Wait(3),
-                Action::Snapshot("02-replay-playing"),
             ],
         },
         Scenario {
@@ -5419,6 +5274,7 @@ fn browser_slots() -> ui::window_toolbar::WindowToolbar {
         navigates: false,
         toggles: false,
         destructive: false,
+        labelled: false,
     };
     WindowToolbar {
         sidebar: None,
@@ -5465,6 +5321,7 @@ fn files_slots() -> ui::window_toolbar::WindowToolbar {
         navigates: false,
         toggles: false,
         destructive: false,
+        labelled: false,
     };
     let segment = |label: &str, value: &str| LocationSegment {
         label: label.into(),
@@ -6071,10 +5928,8 @@ mod tests {
                     "01-solo-workspace",
                     "02-invite-pending",
                     "03-ada-editing-notes",
-                    "04-attributed-history",
-                    "05-history-comparison",
-                    "06-reverted-forward",
-                    "07-ada-in-files",
+                    "04-reverted-forward",
+                    "05-ada-in-files",
                 ],
                 "the proof must retain every product state rather than skipping from invite to history"
             );
@@ -6096,7 +5951,6 @@ mod tests {
             let mut driver = ShellDriver::new((1600, 900));
             let mut sink = CollaborationProofSink {
                 pending_invite_is_durable: false,
-                ada_activity_is_visible: false,
                 forward_revert_is_announced: false,
                 ada_is_active_in_files: false,
             };
@@ -6109,10 +5963,6 @@ mod tests {
             assert!(
                 sink.pending_invite_is_durable,
                 "the pending-invite frame must show both durable access and non-live presence"
-            );
-            assert!(
-                sink.ada_activity_is_visible,
-                "the attributed-history frame must visibly filter to Ada's authored changes"
             );
             assert!(
                 sink.forward_revert_is_announced,
@@ -6128,13 +5978,8 @@ mod tests {
     /// Snapshot names are a contract with the visual review suite. Check the
     /// actual state at each consequential frame as well, so a future fixture
     /// regression cannot quietly emit a plausible but false PNG.
-    #[allow(
-        clippy::struct_excessive_bools,
-        reason = "each flag records an independent collaboration-proof invariant"
-    )]
     struct CollaborationProofSink {
         pending_invite_is_durable: bool,
-        ada_activity_is_visible: bool,
         forward_revert_is_announced: bool,
         ada_is_active_in_files: bool,
     }
@@ -6162,25 +6007,13 @@ mod tests {
                             && workspace.role_of("ada").is_some()
                     });
                 }
-                "04-attributed-history" => {
-                    let activity = driver.host().room_activity();
-                    self.ada_activity_is_visible = activity
-                        .author_filter()
-                        .is_some_and(|author| author.eq_ignore_ascii_case("ada"))
-                        && activity.visible_len() > 0
-                        && (0..activity.visible_len()).all(|index| {
-                            activity
-                                .visible_entry(index)
-                                .is_some_and(|entry| entry.author.name.eq_ignore_ascii_case("ada"))
-                        });
-                }
-                "06-reverted-forward" => {
+                "04-reverted-forward" => {
                     self.forward_revert_is_announced = state.notifications().iter().any(|notice| {
                         notice.title == "Reverted a workspace change"
                             && notice.body.contains("Written forward")
                     });
                 }
-                "07-ada-in-files" => {
+                "05-ada-in-files" => {
                     let files_tab = workspace
                         .strips
                         .iter()

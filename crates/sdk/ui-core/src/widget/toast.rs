@@ -1,42 +1,26 @@
-//! `Toast` + `ToastStack` primitive — transient notifications anchored
-//! top-right of the shell, sinking fallible OS operations
-//! (trash/rename/move/copy), `ShellError` conversions, and confirmations.
+//! Transient notices and the notification card.
 //!
-//! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*` for the accent
-//!   bar.
-//! - [`Toast`] is constructed via [`ToastStack::push`], not directly.
-//! - [`ToastStack`] is a ring-buffered list; default TTL is [`DEFAULT_TTL`]
-//!   (3s), default cap is [`DEFAULT_MAX`] (5 toasts).
-//!
-//! The `Widget` impl draws each active toast as a stacked floating card with
-//! its severity icon and a dismiss control. The stack advances itself from
-//! [`crate::time`]: an app only pushes. Expiry pauses while the pointer is
-//! over the stack, and under the capture clock (`--shots`) so a scenario can
-//! hold a toast in frame.
+//! - [`Transient`] and [`Notice`] keep a window's transient message (a
+//!   confirmation, something under way, a failure) for its lifetime and
+//!   show it in the window's bar ([`crate::window_toolbar::notify`]); no
+//!   window paints a card for one.
+//! - [`ToastCard`] and [`paint_card`] paint the shell's notification card,
+//!   outside any window: the desktop's notification banners and the lock
+//!   screen's.
+//! - [`ToastKind`] maps to `Theme::tokens.colors.semantic.*`.
 
-use crate::num::{f32_of_f64, f64_of_usize, usize_of_f64};
+use crate::num::f32_of_f64;
 use crate::time::Duration;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::paint::PaintCtx;
-use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{Button, ButtonFace, Widget};
-
-/// Default time-to-live for a freshly pushed toast.
-pub const DEFAULT_TTL: Duration = Duration::from_secs(3);
-
-/// Default maximum number of simultaneous toasts. When the cap is
-/// exceeded by [`ToastStack::push`] the oldest entry is dropped.
-pub const DEFAULT_MAX: usize = 5;
+use crate::widget::{Button, ButtonFace};
 
 /// Toast cards have a fixed height and therefore paint each text field on a
 /// single baseline. Collapse all Unicode whitespace before measuring or
@@ -49,34 +33,14 @@ fn single_line_text(text: &str) -> String {
 
 /// Severity / category of a toast. Maps to the semantic color ramp in
 /// [`crate::tokens::Colors`] for the left accent bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ToastKind {
+    #[default]
     Info,
     Success,
     Warning,
     Error,
-}
-
-/// Placement for a transient card painted inside an app's area.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ToastAnchor {
-    BottomCenter,
-    /// At the area's bottom trailing corner.
-    BottomRight,
-    /// Centred, at the top of the area (under a toolbar or a capture HUD).
-    TopCenter,
-    /// At the area's top trailing corner.
-    TopRight,
-}
-
-impl ToastAnchor {
-    fn is_top(self) -> bool {
-        matches!(self, Self::TopCenter | Self::TopRight)
-    }
-
-    fn is_centered(self) -> bool {
-        matches!(self, Self::TopCenter | Self::BottomCenter)
-    }
 }
 
 /// Whether a transient shown at `shown` for `ttl` has expired. Under the
@@ -87,8 +51,8 @@ pub fn transient_expired(shown: crate::time::Instant, ttl: Duration) -> bool {
     !crate::time::wall_frozen() && crate::time::now().saturating_duration_since(shown) > ttl
 }
 
-/// How long a transient card that offers no action stays up: a [`Notice`],
-/// a [`Transient`] and anything painted with [`paint_transient`].
+/// How long a notice stays up: a [`Notice`] or a [`Transient`] shown in the
+/// window's bar ([`crate::window_toolbar::notify`]).
 pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 
 /// A message an app shows over its content for a while. It is one of two
@@ -103,13 +67,18 @@ pub const NOTICE_LIFETIME: Duration = Duration::from_secs(4);
 ///   running ([`Self::keep_while`]) and leaves once it no longer does, or a
 ///   [`NOTICE_LIFETIME`] after it last did, so no stale progress stays.
 ///
-/// The app asks to be woken at [`Self::deadline`] and, there, renews
-/// progress and calls [`Self::expire`] so the window repaints without what
-/// left. A message that needs the person to act belongs on a card with an
-/// action instead.
-#[derive(Clone, Debug)]
+/// The message shows in the window's bar ([`Self::publish`], on every sync):
+/// the app asks to be woken at [`Self::deadline`] and, there, renews
+/// progress and calls [`Self::expire`]. A message that needs the person to
+/// act before it goes is not a transient one.
+#[derive(Debug)]
 pub struct Transient<T> {
     current: Option<Shown<T>>,
+    /// Counts the messages shown, so the bar hears each one once.
+    shown: u64,
+    /// What [`Self::publish`] put in the window's bar, and which message it
+    /// said: taken down once the message goes.
+    published: std::cell::RefCell<Option<(u64, crate::window_toolbar::ToolbarNotice)>>,
 }
 
 /// A [`Transient`]'s message and the time its lifetime counts from: when it
@@ -119,6 +88,8 @@ struct Shown<T> {
     value: T,
     since: crate::time::Instant,
     progress: bool,
+    /// Which message this is ([`Transient::shown`]).
+    number: u64,
 }
 
 impl<T> Default for Transient<T> {
@@ -127,10 +98,60 @@ impl<T> Default for Transient<T> {
     }
 }
 
+/// A copy keeps the message but not the bar's notice: the original took it
+/// up and takes it down.
+impl<T: Clone> Clone for Transient<T> {
+    fn clone(&self) -> Self {
+        Self {
+            current: self.current.clone(),
+            shown: self.shown,
+            published: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+/// A message gone with its owner leaves the window's bar with it.
+impl<T> Drop for Transient<T> {
+    fn drop(&mut self) {
+        if let Some((_, notice)) = self.published.get_mut().take() {
+            crate::window_toolbar::withdraw(&notice);
+        }
+    }
+}
+
 impl<T> Transient<T> {
     #[must_use]
     pub const fn new() -> Self {
-        Self { current: None }
+        Self {
+            current: None,
+            shown: 0,
+            published: std::cell::RefCell::new(None),
+        }
+    }
+
+    /// Show the message in the window's bar while it lasts, as `notice`
+    /// says it, and take it down once it has gone; call on every sync. A
+    /// notice shown since from elsewhere in the window stays: the newest
+    /// replaces the older.
+    pub fn publish(&self, notice: impl FnOnce(&T) -> crate::window_toolbar::ToolbarNotice) {
+        let want = self
+            .current
+            .as_ref()
+            .filter(|_| self.get().is_some())
+            .map(|shown| (shown.number, notice(&shown.value)));
+        let mut published = self.published.borrow_mut();
+        if *published == want {
+            return;
+        }
+        // The same message said differently replaces itself; another
+        // message is news, and replaces whatever is up.
+        if let Some((_, gone)) = published.take() {
+            crate::window_toolbar::withdraw(&gone);
+        }
+        if let Some((number, notice)) = want {
+            crate::window_toolbar::notify(Some(notice.clone()));
+            *published = Some((number, notice));
+        }
     }
 
     /// `value`, shown from now as plain information.
@@ -163,10 +184,12 @@ impl<T> Transient<T> {
     }
 
     fn put(&mut self, value: T, progress: bool) {
+        self.shown = self.shown.wrapping_add(1);
         self.current = Some(Shown {
             value,
             since: crate::time::now(),
             progress,
+            number: self.shown,
         });
     }
 
@@ -243,39 +266,12 @@ impl<T> Transient<T> {
         }
         self.since().map(|shown| shown + NOTICE_LIFETIME)
     }
-
-    /// Paint `card`, which says this message, in `area` at `anchor` with
-    /// [`paint_transient`]; nothing once the message's lifetime is over.
-    pub fn paint(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        anchor: ToastAnchor,
-        card: &ToastCard<'_>,
-    ) -> ToastCardHit {
-        let Some(since) = self.since() else {
-            return ToastCardHit::default();
-        };
-        paint_transient(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            area,
-            anchor,
-            card,
-            since,
-        )
-    }
 }
 
-/// The one transient message an app shows over its content: a confirmation,
-/// something under way, or a failure. The app shows it and paints it where
-/// it belongs; the notice keeps its own lifetime ([`Transient`]) and its
-/// announcement.
+/// The one transient message an app shows in its window's bar: a
+/// confirmation, something under way, or a failure. The app shows it and
+/// [publishes](Self::publish) it on every sync; the notice keeps its own
+/// lifetime ([`Transient`]), and the bar announces it.
 #[derive(Clone, Debug, Default)]
 pub struct Notice {
     current: Transient<(String, ToastKind)>,
@@ -326,42 +322,11 @@ impl Notice {
         self.current.deadline()
     }
 
-    /// Paint the notice in `area`, at `anchor`, with [`paint_transient`].
-    pub fn paint(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        area: Rect,
-        anchor: ToastAnchor,
-    ) -> ToastCardHit {
-        let Some((text, kind)) = self.get() else {
-            return ToastCardHit::default();
-        };
-        self.current.paint(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            area,
-            anchor,
-            &ToastCard::new(text, kind),
-        )
-    }
-
-    /// The notice as a live region: a failure interrupts, anything else
-    /// waits its turn.
-    pub fn access_node(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
-        let (text, kind) = self.get()?;
-        Some(AccessNode::new(Role::StaticText).with_name(text).with_live(
-            if kind == ToastKind::Error {
-                Politeness::Assertive
-            } else {
-                Politeness::Polite
-            },
-        ))
+    /// Show the notice in the window's bar while it is up; call on every
+    /// sync. See [`Transient::publish`].
+    pub fn publish(&self) {
+        self.current
+            .publish(|(text, kind)| crate::window_toolbar::ToolbarNotice::new(text.clone(), *kind));
     }
 }
 
@@ -369,8 +334,7 @@ impl Notice {
 /// what its lifetime counts against. The clock runs only while the card is
 /// on screen and nobody holds it (the pointer on it, keyboard focus in it):
 /// a card that never fit on screen, or one being read, never runs out under
-/// the reader. [`ToastStack`] and the desktop's notification banners share
-/// it, so a toast and a banner leave by the same rule.
+/// the reader. The desktop's notification banners keep it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dwell {
     /// Time on screen, unheld, before the current run.
@@ -467,362 +431,6 @@ impl Dwell {
     }
 }
 
-/// A single toast entry held by a [`ToastStack`]. Entries are produced
-/// internally by [`ToastStack::push`]; shell code does not construct
-/// `Toast` values directly.
-#[derive(Clone, Debug)]
-pub struct Toast {
-    pub text: String,
-    pub kind: ToastKind,
-    /// What its one button does ("Undo"), if it has one.
-    pub action: Option<String>,
-    lifetime: Duration,
-    dwell: Dwell,
-}
-
-impl Toast {
-    /// What is left of this toast's lifetime.
-    #[must_use]
-    pub fn ttl_remaining(&self) -> Duration {
-        self.lifetime.saturating_sub(self.dwell.spent)
-    }
-}
-
-/// Top-right notification stack with a configurable maximum entry count
-/// and TTL-based expiry.
-///
-/// The stack is render-only — input routing (click-to-dismiss, hover
-/// pause) is wired by the first shell consumer. The primitive itself
-/// exposes timing/capacity API so it stays unit-testable without a live
-/// event loop or a wall clock.
-pub struct ToastStack {
-    toasts: Vec<Toast>,
-    max: usize,
-    default_ttl: Duration,
-    rect: Rect,
-    /// Whether the pointer is currently over the stack — [`tick`] pauses
-    /// expiry while hovered so the user can read/click a toast.
-    hovered: bool,
-    last_cursor: Point,
-    /// The card whose dismiss control is under the pointer.
-    close_hovered: Option<usize>,
-    advanced_at: Option<crate::time::Instant>,
-    /// The number of cards the layout was sized for.
-    laid_out: usize,
-    /// The theme the stack was laid out in, for its controls' geometry.
-    theme: Theme,
-    /// What the last draw painted: each card's text and kind, the dismiss
-    /// control under the pointer, and where. A change needs another draw;
-    /// `None` until drawn in the current theme.
-    painted: Option<PaintedToasts>,
-    /// Each card's button, where the last draw painted it.
-    action_rects: Vec<Option<Rect>>,
-    /// The card whose button is under the pointer, now and as last drawn.
-    action_hovered: Option<usize>,
-    action_hovered_painted: Option<usize>,
-    /// The text of the notice whose button was pressed, until the owner
-    /// takes it.
-    activated: Option<String>,
-}
-
-/// [`ToastStack::painted`].
-type PaintedToasts = (Vec<(String, ToastKind)>, Option<usize>, Rect);
-
-impl std::fmt::Debug for ToastStack {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ToastStack")
-            .field("toasts", &self.toasts)
-            .field("max", &self.max)
-            .field("default_ttl", &self.default_ttl)
-            .field("rect", &self.rect)
-            .field("hovered", &self.hovered)
-            .field("last_cursor", &self.last_cursor)
-            .field("close_hovered", &self.close_hovered)
-            .field("advanced_at", &self.advanced_at)
-            .field("laid_out", &self.laid_out)
-            .finish_non_exhaustive()
-    }
-}
-
-impl Default for ToastStack {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ToastStack {
-    /// Build an empty toast stack with the [`DEFAULT_MAX`] cap and
-    /// [`DEFAULT_TTL`] per-toast lifetime.
-    pub fn new() -> Self {
-        Self {
-            toasts: Vec::new(),
-            max: DEFAULT_MAX,
-            default_ttl: DEFAULT_TTL,
-            rect: Rect::ZERO,
-            hovered: false,
-            last_cursor: Point::ZERO,
-            close_hovered: None,
-            advanced_at: None,
-            laid_out: 0,
-            theme: Theme::dark(),
-            painted: None,
-            action_rects: Vec::new(),
-            action_hovered: None,
-            action_hovered_painted: None,
-            activated: None,
-        }
-    }
-
-    /// Override the maximum number of simultaneous toasts.
-    #[must_use]
-    pub fn with_max(mut self, max: usize) -> Self {
-        self.max = max.max(1);
-        self
-    }
-
-    /// Override the TTL applied to subsequently pushed toasts.
-    #[must_use]
-    pub fn with_default_ttl(mut self, ttl: Duration) -> Self {
-        self.default_ttl = ttl;
-        self
-    }
-
-    /// Push a new toast. If the stack is at capacity the oldest entry
-    /// is dropped to make room (FIFO drop policy).
-    pub fn push(&mut self, text: impl Into<String>, kind: ToastKind) {
-        self.push_toast(text.into(), kind, None);
-    }
-
-    /// Push a notice with one button, `action` ("Undo"). Pressing it takes
-    /// the notice down; [`Self::take_activated`] then names the notice.
-    pub fn push_with_action(
-        &mut self,
-        text: impl Into<String>,
-        kind: ToastKind,
-        action: impl Into<String>,
-    ) {
-        self.push_toast(text.into(), kind, Some(action.into()));
-    }
-
-    /// The text of the notice whose button was pressed since the last call.
-    pub fn take_activated(&mut self) -> Option<String> {
-        self.activated.take()
-    }
-
-    /// Each notice with a button: its text, the button's label, and where
-    /// the button was last painted.
-    pub(crate) fn action_buttons(&self) -> impl Iterator<Item = (&str, &str, Option<Rect>)> {
-        self.toasts.iter().enumerate().filter_map(|(index, toast)| {
-            let action = toast.action.as_deref()?;
-            let painted = self.action_rects.get(index).copied().flatten();
-            Some((toast.text.as_str(), action, painted))
-        })
-    }
-
-    /// Press the button of the notice reading `text`, as a click on it
-    /// does: [`Self::take_activated`] then names it, and it goes. Whether
-    /// such a notice was showing.
-    pub(crate) fn press_action(&mut self, text: &str) -> bool {
-        let Some(index) = self
-            .toasts
-            .iter()
-            .position(|toast| toast.action.is_some() && toast.text == text)
-        else {
-            return false;
-        };
-        self.activated = Some(text.to_owned());
-        self.dismiss(index);
-        self.hovered = false;
-        true
-    }
-
-    /// Take down every notice that offers a button: what it would act on
-    /// has moved on, so its "Undo" would undo something else.
-    pub fn dismiss_actionable(&mut self) {
-        self.toasts.retain(|toast| toast.action.is_none());
-    }
-
-    fn push_toast(&mut self, text: String, kind: ToastKind, action: Option<String>) {
-        // Charge elapsed time only to entries that existed during that time.
-        // A new notice gets its full lifetime even if the previous frame stalled.
-        self.advance(crate::time::now());
-        let toast = Toast {
-            text,
-            kind,
-            action,
-            lifetime: self.default_ttl,
-            dwell: Dwell::new(),
-        };
-        self.toasts.push(toast);
-        // Drop oldest entries until we are back within the cap.
-        while self.toasts.len() > self.max {
-            self.toasts.remove(0);
-        }
-    }
-
-    /// Every pixel the stack's cards paint, their shadows included: what a
-    /// host repaints where the stack appears, changes or goes. `None` with
-    /// no card showing.
-    #[must_use]
-    pub fn painted_bounds(&self, theme: &Theme) -> Option<Rect> {
-        (!self.toasts.is_empty() && self.rect.area() > 0.0)
-            .then(|| crate::widget::floating_surface::painted_bounds(self.rect, theme))
-    }
-
-    /// Place this overlay inside `area` without making it a layout child.
-    /// Useful for app-level notification stacks that must float above their
-    /// content rather than reserve document space.
-    pub fn place_bottom_right(&mut self, area: Rect, margin: f64) {
-        let n = self.toasts.len();
-        let height = stack_height(n);
-        let x1 = area.x1 - margin;
-        let y1 = area.y1 - margin;
-        self.rect = if n == 0 {
-            Rect::ZERO
-        } else {
-            Rect::new(x1 - TOAST_WIDTH, y1 - height, x1, y1)
-        };
-    }
-
-    /// Advance time. `dt` counts against each toast's [`Dwell`]; entries
-    /// whose lifetime runs out are removed. Expiry is **paused while the
-    /// pointer hovers the stack** so a toast can be read or clicked without
-    /// vanishing.
-    pub fn tick(&mut self, dt: Duration) {
-        if self.hovered {
-            return;
-        }
-        for t in &mut self.toasts {
-            t.dwell.spend(dt);
-        }
-        self.toasts.retain(|t| !t.ttl_remaining().is_zero());
-    }
-
-    /// Advance the toasts to `now`: the time since the last advance counts
-    /// against each toast's lifetime, except while the pointer is over the
-    /// stack and under the capture clock. The widget calls this itself on
-    /// every sync; an app only pushes.
-    pub fn advance(&mut self, now: crate::time::Instant) {
-        let last = self.advanced_at.replace(now);
-        if self.toasts.is_empty() || crate::time::wall_frozen() {
-            return;
-        }
-        if let Some(last) = last {
-            self.tick(now.saturating_duration_since(last));
-        }
-    }
-
-    /// Whether the pointer is currently over the stack.
-    pub fn is_hovered(&self) -> bool {
-        self.hovered
-    }
-
-    /// The card index under a logical point, if any (top-to-bottom layout).
-    fn card_at(&self, p: Point) -> Option<usize> {
-        if p.x < self.rect.x0 || p.x > self.rect.x0 + TOAST_WIDTH {
-            return None;
-        }
-        let rel = p.y - self.rect.y0;
-        if rel < 0.0 {
-            return None;
-        }
-        let stride = TOAST_HEIGHT + TOAST_GAP;
-        let idx = usize_of_f64(rel / stride);
-        // Reject the inter-card gap.
-        if rel - f64_of_usize(idx) * stride > TOAST_HEIGHT {
-            return None;
-        }
-        if idx < self.toasts.len() {
-            Some(idx)
-        } else {
-            None
-        }
-    }
-
-    fn stack_size(&self) -> (f32, f32) {
-        let n = self.toasts.len();
-        if n == 0 {
-            (0.0, 0.0)
-        } else {
-            (f32_of_f64(TOAST_WIDTH), f32_of_f64(stack_height(n)))
-        }
-    }
-
-    /// The dismiss control of the card at `index`, as [`paint_card`] lays
-    /// it out.
-    fn close_rect(&self, index: usize) -> Rect {
-        let y0 = self.rect.y0 + f64_of_usize(index) * (TOAST_HEIGHT + TOAST_GAP);
-        let card = Rect::new(
-            self.rect.x0,
-            y0,
-            self.rect.x0 + TOAST_WIDTH,
-            y0 + TOAST_HEIGHT,
-        );
-        dismiss_rect(card, &self.theme)
-    }
-
-    /// The card whose button is at `point`, as last painted.
-    fn action_at(&self, point: Point) -> Option<usize> {
-        self.action_rects
-            .iter()
-            .position(|rect| rect.is_some_and(|rect| rect.contains(point)))
-            .filter(|index| *index < self.toasts.len())
-    }
-
-    /// Dismiss the toast at `idx` (no-op if out of range).
-    pub fn dismiss(&mut self, idx: usize) {
-        if idx < self.toasts.len() {
-            self.toasts.remove(idx);
-        }
-    }
-
-    /// Number of active (non-expired) toasts.
-    pub fn len(&self) -> usize {
-        self.toasts.len()
-    }
-
-    /// `true` when no toasts are currently visible.
-    pub fn is_empty(&self) -> bool {
-        self.toasts.is_empty()
-    }
-
-    /// Iterate the active toasts in push order (oldest first).
-    pub fn iter(&self) -> std::slice::Iter<'_, Toast> {
-        self.toasts.iter()
-    }
-
-    /// Maximum simultaneous toasts.
-    pub fn max(&self) -> usize {
-        self.max
-    }
-
-    /// Current default TTL applied to subsequent [`Self::push`] calls.
-    pub fn default_ttl(&self) -> Duration {
-        self.default_ttl
-    }
-}
-
-impl<'a> IntoIterator for &'a ToastStack {
-    type Item = &'a Toast;
-    type IntoIter = std::slice::Iter<'a, Toast>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
-
-const TOAST_WIDTH: f64 = 320.0;
-const TOAST_HEIGHT: f64 = 48.0;
-const TOAST_GAP: f64 = 8.0;
-
-fn stack_height(n: usize) -> f64 {
-    if n == 0 {
-        0.0
-    } else {
-        (TOAST_HEIGHT * f64_of_usize(n)) + (TOAST_GAP * f64_of_usize(n.saturating_sub(1)))
-    }
-}
-
 /// The radius of a floating card: a notification banner, a toast, and the
 /// status cards that stand in a column with them. One floating card is one
 /// shape everywhere, the floating Panel's (`radii.panel`), so a banner, the
@@ -841,7 +449,7 @@ fn card_pad(theme: &Theme) -> (f64, f64) {
 }
 
 /// The severity icon, the same one a banner of that kind shows.
-fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
+pub(crate) fn kind_icon(kind: ToastKind) -> crate::icons::Icon {
     match kind {
         ToastKind::Info => crate::widget::BannerKind::Info,
         ToastKind::Success => crate::widget::BannerKind::Success,
@@ -871,7 +479,7 @@ fn leading_column(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     })
 }
 
-fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
+pub(crate) fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
     match kind {
         ToastKind::Info => theme.tokens.colors.semantic.info,
         ToastKind::Success => theme.tokens.colors.semantic.success,
@@ -884,10 +492,9 @@ fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color {
 // Shared notification-card renderer
 // ---------------------------------------------------------------------------
 //
-// One immediate-mode painter for a toast/notification card, shared by the
-// retained [`ToastStack`] (in-app toasts) and the shell's OS-notification
-// stack (`tilo_desktop::notifications::NotificationStack`) — HIG §8: extend
-// the widget, don't fork it.
+// One immediate-mode painter for a notification card, for the shell's
+// notification stack (`tilo_desktop::notifications::NotificationStack`) and
+// the lock screen: outside any window.
 
 /// Immediate-mode content for one notification / toast card, painted by
 /// [`paint_card`]. Built fluently:
@@ -1683,120 +1290,6 @@ fn paint_single_action(
     rect
 }
 
-/// Paint a transient toast in `area`, at `anchor`.
-///
-/// This is the immediate-mode counterpart to [`ToastStack`]; a message kept
-/// in a [`Transient`] or a [`Notice`] paints through it. `since` is when the
-/// card's lifetime started: when it went up, or when the pointer last left
-/// it. A card that offers nothing to do (no action, no work under way) is
-/// gone once it has been up for [`NOTICE_LIFETIME`], whatever its caller
-/// keeps: a status nobody takes down never stays forever. The card is as
-/// wide as its title and body need, up to a readable width, and wraps them
-/// there; it holds one action ([`ToastCard::action`]) beside the text. The
-/// returned geometry lets callers hit-test the action and the dismiss
-/// control.
-pub fn paint_transient(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    area: Rect,
-    anchor: ToastAnchor,
-    card: &ToastCard<'_>,
-    since: crate::time::Instant,
-) -> ToastCardHit {
-    if !card.stays_up() && transient_expired(since, NOTICE_LIFETIME) {
-        return ToastCardHit::default();
-    }
-    let edge_gap = f64::from(theme.tokens.spacing.s6);
-    let available_width = (area.width() - 2.0 * edge_gap).max(0.0);
-    let Some(size) = transient_size(text_renderer, theme, available_width, card) else {
-        return ToastCardHit::default();
-    };
-    if area.height() < size.height + edge_gap {
-        return ToastCardHit::default();
-    }
-    let x0 = if anchor.is_centered() {
-        area.center().x - size.width / 2.0
-    } else {
-        area.x1 - edge_gap - size.width
-    };
-    let y0 = if anchor.is_top() {
-        area.y0 + edge_gap
-    } else {
-        area.y1 - edge_gap - size.height
-    };
-    paint_card(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        Rect::new(x0, y0, x0 + size.width, y0 + size.height),
-        card,
-    )
-}
-
-/// The size a transient card takes inside `available_width`, or `None`
-/// when there is no room at all.
-fn transient_size(
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    available_width: f64,
-    card: &ToastCard<'_>,
-) -> Option<vello::kurbo::Size> {
-    if available_width <= 0.0 {
-        return None;
-    }
-    let (pad_x, pad_y) = card_pad(theme);
-    let line = f64::from(theme.text(TextRole::Body).line_height_px());
-    let max_width = (line * 22.0).min(available_width);
-    let min_width = (line * 8.0).min(available_width);
-    let close_column = if card.closable {
-        ButtonFace::height(crate::widget::ControlSize::Small, theme)
-            + f64::from(theme.tokens.spacing.s1)
-    } else {
-        0.0
-    };
-    let action_column = if card.single_action() {
-        single_action_width(text_renderer, theme, card.primary_action)
-            + f64::from(theme.tokens.spacing.s3)
-    } else {
-        0.0
-    };
-    let chrome = 2.0 * pad_x + leading_column(theme, card) + close_column + action_column;
-    let title_style = theme.text(TextRole::Label).strong();
-    let body_style = theme.text(TextRole::Caption);
-    let title = single_line_text(card.title);
-    let body = single_line_text(card.body);
-    let natural = f64::from(text_renderer.measure_style(&title, None, &title_style).0).max(
-        if body.is_empty() {
-            0.0
-        } else {
-            f64::from(text_renderer.measure_style(&body, None, &body_style).0)
-        },
-    );
-    let width = (natural + chrome).clamp(min_width, max_width);
-    let text_width = f32_of_f64((width - chrome).max(1.0));
-    let mut text_h = f64::from(
-        text_renderer
-            .measure_style(&title, Some(text_width), &title_style)
-            .1,
-    );
-    if !body.is_empty() {
-        text_h += f64::from(
-            text_renderer
-                .measure_style(&body, Some(text_width), &body_style)
-                .1,
-        );
-    }
-    text_h += progress_reserve(theme, card);
-    let control = ButtonFace::height(crate::widget::ControlSize::Small, theme);
-    let height = (text_h.max(control) + 2.0 * pad_y)
-        .max(f64::from(theme.tokens.metrics.panel_row_height) + 2.0 * pad_y)
-        .ceil();
-    Some(vello::kurbo::Size::new(width, height))
-}
-
 /// The height a card's progress bar and the gap above it take.
 fn progress_reserve(theme: &Theme, card: &ToastCard<'_>) -> f64 {
     if card.progress.is_some() {
@@ -1895,7 +1388,7 @@ fn paint_card_text(
     let (pad_x, pad_y) = card_pad(theme);
     let text_x = column.x0 + pad_x;
     let width_avail = f32_of_f64((column.x1 - text_x).max(0.0));
-    // A card sized for its text (`paint_transient`) wraps it; one that is
+    // A card sized for its text wraps it; one that is
     // shorter than its wrapped text keeps each field to one elided line.
     if let Some(block) = paint_wrapped_card_text(ctx, column, card, alpha, text_x, width_avail) {
         return block;
@@ -2047,201 +1540,6 @@ fn paint_wrapped_card_text(
         y += h;
     }
     Some(extent)
-}
-
-impl Widget for ToastStack {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.theme = theme.clone();
-        self.painted = None;
-        let (w, h) = self.stack_size();
-        self.laid_out = self.toasts.len();
-        let style = Style {
-            size: Size::from_lengths(w, h),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
-        self.advance(crate::time::now());
-    }
-
-    fn update(
-        &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
-    ) -> bool {
-        let before = self.toasts.len();
-        self.advance(crate::time::now());
-        before != self.toasts.len()
-    }
-
-    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
-        if self.hovered || crate::time::wall_frozen() {
-            return None;
-        }
-        let last = self.advanced_at?;
-        let soonest = self.toasts.iter().map(Toast::ttl_remaining).min()?;
-        Some(last + soonest)
-    }
-
-    fn adjust_layout_style(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
-    ) -> bool {
-        let (w, h) = self.stack_size();
-        let Ok(current) = taffy.style(node) else {
-            return false;
-        };
-        let size = Size {
-            width: Dimension::length(w),
-            height: Dimension::length(h),
-        };
-        if current.size == size {
-            return false;
-        }
-        let mut style = current.clone();
-        style.size = size;
-        self.laid_out = self.toasts.len();
-        taffy.set_style(node, style).is_ok()
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.laid_out != self.toasts.len()
-    }
-
-    crate::rect_geometry!();
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        if self.toasts.is_empty() {
-            return;
-        }
-
-        let mut y = self.rect.y0;
-        let mut action_rects = Vec::with_capacity(self.toasts.len());
-        for (index, toast) in self.toasts.iter().enumerate() {
-            let card_rect = Rect::new(
-                self.rect.x0,
-                y,
-                self.rect.x0 + TOAST_WIDTH,
-                y + TOAST_HEIGHT,
-            );
-            let mut card = ToastCard::new(&toast.text, toast.kind)
-                .closable(true)
-                .close_hovered(self.close_hovered == Some(index));
-            if let Some(action) = &toast.action {
-                card = card.action(action, self.action_hovered == Some(index));
-            }
-            // Route through the shared card renderer so an in-app toast and a
-            // desktop notification are pixel-identical (HIG §8).
-            let hit = paint_card(scene, transform, text_renderer, theme, card_rect, &card);
-            action_rects.push(
-                (toast.action.is_some() && hit.primary_action_rect.area() > 0.0)
-                    .then_some(hit.primary_action_rect),
-            );
-            y += TOAST_HEIGHT + TOAST_GAP;
-        }
-        self.action_rects = action_rects;
-    }
-
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = ctx.logical(position);
-                // Hover-pause: expiry halts while the pointer is over the stack.
-                let now_hover = !self.toasts.is_empty() && self.card_at(self.last_cursor).is_some();
-                if now_hover != self.hovered {
-                    // Leaving restarts the clock from now, so the hovered
-                    // time does not count against the toasts.
-                    self.advanced_at = Some(crate::time::now());
-                    self.hovered = now_hover;
-                }
-                self.close_hovered = self
-                    .card_at(self.last_cursor)
-                    .filter(|&index| self.close_rect(index).contains(self.last_cursor));
-                self.action_hovered = self.action_at(self.last_cursor);
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                if let Some(idx) = self.action_at(self.last_cursor) {
-                    self.activated = self.toasts.get(idx).map(|toast| toast.text.clone());
-                    self.dismiss(idx);
-                    self.hovered = false;
-                    *ctx.handled = true;
-                } else if let Some(idx) = self.card_at(self.last_cursor) {
-                    self.dismiss(idx);
-                    self.hovered = false;
-                    *ctx.handled = true;
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn name(&self) -> &'static str {
-        "ToastStack"
-    }
-
-    /// A stack that shows what it painted (nothing, mostly) needs no frame:
-    /// a pointer moving over the window repaints nothing here.
-    fn needs_redraw(&self) -> bool {
-        self.painted
-            .as_ref()
-            .is_none_or(|(cards, close_hovered, rect)| {
-                *close_hovered != self.close_hovered
-                    || self.action_hovered != self.action_hovered_painted
-                    || *rect != self.rect
-                    || cards.len() != self.toasts.len()
-                    || cards
-                        .iter()
-                        .zip(&self.toasts)
-                        .any(|((text, kind), toast)| *text != toast.text || *kind != toast.kind)
-            })
-    }
-
-    fn mark_drawn(&mut self) {
-        self.action_hovered_painted = self.action_hovered;
-        self.painted = Some((
-            self.toasts
-                .iter()
-                .map(|toast| (toast.text.clone(), toast.kind))
-                .collect(),
-            self.close_hovered,
-            self.rect,
-        ));
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
-        // Assertive live region so a freshly-shown toast announces itself
-        // immediately without stealing keyboard focus; the stable `name`
-        // is the identity the host diffs across frames.
-        let latest = self.toasts.last().map(|t| t.text.clone());
-        let mut node = AccessNode::new(Role::Group)
-            .with_name("Notifications")
-            .with_live(Politeness::Assertive);
-        if let Some(text) = latest {
-            node = node.with_value(text);
-        }
-        Some(node)
-    }
 }
 
 #[cfg(test)]

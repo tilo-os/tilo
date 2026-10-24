@@ -92,7 +92,7 @@ impl ShellOverlayHost {
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray.
+        // off the clock/tray, and the windows' bars keep them lower still.
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -101,6 +101,11 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
+            // Under the top bar is where the windows' bars are: banners
+            // start below the ones under the corner, so an incoming call
+            // never hides a window's History, maximize or close.
+            let bars = self.window_bars_on_screen();
+            self.notification_stack.keep_clear_of(&bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
@@ -230,20 +235,60 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
+        let slide = self.workspace_slide_poses(theme);
+        if let Some((from, leaving, _)) = slide {
+            self.draw_leaving_workspace(
+                from,
+                leaving,
+                workspace_scene,
+                transform,
+                (text_renderer, theme, presence),
+            );
+        }
+        let clip = self.rect;
         let Some(surface) = self.desktop_surface_mut() else {
             self.content
                 .draw(backdrop_scene, transform, text_renderer, theme, presence);
             return None;
         };
-        let bounds = surface.draw_sections(
-            backdrop_scene,
-            topbar_scene,
-            workspace_scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-        )?;
+        let bounds = if let Some((_, _, arriving)) = slide {
+            // A workspace switch by pointer: the windows arrive along the
+            // slide's axis; the bar and the backdrop stay.
+            let bounds = surface.draw_chrome_sections(
+                backdrop_scene,
+                topbar_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )?;
+            workspace_scene.push_layer(
+                Fill::NonZero,
+                BlendMode::default(),
+                arriving.opacity,
+                transform,
+                &clip,
+            );
+            let drawn = surface.draw_workspace_area(
+                workspace_scene,
+                transform.pre_translate(arriving.transform.translation()),
+                text_renderer,
+                theme,
+                presence,
+            );
+            workspace_scene.pop_layer();
+            drawn.map(|()| bounds)?
+        } else {
+            surface.draw_sections(
+                backdrop_scene,
+                topbar_scene,
+                workspace_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            )?
+        };
         // The compact bars of the other displays share the top bar's scene.
         let bars = surface
             .display_chrome()
@@ -291,10 +336,11 @@ impl ShellOverlayHost {
         self.strip_navigation_bounds(flags.quick_settings || quick_settings_transition_visible)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
-    )]
+    /// Who is here, as the bar's faces open it: it arrives from them and
+    /// goes back to them on the standard motion (`motion::Appear`), as the
+    /// bar's workspace menu and profile card do; a key lands it at once.
+    /// Closed, it takes no input and offers no target at once, and what it
+    /// last showed is drawn leaving until it has gone.
     pub(super) fn draw_collaborators_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -304,10 +350,56 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        if !flags.collaborators {
+        self.collaborators_appearing
+            .follow(flags.collaborators, theme.motion());
+        if flags.collaborators {
+            let mut painted = std::mem::take(&mut self.collaborators_painted);
+            painted.reset();
+            self.paint_collaborators_roster(&mut painted, text_renderer, theme, presence);
+            self.collaborators_painted = painted;
+            self.collaborators_painted_panel = self.collaborators_overlay.panel_rect();
+        } else {
             self.collaborators_overlay.clear();
-            return;
+            if !self.collaborators_appearing.is_drawn() {
+                self.collaborators_painted.reset();
+                self.collaborators_painted_panel = Rect::ZERO;
+                return;
+            }
         }
+        let panel = self.collaborators_painted_panel;
+        // From the faces that opened it; from the bar above it when they
+        // are not shown.
+        let faces = self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::collaborators_rect);
+        let anchor = if faces.is_zero_area() {
+            Point::new(panel.center().x, panel.y0)
+        } else {
+            faces.center()
+        };
+        let pose = self.collaborators_appearing.pose(panel, anchor);
+        if flags.collaborators {
+            self.collaborators_overlay.set_drawn_pose(pose);
+        }
+        let bounds = ui::widget::floating_surface::painted_bounds(panel, theme);
+        if let Some(placed) = pose.begin(scene, transform, bounds) {
+            scene.append(&self.collaborators_painted, Some(placed));
+            pose.end(scene);
+        }
+    }
+
+    /// Paint the roster at rest, in the host's coordinates, and lay out its
+    /// targets.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
+    )]
+    fn paint_collaborators_roster(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let transform = Affine::IDENTITY;
         // The name this person goes by, numbered like anyone else's when
         // someone here shares it; never "You", never their key.
         let own_name = ui::local_identity::load()
@@ -399,93 +491,6 @@ impl ShellOverlayHost {
             },
             self.last_cursor,
         );
-    }
-
-    pub(super) fn draw_room_activity_sheet(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        flags: crate::shell::chrome_state::OverlayFlags,
-    ) {
-        self.drain_app_host_intents();
-        let view_request = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
-        // The open window reads the pane every frame, and opening, closing
-        // or retargeting it changes what the passive glance shows.
-        let force_awareness = view_request.is_some()
-            || flags.room_activity
-            || self.room_activity_was_open
-            || self.activity_window_rect().is_some();
-        if let Some((previous, request)) = view_request {
-            // Finish against the outgoing admission before awareness refreshes
-            // for the destination. A first open must not acknowledge its feed.
-            if self.room_activity_was_open {
-                self.room_activity.finish_view(previous.raw());
-            }
-            if let tilo_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. } = request
-            {
-                use crate::shell::room_activity::ActivityView;
-                self.room_activity.set_view(ActivityView::CatchUp);
-                self.room_activity.set_view(view);
-                self.room_activity.invalidate();
-            }
-            self.room_activity_was_open = false;
-        }
-        // Older control/shot clients still express this as an overlay edge;
-        // consume it by opening the typed tiled window once.
-        if flags.room_activity
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            chrome.borrow_mut().open_room_activity(None);
-        }
-        self.refresh_room_activity_awareness(force_awareness);
-        self.room_activity.observe_replay_presence(presence);
-        let visible = self.activity_window_rect().is_some();
-        if visible && !self.room_activity_was_open {
-            self.room_activity.invalidate();
-            if let Some(chrome) = self.chrome.as_ref() {
-                let (workspace, focus) = {
-                    let mut state = chrome.borrow_mut();
-                    let workspace = state.tree().desktop.active.raw();
-                    (workspace, state.take_activity_focus_request())
-                };
-                self.room_activity.begin_view(workspace);
-                if let Some(focus) = focus {
-                    self.room_activity.apply_deep_link(focus);
-                }
-            }
-        } else if visible
-            && let Some(chrome) = self.chrome.as_ref()
-            && let Some(focus) = chrome.borrow_mut().take_activity_focus_request()
-        {
-            // Activity was already showing: a later request to show a task
-            // (a notification's Review, the composer's Edit) still lands.
-            self.room_activity.apply_deep_link(focus);
-        } else if !visible
-            && self.room_activity_was_open
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            let workspace = chrome.borrow().tree().desktop.active.raw();
-            self.room_activity.finish_view(workspace);
-        }
-        self.room_activity_was_open = visible;
-        if visible {
-            self.refresh_room_activity();
-            self.apply_pending_history_action();
-            // The recap is a tiled window: it has no scrim, entry fade or
-            // floating shadow of its own, and it must open no layer here.
-            // A layer left open leaks past this draw: every later overlay
-            // lands in it, and with several displays the next display's
-            // whole pass nests inside this display's clip and draws nothing.
-            self.room_activity.set_review_clip(self.rect);
-            self.room_activity
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
     }
 }
 

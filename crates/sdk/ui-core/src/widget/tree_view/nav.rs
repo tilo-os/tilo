@@ -116,7 +116,9 @@ impl NavItemSpec {
                 .image(art.image.as_ref())
         });
         if let Some(person) = &self.person {
-            let mut avatar = crate::widget::AvatarFace::new(label, &person.identity)
+            let name = person.name.as_deref().unwrap_or(label);
+            let mut avatar = crate::widget::AvatarFace::new(name, &person.identity)
+                .image(person.image.as_ref())
                 .presence(person.colour)
                 .presence_ring();
             if person.speaking {
@@ -363,6 +365,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             self.hovered == Some(key) && !self.reorder.is_tracking(),
             false,
         ));
+        face.check_pose = item.checked.map(|checked| {
+            self.faces.check(
+                id,
+                checked,
+                crate::widget::CheckGlyph::Check,
+                nav.theme.motion(),
+            )
+        });
         face = face.focused(self.is_focused && self.focused == Some(key));
         face.style = nav.style();
         if face.style == NavRowStyle::List && self.model.is_branch(id) {

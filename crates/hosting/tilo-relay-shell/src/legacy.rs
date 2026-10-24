@@ -207,8 +207,8 @@ impl LegacyWindows {
     /// `MediaCapabilities`, the codecs every member watching each room the
     /// session is in decodes. A member that never said counts as H.264 only;
     /// one that decodes no video watches none and does not count. Sent when
-    /// it changes and every [`ADVERT_EVERY`]. Sessions no longer listed are
-    /// forgotten, and members out of every room for [`MEMBER_GRACE`].
+    /// it changes and every `ADVERT_EVERY`. Sessions no longer listed are
+    /// forgotten, and members out of every room for `MEMBER_GRACE`.
     pub fn advertise(
         &self,
         rooms: &[RoomViewers],
@@ -661,7 +661,7 @@ impl LegacyWindows {
     /// The presence payloads that ask each session for a keyframe of a
     /// stream that lost a unit on the way here, so members watching it
     /// recover without waiting for the session's periodic keyframe. Asked
-    /// again every [`KEYFRAME_RETRY`] until a keyframe arrives; the session
+    /// again every `KEYFRAME_RETRY` until a keyframe arrives; the session
     /// rate-limits what it forces.
     pub fn keyframe_requests(
         &self,
@@ -736,7 +736,7 @@ impl LegacyWindows {
 
     /// Whether the publishing device is still subscribed to the room. A
     /// static window sends no frames, so its session leaving, not silence,
-    /// ends its streams; a reconnect shorter than [`DEPARTURE`] does not.
+    /// ends its streams; a reconnect shorter than `DEPARTURE` does not.
     pub fn present(&self, workspace_id: u64, device: [u8; 32], here: bool, now: Instant) {
         let mut rooms = self.rooms();
         let Some(state) = rooms.get_mut(&workspace_id) else {

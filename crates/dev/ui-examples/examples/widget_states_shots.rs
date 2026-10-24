@@ -53,7 +53,6 @@ use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use tilo_ui::widget::toast::ToastKind;
 use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
 use tilo_ui::widget::tree_view::TreeNode;
@@ -1602,55 +1601,6 @@ impl Widget for TooltipProbe {
     }
 }
 
-/// A transient toast painted in the main pass, inside the page's cached
-/// columns, as a painted app paints one: its material blurs the photograph
-/// through the subtree caches.
-struct ToastProbe {
-    area: Rect,
-}
-
-impl Widget for ToastProbe {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy
-            .new_leaf(taffy::Style::default())
-            .unwrap_or_else(|_| NodeId::new(0))
-    }
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        _presence: &PresenceCtx,
-    ) {
-        tilo_ui::widget::toast::paint_transient(
-            scene,
-            transform,
-            tr,
-            theme,
-            self.area,
-            tilo_ui::widget::toast::ToastAnchor::BottomRight,
-            &tilo_ui::widget::toast::ToastCard::new(
-                "Copied link to Quarterly report",
-                ToastKind::Success,
-            )
-            .closable(true),
-            tilo_ui::time::now(),
-        );
-    }
-    fn name(&self) -> &'static str {
-        "ToastProbe"
-    }
-    fn get_rect(&self) -> Rect {
-        self.area
-    }
-}
-
 /// The find band and a media control bar, painted as a painted host paints
 /// them: the band across the prose, the bar over the photograph.
 struct ChromeProbe {
@@ -1824,9 +1774,6 @@ fn overlays(theme: &Theme, out: &Path, viewport: (u32, u32)) {
             label: "Share this report",
         }));
     }
-    let root = root.push(Box::new(ToastProbe {
-        area: Rect::new(24.0, 24.0, width - 24.0, 324.0),
-    }));
     let mut harness =
         FrameHarness::new_with_theme(State::new(), Box::new(root), viewport, theme.clone());
     harness.settle_for_capture(SETTLE);

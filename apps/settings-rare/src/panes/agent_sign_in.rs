@@ -3,10 +3,10 @@
 //! GitHub Copilot subscription (a code entered on GitHub's page), and
 //! `OpenRouter`, whose sign-in hands back an API key. Signing in with
 //! Hugging Face, for the model manager's downloads, waits the same way
-//! ([`SignInWait`]).
+//! (`SignInWait`).
 //!
 //! A sign-in runs on a worker. A grant is sealed in this device's vault
-//! under the provider's own id ([`agent_vertex::grant_id`]) before the
+//! under the provider's own id (`agent_vertex::grant_id`) before the
 //! provider is saved, so a saved provider always has one; the gateway mints
 //! request tokens from it and agents never see it. `OpenRouter`'s key is
 //! stored like a typed key, through provider administration.

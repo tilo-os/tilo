@@ -1,4 +1,4 @@
-//! "Add <name> to apps" for each downloaded program running now that has no
+//! "Add \<name\> to apps" for each downloaded program running now that has no
 //! entry in the person's apps ([`crate::shell::downloaded_apps`]): the way
 //! to add one after closing the question its first run asked, or after
 //! saying no to it.

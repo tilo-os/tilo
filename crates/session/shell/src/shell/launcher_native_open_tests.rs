@@ -30,7 +30,7 @@ fn signed_governance(
                     )?;
                 }
             }
-            candidate.durable_mutation_messages(
+            candidate.publication_mut().durable_mutation_messages(
                 &before,
                 &key,
                 now,
@@ -261,7 +261,7 @@ fn admit_viewer(
                 &governor_key,
                 now
             )?);
-            candidate.durable_mutation_messages(
+            candidate.publication_mut().durable_mutation_messages(
                 &before,
                 &governor_key,
                 now,

@@ -72,6 +72,9 @@ pub const STATUS_REVOKED: u8 = 2;
 pub const CLOSE_PREFACE: u32 = 0x7400;
 /// WebTransport close code for a refused grant.
 pub const CLOSE_DENIED: u32 = 0x7401;
+/// How long a refused session stays open for its client to read the
+/// refusal and close it.
+const DENIED_GRACE: Duration = Duration::from_secs(1);
 /// WebTransport close code for a session whose authority lapsed.
 pub const CLOSE_REVOKED: u32 = 0x7402;
 
@@ -169,6 +172,11 @@ impl Admission {
             let _ = self.send.finish();
         })
         .await;
+        // Some browsers (Firefox) drop a stream's unread bytes when the
+        // session closes under it, and report no close code either: the
+        // client closes the session once it read the refusal, or the host
+        // after a moment.
+        let _ = tokio::time::timeout(DENIED_GRACE, session.closed()).await;
         session.close(CLOSE_DENIED, b"admission denied");
     }
 

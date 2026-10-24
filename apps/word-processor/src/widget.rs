@@ -2353,7 +2353,7 @@ struct NumSlot {
 /// plus its accessible children.
 ///
 /// The word processor renders its blocks directly (materialized [`BlockView`]s,
-/// not child widgets), so [`Widget::accessibility`]'s usual "single local node +
+/// not child widgets), so [`Widget::accessibility`](ui::widget::Widget::accessibility)'s usual "single local node +
 /// `Widget::children`" path doesn't apply. Instead it builds the whole tree itself
 /// via [`WordProcessorWidget::accessibility_tree`], with this struct as the carrier;
 /// `accessibility` returns this tree's root so the host still sees a focusable

@@ -883,6 +883,10 @@ pub struct ActionSpec {
     /// another than the one it is offered on here: a view binds its
     /// controls to another provider's action ([`ActionSpec::run_by`]).
     provider: Option<Arc<RunBy>>,
+    /// The arguments this action fixes, when it is a declaration offered on
+    /// the item it acts on, and so not among `params`. See
+    /// [`ActionSpec::with_bound`].
+    bound: Option<Arc<[(String, serde_json::Value)]>>,
 }
 
 /// Where another provider runs an action a view offers
@@ -921,6 +925,7 @@ impl Clone for ActionSpec {
             carrier: self.carrier,
             applied_as: self.applied_as.clone(),
             provider: self.provider.clone(),
+            bound: self.bound.clone(),
         }
     }
 }
@@ -1081,7 +1086,63 @@ impl ActionSpec {
         supplied: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), ArgError> {
         self.validate_deferred_shape()?;
-        ActionArgs::bind_json(&self.params, supplied).map(|_| ())
+        ActionArgs::bind_json(&self.params, self.without_bound(supplied)?.as_ref()).map(|_| ())
+    }
+
+    /// The arguments this action fixes ([`Self::with_bound`]), by name.
+    #[must_use]
+    pub fn bound(&self) -> &[(String, serde_json::Value)] {
+        self.bound.as_deref().unwrap_or_default()
+    }
+
+    /// This action fixing `values`: a declaration offered on the item it
+    /// acts on ("rename *this* album"), its item parameter bound and left
+    /// out of [`Self::params`]. A caller that passes a bound argument anyway
+    /// is heard as leaving it out when it names the bound value (an item's
+    /// id also in a longer form of the item's address, `sheets/<id>`), and
+    /// refused, naming the bound value, when it names another: the action
+    /// acts on its item only.
+    #[must_use]
+    pub fn with_bound(mut self, values: Vec<(String, serde_json::Value)>) -> Self {
+        self.bound = (!values.is_empty()).then(|| values.into());
+        self
+    }
+
+    /// `supplied` without the bound arguments it repeats
+    /// ([`Self::with_bound`]).
+    fn without_bound<'a>(
+        &self,
+        supplied: &'a serde_json::Map<String, serde_json::Value>,
+    ) -> Result<std::borrow::Cow<'a, serde_json::Map<String, serde_json::Value>>, ArgError> {
+        let repeated: Vec<&(String, serde_json::Value)> = self
+            .bound()
+            .iter()
+            .filter(|(name, _)| supplied.contains_key(name))
+            .collect();
+        if repeated.is_empty() {
+            return Ok(std::borrow::Cow::Borrowed(supplied));
+        }
+        let mut kept = supplied.clone();
+        for (name, value) in repeated {
+            let given = kept.remove(name).unwrap_or_default();
+            check_bound(name, value, &given)?;
+        }
+        Ok(std::borrow::Cow::Owned(kept))
+    }
+
+    /// `supplied` pairs without the bound arguments they repeat.
+    fn pairs_without_bound(
+        &self,
+        supplied: impl IntoIterator<Item = (String, ArgValue)>,
+    ) -> Result<Vec<(String, ArgValue)>, ArgError> {
+        let mut kept = Vec::new();
+        for (name, given) in supplied {
+            match self.bound().iter().find(|(bound, _)| *bound == name) {
+                Some((_, value)) => check_bound(&name, value, &given.to_json())?,
+                None => kept.push((name, given)),
+            }
+        }
+        Ok(kept)
     }
 
     /// A document operation whose no-argument builder runs only at execution.
@@ -1154,6 +1215,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         }
     }
 
@@ -1196,6 +1258,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         })
     }
 
@@ -1232,6 +1295,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         }
     }
 
@@ -1286,6 +1350,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         }
     }
 
@@ -1353,6 +1418,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         })
     }
 
@@ -1402,6 +1468,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         }
     }
 
@@ -1505,6 +1572,7 @@ impl ActionSpec {
             carrier: false,
             applied_as: None,
             provider: None,
+            bound: None,
         }
     }
 
@@ -1727,7 +1795,9 @@ impl ActionSpec {
             return self.contract.need();
         }
         if let Some(json) = json {
-            return ActionArgs::bind_json(&self.params, json)
+            return self
+                .without_bound(json)
+                .and_then(|json| ActionArgs::bind_json(&self.params, &json))
                 .map_or_else(|_| self.contract.need(), |args| self.need_for_args(&args));
         }
         if let Some(json) =
@@ -1778,10 +1848,12 @@ impl ActionSpec {
         if self.risk_of.is_none() {
             return self.contract.confirmation.clone();
         }
-        ActionArgs::bind_json(&self.params, supplied).map_or_else(
-            |_| self.contract.confirmation.clone(),
-            |args| self.confirmation_for_args(&args),
-        )
+        self.without_bound(supplied)
+            .and_then(|supplied| ActionArgs::bind_json(&self.params, &supplied))
+            .map_or_else(
+                |_| self.contract.confirmation.clone(),
+                |args| self.confirmation_for_args(&args),
+            )
     }
 
     /// [`confirmation_for_args`](Self::confirmation_for_args) for the palette
@@ -1968,7 +2040,7 @@ impl ActionSpec {
         supplied: impl IntoIterator<Item = (String, ArgValue)>,
     ) -> Result<EncodedAction, ArgError> {
         self.validate_deferred_shape()?;
-        let bound = ActionArgs::bind(&self.params, supplied)?;
+        let bound = ActionArgs::bind(&self.params, self.pairs_without_bound(supplied)?)?;
         self.validate_built(self.build.build(&bound))
     }
 
@@ -1978,7 +2050,7 @@ impl ActionSpec {
         supplied: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<EncodedAction, ArgError> {
         self.validate_deferred_shape()?;
-        let bound = ActionArgs::bind_json(&self.params, supplied)?;
+        let bound = ActionArgs::bind_json(&self.params, self.without_bound(supplied)?.as_ref())?;
         self.validate_built(self.build.build(&bound))
     }
 
@@ -1990,6 +2062,42 @@ impl ActionSpec {
             ActionInput::Immediate(_) | ActionInput::Deferred { .. } => None,
         }
     }
+}
+
+/// Whether `given`, passed for `name`, which an action binds to `value`
+/// ([`ActionSpec::with_bound`]), names that value: as it is, or, for an
+/// item's id, as the end of a longer form of its address (`sheets/<id>`,
+/// `sheets.workbook/sheets/<id>`, `sheet:<id>`).
+fn check_bound(
+    name: &str,
+    value: &serde_json::Value,
+    given: &serde_json::Value,
+) -> Result<(), ArgError> {
+    let same = given == value
+        || match (value, given) {
+            (serde_json::Value::String(id), serde_json::Value::String(given)) => {
+                given.trim() == id
+                    || given
+                        .rsplit(['/', ':'])
+                        .next()
+                        .is_some_and(|last| last == id && !id.is_empty())
+            }
+            _ => false,
+        };
+    if same {
+        return Ok(());
+    }
+    let shown = match value {
+        serde_json::Value::String(id) => id.clone(),
+        other => other.to_string(),
+    };
+    Err(ArgError::Constraint {
+        name: name.to_owned(),
+        reason: format!(
+            "is `{shown}` here: this action acts on that item only. Leave `{name}` out, or \
+             invoke the action on the item you mean"
+        ),
+    })
 }
 
 fn enforce_operation_type(encoded: EncodedAction, expected: &str) -> EncodedAction {
@@ -2143,6 +2251,58 @@ mod tests {
     /// takes the views they open with them: a view whose open action is not
     /// offered fails the action contract, which then refuses the whole
     /// surface.
+    #[test]
+    fn a_bound_argument_passed_again_is_left_out_unless_it_names_another_value() {
+        let spec = ActionSpec::typed_operation(
+            "zoom",
+            "Zoom",
+            "factor",
+            OperationKind::View,
+            "view.zoom",
+            vec![ActionParam::required("factor", ParamType::Number, "Factor")],
+            |args| {
+                EncodedAction::encode_operation("view.zoom", &args.number("factor"))
+                    .expect("bound number encodes")
+            },
+        )
+        .with_bound(vec![
+            ("pane".into(), serde_json::json!("p1")),
+            ("level".into(), serde_json::json!(2)),
+        ]);
+        let names: Vec<&str> = spec.params().iter().map(|param| &*param.name).collect();
+        assert_eq!(names, ["factor"]);
+        for supplied in [
+            serde_json::json!({"factor": 1.5}),
+            serde_json::json!({"factor": 1.5, "pane": "p1", "level": 2}),
+            serde_json::json!({"factor": 1.5, "pane": "window/panes/p1"}),
+        ] {
+            let supplied = supplied.as_object().expect("object");
+            assert_eq!(
+                spec.build_json(supplied).expect("binds").type_id,
+                "view.zoom"
+            );
+            assert!(spec.validate_json(supplied).is_ok());
+        }
+        let other = serde_json::json!({"factor": 1.5, "level": 3});
+        let refused = spec
+            .build_json(other.as_object().expect("object"))
+            .expect_err("another value is refused");
+        assert_eq!(
+            refused.to_string(),
+            "argument `level` is `2` here: this action acts on that item only. Leave `level` \
+             out, or invoke the action on the item you mean"
+        );
+        assert!(
+            spec.build_json(
+                serde_json::json!({"factor": 1.5, "zoom": 1})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_err(),
+            "an argument neither published nor bound is still unknown"
+        );
+    }
+
     #[test]
     fn retaining_actions_keeps_only_the_views_still_opened() {
         let open = |id: &str| {

@@ -15,6 +15,8 @@
 //!     }
 //! }
 //! ```
+//!
+//! [`ActionHost`]: crate::action_host::ActionHost
 
 use automerge::{AutoCommit, ChangeHash};
 use tilo_actions::{Action, ActionContext, EncodedAction};

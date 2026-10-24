@@ -22,6 +22,7 @@ mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
 mod observed_launch;
+pub use observed_launch::AppOpen;
 mod offload_door;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
@@ -31,6 +32,8 @@ mod app_settings_tests;
 mod authority_sample_tests;
 mod canonical_route;
 mod committed_document;
+mod content_put;
+pub use content_put::CONTENT_PUT_REFUSED;
 #[cfg(test)]
 mod directory_disclosure_tests;
 mod directory_pagination;
@@ -541,6 +544,74 @@ mod device_continuity_service_boundary_tests {
             },
         ] {
             let unannounced = nearby_transfer_change(&services, &files_context(), 0)
+                .err()
+                .expect("a host that cannot announce changes says so");
+            assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
+        }
+    }
+
+    /// Speaker groups that record each wait and answer it with the next
+    /// revision, or (`announces: false`) cannot say when they change.
+    struct WaitingSpeakers {
+        announces: bool,
+        waits: Mutex<Vec<u64>>,
+    }
+
+    impl crate::services::SpeakerServices for WaitingSpeakers {
+        fn command(
+            &self,
+            _command: runtime_collab::SpeakerCommand,
+        ) -> runtime_collab::SpeakerReply {
+            runtime_collab::SpeakerReply::Done { group: None }
+        }
+
+        fn changed(&self, after: u64) -> Option<crate::services::SpeakerChange> {
+            self.waits.lock().expect("waits").push(after);
+            self.announces
+                .then(|| Box::pin(std::future::ready(after.wrapping_add(1))) as _)
+        }
+    }
+
+    #[test]
+    fn only_the_certified_settings_route_waits_for_speaker_changes() {
+        let service = Arc::new(WaitingSpeakers {
+            announces: true,
+            waits: Mutex::new(Vec::new()),
+        });
+        let services = HostServices {
+            speakers: Some(service.clone()),
+            ..Default::default()
+        };
+        let change =
+            speaker_change(&services, "so.tilo.settings", 4).expect("Settings waits on its route");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        assert_eq!(runtime.block_on(change), 5, "the host's next change");
+
+        for app in [NEARBY_TRANSFER_APP_ID, "so.tilo.browser", ""] {
+            let refused = speaker_change(&services, app, 0)
+                .err()
+                .expect("only the certified Settings route waits");
+            assert!(refused.to_string().contains("certified Settings"));
+        }
+        assert_eq!(
+            *service.waits.lock().expect("waits"),
+            [4],
+            "a refused route never reaches the host"
+        );
+
+        for services in [
+            HostServices::default(),
+            HostServices {
+                speakers: Some(Arc::new(WaitingSpeakers {
+                    announces: false,
+                    waits: Mutex::new(Vec::new()),
+                })),
+                ..Default::default()
+            },
+        ] {
+            let unannounced = speaker_change(&services, "so.tilo.settings", 0)
                 .err()
                 .expect("a host that cannot announce changes says so");
             assert_eq!(unannounced.kind, capnp::ErrorKind::Unimplemented);
@@ -2109,9 +2180,11 @@ impl PendingInvocation {
 mod action_host;
 mod admission_memo;
 mod app_consent;
+mod app_open_door;
 mod host_action_admission;
 mod host_steps;
 mod launchable;
+mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
 mod run_question;
@@ -3447,6 +3520,8 @@ pub struct CapnpBrokerState {
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
+    /// Host steps whose result stays current, while they are open.
+    live_views: live_views::LiveViews,
     // Retain result authorization even when the host has no durable journal.
     // Entries share the completed invocation cache's bounded lifetime.
     checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
@@ -4194,6 +4269,7 @@ impl CapnpBrokerState {
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
+                live_views: live_views::LiveViews::default(),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
@@ -6220,14 +6296,7 @@ impl CapnpBrokerState {
                 prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: actor.id.clone(),
-                cancellable: matches!(
-                    offered.1.contract.execution,
-                    tilo_actions::ExecutionMode::Background { cancellable: true }
-                        | tilo_actions::ExecutionMode::Streaming {
-                            cancellable: true,
-                            ..
-                        }
-                ),
+                cancellable: offered.1.contract.execution.cancellable(),
                 retryable_on_disconnect: matches!(
                     offered.1.contract.retry,
                     tilo_actions::RetryPolicy::Idempotent
@@ -6293,6 +6362,7 @@ impl CapnpBrokerState {
     /// Retire only this run's transient presence, preserving its pending jobs.
     pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         caller.retire_execution();
+        self.live_views.retire(caller);
         if let Ok(mut pending) = self.pending_invocations.lock() {
             for invocation in pending.values_mut() {
                 if invocation
@@ -6586,6 +6656,9 @@ impl CapnpBrokerState {
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
+        if let Some(update) = self.live_views.status(id, None) {
+            return Some(update);
+        }
         self.pending_invocations
             .lock()
             .ok()
@@ -6604,6 +6677,9 @@ impl CapnpBrokerState {
         owner: &InvocationOwner,
     ) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
+        if let Some(update) = self.live_views.status(id, Some(owner)) {
+            return Some(update);
+        }
         self.pending_invocations
             .lock()
             .ok()
@@ -6675,6 +6751,9 @@ impl CapnpBrokerState {
         owner: &InvocationOwner,
     ) -> Result<(), String> {
         self.expire_stale_invocations();
+        if let Some(cancelled) = self.live_views.cancel(id, Some(owner)) {
+            return cancelled;
+        }
         let mut pending = self
             .pending_invocations
             .lock()
@@ -7372,6 +7451,7 @@ impl CapnpBrokerState {
             | CollabEvent::OpenSelectedV2Result { .. }
             | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
+            | CollabEvent::SpeakersChanged
             | CollabEvent::LocalFileClipboardResult { .. }
             | CollabEvent::Realtime(_)
             | CollabEvent::RecordContent { .. }
@@ -8845,6 +8925,31 @@ fn nearby_transfer_change(
         })
 }
 
+/// The only application that manages the person's speaker groups.
+const SPEAKER_APP_ID: &str = "so.tilo.settings";
+
+/// The wait for the speaker groups' next change past `after` for a
+/// connection on `route_app`: only the certified Settings route may wait, as
+/// only it may command.
+fn speaker_change(
+    services: &HostServices,
+    route_app: &str,
+    after: u64,
+) -> Result<crate::services::SpeakerChange, capnp::Error> {
+    if route_app != SPEAKER_APP_ID {
+        return Err(capnp::Error::failed(
+            "speaker groups are managed only by the certified Settings application".into(),
+        ));
+    }
+    services
+        .speakers
+        .as_ref()
+        .and_then(|service| service.changed(after))
+        .ok_or_else(|| {
+            capnp::Error::unimplemented("this host does not say when speaker groups change".into())
+        })
+}
+
 fn delegate_nearby_transfer_command(
     services: &HostServices,
     context: &crate::services::NearbyTransferRequestContext,
@@ -9198,24 +9303,38 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // An edit an effect submits while running for someone is theirs.
-        let caller =
-            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
-                match continued {
-                    Ok(caller) => caller,
-                    Err(refused) => return reply_frame(*refused, results),
-                }
-            } else if current.agent_id.is_some() {
-                person.clone()
-            } else {
-                match self
-                    .state
-                    .app_door(&person, &route.app_id, &request.message)
-                {
-                    Ok(caller) => caller,
-                    Err(refusal) => return reply_frame(*refusal, results),
-                }
-            };
+        // An app's open of an application is decided as the caller of the
+        // invocation it continues, under that invocation's custody, else as
+        // the person whose press it follows; an edit an effect submits while
+        // running for someone is theirs.
+        let (decided, continued_origin) = match current
+            .agent_id
+            .is_none()
+            .then(|| {
+                self.state
+                    .app_open_caller(self.peer_id, &route.app_id, &person, &request.message)
+            })
+            .flatten()
+        {
+            Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+            Some(Err(refused)) => (Some(Err(refused)), None),
+            None => (
+                self.state.continued_caller(self.peer_id, &request.message),
+                None,
+            ),
+        };
+        let caller = match decided {
+            Some(Ok(caller)) => caller,
+            Some(Err(refused)) => return reply_frame(*refused, results),
+            None if current.agent_id.is_some() => person.clone(),
+            None => match self
+                .state
+                .app_door(&person, &route.app_id, &request.message)
+            {
+                Ok(caller) => caller,
+                Err(refusal) => return reply_frame(*refusal, results),
+            },
+        };
         if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
             &request.message
             && query.view_resource.is_some()
@@ -9274,11 +9393,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
-            origin: InvocationCaller::Local {
+            origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
                 route,
                 time: original_time,
                 admitted: Box::new(current),
-            },
+            }),
         };
         if let Some(question) = question {
             return run_question::serve_answered(
@@ -9568,6 +9687,36 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         results.get().set_reply_json(&reply);
         Promise::ok(())
+    }
+
+    /// Resolves once what a speaker snapshot would show may have changed
+    /// since `after`. Only the certified Settings route may wait, the same
+    /// route every speaker command is confined to, and it learns nothing but
+    /// that something changed: it asks for a snapshot, which is checked as
+    /// always.
+    fn speaker_changed(
+        self: Rc<Self>,
+        params: channel_handle::SpeakerChangedParams,
+        mut results: channel_handle::SpeakerChangedResults,
+    ) -> Promise<(), capnp::Error> {
+        let route = self.route();
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&route, &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let after = match params.get() {
+            Ok(params) => params.get_after(),
+            Err(error) => return Promise::err(error),
+        };
+        match speaker_change(&self.state.services, &route.app_id, after) {
+            Ok(change) => Promise::from_future(async move {
+                results.get().set_change(change.await);
+                Ok(())
+            }),
+            Err(error) => Promise::err(error),
+        }
     }
 
     fn settings(
@@ -11666,6 +11815,19 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
+        // An app opens another only for the person's press in it or an
+        // invocation delivered to it ([`app_open_door`]); an agent's own
+        // connection, by its own grants.
+        if self.verified_identity.agent_id.is_none()
+            && self
+                .state
+                .app_open_authority(self.peer_id, &self.route().app_id, parent)
+                .is_none()
+        {
+            return Promise::err(capnp::Error::failed(
+                "nothing the person or an invocation asked for is behind this launch".into(),
+            ));
+        }
         if let Err(error) = self.current_launch_authority(&app_id, parent) {
             return Promise::err(capnp::Error::failed(error));
         }
@@ -20719,7 +20881,7 @@ fn validate_invocation_update(
         sequence, value, ..
     } = update
     {
-        let tilo_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution else {
+        let Some(item_schema) = pending.execution.item_schema() else {
             return Err(capnp::Error::failed(
                 "non-streaming action reported a streamed item".into(),
             ));

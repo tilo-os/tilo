@@ -73,7 +73,7 @@ on:
         required: false
         default: ""
       boot_assessment_fault:
-        description: "With boot_assessment_image: greetd (greetd fails to start) or greeter (greetd stays active while its greeter keeps exiting)."
+        description: "With boot_assessment_image: greetd (greetd fails to start), greeter (greetd stays active while its greeter keeps exiting) or unlock (its initrd waits at a disk unlock prompt and is power-cycled there)."
         required: false
         default: greetd
 
@@ -214,8 +214,8 @@ jobs:
             echo '::error::boot_assessment_image must pin a tilo-vm dev image digest other than upgrade_image, without shared_disk_esp or dev_uki_boot'
             exit 1
           }
-          [[ $BOOT_ASSESSMENT_FAULT == greetd || $BOOT_ASSESSMENT_FAULT == greeter ]] || {
-            echo '::error::boot_assessment_fault must be greetd or greeter'
+          [[ $BOOT_ASSESSMENT_FAULT == greetd || $BOOT_ASSESSMENT_FAULT == greeter || $BOOT_ASSESSMENT_FAULT == unlock ]] || {
+            echo '::error::boot_assessment_fault must be greetd, greeter or unlock'
             exit 1
           }
           export TILO_KVM_CPU_VARIANT="$CPU_VARIANT"
@@ -438,6 +438,7 @@ jobs:
           if [[ -n $BOOT_ASSESSMENT_IMAGE ]]; then
             RUNNER='./os/dev/vm.sh ssh' SUDO_PASS="$TILO_PASS" FAULT="$BOOT_ASSESSMENT_FAULT" \
               RESET="./os/dev/vm.sh stop; ./os/dev/vm.sh boot --2d --disk '$overlay'" \
+              SERIAL='./os/dev/vm.sh serial' \
               ./os/tests/boot_assessment_rollback.sh "$BOOT_ASSESSMENT_IMAGE" "$TILO_RUN/boot-assessment"
           fi
           read -r -a samples <<< "$VERITY_SAMPLES"

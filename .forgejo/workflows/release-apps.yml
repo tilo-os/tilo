@@ -174,7 +174,7 @@ jobs:
               ('tools/ci/__init__.py', 61, 'd4ca8c8ec9228fafe30fae7d4532c4ac4455661dc92f75d2428f9d7779dba462'),
               ('tools/ci/python.py', 4094, 'f203b780f78a8c5a0c0cd8a443439f927e4012f6f5a2d85fe580e284ecde1afa'),
               ('tools/ci/resolve_builder.py', 7983, '58824c0b8a8cb969bae988379de273dad5e9948726299c553c4ab1b55f203e68'),
-              ('tools/ci/images.toml', 1502, '95e464bcd5c21301b5fbce9c2e9af21ee539ac2866606c780cf2503c7acb549c'),
+              ('tools/ci/images.toml', 1339, '8765f7b74ba07fd0f92df853d4b5323b5f7ce351484de5c58c061b06b3561e02'),
           )
 
           class NoRedirect(HTTPRedirectHandler):

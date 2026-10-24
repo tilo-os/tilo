@@ -3,6 +3,7 @@ use super::morning::{
 };
 use tilo_sort::CompactSort as _;
 mod morning_sources;
+mod serve;
 
 // Room activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
@@ -364,6 +365,37 @@ fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<Resume
         .max_by_key(|resume| resume.timestamp)
 }
 
+/// How strongly the resume card washes the sheet with primary ink.
+const RESUME_CARD_WASH: f32 = 0.13;
+
+/// The resume card's ground as it reaches the screen: its wash over the sheet.
+fn resume_card_ground(theme: &Theme) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    let sheet = ui::chrome::shell::panel_ground(theme);
+    ui::tokens::colors::over(sheet, colors.text_primary, RESUME_CARD_WASH)
+}
+
+/// The explorer's browse and detail panes as they reach the screen: an
+/// opaque lift laid over the sheet, so text in them is measured here and not
+/// on the sheet (the light theme is darker here than on the sheet).
+fn explorer_pane_ground(theme: &Theme) -> vello::peniko::Color {
+    theme.tokens.colors.lift(0.35)
+}
+
+/// Accent-toned text on `ground`: the accent as ink, stepped out until it
+/// reads there as text. `intent.accent_hover` is a fill: on the dark theme
+/// it read at 1.9:1 on the resume card.
+fn accent_text_on(theme: &Theme, ground: vello::peniko::Color) -> vello::peniko::Color {
+    use ui::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
+    let colors = &theme.tokens.colors;
+    let floor = if colors.palette.high_contrast {
+        HIGH_CONTRAST_TEXT_MIN_CONTRAST
+    } else {
+        BODY_TEXT_MIN_CONTRAST
+    };
+    colors.ink_on(ground, colors.intent.accent_ink, floor)
+}
+
 fn draw_resume_card(
     scene: &mut Scene,
     transform: Affine,
@@ -377,7 +409,7 @@ fn draw_resume_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.text_primary.with_alpha_factor(0.13),
+        colors.text_primary.with_alpha_factor(RESUME_CARD_WASH),
         None,
         &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
     );
@@ -404,7 +436,7 @@ fn draw_resume_card(
     tr.draw_style(
         scene,
         &t("activity-resume-heading"),
-        colors.intent.accent_hover,
+        accent_text_on(theme, resume_card_ground(theme)),
         at(transform, rect.x0 + 46.0, rect.y0 + 8.0),
         None,
         &theme.text(TextRole::Caption),
@@ -549,7 +581,7 @@ impl Period {
 
 /// Which workspaces' changes the pane is showing. A genuine scope
 /// decision, not a filter — a row outside it is not this room's history.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum RoomScope {
     /// Changes touching the active workspace, plus ones belonging to no
     /// single workspace — those can't carry another room into this view.
@@ -755,6 +787,9 @@ pub struct RoomActivityPane {
     cold_agent_runs: HashMap<RecordId, ColdAgentRuns>,
     agent_undo_notice: Option<(String, String)>,
     open_agent_records: HashSet<RecordId>,
+    /// What a deep link last asked the feed to show, and how many it asked.
+    focus: Option<tilo_actions::remote::workspace_activity::Focus>,
+    focus_serial: u64,
 }
 
 impl Default for RoomActivityPane {
@@ -954,6 +989,8 @@ impl RoomActivityPane {
             cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
             open_agent_records: HashSet::new(),
+            focus: None,
+            focus_serial: 0,
         }
     }
 
@@ -3154,7 +3191,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.lift(0.35),
+                explorer_pane_ground(theme),
                 None,
                 &RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.control)),
             );
@@ -3329,7 +3366,7 @@ impl RoomActivityPane {
         tr.draw_style(
             scene,
             &t("activity-agent-task"),
-            theme.tokens.colors.intent.accent_hover,
+            accent_text_on(theme, explorer_pane_ground(theme)),
             at(transform, x, y),
             None,
             &theme
@@ -6654,7 +6691,7 @@ fn draw_brief_card(
         scene,
         &affordance,
         if expanded {
-            theme.tokens.colors.intent.accent_hover
+            accent_text_on(theme, ui::chrome::shell::panel_ground(theme))
         } else {
             theme.tokens.colors.text_dim
         },

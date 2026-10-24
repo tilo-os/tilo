@@ -423,8 +423,9 @@ pub fn pipeline_desc_with_audio(
     // bits for openh264, `target-bitrate` in bits for libvpx, `bitrate` in
     // *kilo*bits for every hardware encoder and x264. The spec converts, so
     // the number the size estimate quotes is the rate the encoder is asked
-    // for whichever one was selected.
-    let bitrate_arg = enc.spec.bitrate_arg(bitrate);
+    // for whichever one was selected. The encoder's fixed settings follow
+    // (no B-frames for x264, so the file's first picture is at zero).
+    let encoder_args = enc.spec.launch_args(bitrate);
     let enc = enc.spec.element;
     let audio = with_audio
         .then(|| audio_branch_desc(settings.container, "tilo_mux"))
@@ -437,7 +438,7 @@ pub fn pipeline_desc_with_audio(
     format!(
         "appsrc name=tilo_src is-live=false format=time \
          caps=video/x-raw,format=RGBA,width={w},height={h},framerate={fps}/1 \
-         ! videoconvert ! {enc} {bitrate_arg} ! {parse}{mux} name=tilo_mux \
+         ! videoconvert ! {enc} {encoder_args} ! {parse}{mux} name=tilo_mux \
          ! filesink location=\"{out}\"{audio}"
     )
 }
@@ -2344,7 +2345,7 @@ mod tests {
                 // this machine has installed. Ask the selection for it rather
                 // than assuming the bits-per-second baseline.
                 let (sel, _, _) = encode_chain(container);
-                let arg = sel.spec.bitrate_arg(bps);
+                let arg = sel.spec.launch_args(bps);
                 assert!(
                     d.contains(&format!("{} {arg} !", sel.spec.element)),
                     "{container:?} at {} must encode at the quoted {bps} bps ({arg}): {d}",

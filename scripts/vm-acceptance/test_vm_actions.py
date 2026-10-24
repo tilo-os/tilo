@@ -129,5 +129,19 @@ class ActionsPagingTest(unittest.TestCase):
             self.assertEqual(self.vm.actions(), [CLOSER])
 
 
+class SplitCharacterOutputTest(unittest.TestCase):
+    """A byte-counted cut of slot output (`cut -c1-400` on a session log) can
+    end inside a multi-byte character; the command still answers."""
+
+    def test_a_split_character_is_replaced_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "tilo-vm"
+            # "née" cut after the first byte of the two-byte "é".
+            binary.write_text("#!/bin/sh\nprintf 'n\\303'\n")
+            binary.chmod(0o755)
+            vm = TiloVm(str(binary), "test-vm", "test-slot", Path(tmp) / "commands.log")
+            self.assertEqual(vm.run("slot", "exec", "cut -c1-2 log"), "n\ufffd")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -127,13 +127,14 @@ pub(crate) fn service_socket_is_live(path: &std::path::Path) -> bool {
 }
 
 /// The route the session's action door places offloadable actions through:
-/// the person's home relay that retains the session's rooms, over the
-/// document media the filesystem daemon keeps for them, reached as the
+/// the person's home relay that retains the invoking room, over the
+/// document media the filesystem daemon keeps for it, reached as the
 /// desktop session through the invoking app's scope
-/// ([`tilo_runtime::offload::session_action_offload`]). `None` — every
-/// offloadable action runs through its app's own handler — when offload is
-/// off or no registered relay retains any of the rooms. Never blocks on the
-/// network or the daemon.
+/// ([`tilo_runtime::offload::session_action_offload`]). The session's rooms
+/// now get their route at once; a room created or joined later is resolved
+/// when its first offloadable action is invoked. `None` — every offloadable
+/// action runs through its app's own handler — only when offload is off.
+/// Never blocks on the network or the daemon.
 pub(crate) fn session_action_offload(
     membership: &crate::shell::state::WorkspaceTreeHandle,
 ) -> Option<std::sync::Arc<dyn tilo_actions::offload::ActionOffload>> {
@@ -526,9 +527,9 @@ mod tests {
     }
 
     /// The compositor's broker, as the desktop session starts it, holds the
-    /// offload route its person's home relay configures — over the media
-    /// the filesystem daemon keeps — and none when offload is off or no
-    /// relay retains the session's rooms.
+    /// offload route the person's home relays configure — over the media
+    /// the filesystem daemon keeps — even for a relay registered after the
+    /// session started, and none when offload is off.
     #[test]
     #[allow(
         clippy::significant_drop_tightening,
@@ -563,29 +564,8 @@ mod tests {
                 drop(broker);
                 route
             };
-
-            // No home relay: every offloadable action runs through its
-            // app's handler, exactly as before.
-            assert!(route(&chrome).is_none(), "unconfigured: no route");
-
-            // The person's home relay retains the session's room. It never
-            // answers, so nothing can be placed elsewhere, and the route
-            // says so: the door runs the app's handler.
-            let (_, cert) = tilo_identity_host::broker::trusted_current_device(&room)
-                .expect("the session's certified device");
-            let unreachable =
-                iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
-                    .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
-            register_home_relay(
-                &tilo_relay::home_peer_registry_path(&identity_root),
-                cert.user_public_key,
-                &room,
-                unreachable,
-            );
-            let held = route(&chrome)
-                .expect("the configured home relay routes the session's offloadable actions");
             let request = tilo_actions::offload::OffloadRequest {
-                room,
+                room: room.clone(),
                 app_id: "so.tilo.photos".into(),
                 address: tilo_actions::ActionAddress::new("photos.library:main", "make-thumbnails"),
                 offload: tilo_actions::Offload {
@@ -598,10 +578,48 @@ mod tests {
                 },
                 inputs: vec![hex::encode([1; 32])],
             };
-            let answer = tilo_rt::app().handle().block_on(held.offload(request));
-            let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
-                panic!("an unreachable relay places nothing elsewhere: {answer:?}");
+            let run_here = |route: &std::sync::Arc<dyn tilo_actions::offload::ActionOffload>| {
+                let answer = tilo_rt::app()
+                    .handle()
+                    .block_on(route.offload(request.clone()));
+                let tilo_actions::offload::Offloaded::RunHere { reason } = answer else {
+                    panic!("nothing here can run elsewhere: {answer:?}");
+                };
+                reason
             };
+
+            // No home relay yet: the broker holds the route, which runs every
+            // offloadable action through its app's handler and says why.
+            let unconfigured = route(&chrome).expect("the session routes its rooms");
+            assert_eq!(
+                run_here(&unconfigured),
+                "no home relay of this device retains the room"
+            );
+
+            // The person's home relay is registered as retaining the room
+            // while that session runs: its route reaches the relay from the
+            // next invocation on. It never answers, so nothing can be placed
+            // elsewhere, and the route says so: the door runs the app's
+            // handler.
+            let (_, cert) = tilo_identity_host::broker::trusted_current_device(&room)
+                .expect("the session's certified device");
+            let unreachable =
+                iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[5; 32]).public())
+                    .with_ip_addr(std::net::SocketAddr::from(([127, 0, 0, 1], 9)));
+            register_home_relay(
+                &tilo_relay::home_peer_registry_path(&identity_root),
+                cert.user_public_key,
+                &room,
+                unreachable,
+            );
+            let reason = run_here(&unconfigured);
+            assert!(reason.contains("offload route"), "{reason}");
+            drop(unconfigured);
+
+            // A session started with it registered holds the route at once.
+            let held = route(&chrome)
+                .expect("the configured home relay routes the session's offloadable actions");
+            let reason = run_here(&held);
             assert!(reason.contains("offload route"), "{reason}");
             drop(held);
 

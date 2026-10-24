@@ -318,7 +318,7 @@ struct Opened {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     /// Every label and the ribbon band: the pointer on this (with
-    /// [`GRACE`]) keeps the labels up.
+    /// `GRACE`) keeps the labels up.
     pub bounds: Rect,
     /// Each label's pointer row: from the label's left edge to the screen
     /// edge, as tall as its ribbon segment's pointer target, so the rows
@@ -871,7 +871,7 @@ impl StripSwitcher {
     }
 
     /// A wheel or two-finger scroll over the switcher at `now`: a strip up
-    /// or down per notch, or per [`SCROLL_STEP_PX`] of travel. `None` until
+    /// or down per notch, or per `SCROLL_STEP_PX` of travel. `None` until
     /// the travel adds up to a step, or when the pointer is not on it.
     pub fn scroll(
         &mut self,

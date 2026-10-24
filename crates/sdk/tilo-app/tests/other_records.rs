@@ -350,7 +350,7 @@ fn declared_records_are_published_and_committed_though_no_view_shows_them() {
     let playback = app.person::<Playback>().unwrap();
     assert!(playback.with(|state| state.muted.contains(&"news".to_owned())));
 
-    let report = tilo_app::framework::testing::surface_report::<DeclaringApp>();
+    let report = tilo_app::framework::headless::surface_report::<DeclaringApp>();
     let kinds: Vec<&str> = report["resources"]
         .as_array()
         .unwrap()

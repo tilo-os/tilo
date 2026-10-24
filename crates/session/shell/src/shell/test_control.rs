@@ -2522,7 +2522,15 @@ mod tests {
         let mut unnamed = Strip::new(crate::shell::state::StripId(11), "");
         unnamed.window_groups = vec![group(
             110,
-            vec![tab(1100, "Activity", TileContent::WorkspaceActivity)],
+            vec![tab(
+                1100,
+                "Activity",
+                TileContent::LocalApp {
+                    app_id: "so.tilo.activity".into(),
+                    label: "Activity".into(),
+                    note: String::new(),
+                },
+            )],
             1100,
         )];
         home.strips = vec![main, unnamed];
@@ -2550,9 +2558,9 @@ mod tests {
                  "app_id": null, "title": "Placeholder", "active": true},
                 {"workspace": "Home", "strip": "Main", "group": 101, "tab": 1010, "kind": "Foreign",
                  "app_id": "so.tilo.notes", "title": "Notes 2", "active": false},
-                // An unnamed strip is named by its id; a unit tile by its variant.
-                {"workspace": "Home", "strip": 11, "group": 110, "tab": 1100, "kind": "WorkspaceActivity",
-                 "app_id": null, "title": "Activity", "active": false},
+                // An unnamed strip is named by its id.
+                {"workspace": "Home", "strip": 11, "group": 110, "tab": 1100, "kind": "LocalApp",
+                 "app_id": "so.tilo.activity", "title": "Activity", "active": false},
             ])
         );
     }

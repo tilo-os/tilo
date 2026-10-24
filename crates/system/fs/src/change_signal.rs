@@ -15,7 +15,10 @@
 //! watch on it. The value is a token only this daemon knows, and setting it
 //! changes nothing; anyone else is refused. The root is signalled too
 //! whenever the record catalogue's revision moves, which is what a watch on
-//! the catalogue waits for.
+//! the catalogue waits for. A file's availability (fetched, kept offline,
+//! unavailable while the device that keeps it is offline) is no namespace
+//! change at all, so a change to its availability record signals the
+//! directory the file is in the same way.
 //!
 //! The mount answers the attribute with `1` once a signal has gone through,
 //! and only while the worker raises them, so a watcher trusts its watch
@@ -100,6 +103,7 @@ mod worker {
     use tilo_lock::MutexRecover as _;
 
     use super::ChangeSignal;
+    use crate::availability::AvailabilityRegistry;
     use crate::namespace::{Namespace, ROOT_INO};
 
     /// A burst of changes (one peer's sync, a folder copied in) is signalled
@@ -128,9 +132,10 @@ mod worker {
     }
 
     impl ChangeSignal {
-        /// Raise signals for `namespace`, mounted at `mount_point`, whose
-        /// session `notifier` belongs to, on `runtime`. A first signal on the
-        /// root must go through before the mount says it signals.
+        /// Raise signals for `namespace`, and for the records of
+        /// `availability` when the mount has one, mounted at `mount_point`,
+        /// whose session `notifier` belongs to, on `runtime`. A first signal
+        /// on the root must go through before the mount says it signals.
         ///
         /// # Errors
         ///
@@ -139,11 +144,17 @@ mod worker {
         pub fn start(
             self: &Arc<Self>,
             namespace: Arc<Mutex<Namespace>>,
+            availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
             mount_point: &Path,
             notifier: Notifier,
             runtime: &tokio::runtime::Handle,
         ) -> io::Result<ChangeSignalTask> {
             self.raise(mount_point, Path::new(""))?;
+            // Subscribed before the first pass, so no record changed in
+            // between goes unsignalled.
+            let mut records = availability
+                .as_ref()
+                .map(|registry| registry.lock_recover().subscribe_changes());
             let (mut changes, mut seen) = {
                 let mut ns = namespace.lock_recover();
                 ns.collect_projected_changes();
@@ -157,12 +168,29 @@ mod worker {
             let signal = Arc::clone(self);
             let mount_point = mount_point.to_path_buf();
             let task = runtime.spawn(async move {
-                while changes.changed().await.is_ok() {
+                loop {
+                    let record_changed = async {
+                        match records.as_mut() {
+                            Some(records) => records.changed().await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    let woke = tokio::select! {
+                        heard = changes.changed() => heard.is_ok(),
+                        heard = record_changed => heard.is_ok(),
+                    };
+                    if !woke {
+                        break;
+                    }
                     tokio::time::sleep(SETTLE).await;
                     changes.borrow_and_update();
+                    if let Some(records) = records.as_mut() {
+                        records.borrow_and_update();
+                    }
                     let pass = Pass {
                         signal: Arc::clone(&signal),
                         namespace: Arc::clone(&namespace),
+                        availability: availability.clone(),
                         mount_point: mount_point.clone(),
                         notifier: notifier.clone(),
                     };
@@ -211,23 +239,39 @@ mod worker {
     struct Pass {
         signal: Arc<ChangeSignal>,
         namespace: Arc<Mutex<Namespace>>,
+        availability: Option<Arc<Mutex<AvailabilityRegistry>>>,
         mount_point: PathBuf,
         notifier: Notifier,
     }
 
     impl Pass {
         fn run(self, seen: &Seen) -> io::Result<Seen> {
+            // Taken before the namespace is locked: the registry is never
+            // locked inside the namespace lock.
+            let records = self
+                .availability
+                .as_ref()
+                .map(|registry| registry.lock_recover().take_changed_records())
+                .unwrap_or_default();
             let (nodes, directories, next) = {
                 let mut ns = self.namespace.lock_recover();
                 let changes = ns.kernel_changes_since(&seen.heads);
+                let mut changed_directories = changes.directories;
+                for record in records {
+                    if let Some(parent) = ns
+                        .ino_for_record_id(record)
+                        .and_then(|ino| ns.parent_ino(ino))
+                    {
+                        changed_directories.insert(parent);
+                    }
+                }
                 let next = Seen {
                     heads: ns.heads(),
                     catalogue: ns.indexed_record_revision().to_owned(),
                 };
                 let mut directories: BTreeSet<u64> = {
                     let listed = self.signal.listed.lock_recover();
-                    changes
-                        .directories
+                    changed_directories
                         .into_iter()
                         .filter(|ino| listed.contains(ino))
                         .collect()

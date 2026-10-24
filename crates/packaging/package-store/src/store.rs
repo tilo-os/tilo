@@ -840,7 +840,7 @@ impl PackageStore {
         )?;
         let previous = registry.find(&meta.manifest.package.id).cloned();
         let pinned = admission.pinned || previous.as_ref().is_some_and(|row| row.pinned);
-        let package = self.row_for(
+        let mut package = self.row_for(
             meta,
             Admission {
                 pinned,
@@ -848,6 +848,13 @@ impl PackageStore {
             },
             now,
         );
+        // An update is not a use: the size sweep evicts the app the person
+        // opened least recently, and a background update of an app they
+        // never open must not make it look freshly used. A row that never
+        // recorded one (`0`) dates from the install as before.
+        if let Some(previous) = previous.as_ref().filter(|row| row.last_used != 0) {
+            package.last_used = previous.last_used;
+        }
         let replaced = registry.upsert(package.clone());
         registry.save(&self.layout.registry())?;
         if let Some(old) = &replaced
@@ -979,7 +986,7 @@ impl PackageStore {
 
     /// Remove every payload tree and record under `pkgs/` that no registry
     /// row and no image names: left by a crash between a commit and retiring
-    /// the replaced tree, or kept by [`Self::retire_tree`] while a running
+    /// the replaced tree, or kept by `Self::retire_tree` while a running
     /// app had it mounted or a launch held it. A tree `in_use` holds or a
     /// launch holds stays. Then empty `tmp/` of the staging crashed
     /// installs left.

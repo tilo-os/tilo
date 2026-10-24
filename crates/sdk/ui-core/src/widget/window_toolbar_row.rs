@@ -57,9 +57,20 @@ use crate::time::Instant;
 use crate::tokens::{MotionSource, TextRole};
 use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
 
+mod access;
+mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
+mod paint;
+mod strip;
+use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
 use location_label::{LocationLabel, edited_word};
+#[cfg(test)]
+pub(crate) use paint::location_shown;
+#[cfg(test)]
+use paint::shows_on;
+pub(crate) use paint::{LocationLift, PickerText, paint_picker};
+use paint::{labelled_face, picker_width};
 
 /// Action targets of the slots, as assistive technology and automation
 /// address them.
@@ -75,6 +86,7 @@ pub const CHOICE_TARGET_PREFIX: &str = "window-toolbar-choice:";
 pub const LEADING_TARGET_PREFIX: &str = "window-toolbar-leading:";
 pub const VIEW_TARGET_PREFIX: &str = "window-toolbar-view:";
 pub const VIEWS_MENU_TARGET: &str = "window-toolbar-views";
+pub const NOTICE_TARGET_PREFIX: &str = "window-toolbar-notice:";
 
 /// The size of the view switcher's segments: a strip no taller than the
 /// bar's buttons.
@@ -90,536 +102,6 @@ const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as 
 /// Actions move into the overflow menu, last first, while the location
 /// would be narrower than this.
 const COMFORTABLE_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Slot {
-    Sidebar,
-    Back,
-    Forward,
-    /// One of the actions after the navigation.
-    Leading(usize),
-    Location,
-    /// One choice of the view switcher.
-    View(usize),
-    /// The views folded into a menu: the chosen one named, the others a
-    /// press away.
-    ViewsMenu,
-    Action(usize),
-    /// The button whose menu holds the actions the row has no room for.
-    Overflow,
-}
-
-/// Where each slot of one toolbar sits.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Slots {
-    pub sidebar: Rect,
-    pub back: Rect,
-    pub forward: Rect,
-    /// The leading actions, after the navigation.
-    pub leading: Vec<Rect>,
-    pub location: Rect,
-    /// The view switcher's segments (none: folded into the views menu, or
-    /// into the overflow menu).
-    pub views: Vec<Rect>,
-    /// The views menu, where the row has no room for the switcher
-    /// (`Rect::ZERO`: none).
-    pub views_menu: Rect,
-    /// The actions standing in the row, the first of the declared ones.
-    pub actions: Vec<Rect>,
-    /// The overflow button (`Rect::ZERO`: every action is in the row).
-    pub overflow: Rect,
-    /// Which form of its label the location shows
-    /// ([`crate::window_toolbar::ToolbarLocation::form`]).
-    pub form: usize,
-}
-
-/// What the row lays out beside the toolbar: the view switcher's size and
-/// the views menu's width, as the theme draws their labels (none before
-/// they are measured).
-pub(crate) type ViewsSize = Option<ViewsMeasure>;
-
-/// The two forms the views take in the row.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ViewsMeasure {
-    /// The segmented switcher's width and height.
-    pub strip: (f64, f64),
-    /// The views menu's width: as wide as its widest label needs, so
-    /// choosing another view never moves the row.
-    pub menu: f64,
-    /// What the location as the views' picker stands beside its label:
-    /// its face's padding and chevron (none: the location cannot pick the
-    /// views, [`picks_views`]). Laid out, the least width of the picker:
-    /// that beside the form the location shows.
-    pub location: Option<f64>,
-}
-
-/// The location's label and its narrower forms as the theme draws them.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct LocationForms {
-    /// Each form's text width, the label's first.
-    pub text: Vec<f64>,
-    /// What stands beside the text in the location at rest: its icon, a
-    /// field's frame.
-    pub chrome: f64,
-}
-
-impl LocationForms {
-    /// The widest form that stands whole at rest in `room`, else the
-    /// narrowest.
-    fn fitting(&self, room: f64) -> usize {
-        self.text
-            .iter()
-            .position(|width| width + self.chrome <= room)
-            .unwrap_or_else(|| self.text.len().saturating_sub(1))
-    }
-
-    /// The room the location at rest keeps for `form` to stand whole: none
-    /// where it has no narrower form to choose, or `form` is cut short in
-    /// `room` all the same.
-    fn least(&self, form: usize, room: f64) -> f64 {
-        match self.text.get(form) {
-            Some(width) if self.text.len() > 1 && width + self.chrome <= room => {
-                width + self.chrome
-            }
-            _ => 0.0,
-        }
-    }
-
-    /// The text width of `form` (nothing measured: none).
-    fn width(&self, form: usize) -> f64 {
-        self.text.get(form).copied().unwrap_or(0.0)
-    }
-}
-
-/// What the views and the location's forms were measured for.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MeasureKey {
-    labels: Vec<String>,
-    forms: Vec<String>,
-    editable: bool,
-    picker: bool,
-    icon: bool,
-    text_scale: u32,
-}
-
-/// What stands beside the label's text in the location at rest
-/// ([`paint_location`]): a picker's face and chevron where it chooses
-/// among places, a field's frame where it is edited, its icon.
-fn location_chrome((editable, picker, icon): (bool, bool, bool), theme: &Theme) -> f64 {
-    if picker {
-        return picker_width(0.0, theme);
-    }
-    let mut chrome = 0.0;
-    if editable {
-        let rect = Rect::new(0.0, 0.0, COMFORTABLE_LOCATION_PX, CONTROL_PX);
-        chrome += rect.width() - FieldFace::new(rect, "").text_rect(theme).width();
-    }
-    if icon {
-        chrome += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
-    }
-    chrome
-}
-
-/// Where the views stand in one layout of the row.
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum ViewsPlace {
-    /// The segmented switcher, this wide and tall.
-    Strip(f64, f64),
-    /// The views menu, this wide.
-    Menu(f64),
-    /// The location as the views' picker, at least this wide.
-    InLocation(f64),
-    /// The overflow menu's first rows (or there are no views).
-    Overflow,
-}
-
-/// Where the views go once the switcher has no room: into the location,
-/// as its picker, where it can be one ([`picks_views`]), else into a views
-/// menu of their own.
-fn folded_views(measured: ViewsMeasure) -> ViewsPlace {
-    measured
-        .location
-        .map_or(ViewsPlace::Menu(measured.menu), ViewsPlace::InLocation)
-}
-
-/// Whether `toolbar`'s location can be the views' picker: a plain label,
-/// neither edited, nor a picker of its own places, nor a breadcrumb.
-fn picks_views(toolbar: &WindowToolbar) -> bool {
-    toolbar.location.as_ref().is_some_and(|location| {
-        !location.editable
-            && location.choices.is_empty()
-            && location.segments.is_empty()
-            && !location.label.is_empty()
-    })
-}
-
-/// What one layout keeps in the row: the first `plain` leading actions
-/// that do not move through the content, the first `navigating` that do,
-/// and the first `inline` actions.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Kept {
-    plain: usize,
-    navigating: usize,
-    inline: usize,
-}
-
-impl Kept {
-    /// Every leading action, and the first `inline` actions.
-    fn all(toolbar: &WindowToolbar, inline: usize) -> Self {
-        let navigating = toolbar
-            .leading
-            .iter()
-            .filter(|action| action.navigates)
-            .count();
-        Self {
-            plain: toolbar.leading.len().saturating_sub(navigating),
-            navigating,
-            inline,
-        }
-    }
-
-    /// Whether leading action `index` stands in the row.
-    fn shows(self, toolbar: &WindowToolbar, index: usize) -> bool {
-        let Some(action) = toolbar.leading.get(index) else {
-            return false;
-        };
-        let rank = toolbar
-            .leading
-            .iter()
-            .take(index)
-            .filter(|other| other.navigates == action.navigates)
-            .count();
-        rank < if action.navigates {
-            self.navigating
-        } else {
-            self.plain
-        }
-    }
-}
-
-impl Slots {
-    /// Lay `toolbar`'s slots out across `row`, centred on its centre line:
-    /// navigation and the leading actions leading, the views and the
-    /// actions trailing, the location filling between. At most
-    /// [`crate::window_toolbar::MAX_ACTIONS`] actions stand in the row;
-    /// while the location would be narrower than
-    /// [`COMFORTABLE_LOCATION_PX`] (or, without one, while the buttons would
-    /// overlap) the last of them move into the overflow menu, as do the
-    /// declared actions past that many and those declared for the menu, and
-    /// the view switcher folds into the views menu. Where that leaves the
-    /// location narrower than [`MIN_LOCATION_PX`], the rest goes into the
-    /// overflow menu in [`Slots::yielding`]'s order, so the location stays
-    /// in the row, elided. One action never goes into the menu alone: the
-    /// menu's button would take its place and hide it.
-    ///
-    /// The location shows the widest form of its label that stands whole
-    /// beside the navigation, with everything that yields before it in the
-    /// menu, and that yields only where that form would not stand whole:
-    /// a wider row never shows a narrower form. The location is the views'
-    /// picker only where that same form stands whole beside its chevron.
-    pub(crate) fn lay_out(
-        toolbar: &WindowToolbar,
-        row: Rect,
-        views: ViewsSize,
-        forms: &LocationForms,
-    ) -> Self {
-        if row.width() <= 0.0 || row.height() <= 0.0 {
-            return Self::default();
-        }
-        // The room the location has beside the navigation alone, everything
-        // that yields before it ([`Self::yielding`]) in the menu.
-        let navigation = Kept {
-            plain: 0,
-            inline: 0,
-            ..Kept::all(toolbar, 0)
-        };
-        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow)
-            .location
-            .width();
-        let form = forms.fitting(room);
-        let least = forms.least(form, room);
-        let mut slots = Self::arranged(toolbar, row, views, (forms.width(form), least));
-        slots.form = form;
-        slots
-    }
-
-    /// [`Self::lay_out`] for a location showing a form `form_w` wide, which
-    /// at rest stands whole in a location `least` wide.
-    fn arranged(
-        toolbar: &WindowToolbar,
-        row: Rect,
-        views: ViewsSize,
-        (form_w, least): (f64, f64),
-    ) -> Self {
-        let row_actions = toolbar
-            .row_actions()
-            .min(crate::window_toolbar::MAX_ACTIONS);
-        let measured = views
-            .filter(|_| {
-                toolbar
-                    .views
-                    .as_ref()
-                    .is_some_and(|views| !views.choices.is_empty())
-            })
-            .map(|m| ViewsMeasure {
-                location: m
-                    .location
-                    .filter(|_| picks_views(toolbar))
-                    .map(|chrome| form_w.ceil() + chrome),
-                ..m
-            });
-        // A menu holding one action alone saves no width: its button takes
-        // the action's place and hides it.
-        let lone = |inline: usize, place: ViewsPlace| {
-            row_actions - inline == 1
-                && toolbar.actions.len() == row_actions
-                && (toolbar.views.is_none() || place != ViewsPlace::Overflow)
-        };
-        let places = match measured {
-            Some(m) => vec![ViewsPlace::Strip(m.strip.0, m.strip.1), folded_views(m)],
-            None => vec![ViewsPlace::Overflow],
-        };
-        let all = Kept::all(toolbar, row_actions);
-        for &place in &places {
-            let mut inline = row_actions;
-            loop {
-                let slots = Self::with_inline(toolbar, row, Kept { inline, ..all }, place);
-                let room = if toolbar.location.is_some() {
-                    slots.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
-                } else {
-                    slots.fits(row)
-                };
-                let placed =
-                    !matches!(place, ViewsPlace::InLocation(_)) || slots.views_menu.area() > 0.0;
-                if room && placed && !lone(inline, place) {
-                    return slots;
-                }
-                if inline == 0 {
-                    break;
-                }
-                inline -= 1;
-            }
-        }
-        let mut last = Self::default();
-        for (kept, place) in Self::yielding(toolbar, measured) {
-            let inline =
-                if kept.plain == all.plain && kept.navigating == all.navigating && lone(0, place) {
-                    row_actions
-                } else {
-                    0
-                };
-            let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place);
-            let located = match place {
-                ViewsPlace::InLocation(least) => slots.location.width() >= least,
-                _ => {
-                    toolbar.location.is_none()
-                        || (slots.location.area() > 0.0 && slots.location.width() >= least)
-                }
-            };
-            if slots.fits(row) && located {
-                return slots;
-            }
-            last = slots;
-        }
-        last
-    }
-
-    /// What goes into the overflow menu, in order, where the row is too
-    /// narrow for the location beside everything else: the plain leading
-    /// actions, the last first; then the views (the views menu's place);
-    /// then the leading actions that move through the content, the last
-    /// first. The location yields to none of them: it stays, elided.
-    fn yielding(toolbar: &WindowToolbar, measured: ViewsSize) -> Vec<(Kept, ViewsPlace)> {
-        let all = Kept::all(toolbar, 0);
-        let views = measured.map_or(ViewsPlace::Overflow, folded_views);
-        let plain = (0..=all.plain)
-            .rev()
-            .map(|plain| (Kept { plain, ..all }, views));
-        let navigating = (0..=all.navigating).rev().map(|navigating| {
-            let kept = Kept {
-                plain: 0,
-                navigating,
-                inline: 0,
-            };
-            (kept, ViewsPlace::Overflow)
-        });
-        plain.chain(navigating).collect()
-    }
-
-    /// The slots with the leading actions and the actions `kept` keeps in
-    /// the row and the rest in the overflow menu, and the views at `place`.
-    fn with_inline(toolbar: &WindowToolbar, row: Rect, kept: Kept, place: ViewsPlace) -> Self {
-        let mut slots = Self::default();
-        let y0 = row.center().y - CONTROL_PX / 2.0;
-        let square = |x0: f64| Rect::new(x0, y0, x0 + CONTROL_PX, y0 + CONTROL_PX);
-        let mut x0 = row.x0;
-        if toolbar.sidebar.is_some() {
-            slots.sidebar = square(x0);
-            x0 = slots.sidebar.x1 + SECTION_GAP;
-        }
-        if toolbar.navigation.is_some() {
-            slots.back = square(x0);
-            slots.forward = square(slots.back.x1 + CONTROL_GAP);
-            x0 = slots.forward.x1 + SECTION_GAP;
-        }
-        let mut folded = false;
-        let mut any = false;
-        for index in 0..toolbar.leading.len() {
-            if kept.shows(toolbar, index) {
-                let rect = square(x0);
-                x0 = rect.x1 + CONTROL_GAP;
-                slots.leading.push(rect);
-                any = true;
-            } else {
-                slots.leading.push(Rect::ZERO);
-                folded = true;
-            }
-        }
-        if any {
-            x0 = x0 - CONTROL_GAP + SECTION_GAP;
-        }
-        let inline = kept.inline;
-        let mut x1 = row.x1;
-        let mut trailing = false;
-        let in_menu = toolbar.actions.len() > inline
-            || folded
-            || (toolbar.views.is_some() && place == ViewsPlace::Overflow);
-        if in_menu {
-            slots.overflow = Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
-            x1 = slots.overflow.x0 - CONTROL_GAP;
-            trailing = true;
-        }
-        let mut actions = Vec::with_capacity(inline);
-        for _ in 0..inline {
-            let rect = Rect::new(x1 - CONTROL_PX, y0, x1, y0 + CONTROL_PX);
-            x1 = rect.x0 - CONTROL_GAP;
-            actions.push(rect);
-            trailing = true;
-        }
-        actions.reverse();
-        slots.actions = actions;
-        if trailing {
-            x1 = x1 + CONTROL_GAP - SECTION_GAP;
-        }
-        let choices = toolbar
-            .views
-            .as_ref()
-            .map_or(0, |views| views.choices.len());
-        match place {
-            ViewsPlace::Strip(width, height) if choices > 0 => {
-                let strip = Rect::new(
-                    x1 - width,
-                    row.center().y - height / 2.0,
-                    x1,
-                    row.center().y + height / 2.0,
-                );
-                slots.views = equal_segments(strip, choices);
-                x1 = strip.x0 - SECTION_GAP;
-            }
-            ViewsPlace::Menu(width) if choices > 0 => {
-                slots.views_menu = Rect::new(x1 - width, y0, x1, y0 + CONTROL_PX);
-                x1 = slots.views_menu.x0 - SECTION_GAP;
-            }
-            _ => {}
-        }
-        if toolbar.location.is_some() && x1 - x0 >= MIN_LOCATION_PX {
-            slots.location = Rect::new(x0, y0, x1, y0 + CONTROL_PX);
-        }
-        if let ViewsPlace::InLocation(least) = place
-            && choices > 0
-            && slots.location.width() >= least
-        {
-            slots.views_menu = slots.location;
-        }
-        slots
-    }
-
-    /// Every button stands inside `row`, clear of the ones before it.
-    fn fits(&self, row: Rect) -> bool {
-        let lead = self
-            .leading
-            .iter()
-            .map(|rect| rect.x1)
-            .fold(self.forward.x1.max(self.sidebar.x1).max(row.x0), f64::max);
-        self.actions
-            .iter()
-            .chain(self.views.first())
-            .chain((self.views_menu.area() > 0.0).then_some(&self.views_menu))
-            .chain((self.overflow.area() > 0.0).then_some(&self.overflow))
-            .all(|rect| rect.x0 >= lead)
-    }
-
-    /// Whether the location is the views' picker.
-    pub(crate) fn views_in_location(&self) -> bool {
-        self.views_menu.area() > 0.0 && self.views_menu == self.location
-    }
-
-    /// The leading actions the row has no room for, in their order.
-    fn folded_leading(&self) -> impl Iterator<Item = usize> + '_ {
-        self.leading
-            .iter()
-            .enumerate()
-            .filter(|(_, rect)| rect.area() <= 0.0)
-            .map(|(index, _)| index)
-    }
-
-    /// The view switcher's whole strip (`Rect::ZERO`: in the menu).
-    #[cfg(test)]
-    pub(crate) fn views_strip(&self) -> Rect {
-        match (self.views.first(), self.views.last()) {
-            (Some(first), Some(last)) => first.union(*last),
-            _ => Rect::ZERO,
-        }
-    }
-
-    fn hit(&self, p: Point) -> Option<Slot> {
-        if self.sidebar.contains(p) {
-            return Some(Slot::Sidebar);
-        }
-        if self.back.contains(p) {
-            return Some(Slot::Back);
-        }
-        if self.forward.contains(p) {
-            return Some(Slot::Forward);
-        }
-        if let Some(i) = self.leading.iter().position(|r| r.contains(p)) {
-            return Some(Slot::Leading(i));
-        }
-        if let Some(i) = self.views.iter().position(|r| r.contains(p)) {
-            return Some(Slot::View(i));
-        }
-        if self.views_menu.contains(p) {
-            return Some(Slot::ViewsMenu);
-        }
-        if let Some(i) = self.actions.iter().position(|r| r.contains(p)) {
-            return Some(Slot::Action(i));
-        }
-        if self.overflow.contains(p) {
-            return Some(Slot::Overflow);
-        }
-        self.location.contains(p).then_some(Slot::Location)
-    }
-}
-
-/// `strip` split into `n` equal segments, as a segmented control of
-/// labels that all fit splits itself.
-fn equal_segments(strip: Rect, n: usize) -> Vec<Rect> {
-    let Some(count) = u32::try_from(n).ok().filter(|n| *n > 0) else {
-        return Vec::new();
-    };
-    let share = strip.width() / f64::from(count);
-    (0..count)
-        .map(|i| {
-            let x0 = strip.x0 + share * f64::from(i);
-            let x1 = if i.saturating_add(1) == count {
-                strip.x1
-            } else {
-                x0 + share
-            };
-            Rect::new(x0, strip.y0, x1, strip.y1)
-        })
-        .collect()
-}
 
 /// What a row of the open menu (the overflow's, a menu button's, or the
 /// location's picker) runs.
@@ -683,7 +165,7 @@ pub(crate) struct ToolbarRow {
     menu_slot: Option<Slot>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
-    views_size: Option<(MeasureKey, ViewsSize, LocationForms, Vec<f64>)>,
+    views_size: Option<Measured>,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -700,6 +182,10 @@ pub(crate) struct ToolbarRow {
     /// What the edited field holds, for the app's suggestions: drafts, not
     /// things the person did, so they go out apart from [`Self::events`].
     drafts: Vec<(u64, ToolbarEvent)>,
+    /// The window is compact: a notice says itself in its own strip under
+    /// the row ([`strip::NoticeStrip`]), not in the location's place.
+    compact: bool,
+    strip: strip::NoticeStrip,
 }
 
 impl Default for ToolbarRow {
@@ -734,6 +220,8 @@ impl ToolbarRow {
             popup_area: Rect::ZERO,
             events: Vec::new(),
             drafts: Vec::new(),
+            compact: false,
+            strip: strip::NoticeStrip::default(),
         }
     }
 
@@ -745,7 +233,32 @@ impl ToolbarRow {
         theme_motion: crate::tokens::EffectiveMotion,
         now: Instant,
     ) {
-        let next = toolbar.map(|toolbar| (tab, toolbar.clone()));
+        // A notice stands in the location's place, unless the location is
+        // being edited: the field keeps what the person is typing. In a
+        // compact window it has a strip of its own under the row, and the
+        // row stands as it does without one.
+        let editing =
+            self.field.is_some() && self.shown.as_ref().map(|(shown, _)| *shown) == Some(tab);
+        let compact = self.compact;
+        self.strip.offer(
+            toolbar
+                .and_then(|toolbar| toolbar.notice.as_ref())
+                .filter(|_| compact),
+            theme_motion,
+        );
+        let next = toolbar.map(|toolbar| {
+            if editing || compact {
+                (
+                    tab,
+                    WindowToolbar {
+                        notice: None,
+                        ..toolbar.clone()
+                    },
+                )
+            } else {
+                (tab, toolbar.presented())
+            }
+        });
         let next_tab = next.as_ref().map(|(tab, _)| *tab);
         let previous_tab = self.shown.as_ref().map(|(tab, _)| *tab);
         if next_tab != previous_tab {
@@ -891,8 +404,25 @@ impl ToolbarRow {
                     .collect()
             })
             .unwrap_or_default();
+        let leading: Vec<String> = self
+            .toolbar()
+            .map(|toolbar| {
+                toolbar
+                    .leading
+                    .iter()
+                    .map(|action| {
+                        if action.labelled {
+                            action.name.clone()
+                        } else {
+                            String::new()
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let key = MeasureKey {
             labels,
+            leading,
             forms,
             editable: location.is_some_and(|location| location.editable),
             picker: location
@@ -900,9 +430,21 @@ impl ToolbarRow {
             icon: location.is_some_and(|location| {
                 location.icon.as_deref().and_then(Icon::from_name).is_some()
             }),
+            notice: self
+                .toolbar()
+                .and_then(|toolbar| toolbar.notice.as_ref())
+                .map(|notice| {
+                    notice
+                        .actions
+                        .iter()
+                        .map(|action| action.name.clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
             text_scale: theme.text_scale.to_bits(),
         };
-        if key.labels.is_empty() && key.forms.is_empty() {
+        if key.labels.is_empty() && key.forms.is_empty() && key.leading.iter().all(String::is_empty)
+        {
             let had = self.views_size.take().is_some();
             if had {
                 self.lay_out(self.row);
@@ -912,18 +454,25 @@ impl ToolbarRow {
         if self
             .views_size
             .as_ref()
-            .is_some_and(|(measured, ..)| *measured == key)
+            .is_some_and(|measured| measured.key == key)
         {
             return false;
         }
         let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
+            // The notice's buttons as text buttons, each its label in it.
+            let actions = key
+                .notice
+                .iter()
+                .map(|name| labelled_face(Rect::ZERO, name).intrinsic_width(text, theme))
+                .collect();
             let style = theme.text(TextRole::Body);
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
                 chrome: location_chrome((key.editable, key.picker, key.icon), theme),
+                actions,
             };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
             let views = (!labels.is_empty()).then_some(ViewsMeasure {
@@ -934,10 +483,27 @@ impl ToolbarRow {
                 menu: picker_width(widest, theme),
                 location: Some(picker_width(0.0, theme)),
             });
-            (views, forms, tabs)
+            let leading = key
+                .leading
+                .iter()
+                .map(|name| {
+                    if name.is_empty() {
+                        0.0
+                    } else {
+                        labelled_face(Rect::ZERO, name).intrinsic_width(text, theme)
+                    }
+                })
+                .collect();
+            (views, forms, tabs, leading)
         });
-        let (views, forms, tabs) = measured;
-        self.views_size = Some((key, views, forms, tabs));
+        let (views, forms, tabs, leading) = measured;
+        self.views_size = Some(Measured {
+            key,
+            views,
+            forms,
+            tabs,
+            leading,
+        });
         self.lay_out(self.row);
         true
     }
@@ -949,18 +515,20 @@ impl ToolbarRow {
     /// Lay the slots out across `row`.
     pub(crate) fn lay_out(&mut self, row: Rect) {
         self.row = row;
-        let (views, forms) = self
+        let unmeasured = LocationForms::default();
+        let (views, forms, labels) = self
             .views_size
             .as_ref()
-            .map_or((None, None), |(_, views, forms, _)| (*views, Some(forms)));
-        let unmeasured = LocationForms::default();
+            .map_or((None, &unmeasured, &[][..]), |measured| {
+                (measured.views, &measured.forms, measured.leading.as_slice())
+            });
         self.slots = self
             .toolbar()
-            .map(|toolbar| Slots::lay_out(toolbar, row, views, forms.unwrap_or(&unmeasured)))
+            .map(|toolbar| Slots::lay_out(toolbar, row, views, (forms, labels)))
             .unwrap_or_default();
         // The views are tabs, each as wide as its label (as `ViewTabs`
         // packs them), across the strip measured to hold them.
-        if let Some((.., tabs)) = self.views_size.as_ref()
+        if let Some(Measured { tabs, .. }) = self.views_size.as_ref()
             && let Some(strip_x0) = self.slots.views.first().map(|tab| tab.x0)
             && tabs.len() == self.slots.views.len()
         {
@@ -1095,6 +663,64 @@ impl ToolbarRow {
 
     pub(crate) fn slots(&self) -> &Slots {
         &self.slots
+    }
+
+    /// Say a notice in a strip of its own under the row (`compact`), or in
+    /// the location's place. Takes hold at the next [`Self::show`].
+    pub(crate) fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
+    }
+
+    /// How tall the notice's strip stands under the row (none: no strip).
+    pub(crate) fn strip_height(&self) -> f64 {
+        self.strip.height()
+    }
+
+    /// Measure the notice's strip as `theme` draws it across `width`.
+    /// Returns whether its height changed.
+    pub(crate) fn measure_strip(&mut self, theme: &Theme, width: f64) -> bool {
+        self.strip.measure(theme, width)
+    }
+
+    /// Stand the notice's strip at `rect`, the room the bar keeps for it.
+    pub(crate) fn place_strip(&mut self, rect: Rect) {
+        self.strip.place(rect);
+    }
+
+    /// Where the notice's strip stands (`Rect::ZERO`: none).
+    pub(crate) fn strip_rect(&self) -> Rect {
+        self.strip.rect()
+    }
+
+    /// The notice up in the strip, where its text stands, whether whole,
+    /// and its buttons (none: no strip).
+    pub(crate) fn strip_notice(
+        &self,
+    ) -> Option<(&crate::window_toolbar::ToolbarNotice, Rect, bool, Vec<Rect>)> {
+        let notice = self.strip.notice()?;
+        Some((
+            notice,
+            self.strip.text_rect(),
+            self.strip.whole(),
+            self.strip.buttons(),
+        ))
+    }
+
+    /// The slot at `p`: one of the strip's buttons, else one of the row's.
+    fn hit_slot(&self, p: Point) -> Option<Slot> {
+        if let Some(i) = self.strip.buttons().iter().position(|r| r.contains(p)) {
+            return Some(Slot::Notice(i));
+        }
+        self.slots.hit(p)
+    }
+
+    /// Whether the notice up stands whole in the location, as measured
+    /// (none: no notice is up, or it is not measured yet).
+    pub(crate) fn notice_whole(&self) -> Option<bool> {
+        self.toolbar()?.notice.as_ref()?;
+        let forms = &self.views_size.as_ref()?.forms;
+        let whole = forms.text.first()? + forms.chrome;
+        Some(self.slots.location.width() + 0.5 >= whole)
     }
 
     pub(crate) fn row(&self) -> Rect {
@@ -1275,6 +901,7 @@ impl ToolbarRow {
                 .is_some_and(|views| *i < views.choices.len()),
             Slot::ViewsMenu => self.slots.views_menu.area() > 0.0,
             Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
+            Slot::Notice(i) => self.notice_action(*i).is_some_and(|a| a.enabled),
             Slot::Overflow => self.slots.overflow.area() > 0.0,
         }
     }
@@ -1447,6 +1074,18 @@ impl ToolbarRow {
         true
     }
 
+    /// The notice up, in the strip or in the location's place.
+    fn notice_up(&self) -> Option<&crate::window_toolbar::ToolbarNotice> {
+        self.strip
+            .notice()
+            .or_else(|| self.toolbar()?.notice.as_ref())
+    }
+
+    /// The notice's button `index`, while a notice with it is up.
+    fn notice_action(&self, index: usize) -> Option<&crate::window_toolbar::ToolbarAction> {
+        self.notice_up()?.actions.get(index)
+    }
+
     /// Run leading action `index`.
     fn run_leading(&mut self, index: usize) -> bool {
         let Some(action) = self
@@ -1509,6 +1148,12 @@ impl ToolbarRow {
                 return self.open_action_menu(*i);
             }
             Slot::Action(i) => return self.run_action(*i),
+            Slot::Notice(i) => {
+                let Some(id) = self.notice_action(*i).map(|action| action.id.clone()) else {
+                    return false;
+                };
+                self.push(ToolbarEvent::Action { id });
+            }
             Slot::Overflow => return self.open_overflow(),
             Slot::ViewsMenu => return self.open_views_menu(),
         }
@@ -1517,7 +1162,7 @@ impl ToolbarRow {
 
     /// The pointer moved to `p`. Returns whether what shows changed.
     pub(crate) fn pointer_moved(&mut self, p: Point) -> bool {
-        let hover = self.slots.hit(p);
+        let hover = self.hit_slot(p);
         let changed = hover != self.hover;
         self.hover = hover;
         let on_location = self.field.is_none() && self.slots.location.contains(p);
@@ -1542,7 +1187,7 @@ impl ToolbarRow {
     pub(crate) fn tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
         let toolbar = self.toolbar()?;
         let lookup = crate::i18n::I18nManager::lookup_plain;
-        match self.slots.hit(p)? {
+        match self.hit_slot(p)? {
             Slot::Sidebar => Some((self.slots.sidebar, lookup(sidebar_key(toolbar)))),
             Slot::Back => Some((self.slots.back, lookup("window-toolbar-back"))),
             Slot::Forward => Some((self.slots.forward, lookup("window-toolbar-forward"))),
@@ -1554,6 +1199,15 @@ impl ToolbarRow {
             Slot::Action(i) => {
                 let action = toolbar.actions.get(i)?;
                 Some((*self.slots.actions.get(i)?, action.name.clone()))
+            }
+            Slot::Notice(i) => {
+                let rect = self
+                    .slots
+                    .notice
+                    .get(i)
+                    .copied()
+                    .or_else(|| self.strip.buttons().get(i).copied())?;
+                Some((rect, self.notice_action(i)?.name.clone()))
             }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
             // A segment, the views menu and the location say what they are.
@@ -1727,13 +1381,13 @@ impl ToolbarRow {
     }
 
     pub(crate) fn hit(&self, p: Point) -> bool {
-        self.slots.hit(p).is_some()
+        self.hit_slot(p).is_some()
     }
 
     /// A left press at `p`. Returns whether a slot took it. A press
     /// outside the field while it is edited puts the location back.
     pub(crate) fn press(&mut self, p: Point) -> bool {
-        let slot = self.slots.hit(p);
+        let slot = self.hit_slot(p);
         if self.field.is_some() && slot != Some(Slot::Location) {
             self.abandon_edit();
         }
@@ -1770,7 +1424,7 @@ impl ToolbarRow {
     /// location field and the bar's menus take the keyboard themselves.
     pub(crate) fn pressing_app_slot(&self) -> bool {
         match &self.pressed {
-            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_)) => true,
+            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_) | Slot::Notice(_)) => true,
             Some(Slot::Action(i)) => self
                 .toolbar()
                 .and_then(|toolbar| toolbar.actions.get(*i))
@@ -1785,7 +1439,7 @@ impl ToolbarRow {
         let Some(pressed) = self.pressed.take() else {
             return false;
         };
-        if self.slots.hit(p).as_ref() == Some(&pressed) {
+        if self.hit_slot(p).as_ref() == Some(&pressed) {
             self.activate(&pressed);
         }
         true
@@ -1865,6 +1519,7 @@ impl ToolbarRow {
     /// a menu arriving or leaving.
     pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
         self.fade.is_moving(now)
+            || self.strip.needs_frame()
             || self
                 .field
                 .as_ref()
@@ -1885,325 +1540,6 @@ impl ToolbarRow {
             .map(|segment| segment.value.clone())
     }
 
-    /// Paint the row's menus, in the window's top layer.
-    pub(crate) fn paint_popups(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        Widget::draw_overlay(&mut self.menu, scene, transform, tr, theme, presence);
-        if self.suggestions_open() {
-            self.suggestions.paint(scene, transform, tr, theme);
-        }
-    }
-
-    pub(crate) fn paint(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.measure_views(theme);
-        let now = crate::time::now();
-        if let Some((outgoing, opacity)) = self.fade.outgoing(now)
-            && outgoing.is_some()
-            && let Some((toolbar, slots)) = self.outgoing.as_ref()
-        {
-            layered(scene, transform, self.row, opacity, |scene| {
-                let _ = paint_slots(
-                    scene,
-                    transform,
-                    (tr, theme, presence),
-                    toolbar,
-                    slots,
-                    (None, None),
-                );
-            });
-        } else if !self.fade.is_moving(now) {
-            self.outgoing = None;
-        }
-        let incoming = self.fade.incoming(now);
-        let Some((_, toolbar)) = self.shown.as_ref() else {
-            return;
-        };
-        let interaction = Interaction {
-            hover: self.hover.clone(),
-            pressed: self.pressed.clone(),
-            editing: self.field.is_some(),
-            menu_open: self
-                .menu
-                .is_open()
-                .then(|| self.menu_slot.clone())
-                .flatten(),
-        };
-        let row = self.row;
-        let slots = &self.slots;
-        let field = self.field.as_mut();
-        let crumbs = self.crumbs.as_mut().map(|(_, crumbs)| crumbs);
-        let mut trigger = None;
-        layered(scene, transform, row, incoming, |scene| {
-            trigger = paint_slots(
-                scene,
-                transform,
-                (tr, theme, presence),
-                toolbar,
-                slots,
-                (Some(&interaction), crumbs),
-            );
-            if let Some(field) = field {
-                Widget::draw(field, scene, transform, tr, theme, presence);
-            }
-        });
-        if let Some(trigger) = trigger {
-            self.choice_trigger = trigger;
-        }
-    }
-
-    /// The slots as assistive technology and automation reach them.
-    pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let Some(toolbar) = self.toolbar() else {
-            return Vec::new();
-        };
-        let button = |name: String, target: String, rect: Rect, enabled: bool| {
-            AccessNode::new(Role::Button)
-                .with_name(name)
-                .with_action_target(target)
-                .with_bounds(rect)
-                .with_state(AccessState {
-                    focusable: enabled,
-                    disabled: !enabled,
-                    ..Default::default()
-                })
-        };
-        let mut nodes = Vec::new();
-        if let Some(open) = toolbar.sidebar {
-            let mut toggle = button(
-                crate::i18n::I18nManager::lookup_plain(sidebar_key(toolbar)),
-                SIDEBAR_TARGET.into(),
-                self.slots.sidebar,
-                !toolbar.sidebar_unavailable,
-            );
-            toggle.role = Role::ToggleButton;
-            toggle.state.checked = Some(open);
-            nodes.push(toggle);
-        }
-        if let Some(nav) = toolbar.navigation {
-            nodes.push(button(
-                crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
-                BACK_TARGET.into(),
-                self.slots.back,
-                nav.back,
-            ));
-            nodes.push(button(
-                crate::i18n::I18nManager::lookup_plain("window-toolbar-forward"),
-                FORWARD_TARGET.into(),
-                self.slots.forward,
-                nav.forward,
-            ));
-        }
-        for (action, rect) in toolbar
-            .leading
-            .iter()
-            .zip(&self.slots.leading)
-            .filter(|(_, rect)| rect.area() > 0.0)
-        {
-            let mut node = button(
-                action.name.clone(),
-                format!("{LEADING_TARGET_PREFIX}{}", action.id),
-                *rect,
-                action.enabled,
-            );
-            if action.toggles || action.on {
-                node.role = Role::ToggleButton;
-                node.state.checked = Some(action.on);
-            }
-            nodes.push(node);
-        }
-        if let Some(location) = toolbar.location.as_ref()
-            && self.slots.location.area() > 0.0
-            && !self.slots.views_in_location()
-        {
-            if let Some(field) = self.field.as_ref().and_then(Widget::accessibility) {
-                nodes.push(field);
-                nodes.extend(self.suggestion_nodes());
-            } else {
-                let name = if location.name.is_empty() {
-                    location.label.clone()
-                } else {
-                    location.name.clone()
-                };
-                let picker = !location.editable && !location.choices.is_empty();
-                let mut node = AccessNode::new(if location.editable || picker {
-                    Role::Button
-                } else {
-                    Role::StaticText
-                })
-                .with_name(name)
-                .with_optional_value(Some(location.edit_value().to_owned()))
-                .with_bounds(self.slots.location);
-                if location.edited {
-                    node = node.with_description(edited_word());
-                }
-                if location.editable || picker {
-                    node = node
-                        .with_action_target(LOCATION_TARGET)
-                        .with_state(AccessState {
-                            focusable: true,
-                            expanded: picker.then(|| self.choices_open()),
-                            ..Default::default()
-                        });
-                }
-                if picker && self.choices_open() {
-                    // The open picker's rows: each one goes there.
-                    let count = location.choices.len();
-                    node = node.with_children(
-                        location
-                            .choices
-                            .iter()
-                            .enumerate()
-                            .map(|(index, choice)| {
-                                AccessNode::new(Role::MenuItem)
-                                    .with_name(choice.label.clone())
-                                    .with_action_target(format!("{CHOICE_TARGET_PREFIX}{index}"))
-                                    .with_position(index.saturating_add(1), count)
-                                    .with_state(AccessState {
-                                        focusable: true,
-                                        checked: Some(choice.current),
-                                        ..Default::default()
-                                    })
-                            })
-                            .collect(),
-                    );
-                }
-                nodes.push(node);
-            }
-        }
-        // The location's levels: each ancestor goes there.
-        if let Some(location) = toolbar.location.as_ref()
-            && self.field.is_none()
-            && self.slots.location.area() > 0.0
-        {
-            let ancestors = location.segments.len().saturating_sub(1);
-            for (i, segment) in location.segments.iter().take(ancestors).enumerate() {
-                nodes.push(button(
-                    segment.label.clone(),
-                    format!("{SEGMENT_TARGET_PREFIX}{i}"),
-                    self.slots.location,
-                    true,
-                ));
-            }
-        }
-        // The views the row shows as tabs, the chosen one selected; without room
-        // they are the overflow menu's.
-        if let Some(views) = toolbar.views.as_ref() {
-            for (view, rect) in views.choices.iter().zip(&self.slots.views) {
-                let mut node = button(
-                    view.label.clone(),
-                    format!("{VIEW_TARGET_PREFIX}{}", view.id),
-                    *rect,
-                    true,
-                );
-                node.role = Role::Tab;
-                node.state.selected = view.id == views.chosen;
-                if !views.name.is_empty() {
-                    node = node.with_description(views.name.clone());
-                }
-                nodes.push(node);
-            }
-            // Folded, the views are a menu that names the chosen one; its
-            // items run while it is closed, as the overflow menu's do.
-            if self.slots.views_menu.area() > 0.0 {
-                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
-                let views_name = if views.name.is_empty() {
-                    crate::i18n::I18nManager::lookup_plain("window-toolbar-views")
-                } else {
-                    views.name.clone()
-                };
-                // As the views' picker the location is named by what it
-                // shows, its period, and says it picks the view.
-                let in_location = toolbar
-                    .location
-                    .as_ref()
-                    .filter(|_| self.slots.views_in_location());
-                let name = in_location.map_or_else(|| views_name.clone(), |l| l.label.clone());
-                let mut menu = button(
-                    name.clone(),
-                    VIEWS_MENU_TARGET.into(),
-                    self.slots.views_menu,
-                    true,
-                )
-                .with_optional_value(chosen.map(|view| view.label.clone()));
-                if in_location.is_some() {
-                    menu = menu.with_description(views_name);
-                }
-                menu.state.expanded = Some(self.menu_open_for(&Slot::ViewsMenu));
-                menu = menu.with_children(vec![self.menu_node(
-                    name,
-                    &Slot::ViewsMenu,
-                    self.slots.views_menu,
-                    (0..views.choices.len()).map(MenuEntry::View),
-                )]);
-                nodes.push(menu);
-            }
-        }
-        // The actions the row shows; a menu button's items are its menu's.
-        for ((i, action), rect) in toolbar.actions.iter().enumerate().zip(&self.slots.actions) {
-            let mut node = button(
-                action.name.clone(),
-                format!("{ACTION_TARGET_PREFIX}{}", action.id),
-                *rect,
-                action.enabled,
-            );
-            if action.toggles || action.on {
-                node.role = Role::ToggleButton;
-                node.state.checked = Some(action.on);
-            }
-            if !action.items.is_empty() {
-                let slot = Slot::Action(i);
-                node.state.expanded = Some(self.menu_open_for(&slot));
-                let entries = (0..action.items.len()).map(|j| MenuEntry::Item(i, j));
-                node = node.with_children(vec![self.menu_node(
-                    action.name.clone(),
-                    &slot,
-                    *rect,
-                    entries,
-                )]);
-            }
-            nodes.push(node);
-        }
-        // What the row has no room for is the overflow menu's. Its items
-        // are there for assistive technology and automation to run even
-        // while it is closed, hidden from a reader until it opens, each
-        // where its row is drawn while it is open.
-        if self.slots.overflow.area() > 0.0 {
-            let name = crate::i18n::I18nManager::lookup_plain("window-toolbar-more");
-            let mut more = button(
-                name.clone(),
-                OVERFLOW_TARGET.into(),
-                self.slots.overflow,
-                true,
-            );
-            more.state.expanded = Some(self.menu_open_for(&Slot::Overflow));
-            let entries = self.overflow_entries();
-            if !entries.is_empty() {
-                more = more.with_children(vec![self.menu_node(
-                    name,
-                    &Slot::Overflow,
-                    self.slots.overflow,
-                    entries.into_iter(),
-                )]);
-            }
-            nodes.push(more);
-        }
-        nodes
-    }
-
     /// After an entry of the overflow menu or a menu button's ran (`ran`)
     /// as assistive technology activated it: its open menu closes, as it
     /// does when its row is picked. Returns `ran`.
@@ -2217,259 +1553,6 @@ impl ToolbarRow {
     fn menu_open_for(&self, slot: &Slot) -> bool {
         self.menu.is_open() && self.menu_slot.as_ref() == Some(slot)
     }
-
-    /// What the overflow menu lists, in its order: the views the row has
-    /// no room for, then the leading actions and the actions it does not
-    /// show, a menu button's items in its place.
-    fn overflow_entries(&self) -> Vec<MenuEntry> {
-        let Some(toolbar) = self.toolbar() else {
-            return Vec::new();
-        };
-        let mut entries = Vec::new();
-        if self.views_in_overflow()
-            && let Some(views) = toolbar.views.as_ref()
-        {
-            entries.extend((0..views.choices.len()).map(MenuEntry::View));
-        }
-        entries.extend(self.slots.folded_leading().map(MenuEntry::Leading));
-        for (i, action) in toolbar
-            .actions
-            .iter()
-            .enumerate()
-            .skip(self.slots.actions.len())
-        {
-            if action.items.is_empty() {
-                entries.push(MenuEntry::Action(i));
-            } else {
-                entries.extend((0..action.items.len()).map(|j| MenuEntry::Item(i, j)));
-            }
-        }
-        entries
-    }
-
-    /// `slot`'s menu, named `name`, as assistive technology reaches it:
-    /// one item per entry, each running what its row runs. While the menu
-    /// is open each item is where its row is drawn; while it is closed the
-    /// items are hidden from a reader and stand at `anchor`, the control
-    /// that opens the menu.
-    fn menu_node(
-        &self,
-        name: String,
-        slot: &Slot,
-        anchor: Rect,
-        entries: impl Iterator<Item = MenuEntry>,
-    ) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        let open = self.menu_open_for(slot);
-        let entries: Vec<MenuEntry> = entries.collect();
-        let count = entries.len();
-        let items = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(position, entry)| {
-                let (name, target, enabled, checked) = self.entry_semantics(*entry)?;
-                let rect = open
-                    .then(|| {
-                        self.menu_entries
-                            .iter()
-                            .position(|row| *row == Some(*entry))
-                            .and_then(|row| self.menu.item_rect(row))
-                    })
-                    .flatten()
-                    .unwrap_or(anchor);
-                Some(
-                    AccessNode::new(Role::MenuItem)
-                        .with_name(name)
-                        .with_action_target(target)
-                        .with_bounds(rect)
-                        .with_position(position.saturating_add(1), count)
-                        .with_state(AccessState {
-                            focusable: enabled && open,
-                            disabled: !enabled,
-                            checked,
-                            hidden: !open,
-                            ..Default::default()
-                        }),
-                )
-            })
-            .collect();
-        AccessNode::new(Role::Menu)
-            .with_name(name)
-            .with_children(items)
-            .with_state(AccessState {
-                hidden: !open,
-                ..Default::default()
-            })
-    }
-
-    /// A menu entry's name, action target, whether it runs, and its check.
-    fn entry_semantics(&self, entry: MenuEntry) -> Option<(String, String, bool, Option<bool>)> {
-        let toolbar = self.toolbar()?;
-        let action = |action: &crate::window_toolbar::ToolbarAction| {
-            (
-                action.name.clone(),
-                format!("{ACTION_TARGET_PREFIX}{}", action.id),
-                action.enabled,
-                (action.toggles || action.on).then_some(action.on),
-            )
-        };
-        match entry {
-            MenuEntry::Action(i) => toolbar.actions.get(i).map(action),
-            MenuEntry::Leading(i) => toolbar.leading.get(i).map(|leading| {
-                (
-                    leading.name.clone(),
-                    format!("{LEADING_TARGET_PREFIX}{}", leading.id),
-                    leading.enabled,
-                    (leading.toggles || leading.on).then_some(leading.on),
-                )
-            }),
-            MenuEntry::Item(i, j) => toolbar
-                .actions
-                .get(i)
-                .and_then(|menu| menu.items.get(j))
-                .map(action),
-            MenuEntry::View(i) => {
-                let views = toolbar.views.as_ref()?;
-                let view = views.choices.get(i)?;
-                Some((
-                    view.label.clone(),
-                    format!("{VIEW_TARGET_PREFIX}{}", view.id),
-                    true,
-                    Some(view.id == views.chosen),
-                ))
-            }
-            MenuEntry::Choice(_) => None,
-        }
-    }
-
-    /// The listed suggestions as assistive technology reaches them: each
-    /// one an item that commits it, its line under the title its
-    /// description.
-    fn suggestion_nodes(&self) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        if !self.suggestions_open() {
-            return Vec::new();
-        }
-        let rows = self.suggestions.suggestions();
-        let list = rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| {
-                let rect = self.suggestions.row_rect(index)?;
-                let mut node = AccessNode::new(Role::ListItem)
-                    .with_name(&row.label)
-                    .with_action_target(format!("{SUGGESTION_TARGET_PREFIX}{index}"))
-                    .with_bounds(rect)
-                    .with_position(index.saturating_add(1), rows.len())
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .selected(self.suggestions.highlight() == Some(index)),
-                    );
-                if let Some(subtitle) = &row.subtitle {
-                    node = node.with_description(subtitle);
-                }
-                Some(node)
-            })
-            .collect();
-        let mut node = AccessNode::new(Role::List)
-            .with_name(crate::i18n::I18nManager::lookup_plain(
-                "window-toolbar-suggestions",
-            ))
-            .with_children(list);
-        if let Some(panel) = self.suggestions.rect() {
-            node = node.with_bounds(panel);
-        }
-        vec![node]
-    }
-
-    /// Run the slot `target` names, as assistive technology activates it.
-    pub(crate) fn perform(&mut self, target: &str) -> bool {
-        if let Some(index) = target
-            .strip_prefix(SUGGESTION_TARGET_PREFIX)
-            .and_then(|index| index.parse::<usize>().ok())
-        {
-            return self.suggestions_open() && self.commit_suggestion(index);
-        }
-        if let Some(index) = target
-            .strip_prefix(CHOICE_TARGET_PREFIX)
-            .and_then(|index| index.parse::<usize>().ok())
-        {
-            return self.commit_choice(index);
-        }
-        let slot = match target {
-            SIDEBAR_TARGET => Slot::Sidebar,
-            BACK_TARGET => Slot::Back,
-            FORWARD_TARGET => Slot::Forward,
-            LOCATION_TARGET => Slot::Location,
-            OVERFLOW_TARGET => Slot::Overflow,
-            VIEWS_MENU_TARGET => Slot::ViewsMenu,
-            _ => {
-                if let Some(level) = target
-                    .strip_prefix(SEGMENT_TARGET_PREFIX)
-                    .and_then(|level| level.parse::<usize>().ok())
-                {
-                    let Some(value) = self
-                        .toolbar()
-                        .and_then(|toolbar| toolbar.location.as_ref())
-                        .and_then(|location| location.segments.get(level))
-                        .map(|segment| segment.value.clone())
-                    else {
-                        return false;
-                    };
-                    self.push(ToolbarEvent::Commit { text: value });
-                    return true;
-                }
-                if let Some(id) = target.strip_prefix(LEADING_TARGET_PREFIX) {
-                    let Some(i) = self
-                        .toolbar()
-                        .and_then(|toolbar| toolbar.leading.iter().position(|a| a.id == id))
-                    else {
-                        return false;
-                    };
-                    return self.run_leading(i);
-                }
-                if let Some(id) = target.strip_prefix(VIEW_TARGET_PREFIX) {
-                    let Some(i) = self
-                        .toolbar()
-                        .and_then(|toolbar| toolbar.views.as_ref())
-                        .and_then(|views| views.choices.iter().position(|v| v.id == id))
-                    else {
-                        return false;
-                    };
-                    // A view in the overflow menu is chosen as one in the row is.
-                    let chosen = self.choose_view(i);
-                    return self.ran_from_menu(chosen);
-                }
-                let Some(id) = target.strip_prefix(ACTION_TARGET_PREFIX) else {
-                    return false;
-                };
-                let Some(toolbar) = self.toolbar() else {
-                    return false;
-                };
-                if let Some(i) = toolbar.actions.iter().position(|a| a.id == id) {
-                    // An action in the overflow menu runs as one in the row
-                    // does; a menu button opens its menu.
-                    let opens = toolbar.actions.get(i).is_some_and(|a| !a.items.is_empty());
-                    let ran = self.activate(&Slot::Action(i));
-                    return if opens { ran } else { self.ran_from_menu(ran) };
-                }
-                let Some((i, j)) = toolbar.actions.iter().enumerate().find_map(|(i, action)| {
-                    action
-                        .items
-                        .iter()
-                        .position(|item| item.id == id)
-                        .map(|j| (i, j))
-                }) else {
-                    return false;
-                };
-                // A menu button's item runs without its menu open.
-                let ran = self.run_item(i, j);
-                return self.ran_from_menu(ran);
-            }
-        };
-        self.activate(&slot)
-    }
 }
 
 /// The name of the sidebar toggle in its present state.
@@ -2479,403 +1562,6 @@ fn sidebar_key(toolbar: &WindowToolbar) -> &'static str {
     } else {
         "window-toolbar-show-sidebar"
     }
-}
-
-/// What the person is doing with the row, for its paint.
-struct Interaction {
-    hover: Option<Slot>,
-    pressed: Option<Slot>,
-    editing: bool,
-    /// The button whose menu is open (the location, for its picker): it
-    /// stays lifted.
-    menu_open: Option<Slot>,
-}
-
-/// Paint `paint` at `opacity`, in a layer only while it is part-way.
-fn layered(
-    scene: &mut Scene,
-    transform: Affine,
-    clip: Rect,
-    opacity: f32,
-    paint: impl FnOnce(&mut Scene),
-) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let part = opacity < 1.0;
-    if part {
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            opacity,
-            transform,
-            &clip.inflate(2.0, 2.0),
-        );
-    }
-    paint(scene);
-    if part {
-        scene.pop_layer();
-    }
-}
-
-/// Whether `slot` is drawn on: the sidebar's toggle while the sidebar is
-/// open, a toggle while it is on (a panel's, while the panel is open).
-fn shows_on(toolbar: &WindowToolbar, slot: &Slot) -> bool {
-    match slot {
-        Slot::Sidebar => toolbar.sidebar == Some(true),
-        Slot::Leading(i) => toolbar.leading.get(*i).is_some_and(|action| action.on),
-        Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|action| action.on),
-        _ => false,
-    }
-}
-
-/// Paint `toolbar`'s slots. Returns where a location with choices painted
-/// its picker, which its menu hangs from.
-fn paint_slots(
-    scene: &mut Scene,
-    transform: Affine,
-    (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
-    toolbar: &WindowToolbar,
-    slots: &Slots,
-    (interaction, crumbs): (Option<&Interaction>, Option<&mut Breadcrumb>),
-) -> Option<Rect> {
-    let face = |slot: Slot, enabled: bool, on: bool| ButtonFace {
-        hovered: interaction.is_some_and(|i| i.hover.as_ref() == Some(&slot)),
-        pressed: interaction.is_some_and(|i| i.pressed.as_ref() == Some(&slot)),
-        on,
-        enabled,
-        destructive: false,
-    };
-    if toolbar.sidebar.is_some() {
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (slots.sidebar, Icon::PanelLeft),
-            face(
-                Slot::Sidebar,
-                !toolbar.sidebar_unavailable,
-                shows_on(toolbar, &Slot::Sidebar),
-            ),
-        );
-    }
-    if let Some(nav) = toolbar.navigation {
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (slots.back, Icon::ArrowLeft),
-            face(Slot::Back, nav.back, false),
-        );
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (slots.forward, Icon::ArrowRight),
-            face(Slot::Forward, nav.forward, false),
-        );
-    }
-    for (i, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
-        let Some(icon) = Icon::from_name(&action.icon).filter(|_| rect.area() > 0.0) else {
-            continue;
-        };
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (*rect, icon),
-            face(
-                Slot::Leading(i),
-                action.enabled,
-                shows_on(toolbar, &Slot::Leading(i)),
-            ),
-        );
-    }
-    if let Some(views) = toolbar.views.as_ref()
-        && !slots.views.is_empty()
-    {
-        let labels: Vec<&str> = views.choices.iter().map(|v| v.label.as_str()).collect();
-        let hovered = interaction.and_then(|i| match &i.hover {
-            Some(Slot::View(index)) => Some(*index),
-            _ => None,
-        });
-        let face = SegmentedFace::new(
-            &slots.views,
-            &labels,
-            views
-                .chosen_index()
-                .unwrap_or(super::toggle_group::NONE_CHOSEN),
-        )
-        // Switching the window's view is tabs, the look of every view
-        // switcher (`ViewTabs`), never a segmented control.
-        .style(super::toggle_group::SegmentedStyle::Tabs)
-        .control_size(VIEWS_SIZE)
-        .hovered(hovered);
-        ToggleGroup::paint(scene, transform, tr, theme, &face);
-    }
-    if let Some(views) = toolbar.views.as_ref()
-        && slots.views_menu.area() > 0.0
-    {
-        let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::ViewsMenu));
-        let lift = LocationLift {
-            hovered: interaction.is_some_and(|i| i.hover == Some(Slot::ViewsMenu)),
-            pressed: open || interaction.is_some_and(|i| i.pressed == Some(Slot::ViewsMenu)),
-            focused: false,
-        };
-        // As the views' picker the location names its period, not the view.
-        let picker = match toolbar.location.as_ref() {
-            Some(location) if slots.views_in_location() => {
-                let (shown, ink) = location_shown(location, slots.form, theme);
-                PickerText::new(shown, ink).edited(location.edited)
-            }
-            _ => {
-                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
-                let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
-                PickerText::new(label, theme.tokens.colors.text_primary)
-            }
-        };
-        paint_picker(
-            scene,
-            transform,
-            (tr, theme),
-            picker,
-            slots.views_menu,
-            lift,
-        );
-    }
-    for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
-        let Some(icon) = Icon::from_name(&action.icon) else {
-            continue;
-        };
-        paint_icon_button(scene, transform, tr, theme, (*rect, icon), {
-            let mut lifted = face(
-                Slot::Action(i),
-                action.enabled,
-                shows_on(toolbar, &Slot::Action(i)),
-            );
-            lifted.hovered |= interaction.is_some_and(|it| it.menu_open == Some(Slot::Action(i)));
-            lifted.destructive = action.destructive;
-            lifted
-        });
-    }
-    if slots.overflow.area() > 0.0 {
-        let open = interaction.is_some_and(|i| i.menu_open == Some(Slot::Overflow));
-        let mut overflow = face(Slot::Overflow, true, false);
-        overflow.hovered |= open;
-        paint_icon_button(
-            scene,
-            transform,
-            tr,
-            theme,
-            (slots.overflow, Icon::MoreHorizontal),
-            overflow,
-        );
-    }
-    let editing = interaction.is_some_and(|i| i.editing);
-    let location = toolbar.location.as_ref()?;
-    if slots.location.area() <= 0.0 || editing || slots.views_in_location() {
-        return None;
-    }
-    let lifted = LocationLift {
-        hovered: interaction.is_some_and(|i| i.hover == Some(Slot::Location)),
-        pressed: interaction.is_some_and(|i| {
-            i.pressed == Some(Slot::Location) || i.menu_open == Some(Slot::Location)
-        }),
-        focused: false,
-    };
-    paint_location(
-        scene,
-        transform,
-        (tr, theme, presence),
-        (location, crumbs),
-        (slots.location, slots.form),
-        lifted,
-    )
-}
-
-/// How the pointer stands on a picker: the location, or the views menu.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct LocationLift {
-    pub(crate) hovered: bool,
-    /// Pressed, or its menu is open.
-    pub(crate) pressed: bool,
-    /// Holds keyboard focus with the ring shown.
-    pub(crate) focused: bool,
-}
-
-/// The location at rest: its icon, then its label in form `form`
-/// ([`Slots::form`]), elided at the end. An
-/// editable one stands in a field's frame, so it reads as one to click; one
-/// with choices reads as a picker, its label and a chevron on the bar's
-/// plain button face, and returns where it painted that.
-fn paint_location(
-    scene: &mut Scene,
-    transform: Affine,
-    (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
-    (location, crumbs): (
-        &crate::window_toolbar::ToolbarLocation,
-        Option<&mut Breadcrumb>,
-    ),
-    (rect, form): (Rect, usize),
-    lift: LocationLift,
-) -> Option<Rect> {
-    if !location.editable && !location.choices.is_empty() {
-        let (shown, ink) = location_shown(location, form, theme);
-        return Some(paint_picker(
-            scene,
-            transform,
-            (tr, theme),
-            PickerText::new(shown, ink).edited(location.edited),
-            rect,
-            lift,
-        ));
-    }
-    let mut text_rect = rect;
-    if location.editable {
-        let face = FieldFace::new(rect, "").hovered(lift.hovered);
-        face.paint_chrome(scene, transform, theme);
-        text_rect = face.text_rect(theme);
-    }
-    if let Some(icon) = location.icon.as_deref().and_then(Icon::from_name) {
-        let c = Point::new(text_rect.x0 + LOCATION_ICON_PX / 2.0, rect.center().y);
-        crate::icons::draw_icon(
-            scene,
-            transform,
-            Rect::from_center_size(c, (LOCATION_ICON_PX, LOCATION_ICON_PX)),
-            icon,
-            theme.tokens.colors.text_dim,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
-        text_rect.x0 += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
-    }
-    // A location with levels shows them as a breadcrumb.
-    if let Some(crumbs) = crumbs
-        && !location.segments.is_empty()
-    {
-        if text_rect.width() > 0.0 {
-            crumbs.set_rect(Rect::new(text_rect.x0, rect.y0, text_rect.x1, rect.y1));
-            Widget::draw(crumbs, scene, transform, tr, theme, presence);
-        }
-        return None;
-    }
-    let (shown, ink) = location_shown(location, form, theme);
-    if shown.is_empty() || text_rect.width() <= 0.0 {
-        return None;
-    }
-    let label = LocationLabel::measure(tr, theme, shown, location.edited, text_rect.width());
-    let y = rect.center().y - label.height / 2.0;
-    label.paint(scene, transform, (tr, theme), (text_rect.x0, y), ink);
-    None
-}
-
-/// What the location says, in its ink: form `form` of its label
-/// ([`crate::window_toolbar::ToolbarLocation::form`]), else its
-/// placeholder.
-pub(crate) fn location_shown<'a>(
-    location: &'a crate::window_toolbar::ToolbarLocation,
-    form: usize,
-    theme: &Theme,
-) -> (&'a str, vello::peniko::Color) {
-    if location.label.is_empty() {
-        return (
-            location.placeholder.as_str(),
-            theme.tokens.colors.text_tertiary,
-        );
-    }
-    (location.form(form), theme.tokens.colors.text_primary)
-}
-
-/// How wide a picker ([`paint_picker`]) whose label is `label_w` wide
-/// stands.
-pub(crate) fn picker_width(label_w: f64, theme: &Theme) -> f64 {
-    let pad = f64::from(theme.tokens.spacing.s2);
-    let gap = f64::from(theme.tokens.spacing.s1);
-    pad * 2.0 + label_w.ceil() + gap + LOCATION_ICON_PX
-}
-
-/// What a picker ([`paint_picker`]) says: its label in its ink, and
-/// whether the document it names has unsaved edits.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct PickerText<'a> {
-    shown: &'a str,
-    ink: vello::peniko::Color,
-    edited: bool,
-}
-
-impl<'a> PickerText<'a> {
-    pub(crate) fn new(shown: &'a str, ink: vello::peniko::Color) -> Self {
-        Self {
-            shown,
-            ink,
-            edited: false,
-        }
-    }
-
-    /// The document it names has unsaved edits: the edited word follows.
-    pub(crate) fn edited(mut self, edited: bool) -> Self {
-        self.edited = edited;
-        self
-    }
-}
-
-/// A label that opens a menu of choices (a location with choices, the
-/// folded views): the label (elided at the end) and a trailing chevron, on
-/// the plain button face the bar's buttons lift with, as wide as they need
-/// and never wider than `rect`. Returns the face's rect, which the menu
-/// hangs from.
-pub(crate) fn paint_picker(
-    scene: &mut Scene,
-    transform: Affine,
-    (tr, theme): (&mut TextRenderer, &Theme),
-    text: PickerText<'_>,
-    rect: Rect,
-    lift: LocationLift,
-) -> Rect {
-    let pad = f64::from(theme.tokens.spacing.s2);
-    let gap = f64::from(theme.tokens.spacing.s1);
-    let room = (rect.width() - pad * 2.0 - gap - LOCATION_ICON_PX).max(0.0);
-    let label = LocationLabel::measure(tr, theme, text.shown, text.edited, room);
-    let label_w = label.width.min(room);
-    let face_rect = Rect::new(
-        rect.x0,
-        rect.y0,
-        (rect.x0 + pad * 2.0 + label_w + gap + LOCATION_ICON_PX).min(rect.x1),
-        rect.y1,
-    );
-    let face = crate::widget::ButtonFace::new(face_rect, "")
-        .role(crate::widget::ButtonRole::Plain)
-        .control_size(crate::widget::ControlSize::Small)
-        .hovered(lift.hovered)
-        .pressed(lift.pressed)
-        .focused(lift.focused);
-    crate::widget::Button::paint(scene, transform, tr, theme, &face);
-    let y = rect.center().y - label.height / 2.0;
-    label.paint(
-        scene,
-        transform,
-        (tr, theme),
-        (face_rect.x0 + pad, y),
-        text.ink,
-    );
-    let chevron_x = face_rect.x0 + pad + label_w + gap;
-    crate::icons::draw_icon(
-        scene,
-        transform,
-        Rect::new(
-            chevron_x,
-            rect.center().y - LOCATION_ICON_PX / 2.0,
-            chevron_x + LOCATION_ICON_PX,
-            rect.center().y + LOCATION_ICON_PX / 2.0,
-        ),
-        Icon::ChevronDown,
-        theme.tokens.colors.text_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
-    face_rect
 }
 
 #[cfg(test)]

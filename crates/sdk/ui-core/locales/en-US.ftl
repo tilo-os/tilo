@@ -228,6 +228,10 @@ history-sync-finish-edit = Finish the current edit before receiving remote chang
 history-sync-queue-full = Remote document queue is full. Synchronization needs a fresh snapshot after the current edit finishes.
 history-sync-owner-changed = Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.
 history-sync-offline = Working offline. Changes will sync when you're back.
+arriving-loading = Loading
+arriving-from = From { $source }
+arriving-failed = Couldn’t load this
+arriving-retry = Try again
 room-sync-connecting = Connecting to { $workspace }…
 room-sync-connecting-unnamed = Connecting…
 room-sync-host-needs-update = This workspace’s host needs to update
@@ -390,6 +394,26 @@ tree-move-outdent = Move out of the parent item
 # The show/hide control inside every password field.
 text-input-show-password = Show password
 text-input-hide-password = Hide password
+
+# The password prompt every secret in Tilo is asked by.
+secret-prompt-continue = Continue
+secret-prompt-cancel = Cancel
+secret-prompt-username = User name
+secret-prompt-password = Password
+secret-prompt-pin = PIN
+secret-prompt-puk = PUK
+secret-prompt-new-pin = New PIN
+secret-prompt-confirm-pin = Confirm new PIN
+secret-prompt-caps-lock = Caps Lock is on
+secret-prompt-pin-length = { $min } to { $max } digits
+secret-prompt-pin-length-exact = { $count } digits
+secret-prompt-attempts-left = { $count ->
+    [one] One attempt left
+   *[other] { $count } attempts left
+}
+secret-prompt-pins-differ = The new PINs don’t match
+secret-prompt-keypad-delete = Delete
+secret-prompt-keypad-enter = Done
 
 # Authentication surfaces share the system theme and catalog.
 lock-welcome-back = Welcome back
@@ -608,13 +632,11 @@ history-day-earlier = Earlier
 
 save-status-stalled = Couldn't save yet. Retrying…
 save-status-not-saved = Not saved
-save-status-not-saved-detail = Your changes are still here.
 save-status-not-saved-named = { $document } wasn't saved
 save-status-not-saved-notice = Your changes are still in { $app }.
 save-status-saved = Saved
 save-status-failed = Save failed
 save-status-retry = Try again
-save-status-dismiss = Dismiss
 
 # Find bar: the band at the top of a document that finds in it.
 find-bar-name = Find
@@ -751,6 +773,7 @@ widget-screenshot-edit = Edit
 widget-screenshot-open = Open
 widget-screenshot-reveal = Show in Files
 widget-screenshot-send = Send…
+widget-capture-title = Capture
 widget-capture-dismiss = Dismiss
 widget-capture-mode-screenshot = Screenshot
 widget-capture-mode-recording = Recording
@@ -784,6 +807,30 @@ widget-replay-stop = Stop keeping the last 30 s
 widget-screenshot-send-workspace = Save to this workspace's files
 widget-screenshot-send-no-device = No other device is online
 widget-screenshot-send-device = Send to { $device }
+widget-markup-title = Markup
+widget-markup-close = Close
+widget-markup-undo = Undo
+widget-markup-redo = Redo
+widget-markup-tools-pen = Pen tools
+widget-markup-tools-highlighter = Highlight tools
+widget-markup-tools-arrow = Arrow tools
+widget-markup-tools-rectangle = Shape tools
+widget-markup-tools-redact = Redact tools
+widget-markup-tool-pen = Pen
+widget-markup-tool-highlighter = Highlight
+widget-markup-tool-arrow = Arrow
+widget-markup-tool-rectangle = Rectangle
+widget-markup-tool-redact = Redact
+widget-markup-fit = Fit image
+widget-markup-colors = Colours
+widget-markup-color-red = Red
+widget-markup-color-yellow = Yellow
+widget-markup-color-blue = Blue
+widget-markup-color-green = Green
+widget-markup-color-white = White
+widget-markup-open = Open in app
+widget-markup-copy = Copy
+widget-markup-save = Save copy
 
 ## Block editor
 block-a11y-formula-source = Source editor
@@ -857,3 +904,10 @@ text-menu-numbered-list = Numbered list
 
 # A reference to something another app keeps, shown as a chip; $label is its name.
 reference-open = Open { $label }
+
+# A signal meter's name, by how strong the signal is (a Wi-Fi or mobile network).
+signal-meter-unknown = Signal strength unknown
+signal-meter-weak = Weak signal
+signal-meter-fair = Fair signal
+signal-meter-good = Good signal
+signal-meter-strong = Strong signal

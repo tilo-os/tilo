@@ -232,13 +232,87 @@ fn placing_refuses_unknown_sources_taken_spans_and_windows_past_the_source() {
     )
     .unwrap_err();
     assert!(format!("{long:?}").contains("lasts"), "{long:?}");
+    let unnamed = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "voice.wav", "track": "Music" }),
+    )
+    .unwrap_err();
+    assert!(format!("{unnamed:?}").contains("no track"), "{unnamed:?}");
     let wrong = call(
         &mut app,
         "add-clip",
         json!({ "media": "voice.wav", "track": "V9" }),
     )
     .unwrap_err();
-    assert!(format!("{wrong:?}").contains("no track"), "{wrong:?}");
+    assert!(
+        format!("{wrong:?}").contains("would be a video track"),
+        "{wrong:?}"
+    );
+    assert_eq!(app.state().tracks.len(), 1, "a refused clip makes no track");
+}
+
+#[test]
+fn a_new_project_takes_its_first_clips_on_the_tracks_they_name() {
+    let mut app = editor(&Project::new("cut"));
+    assert!(app.state().tracks.is_empty(), "a new project has no tracks");
+    import(&mut app, &png(640, 360), "logo.png").unwrap();
+    import(&mut app, &wav(4), "voice.wav").unwrap();
+
+    let first = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "logo.png", "track": "V1", "at": 0.0, "out": 3.0 }),
+    )
+    .unwrap();
+    assert_eq!(first["placed"]["track"], "V1");
+    let title = call(&mut app, "add-title", json!({ "text": "Harbour" })).unwrap();
+    let over = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": title["media"], "track": "v2", "at": 0.0, "out": 2.0 }),
+    )
+    .unwrap();
+    assert_eq!(over["placed"]["track"], "V2", "a lane's name in any case");
+    let sound = call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "voice.wav", "track": "A1" }),
+    )
+    .unwrap();
+    assert_eq!(sound["placed"]["track"], "A1");
+    call(
+        &mut app,
+        "add-clip",
+        json!({ "media": "logo.png", "track": "V1", "at": 3.0, "out": 4.0 }),
+    )
+    .unwrap();
+
+    let state = app.state();
+    let lanes: Vec<(&str, TrackKind, u32)> = state
+        .display_tracks()
+        .into_iter()
+        .map(|t| (t.name.as_str(), t.kind, t.index))
+        .collect();
+    assert_eq!(
+        lanes,
+        vec![
+            ("V2", TrackKind::Video, 2),
+            ("V1", TrackKind::Video, 1),
+            ("A1", TrackKind::Audio, 1),
+        ],
+        "each named lane is made once, and V2 is over V1"
+    );
+    assert_eq!(state.clips.len(), 4);
+    let read = read_timeline(&state, None).unwrap();
+    assert_eq!(read["project"]["duration"], 7.0, "{read}");
+
+    call(&mut app, "add-track", json!({ "kind": "Video" })).unwrap();
+    assert_eq!(
+        app.state().display_tracks().first().map(|t| t.name.clone()),
+        Some("V3".to_owned()),
+        "add-track still makes the next lane"
+    );
 }
 
 #[test]
@@ -405,4 +479,20 @@ fn colours_and_alignments_are_read_as_people_write_them() {
         content_media_id(&"ab".repeat(32)),
         content_media_id(&"AB".repeat(32))
     );
+}
+
+#[test]
+fn a_field_edit_naming_no_field_says_which_fields_there_are() {
+    let mut app = editor(&Project::new("cut"));
+    let edit = json!({ "path": [{ "field": "project" }, { "field": "name" }], "op": "set", "value": "Promo" });
+    let refused = format!(
+        "{:?}",
+        call(&mut app, "field-edit", json!({ "edit": edit })).unwrap_err()
+    );
+    assert!(refused.contains("no field `project`"), "{refused}");
+    assert!(!refused.contains(": : "), "no empty place: {refused}");
+    assert!(refused.contains("name"), "the fields are named: {refused}");
+    let renamed = json!({ "path": [{ "field": "name" }], "op": "set", "value": "Promo" });
+    call(&mut app, "field-edit", json!({ "edit": renamed })).unwrap();
+    assert_eq!(app.state().name, "Promo");
 }

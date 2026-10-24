@@ -55,7 +55,8 @@ case $group in
         2> "$out/fs-gate-$run.log" || status=$?
       TILO_FS_PERF_GATE=1 cargo test --locked -p tilo-fs --test document_media_footprint -- --nocapture \
         2>> "$out/fs-gate-$run.log" || status=$?
-      grep '^PERF\| PERF ' "$out/fs-gate-$run.log" || true
+      # The gates' assertion messages name the scenario that failed.
+      grep '^PERF\| PERF \|exceeded \|panicked at' "$out/fs-gate-$run.log" || true
     done
     env_json dev none kvm > "$out/env.json"
     python3 tools/perf/adapters.py fs-gate --env-json "$out/env.json" "$out"/fs-gate-*.log > "$out/fs.jsonl"
@@ -87,9 +88,13 @@ case $group in
     python3 tools/perf/record.py env --profile release --renderer none --virtualization none \
       --runner none --hardware "apps.tilo.so registry index" > "$out/env.json"
     python3 tools/perf/adapters.py tapp-sizes --env-json "$out/env.json" "$out/entries.json" > "$out/footprint.jsonl"
+    # The registry serves the last release until the next one publishes, so its packages are
+    # held to the budgets of the commit that built them, fetched from the forge.
+    release=(--git-dir "$TMPDIR/release.git" --fetch-from https://code.tilo.so/tilo/tilo.git)
     status=0
-    python3 tools/perf/tapp_size_ratchet.py fleet "$out/entries.json" --summary "$out/summary.md" || status=1
-    python3 tools/perf/runtime_size_ratchet.py published "$out/entries.json" \
+    python3 tools/perf/tapp_size_ratchet.py fleet "$out/entries.json" "${release[@]}" \
+      --summary "$out/summary.md" || status=1
+    python3 tools/perf/runtime_size_ratchet.py published "$out/entries.json" "${release[@]}" \
       --measurements "$out/runtime.json" --summary "$out/summary.md" || status=1
     [[ -s $out/runtime.json ]] || exit 1
     python3 tools/perf/adapters.py runtime-sizes --env-json "$out/env.json" "$out/runtime.json" \
@@ -143,7 +148,12 @@ case $group in
     for run in 1 2 3; do
       TILO_IDLE_SHELL_BIN="$target/debug/shell" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
         bash tools/test-env.sh "$target/debug/examples/idle-wakeups" > "$out/idle-$run.log" 2>&1 || status=$?
-      grep -A40 '^idle wakeups over' "$out/idle-$run.log" || tail -n 40 "$out/idle-$run.log"
+      # The report: every thread's row, the frame loop and what was logged.
+      if grep -q '^IDLE-WAKEUPS ' "$out/idle-$run.log"; then
+        sed -n '/^idle wakeups over/,/^IDLE-WAKEUPS /p' "$out/idle-$run.log"
+      else
+        tail -n 40 "$out/idle-$run.log"
+      fi
     done
     env_json dev lavapipe kvm > "$out/env.json"
     python3 tools/perf/adapters.py idle-wakeups --env-json "$out/env.json" "$out"/idle-*.log > "$out/wakeups.jsonl"
@@ -181,9 +191,17 @@ case $group in
     env_json release none kvm > "$out/env.json"
     # t sizes TOKIO_WORKER_THREADS by the cores a job is given, which may be more than it asks
     # for; the series was measured with a runtime worker per core of a 40-CPU quota.
+    # The host's state lives on memory. On the node's shared overlay disk a durable commit
+    # waits for every other job's writes: with the node's load average past 1000, single
+    # commits took up to 15 s and a quarter of the guests had no Ready within 60 s, while
+    # the same build on memory, in the same job, joined all 100 with p99 1.8 s, as in
+    # docs/benchmarks/room-host-capacity-2026-10.md's tmpfs runs. The disk measured other
+    # jobs; eu1 keeps its state on local NVMe.
     for run in 1 2 3; do
-      TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
-        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log"
+      state=$(mktemp -d /dev/shm/room-load.XXXXXX)
+      TMPDIR=$state TOKIO_WORKER_THREADS=40 "$target/release/tilo-room-load" bench --guests 100 --malloc-arenas 2 --hold 60 \
+        > "$out/room-load-$run.json" 2> "$out/room-load-$run.log" || { rm -rf "$state"; exit 1; }
+      rm -rf "$state"
     done
     python3 tools/perf/adapters.py room-load --env-json "$out/env.json" "$out"/room-load-*.json \
       > "$out/hosting-room.jsonl"
@@ -216,7 +234,9 @@ case $group in
     # whatever the other's verdict.
     status=0
     for codec in h264 vp9; do
-      name=stream codec_args=()
+      # The H.264 window opens after another closed (--reopen): the desktop
+      # must rest under a window that is not the page's first.
+      name=stream codec_args=(--reopen)
       [[ $codec == vp9 ]] && name=stream-vp9 codec_args=(--codec vp9)
       if node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/$name.json" \
         --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \

@@ -496,6 +496,43 @@ fn captures_publish_view_effects_and_availability_without_running_handlers() {
     );
 }
 
+/// `--headless-drive` beside `--scenario`: the scene is the scenario's, as
+/// its capture's is, but every action the app publishes is reachable, so a
+/// drive and an agent reach what a person clicks.
+#[test]
+fn a_drive_of_a_scenario_runs_the_effects_it_invokes_and_starts_nothing_itself() {
+    let mut drive = TestApp::<MailApp>::drive("inbox").unwrap();
+    let count = drive.effect(&MailEffect::Count).unwrap();
+    assert_eq!(count.value, Some(serde_json::json!(0)));
+    drive.effect(&MailEffect::ShowSent).unwrap();
+    assert!(
+        drive
+            .harness()
+            .inspection_json()
+            .unwrap()
+            .contains("Showing sent"),
+        "the view's handler ran"
+    );
+    // A job the drive asked for runs, and finishes with its action.
+    drive
+        .effect(&MailEffect::Fetch {
+            from: "a drive".into(),
+        })
+        .unwrap();
+    assert_eq!(drive.state().fetched, "hello from a drive");
+    assert_eq!(
+        tilo_app::framework::testing::unreachable_actions(&mut drive),
+        Vec::<String>::new(),
+        "every published action is addressable in the drive"
+    );
+
+    // Nothing starts that nobody invoked: what it shows stays the fixture.
+    let mut fetcher = TestApp::<FetcherApp>::drive("inbox").unwrap();
+    fetcher.settle();
+    assert_eq!(fetcher.state().fetched, "");
+    assert!(fetcher.state().outbox.is_empty());
+}
+
 #[test]
 fn history_renders_effect_controls_without_replaying_outside_consequences() {
     DELIVERED.with(|delivered| delivered.borrow_mut().clear());

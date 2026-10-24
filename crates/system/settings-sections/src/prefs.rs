@@ -817,7 +817,7 @@ pub struct AppearancePrefs {
     pub forced_colors: bool,
     /// "Always distinguish similar letters": I, l, 1 and 0, O set apart in
     /// all text. `None` follows the theme's typeface (on with Hyperlegible);
-    /// [`Self::distinct_letters_effective`] is what the system shows.
+    /// `distinct_letters_effective` is what the system shows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distinct_letters: Option<bool>,
     /// The interface language, a BCP 47 tag (`de-DE`), which Region &

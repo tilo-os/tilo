@@ -26,7 +26,7 @@ use ui::theme::Theme;
 use ui::widget::toast::ToastKind;
 use ui::widget::{AppModel, Column, ModalDialog, ModelPath, NavShell, Widget};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 type Picked = ui::portal::PortalOutcome;
 #[derive(Clone, Copy)]
@@ -72,8 +72,12 @@ pub struct BackupsApp {
     restore: Option<ModalDialog<Column>>,
     restore_changed: bool,
     failure: Option<(String, String)>,
-    status_bubble: ui::StatusBubble,
-    cursor: Option<Point>,
+    /// Said in the window's bar for a while when the backups' health
+    /// changes: all healthy again, or how many now need a look.
+    health: ui::widget::toast::Transient<(String, ui::widget::toast::ToastKind)>,
+    /// How many backups needed a look when last read; `None` before the
+    /// first read, which is the window opening, not news.
+    failed_seen: Option<u64>,
     scroll: Rc<Cell<(f32, f32)>>,
     built: Option<ViewKey>,
     dirty: bool,
@@ -187,8 +191,8 @@ impl BackupsApp {
             order: Order::NewestFirst,
             restore: None,
             failure: None,
-            status_bubble: ui::StatusBubble::new(),
-            cursor: None,
+            health: ui::widget::toast::Transient::new(),
+            failed_seen: None,
             scroll: Rc::new(Cell::new((0.0, 0.0))),
             built: None,
             dirty: true,
@@ -759,7 +763,8 @@ impl BackupsApp {
     pub(crate) fn stage_scenario(&mut self, scenario: &str) {
         match scenario {
             "status" => {
-                self.status_bubble.poke(ui::time::now());
+                let failed = self.failed_count();
+                self.say_health(failed);
             }
             "progress" => {
                 self.operation_status = Some("642 files totaling 3.8 GB verified so far".into());
@@ -987,14 +992,38 @@ impl BackupsApp {
         self.shell.set_inspector(details);
     }
 
-    /// "All backups healthy", or how many need a look.
-    fn health_line(&self) -> String {
-        let failed = self.catalog.failed(Filter::All) as u64;
-        if failed == 0 {
-            i18n::t("backups-health-ok")
+    fn failed_count(&self) -> u64 {
+        self.catalog.failed(Filter::All) as u64
+    }
+
+    /// "All backups healthy", or how many need a look, in the window's bar
+    /// for a while.
+    fn say_health(&mut self, failed: u64) {
+        self.health.show(if failed == 0 {
+            (
+                i18n::t("backups-health-ok"),
+                ui::widget::toast::ToastKind::Success,
+            )
         } else {
-            i18n::counted("backups-health-attention", failed, "")
+            (
+                i18n::counted("backups-health-attention", failed, ""),
+                ui::widget::toast::ToastKind::Warning,
+            )
+        });
+    }
+
+    /// Say the health when it changes, and keep the bar's notice current.
+    fn publish_health(&mut self) {
+        if self.setup_key().is_none() {
+            let failed = self.failed_count();
+            if self.failed_seen.is_some_and(|seen| seen != failed) {
+                self.say_health(failed);
+            }
+            self.failed_seen = Some(failed);
         }
+        self.health.expire();
+        self.health
+            .publish(|(text, kind)| ui::window_toolbar::ToolbarNotice::new(text.clone(), *kind));
     }
 
     /// Declare the window bar's slots ([`ui::window_toolbar`]): the shell's
@@ -1039,29 +1068,6 @@ impl BackupsApp {
         }
         ui::window_toolbar::declare(Some(toolbar));
     }
-
-    fn paint_status(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-    ) {
-        if self.setup_key().is_some() {
-            return;
-        }
-        let now = ui::time::now();
-        let line = self.health_line();
-        self.status_bubble.show(&line, now);
-        // Resting the pointer on the bubble's corner holds it open.
-        if let Some(cursor) = self.cursor {
-            self.status_bubble
-                .pointer_moved(window, cursor, text, theme, now);
-        }
-        self.status_bubble
-            .paint(scene, transform, text, theme, window, now);
-    }
 }
 impl ui::widget::Decorator for BackupsApp {
     type Inner = NavShell;
@@ -1097,6 +1103,7 @@ impl ui::widget::Decorator for BackupsApp {
             self.shell.snap();
         }
         self.shell.sync(state, path);
+        self.publish_health();
         if let Some(dialog) = &mut self.restore {
             dialog.sync(state, path);
         }
@@ -1124,6 +1131,7 @@ impl ui::widget::Decorator for BackupsApp {
             .flatten();
         progress
             .into_iter()
+            .chain(self.health.deadline())
             .chain(self.shell.next_wake_deadline())
             .min()
     }
@@ -1141,9 +1149,6 @@ impl ui::widget::Decorator for BackupsApp {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
-        if let WindowEvent::CursorMoved { position, .. } = event {
-            self.cursor = Some(ctx.logical(position));
-        }
         if let Some(dialog) = &mut self.restore {
             dialog.handle_detached(
                 event,
@@ -1197,18 +1202,13 @@ impl ui::widget::Decorator for BackupsApp {
     ) {
         self.shell
             .draw_overlay(scene, transform, text, theme, presence);
-        let window = presence
-            .viewport
-            .get()
-            .unwrap_or_else(|| self.shell.get_rect());
-        self.paint_status(scene, transform, text, theme, window);
         if let Some(dialog) = &mut self.restore {
             dialog.draw_overlay(scene, transform, text, theme, presence);
         }
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.status_bubble.needs_frame(ui::time::now()) || self.shell.needs_animation_frame()
+        self.shell.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1244,6 +1244,7 @@ mod tests {
     use ui::a11y::Action;
     use ui::headless::Framed;
     use ui::widget::{NavList, SidebarPlacement};
+    use vello::kurbo::Point;
     fn demo() -> BackupsApp {
         BackupsApp::with_catalog(Catalog::sample(now()))
     }

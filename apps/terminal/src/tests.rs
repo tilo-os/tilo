@@ -569,7 +569,7 @@ fn send_key(
     send_key_mods(widget, doc, key, ctrl, shift, false);
 }
 
-fn send_key_mods(
+pub(crate) fn send_key_mods(
     widget: &mut impl ui::widget::Widget,
     doc: &mut AutoCommit,
     key: winit::keyboard::Key,

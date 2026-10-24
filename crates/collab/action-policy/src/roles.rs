@@ -553,18 +553,18 @@ pub fn agent_default(scope: &[TreePath]) -> Preset {
 ///
 /// An agent is an ordinary collaborator acting for one person: it never holds
 /// more than that person's role, never more than what its room admission
-/// grants it, and never more than [`ROLE_CAP`]. Every host — the relay
+/// grants it, and never more than [`ROLE_CAP`](agent_policy::ROLE_CAP). Every host — the relay
 /// governing a room, every member admitting its ops, the desktop broker
-/// hosting a room itself — asks [`role`] rather than deciding on its own.
+/// hosting a room itself — asks [`role`](agent_policy::role) rather than deciding on its own.
 ///
 /// Four questions about agents are still open. Until they are decided each
 /// keeps the answer the first agent-collaborator release gave it, and each
 /// is changed here:
 ///
-/// 1. Is an agent's role capped at Editor? [`ROLE_CAP`]: yes.
-/// 2. May another person's agent join a room? [`OTHER_PEOPLES_AGENTS_JOIN`]:
+/// 1. Is an agent's role capped at Editor? [`ROLE_CAP`](agent_policy::ROLE_CAP): yes.
+/// 2. May another person's agent join a room? [`OTHER_PEOPLES_AGENTS_JOIN`](agent_policy::OTHER_PEOPLES_AGENTS_JOIN):
 ///    no; a room's governor admits only its own person's agents.
-/// 3. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`]: a
+/// 3. What does withdrawing an agent mean? [`WITHDRAWAL_IS_FINAL`](agent_policy::WITHDRAWAL_IS_FINAL): a
 ///    withdrawn agent device is never admitted again; granting it anew
 ///    needs a new agent key.
 /// 4. Do members enforce the app scope of an agent's delegation? Not yet:

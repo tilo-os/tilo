@@ -133,6 +133,16 @@ fn bootc_status_field_bytes(bytes: &[u8], selector: &str) -> Result<String, Stri
         .get("status")
         .and_then(serde_json::Value::as_object)
         .ok_or("bootc status has no object-valued status field")?;
+    // Whether the next boot takes the rollback deployment rather than the
+    // booted one: after the boot loader fell back to an older deployment, the
+    // newer one that failed is still bootc's default until it is settled.
+    if selector == "rollback-queued" {
+        return match status.get("rollbackQueued") {
+            None | Some(serde_json::Value::Null) => Ok(String::new()),
+            Some(serde_json::Value::Bool(queued)) => Ok(queued.to_string()),
+            Some(_) => Err("bootc status.rollbackQueued is not a boolean".into()),
+        };
+    }
     let (deployment, path): (&str, &[&str]) = match selector {
         "booted-image" => ("booted", &["image", "image", "image"]),
         "staged-image" => ("staged", &["image", "image", "image"]),
@@ -1118,6 +1128,30 @@ mod tests {
             assert_eq!(
                 bootc_status_field_bytes(status, "rollback-composefs").unwrap(),
                 ""
+            );
+            let queued = br#"{"status":{"rollbackQueued":true,"rollback":null}}"#;
+            assert_eq!(
+                bootc_status_field_bytes(queued, "rollback-queued").unwrap(),
+                "true"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(
+                    br#"{"status":{"rollbackQueued":false}}"#,
+                    "rollback-queued"
+                )
+                .unwrap(),
+                "false"
+            );
+            assert_eq!(
+                bootc_status_field_bytes(status, "rollback-queued").unwrap(),
+                ""
+            );
+            assert!(
+                bootc_status_field_bytes(
+                    br#"{"status":{"rollbackQueued":"yes"}}"#,
+                    "rollback-queued"
+                )
+                .is_err()
             );
             let dated = br#"{"status":{"booted":{"image":{"timestamp":"2026-10-09T13:20:59Z"}},"staged":{"image":{"timestamp":"2026-10-20T08:00:00Z"}},"rollback":{"composefs":{"verity":"abc"}}}}"#;
             assert_eq!(

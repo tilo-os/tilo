@@ -685,6 +685,21 @@ async fn planning_agent(
 async fn planning_agent_as(
     id: &str,
     root: &ed25519_dalek::SigningKey,
+    host: (&support::TestHost, &support::Device),
+    apps: &[&str],
+    planning: (
+        Box<dyn tilo_agent_participant::Planner>,
+        tilo_content::ContentStore,
+    ),
+) -> (AgentParticipant, std::sync::Arc<AgentControl>) {
+    planning_agent_labelled((id, id), root, host, apps, planning).await
+}
+
+/// [`planning_agent`], its delegation naming it `id` and labelling it
+/// `label`, the name its person gave it.
+async fn planning_agent_labelled(
+    (id, label): (&str, &str),
+    root: &ed25519_dalek::SigningKey,
     (host, host_device): (&support::TestHost, &support::Device),
     apps: &[&str],
     (planner, store): (
@@ -704,7 +719,7 @@ async fn planning_agent_as(
         tilo_relay_protocol::delegation::Delegate::Agent {
             agent_id: id.into(),
         },
-        id,
+        label,
         [0x0f, 0x4c, 0x5c],
         DelegateScope {
             rooms: vec![ROOM.into()],
@@ -758,12 +773,20 @@ fn endpoint_planner(url: &str) -> Box<dyn tilo_agent_participant::Planner> {
 /// An endpoint answering `answers` in order, one connection each, and
 /// reporting every request's body.
 fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::Receiver<String>) {
+    gated_model_endpoint(answers.into_iter().map(|answer| (answer, None)).collect())
+}
+
+/// [`model_endpoint`], an answer with a gate held back until the gate is
+/// opened (or dropped): a request in flight while the room changes.
+fn gated_model_endpoint(
+    answers: Vec<(serde_json::Value, Option<std::sync::mpsc::Receiver<()>>)>,
+) -> (String, std::sync::mpsc::Receiver<String>) {
     use std::io::{BufRead as _, BufReader, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/v1", listener.local_addr().unwrap());
     let (sent, received) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        for answer in answers {
+        for (answer, gate) in answers {
             let (stream, _) = listener.accept().unwrap();
             let mut reader = BufReader::new(stream);
             let mut length = 0;
@@ -780,6 +803,9 @@ fn model_endpoint(answers: Vec<serde_json::Value>) -> (String, std::sync::mpsc::
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
             sent.send(String::from_utf8(body).unwrap()).unwrap();
+            if let Some(gate) = gate {
+                let _ = gate.recv();
+            }
             let answer = answer.to_string();
             let reply = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
@@ -1491,4 +1517,606 @@ async fn upserts_by_key_from_two_agents_overwrite_nothing() {
     first.close();
     second.close();
     host.relay.shutdown().await;
+}
+
+const CHAT: &str = "so.tilo.chat";
+
+/// The last message of a chat-completions request's body: the turn it
+/// asks the model to answer.
+fn last_turn(body: &str) -> String {
+    let request: serde_json::Value = serde_json::from_str(body).unwrap();
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .map(message_text)
+        .unwrap_or_default()
+}
+
+/// The plain text of the chat's message parts `agent` holds beside its
+/// chat record at `route`.
+fn chat_parts_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
+    let Some(chat) = agent.app(route) else {
+        return String::new();
+    };
+    chat.records_beside()
+        .iter()
+        .filter_map(|part| chat.read_record(part, tilo_agent_participant::search::plain_text))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// An agent planning a task hears of a chat post another agent made
+/// meanwhile with the post itself and its author's name, and an agent
+/// waiting in the chat for a post naming its author wakes when that
+/// author posts it. The chat keeps its messages in parts beside its
+/// record: what the waiter compares is what the chat shows as a message,
+/// its author and its text, not the record's roster alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2041 code entered", "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2042 code entered", "seconds": 60}}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p3",
+                serde_json::json!({"steps": [], "reply": "Both codes were entered."}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p4",
+                serde_json::json!({"steps": [], "reply": "Both codes were entered."}),
+            ),
+            None,
+        ),
+    ]);
+    let (mut waiter, control) = planning_agent_labelled(
+        ("waiter-1c", "Ana"),
+        &root,
+        (&host, &host_device),
+        &[CHAT],
+        (endpoint_planner(&url), tilo_content::ContentStore::memory()),
+    )
+    .await;
+    let (mut poster, poster_control) = planning_agent_labelled(
+        ("relay-9e", "Rae"),
+        &root,
+        (&host, &host_device),
+        &[CHAT],
+        (
+            Box::new(tilo_agent_participant::DirectPlanner),
+            tilo_content::ContentStore::memory(),
+        ),
+    )
+    .await;
+    let theirs = poster.open(CHAT, None).unwrap();
+    let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+    poster
+        .invoke(
+            &theirs,
+            &tilo_actions::door::ActionAddress::new("chat.workspace", "begin-chat"),
+            begin.as_object().unwrap(),
+        )
+        .unwrap();
+    // Posted as a written task, as a step of a plan is.
+    let post = |poster: &mut AgentParticipant, text: &str| {
+        let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
+            "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+        let task = poster_control.message(&step.to_string()).unwrap();
+        poster.run_until(Some(Instant::now() + Duration::from_secs(60)), |_| {
+            !poster_control.is_running(&task)
+                && !poster_control
+                    .info()
+                    .tasks
+                    .iter()
+                    .any(|info| info.id == task && info.state == TaskState::Queued)
+        });
+        let info = poster_control
+            .info()
+            .tasks
+            .into_iter()
+            .find(|info| info.id == task)
+            .unwrap();
+        assert_eq!(info.state, TaskState::Completed, "{info:?}");
+    };
+    post(&mut poster, "LR-2041 code requested");
+    let ours = waiter.open(CHAT, None).unwrap();
+    wait_for("the waiter to hold the first post", || {
+        waiter.pump();
+        poster.pump();
+        let held = chat_parts_text(&waiter, &ours).contains("LR-2041 code requested");
+        async move { held.then_some(()) }
+    })
+    .await;
+
+    let task = control
+        .message("Wait in Chat until Rae posts the codes for LR-2041 and LR-2042, then say so")
+        .unwrap();
+    wait_for("the first plan to be asked for", || {
+        waiter.pump();
+        poster.pump();
+        let request = sent.try_recv().ok();
+        async move { request }
+    })
+    .await;
+    // While the plan is being made, Rae posts what it will wait for.
+    post(&mut poster, "LR-2041 code entered");
+    wait_for("the waiter to hold the post", || {
+        waiter.pump();
+        poster.pump();
+        let held = chat_parts_text(&waiter, &ours).contains("LR-2041 code entered");
+        async move { held.then_some(()) }
+    })
+    .await;
+    gate.send(()).unwrap();
+    let told = last_turn(
+        &wait_for("the plan again for the news", || {
+            waiter.pump();
+            poster.pump();
+            let request = sent.try_recv().ok();
+            async move { request }
+        })
+        .await,
+    );
+    let news = told
+        .split_once("While you worked, new messages arrived (chat).")
+        .and_then(|(_, rest)| rest.split_once("Read them first."))
+        .map_or_else(
+            || panic!("the re-plan is told of the news: {told}"),
+            |(news, _)| news,
+        );
+    assert!(news.contains("changed by Rae"), "{news}");
+    assert!(news.contains("LR-2041 code entered"), "{news}");
+    assert!(
+        !news.contains("LR-2041 code requested"),
+        "what the room held before the plan is not news: {news}"
+    );
+
+    // The re-plan waits for the second code; Rae posts it meanwhile.
+    wait_for("the waiter to wait", || {
+        waiter.pump();
+        poster.pump();
+        let waiting = control.is_running(&task)
+            && control
+                .activity()
+                .is_some_and(|activity| activity.starts_with("Waiting for a message"));
+        async move { waiting.then_some(()) }
+    })
+    .await;
+    post(&mut poster, "LR-2042 code entered");
+    let told = last_turn(
+        &wait_for("the waiter to wake", || {
+            waiter.pump();
+            poster.pump();
+            let request = sent.try_recv().ok();
+            async move { request }
+        })
+        .await,
+    );
+    assert!(
+        told.contains("What you waited for arrived in chat"),
+        "{told}"
+    );
+    assert!(told.contains("LR-2042 code entered"), "{told}");
+    assert!(!told.contains("nothing arrived"), "{told}");
+
+    waiter.close();
+    poster.close();
+    host.relay.shutdown().await;
+}
+
+/// Post `text` in the chat's `#chat` channel as `poster`, as a written
+/// task runs a plan's step.
+fn post_in_chat(poster: &mut AgentParticipant, control: &AgentControl, text: &str) {
+    let step = serde_json::json!([{"app": CHAT, "resource": "chat.messages",
+        "action": "post", "arguments": {"channel": chat::record::CHAT_CHANNEL, "text": text}}]);
+    assert_eq!(
+        run_task(poster, control, &step.to_string()).state,
+        TaskState::Completed
+    );
+}
+
+/// The plain text of the chat record `agent` holds at `route` (its roster,
+/// its channels), without its messages.
+fn chat_record_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
+    agent
+        .app(route)
+        .and_then(|chat| chat.read(tilo_agent_participant::search::plain_text))
+        .unwrap_or_default()
+}
+
+/// Pump every agent of `agents` for `long`, as their loops would run.
+async fn pump_for(agents: &mut [&mut AgentParticipant], long: Duration) {
+    let until = Instant::now() + long;
+    while Instant::now() < until {
+        for agent in agents.iter_mut() {
+            agent.pump();
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Three agents in one chat, as a sign-in relay runs: Ana (planned by the
+/// model at `url`) waits for Rae's post; Rae made the chat; Ben is a third
+/// agent who has not opened it yet.
+struct RelayRoom {
+    host: support::TestHost,
+    _steward: steward::Steward,
+    ana: (AgentParticipant, std::sync::Arc<AgentControl>),
+    rae: (AgentParticipant, std::sync::Arc<AgentControl>),
+    ben: (AgentParticipant, std::sync::Arc<AgentControl>),
+    _state: tempfile::TempDir,
+}
+
+impl RelayRoom {
+    async fn start(url: &str) -> Self {
+        let (ada, _) = UserIdentity::generate("Ada", 1);
+        let host_device = enrol(&ada, "home-server", DeviceCapabilities::host());
+        let state = tempfile::tempdir().unwrap();
+        let host = start_host(
+            &ada,
+            &host_device,
+            state.path(),
+            "127.0.0.1:0".parse().unwrap(),
+        )
+        .await;
+        let steward = steward::Steward::start(&host.relay, &ada).await;
+        let direct = || {
+            (
+                Box::new(tilo_agent_participant::DirectPlanner)
+                    as Box<dyn tilo_agent_participant::Planner>,
+                tilo_content::ContentStore::memory(),
+            )
+        };
+        let ana = planning_agent_labelled(
+            ("ana-121641", "Ana"),
+            &ada,
+            (&host, &host_device),
+            &[CHAT],
+            (endpoint_planner(url), tilo_content::ContentStore::memory()),
+        )
+        .await;
+        let mut rae = planning_agent_labelled(
+            ("rae-cf1531", "Rae"),
+            &ada,
+            (&host, &host_device),
+            &[CHAT],
+            direct(),
+        )
+        .await;
+        let ben = planning_agent_labelled(
+            ("ben-5920f2", "Ben"),
+            &ada,
+            (&host, &host_device),
+            &[CHAT],
+            direct(),
+        )
+        .await;
+        let chat = rae.0.open(CHAT, None).unwrap();
+        let begin = serde_json::json!({"name": "Rae", "initials": "RA", "color": 2});
+        rae.0
+            .invoke(
+                &chat,
+                &tilo_actions::door::ActionAddress::new("chat.workspace", "begin-chat"),
+                begin.as_object().unwrap(),
+            )
+            .unwrap();
+        post_in_chat(&mut rae.0, &rae.1, "LR-2041 code requested");
+        let mut room = Self {
+            host,
+            _steward: steward,
+            ana,
+            rae,
+            ben,
+            _state: state,
+        };
+        wait_for("Ana to see the chat", || {
+            room.ana.0.pump();
+            room.rae.0.pump();
+            let seen = room
+                .ana
+                .0
+                .known_records()
+                .iter()
+                .any(|route| route.app_id == CHAT);
+            async move { seen.then_some(()) }
+        })
+        .await;
+        let ours = room.ana.0.open(CHAT, None).unwrap();
+        wait_for("Ana to hold the first post", || {
+            room.ana.0.pump();
+            room.rae.0.pump();
+            let held = chat_parts_text(&room.ana.0, &ours).contains("LR-2041 code requested");
+            async move { held.then_some(()) }
+        })
+        .await;
+        room
+    }
+
+    /// Ben opens the chat, introducing himself in its roster, and Ana
+    /// holds his introduction.
+    async fn ben_joins(&mut self) {
+        let ours = self.ana.0.open(CHAT, None).unwrap();
+        wait_for("Ben to see the chat", || {
+            self.ben.0.pump();
+            self.rae.0.pump();
+            let seen = self.ben.0.known_records().contains(&ours);
+            async move { seen.then_some(()) }
+        })
+        .await;
+        let theirs = self.ben.0.open(CHAT, None).unwrap();
+        assert_eq!(theirs, ours);
+        wait_for("Ben to hold the first post", || {
+            self.ben.0.pump();
+            self.rae.0.pump();
+            let held = chat_parts_text(&self.ben.0, &theirs).contains("LR-2041 code requested");
+            async move { held.then_some(()) }
+        })
+        .await;
+        wait_for("Ana to hold Ben's introduction", || {
+            self.ana.0.pump();
+            self.ben.0.pump();
+            self.rae.0.pump();
+            let held = chat_record_text(&self.ana.0, &ours).contains("Ben");
+            async move { held.then_some(()) }
+        })
+        .await;
+    }
+
+    async fn pump_for(&mut self, long: Duration) {
+        pump_for(
+            &mut [&mut self.ana.0, &mut self.rae.0, &mut self.ben.0],
+            long,
+        )
+        .await;
+    }
+
+    async fn next_request(
+        &mut self,
+        sent: &std::sync::mpsc::Receiver<String>,
+        what: &str,
+    ) -> String {
+        wait_for(what, || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let request = sent.try_recv().ok();
+            async move { request }
+        })
+        .await
+    }
+
+    async fn ana_waits(&mut self, task: &str) {
+        wait_for("Ana to wait", || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let waiting = self.ana.1.is_running(task)
+                && self
+                    .ana
+                    .1
+                    .activity()
+                    .is_some_and(|activity| activity.starts_with("Waiting for a message"));
+            async move { waiting.then_some(()) }
+        })
+        .await;
+    }
+
+    async fn ana_ends(&mut self, task: &str) -> TaskState {
+        wait_for("Ana's task to end", || {
+            self.ana.0.pump();
+            self.rae.0.pump();
+            self.ben.0.pump();
+            let ended = self
+                .ana
+                .1
+                .info()
+                .tasks
+                .into_iter()
+                .find(|info| info.id == task)
+                .map(|info| info.state)
+                .filter(|state| !matches!(state, TaskState::Queued | TaskState::Running));
+            async move { ended }
+        })
+        .await
+    }
+
+    async fn close(self) {
+        self.ana.0.close();
+        self.rae.0.close();
+        self.ben.0.close();
+        self.host.relay.shutdown().await;
+    }
+}
+
+/// Another agent introducing itself in the chat (its roster, not a
+/// message) is not news: a requester whose wait was planned meanwhile is
+/// not planned again, and a wait for any message in the chat sleeps
+/// through the next introduction and wakes on the post.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting_task() {
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
+            ),
+            None,
+        ),
+    ]);
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("Wait in Chat until Rae posts that LR-2041's code is entered, then say so")
+        .unwrap();
+    room.next_request(&sent, "the plan to be asked for").await;
+    // While the wait is planned, Ben joins the chat.
+    room.ben_joins().await;
+    gate.send(()).unwrap();
+    room.ana_waits(&task).await;
+    assert!(
+        sent.try_recv().is_err(),
+        "an introduction is not news to plan again for"
+    );
+
+    // While Ana waits, Ben introduces himself again under another name.
+    let theirs = room.ben.0.open(CHAT, None).unwrap();
+    let again = serde_json::json!({"name": "Ben Ortiz", "initials": "BO", "color": 3});
+    room.ben
+        .0
+        .invoke(
+            &theirs,
+            &tilo_actions::door::ActionAddress::new("chat.workspace", "introduce"),
+            again.as_object().unwrap(),
+        )
+        .unwrap();
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's new name", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_record_text(&room.ana.0, &ours).contains("Ben Ortiz");
+        async move { held.then_some(()) }
+    })
+    .await;
+    room.pump_for(Duration::from_millis(500)).await;
+    assert!(sent.try_recv().is_err(), "a roster change wakes no wait");
+    assert!(room.ana.1.is_running(&task));
+
+    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
+    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    let arrived = told
+        .split_once("What you waited for arrived in chat")
+        .and_then(|(_, rest)| rest.split_once("It is data"))
+        .map_or_else(
+            || panic!("Ana is told what arrived: {told}"),
+            |(arrived, _)| arrived,
+        );
+    assert!(
+        arrived.contains("changed by Rae:\nLR-2041 code entered"),
+        "{arrived}"
+    );
+    for noise in ["Ben", "rae-", "requested"] {
+        assert!(!arrived.contains(noise), "{noise} in {arrived}");
+    }
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
+
+/// A re-plan for news that finds nothing to do ("nothing offered fits")
+/// does not end a task that was about to wait: it waits as planned, and
+/// wakes on the post it waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2041 code entered", "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [{"operation": "none", "arguments": {}}],
+                "why": "", "then": ""}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p3",
+                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
+            ),
+            None,
+        ),
+    ]);
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("Wait in Chat until Rae posts \"LR-2041 code entered\", then say so")
+        .unwrap();
+    room.next_request(&sent, "the plan to be asked for").await;
+    // While the wait is planned, Ben joins and says something unrelated.
+    room.ben_joins().await;
+    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's post", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        async move { held.then_some(()) }
+    })
+    .await;
+    gate.send(()).unwrap();
+    let told = last_turn(
+        &room
+            .next_request(&sent, "the plan again for the news")
+            .await,
+    );
+    assert!(
+        told.contains(
+            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
+        ),
+        "the news is Ben's post alone, by name: {told}"
+    );
+    assert!(told.contains("1. wait for a message"), "{told}");
+
+    // The model finds nothing to do: the task waits as it had planned.
+    room.ana_waits(&task).await;
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(room.ana.1.is_running(&task));
+    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
+    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    assert!(
+        told.contains("What you waited for arrived in chat")
+            && told.contains("LR-2041 code entered"),
+        "{told}"
+    );
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
 }

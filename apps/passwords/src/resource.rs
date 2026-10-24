@@ -349,6 +349,57 @@ mod tests {
         );
     }
 
+    /// A favorite is vault state an agent, a script or a screen reader sets
+    /// by the item's id, not only by the row's star.
+    #[test]
+    fn an_item_is_made_a_favorite_and_back_by_its_action() {
+        let _profile = profile();
+        let mut model = crate::PasswordsModel::open();
+        let mut item = SecretItem::login("Mail", "ada@example.com", "not-public-7A");
+        let id = model.save_item(&mut item).unwrap();
+        drop(model);
+        let mut app = TestApp::<PasswordsShell>::new().unwrap();
+        let vault = published(&mut app, Passwords::KIND).unwrap();
+        assert!(
+            vault.actions.iter().any(|action| action.id == "favorite"),
+            "the vault offers favorite"
+        );
+        let stored = || {
+            crate::PasswordsModel::open()
+                .items()
+                .iter()
+                .any(|item| item.tags.contains("favorite"))
+        };
+        let favorite = |favorite| PasswordsEffect::Favorite {
+            item: id.0.clone(),
+            favorite,
+        };
+
+        app.effect(&favorite(true)).unwrap();
+        assert!(stored(), "the vault keeps the favorite");
+        app.effect(&favorite(true)).unwrap();
+        assert!(stored(), "asking again leaves it a favorite");
+        app.effect(&PasswordsEffect::Filter {
+            filter: "favorites".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            app.surface_mut::<PasswordsSurface>().core().visible().len(),
+            1,
+            "Favorites lists it"
+        );
+        app.effect(&favorite(false)).unwrap();
+        assert!(!stored(), "and no longer once it is removed");
+        assert!(
+            app.effect(&PasswordsEffect::Favorite {
+                item: "not-in-the-vault".into(),
+                favorite: true,
+            })
+            .is_err(),
+            "an item the vault does not hold is refused"
+        );
+    }
+
     #[test]
     fn an_item_saved_from_the_editor_lands_in_the_vault() {
         let _profile = profile();

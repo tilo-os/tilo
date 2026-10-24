@@ -235,7 +235,8 @@ fn no_policy_document_fixture() -> (StatePeer, SigningKey, SigningKey, SystemTim
     let mut chat = AutoCommit::new();
     chat.put(ROOT, "label", "unchanged signed document")
         .unwrap();
-    peer.publish_document("so.tilo.chat", "", chat.save(), &key, now)
+    peer.publication_mut()
+        .publish_document("so.tilo.chat", "", chat.save(), &key, now)
         .unwrap();
     (peer, root, key, now)
 }

@@ -1,4 +1,5 @@
-//! RFC 8628 device authorization.
+//! RFC 8628 device authorization: a code the person enters on another
+//! page, for issuers that register no loopback redirect (GitHub).
 //!
 //! [`DeviceAuthorization::begin`] asks the issuer for a code; the person
 //! enters [`DeviceAuthorization::user_code`] at

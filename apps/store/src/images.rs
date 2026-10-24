@@ -129,7 +129,7 @@ fn artwork_dir() -> Option<std::path::PathBuf> {
 /// disk afterwards, so icons and screenshots a window showed before appear
 /// at once, and only new ones wait for the network. Files are named by the
 /// BLAKE3 of their URL; the oldest are removed once the cache outgrows
-/// [`ARTWORK_CACHE_BYTES`].
+/// `ARTWORK_CACHE_BYTES`.
 pub fn cached_fetcher(network: Fetcher, dir: Option<std::path::PathBuf>) -> Fetcher {
     let written = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Arc::new(move |url: &str| {

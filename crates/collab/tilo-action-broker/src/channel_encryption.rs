@@ -31,7 +31,7 @@
 //! asks the identity service again only when it fires, rather than on a
 //! timer. A key rotation, an invite, a removal, a role change that ends
 //! reading and a device's enrolment or revocation each become a commit the
-//! steward makes within [`RECONCILE_INTERVAL`] of the policy change (on its
+//! steward makes within `RECONCILE_INTERVAL` of the policy change (on its
 //! announcement, or at the expiry, when the directory announces changes:
 //! [`ChannelDirectory::policy_epoch`]); the
 //! commit is announced on the steward the moment it is made and on a member
@@ -649,11 +649,11 @@ impl ChannelEncryption {
     /// arrives or an endpoint's access wakes it ([`ChannelKeyAccess::with_wake`]).
     ///
     /// A steward re-checks its access policy when its directory announces a
-    /// change ([`Self::waits_for_policy_change`]) and at the next expiry the
+    /// change (`Self::waits_for_policy_change`) and at the next expiry the
     /// last re-check read, which [`Self::pump`] registers with
     /// [`ChannelDirectory::announce_at`]; neither is a deadline
     /// here. A directory that announces nothing keeps the re-check every
-    /// [`RECONCILE_INTERVAL`]. The re-check also redelivers what members have
+    /// `RECONCILE_INTERVAL`. The re-check also redelivers what members have
     /// not acknowledged (on their own backoff) and retries an unaccepted
     /// genesis announcement. A member is due only while it still has to
     /// acknowledge a frame or is asking for access, on its backoff. A member
@@ -1332,7 +1332,7 @@ impl ChannelKeyAccess {
     /// arrives or the wake given to [`Self::with_wake`] fires.
     ///
     /// Work this pass found due and still left due (an access request that
-    /// could not be prepared) is retried after [`RECONCILE_INTERVAL`], the
+    /// could not be prepared) is retried after `RECONCILE_INTERVAL`, the
     /// cadence every pass had while the caller woke on a fixed timer.
     #[must_use]
     pub fn pump_until_due(&self, transport: &dyn GovernanceTransport) -> Option<Duration> {

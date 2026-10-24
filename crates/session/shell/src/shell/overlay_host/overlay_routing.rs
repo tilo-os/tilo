@@ -156,6 +156,27 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        if self.now_playing_card.scrubbing() {
+            match event {
+                WindowEvent::CursorMoved { .. } => {
+                    if let Some(point) = self.last_cursor {
+                        self.drag_now_playing_seek(point);
+                    }
+                    *handled = true;
+                    return true;
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                } => {
+                    self.release_now_playing_seek();
+                    *handled = true;
+                    return true;
+                }
+                _ => {}
+            }
+        }
         if !self.qs_root.drag_active() {
             return false;
         }
@@ -205,12 +226,24 @@ impl ShellOverlayHost {
     fn route_qs_slider_touch(&mut self, touch: &winit::event::Touch, scale_factor: f64) -> bool {
         use ui::widget::SliderTouchStep;
         let mut finger = self.qs_slider_touch;
-        let step = finger.step(touch, scale_factor, |point| self.qs_slider_face_at(point));
+        let step = finger.step(touch, scale_factor, |point| {
+            self.qs_slider_face_at(point) || self.now_playing_seek_at(point)
+        });
         self.qs_slider_touch = finger;
         match step {
             SliderTouchStep::Press(point) => {
                 let p = self.untransform_quick_settings_pointer(point, Instant::now());
-                self.handle_shell_quick_settings_root_click(p);
+                if !self.handle_now_playing_click(p) {
+                    self.handle_shell_quick_settings_root_click(p);
+                }
+                true
+            }
+            SliderTouchStep::Move(point) if self.now_playing_card.scrubbing() => {
+                self.drag_now_playing_seek(point);
+                true
+            }
+            SliderTouchStep::Release if self.now_playing_card.scrubbing() => {
+                self.release_now_playing_seek();
                 true
             }
             SliderTouchStep::Move(point) => {
@@ -321,6 +354,22 @@ impl ShellOverlayHost {
         if self.portal_dialogs.view().is_none() {
             return false;
         }
+        if self.portal_dialogs.prompt().is_some() {
+            // The password prompt is modal and routes its own input: keys,
+            // the input method, the pointer and touch. A press is placed
+            // where the pointer last was, which may have been over a window
+            // whose motion never reached this tree.
+            if let (WindowEvent::MouseInput { .. }, Some(point)) = (event, self.last_cursor) {
+                let moved = ui::synthetic_input::cursor_moved(
+                    point.x * ctx.scale_factor,
+                    point.y * ctx.scale_factor,
+                );
+                self.portal_dialogs.prompt_event(&moved, ctx);
+            }
+            self.portal_dialogs.prompt_event(event, ctx);
+            *ctx.handled = true;
+            return true;
+        }
         if self.portal_dialogs.layout(self.overlay_area()).is_none() {
             // A security review that cannot fit is not an invisible Allow
             // button. Keep Escape available, but consume every other input.
@@ -415,9 +464,7 @@ impl ShellOverlayHost {
         let Some(layout) = self.portal_dialogs.layout(self.overlay_area()) else {
             return;
         };
-        let used = self
-            .portal_dialogs
-            .field_pointer_event(event, ctx, &layout, self.last_cursor);
+        let used = self.portal_dialogs.field_pointer_event(event, ctx, &layout);
         if !used
             && let (
                 WindowEvent::MouseInput {

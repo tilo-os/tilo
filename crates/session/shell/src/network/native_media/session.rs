@@ -15,7 +15,7 @@ use media::voice::{
 use runtime_collab::native_media::{
     Inventory, Issue, Picture, PictureSource, Shown, State as CallState,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::os::fd::AsFd;
 use tilo_moq::client::{self, Status};
 use tilo_relay_protocol::voice::HEARTBEAT;
@@ -167,6 +167,10 @@ impl MediaFactory for Factory {
                         choice: camera,
                         ..Video::default()
                     },
+                    volumes: BTreeMap::new(),
+                    volumes_applied: None,
+                    said_muted: true,
+                    told: Arc::default(),
                 }) as Box<dyn MediaSession>)
             }));
             (&mut preparing.0).await.map_err(|_| Issue::Unavailable)?
@@ -500,6 +504,23 @@ struct Session {
     /// Those keys, as of this tick; `None` until this device holds them.
     keys: Option<channel_crypto::ChannelContentKeys>,
     video: Video,
+    /// How loud each participant plays here, by `authority::call_id`.
+    volumes: BTreeMap<String, u16>,
+    /// The grant revision `volumes` was last worked out for, as publications.
+    volumes_applied: Option<u64>,
+    /// Whether the governor was last told this device is muted. A call
+    /// starts muted, as its participation says from the start.
+    said_muted: bool,
+    told: Arc<Telling>,
+}
+
+/// What the governor is to be told this device shows. Tellings run one at
+/// a time, in order, each sending what is newest when its turn comes, so
+/// the governor always ends on the newest.
+#[derive(Default)]
+struct Telling {
+    newest: Mutex<tilo_relay_protocol::voice::Showing>,
+    turn: tokio::sync::Mutex<()>,
 }
 
 /// The call's pictures: what this device shows, what the app shows of the
@@ -525,15 +546,6 @@ struct Video {
     /// call's keys.
     sealing: Arc<Mutex<Option<super::call_seal::Sealing>>>,
     inbox: video::Inbox,
-}
-impl Video {
-    /// What this device shows now, as the governor is told.
-    const fn showing(&self) -> tilo_relay_protocol::voice::Showing {
-        tilo_relay_protocol::voice::Showing {
-            camera: self.camera.is_some(),
-            screen: self.screen.is_some(),
-        }
-    }
 }
 impl Session {
     // False requests guarded recovery from a nonterminal owner fence.
@@ -633,6 +645,32 @@ impl Session {
         self.video.showing.clear();
         self.video.inbox.clear();
     }
+    /// Play each participant at the volume set for them, by the
+    /// publications of the current grant: someone back on a new
+    /// publication keeps theirs.
+    fn volume_tick(&mut self) {
+        let revision = self.runtime.ticket.revision();
+        if self.volumes_applied == Some(revision) {
+            return;
+        }
+        let volumes = &self.volumes;
+        let by_publication = self
+            .runtime
+            .ticket
+            .inspect_current(|_, grant| {
+                Ok(grant
+                    .participants
+                    .iter()
+                    .filter_map(|participant| {
+                        let percent = volumes.get(&authority::call_id(participant)?)?;
+                        Some((participant.namespace.clone(), *percent))
+                    })
+                    .collect())
+            })
+            .unwrap_or_default();
+        self.audio.set_volumes(by_publication);
+        self.volumes_applied = Some(revision);
+    }
     /// Ask the carrier for the pictures the app shows, by the publications
     /// of the people it shows, whenever the carrier or its grant changed;
     /// then move what arrived into the inbox, named by person.
@@ -650,6 +688,10 @@ impl Session {
                     for participant in &grant.participants {
                         if grant.publication.as_ref() == Some(&participant.namespace) {
                             own = Some(hex::encode(participant.user_public_key));
+                            continue;
+                        }
+                        // A bridge carries voices only, under its own person.
+                        if participant.bridged.is_some() {
                             continue;
                         }
                         let person = hex::encode(participant.user_public_key);
@@ -720,7 +762,9 @@ impl Session {
                     Ok(grant
                         .participants
                         .iter()
-                        .find(|participant| &participant.namespace == namespace)
+                        .find(|participant| {
+                            &participant.namespace == namespace && participant.bridged.is_none()
+                        })
                         .map(|participant| hex::encode(participant.user_public_key)))
                 })
                 .ok()
@@ -778,12 +822,37 @@ impl Session {
             }
         }
     }
-    /// Tell the governor what this device shows, off the call's tick.
+    /// What this device shows now, as the governor is told: muted while
+    /// it holds no microphone capture (a reconnect only pauses it).
+    const fn showing(&self) -> tilo_relay_protocol::voice::Showing {
+        tilo_relay_protocol::voice::Showing {
+            camera: self.video.camera.is_some(),
+            screen: self.video.screen.is_some(),
+            muted: self.capture.is_none(),
+            deafened: self.audio.deafened(),
+        }
+    }
+    /// Tell the governor when this device was muted or unmuted.
+    fn say_muted(&mut self) {
+        let muted = self.capture.is_none();
+        if muted != self.said_muted {
+            self.said_muted = muted;
+            self.say_showing();
+        }
+    }
+    /// Tell the governor what this device shows, off the call's tick; not
+    /// once the call is closed.
     fn say_showing(&self) {
+        if self.runtime.cancelled.load(Ordering::Acquire) {
+            return;
+        }
         let ticket = self.runtime.ticket.clone();
         let commands = self.runtime.commands.clone();
-        let showing = self.video.showing();
+        *self.told.newest.lock() = self.showing();
+        let told = self.told.clone();
         self.runtime.executor.spawn(async move {
+            let _turn = told.turn.lock().await;
+            let showing = *told.newest.lock();
             if let Err(error) = command(&commands, Operation::Show { ticket, showing }).await {
                 tracing::debug!(%error, "the call was not told what this device shows");
             }
@@ -1024,6 +1093,7 @@ impl MediaSession for Session {
         }
         self.retire_departed(&client);
         self.video_tick(&client);
+        self.volume_tick();
         let now = Instant::now();
         self.audio.playout(now).map_err(|_| Issue::Unavailable)?;
         let others = self
@@ -1088,8 +1158,12 @@ impl MediaSession for Session {
                 && intent.slot.current.load(Ordering::SeqCst)
         });
         if !reuse {
-            // Leaves `self.capture` empty, so the intent below is always fresh.
-            self.stop_capture();
+            // Leaves `self.capture` empty, so the intent below is always
+            // fresh; the person stays unmuted throughout a source change.
+            if let Some(intent) = self.capture.take() {
+                intent.slot.stop();
+            }
+            self.audio.stop_capture();
         }
         let intent = self.capture.get_or_insert_with(|| CaptureIntent {
             source_id: source_id.into(),
@@ -1101,12 +1175,13 @@ impl MediaSession for Session {
             prepared: None,
             watchdog: None,
         });
-        if intent.pending.is_some()
+        let starting = intent.pending.is_some()
             || intent.prepared.is_some()
-            || intent.slot.generation.lock().is_some()
-        {
+            || intent.slot.generation.lock().is_some();
+        self.say_muted();
+        let Some(intent) = self.capture.as_mut().filter(|_| !starting) else {
             return Ok(());
-        }
+        };
         intent.cancel_pending();
         let slot = intent.slot.clone();
         let startup = slot.begin()?;
@@ -1173,6 +1248,7 @@ impl MediaSession for Session {
             intent.slot.stop();
         }
         self.audio.stop_capture();
+        self.say_muted();
     }
     fn start_video(&mut self, source: PictureSource) -> Result<(), Issue> {
         let running = self.runtime.client.lock().clone();
@@ -1228,11 +1304,25 @@ impl MediaSession for Session {
         }
         None
     }
+    fn set_deafened(&mut self, deafened: bool) {
+        if self.audio.deafened() != deafened {
+            self.audio.set_deafened(deafened);
+            self.say_showing();
+        }
+    }
     fn show(&mut self, shown: Vec<Shown>) {
         if self.video.shown != shown {
             self.video.shown = shown;
             self.video.applied = None;
         }
+    }
+    fn set_volume(&mut self, participant: String, percent: u16) {
+        if percent == 100 {
+            self.volumes.remove(&participant);
+        } else {
+            self.volumes.insert(participant, percent);
+        }
+        self.volumes_applied = None;
     }
     fn take_pictures(&mut self, after: u64, budget: usize) -> (Vec<Picture>, u64) {
         self.video.inbox.take(after, budget)
@@ -1241,10 +1331,11 @@ impl MediaSession for Session {
         Some(self.video.inbox.signal())
     }
     fn close(&mut self) {
+        // First, so nothing tells the governor what a leaving call shows.
+        let first = !self.runtime.cancelled.swap(true, Ordering::SeqCst);
         self.stop_capture();
         self.video.camera = None;
         self.video.screen = None;
-        let first = !self.runtime.cancelled.swap(true, Ordering::SeqCst);
         self.runtime.ticket.stop();
         let task = self.runtime.task.lock().take();
         if let Some(task) = task {

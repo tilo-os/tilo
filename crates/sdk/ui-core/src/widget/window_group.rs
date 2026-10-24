@@ -58,9 +58,11 @@ pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
 
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
 
-/// Kept inside the row's visible margin during the spawn animation.
-const SPAWN_ANIM_X_OFFSET: f64 = -16.0;
-const SPAWN_ANIM_INITIAL_SCALE: f64 = 0.92;
+/// How long a window's place is held, with nothing drawn in it, for its
+/// first frame: a window whose content arrives inside it appears whole,
+/// with no fade (its slot opening is the motion); one that arrives later
+/// cross-fades in over the ground it held.
+const ARRIVAL_GRACE: Duration = Duration::from_millis(150);
 /// The lifted handle remains readable while exposing the drop target; the app
 /// pixels beneath it recede further so the target never disappears.
 const DRAG_CONTENT_ALPHA: f32 = 0.42;
@@ -80,12 +82,15 @@ fn window_progress(direction: crate::motion::Direction, elapsed: Duration) -> f6
     )
 }
 
-/// How long a window's arrival takes.
-fn spawn_time() -> Duration {
-    crate::motion::WindowMotion::OPEN.settle_time(
+/// How far a window's content has cross-faded in over the ground its place
+/// held, `elapsed` after it arrived past [`ARRIVAL_GRACE`]
+/// (`motion::CROSS_FADE`).
+fn arrival_progress(elapsed: Duration) -> f64 {
+    crate::motion::CROSS_FADE.progress_after(
         crate::motion::Direction::Enter,
         crate::tokens::EffectiveMotion::default(),
         crate::tokens::MotionSource::Pointer,
+        elapsed,
     )
 }
 
@@ -310,13 +315,40 @@ pub struct WindowGroup {
     /// display and draws edge to edge ([`Widget::set_full_bleed`]).
     fills_display: bool,
     last_cursor: Point,
+    /// When the window was asked for: its slot opens from here, and its
+    /// content, held back until it first draws, shows whole if that is
+    /// within [`ARRIVAL_GRACE`].
     spawned_at: Option<Instant>,
+    /// Content that first drew past the grace cross-fades in from here.
+    arrival_fade_at: Option<Instant>,
+    /// A tab just opened in this window that has not drawn yet, and the tab
+    /// shown before it: the window keeps showing that one meanwhile, so its
+    /// body is never blank.
+    tab_waiting: Option<(u64, u64)>,
+    /// The hand-over from the tab shown before to a new one, once the new
+    /// one has drawn (`motion::CrossFade`).
+    tab_fade: Option<crate::motion::CrossFade<u64>>,
     /// Drawn rect in flight between the tiled slot and the work area.
     /// Layout jumps to the destination; paint interpolates (no Taffy).
     rect_spring: Option<FrameSpring<Rect>>,
     /// Slot width in flight. Layout reads this so an open grows from 0,
     /// a close collapses the slot, and a resize retargets without a jump.
     width_spring: Option<FrameSpring<f64>>,
+    /// The width the window's bar and content are laid out at while its slot
+    /// width is in flight: the wide end of the motion. A widening window
+    /// reflows to the width it is going to as the motion starts, its app's
+    /// new frame arriving under the growing slot's clip; a narrowing one
+    /// keeps the width it had, clipped by the slot, and reflows once it
+    /// rests. Never on every frame. Read only while `width_spring` is set.
+    content_px: f64,
+    /// The width the window had when it began to restore from maximized:
+    /// what it stays laid out at, clipped by its shrinking frame, until the
+    /// frame rests. Read only while `rect_spring` is set or
+    /// `rest_layout_owed`, and the window is not maximized.
+    rect_from_width: f64,
+    /// A restoring frame came to rest and the window is owed the layout at
+    /// its own width: asks for the frame that lays it out.
+    rest_layout_owed: bool,
     /// Set on any `draw` this group sat out because nothing in it had
     /// presented yet; drained on the first `draw` that does paint, which
     /// latches the arrival fade to the moment the window turns up rather
@@ -365,6 +397,9 @@ pub struct WindowGroup {
     /// group vanishes from the canonical tree, that exit is its one retirement.
     close_requested: bool,
     close_duration: Duration,
+    /// The close was a shortcut's or an action's: it lands, so the group is
+    /// gone on the next frame instead of fading out.
+    close_lands: bool,
     /// Per drawn frame the width spring steps once and a closing group asks
     /// for one rebuild (its spring steps in `build_layout`). A frame's
     /// composition takes several passes and real time moves between them:
@@ -542,8 +577,14 @@ impl WindowGroup {
             fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            arrival_fade_at: None,
+            tab_waiting: None,
+            tab_fade: None,
             rect_spring: None,
             width_spring: None,
+            content_px: 0.0,
+            rect_from_width: 0.0,
+            rest_layout_owed: false,
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
@@ -552,6 +593,7 @@ impl WindowGroup {
             width_step_skipped: false,
             close_rebuild_taken: false,
             close_duration: window_close_time(),
+            close_lands: false,
             reduce_motion: false,
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
@@ -629,6 +671,27 @@ impl WindowGroup {
         self.arm_width_from_zero();
     }
 
+    /// Called by every paint: on the first one after the window's place was
+    /// held back (nothing of it had drawn), decide how its content arrives.
+    /// Inside [`ARRIVAL_GRACE`] of being asked for it shows whole; later, it
+    /// cross-fades in. The slot's width spring is left as it is: it has been
+    /// opening since the window was asked for.
+    fn take_first_paint(&mut self) {
+        let now = crate::time::now();
+        if std::mem::take(&mut self.held_back) && !self.is_closing() {
+            let late = self
+                .spawned_at
+                .is_none_or(|asked| now.saturating_duration_since(asked) >= ARRIVAL_GRACE);
+            self.arrival_fade_at = late.then_some(now);
+        }
+        if self
+            .arrival_fade_at
+            .is_some_and(|t| arrival_progress(now.saturating_duration_since(t)) >= 1.0)
+        {
+            self.arrival_fade_at = None;
+        }
+    }
+
     /// A shortcut or action lands what it changed at once: the springs it
     /// started (width, maximize) jump to their targets, a spawn shows the
     /// group already in place, and the tab bar's chips settle.
@@ -648,6 +711,7 @@ impl WindowGroup {
             }
             if !self.is_closing() {
                 self.spawned_at = None;
+                self.arrival_fade_at = None;
             }
         }
     }
@@ -704,6 +768,7 @@ impl WindowGroup {
         let mut spring = FrameSpring::new(0.0).with_tolerance_px();
         spring.set_target(target);
         self.width_spring = Some(spring);
+        self.content_px = target;
         self.style_dirty = true;
     }
 
@@ -714,7 +779,12 @@ impl WindowGroup {
             return;
         }
         if let Some(spring) = self.width_spring.as_mut() {
+            let now = spring.value();
+            self.content_px = now.max(to);
             spring.set_target(to);
+            if to > now {
+                self.hold_app_frames_at_leading_edge();
+            }
             return;
         }
         let from = from.max(0.0);
@@ -726,7 +796,31 @@ impl WindowGroup {
         // frame covers the time since.
         spring.set_target(to);
         self.width_spring = Some(spring);
+        self.content_px = from.max(to);
+        if to > from {
+            self.hold_app_frames_at_leading_edge();
+        }
         self.style_dirty = true;
+    }
+
+    /// The width the bar and content are laid out at while the window's
+    /// frame is in flight, when it is not the frame's own: a restoring
+    /// window keeps the width it had until its frame rests, and a slot in
+    /// flight lays out at the wide end of its motion.
+    fn content_width_in_flight(&self) -> Option<f64> {
+        if self.edge_drag.is_some() {
+            return None;
+        }
+        // Until the layout at its own width has been made, a restoring
+        // window stays as it was laid out while its frame shrank.
+        if self.rect_spring.is_some() || self.rest_layout_owed {
+            return (!self.maximized && self.rect_from_width > 1.0).then_some(self.rect_from_width);
+        }
+        if self.maximized {
+            return None;
+        }
+        let slot = self.width_spring.as_ref()?.value().max(0.0);
+        ((self.content_px - slot).abs() > 0.5).then_some(self.content_px)
     }
 
     /// Advance the slot-width spring. Called from the row's layout pass
@@ -769,6 +863,7 @@ impl WindowGroup {
         }
         let from = self.layout_width_px();
         self.closing_at = Some(crate::time::now());
+        self.close_lands = self.motion_source.lands_at_once();
         self.close_rebuild_taken = false;
         self.retarget_width(from, 0.0);
     }
@@ -812,11 +907,34 @@ impl WindowGroup {
         self.closing_at.is_some()
     }
 
+    /// The close has run its course: the window has faded out and its slot
+    /// has closed. Pruned before the slot is shut, the windows beside it
+    /// would jump across what was left of it.
     pub fn close_complete(&self) -> bool {
         self.closing_at.is_some_and(|t| {
             self.reduce_motion
-                || crate::time::now().saturating_duration_since(t) >= self.close_duration
+                || self.close_lands
+                || (crate::time::now().saturating_duration_since(t) >= self.close_duration
+                    && self.slot_at_rest())
         })
+    }
+
+    /// Whether the slot's width is where it is going, as of this frame.
+    fn slot_at_rest(&self) -> bool {
+        self.width_spring
+            .as_ref()
+            .is_none_or(|spring| !spring.motion.is_moving(crate::motion::frame_now()))
+    }
+
+    /// When a tab's close starts: now, or, for a shortcut that lands, as long
+    /// ago as its fade lasts, so the closed tab is not drawn again.
+    fn close_started(&self) -> Instant {
+        let now = crate::time::now();
+        if self.lands_at_once() {
+            now.checked_sub(group_close_fade()).unwrap_or(now)
+        } else {
+            now
+        }
     }
 
     /// Whether a maximized window's bar shows: the person reached for it
@@ -1139,7 +1257,7 @@ impl WindowGroup {
     }
 
     /// The widths this window may be resized to: the strictest minimum and
-    /// maximum any of its tabs' apps states ([`AppWidget::min_window_width`]),
+    /// maximum any of its tabs' apps states ([`crate::widget::AppWidget::min_window_width`]),
     /// never below the strip's floor. Every tab shares the window's width, so
     /// a background tab's minimum binds as much as the shown one's.
     pub fn width_limits(&self) -> WidthLimits {
@@ -1236,6 +1354,14 @@ impl WindowGroup {
                 app.set_live_resize_anchor(fixed);
             }
         }
+    }
+
+    /// The window widens on its own motion: an app's frame drawn at its last
+    /// size stays at the leading edge, at that size, until its frame at the
+    /// new size arrives. Never stretched to the frame.
+    fn hold_app_frames_at_leading_edge(&mut self) {
+        self.set_live_resize_anchor(Some(WindowEdge::Leading));
+        self.release_live_resize_anchor();
     }
 
     /// The drag is over: an app may stop drawing against the fixed edge once
@@ -1792,16 +1918,27 @@ impl WindowGroup {
             self.rect_spring = None;
             return;
         }
-        if self.rect_spring.is_some() {
+        if let Some(spring) = &self.rect_spring {
             // Already in flight: keep value and velocity. The next
             // apply_layout retargets to the new destination.
+            self.rect_from_width = spring.value().width();
             return;
         }
+        self.rect_from_width = self.rect.width();
         self.rect_spring = Some(FrameSpring::new(self.rect));
     }
 
     fn retarget_rect_spring(&mut self) {
         let dest = self.rect;
+        let Some(spring) = self.rect_spring.as_ref() else {
+            return;
+        };
+        if dest != spring.target() && dest.width() > spring.value().width() {
+            // Widening: the app is given its final size now, and until its
+            // frame at that size arrives the last one stays at the frame's
+            // origin, at its own size, clipped by the growing frame.
+            self.hold_app_frames_at_leading_edge();
+        }
         let Some(spring) = self.rect_spring.as_mut() else {
             return;
         };
@@ -1829,6 +1966,11 @@ impl WindowGroup {
         spring.step(crate::motion::frame_now());
         if spring.is_settled() {
             self.rect_spring = None;
+            // Laid out at the width it had while it shrank: now at its own.
+            if !self.maximized {
+                self.style_dirty = true;
+                self.rest_layout_owed = true;
+            }
         }
     }
 
@@ -1838,20 +1980,23 @@ impl WindowGroup {
         };
         let src = self.rect;
         let dst = spring.value();
-        if src.width() < 1.0 || src.height() < 1.0 {
-            return base;
+        // Moved, never scaled: the bar and the app's frame are drawn at the
+        // size they were laid out at, with their top-left where the
+        // springing rect has it, and clipped to it ([`Self::frame_clip`]). A
+        // client's buffer is never drawn stretched or squashed.
+        base.pre_translate(vello::kurbo::Vec2::new(dst.x0 - src.x0, dst.y0 - src.y0))
+    }
+
+    /// Where the window's frame is this frame, in its moved coordinates:
+    /// the springing rect while it maximizes or restores, the slot while
+    /// its width is in flight and narrower than its content. `None` at
+    /// rest, where nothing needs clipping.
+    fn frame_clip(&self) -> Option<Rect> {
+        if let Some(spring) = &self.rect_spring {
+            let dst = spring.value();
+            return Some(Rect::from_origin_size(self.rect.origin(), dst.size()));
         }
-        let sx = dst.width() / src.width();
-        let sy = dst.height() / src.height();
-        #[allow(
-            clippy::arithmetic_side_effects,
-            reason = "Affine `*` composes floating-point transform matrices"
-        )]
-        {
-            base * Affine::translate((dst.x0, dst.y0))
-                * Affine::scale_non_uniform(sx, sy)
-                * Affine::translate((-src.x0, -src.y0))
-        }
+        self.content_width_in_flight().map(|_| self.rect)
     }
 
     /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
@@ -1879,13 +2024,67 @@ impl WindowGroup {
     /// The sibling path — splitting into a *brand-new* group — plays the
     /// group-level fade instead, in `GroupRow::split_tab_into_new_group`,
     /// so the two never double up.
-    pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, mut host: TileHost) {
+    ///
+    /// The new tab is shown at once; until it has drawn, the window keeps
+    /// showing the tab it showed before, and then cross-fades to it.
+    pub fn insert_detached_tab(&mut self, idx: usize, desc: TabDescriptor, host: TileHost) {
         let id = desc.id;
+        let before = self.bar.active_id();
+        let before_shown = self
+            .hosts
+            .iter()
+            .any(|(i, h)| *i == before && Widget::presented(h))
+            && !self.closing_hosts.contains_key(&before);
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
-        host.start_spawn_animation();
         host.set_panic_scope(id);
         self.hosts.insert(clamped, (id, host));
+        if before_shown && before != id && self.bar.active_id() == id {
+            self.tab_waiting = Some((before, id));
+        }
+    }
+
+    /// Advance the hand-over to a newly opened tab: drop it when the tab is
+    /// no longer the one shown, and start the cross-fade once it has drawn.
+    fn advance_tab_handover(&mut self, theme: &Theme) {
+        let active = self.bar.active_id();
+        if let Some((from, to)) = self.tab_waiting {
+            let from_alive = self.hosts.iter().any(|(i, _)| *i == from);
+            if to != active || !from_alive {
+                self.tab_waiting = None;
+            } else if self
+                .hosts
+                .iter()
+                .any(|(i, h)| *i == to && (Widget::presented(h) || Widget::opening(h)))
+            {
+                // Drawn, or waited for long enough that its opening card
+                // says what is coming.
+                let mut fade = crate::motion::CrossFade::new(from);
+                // The new tab's content arriving, not a navigation: it
+                // cross-fades whatever opened it.
+                fade.show(
+                    to,
+                    theme.motion(),
+                    crate::tokens::MotionSource::Pointer,
+                    crate::motion::frame_now(),
+                );
+                self.tab_fade = Some(fade);
+                self.tab_waiting = None;
+            }
+        }
+        if self.tab_fade.as_ref().is_some_and(|fade| {
+            *fade.shown() != active || !fade.is_moving(crate::motion::frame_now())
+        }) {
+            self.tab_fade = None;
+        }
+    }
+
+    /// The tab drawn in place of the shown one while the shown one has not
+    /// drawn yet.
+    fn tab_standing_in(&self) -> Option<u64> {
+        self.tab_waiting
+            .filter(|&(_, to)| to == self.bar.active_id())
+            .map(|(from, _)| from)
     }
 
     /// Move an existing tab to a persisted order without producing a
@@ -1953,8 +2152,14 @@ impl WindowGroup {
             fills_display: false,
             last_cursor: Point::ZERO,
             spawned_at: None,
+            arrival_fade_at: None,
+            tab_waiting: None,
+            tab_fade: None,
             rect_spring: None,
             width_spring: None,
+            content_px: 0.0,
+            rect_from_width: 0.0,
+            rest_layout_owed: false,
             held_back: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
@@ -1963,6 +2168,7 @@ impl WindowGroup {
             width_step_skipped: false,
             close_rebuild_taken: false,
             close_duration: window_close_time(),
+            close_lands: false,
             reduce_motion: false,
             motion_source: crate::tokens::MotionSource::default(),
             style_dirty: false,
@@ -2433,9 +2639,8 @@ impl WindowGroup {
             return false;
         }
         if let Some(close_id) = self.bar.take_close() {
-            self.closing_hosts
-                .entry(close_id)
-                .or_insert_with(crate::time::now);
+            let started = self.close_started();
+            self.closing_hosts.entry(close_id).or_insert(started);
         }
         if self.bar.tabs().is_empty() {
             self.start_closing();
@@ -2456,6 +2661,7 @@ impl WindowGroup {
             // prune the group while its live tab remains canonical; resync then
             // rebuilds it and the real destroy animates a second time.
             self.closing_at = None;
+            self.close_lands = false;
             self.close_requested = true;
             self.width_spring = None;
             self.style_dirty = true;
@@ -2691,9 +2897,8 @@ impl WindowGroup {
                 let active = self.bar.active_id();
                 self.bar.start_closing(active);
                 let _ = self.bar.take_close();
-                self.closing_hosts
-                    .entry(active)
-                    .or_insert_with(crate::time::now);
+                let started = self.close_started();
+                self.closing_hosts.entry(active).or_insert(started);
                 if !self.pending_close_commit.contains(&active) {
                     self.pending_close_commit.push(active);
                 }
@@ -2764,6 +2969,11 @@ impl WindowGroup {
     /// so the fade plays out with the tile still in place), then starts
     /// closing the whole group once nothing is left in it.
     fn sweep_expired_closing_hosts(&mut self) {
+        // A closing window keeps its last tab's host to draw until the group
+        // is pruned with everything in it.
+        if self.is_closing() {
+            return;
+        }
         let close_window = group_close_fade();
         let expired: Vec<u64> = self
             .closing_hosts
@@ -2803,9 +3013,8 @@ impl WindowGroup {
 
         // Host stays in `self.hosts` for `CLOSE_FADE_MS`; the sweep above drops it.
         if let Some(close_id) = self.bar.take_close() {
-            self.closing_hosts
-                .entry(close_id)
-                .or_insert_with(crate::time::now);
+            let started = self.close_started();
+            self.closing_hosts.entry(close_id).or_insert(started);
             if !self.pending_close_commit.contains(&close_id) {
                 self.pending_close_commit.push(close_id);
             }
@@ -2817,7 +3026,11 @@ impl WindowGroup {
 
         // Without `style_dirty` the cached taffy node keeps the
         // pre-toggle width and the click looks like a no-op.
+        // The window button is a pointer's: the window moves to its new
+        // rect on the window motion, as Super+M from the same place would
+        // not (a shortcut lands).
         if let Some(_id) = self.bar.take_max() {
+            self.begin_rect_spring_from_current();
             self.maximized = !self.maximized;
             self.style_dirty = true;
             self.pending_maximize_change = Some(self.maximized);
@@ -2868,16 +3081,9 @@ impl WindowGroup {
             let alpha = f32_of_f64((1.0 - eased).max(0.0));
             let scale = 1.0 - 0.05 * eased;
             (alpha, 0.0, 0.0, scale)
-        } else if let Some(started) = self.spawned_at {
-            let elapsed = crate::time::now().saturating_duration_since(started);
-            if elapsed >= spawn_time() {
-                (1.0, 0.0, 0.0, 1.0)
-            } else {
-                let eased = window_progress(crate::motion::Direction::Enter, elapsed);
-                let scale = SPAWN_ANIM_INITIAL_SCALE + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
-                let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
-                (f32_of_f64(eased), x_off, 0.0, scale)
-            }
+        } else if let Some(started) = self.arrival_fade_at {
+            let eased = arrival_progress(crate::time::now().saturating_duration_since(started));
+            (crate::motion::unit_opacity(eased), 0.0, 0.0, 1.0)
         } else {
             (1.0, 0.0, 0.0, 1.0)
         }
@@ -2931,6 +3137,18 @@ impl WindowGroup {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // The window closing with its last tab fades out as one, its
+        // content with its bar and frame: the group's layer carries the fade,
+        // so the tab is drawn as it last was for as long as the group closes.
+        if self.is_closing() {
+            let ids: Vec<u64> = self.closing_hosts.keys().copied().collect();
+            for id in ids {
+                if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
+                    h.draw(scene, transform, tr, theme, presence);
+                }
+            }
+            return;
+        }
         let close_window = group_close_fade();
         let closing_ids: Vec<(u64, Instant)> = self
             .closing_hosts
@@ -3481,6 +3699,8 @@ impl Widget for WindowGroup {
     ) -> NodeId {
         self.close_duration = window_close_time();
         self.set_reduce_motion(theme.reduce_motion);
+        // This is the layout a maximized frame that came to rest is owed.
+        self.rest_layout_owed = false;
         let bar_node = self
             .navigation_bar_visible()
             .then(|| self.bar.build_layout(taffy, theme, node_map));
@@ -3532,6 +3752,17 @@ impl Widget for WindowGroup {
             style.inset.top = taffy::LengthPercentageAuto::length(f32_of_f64(slide));
         }
         let nodes = bar_node.map_or_else(|| vec![tile_node], |bar| vec![bar, tile_node]);
+        if let Some(laid) = self.content_width_in_flight() {
+            for &node in &nodes {
+                if let Ok(child) = taffy.style(node) {
+                    let mut child = child.clone();
+                    child.size.width = Dimension::length(f32_of_f64(laid));
+                    child.min_size.width = Dimension::length(f32_of_f64(laid));
+                    child.max_size.width = Dimension::length(f32_of_f64(laid));
+                    let _ = taffy.set_style(node, child);
+                }
+            }
+        }
         taffy.widget_node(style, &nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -3590,20 +3821,17 @@ impl Widget for WindowGroup {
                 return;
             }
         }
-        // The shell latches the spawn fade when it splices the group in,
-        // before the app has drawn — without restarting it here the fade
-        // would already have run its course against an invisible group.
-        if std::mem::take(&mut self.held_back) && !self.is_closing() {
-            self.spawned_at = (!self.reduce_motion).then(crate::time::now);
-            if !self.reduce_motion {
-                self.arm_width_from_zero();
-            }
-        }
-        // Close checked first (mutually exclusive with spawn in practice):
-        // `opacity 0→1, scale 0.92→1, x -16→0` over `SPAWN_ANIM_MS`
-        // cubic-out; close mirrors it (α 1→0, scale 1→0.95). The whole
-        // paint composes under one alpha+translate+scale layer so hit
-        // tests stay aligned with what's on screen mid-fade.
+        // The first frame after holding the place back. The slot has been
+        // opening since the window was asked for and goes on from where it
+        // is; the content shows whole when it came inside the grace (a
+        // local app's first frame normally does), and cross-fades in over
+        // the ground its place held when it came later.
+        self.take_first_paint();
+        // Close checked first (mutually exclusive with an arrival): the
+        // window fades out as one (α 1→0, scale 1→0.95) while its slot
+        // closes; a late arrival cross-fades in. The whole paint composes
+        // under one alpha+translate+scale layer so hit tests stay aligned
+        // with what's on screen mid-fade.
         let (fade_alpha, fade_x, fade_y, fade_scale) = self.fade_transform_params();
         let spawn_active = fade_alpha < 1.0;
         if spawn_active {
@@ -3624,6 +3852,36 @@ impl Widget for WindowGroup {
             );
         }
         let transform = self.fade_affine(transform, (fade_x, fade_y, fade_scale));
+        // A frame in flight clips what it does not yet (or no longer) show,
+        // and where it is larger than what is laid out in it (a window
+        // growing past the last frame its app drew, or restoring from
+        // maximized) its ground fills the rest: its body is never empty.
+        let frame_clip = self.frame_clip();
+        if frame_clip.is_none() {
+            for (_, host) in &mut self.hosts {
+                host.set_inside_growing_frame(false);
+            }
+        }
+        if let Some(frame) = frame_clip {
+            let shape =
+                vello::kurbo::RoundedRect::from_rect(frame, f64::from(theme.tokens.radii.tile));
+            scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &shape);
+            let laid = self.content_width_in_flight().unwrap_or(self.rect.width());
+            let grows_past =
+                frame.width() > laid + 0.5 || frame.height() > self.rect.height() + 0.5;
+            for (_, host) in &mut self.hosts {
+                host.set_inside_growing_frame(grows_past);
+            }
+            if grows_past {
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.content,
+                    None,
+                    &shape,
+                );
+            }
+        }
         // The bar's hit rects stay live either way — only the paint is
         // gated (maximized swaps in the floating pill further down).
         if self.navigation_bar_visible() {
@@ -3650,7 +3908,27 @@ impl Widget for WindowGroup {
         let focused = self.focused || self.search_active;
         let dragged_tab = self.bar.drag_visual(theme).map(|visual| visual.tab_id);
         let bar_visible = self.navigation_bar_visible();
-        if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
+        self.advance_tab_handover(theme);
+        let now = crate::motion::frame_now();
+        let outgoing = self
+            .tab_fade
+            .as_ref()
+            .and_then(|fade| fade.outgoing(now).map(|(id, _)| *id));
+        let incoming = outgoing
+            .and(self.tab_fade.as_ref())
+            .map(|fade| fade.incoming(now));
+        // The tab shown before stays whole under the new one while that
+        // fades in over it: two windows' grounds never thin out together.
+        if let Some(out_id) = outgoing
+            && let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == out_id)
+        {
+            h.draw(scene, transform, tr, theme, presence);
+        }
+        if let Some(standing_in) = self.tab_standing_in() {
+            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == standing_in) {
+                h.draw(scene, transform, tr, theme, presence);
+            }
+        } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             if let Some(name) = &opening_name {
                 h.set_opening_name(name);
             }
@@ -3669,7 +3947,19 @@ impl Widget for WindowGroup {
                     &h.get_rect().inflate(160.0, 160.0),
                 );
             }
+            if let Some(alpha) = incoming {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    alpha,
+                    transform,
+                    &h.get_rect(),
+                );
+            }
             h.draw(scene, transform, tr, theme, presence);
+            if incoming.is_some() {
+                scene.pop_layer();
+            }
             if source_is_lifted {
                 scene.pop_layer();
             }
@@ -3691,6 +3981,9 @@ impl Widget for WindowGroup {
         // per `crates/sdk/ui-core/HIG.md` §9.4 the accent means *live*, not *chosen*.
         self.clear_maximized_controls();
 
+        if frame_clip.is_some() {
+            scene.pop_layer();
+        }
         // Matches the `spawn_active` push above.
         if spawn_active {
             scene.pop_layer();
@@ -3866,11 +4159,8 @@ impl Widget for WindowGroup {
     }
     fn animation_detail(&self) -> Option<String> {
         let mut parts = Vec::new();
-        if self
-            .spawned_at
-            .is_some_and(|t| crate::time::now().saturating_duration_since(t) < spawn_time())
-        {
-            parts.push("spawn".to_string());
+        if self.arrival_fade_at.is_some() {
+            parts.push("arrival".to_string());
         }
         if self.closing_at.is_some() {
             parts.push("closing".to_string());
@@ -3910,10 +4200,9 @@ impl Widget for WindowGroup {
             return false;
         }
         // Include group and inactive closing-host animations beyond the active presentation.
-        let spawn_in_flight = !self.reduce_motion
-            && self
-                .spawned_at
-                .is_some_and(|t| crate::time::now().saturating_duration_since(t) < spawn_time());
+        let spawn_in_flight = self.arrival_fade_at.is_some_and(|t| {
+            arrival_progress(crate::time::now().saturating_duration_since(t)) < 1.0
+        });
         let close_window = group_close_fade();
         let close_in_flight = !self.reduce_motion
             && self
@@ -3936,11 +4225,17 @@ impl Widget for WindowGroup {
             .iter()
             .find(|(i, _)| *i == active_id)
             .is_some_and(|(_, h)| h.needs_animation_frame());
-        let rect_in_flight = !self.reduce_motion && self.rect_spring.is_some();
+        let rect_in_flight =
+            (!self.reduce_motion && self.rect_spring.is_some()) || self.rest_layout_owed;
         let chrome_fade = self.maximized_chrome_live()
             && self.top_edge.fading(crate::time::now(), self.chrome_motion);
         let top_slide = self.top_slide_in_flight();
+        let tab_fade = self
+            .tab_fade
+            .as_ref()
+            .is_some_and(|fade| fade.is_moving(crate::motion::frame_now()));
         spawn_in_flight
+            || tab_fade
             || top_slide
             || chrome_fade
             || close_in_flight
@@ -4219,7 +4514,7 @@ mod tests {
         assert_eq!(group.tab_count(), 2);
     }
 
-    fn make_group() -> WindowGroup {
+    pub(super) fn make_group() -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = vec![
             (
                 TabDescriptor::new(1, "A"),
@@ -5499,126 +5794,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_animation_eases_within_its_band_and_respects_reduced_motion() {
-        // One instant for the whole test: each case backdates its own
-        // timestamps, so a descheduled runner cannot move them.
-        crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            {
-                let mut g = make_group();
-                assert!(g.spawned_at.is_none(), "fresh group has no spawn timestamp");
-                g.start_spawn_animation();
-                assert!(
-                    g.spawned_at.is_some(),
-                    "start_spawn_animation records the start"
-                );
-                assert!(
-                    g.needs_animation_frame(),
-                    "in-flight spawn fade must pump the run loop",
-                );
-            }
-
-            {
-                let mut g = make_group();
-                g.reduce_motion = true;
-                g.start_spawn_animation();
-
-                assert_eq!(
-                    g.fade_transform_params(),
-                    (1.0, 0.0, 0.0, 1.0),
-                    "reduced motion must paint a newly opened group at its settled transform",
-                );
-                assert!(
-                    !g.needs_animation_frame(),
-                    "the settled spawn must not keep a software-rendered compositor awake",
-                );
-            }
-
-            {
-                let mut g = make_group();
-                g.spawned_at = Some(
-                    crate::time::now()
-                        .checked_sub(spawn_time() + Duration::from_millis(16))
-                        .unwrap(),
-                );
-                assert!(
-                    !g.needs_animation_frame(),
-                    "after the spawn window elapses, the fade no longer demands frames",
-                );
-            }
-
-            {
-                let mut g = make_group();
-                // No spawn in flight — the drawn alpha pins to 1.0.
-                assert_eq!(
-                    g.fade_transform_params().0,
-                    1.0,
-                    "idle group reports finished progress"
-                );
-
-                // First frame: elapsed ~0, so eased progress is near zero.
-                g.start_spawn_animation();
-                let t_start = g.fade_transform_params().0;
-                assert!(
-                    t_start < 0.05,
-                    "first-frame spawn progress must be near zero, got {t_start}",
-                );
-
-                // A quarter of the way in time, the spring is well past half
-                // way (it leaves quickly and lands softly). Backdate the timestamp instead of
-                // sleeping so the test doesn't waste real time.
-                g.spawned_at = crate::time::now().checked_sub(spawn_time() / 4);
-                let t_mid = g.fade_transform_params().0;
-                assert!(
-                    t_mid > 0.5 && t_mid < 1.0,
-                    "mid-spawn progress must be past half but not yet complete, got {t_mid}",
-                );
-
-                // Past the duration: pins to 1.0.
-                g.spawned_at = Some(
-                    crate::time::now()
-                        .checked_sub(spawn_time() + Duration::from_millis(16))
-                        .unwrap(),
-                );
-                assert_eq!(
-                    g.fade_transform_params().0,
-                    1.0,
-                    "after the spawn window elapses, progress pins to 1.0",
-                );
-            }
-
-            // Case `spawn_animation_duration_in_visible_band`.
-            // Locked to a 350-450ms band so a future pass can't silently shorten
-            // it back to an imperceptible tuning.
-            {
-                let spawn = spawn_time();
-                assert!(
-                    (Duration::from_millis(350)..=Duration::from_millis(450)).contains(&spawn),
-                    "spawn duration must stay in the 350-450 ms readability band, got {spawn:?}",
-                );
-            }
-
-            {
-                let mut group = WindowGroup::new(0, vec![], 0, WindowWidth::Normal);
-                let host = TileHost::new(TileContent::Stub {
-                    kind: AppKind::Settings,
-                    label: "stub".to_string(),
-                });
-                let desc = TabDescriptor::new(42, "new");
-                group.insert_detached_tab(0, desc, host);
-                let inserted = group
-                    .hosts
-                    .iter()
-                    .find(|(i, _)| *i == 42)
-                    .expect("inserted host present");
-                assert!(
-                    inserted.1.spawn_in_flight(),
-                    "inserting a detached tab must fire the tile-level spawn fade",
-                );
-            }
-        });
-    }
-
-    #[test]
     fn maximize_restore_springs_the_drawn_rect_from_the_tiled_slot() {
         use std::collections::HashMap;
         use taffy::Style;
@@ -6245,15 +6420,20 @@ mod tests {
                     g.needs_animation_frame(),
                     "group-level close fade must pump frames until close_complete",
                 );
-                g.set_closing_at_for_tests(
-                    crate::time::now()
-                        .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
-                        .expect("representable close deadline"),
-                );
-                assert!(
-                    !g.needs_animation_frame(),
-                    "after the fade window elapses, frames are no longer required",
-                );
+                // Later, once the slot has shut too.
+                let later = crate::time::now() + Duration::from_secs(2);
+                crate::time::testing::with_monotonic_time(later, || {
+                    g.step_width_spring();
+                    g.set_closing_at_for_tests(
+                        crate::time::now()
+                            .checked_sub(g.close_duration.saturating_add(Duration::from_millis(20)))
+                            .expect("representable close deadline"),
+                    );
+                    assert!(
+                        !g.needs_animation_frame(),
+                        "after the fade window elapses, frames are no longer required",
+                    );
+                });
             }
 
             {
@@ -6288,542 +6468,13 @@ mod tests {
 /// The maximized window's bar: hidden at rest over a full-height client, and
 /// one bar with a Tilo app's header row.
 #[cfg(test)]
-mod window_bar_tests {
-    use super::*;
-    use crate::widget::{AppKind, NavShell, TaffyTreeExt};
-
-    /// A page of text that fills what it is given, so a bar over it shows.
-    struct Page {
-        rect: Rect,
-    }
-
-    impl Widget for Page {
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            _theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            taffy.fill_leaf(node_map, self)
-        }
-
-        crate::rect_geometry!();
-
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            tr: &mut TextRenderer,
-            theme: &Theme,
-            _presence: &PresenceCtx,
-        ) {
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.content,
-                None,
-                &self.rect,
-            );
-            let style = theme.text(TextRole::Body);
-            for line in 0..30u32 {
-                let y = self.rect.y0 + 8.0 + f64::from(line) * 24.0;
-                if y > self.rect.y1 - 24.0 {
-                    break;
-                }
-                #[allow(
-                    clippy::arithmetic_side_effects,
-                    reason = "Affine `*` composes floating-point transform matrices"
-                )]
-                let at = transform * Affine::translate((self.rect.x0 + 24.0, y));
-                tr.draw_style(
-                    scene,
-                    &format!("{line:02}  The quick brown fox jumps over the lazy dog."),
-                    theme.tokens.colors.text_primary,
-                    at,
-                    None,
-                    &style,
-                );
-            }
-        }
-
-        fn name(&self) -> &'static str {
-            "Page"
-        }
-    }
-
-    /// A Tilo app drawn in-process: a `NavShell` with a sidebar, a content
-    /// column and their header rows.
-    struct HeaderedApp {
-        rect: Rect,
-        shell: NavShell,
-    }
-
-    impl HeaderedApp {
-        fn new(header_in_bar: bool) -> Self {
-            let shell = NavShell::new()
-                .sidebar(Box::new(Page { rect: Rect::ZERO }))
-                .content(Box::new(Page { rect: Rect::ZERO }))
-                .sidebar_header("Notes", Vec::new())
-                .content_header(
-                    "Groceries",
-                    vec![Box::new(crate::widget::Button::icon_only(
-                        "more",
-                        crate::icons::Icon::MoreHorizontal,
-                        "More",
-                    ))],
-                );
-            let shell = if header_in_bar {
-                shell.with_header_in_window_bar()
-            } else {
-                shell
-            };
-            Self {
-                rect: Rect::ZERO,
-                shell,
-            }
-        }
-    }
-
-    impl Widget for HeaderedApp {
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let child = self.shell.build_layout(taffy, theme, node_map);
-            let style = Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            };
-            taffy.widget_node(style, &[child], node_map, self)
-        }
-
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
-            if let Some(&child) = taffy.children(node).unwrap_or_default().first() {
-                self.shell
-                    .apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
-            }
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.rect
-        }
-
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            tr: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
-            self.shell.draw(scene, transform, tr, theme, presence);
-        }
-
-        fn children(&self) -> Vec<&dyn Widget> {
-            vec![&self.shell]
-        }
-
-        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-            vec![&mut self.shell]
-        }
-
-        fn take_structure_dirty(&mut self) -> bool {
-            self.shell.take_structure_dirty()
-        }
-
-        fn name(&self) -> &'static str {
-            "HeaderedApp"
-        }
-    }
-
-    impl crate::widget::app_widget::AppWidget for HeaderedApp {
-        fn uses_host_record(&self) -> bool {
-            false
-        }
-        fn app_kind(&self) -> AppKind {
-            AppKind::Files
-        }
-        fn app_title(&self) -> &'static str {
-            "Notes"
-        }
-        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-            crate::widget::app_widget::IconDescriptor::Glyph("N")
-        }
-    }
-
-    /// The desktop's top bar the maximized window sits under, in logical px.
-    const TOP: f64 = 36.0;
-    const W: f64 = 1280.0;
-    const H: f64 = 800.0;
-
-    fn group(content: TileContent) -> WindowGroup {
-        let mut g = WindowGroup::new(
-            10,
-            vec![(TabDescriptor::new(1, "Notes"), content)],
-            1,
-            WindowWidth::Normal,
-        );
-        g.maximized = true;
-        g
-    }
-
-    fn page_group() -> WindowGroup {
-        group(TileContent::App(Box::new(PageApp(Page {
-            rect: Rect::ZERO,
-        }))))
-    }
-
-    /// A foreign-like app: no header row to merge with.
-    struct PageApp(Page);
-
-    impl Widget for PageApp {
-        fn build_layout(
-            &mut self,
-            taffy: &mut TaffyTree<()>,
-            theme: &Theme,
-            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            self.0.build_layout(taffy, theme, node_map)
-        }
-        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.0.apply_layout(taffy, node, origin);
-        }
-        fn get_rect(&self) -> Rect {
-            self.0.get_rect()
-        }
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            tr: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
-            self.0.draw(scene, transform, tr, theme, presence);
-        }
-        fn name(&self) -> &'static str {
-            "PageApp"
-        }
-    }
-
-    impl crate::widget::app_widget::AppWidget for PageApp {
-        fn uses_host_record(&self) -> bool {
-            false
-        }
-        fn app_kind(&self) -> AppKind {
-            AppKind::Terminal
-        }
-        fn app_title(&self) -> &'static str {
-            "Terminal"
-        }
-        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-            crate::widget::app_widget::IconDescriptor::Glyph("T")
-        }
-    }
-
-    /// Lay the group out as the work area under the desktop's top bar, at
-    /// `scale` (the layout is logical; the scale only matters for paint).
-    fn lay_out(g: &mut WindowGroup, theme: &Theme) {
-        // Twice: a NavShell plans against the size it was last given.
-        for _ in 0..2 {
-            let _ = g.take_structure_dirty();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let node = g.build_layout(&mut taffy, theme, &mut map);
-            let mut style = taffy.style(node).cloned().unwrap_or_default();
-            style.size = Size {
-                width: Dimension::length(f32_of_f64(W)),
-                height: Dimension::length(f32_of_f64(H - TOP)),
-            };
-            let _ = taffy.set_style(node, style);
-            let available = Size {
-                width: taffy::AvailableSpace::Definite(f32_of_f64(W)),
-                height: taffy::AvailableSpace::Definite(f32_of_f64(H - TOP)),
-            };
-            let mut text = TextRenderer::new();
-            let mut bindings = crate::bound_dispatch::BoundNodeMap::default();
-            // SAFETY: `map` describes the tree just built from `g`, which this
-            // function holds exclusively.
-            unsafe {
-                bindings.rebuild(g, &taffy, node, &map);
-                crate::widget::layout::compute_widget_layout(
-                    &mut taffy, node, available, &map, &bindings, &mut text,
-                )
-                .unwrap();
-            }
-            g.apply_layout(&taffy, node, Point::new(0.0, TOP));
-        }
-    }
-
-    fn paint(g: &mut WindowGroup, theme: &Theme, scale: f64) -> Scene {
-        let mut scene = Scene::new();
-        let t = Affine::scale(scale);
-        // The desktop's top bar above the window, so a gap would show.
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            t,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &Rect::new(0.0, 0.0, W, TOP),
-        );
-        g.draw(
-            &mut scene,
-            t,
-            &mut TextRenderer::new(),
-            theme,
-            &PresenceCtx::empty(),
-        );
-        scene
-    }
-
-    /// Review frames: a maximized foreign-like window at rest (1× and 2×),
-    /// the bar revealed and its Restore hovered, and a Tilo app with its
-    /// header in the bar at rest and revealed, plus one with a permanent
-    /// header and the controls merged into its row.
-    /// Maximized, the bar and its search stay the window's children, so a
-    /// host's walks (tooltips, accessibility, redraw) reach them as when
-    /// restored.
-    #[test]
-    fn maximized_the_bar_and_search_stay_children() {
-        let theme = Theme::dark();
-        let mut g = page_group();
-        lay_out(&mut g, &theme);
-        assert!(g.maximized, "the fixture is maximized");
-        let children = g.children();
-        let is = |w: &dyn Widget| {
-            children
-                .iter()
-                .any(|c| std::ptr::addr_eq(*c as *const dyn Widget, w as *const dyn Widget))
-        };
-        assert!(is(&g.bar), "the bar is a child");
-        assert!(is(&g.search), "the search is a child");
-    }
-
-    #[test]
-    #[ignore = "a review tool: needs a GPU adapter; writes PNGs to TILO_UI_SCREENSHOT_DIR"]
-    fn render_maximized_bar_frames() {
-        let dir = std::path::PathBuf::from(
-            std::env::var("TILO_UI_SCREENSHOT_DIR").expect("TILO_UI_SCREENSHOT_DIR"),
-        );
-        std::fs::create_dir_all(&dir).expect("shot dir");
-        let theme = Theme::dark().with_reduce_motion(true);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "small fixed canvas"
-        )]
-        let shoot = |g: &mut WindowGroup, scale: f64, name: &str, pointer: Option<Point>| {
-            let (pw, ph) = ((W * scale) as u32, (H * scale) as u32);
-            let mut renderer =
-                crate::offscreen::OffscreenRenderer::try_new(pw, ph).expect("a GPU adapter");
-            let mut scene = paint(g, &theme, scale);
-            if let Some(p) = pointer {
-                let dot = vello::kurbo::Circle::new(p, 4.0);
-                let t = Affine::scale(scale);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    t,
-                    vello::peniko::Color::from_rgb8(255, 210, 0),
-                    None,
-                    &dot,
-                );
-            }
-            let rgba = renderer.render(&scene, vello::peniko::Color::BLACK);
-            crate::png::write_rgba8(dir.join(format!("{name}.png")), pw, ph, &rgba)
-                .expect("write frame");
-        };
-
-        for scale in [1.0, 2.0] {
-            let mut g = page_group();
-            lay_out(&mut g, &theme);
-            shoot(&mut g, scale, &format!("maximized-rest-{scale}x"), None);
-        }
-        // A sequence: pointer on the app's top row, resting in the band,
-        // the bar shown, Restore hovered, then down into the app.
-        let mut g = page_group();
-        lay_out(&mut g, &theme);
-        let _ = paint(&mut g, &theme, 1.0);
-        let top_row = Point::new(700.0, TOP + 22.0);
-        g.note_maximized_pointer(top_row);
-        let _ = g.elapse_maximized_chrome_intent();
-        shoot(&mut g, 2.0, "seq-1-aiming-at-app-top-row", Some(top_row));
-        let band = Point::new(1100.0, TOP + 2.0);
-        g.note_maximized_pointer(band);
-        g.note_maximized_pointer(Point::new(1101.0, TOP + 2.0));
-        shoot(&mut g, 2.0, "seq-2-resting-in-band", Some(band));
-        let _ = g.elapse_maximized_chrome_intent();
-        shoot(&mut g, 2.0, "seq-3-bar-shown", Some(band));
-        let restore = g.presentation_bounds().restore.expect("shown");
-        g.note_maximized_pointer(restore.center());
-        g.restore_hover = true;
-        shoot(&mut g, 2.0, "seq-4-restore-hovered", Some(restore.center()));
-        g.restore_hover = false;
-        let below = Point::new(restore.center().x, 400.0);
-        g.note_maximized_pointer(Point::new(restore.center().x, 300.0));
-        g.note_maximized_pointer(below);
-        shoot(&mut g, 2.0, "seq-5-back-in-app", Some(below));
-
-        for (header_in_bar, name) in [
-            (true, "notes-header-in-bar"),
-            (false, "files-permanent-header"),
-        ] {
-            let mut g = group(TileContent::App(Box::new(HeaderedApp::new(header_in_bar))));
-            lay_out(&mut g, &theme);
-            shoot(&mut g, 2.0, &format!("{name}-rest"), None);
-            g.set_maximized_chrome_shown_for_tests(true);
-            lay_out(&mut g, &theme);
-            let _ = paint(&mut g, &theme, 2.0);
-            shoot(
-                &mut g,
-                2.0,
-                &format!("{name}-revealed"),
-                Some(Point::new(900.0, TOP + 2.0)),
-            );
-        }
-    }
-
-    /// A maximized window keeps its bar in a band above its content: the
-    /// content starts where the bar ends, and nothing of the app is under it.
-    #[test]
-    fn a_maximized_window_keeps_its_bar_above_its_content() {
-        let theme = Theme::dark();
-        let mut g = page_group();
-        lay_out(&mut g, &theme);
-        let bar = g.bar_rect();
-        let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
-        assert!(bar.height() > 0.0, "the maximized window shows its bar");
-        assert!(
-            bar.y1 <= content.y0 + 0.5,
-            "the bar {bar:?} is over the content {content:?}"
-        );
-    }
-
-    /// Lay the group out as the strip does: a child of the work area, so an
-    /// offset the group asks for applies (the layout root ignores one).
-    fn lay_out_in_strip(g: &mut WindowGroup, theme: &Theme) {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = g.build_layout(&mut taffy, theme, &mut map);
-        let strip = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(f32_of_f64(W)),
-                        height: Dimension::length(f32_of_f64(H - TOP)),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        {
-            use taffy::prelude::TaffyMaxContent;
-            taffy
-                .compute_layout(strip, taffy::Size::MAX_CONTENT)
-                .unwrap();
-        }
-        g.apply_layout(&taffy, node, Point::new(0.0, TOP));
-    }
-
-    /// The desktop's bar shown over a window moves the window down rather
-    /// than covering the window's own bar, and moves it whole: no resize.
-    #[test]
-    fn the_desktop_bar_shown_over_a_window_moves_it_down_whole() {
-        let mut theme = Theme::dark();
-        theme.reduce_motion = true;
-        let mut g = page_group();
-        lay_out_in_strip(&mut g, &theme);
-        let before = g.get_rect();
-        g.set_top_overlay_inset(TOP);
-        lay_out_in_strip(&mut g, &theme);
-        let after = g.get_rect();
-        assert!(
-            (after.y0 - (before.y0 + TOP)).abs() < 0.5,
-            "moved down by the desktop bar: {before:?} to {after:?}"
-        );
-        assert!(
-            (after.height() - before.height()).abs() < 0.5,
-            "moved, not resized: {before:?} to {after:?}"
-        );
-        g.set_top_overlay_inset(0.0);
-        lay_out_in_strip(&mut g, &theme);
-        assert!(
-            (g.get_rect().y0 - before.y0).abs() < 0.5,
-            "and back up when it hides"
-        );
-    }
-
-    fn slots() -> crate::window_toolbar::WindowToolbar {
-        use crate::window_toolbar::{ToolbarLocation, ToolbarNavigation, WindowToolbar};
-        WindowToolbar {
-            sidebar: None,
-            navigation: Some(ToolbarNavigation {
-                back: true,
-                forward: true,
-            }),
-            location: Some(ToolbarLocation {
-                label: "duckduckgo.com".into(),
-                value: "https://duckduckgo.com/".into(),
-                editable: true,
-                ..ToolbarLocation::default()
-            }),
-            actions: Vec::new(),
-            ..WindowToolbar::default()
-        }
-    }
-
-    fn pages(count: u64) -> WindowGroup {
-        let tiles = (1..=count)
-            .map(|id| {
-                (
-                    TabDescriptor::new(id, format!("Page {id}")),
-                    TileContent::App(Box::new(PageApp(Page { rect: Rect::ZERO })) as Box<_>),
-                )
-            })
-            .collect();
-        WindowGroup::new(10, tiles, 1, WindowWidth::Normal)
-    }
-
-    #[test]
-    fn an_apps_slots_live_in_the_bar_and_the_content_starts_under_it() {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark().with_reduce_motion(true);
-        for count in [1, 2] {
-            let mut g = pages(count);
-            assert!(g.set_tab_toolbar(1, Some(slots())));
-            lay_out(&mut g, &theme);
-            let bar = g.bar_rect();
-            let expected = if count == 1 {
-                crate::widget::tabs::TAB_BAR_HEIGHT
-            } else {
-                crate::widget::tabs::TAB_BAR_HEIGHT + crate::widget::tabs::TOOLBAR_ROW_HEIGHT
-            };
-            assert!(
-                (bar.height() - expected).abs() < 0.5,
-                "{count} tabs: {bar:?}"
-            );
-            let content = g.active_host().map(Widget::get_rect).unwrap_or(Rect::ZERO);
-            assert!(
-                content.y0 >= bar.y1 - 0.5,
-                "{count} tabs: the bar {bar:?} is over the content {content:?}"
-            );
-            let location = g.bar_for_tests().location_rect();
-            assert!(bar.contains(location.center()), "{count} tabs: in the bar");
-            assert!(
-                !g.bar_grab_hit(location.center()),
-                "the location is no drag handle"
-            );
-            assert!(g.edit_location() && g.editing_location());
-        }
-    }
-}
+#[path = "window_group_window_bar_tests.rs"]
+mod window_bar_tests;
 
 #[cfg(test)]
 #[path = "window_group_search_tests.rs"]
 mod search_tests;
+
+#[cfg(test)]
+#[path = "window_group_motion_tests.rs"]
+mod motion_tests;

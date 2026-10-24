@@ -3,7 +3,7 @@
 //! `TypstApp` is a single full-bleed [`Widget`]. It hosts the library controls
 //! of [`Chrome`] above two content panes it paints itself (the source editor
 //! and the rendered preview, which are genuine content drawing), and lays them
-//! out in plain rects computed in [`TypstApp::layout_in`]:
+//! out in plain rects computed in `TypstApp::layout_in`:
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
@@ -22,8 +22,8 @@
 //! The editor stands on the window ground and the preview on the inspector
 //! region; neither fills a ground of its own. What a person reads while
 //! working (caret position, pages, zoom) is the status bar, which reserves its
-//! band; a change worth noticing once ("Compiled in 42 ms") is the transient
-//! [`ui::StatusBubble`].
+//! band; a change worth noticing once ("Compiled in 42 ms") is said in the
+//! window's bar for a while.
 //!
 //! The workspace's files — names, paths and sources — are the resource's
 //! state ([`crate::resource::Workspace`]); every edit is a field edit or one
@@ -239,8 +239,9 @@ pub struct TypstApp {
     // --- chrome ---
     chrome: Chrome,
     frame: Frame,
-    /// The transient bottom-trailing bubble: a compile result, an export.
-    status: ui::StatusBubble,
+    /// A change worth noticing once, said in the window's bar for a while: a
+    /// compile result, an export.
+    status: ui::widget::toast::Transient<String>,
     /// The window's report of this window's file saves: the framework says
     /// nothing while they land and offers "Try again" when one fails.
     saves: ui::framework::Saves,
@@ -272,8 +273,6 @@ pub struct TypstApp {
     /// What the frame being drawn shows around the panes, and what the frame
     /// on screen showed.
     window_shown: ui::scroll_copy::ShownFrames<damage::WindowShown>,
-    /// The pointer has moved over the window, so the bubble follows it.
-    pointer_seen: bool,
 }
 
 impl TypstApp {
@@ -322,7 +321,7 @@ impl TypstApp {
                 f64::from(theme.tokens.metrics.min_pointer_target),
                 0.0,
             ),
-            status: ui::StatusBubble::new(),
+            status: ui::widget::toast::Transient::new(),
             saves: ui::framework::Saves::default(),
             save_path: None,
             compile_feedback: false,
@@ -342,7 +341,6 @@ impl TypstApp {
             .with_label("Resize the source and the preview"),
             dirty: true,
             window_shown: ui::scroll_copy::ShownFrames::default(),
-            pointer_seen: false,
             actions: None,
         }
     }
@@ -476,14 +474,11 @@ impl TypstApp {
             Some("select") => self.demo_preview_select = true,
             Some("stale") => self.demo_stale = true,
             Some("status") => {
-                self.status.show(
-                    &format!(
-                        "{}; {}",
-                        self.status_left_label(),
-                        self.status_right_label()
-                    ),
-                    ui::time::now(),
-                );
+                self.status.show(format!(
+                    "{}; {}",
+                    self.status_left_label(),
+                    self.status_right_label()
+                ));
             }
             _ => {}
         }
@@ -1006,10 +1001,10 @@ impl TypstApp {
         self.dirty = true;
     }
 
-    /// Announce something worth noticing once: the transient bubble shows it
-    /// and hides it again.
+    /// Announce something worth noticing once: the window's bar says it for
+    /// a while.
     fn set_flash(&mut self, msg: impl AsRef<str>) {
-        self.status.show(msg.as_ref(), ui::time::now());
+        self.status.show(msg.as_ref().to_owned());
         self.dirty = true;
     }
 
@@ -1217,17 +1212,6 @@ impl TypstApp {
             self.preview.zoom() * 100.0
         )
     }
-
-    /// The area the transient bubble floats in: the content above the status
-    /// bar.
-    fn bubble_area(&self) -> Rect {
-        Rect::new(
-            self.rect.x0,
-            self.bar_rect.y1,
-            self.rect.x1,
-            self.status_rect.y0,
-        )
-    }
 }
 
 impl Default for TypstApp {
@@ -1263,72 +1247,18 @@ impl Widget for TypstApp {
     }
 
     fn sync(&mut self, doc: &AppModel, path: &ModelPath) {
-        // Retained controls settle their admitted operations on sync (notably
-        // opening the toolbar overflow); Chrome's presentation sync only
-        // updates the document label and current toggle state.
-        for child in self.children_mut() {
-            child.sync(doc, path);
-        }
-        let (doc, _) = ui::doc::document_ref(doc, path);
-        self.background_poll_deadline.set(None);
-        // "Try again" on the window's save status: save to where the failed
-        // save went.
-        if self.saves.take_retry()
-            && let Some(path) = self.save_path.clone()
-            && let Some(dispatcher) = &self.actions
-        {
-            dispatcher.effect(&crate::actions::TypstEffect::Save {
-                path: Some(path.to_string_lossy().into_owned()),
-            });
-        }
-        if let Some(operation) = self.pending_resource_io.take() {
-            let result = match operation {
-                ResourceIo::Open(path) => self.open_typ_from(&path),
-                ResourceIo::Save(path) => self.save_typ_to(&path),
-                ResourceIo::ExportPdf(path) => self.export_pdf_to_path(&path),
-            };
-            self.finish_file_effect(result);
-        }
-        // Land a finished Open/Save/Export file dialog.
-        self.drain_io();
-        // Pages the renderer finished while nothing else happened repaint.
-        if self.preview.take_renders() {
-            self.dirty = true;
-        }
-        self.editor.pull(doc);
-        let source = self.editor.text().to_owned();
+        self.sync_workspace(doc, path);
+        self.status.expire();
+        self.status.publish(|text| {
+            ui::window_toolbar::ToolbarNotice::new(text.clone(), ui::widget::toast::ToastKind::Info)
+        });
+    }
 
-        // In the browser the fonts arrive after the editor opens; compile
-        // once they have, with parts built from them.
-        if *self.parts.fonts() == compile::Fonts::Loading {
-            if WorldParts::fonts_loading() {
-                self.source_cache = source;
-                return;
-            }
-            self.parts = WorldParts::new();
-            self.worker = None;
-            self.initialized = false;
-        }
-
-        if !self.initialized {
-            // First frame: compile synchronously so the very first paint
-            // (a capture's included) has the pages laid out, then bring the
-            // async worker online for subsequent edits.
-            self.last_source = source.clone();
-            let out = compile::compile_source(&self.parts, &source);
-            self.apply_output(out);
-            self.worker = CompileWorker::spawn(self.parts.clone());
-            self.source_cache = source;
-            self.initialized = true;
-            return;
-        }
-
-        if source != self.last_source {
-            self.request_compile(&source);
-        }
-        self.source_cache = source;
-        // Consume any finished async compile.
-        self.pump_worker();
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.background_wake()
+            .into_iter()
+            .chain(self.status.deadline())
+            .min()
     }
 
     fn build_layout(
@@ -1429,14 +1359,8 @@ impl Widget for TypstApp {
             &self.status_left_label(),
             &self.status_right_label(),
         );
-        let now = ui::time::now();
-        let area = self.bubble_area();
-        if self.pointer_seen {
-            self.status.pointer_moved(area, self.mouse, tr, theme, now);
-        }
-        self.status.paint(scene, t, tr, theme, area, now);
 
-        self.note_window(tr, theme);
+        self.note_window(theme);
 
         // This frame reflects the latest interaction state; clear the move-dirty
         // flag so idle hover doesn't spin the render loop.
@@ -1621,30 +1545,13 @@ impl Widget for TypstApp {
                 .any(|child| child.has_pending_visual_work())
     }
 
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
-            return None;
-        }
-        // Poll completed work independently of animation preferences. Repeated
-        // queries retain the same deadline until sync consumes it.
-        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-            ui::time::now()
-                .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(ui::time::now)
-        });
-        self.background_poll_deadline.set(Some(deadline));
-        Some(deadline)
-    }
-
     fn needs_animation_frame(&self) -> bool {
         // Keep the App pumping frames while: the editor caret is blinking,
-        // a compile is in flight (so `draw` can consume its result), the
-        // transient bubble is lingering or fading (so it hides itself without
-        // a stray pointer event), or a control is animating.
+        // a compile is in flight (so `draw` can consume its result), or a
+        // control is animating.
         self.editor.wants_animation()
             || self.compiling()
             || self.preview.wants_frames()
-            || self.status.needs_frame(ui::time::now())
             || self
                 .chrome
                 .children()
@@ -1993,12 +1900,6 @@ impl TypstApp {
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
         self.mouse = p;
-        self.pointer_seen = true;
-        // The bubble pins open while the pointer rests on its corner: repaint
-        // only while it shows so idle hover doesn't spin the loop.
-        if self.status.is_visible(ui::time::now()) {
-            self.dirty = true;
-        }
         if self.splitter.is_dragging() {
             *handled = true;
         } else if self.dragging_editor {
@@ -2091,6 +1992,94 @@ pub(crate) fn read_text(path: &std::path::Path) -> Result<String, tilo_files::Fs
 fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
     let (dir, name) = tilo_files::file_at(path)?;
     tilo_files::blocking::save_document(&dir, &name, bytes)
+}
+
+impl TypstApp {
+    /// The workspace and its compile, followed on every sync.
+    fn sync_workspace(&mut self, doc: &AppModel, path: &ModelPath) {
+        // Retained controls settle their admitted operations on sync (notably
+        // opening the toolbar overflow); Chrome's presentation sync only
+        // updates the document label and current toggle state.
+        for child in self.children_mut() {
+            child.sync(doc, path);
+        }
+        let (doc, _) = ui::doc::document_ref(doc, path);
+        self.background_poll_deadline.set(None);
+        // "Try again" on the window's save status: save to where the failed
+        // save went.
+        if self.saves.take_retry()
+            && let Some(path) = self.save_path.clone()
+            && let Some(dispatcher) = &self.actions
+        {
+            dispatcher.effect(&crate::actions::TypstEffect::Save {
+                path: Some(path.to_string_lossy().into_owned()),
+            });
+        }
+        if let Some(operation) = self.pending_resource_io.take() {
+            let result = match operation {
+                ResourceIo::Open(path) => self.open_typ_from(&path),
+                ResourceIo::Save(path) => self.save_typ_to(&path),
+                ResourceIo::ExportPdf(path) => self.export_pdf_to_path(&path),
+            };
+            self.finish_file_effect(result);
+        }
+        // Land a finished Open/Save/Export file dialog.
+        self.drain_io();
+        // Pages the renderer finished while nothing else happened repaint.
+        if self.preview.take_renders() {
+            self.dirty = true;
+        }
+        self.editor.pull(doc);
+        let source = self.editor.text().to_owned();
+
+        // In the browser the fonts arrive after the editor opens; compile
+        // once they have, with parts built from them.
+        if *self.parts.fonts() == compile::Fonts::Loading {
+            if WorldParts::fonts_loading() {
+                self.source_cache = source;
+                return;
+            }
+            self.parts = WorldParts::new();
+            self.worker = None;
+            self.initialized = false;
+        }
+
+        if !self.initialized {
+            // First frame: compile synchronously so the very first paint
+            // (a capture's included) has the pages laid out, then bring the
+            // async worker online for subsequent edits.
+            self.last_source = source.clone();
+            let out = compile::compile_source(&self.parts, &source);
+            self.apply_output(out);
+            self.worker = CompileWorker::spawn(self.parts.clone());
+            self.source_cache = source;
+            self.initialized = true;
+            return;
+        }
+
+        if source != self.last_source {
+            self.request_compile(&source);
+        }
+        self.source_cache = source;
+        // Consume any finished async compile.
+        self.pump_worker();
+    }
+
+    /// When background work is next polled, while there is any.
+    fn background_wake(&self) -> Option<Instant> {
+        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
+            return None;
+        }
+        // Poll completed work independently of animation preferences. Repeated
+        // queries retain the same deadline until sync consumes it.
+        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+            ui::time::now()
+                .checked_add(std::time::Duration::from_millis(16))
+                .unwrap_or_else(ui::time::now)
+        });
+        self.background_poll_deadline.set(Some(deadline));
+        Some(deadline)
+    }
 }
 
 mod damage;

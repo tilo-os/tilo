@@ -210,6 +210,47 @@ pub trait ContentBackend: Send + Sync {
     fn shared(&self) -> bool {
         false
     }
+
+    /// Whether this store answers only for content readable in one room: the device content
+    /// store reads through the scope the launcher handed the window, and serves an address only
+    /// when that room references it. A caller's content reference is resolved only in such a
+    /// store, so naming a hash never reaches content from elsewhere on this machine.
+    fn room_scoped(&self) -> bool {
+        false
+    }
+}
+
+/// A store a host keeps for one room alone ([`ContentStore::for_one_room`]).
+struct OneRoom(Arc<dyn ContentBackend>);
+
+impl ContentBackend for OneRoom {
+    fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
+        self.0.put(reader, mime)
+    }
+
+    fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+        self.0.open(hash)
+    }
+
+    fn has(&self, hash: &str) -> bool {
+        self.0.has(hash)
+    }
+
+    fn state(&self, hash: &str) -> ContentState {
+        self.0.state(hash)
+    }
+
+    fn collect_unreferenced(&self, live: &BTreeSet<String>) -> Result<Collected, ContentError> {
+        self.0.collect_unreferenced(live)
+    }
+
+    fn shared(&self) -> bool {
+        self.0.shared()
+    }
+
+    fn room_scoped(&self) -> bool {
+        true
+    }
 }
 
 /// An app's handle to binary content: cheap to clone, passed to whatever needs it.
@@ -368,6 +409,26 @@ impl ContentStore {
     /// [`ContentBackend::shared`].
     pub fn shared(&self) -> bool {
         self.backend.shared()
+    }
+
+    /// Whether this store answers only for content readable in one room; see
+    /// [`ContentBackend::room_scoped`].
+    pub fn room_scoped(&self) -> bool {
+        self.backend.room_scoped()
+    }
+
+    /// This store, declared as one room's ([`Self::room_scoped`]): for a host that keeps a
+    /// store for one room alone, so everything in it is that room's (a test's profile, one
+    /// room's headless drive).
+    #[must_use]
+    pub fn for_one_room(self) -> Self {
+        Self::new(OneRoom(self.backend))
+    }
+
+    /// Content in memory, as one room's store ([`Self::for_one_room`]): for tests of what a
+    /// caller may name by reference.
+    pub fn memory_in_room() -> Self {
+        Self::memory().for_one_room()
     }
 
     /// Remove every item not named in `live`; see [`ContentBackend::collect_unreferenced`].

@@ -328,6 +328,19 @@ impl ShellNetwork {
                 if view.governor().user_public_key != certificate.user_public_key {
                     return Err("another person governs the room".into());
                 }
+                Ok(())
+            })
+            .ok()?;
+        self.hosted_room(room)
+    }
+
+    /// The host governing `room`, whoever's it is, when this device holds
+    /// the room: a member asks it for what the room's policy lets them do,
+    /// such as inviting someone, and the host decides.
+    pub(super) fn hosted_room(&self, room: RoomId) -> Option<HeldRoom> {
+        let owner = self.native_owner().ok()?;
+        owner
+            .with_current(room, |view| {
                 let host = hosting_governor(view, room)?.ok_or("no host governs the room")?;
                 Ok(HeldRoom {
                     room,

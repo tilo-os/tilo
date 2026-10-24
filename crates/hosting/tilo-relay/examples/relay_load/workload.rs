@@ -524,6 +524,7 @@ impl Collaborator {
         let change = self.doc.save_after(&heads);
         let message = self
             .peer
+            .publication_mut()
             .publish_incremental(APP, RECORD, change, &self.sk, SystemTime::now())
             .map_err(|error| anyhow!("publish an edit: {error}"))?;
         let (channel, _) =

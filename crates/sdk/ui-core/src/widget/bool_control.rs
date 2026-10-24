@@ -117,7 +117,12 @@ impl BoolControl {
     /// changes when the binding reports the stored change, so a write that
     /// never lands is never shown as made.
     pub fn flip(&mut self) {
-        let flipped = !self.is_checked;
+        self.choose(!self.is_checked);
+    }
+
+    /// Ask for `flipped` the way a click does ([`Self::flip`]), for a hand
+    /// that dragged a switch's knob to one side: the side it left it on.
+    pub fn choose(&mut self, flipped: bool) {
         if let Some(action) = &mut self.action {
             if let Err(error) = action.emit(flipped) {
                 tracing::warn!(%error, "the switch's action refused its value");
@@ -299,7 +304,8 @@ macro_rules! bool_control_api {
 pub(super) use bool_control_api;
 
 /// The `Widget` methods a [`BoolControl`] answers on its own; `$kind` is the
-/// default test id.
+/// default test id. Events are the widget's own: a checkbox hands them to
+/// [`BoolControl::handle_event`], a switch also lets its knob be dragged.
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
         crate::provides!(
@@ -317,14 +323,6 @@ macro_rules! bool_control_widget_methods {
 
         fn sync(&mut self, state: &crate::widget::AppModel, root: &crate::widget::ModelPath) {
             self.control.sync(state, root);
-        }
-
-        fn handle_event(
-            &mut self,
-            event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
-        ) {
-            self.control.handle_event(event, ctx);
         }
 
         fn test_id(&self) -> Option<&str> {

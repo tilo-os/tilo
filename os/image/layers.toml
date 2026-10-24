@@ -19,6 +19,11 @@ helpers = [
   "rollback-files", "recovery-files", "extension-files",
 ]
 
+# Boards with a release image of their own (os/hardware/profiles/<board>.json, on its
+# architecture): the release image with the `board` layers, which read the hardware profile, built
+# again for the board (os/image/build-layer.sh, TILO_OS_BOARD).
+release_boards = ["lenovo-83ed"]
+
 # Images the layers are built with, which ship nothing themselves.
 [[image]]
 # The OS builder: the toolchains over the pinned base and the frozen RPM snapshot.
@@ -39,6 +44,10 @@ targets = ["image-tool-stages", "uki-tools"]
 # are stages given as images of other actions: `<image>:<target>` of an image
 # above, `<layer>:<stage>` for the image of every layer up to that one (or a stage
 # it saves beside its layers, `also`), and `compiled`, the compiled tree.
+# `release` layers differ in a release image (the registry owner's key, thin LTO), which
+# builds them, and every layer above one, again (os/image/build-layer.sh); `board` layers
+# differ in a board's (its firmware, device tree and update origin), and so does every layer
+# above one.
 [[layer]]
 name = "packages"
 piece = "packages"
@@ -49,17 +58,21 @@ given = ["builder:builder-base"]
 name = "kernel"
 piece = "kernel"
 target = "kernel-installed"
+board = true
 
 [[layer]]
 name = "system"
 piece = "system"
 target = "system"
 given = ["builder:builder-base"]
+board = true
 
 [[layer]]
 name = "trust"
 piece = "trust"
 target = "trust"
+release = true
+board = true
 
 [[layer]]
 # The Tilo binaries, the state derived from every layer below (initramfs, font and
@@ -70,3 +83,5 @@ name = "image"
 pieces = ["binaries", "rootfs", "boot"]
 target = "final"
 given = ["builder:builder-base", "tools:image-tool-stages", "tools:uki-tools", "compiled"]
+release = true
+board = true

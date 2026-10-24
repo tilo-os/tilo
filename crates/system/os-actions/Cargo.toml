@@ -26,6 +26,9 @@ serde.workspace = true
 serde_json.workspace = true
 zeroize.workspace = true
 getrandom.workspace = true
+# WireGuard key pairs for tunnels Settings sets up (src/network_settings.rs).
+tilo-seal = { path = "../tilo-seal" }
+base64.workspace = true
 rand_core.workspace = true
 thiserror.workspace = true
 tilo-crypto = { path = "../tilo-crypto" }

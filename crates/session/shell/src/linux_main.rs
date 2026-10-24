@@ -479,6 +479,11 @@ pub fn run() -> std::process::ExitCode {
         eprintln!("error: {refusal}");
         return std::process::ExitCode::from(2);
     }
+    // While no other thread exists: a table grown later stalls every thread
+    // that opens a file, the main loop among them.
+    if shell::compositor::descriptor_table::reserve().is_none() {
+        eprintln!("descriptor table left at its default size");
+    }
     shell::shell::decide_receipt_against_surfaces();
     if let Err(error) = shell::shell::install_approved_checks_from_args(std::env::args_os().skip(1))
     {

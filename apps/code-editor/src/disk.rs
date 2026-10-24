@@ -3,8 +3,9 @@
 //!
 //! Two rules shape this module.
 //!
-//! **Writes are atomic.** A save goes through [`tilo_files::native::atomic::write`], which
-//! writes a sibling temp file, fsyncs it, and renames it over the target. A
+//! **Writes are atomic.** A save goes through [`tilo_files::native::atomic`],
+//! which writes a sibling temp file, fsyncs it, and renames it over the
+//! target, keeping an existing file's permission bits and symbolic link. A
 //! crash or a full disk therefore leaves either the old file or the new one,
 //! never a half-written source file. An editor that can truncate your code on a
 //! bad day is worse than one that cannot save at all.
@@ -153,9 +154,23 @@ pub fn save(path: &Path, text: &str, expected: Option<&Stamp>) -> Result<Stamp, 
             Err(e) => return Err(SaveError::Io(e)),
         }
     }
-    tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
-        .map_err(SaveError::Io)?;
+    write(path, text.as_bytes()).map_err(SaveError::Io)?;
     Stamp::of(path).map_err(SaveError::Io)
+}
+
+/// Replace `path`'s bytes atomically. A file that exists stays the person's
+/// file: a script keeps its executable bit, and a symbolic link (a dotfile
+/// kept in another repository) keeps pointing where it did, with the new
+/// bytes written to its target. A path that does not exist yet is created
+/// with its folders.
+fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => tilo_files::native::atomic::write_preserving_target(path, bytes),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            tilo_files::native::atomic::write_creating_parent(path, bytes)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// Whether a file changed on disk relative to `stamp`. A file that vanished
@@ -302,6 +317,45 @@ mod tests {
         // Passing no expectation is the user having said "overwrite anyway".
         save(&p, "mine", None).expect("an unconditional save always writes");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "mine");
+    }
+
+    /// Saving a script keeps it executable, and saving through a symbolic
+    /// link writes the file it points at and leaves the link in place.
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_the_files_permissions_and_its_symbolic_link() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let d = tmpdir();
+        let script = d.path().join("build.sh");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let stamp = Stamp::of(&script).unwrap();
+        save(&script, "#!/bin/sh\necho built\n", Some(&stamp)).expect("the script saves");
+        assert_eq!(
+            std::fs::metadata(&script).unwrap().permissions().mode() & 0o7777,
+            0o755,
+            "a saved script stays executable"
+        );
+
+        let target = d.path().join("dotfiles/bashrc");
+        std::fs::create_dir(d.path().join("dotfiles")).unwrap();
+        std::fs::write(&target, "export A=1\n").unwrap();
+        let link = d.path().join(".bashrc");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let stamp = load(&link).unwrap().stamp;
+        let saved = save(&link, "export A=2\n", Some(&stamp)).expect("the link saves");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link is still a link"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "export A=2\n");
+        assert!(
+            !changed_on_disk(&link, &saved),
+            "the stamp is the one the next save checks against"
+        );
     }
 
     fn a_deleted_file_counts_as_changed() {

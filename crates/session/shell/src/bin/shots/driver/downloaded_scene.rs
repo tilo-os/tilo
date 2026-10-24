@@ -74,7 +74,7 @@ impl ShellDriver {
         self.scene_palette_query("");
     }
 
-    /// "Add <name> to apps?" the first time a downloaded program runs: an
+    /// "Add \<name\> to apps?" the first time a downloaded program runs: an
     /// `AppImage` (with Move to Applications), a program from a tarball
     /// with its icon beside it, and a loose binary with no artwork, which
     /// shows the system's generic application icon. The icon goes through

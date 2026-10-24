@@ -3,8 +3,8 @@
 //!
 //! The window is one [`NavShell`]. The window bar holds the tabs as its
 //! views, Refresh, the sampling cadence and the list's view options, and its
-//! search narrows the process list ([`window_bar`]). The content is the active tab
-//! ([`crate::view::ProcessesPane`] or [`crate::view::ResourcesPane`]); the
+//! search narrows the process list (`window_bar`). The content is the active tab
+//! (`crate::view::ProcessesPane` or `crate::view::ResourcesPane`); the
 //! selected process is the inspector. The shared table layout (sort, tree
 //! mode) lives on [`crate::resource::Monitor`]; the tab, filter and
 //! selection are this window's own; the live process snapshot never leaves

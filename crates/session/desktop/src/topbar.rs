@@ -62,7 +62,7 @@ impl BarStanding {
     }
 }
 
-/// The desktop's bar: every bar control is [`BAR_CONTROL_PX`] (24) with an
+/// The desktop's bar: every bar control is `BAR_CONTROL_PX` (24) with an
 /// `s1` of air above and below, so the bar is 32 logical pixels (64 at scale
 /// 2). At 24 it read cramped and out of balance with the windows' bars
 /// below it. The controls are the design system's bar control
@@ -676,7 +676,7 @@ pub struct TopBarChrome {
     people_left_x: f64,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
-    /// "Continue <app> from <device>": the offer, and its dismiss chip.
+    /// "Continue \<app\> from \<device\>": the offer, and its dismiss chip.
     continuity_rect: Rect,
     continuity_dismiss_rect: Rect,
     /// The ask open beside the own avatar: its pill and its two choices.
@@ -688,6 +688,10 @@ pub struct TopBarChrome {
     /// The centre swapping the time for a live activity and back: a
     /// cross-fade (`ui::motion::CrossFade`, `true` is the activity).
     center_fade: ui::motion::CrossFade<bool>,
+    /// The bar leaving with a window maximizing over it (sliding up as the
+    /// window's frame grows to the top), and coming back with its restore.
+    /// Open at rest; [`Self::move_with_window`] drives it.
+    with_window: ui::motion::Presence,
     /// The centre selector's width following its content (the time, or a
     /// live activity filling the lane) on the standard expand/collapse
     /// motion (`ui::motion::Extent`), so the selector grows into the lane
@@ -990,6 +994,7 @@ impl TopBarChrome {
             activity_pulse: 0,
             activity_started: None,
             center_fade: ui::motion::CrossFade::new(false),
+            with_window: ui::motion::Presence::opened(),
             center_width: ui::motion::Extent::default(),
             center_rect: Rect::ZERO,
             center_lane: Rect::ZERO,
@@ -1296,6 +1301,12 @@ impl TopBarChrome {
     /// profile card; zero when it is not shown.
     pub fn own_avatar_rect(&self) -> Rect {
         self.control_rect(Self::CONTROL_PROFILE)
+    }
+
+    /// Where the others' faces (or the sharing indicator) were last drawn,
+    /// for anchoring who is here; zero when neither is shown.
+    pub fn collaborators_rect(&self) -> Rect {
+        self.control_rect(Self::CONTROL_COLLABORATORS)
     }
 
     /// What the own avatar is called to assistive technology.
@@ -3292,6 +3303,28 @@ impl TopBarChrome {
         self.center_fade.is_moving(now) || self.center_width.is_moving(now)
     }
 
+    /// A window maximizing over the bar's display (`shown` false) or
+    /// restoring (`shown` true), moved by `source`: the bar leaves or comes
+    /// back with it, over the window's own motion. A key's lands.
+    pub fn move_with_window(
+        &mut self,
+        shown: bool,
+        motion: ui::tokens::EffectiveMotion,
+        source: ui::tokens::MotionSource,
+    ) {
+        self.with_window.show(
+            shown,
+            ui::motion::WindowMotion::MOVE,
+            motion,
+            source,
+            ui::motion::frame_now(),
+        );
+    }
+
+    fn with_window_moving(&self) -> bool {
+        self.with_window.is_moving(ui::motion::frame_now())
+    }
+
     /// When the centre's motion settles, if it is moving.
     #[cfg(test)]
     fn center_settles_at(&self) -> Option<Instant> {
@@ -4289,125 +4322,36 @@ impl Widget for TopBarChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Zero-height (fullscreen) paints nothing; without this guard
-        // the encode below still runs at intrinsic size, overflowing
-        // into a stray fragment over the fullscreen window.
-        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
-            return;
-        }
-        // A hidden bar paints nothing until it is reached for.
-        if self.presence() == TopBarPresence::Hidden {
-            self.cache_fp.presence = TopBarPresence::Hidden;
-            return;
-        }
-        // Pulled here, not pushed by update, so a just-dropped battery
-        // percent is drawn and counted as a change in the same pass.
-        self.refresh_status_and_media_state();
-        self.schedule_time_wake();
-        let showing_activity = self.activity_is_visible();
-        self.center_fade.show(
-            showing_activity,
-            theme.motion(),
-            ui::tokens::MotionSource::Pointer,
-            ui::time::now(),
-        );
-        self.read_face_looks(presence, theme.motion());
-        let fp = self.current_fingerprint();
-        if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
-            ui::scene_parts::append(
+        // Leaving with a maximizing window, or coming back with its
+        // restore: the whole bar slides up off its display as it fades.
+        if self.with_window_moving() {
+            let open = self.with_window.progress(ui::motion::frame_now());
+            let shown = ui::motion::unit_opacity(open);
+            if shown <= f32::EPSILON {
+                return;
+            }
+            let lift = vello::kurbo::Vec2::new(0.0, -(1.0 - open) * self.rect.height());
+            out_scene.push_layer(
+                Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                shown,
+                out_transform,
+                &self.rect,
+            );
+            self.draw_bar(
                 out_scene,
-                &self.cached,
-                self.cached_parts.as_ref(),
-                Some(out_transform),
+                out_transform.pre_translate(lift),
+                text_renderer,
+                theme,
+                presence,
             );
+            out_scene.pop_layer();
             return;
         }
-
-        // Theme typography already includes accessibility scale.
-        let renderer_scale = text_renderer.text_scale();
-        text_renderer.set_text_scale(1.0);
-
-        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
-        let mut local = std::mem::take(&mut self.cached);
-        local.reset();
-        let ((), parts) = ui::scene_parts::record(&mut local, |scene| {
-            let transform = Affine::IDENTITY;
-            let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
-            if self.presence() == TopBarPresence::Shown {
-                self.draw_overlay_surface(scene, transform, theme);
-            }
-
-            // The workspace's name leads, after the mark when there is one:
-            // where its label starts, past its capsule's `s2` leading pad.
-            let label_x = self.draw_tilo_mark(
-                scene,
-                transform,
-                theme,
-                center_y,
-                self.rect.x0 + f64::from(theme.tokens.spacing.s3),
-            ) + f64::from(theme.tokens.spacing.s2);
-            self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
-            let center_left =
-                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
-            // The strip shown and the strips as places change as the person
-            // moves between strips: they are one part of the bar, so that change
-            // damages where they are painted rather than the whole bar.
-            let strip_span = (
-                self.ws_pill_rect.x1,
-                center_left - f64::from(theme.tokens.spacing.s4),
-            );
-            ui::scene_parts::part_drawn(
-                scene,
-                ui::scene_parts::PartKey::new("desktop.topbar.strips", ()),
-                |scene| {
-                    // The strip shown, named after the workspace it is in where
-                    // no strip chips stand: the frequent level, where the person
-                    // looks for "where am I".
-                    self.draw_strip_name(
-                        scene,
-                        transform,
-                        theme,
-                        text_renderer,
-                        center_y,
-                        strip_span,
-                    );
-                    self.draw_strip_places(
-                        scene,
-                        transform,
-                        theme,
-                        text_renderer,
-                        center_y,
-                        (
-                            self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
-                            strip_span.1,
-                        ),
-                    );
-                    self.strips_painted()
-                        .into_iter()
-                        .map(|rect| transform.transform_rect_bbox(rect))
-                        .collect()
-                },
-            );
-
-            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-            if !self.is_compact() {
-                self.draw_session_clusters(scene, theme, text_renderer, center_y);
-            }
-            self.draw_focus_indicator(scene, transform, theme);
-            let clock_activity = self.chrome.as_ref().and_then(|chrome| {
-                let snapshot = chrome.snapshot();
-                snapshot.overlays.clock.then_some(snapshot.clock_activity)?
-            });
-            if let Some(activity) = clock_activity {
-                self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
-            }
-        });
-        ui::scene_parts::append(out_scene, &local, parts.as_ref(), Some(out_transform));
-        self.cached = local;
-        self.cached_parts = parts;
-        self.cache_fp = fp;
-        self.cache_theme = Some(theme.clone());
-        text_renderer.set_text_scale(renderer_scale);
+        if self.presence() == TopBarPresence::Hidden && !self.with_window.is_open() {
+            return;
+        }
+        self.draw_bar(out_scene, out_transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -4737,11 +4681,11 @@ impl Widget for TopBarChrome {
     /// Must keep returning `true` until the first successful draw
     /// fills the cache, or the first frame after layout never paints.
     fn needs_animation_frame(&self) -> bool {
-        self.center_is_moving() || self.center_frame_stale()
+        self.center_is_moving() || self.center_frame_stale() || self.with_window_moving()
     }
 
     fn needs_redraw(&self) -> bool {
-        if self.center_is_moving() || self.center_frame_stale() {
+        if self.center_is_moving() || self.center_frame_stale() || self.with_window_moving() {
             return true;
         }
         if self.presence() != self.cache_fp.presence {
@@ -4807,6 +4751,138 @@ impl Widget for TopBarChrome {
             children |= child.take_structure_dirty();
         }
         stale || children
+    }
+}
+
+impl TopBarChrome {
+    fn draw_bar(
+        &mut self,
+        out_scene: &mut Scene,
+        out_transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        // Zero-height (fullscreen) paints nothing; without this guard
+        // the encode below still runs at intrinsic size, overflowing
+        // into a stray fragment over the fullscreen window.
+        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
+            return;
+        }
+        // A hidden bar paints nothing until it is reached for, unless it
+        // is leaving with a maximizing window.
+        if self.presence() == TopBarPresence::Hidden && !self.with_window_moving() {
+            self.cache_fp.presence = TopBarPresence::Hidden;
+            return;
+        }
+        // Pulled here, not pushed by update, so a just-dropped battery
+        // percent is drawn and counted as a change in the same pass.
+        self.refresh_status_and_media_state();
+        self.schedule_time_wake();
+        let showing_activity = self.activity_is_visible();
+        self.center_fade.show(
+            showing_activity,
+            theme.motion(),
+            ui::tokens::MotionSource::Pointer,
+            ui::time::now(),
+        );
+        self.read_face_looks(presence, theme.motion());
+        let fp = self.current_fingerprint();
+        if fp == self.cache_fp && self.cache_theme.as_ref() == Some(theme) && fp.rect_px.2 > 0 {
+            ui::scene_parts::append(
+                out_scene,
+                &self.cached,
+                self.cached_parts.as_ref(),
+                Some(out_transform),
+            );
+            return;
+        }
+
+        // Theme typography already includes accessibility scale.
+        let renderer_scale = text_renderer.text_scale();
+        text_renderer.set_text_scale(1.0);
+
+        // Cache miss — encode at IDENTITY, then splice with `out_transform`.
+        let mut local = std::mem::take(&mut self.cached);
+        local.reset();
+        let ((), parts) = ui::scene_parts::record(&mut local, |scene| {
+            let transform = Affine::IDENTITY;
+            let center_y = f64::midpoint(self.rect.y0, self.rect.y1);
+            if self.presence() == TopBarPresence::Shown {
+                self.draw_overlay_surface(scene, transform, theme);
+            }
+
+            // The workspace's name leads, after the mark when there is one:
+            // where its label starts, past its capsule's `s2` leading pad.
+            let label_x = self.draw_tilo_mark(
+                scene,
+                transform,
+                theme,
+                center_y,
+                self.rect.x0 + f64::from(theme.tokens.spacing.s3),
+            ) + f64::from(theme.tokens.spacing.s2);
+            self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
+            let center_left =
+                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            // The strip shown and the strips as places change as the person
+            // moves between strips: they are one part of the bar, so that change
+            // damages where they are painted rather than the whole bar.
+            let strip_span = (
+                self.ws_pill_rect.x1,
+                center_left - f64::from(theme.tokens.spacing.s4),
+            );
+            ui::scene_parts::part_drawn(
+                scene,
+                ui::scene_parts::PartKey::new("desktop.topbar.strips", ()),
+                |scene| {
+                    // The strip shown, named after the workspace it is in where
+                    // no strip chips stand: the frequent level, where the person
+                    // looks for "where am I".
+                    self.draw_strip_name(
+                        scene,
+                        transform,
+                        theme,
+                        text_renderer,
+                        center_y,
+                        strip_span,
+                    );
+                    self.draw_strip_places(
+                        scene,
+                        transform,
+                        theme,
+                        text_renderer,
+                        center_y,
+                        (
+                            self.ws_pill_rect.x1 + f64::from(theme.tokens.spacing.s2),
+                            strip_span.1,
+                        ),
+                    );
+                    self.strips_painted()
+                        .into_iter()
+                        .map(|rect| transform.transform_rect_bbox(rect))
+                        .collect()
+                },
+            );
+
+            self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
+            if !self.is_compact() {
+                self.draw_session_clusters(scene, theme, text_renderer, center_y);
+            }
+            self.draw_focus_indicator(scene, transform, theme);
+            let clock_activity = self.chrome.as_ref().and_then(|chrome| {
+                let snapshot = chrome.snapshot();
+                snapshot.overlays.clock.then_some(snapshot.clock_activity)?
+            });
+            if let Some(activity) = clock_activity {
+                self.draw_clock_overlay(scene, transform, text_renderer, theme, &activity);
+            }
+        });
+        ui::scene_parts::append(out_scene, &local, parts.as_ref(), Some(out_transform));
+        self.cached = local;
+        self.cached_parts = parts;
+        self.cache_fp = fp;
+        self.cache_theme = Some(theme.clone());
+        text_renderer.set_text_scale(renderer_scale);
     }
 }
 

@@ -191,9 +191,14 @@ fn the_first_refresh_reads_only_the_pane_shown() {
     );
     // The first pane is Network: every row it shows is published at once.
     assert!(
-        put_off
-            .iter()
-            .all(|id| !id.starts_with("settings.network") && !id.starts_with("settings.vpn")),
+        put_off.iter().all(|id| ![
+            "settings.network",
+            "settings.vpn",
+            "network.wifi",
+            "vpn.connection"
+        ]
+        .iter()
+        .any(|prefix| id.starts_with(prefix))),
         "the pane shown publishes its rows from the first frame: {put_off:?}"
     );
 }

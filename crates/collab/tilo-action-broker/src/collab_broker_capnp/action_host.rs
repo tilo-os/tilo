@@ -61,7 +61,7 @@ fn oversized_argument(argument: &str) -> Option<String> {
 
 /// A retired transport run cannot use a retained caller clone. Legacy callers
 /// without an execution retain their existing behavior.
-fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
+pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
     if caller.execution_id().is_some() && !caller.execution_is_live() {
         return Err(ActionHostError::Unavailable {
             reason: "execution session ended".into(),
@@ -2971,7 +2971,7 @@ impl CapnpBrokerState {
         Some(change)
     }
 
-    /// [`Self::action_next_change`] counting only changes after this call:
+    /// `Self::action_next_change` counting only changes after this call:
     /// the `next_change` of a host whose waiter asks before it observes, so a
     /// change between the two still wakes it. Authorized exactly as
     /// [`Self::action_observe`]: `None` for an invocation `caller` did not
@@ -2998,6 +2998,9 @@ impl CapnpBrokerState {
         let job = self
             .remote_job(caller, id)
             .ok_or(ActionHostError::UnknownInvocation)?;
+        if let Some(cancelled) = self.live_views.cancel(job, None) {
+            return cancelled.map_err(|reason| ActionHostError::NotCancellable { reason });
+        }
         self.request_cancellation(job, &BrokerActor::for_caller(caller).id)
             .map_err(|reason| ActionHostError::NotCancellable { reason })
     }

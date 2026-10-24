@@ -3,11 +3,11 @@
 //!
 //! Only the installer journey prepares a medium that carries a person's
 //! identity, belongings and original files, and only it hands the writer a
-//! [`prepared_media::PreparedMedia`] or a [`portable_source::OriginalSource`].
+//! [`prepared_media::PreparedMedia`](crate::setup::journey::prepared_media::PreparedMedia) or a [`portable_source::OriginalSource`](crate::setup::journey::portable_source::OriginalSource).
 //! Without it neither can exist: both are uninhabited, so every path of the
 //! writer that would deliver, refresh or complete a prepared medium is
 //! statically unreachable, and none of the native preparation, capture or
-//! delivery code is linked. [`prepared_media::Delivery`] answers what the
+//! delivery code is linked. [`prepared_media::Delivery`](crate::setup::journey::prepared_media::Delivery) answers what the
 //! journey's own delivery answers when no native preparation is available
 //! (`journey/prepared_media/presentation.rs`): nothing is pending, and a
 //! request to deliver is refused.

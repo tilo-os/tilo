@@ -192,6 +192,32 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Take a launchpad request from the widget document, once per change of
+    /// it. Only the document carries a request, and the pump settles three
+    /// times a wake: a document that has not moved since a harvest found
+    /// nothing in it still holds nothing, so it is not read again.
+    pub(super) fn settle_launchpad(&mut self, edits: &mut ui::widget::Edits<'_>, root: &ObjId) {
+        let mark = LaunchpadMark::of(edits.doc(), root);
+        if self.launchpad_quiet_at.as_ref() == Some(&mark) {
+            // A debug build proves the skip: the harvest would have found
+            // nothing to take.
+            debug_assert!(
+                !tilo_desktop::launchpad::requested(edits.doc(), root),
+                "a launchpad request reached a document the harvest saw quiet"
+            );
+            return;
+        }
+        let took = tilo_resource::profiling::measure("shell.launchpad_harvest", || {
+            self.harvest_empty_workspace_launchpad(edits, root)
+        });
+        // A harvest that took nothing wrote nothing: the document still
+        // stands where it was read. It is quiet there unless a request it
+        // could not take (a refused acknowledgement) still waits, which the
+        // next settle tries again.
+        self.launchpad_quiet_at =
+            (!took && !tilo_desktop::launchpad::requested(edits.doc(), root)).then_some(mark);
+    }
+
     /// Consume one of the collaboration launchpad's six semantic cards.
     /// App cards resolve through the production Applications provider so an
     /// available-but-not-yet-installed app follows the same acquisition path
@@ -970,6 +996,30 @@ fn under_launcher_sections(entries: &mut [CommandEntry]) {
             .and_then(crate::shell::search::launcher::section_of)
         {
             entry.section = Some(section.label());
+        }
+    }
+}
+
+/// A widget document's position: its committed heads, its open edits (by
+/// count, under the actor that makes them, which also tells two fresh
+/// documents apart) and the object the host reads requests from. Equal marks
+/// read the same.
+#[derive(PartialEq)]
+pub(super) struct LaunchpadMark {
+    heads: Vec<automerge::ChangeHash>,
+    pending: usize,
+    actor: automerge::ActorId,
+    root: ObjId,
+}
+
+impl LaunchpadMark {
+    fn of(doc: &AutoCommit, root: &ObjId) -> Self {
+        use automerge::transaction::Transactable as _;
+        Self {
+            heads: doc.base_heads(),
+            pending: doc.pending_ops(),
+            actor: doc.get_actor().clone(),
+            root: root.clone(),
         }
     }
 }

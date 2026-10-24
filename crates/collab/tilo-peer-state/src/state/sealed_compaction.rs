@@ -2,8 +2,8 @@
 //! without the channel key accepts a verified compaction in place of exactly
 //! the writes it covers, and never opens it.
 use super::{
-    DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, Route, SignedOp, SigningKey,
-    StatePeer, SystemTime, err, peer_handle,
+    DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication, PeerPublicationMut,
+    Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
 };
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 
@@ -20,7 +20,7 @@ pub type SealDelta<'a> = SealCheckpoint<'a>;
 /// a full exact admission index: fewer would fold little for the work.
 pub(super) const PRESSED_HISTORY: usize = 64;
 
-impl StatePeer {
+impl PeerPublicationMut<'_> {
     /// Compact `record`'s sealed history as the key holder of its channel
     /// and supersede it here, returning the compaction to publish.
     ///
@@ -42,7 +42,7 @@ impl StatePeer {
     /// the record's channel or does not open to the merged record, or the
     /// compaction is refused by admission; this peer is unchanged then.
     pub fn compact_sealed_history(
-        &mut self,
+        self,
         app: &str,
         record: &str,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
@@ -55,6 +55,7 @@ impl StatePeer {
             record: record.into(),
         };
         let document = self
+            .peer
             .core
             .documents
             .get(&route)
@@ -66,7 +67,8 @@ impl StatePeer {
         let snapshot = DocumentMutation::Snapshot(merged).encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&snapshot)?;
         if metadata.retention() != Some(ContentRetention::Checkpoint)
-            || metadata.channel != collab_types::document_channel_id(app, &self.core.room, record)
+            || metadata.channel
+                != collab_types::document_channel_id(app, &self.peer.core.room, record)
         {
             return Err("a sealed compaction is a checkpoint for the record's channel".into());
         }
@@ -85,9 +87,9 @@ impl StatePeer {
             .ok_or("sequence exhausted")?;
         let mut op = SignedOp::new_unsigned_with_encryption(
             payload,
-            collab_types::document_artifact_id(app, &self.core.room, record),
+            collab_types::document_artifact_id(app, &self.peer.core.room, record),
             author,
-            collab_types::document_attestation_id(app, &self.core.room, record),
+            collab_types::document_attestation_id(app, &self.peer.core.room, record),
             OpKind::Compaction,
             now,
             seq,
@@ -99,13 +101,13 @@ impl StatePeer {
         if open(&op)? != snapshot {
             return Err("the sealed compaction does not open to the merged record".into());
         }
-        let mut candidate = self.clone();
+        let mut candidate = self.peer.clone();
         candidate.admit_new_local_document(app, record, op.clone(), now)?;
-        *self = candidate;
+        *self.peer = candidate;
         Ok(NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
             app_id: app.into(),
-            cluster_id: self.core.room.clone(),
+            cluster_id: self.peer.core.room.clone(),
             record_id: record.into(),
             envelope: Box::new(op),
         })
@@ -150,7 +152,7 @@ pub(super) fn merge_sealed(
 }
 
 /// A sealed record as its channel's key holder reads it
-/// ([`StatePeer::opened_document`]).
+/// ([`PeerPublication::opened_document`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenedRecord {
     /// The record's cleartext base with every sealed write that merges
@@ -290,14 +292,14 @@ pub(super) fn open_sealed(
     })
 }
 
-impl StatePeer {
+impl PeerPublication<'_> {
     /// `record` of `app` as its channel's key holder reads it: the cleartext
     /// base with every sealed write `open` opens merged over it, and the
     /// writes it leaves out (see [`OpenedRecord`]). A record that is not
-    /// encrypted reads as [`Self::document`]. `None` for a record this state
+    /// encrypted reads as [`StatePeer::document`]. `None` for a record this state
     /// does not hold.
     pub fn opened_document(
-        &self,
+        self,
         app: &str,
         record: &str,
         open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
@@ -306,14 +308,17 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         };
-        let Some(document) = self.core.documents.get(&route) else {
+        let Some(document) = self.peer.core.documents.get(&route) else {
             return Ok(None);
         };
         if !document.encryption_required {
-            return Ok(self.document(app, record).map(|document| OpenedRecord {
-                document,
-                unmerged: Vec::new(),
-            }));
+            return Ok(self
+                .peer
+                .document(app, record)
+                .map(|document| OpenedRecord {
+                    document,
+                    unmerged: Vec::new(),
+                }));
         }
         open_sealed(document, open).map(Some)
     }
@@ -321,13 +326,15 @@ impl StatePeer {
     /// Whether `record` of `app` is encrypted here: its writes are sealed,
     /// and a write in the clear is refused as a downgrade.
     #[must_use]
-    pub fn is_sealed_record(&self, app: &str, record: &str) -> bool {
-        self.sealed_route(&Route {
+    pub fn is_sealed_record(self, app: &str, record: &str) -> bool {
+        self.peer.sealed_route(&Route {
             app: app.into(),
             record: record.into(),
         })
     }
+}
 
+impl PeerPublicationMut<'_> {
     /// Sign `changes`, Automerge changes to `record` of `app`, as `key`'s
     /// own write, sealed by the channel's key holder with `seal`, and admit
     /// it like any sealed write: it joins the record's sealed history, and
@@ -342,7 +349,7 @@ impl StatePeer {
     /// fails or yields anything but a delta of the record's channel, or when
     /// admission refuses the write; this peer is unchanged then.
     pub fn publish_sealed_incremental(
-        &mut self,
+        self,
         app: &str,
         record: &str,
         changes: Vec<u8>,
@@ -355,6 +362,7 @@ impl StatePeer {
             record: record.into(),
         };
         let document = self
+            .peer
             .core
             .documents
             .get(&route)
@@ -363,10 +371,10 @@ impl StatePeer {
         // Readers without the key decide a sealed write by the claims of
         // its changes, as a member's page names them: each naming the units
         // its action may write by the surface the op names.
-        let surface = self.signed_surface(app);
-        let claims = self.surfaces.with_footprints(
+        let surface = self.peer.signed_surface(app);
+        let claims = self.peer.surfaces.with_footprints(
             &collab_types::Record {
-                room: &self.core.room,
+                room: &self.peer.core.room,
                 app,
                 record,
             },
@@ -377,7 +385,8 @@ impl StatePeer {
         let plaintext = mutation.encode().map_err(err)?;
         let (metadata, ciphertext) = seal(&plaintext)?;
         if metadata.retention() != Some(ContentRetention::Delta)
-            || metadata.channel != collab_types::document_channel_id(app, &self.core.room, record)
+            || metadata.channel
+                != collab_types::document_channel_id(app, &self.peer.core.room, record)
         {
             return Err("a sealed write is a delta of the record's channel".into());
         }
@@ -392,9 +401,9 @@ impl StatePeer {
             .ok_or("sequence exhausted")?;
         let mut op = SignedOp::new_unsigned_with_encryption(
             ciphertext,
-            collab_types::document_artifact_id(app, &self.core.room, record),
+            collab_types::document_artifact_id(app, &self.peer.core.room, record),
             author,
-            collab_types::document_attestation_id(app, &self.core.room, record),
+            collab_types::document_attestation_id(app, &self.peer.core.room, record),
             OpKind::Change,
             now,
             seq,
@@ -403,13 +412,13 @@ impl StatePeer {
         .with_claims(claims)
         .with_surface(surface);
         collab_types::sign_op(&mut op, key).map_err(err)?;
-        let mut candidate = self.clone();
+        let mut candidate = self.peer.clone();
         candidate.admit_new_local_document(app, record, op.clone(), now)?;
-        *self = candidate;
+        *self.peer = candidate;
         Ok(NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),
             app_id: app.into(),
-            cluster_id: self.core.room.clone(),
+            cluster_id: self.peer.core.room.clone(),
             record_id: record.into(),
             envelope: Box::new(op),
         })
@@ -428,7 +437,7 @@ impl StatePeer {
     /// refuse `delegate`'s own write of `changes`; this peer is unchanged
     /// then.
     pub fn publish_sealed_incremental_for(
-        &mut self,
+        self,
         delegate: &SigningKey,
         (app, record): (&str, &str),
         changes: Vec<u8>,
@@ -438,26 +447,25 @@ impl StatePeer {
     ) -> Result<NeighbourMsg, String> {
         let author = delegate.verifying_key().to_bytes();
         let parsed = collab_types::parse_changes(&changes).map_err(err)?;
-        let shows = self.appearance_author(&author, now);
+        let shows = self.peer.appearance_author(&author, now);
         collab_types::check_appearances(&parsed, shows.as_deref())
             .map_err(|refusal| format!("document change forbidden: {refusal}"))?;
-        self.clone().publish_sealed_incremental(
-            app,
-            record,
-            changes.clone(),
-            seal,
-            delegate,
-            now,
-        )?;
+        self.peer
+            .clone()
+            .publication_mut()
+            .publish_sealed_incremental(app, record, changes.clone(), seal, delegate, now)?;
         self.publish_sealed_incremental(app, record, changes, seal, key, now)
     }
+}
 
+impl PeerPublication<'_> {
     /// Every encrypted record whose sealed history has used three quarters
     /// of its bound, as `(app, record)`: its key holder compacts it before
     /// new writes are refused.
     #[must_use]
-    pub fn sealed_records_to_compact(&self) -> Vec<(String, String)> {
+    pub fn sealed_records_to_compact(self) -> Vec<(String, String)> {
         let mut due: Vec<(String, String)> = self
+            .peer
             .core
             .documents
             .iter()
@@ -473,9 +481,10 @@ impl StatePeer {
         // room's index all the same: once it is half full, the longest
         // history worth folding is due too, one at a time, so the work each
         // write brings stays that of one record.
-        if due.is_empty() && self.core.exact_admissions.pressed() {
+        if due.is_empty() && self.peer.core.exact_admissions.pressed() {
             due.extend(
-                self.core
+                self.peer
+                    .core
                     .documents
                     .iter()
                     .filter(|(_, document)| document.sealed.len() >= PRESSED_HISTORY)
@@ -485,7 +494,9 @@ impl StatePeer {
         }
         due
     }
+}
 
+impl StatePeer {
     /// This replica's own sealed writes (the compactions it minted) that
     /// `before` does not hold. A governed snapshot cannot carry sealed
     /// history, so they are published as themselves.

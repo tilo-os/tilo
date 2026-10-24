@@ -110,7 +110,7 @@ const MAX_QUERY_LEN: usize = 40;
 
 /// The `@`-run ending at `caret` in `text`, if the caret is in one: an `@`
 /// that opens a word (at the start, or after whitespace), followed by at
-/// most [`MAX_QUERY_LEN`] bytes with no newline and no other `@`.
+/// most `MAX_QUERY_LEN` bytes with no newline and no other `@`.
 #[must_use]
 pub fn query_at_caret(text: &str, caret: usize) -> Option<MentionQuery> {
     let caret = text.floor_char_boundary(caret.min(text.len()));

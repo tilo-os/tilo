@@ -524,6 +524,7 @@ impl CapnpChannelHandle {
             request.command,
             runtime_collab::native_media::Command::Leave
                 | runtime_collab::native_media::Command::SetMuted { muted: true }
+                | runtime_collab::native_media::Command::SetDeafened { deafened: true }
         );
         let context = self.native_media_context(stopping).inspect_err(|_| {
             tracing::debug!("native media broker refused local context");

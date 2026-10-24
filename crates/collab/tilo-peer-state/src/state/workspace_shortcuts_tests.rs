@@ -141,6 +141,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
         )
         .unwrap();
     for message in governor
+        .publication_mut()
         .durable_mutation_messages(&before, &authority, now, 2)
         .unwrap()
     {
@@ -162,6 +163,7 @@ fn a_member_sees_a_saved_shortcut_and_never_the_governors_forgery() {
     document.commit();
     governor.core.room_doc = Some(document.into());
     for message in governor
+        .publication_mut()
         .durable_mutation_messages(&before, &authority, now, 3)
         .unwrap()
     {

@@ -69,6 +69,16 @@ pub enum PasswordsEffect {
         #[param("Opaque id of the vault item")]
         item: String,
     },
+    /// Favorite.
+    ///
+    /// Adds the item to Favorites, or removes it.
+    #[effect(idempotent)]
+    Favorite {
+        #[param("Opaque id of the vault item")]
+        item: String,
+        #[param("Whether the item is a favorite")]
+        favorite: bool,
+    },
     /// Import passwords.
     ///
     /// Opens the system file chooser for a browser password CSV.

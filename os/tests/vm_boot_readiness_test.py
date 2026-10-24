@@ -43,7 +43,7 @@ class ReadinessTests(unittest.TestCase):
                 worker = threading.Thread(target=answer)
                 worker.start()
                 env = dict(os.environ, TILO_DISTROBOX="", TILO_RUN=str(root),
-                           TILO_BOOT_WAIT_ATTEMPTS="1", TILO_SSH_PORT="1",
+                           TILO_BOOT_WAIT_SECS="1", TILO_SSH_PORT="1",
                            PATH=f"{root}:{os.environ['PATH']}")
                 try:
                     result = subprocess.run(["bash", str(REPO / "os/dev/vm.sh"), "wait"],

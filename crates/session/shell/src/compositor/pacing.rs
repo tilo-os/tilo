@@ -613,7 +613,7 @@ impl PacingWindow {
         }
     }
 
-    /// The `FRAME-PACING` line for the window, when [`PACING_WINDOW`] has
+    /// The `FRAME-PACING` line for the window, when `PACING_WINDOW` has
     /// passed since its first frame. Starts a new window.
     pub fn take_line(
         &mut self,

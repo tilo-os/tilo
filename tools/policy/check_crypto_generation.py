@@ -10,8 +10,8 @@ upstream migrates instead of gaining new direct users here.
 The check reads ``Cargo.lock``: every package without a ``source`` is a local
 one, and its ``dependencies`` list is exactly its direct (normal, dev and
 build) dependencies at their resolved versions, renames included. Vendored
-upstream crates under ``vendor/`` and the cargo-hakari package (which names
-crates only to unify their features) are exempt. ``SANCTIONED`` lists the
+upstream crates under ``vendor/``, the cargo-hakari package and
+workspace-unify (which name crates only to unify their features) are exempt. ``SANCTIONED`` lists the
 direct edges whose newest dependent release still requires the old generation;
 each needs a reason, and a sanctioned edge that no longer exists fails too, so
 the list only shrinks.
@@ -48,6 +48,8 @@ SANCTIONED = {
 }
 
 HAKARI_PACKAGE = "workspace-hack"
+# tools/ci/workspace_unify.py's package: every library the workspace builds, old generation too.
+UNIFY_PACKAGE = "workspace-unify"
 
 
 @dataclass(frozen=True)
@@ -87,7 +89,7 @@ def check(root: Path = ROOT) -> tuple[list[Violation], list[tuple[str, str, str]
     versions: dict[str, list[str]] = {}
     for package in packages:
         versions.setdefault(package["name"], []).append(package["version"])
-    exempt = vendored_packages(root) | {HAKARI_PACKAGE}
+    exempt = vendored_packages(root) | {HAKARI_PACKAGE, UNIFY_PACKAGE}
 
     violations = []
     used = set()

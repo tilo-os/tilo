@@ -29,10 +29,12 @@ use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 use ui::floating_surface::HostNetworkStatus;
 
-/// Between network changes, still refresh the Wi-Fi bars, whose signal
-/// strength `NetworkManager` does not signal. A service that cannot be
-/// reached (the system bus, `UPower`, `PipeWire`) is asked again on the same
-/// interval.
+/// While the link is Wi-Fi, refresh its bars between network changes:
+/// `NetworkManager` does not signal signal strength. A wired or absent link
+/// has no bars and is not read on a timer. A service that cannot be reached
+/// (the system bus, `UPower`, `PipeWire`) is asked again once its socket is
+/// created ([`wait_for_socket`]), or on this interval when the socket is
+/// there but refused, or cannot be watched.
 ///
 /// `pw-dump --monitor` never wakes the poller: `PipeWire` reprints the graph
 /// on client and parameter churn, so a line-oriented watch never goes quiet.
@@ -332,10 +334,24 @@ impl StatusBridge {
                             }
                         }
                     }
-                    // Only the Wi-Fi bars are read on the interval.
-                    let first = wake_rx
-                        .recv_timeout(FALLBACK_INTERVAL)
-                        .unwrap_or(Read::Link);
+                    // Only the Wi-Fi bars are read on the interval, and only
+                    // while there are bars to read.
+                    let on_wifi = bridge
+                        .snapshot()
+                        .link
+                        .is_some_and(|link| link.kind == LinkKind::Wifi);
+                    let first = if on_wifi {
+                        wake_rx
+                            .recv_timeout(FALLBACK_INTERVAL)
+                            .unwrap_or(Read::Link)
+                    } else {
+                        match wake_rx.recv() {
+                            Ok(read) => read,
+                            // Every follower is gone and `_wake_tx` is held:
+                            // unreachable, but never spin.
+                            Err(_) => return,
+                        }
+                    };
                     reads.push(first);
                     // A burst (a headset brings a sink, a default switch and
                     // a level) is read once.
@@ -461,7 +477,7 @@ async fn follow_battery(wake: Sender<Read>) {
         if wake.send(Read::Battery).is_err() {
             return;
         }
-        tokio::time::sleep(FALLBACK_INTERVAL).await;
+        wait_for_socket_async(system_bus_socket()).await;
     }
 }
 
@@ -493,15 +509,100 @@ fn spawn_output_level_follower(wake: Sender<Read>) {
                     }
                 }
                 // PipeWire went away or never answered: read what is there
-                // (nothing, drawn as no glyph), then ask again later.
+                // (nothing, drawn as no glyph), then ask again once it can
+                // answer.
                 if wake.send(Read::Volume).is_err() {
                     return;
                 }
-                std::thread::sleep(FALLBACK_INTERVAL);
+                wait_for_socket(crate::shell::session_audio_policy::pipewire_socket().as_deref());
             }
         });
     if let Err(error) = spawned {
         tracing::warn!(target: "tilo::status", %error, "output level follower not started");
+    }
+}
+
+/// The system bus's socket, from `DBUS_SYSTEM_BUS_ADDRESS` (its first
+/// `unix:path=` address) or the standard path. `None` for an address that
+/// names no file (abstract or TCP).
+fn system_bus_socket() -> Option<std::path::PathBuf> {
+    match std::env::var("DBUS_SYSTEM_BUS_ADDRESS") {
+        Ok(address) if !address.is_empty() => system_bus_socket_in(&address),
+        _ => Some(std::path::PathBuf::from("/run/dbus/system_bus_socket")),
+    }
+}
+
+fn system_bus_socket_in(address: &str) -> Option<std::path::PathBuf> {
+    address.split(';').find_map(|entry| {
+        entry
+            .strip_prefix("unix:")?
+            .split(',')
+            .find_map(|pair| pair.strip_prefix("path="))
+            .map(std::path::PathBuf::from)
+    })
+}
+
+/// Block until a service whose `socket` refused a connection may answer:
+/// until the socket is created, when it is missing. When it exists (the
+/// service is there and refused), or nothing can be watched, wait
+/// [`FALLBACK_INTERVAL`] instead. A missing directory on the way is waited
+/// for the same way, one level at a time.
+///
+/// An idle session without the service (a headless or minimal one) then
+/// never wakes for it, where a timer woke it twice a minute.
+fn wait_for_socket(socket: Option<&std::path::Path>) {
+    let Some(socket) = socket else {
+        std::thread::sleep(FALLBACK_INTERVAL);
+        return;
+    };
+    loop {
+        if socket.exists() {
+            // Created while we waited, or there all along and refusing.
+            return;
+        }
+        // The deepest directory on the way that exists, and its entry
+        // toward the socket.
+        let mut missing = socket;
+        let directory = loop {
+            match missing.parent() {
+                Some(parent) if parent.is_dir() => break Some(parent),
+                Some(parent) => missing = parent,
+                None => break None,
+            }
+        };
+        let Some(directory) = directory else {
+            std::thread::sleep(FALLBACK_INTERVAL);
+            return;
+        };
+        let (created, appeared) = mpsc::channel();
+        let entry = missing.to_owned();
+        let watch = tilo_files::native::watch_changes(
+            directory,
+            move |changed| changed == entry,
+            move || {
+                let _ = created.send(());
+            },
+        );
+        let Ok(_watch) = watch else {
+            std::thread::sleep(FALLBACK_INTERVAL);
+            return;
+        };
+        // Watched from here on: an entry created before this is seen by
+        // the check.
+        if !missing.exists() && appeared.recv().is_err() {
+            std::thread::sleep(FALLBACK_INTERVAL);
+            return;
+        }
+    }
+}
+
+/// [`wait_for_socket`] off the session runtime's workers.
+async fn wait_for_socket_async(socket: Option<std::path::PathBuf>) {
+    if tokio::task::spawn_blocking(move || wait_for_socket(socket.as_deref()))
+        .await
+        .is_err()
+    {
+        tokio::time::sleep(FALLBACK_INTERVAL).await;
     }
 }
 
@@ -535,7 +636,7 @@ async fn follow_network(slot: NetworkSlot, wake: Sender<Read>, status: Arc<Netwo
         if !publish_network(&slot, &wake, &status, None) {
             return;
         }
-        tokio::time::sleep(FALLBACK_INTERVAL).await;
+        wait_for_socket_async(system_bus_socket()).await;
     }
 }
 
@@ -622,6 +723,58 @@ pub fn link_bars(link: &LinkStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_system_bus_socket_is_the_first_unix_path_of_its_address() {
+        assert_eq!(
+            system_bus_socket_in("unix:path=/run/dbus/system_bus_socket"),
+            Some(std::path::PathBuf::from("/run/dbus/system_bus_socket"))
+        );
+        assert_eq!(
+            system_bus_socket_in("unix:abstract=/tmp/x;unix:guid=1,path=/srv/bus"),
+            Some(std::path::PathBuf::from("/srv/bus"))
+        );
+        assert_eq!(system_bus_socket_in("tcp:host=localhost,port=1"), None);
+    }
+
+    /// The wait for a missing service socket on a thread of its own, so the
+    /// test can create the socket while it blocks.
+    fn waiting_for(socket: std::path::PathBuf) -> mpsc::Receiver<()> {
+        let (done, ended) = mpsc::channel();
+        std::thread::spawn(move || {
+            wait_for_socket(Some(&socket));
+            let _ = done.send(());
+        });
+        ended
+    }
+
+    #[test]
+    fn a_service_socket_that_exists_is_tried_at_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("bus");
+        std::fs::write(&socket, b"").unwrap();
+        tilo_test_env::recv("the wait to end", &waiting_for(socket));
+    }
+
+    #[test]
+    fn a_missing_service_socket_is_waited_for_until_it_and_its_directory_are_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("run").join("pipewire-0");
+        let ended = waiting_for(socket.clone());
+        // Neither unrelated entries nor the directory on the way end the
+        // wait: it watches one level deeper once that directory exists.
+        std::fs::write(dir.path().join("other"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("run")).unwrap();
+        std::fs::write(dir.path().join("run").join("other"), b"").unwrap();
+        assert!(
+            ended
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .is_err(),
+            "the wait ended before its socket existed"
+        );
+        std::fs::write(&socket, b"").unwrap();
+        tilo_test_env::recv("the wait to end once the socket exists", &ended);
+    }
 
     #[test]
     fn network_hints_follow_lossless_host_state_and_transport_loss() {

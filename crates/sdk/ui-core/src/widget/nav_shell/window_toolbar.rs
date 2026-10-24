@@ -108,6 +108,9 @@ impl NavShell {
             self.toggle_inspector();
             acted = true;
         }
+        if crate::window_toolbar::take_notice_press(super::notices::WINDOW_NOTICE_ACTION) {
+            acted |= self.press_notice_action();
+        }
         if self.built
             && let Some(open) = self.requests.staged_sidebar.take()
         {

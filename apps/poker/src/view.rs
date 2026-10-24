@@ -1,6 +1,7 @@
 //! The table as each participant sees it: the seats around the board, their
 //! own cards face up and everyone else's face down until the showdown, and
-//! the moves open to them now.
+//! the moves open to them now. The hand is the window bar's location; the
+//! table draws no title row of its own.
 
 use ui::framework::People;
 use ui::i18n::I18nManager;
@@ -39,7 +40,6 @@ pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
         .with_rhythm(Rhythm::Sibling)
         .with_intrinsic_height();
     for part in [
-        header(table),
         top,
         board(table),
         bottom,
@@ -52,34 +52,63 @@ pub fn table(cx: &mut ViewCx<Table>, table: &Table) -> Element {
         .readable()
         .centered()
         .with_child(Box::new(column));
-    Box::new(Scrollable::new_vertical().with_child(Box::new(centred)))
+    Box::new(TableWindow {
+        content: Box::new(Scrollable::new_vertical().with_child(Box::new(centred))),
+        location: location(table),
+    })
 }
 
-fn header(table: &Table) -> Element {
-    let title = if table.hand.number == 0 {
+/// Where the window is: the table, or the hand being played at it.
+pub fn location(table: &Table) -> String {
+    if table.hand.number == 0 {
         plain("poker-title")
     } else {
         fmt("poker-hand-number", &[("number", table.hand.number.into())])
-    };
-    let blinds = fmt(
-        "poker-blinds",
-        &[
-            ("small", game::SMALL_BLIND.into()),
-            ("big", BIG_BLIND.into()),
-        ],
-    );
-    Box::new(
-        ui::row![
-            Text::new(&title)
-                .with_id("hand-title")
-                .with_role(TextRole::Title),
-            Text::new(&blinds)
-                .with_id("blinds")
-                .with_role(TextRole::Caption),
-        ]
-        .with_rhythm(Rhythm::Sibling)
-        .with_align_items(ui::taffy::AlignItems::Baseline),
-    )
+    }
+}
+
+/// The table, with the hand as the window bar's location.
+struct TableWindow {
+    content: Element,
+    location: String,
+}
+
+impl TableWindow {
+    fn declare(&self) {
+        ui::window_toolbar::declare(Some(ui::window_toolbar::WindowToolbar {
+            location: Some(ui::window_toolbar::ToolbarLocation {
+                label: self.location.clone(),
+                ..ui::window_toolbar::ToolbarLocation::default()
+            }),
+            ..ui::window_toolbar::WindowToolbar::default()
+        }));
+    }
+}
+
+impl ui::widget::Decorator for TableWindow {
+    type Inner = dyn Widget;
+
+    fn inner(&self) -> &(dyn Widget + 'static) {
+        self.content.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn Widget + 'static) {
+        self.content.as_mut()
+    }
+
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+        self.declare();
+        self.content.sync(state, path);
+    }
+
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        self.declare();
+        self.content.update(state, path)
+    }
+
+    fn name(&self) -> &'static str {
+        "TableWindow"
+    }
 }
 
 fn seat_row(
@@ -242,11 +271,21 @@ fn board(table: &Table) -> Element {
     }
     let pot = fmt("poker-pot", &[("pot", hand.pot().into())]);
     let street = plain(hand.street.message());
+    let blinds = fmt(
+        "poker-blinds",
+        &[
+            ("small", game::SMALL_BLIND.into()),
+            ("big", BIG_BLIND.into()),
+        ],
+    );
     let facts = ui::row![
         Text::new(&street)
             .with_id("street")
             .with_role(TextRole::Label),
         Text::new(&pot).with_id("pot").with_role(TextRole::Heading),
+        Text::new(&blinds)
+            .with_id("blinds")
+            .with_role(TextRole::Caption),
     ]
     .with_rhythm(Rhythm::Sibling)
     .with_justify(ui::taffy::JustifyContent::Center)

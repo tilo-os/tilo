@@ -250,7 +250,10 @@ impl ShellOverlayHost {
         }
     }
 
-    fn main_bar_rect(&mut self, rect: fn(&tilo_desktop::topbar::TopBarChrome) -> Rect) -> Rect {
+    pub(super) fn main_bar_rect(
+        &mut self,
+        rect: fn(&tilo_desktop::topbar::TopBarChrome) -> Rect,
+    ) -> Rect {
         self.desktop_surface_mut()
             .and_then(|surface| surface.topbar().map(rect))
             .unwrap_or(Rect::ZERO)

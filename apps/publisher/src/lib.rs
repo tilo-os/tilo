@@ -448,7 +448,7 @@ impl ResourceApp for App {
     }
 
     /// A capture never reads this machine's key file or settings: the claims
-    /// are filled in here, the key and the last outcome in [`staged`].
+    /// are filled in here, the key and the last outcome in `staged`.
     fn scenario(name: Option<&str>) -> Vec<Invoke<Publisher>> {
         if name == Some("no-key") {
             return Vec::new();

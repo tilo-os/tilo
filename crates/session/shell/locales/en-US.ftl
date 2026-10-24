@@ -409,6 +409,8 @@ qs-bluetooth-device-paired-a11y = Paired; activate to connect
 
 # Quick Settings: VPN
 qs-vpn-empty = No VPN profiles. Add one in Settings.
+qs-device-vpn-through = Through { $device }
+qs-device-vpn-unnamed = your other device
 
 # Quick Settings failures, as notifications
 qs-action-failed-refreshing = { $error }. The current device state is being refreshed.
@@ -435,6 +437,7 @@ portal-shortcut-duplicate = Already assigned in this request. Choose another sho
 portal-shortcut-taken = Already used by { $app }. Choose another shortcut.
 portal-shortcut-another-app = another application
 portal-auth-heading = Administrator access
+portal-auth-as = As { $user }
 portal-auth-ended = Authentication ended unexpectedly.
 portal-auth-rejected = That password was not accepted.
 portal-grant-title = { $app } wants to use { $target }
@@ -549,6 +552,25 @@ topbar-clocks-notification-body = Time is up
 
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
+host-activity-workspace-not-shown = Switch to this workspace to change its history.
+host-activity-personal-only = Only the person at this device can do this.
+host-activity-action-feed = Read history
+host-activity-action-summary = Read what's new
+host-activity-action-replay = Replay layout
+host-activity-action-detail = Read changes
+host-activity-action-focus = Read what to show
+host-activity-action-mark-viewed = Mark as viewed
+host-activity-action-focused = Say what was shown
+host-activity-action-name = Name changes
+host-activity-action-split = Split work group
+host-activity-action-merge = Merge work groups
+host-activity-action-move-boundary = Move work session boundary
+host-activity-action-undo = Undo changes
+host-activity-action-restore = Restore to before
+host-activity-action-undo-run = Undo agent task
+host-activity-action-open = Open
+host-activity-action-choose-source = Choose morning source
+host-activity-action-source = Use morning source
 host-activity-working-in = Working in { $app }
 host-activity-editing = Editing shared content
 host-activity-organizing = Organizing shared content
@@ -1112,6 +1134,8 @@ launch-failed-window-lost = Its window stopped without being closed. Open it aga
 launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
+app-open-unavailable-title = No app to open
+app-open-unavailable-body = { $app } asked to open an app that isn't on this computer or offered in the Store.
 launch-failure-title = Couldn't open { $app }
 
 # An app, or a process it started, that the system ended because memory ran out
@@ -1415,8 +1439,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = { $app } · contains resources
-search-app-action-launches = { $resource } · { $app } · launches application
+search-app-resource-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo
@@ -1541,6 +1564,9 @@ search-action-tab-split-right = Split this tab to the right
 search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
 search-action-tab-move-to-new-group = Move this tab to a new group
 search-action-tab-move-to-new-group-subtitle = Move the focused tab into a new window group at the end of its strip
+search-action-tab-move-to-workspace = Move this tab to another workspace
+search-action-tab-move-to-workspace-subtitle = Take the focused tab to another of your workspaces
+search-action-tab-move-to-workspace-missing = There is no such workspace.
 search-action-window-focus-previous = Focus the previous window
 search-action-window-focus-previous-subtitle = Move focus to the window on the left along the strip
 search-action-window-focus-next = Focus the next window
@@ -1589,6 +1615,12 @@ search-action-tab-move-to-group-next = Move this tab into the group on the right
 search-action-tab-move-to-group-next-subtitle = Move the focused tab into the neighbouring window group on the right
 search-action-notifications-dnd-toggle = Do Not Disturb
 search-action-notifications-dnd-toggle-subtitle = Hold notification banners until you’re back
+search-action-notifications-open = Show notifications
+search-action-notifications-open-subtitle = Read, answer or clear the notifications you missed
+search-action-notifications-clear = Clear all notifications
+search-action-notifications-clear-subtitle = Empty the notification list; you can bring them back for eight seconds
+search-action-notifications-clear-undo = Bring back cleared notifications
+search-action-notifications-clear-undo-subtitle = Restore the notifications you just cleared, in their order
 search-action-appearance-theme-dark = Dark theme
 search-action-appearance-theme-dark-subtitle = Dark chrome and apps
 search-action-appearance-theme-light = Light theme
@@ -1813,6 +1845,13 @@ search-continuity-unlock-deny = Keep { $device } locked (code { $code })
 search-continuity-unlock-subtitle = It restarted and is asking to open its encrypted disk
 search-continuity-device-remove = Remove { $device } from your devices
 search-continuity-device-remove-subtitle = It can no longer act for you or unlock its disk through your devices
+search-continuity-vpn-through = Send this device's traffic through { $device }
+search-continuity-vpn-stop = Stop sending traffic through { $device }
+search-continuity-vpn-subtitle = Your devices as a VPN
+search-continuity-vpn-exit-stop = Stop { $device } using this device's connection
+search-continuity-vpn-exit-subtitle = Sharing this device's connection with your other devices
+search-continuity-vpn-share = Share this device's connection with your other devices
+search-continuity-vpn-unshare = Stop sharing this device's connection
 device-unlock-error-not-pending = That unlock request is no longer waiting
 device-unlock-error-cannot-remove = This device cannot remove that device
 device-unlock-error-no-identity = This device does not hold your identity
@@ -2331,6 +2370,9 @@ search-action-workspace-create = Create a workspace
 search-action-workspace-create-subtitle = Create and switch to a new empty workspace
 search-action-workspace-create-default-name = Untitled
 search-action-workspace-create-invalid-name = Enter a workspace name of 1 to 120 characters without control characters.
+search-action-workspace-rename = Rename this workspace
+search-action-workspace-rename-subtitle = Give the workspace on screen a new name
+search-action-workspace-rename-refused = Only the people who run this workspace can rename it.
 search-action-strip-create = Create a strip
 search-action-strip-create-subtitle = Add a named strip to this workspace and go to it
 search-action-strip-create-default-name = New strip
@@ -3109,6 +3151,9 @@ search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch str
 search-kw-group-restore = restore, unmaximize, un-maximize, normal size, shrink window
 search-kw-tab-move-to-new-group = new group, detach, pop out, separate tab
 search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifications, focus mode, quiet, notifications off
+search-kw-notifications-open = notifications, notification centre, notification center, missed notifications, alerts, messages i missed
+search-kw-notifications-clear = clear notifications, dismiss all, remove notifications, delete notifications, empty notifications
+search-kw-notifications-clear-undo = undo clear, restore notifications, undo clear all, get notifications back
 search-kw-appearance-theme-dark = dark mode, dark theme, night mode, dark, black theme, night
 search-kw-appearance-theme-light = light mode, light theme, day mode, bright, light, white theme
 search-kw-appearance-language = language, locale, translate, german, english, deutsch, switch language
@@ -3141,6 +3186,10 @@ storage-full-body = Only { $free } left for { $volume }. New files and changes m
 graphics-app-name = Graphics
 graphics-stopped-title = Graphics stopped responding
 graphics-stopped-body = Everything keeps working, but may be slower until you restart the computer.
+crash-notice-app-name = Desktop
+crash-notice-title = The desktop restarted
+crash-notice-froze-body = It stopped responding at { $time }. A record of what happened stays on this computer.
+crash-notice-crashed-body = It stopped unexpectedly at { $time }. A record of what happened stays on this computer.
 
 ## Desk widgets
 

@@ -8,7 +8,7 @@
 //! A shutter press writes verified media bytes and retains one contextual
 //! recent-capture handoff. Photos and Video Player own collection browsing,
 //! favorites, deletion, and metadata. The Automerge document (see
-//! [`crate::doc`]) holds the recent handoff, scan history, and granular capture
+//! [`crate::resource`]) holds the recent handoff, scan history, and granular capture
 //! preferences. A
 //! live viewfinder needs a camera; when none is
 //! present the camera/scanner screens say so honestly rather than faking a
@@ -45,7 +45,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::ActionEmitter;
-use ui::widget::toast::{ToastAnchor, Transient};
+use ui::widget::toast::Transient;
 use ui::widget::{CropSelection, Image, ImageCropEditor, ImageFit, Popover, Widget};
 use winit::event::WindowEvent;
 
@@ -60,8 +60,10 @@ use crate::record::Record as Camera;
 
 mod document_view;
 mod hud;
+mod notice;
 mod scanner_view;
 mod settings_sheet;
+mod window_bar;
 
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:Tilo Lounge;P:welcome-aboard;H:false;;";
@@ -297,16 +299,8 @@ enum Action {
     CaptureDocument,
     /// Choose option `index` of a document scan setting.
     SetDocumentChoice(DocumentChoice, usize),
-    RotateDocument,
-    RecognizeDocument,
-    CopyDocumentText,
-    ExportDocument,
-    BeginDocumentCrop,
     ApplyDocumentCrop,
     CancelDocumentCrop,
-    MoveDocumentPageEarlier,
-    MoveDocumentPageLater,
-    RemoveDocumentPage,
     CycleResolution,
     SetResolution(Resolution),
     SetPhotoFormat(PhotoFormat),
@@ -375,6 +369,10 @@ pub struct CameraApp {
     scan_gen: (u32, u32),
     /// The result of the last action, shown for a notice's lifetime.
     toast: Transient<String>,
+    /// What the person can do about the message up, when it asks them to
+    /// act: kept with the message it belongs to, so a later message without
+    /// one shows none.
+    toast_action: Option<(String, notice::NoticeAction)>,
     /// The last copy, whose outcome can arrive after its confirmation.
     copy: ui::CopyWatch,
     last_mouse: Point,
@@ -547,6 +545,7 @@ impl CameraApp {
             scanned: None,
             scan_gen: (0, 0),
             toast: Transient::new(),
+            toast_action: None,
             copy: ui::CopyWatch::default(),
             last_mouse: Point::new(-1_000.0, -1_000.0),
             document_scan: crate::document_scan::ScanSession::default(),
@@ -929,16 +928,8 @@ impl CameraApp {
             Action::SetDocumentChoice(choice, index) => {
                 format!("camera.document.choice:{}:{index}", choice.index())
             }
-            Action::RotateDocument => "camera.document.rotate".into(),
-            Action::RecognizeDocument => "camera.document.recognize".into(),
-            Action::CopyDocumentText => "camera.document.copy-text".into(),
-            Action::ExportDocument => "camera.document.export".into(),
-            Action::BeginDocumentCrop => "camera.document.crop".into(),
             Action::ApplyDocumentCrop => "camera.document.crop.apply".into(),
             Action::CancelDocumentCrop => "camera.document.crop.cancel".into(),
-            Action::MoveDocumentPageEarlier => "camera.document.move-earlier".into(),
-            Action::MoveDocumentPageLater => "camera.document.move-later".into(),
-            Action::RemoveDocumentPage => "camera.document.remove".into(),
             Action::CycleResolution => "camera.resolution".into(),
             Action::SetResolution(resolution) => {
                 format!("camera.resolution:{}", resolution.as_str())
@@ -1156,47 +1147,6 @@ impl CameraApp {
                     .focusable(true)
                     .disabled(self.document_job.is_some()),
             ),
-            Action::RotateDocument => (
-                Role::Button,
-                "Rotate selected page clockwise".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
-            ),
-            Action::RecognizeDocument => (
-                Role::Button,
-                "Recognize text on selected page".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
-            ),
-            Action::CopyDocumentText => (
-                Role::Button,
-                "Copy recognized text from selected page".into(),
-                AccessState::new().focusable(true).disabled(
-                    self.document_job.is_some()
-                        || self
-                            .document_scan
-                            .pages
-                            .get(self.document_scan.selected)
-                            .and_then(|page| page.ocr.as_ref())
-                            .is_none(),
-                ),
-            ),
-            Action::ExportDocument => (
-                Role::Button,
-                "Save searchable PDF".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
-            ),
-            Action::BeginDocumentCrop => (
-                Role::Button,
-                "Crop selected page".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
-            ),
             Action::ApplyDocumentCrop => (
                 Role::Button,
                 "Apply crop".into(),
@@ -1208,31 +1158,6 @@ impl CameraApp {
                 Role::Button,
                 "Cancel crop".into(),
                 AccessState::new().focusable(true),
-            ),
-            Action::MoveDocumentPageEarlier => (
-                Role::Button,
-                "Move selected page earlier".into(),
-                AccessState::new().focusable(true).disabled(
-                    self.document_job.is_some()
-                        || self.document_scan.pages.is_empty()
-                        || self.document_scan.selected == 0,
-                ),
-            ),
-            Action::MoveDocumentPageLater => (
-                Role::Button,
-                "Move selected page later".into(),
-                AccessState::new().focusable(true).disabled(
-                    self.document_job.is_some()
-                        || self.document_scan.pages.is_empty()
-                        || self.document_scan.selected + 1 >= self.document_scan.pages.len(),
-                ),
-            ),
-            Action::RemoveDocumentPage => (
-                Role::Button,
-                "Remove selected page".into(),
-                AccessState::new()
-                    .focusable(true)
-                    .disabled(self.document_scan.pages.is_empty() || self.document_job.is_some()),
             ),
         };
         AccessNode::new(role)
@@ -1316,6 +1241,9 @@ impl CameraApp {
             "camera-error" => self.camera_issue = Some(CameraIssue::StartFailed),
             _ => {}
         }
+        // The staged screen shows its controls as a control's way there does:
+        // the documents list the scanners this sample has.
+        self.present_controls();
         self.dirty = true;
     }
 
@@ -1432,18 +1360,8 @@ impl CameraApp {
             Action::SelectCamera(device) => self.select_camera(&device),
             Action::CaptureDocument => self.capture_document_page(),
             Action::SetDocumentChoice(choice, index) => self.apply_document_choice(choice, index),
-            Action::RotateDocument => self.rotate_document_page(),
-            Action::RecognizeDocument => self.recognize_document_page(),
-            Action::CopyDocumentText => self.copy_document_text(),
-            Action::ExportDocument => {
-                self.invoke_on(crate::actions::DOCUMENT_ROW, &CameraEffect::ExportPdf);
-            }
-            Action::BeginDocumentCrop => self.begin_document_crop(),
             Action::ApplyDocumentCrop => self.apply_document_crop(),
             Action::CancelDocumentCrop => self.cancel_document_crop(),
-            Action::MoveDocumentPageEarlier => self.move_document_page(false),
-            Action::MoveDocumentPageLater => self.move_document_page(true),
-            Action::RemoveDocumentPage => self.remove_document_page(),
             settings_action @ (Action::CycleResolution
             | Action::SetResolution(_)
             | Action::SetPhotoFormat(_)
@@ -1659,8 +1577,10 @@ impl CameraApp {
         if spawn.is_err() {
             self.document_job = None;
             self.document_job_kind = None;
-            self.toast
-                .show("Text recognition could not start. Try again in a moment.".into());
+            self.show_with_action(
+                "Text recognition could not start. Try again in a moment.".into(),
+                notice::NoticeAction::RecognizeAgain,
+            );
         }
     }
 
@@ -1748,8 +1668,10 @@ impl CameraApp {
                     .show(format!("Page {} captured", self.document_scan.pages.len()));
             }
             DocumentJobResult::Capture(Err(error)) => {
-                self.toast
-                    .show(crate::document_scan::capture_error_message(&error).into());
+                self.show_with_action(
+                    crate::document_scan::capture_error_message(&error).into(),
+                    notice::NoticeAction::ScanAgain,
+                );
                 terminal_error = Some(("camera.document_capture_failed", error));
             }
             DocumentJobResult::Recognize {
@@ -2325,11 +2247,14 @@ impl CameraApp {
         }
         self.camera_issue = None;
         self.chooser.close();
-        self.toast.show(if devices.is_empty() {
-            "No cameras found. Connect one, then refresh".into()
+        if devices.is_empty() {
+            self.show_with_action(
+                "No cameras found. Connect one, then refresh".into(),
+                notice::NoticeAction::RefreshCameras,
+            );
         } else {
-            "Refreshing camera".into()
-        });
+            self.toast.show("Refreshing camera".into());
+        }
     }
 
     fn open_camera_privacy_settings(&mut self) {
@@ -2893,9 +2818,19 @@ impl Widget for CameraApp {
                 self.dirty = true;
             }
         }
+        self.take_window_toolbar_events();
+        self.take_notice_action();
+        self.declare_window_toolbar();
+        self.publish_notice();
     }
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
+        // The window bar's slots are pressed between events.
+        if self.take_window_toolbar_events() | self.take_notice_action() {
+            self.dirty = true;
+        }
+        self.declare_window_toolbar();
+        self.publish_notice();
         #[cfg(feature = "live-capture")]
         self.poll_camera();
 
@@ -2999,33 +2934,13 @@ impl Widget for CameraApp {
         // Camera is an immersive capture surface: the viewfinder fills the
         // window and the settings sheet floats over it.
         let full = self.rect;
-        // A toast never covers what it reports on: over the viewfinder it
-        // rises above the shutter row; on the scanner and the documents,
-        // whose lower half is content, it stands at the top beside the
-        // corner cluster.
-        let (toast_area, toast_anchor) = match self.base_screen() {
-            Screen::Camera | Screen::Settings => {
-                let controls_top = self.draw_camera(scene, t, tr, theme, full);
-                (
-                    Rect::new(full.x0, full.y0, full.x1, controls_top),
-                    ToastAnchor::BottomCenter,
-                )
-            }
-            Screen::Scanner => {
-                let corner = self.draw_scanner(scene, t, tr, theme, full);
-                (
-                    hud::top_band_toast_area(full, corner, theme),
-                    ToastAnchor::TopCenter,
-                )
-            }
+        match self.base_screen() {
+            Screen::Camera | Screen::Settings => self.draw_camera(scene, t, tr, theme, full),
+            Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
             Screen::Document => {
-                let corner = self.draw_document_scanner(scene, t, tr, theme, presence, full);
-                (
-                    hud::top_band_toast_area(full, corner, theme),
-                    ToastAnchor::TopCenter,
-                )
+                self.draw_document_scanner(scene, t, tr, theme, presence, full);
             }
-        };
+        }
         if self.screen == Screen::Settings {
             // Under the modal sheet only the sheet is operable.
             self.regions.clear();
@@ -3033,13 +2948,6 @@ impl Widget for CameraApp {
         } else {
             self.draw_tooltip(scene, t, tr, theme);
         }
-        // A progress note stays while its photo, video or scan is in
-        // the works.
-        self.toast.keep_while(
-            self.worker.saving_photo() || self.video_finalizing || self.pending_scan.is_some(),
-        );
-        self.toast.expire();
-        self.draw_toast(scene, t, tr, theme, toast_area, toast_anchor);
     }
 
     #[allow(
@@ -3493,13 +3401,6 @@ impl ui::widget::controls::ActionControls for CameraApp {
         {
             *binding = handoff.metadata("camera.open-recent-capture");
         }
-        if let Some(handoff) = self.photos_browse.as_ref()
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "camera.open-photos")
-        {
-            *binding = handoff.metadata("camera.open-photos");
-        }
         bindings
     }
     fn refresh_control_action_availability(
@@ -3567,7 +3468,7 @@ mod tests {
 
     /// Without a picture the viewfinder offers only what can still do
     /// something: no capture settings, no lens switch, and a shutter that
-    /// reads as unavailable. Photos and settings stay.
+    /// reads as unavailable. Photos and the settings stay in the window bar.
     #[test]
     fn without_a_picture_the_capture_controls_step_aside() {
         let (mut app, doc, _) = sample_app();
@@ -3578,8 +3479,17 @@ mod tests {
         assert!(!offered(|a| matches!(a, Action::ToggleHdr)));
         assert!(!offered(|a| matches!(a, Action::SetTimer(_))));
         assert!(!offered(|a| matches!(a, Action::CycleFacing)));
-        assert!(offered(|a| matches!(a, Action::OpenPhotos)));
-        assert!(offered(|a| matches!(a, Action::Nav(Screen::Settings))));
+        assert!(
+            !offered(|a| matches!(a, Action::OpenPhotos | Action::Nav(Screen::Settings))),
+            "Photos and the settings are the window bar's"
+        );
+        let bar: Vec<String> = frame
+            .window_toolbar()
+            .actions
+            .into_iter()
+            .map(|action| action.id)
+            .collect();
+        assert_eq!(bar, [window_bar::PHOTOS, window_bar::SETTINGS]);
         let tree = frame.accessibility().unwrap();
         let shutter = tree
             .children
@@ -3968,32 +3878,10 @@ mod tests {
                     }
                 }
                 let shutter = bounds_of(&controls, "camera.shutter");
-                let photo = bounds_of(&controls, "camera.mode:photo");
                 assert!(
-                    photo.y0 - shutter.y1 >= f64::from(Theme::dark().tokens.spacing.s4) - 0.5,
-                    "{w}x{h} at {scale}×: the switcher {photo:?} keeps a group gap under the shutter {shutter:?}"
+                    window.y1 - shutter.y1 >= f64::from(Theme::dark().tokens.spacing.s4) - 0.5,
+                    "{w}x{h} at {scale}×: the shutter {shutter:?} keeps the edge's inset"
                 );
-            }
-        }
-        {
-            let (app, doc, _root) = sample_app();
-            let app = render_at(app, doc, 1280.0, 800.0);
-            let controls = control_bounds(&app);
-            let segments: Vec<Rect> = [
-                "camera.mode:photo",
-                "camera.mode:video",
-                "camera.nav:scanner",
-                "camera.nav:document",
-            ]
-            .iter()
-            .map(|target| bounds_of(&controls, target))
-            .collect();
-            for pair in segments.windows(2) {
-                assert!(
-                    (pair[0].x1 - pair[1].x0).abs() < 0.5,
-                    "{pair:?} are adjacent"
-                );
-                assert!((pair[0].width() - pair[1].width()).abs() < 0.5);
             }
         }
         {
@@ -4119,11 +4007,12 @@ mod tests {
                     && node.role == Role::Button
                     && node.action_target.as_deref() == Some("camera.open-recent-capture")
             }));
-            assert!(tree.children.iter().any(|node| {
-                node.name.as_deref() == Some("Open Photos to browse your library")
-                    && node.role == Role::Button
-                    && node.action_target.as_deref() == Some("camera.open-photos")
-            }));
+            assert!(
+                tree.children
+                    .iter()
+                    .all(|node| node.action_target.as_deref() != Some("camera.open-photos")),
+                "Open Photos is the window bar's"
+            );
             assert!(tree.children.iter().all(|node| node.bounds.is_some()));
         }
         {
@@ -4132,10 +4021,16 @@ mod tests {
             let tree = app
                 .accessibility()
                 .expect("camera has semantic capture controls");
-            assert!(tree.children.iter().any(|node| {
-                node.name.as_deref() == Some("Open Documents")
-                    && node.action_target.as_deref() == Some("camera.nav:document")
-            }));
+            assert!(
+                tree.children.iter().all(|node| {
+                    !node
+                        .action_target
+                        .as_deref()
+                        .is_some_and(|target| target.starts_with("camera.mode:"))
+                        && node.action_target.as_deref() != Some("camera.nav:document")
+                }),
+                "the modes are the window bar's views"
+            );
             assert!(tree.children.iter().all(|node| {
                 !node
                     .action_target
@@ -4144,20 +4039,20 @@ mod tests {
             }));
         }
         {
-            let (app, doc, root) = sample_app();
+            let (app, doc, _root) = sample_app();
             let mut app = render_at(app, doc, 900.0, 700.0);
-            let (camera, state) = Framed::split(&mut app);
-            assert!(camera.perform_semantic_action(
-                "camera.open-photos",
-                &A11yAction::Activate,
-                &mut Edits::lend(&mut state.doc),
-                &root,
-            ));
-            let invocation = ui::widget::controls::take_control_invocation(&mut *app)
-                .expect("Photos browse emits a typed external invocation");
-            assert_eq!(invocation.address.resource, "camera.capture");
-            assert_eq!(invocation.address.action, "open-photos");
-            assert!(invocation.arguments.is_empty());
+            Framed::harness_mut(&mut app).press_window_slot(
+                ui::window_toolbar::ToolbarEvent::Action {
+                    id: window_bar::PHOTOS.into(),
+                },
+            );
+            // The host runs the press as the live window's idle service
+            // does: the typed handoff to Photos went out, and the bar says so.
+            assert_eq!(
+                ui::window_toolbar::notice().map(|notice| notice.text),
+                Some("Opening Photos…".to_owned()),
+                "Photos browse hands off to Photos"
+            );
             assert!(
                 app.captures.len() <= 1,
                 "Camera still owns no gallery cache"
@@ -4854,7 +4749,7 @@ mod tests {
             assert_eq!((page.width(), page.height()), (1240, 1754));
             assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
 
-            app.apply(Action::BeginDocumentCrop, &mut Edits::lend(&mut doc), &root);
+            app.begin_document_crop();
             assert!(app.document_crop_editor.is_some());
             app.document_crop_selection.set(CropSelection {
                 left: 0.1,
@@ -4867,18 +4762,14 @@ mod tests {
             let page = app.document_scan.pages[0].rendered();
             assert_eq!((page.width(), page.height()), (992, 1404));
 
-            app.apply(Action::RotateDocument, &mut Edits::lend(&mut doc), &root);
+            app.rotate_document_page();
             let page = app.document_scan.pages[0].rendered();
             assert_eq!((page.width(), page.height()), (1404, 992));
 
             let (sender, receiver) = mpsc::channel();
             app.document_job = Some(receiver);
             app.document_job_kind = Some(DocumentJobKind::Recognize);
-            app.apply(
-                Action::RemoveDocumentPage,
-                &mut Edits::lend(&mut doc),
-                &root,
-            );
+            app.remove_document_page();
             assert_eq!(app.document_scan.pages.len(), 1, "busy page is stable");
             sender
                 .send(DocumentJobResult::Recognize {
@@ -4901,11 +4792,7 @@ mod tests {
             );
             assert!(app.document_job.is_none());
 
-            app.apply(
-                Action::RemoveDocumentPage,
-                &mut Edits::lend(&mut doc),
-                &root,
-            );
+            app.remove_document_page();
             assert!(app.document_scan.pages.is_empty());
         }
         {
@@ -4953,7 +4840,7 @@ mod tests {
                 app.document_text_status(),
                 "1 word recognized, straightened by 1.5°"
             );
-            app.apply(Action::CopyDocumentText, &mut Edits::lend(&mut doc), &root);
+            app.copy_document_text();
             assert_eq!(ui::clipboard_paste().as_deref(), Some("Invoice"));
             assert_eq!(app.toast.as_deref(), Some("Recognized text copied"));
 

@@ -29,7 +29,11 @@ fn fixture() -> Fixture {
     )
     .unwrap();
     member.select_admission_v5().unwrap();
-    for message in governor.bootstrap_messages(&governor_key, now).unwrap() {
+    for message in governor
+        .publication_mut()
+        .bootstrap_messages(&governor_key, now)
+        .unwrap()
+    {
         member
             .receive_from(origin(&governor_key), message, now)
             .unwrap();

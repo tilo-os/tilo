@@ -4,7 +4,7 @@
 //! zone its state, a rules table with an add-rule form, and the services it
 //! lets through, each with a switch. The
 //! configuration lives in a field-addressable shared Automerge document (see
-//! [`doc`]), so two instances pointed at one collab socket edit independent
+//! [`resource`]), so two instances pointed at one collab socket edit independent
 //! rules and services without clobbering each other. The live app reads/applies via
 //! `firewall-cmd` (gated, see [`backend`]); `--shots` bundles a realistic
 //! sample ruleset so the headless screenshot is fully populated offline.

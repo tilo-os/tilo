@@ -13,10 +13,9 @@
 #   final   the split rootfs plus the UKI under /boot, which is the one tree
 #           excluded from that digest.
 #
-# `split` keeps /kernel/<kver>/vmlinuz, from which the signed development board
-# (os/Containerfile.board) restores the kernel exactly as built, and drops the
-# initramfs: the UKI's .initrd section is the same bytes, and the dev image
-# restores it from there (os/scripts/unseal-rootfs.py). Kept, it was a third
+# `split` keeps /kernel/<kver>/vmlinuz, from which the dev image restores the
+# kernel exactly as built, and drops the initramfs: the UKI's .initrd section is
+# the same bytes, and the dev image restores it from there (os/scripts/unseal-rootfs.py). Kept, it was a third
 # 102 MB copy in every pull, beside the UKI and the original the split whites
 # out.
 #

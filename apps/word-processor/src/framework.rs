@@ -10,7 +10,7 @@
 //! layout, presence keyed to paragraphs, and search over the outline.
 //!
 //! The editor reads the document through the framework's incrementally
-//! maintained [`RichTextState`]: a keystroke refreshes its paragraph, and
+//! maintained [`RichTextState`](tilo_document::RichTextState): a keystroke refreshes its paragraph, and
 //! only the paragraphs around the viewport are ever read.
 
 use std::rc::Rc;

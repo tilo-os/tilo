@@ -73,6 +73,9 @@ pub enum RowLeading<'a> {
     Checkbox { checked: bool },
     /// A colour that is the row's content (a calendar's colour, a label).
     Swatch(Color),
+    /// How strong a radio signal is (a Wi-Fi network): the
+    /// [`SignalMeterFace`](crate::widget::SignalMeterFace) at icon size.
+    Signal(crate::widget::SignalLevel),
     /// A painter for a leading mark no other kind covers (a font sample, a
     /// waveform), given the leading slot.
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
@@ -91,6 +94,7 @@ impl std::fmt::Debug for RowLeading<'_> {
                 .field("checked", checked)
                 .finish(),
             Self::Swatch(colour) => f.debug_tuple("Swatch").field(colour).finish(),
+            Self::Signal(level) => f.debug_tuple("Signal").field(level).finish(),
             Self::Paint(_) => f.write_str("Paint"),
         }
     }
@@ -781,9 +785,12 @@ impl<'a> ListRowFace<'a> {
         let avatar = RowMetrics::avatar(theme, extra);
         let own = match self.leading {
             None => (0.0, 0.0),
-            Some(RowLeading::Icon(_) | RowLeading::Checkbox { .. } | RowLeading::Swatch(_)) => {
-                (m.icon, m.icon)
-            }
+            Some(
+                RowLeading::Icon(_)
+                | RowLeading::Checkbox { .. }
+                | RowLeading::Swatch(_)
+                | RowLeading::Signal(_),
+            ) => (m.icon, m.icon),
             Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => {
                 (avatar, avatar)
             }
@@ -1512,6 +1519,15 @@ impl<'a> ListRowFace<'a> {
                     &Circle::new(r.center(), r.width() / 2.0 - 0.5),
                 );
             }
+            RowLeading::Signal(level) => {
+                let r = Rect::from_center_size(slot.center(), (m.icon, m.icon));
+                crate::widget::SignalMeterFace::new(level).paint(
+                    ctx.scene,
+                    ctx.transform,
+                    theme,
+                    r,
+                );
+            }
             RowLeading::Paint(painter) => painter(ctx, slot),
         }
     }
@@ -1690,6 +1706,7 @@ enum Leading {
         on_toggle: Box<dyn FnMut(bool)>,
     },
     Swatch(Color),
+    Signal(crate::widget::SignalLevel),
 }
 
 /// What a retained hover action runs.
@@ -1773,6 +1790,9 @@ struct Trailing {
     fill: Option<f32>,
     /// The control's own minimum width, restored when it stops filling.
     own_min: taffy::Dimension,
+    /// Centred on the column a disclosure chevron stands in
+    /// ([`ListRow::trailing_disclosure`]).
+    on_disclosure_column: bool,
 }
 
 /// One of a row's own pressable controls.
@@ -2130,6 +2150,18 @@ impl ListRow {
         self
     }
 
+    /// See [`RowLeading::Signal`]: the row leads with how strong its
+    /// signal is, and is described by the meter's name ("Strong signal")
+    /// unless a tooltip already says more.
+    #[must_use]
+    pub fn signal(mut self, level: crate::widget::SignalLevel) -> Self {
+        self.leading = Some(Leading::Signal(level));
+        if self.leading_tooltip.is_none() {
+            self.leading_tooltip = Some(level.name());
+        }
+        self
+    }
+
     /// See [`ListRowFace::leading_column`]. A [`crate::widget::Section`]
     /// equalises the badge column of consecutive rows on its own.
     #[must_use]
@@ -2257,8 +2289,24 @@ impl ListRow {
             natural: 0.0,
             fill: None,
             own_min: taffy::Dimension::auto(),
+            on_disclosure_column: false,
         });
         self
+    }
+
+    /// [`Self::trailing`] for an icon button that opens what the row is
+    /// about while the row itself does something else (a network row that
+    /// connects, its chevron opening the network's page). The button is
+    /// centred on the column a [`Self::disclosure`] chevron stands in, so it
+    /// lines up with the chevrons of the rows around it; its target keeps
+    /// its own size, reaching into the row's bleed.
+    #[must_use]
+    pub fn trailing_disclosure(self, button: Element) -> Self {
+        let mut row = self.trailing(button);
+        if let Some(trailing) = &mut row.trailing {
+            trailing.on_disclosure_column = true;
+        }
+        row
     }
 
     /// The row's marks after its title (a status, a role), in order.
@@ -2619,6 +2667,7 @@ impl ListRow {
                 ),
                 Leading::Checkbox { checked, .. } => RowLeading::Checkbox { checked: *checked },
                 Leading::Swatch(colour) => RowLeading::Swatch(*colour),
+                Leading::Signal(level) => RowLeading::Signal(*level),
             });
         }
         if let Some((kind, id)) = &self.status {
@@ -2689,7 +2738,12 @@ impl ListRow {
         let theme = self.theme.as_ref()?;
         if !matches!(
             self.leading,
-            Some(Leading::Checkbox { .. } | Leading::Badge(_) | Leading::Icon(_))
+            Some(
+                Leading::Checkbox { .. }
+                    | Leading::Badge(_)
+                    | Leading::Icon(_)
+                    | Leading::Signal(_)
+            )
         ) {
             return None;
         }
@@ -3043,6 +3097,13 @@ impl Widget for ListRow {
                 - f64::from(child_layout.location.x)
                 - f64::from(child_layout.size.width);
             child_origin.x += shift.min(room);
+        } else if trailing.on_disclosure_column
+            && let Some(metrics) = &self.metrics
+        {
+            // The chevron's column ends on the layout box's edge; the
+            // button's centre moves onto it, never past the bleed.
+            let width = f64::from(child_layout.size.width);
+            child_origin.x += ((width - metrics.icon) / 2.0).clamp(0.0, metrics.bleed);
         }
         if let Some(trailing) = &mut self.trailing {
             trailing.element.apply_layout(taffy, child, child_origin);

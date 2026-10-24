@@ -636,6 +636,21 @@ files = [
   { from = "ntfs-mount/fuse-handoff.so", to = "/usr/lib/tilo/ntfs-mount/fuse-handoff.so", mode = "0755" },
 ]
 
+# Your devices as a VPN: the root helper the shell asks for a tunnel's TUN,
+# routes, kill switch, DNS and an exit's forwarding (docs/device-vpn.md).
+# Socket-activated, so a swap takes effect at its next start.
+[[component]]
+name = "device-vpn"
+kind = "userspace"
+scope = "vm"
+packages = ["tilo-device-vpn"]
+bins = ["tilo-device-vpn"]
+units = ["tilo-device-vpn.service"]
+layer = "desktop-binaries"
+files = [
+  { from = "tilo-device-vpn", to = "/usr/libexec/tilo-device-vpn", mode = "0755" },
+]
+
 # The one writer of the read-only ESP, started on demand as
 # tilo-esp-write@CALLER.service by the boot-entry and Secure Boot units, at
 # boot and on the way down; a swap takes effect at its next start. Also

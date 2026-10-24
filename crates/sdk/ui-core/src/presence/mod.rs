@@ -39,30 +39,13 @@ pub use render::{
     paint_reaction, paint_speaking_ring,
 };
 
-/// How long a "just typed" highlight lingers before fading out.
-pub const TYPING_FADE: crate::time::Duration = crate::time::Duration::from_millis(2500);
+/// How long a "just typed" highlight lingers, its fade included: the
+/// standard trace of a collaborator's mark ([`crate::motion::Trace`]).
+pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
 
-/// The highlight fades in this many steps, each a wake deadline: a slow
-/// taper reads the same in steps of a quarter second, and while a peer types
-/// the window repaints a few times a second instead of at every refresh.
-pub const TYPING_FADE_STEPS: u32 = 10;
-
-/// One step of the typing fade.
-const TYPING_FADE_STEP: crate::time::Duration = match TYPING_FADE.checked_div(TYPING_FADE_STEPS) {
-    Some(step) => step,
-    None => crate::time::Duration::ZERO,
-};
-
-/// Which fade step a mark `age` old is in; `None` once it has faded.
-fn typing_step(age: crate::time::Duration) -> Option<u32> {
-    (age < TYPING_FADE)
-        .then(|| u32::try_from(age.as_nanos() / TYPING_FADE_STEP.as_nanos()).unwrap_or(u32::MAX))
-}
-
-/// The alpha of a mark `age` old: `1.0` just typed, down a step at a time.
-fn typing_alpha(age: crate::time::Duration) -> Option<f32> {
-    typing_step(age).map(|step| (1.0 - step as f32 / TYPING_FADE_STEPS as f32).clamp(0.0, 1.0))
-}
+/// The highlight fades in this many steps, each a wake deadline
+/// ([`crate::motion::Trace::STEPS`]).
+pub const TYPING_FADE_STEPS: u32 = crate::motion::Trace::STEPS;
 
 /// Longest forward caret jump still read as "this peer just wrote that"
 /// (see the `Caret` arm of [`PresenceCtx::apply_remote_presence`]).
@@ -516,16 +499,16 @@ pub enum RemotePresenceEffect {
 pub const POINTER_IDLE: Duration = Duration::from_secs(5);
 
 /// How long a quiet peer's pointer takes to fade out, ending at
-/// [`POINTER_IDLE`]. See [`PresenceCtx::pointer_opacity`].
-pub const POINTER_FADE: Duration = Duration::from_millis(400);
+/// [`POINTER_IDLE`]: the standard fade of a stream gone quiet
+/// ([`crate::motion::Follow::FADE`]). See [`PresenceCtx::pointer_opacity`].
+pub const POINTER_FADE: Duration = crate::motion::Follow::FADE;
 
 /// Longest a peer's pointer takes to glide to a newly heard position. Peers
 /// publish at ~30 Hz, so a moving pointer glides over the gap between its
 /// last two samples (~33 ms) and arrives as the next one is due; this caps
-/// the glide after a pause, so a pointer that sat still for a while does
-/// not drift lazily to where it was just put. See
+/// the glide after a pause ([`crate::motion::Follow::GLIDE_MAX`]). See
 /// [`PresenceCtx::pointer_position_at`].
-pub const POINTER_EASE_MAX: Duration = Duration::from_millis(100);
+pub const POINTER_EASE_MAX: Duration = crate::motion::Follow::GLIDE_MAX;
 
 /// A pointer's last-known `(x, y)` per user, at each [`PresenceKey`].
 pub type PointerPositions = HashMap<PresenceKey, Vec<(UserId, (f32, f32))>>;
@@ -1604,7 +1587,8 @@ impl PresenceCtx {
         marks
             .iter()
             .filter_map(|m| {
-                typing_alpha(now.saturating_duration_since(m.born)).map(|alpha| (m.range, alpha))
+                crate::motion::Trace::alpha(now.saturating_duration_since(m.born))
+                    .map(|alpha| (m.range, alpha))
             })
             .collect()
     }
@@ -1621,7 +1605,9 @@ impl PresenceCtx {
                 continue;
             }
             for m in marks {
-                if let Some(alpha) = typing_alpha(now.saturating_duration_since(m.born)) {
+                if let Some(alpha) =
+                    crate::motion::Trace::alpha(now.saturating_duration_since(m.born))
+                {
                     out.push((user.clone(), m.range, alpha));
                 }
             }
@@ -1636,11 +1622,7 @@ impl PresenceCtx {
         self.typing
             .values()
             .flatten()
-            .filter_map(|m| {
-                let step = typing_step(now.saturating_duration_since(m.born))?;
-                m.born
-                    .checked_add(TYPING_FADE_STEP.saturating_mul(step.saturating_add(1)))
-            })
+            .filter_map(|m| crate::motion::Trace::next_step(m.born, now))
             .min()
     }
 
@@ -1652,7 +1634,7 @@ impl PresenceCtx {
             .typing
             .values()
             .flatten()
-            .filter_map(|m| typing_step(now.saturating_duration_since(m.born)))
+            .filter_map(|m| crate::motion::Trace::step(now.saturating_duration_since(m.born)))
             .collect();
         steps.compact_sort();
         steps

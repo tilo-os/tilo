@@ -82,6 +82,15 @@ impl JoinRates {
         per_ten_minutes: 30,
         per_day: usize::MAX,
     };
+
+    /// Addresses left on a wait list: a person types theirs once, maybe
+    /// again after a typo, and a household or office shares an address, so
+    /// 5 per 10 minutes and 20 per day; a script filling the list with
+    /// made-up addresses gets no further from one address.
+    pub const WAIT_LIST: Self = Self {
+        per_ten_minutes: 5,
+        per_day: 20,
+    };
 }
 
 /// Sliding windows of joins per address hash.

@@ -659,8 +659,6 @@ pub enum EmptyStrips {
 /// `(order, id)` so peers appending at once still agree, and the
 /// sweep at each level deletes only entries this machine owns. Salt
 /// `0` has no id space, so nothing is projected or merged there.
-/// Device-local tiles ([`TileContent::is_device_local`]) are never
-/// published.
 ///
 /// # Errors
 ///
@@ -705,13 +703,10 @@ pub fn project_owned_contents(
         let owns_strip = mine(strip.id.raw());
         // A peer's strip is still walked: a window we opened into it
         // is ours to publish even though the row isn't.
-        let has_owned = strip.window_groups.iter().any(|g| {
-            g.tabs.iter().any(|t| !t.tile.is_device_local())
-                && (mine(g.id)
-                    || g.tabs
-                        .iter()
-                        .any(|t| !t.tile.is_device_local() && mine(t.id)))
-        });
+        let has_owned = strip
+            .window_groups
+            .iter()
+            .any(|g| !g.tabs.is_empty() && (mine(g.id) || g.tabs.iter().any(|t| mine(t.id))));
         if !owns_strip && !has_owned {
             continue;
         }
@@ -805,14 +800,11 @@ fn project_owned_groups_in(
     let groups_all = or_created(groups_all, &groups_id);
     let mut live_groups: HashSet<String> = HashSet::new();
     for (gi, group) in strip.window_groups.iter().enumerate() {
-        if group.tabs.iter().all(|tab| tab.tile.is_device_local()) {
+        if group.tabs.is_empty() {
             continue;
         }
         let owns_group = mine(group.id);
-        let has_owned_tabs = group
-            .tabs
-            .iter()
-            .any(|t| !t.tile.is_device_local() && mine(t.id));
+        let has_owned_tabs = group.tabs.iter().any(|t| mine(t.id));
         if !owns_group && !has_owned_tabs {
             continue;
         }
@@ -875,7 +867,7 @@ fn project_owned_tabs_in(
     let tabs_all = or_created(tabs_all, &tabs_id);
     let mut live_tabs: HashSet<String> = HashSet::new();
     for (ti, tab) in group.tabs.iter().enumerate() {
-        if tab.tile.is_device_local() || !mine(tab.id) {
+        if !mine(tab.id) {
             continue;
         }
         let tkey = contents_key(tab.id);

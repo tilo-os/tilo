@@ -835,6 +835,21 @@ pub mod __private {
         }
     }
 
+    /// The byte argument `name` taken from `args`, decoded by `decode`
+    /// ([`crate::content::bytes`]): inline, or by a content reference.
+    ///
+    /// # Errors
+    /// Why the argument is missing or not bytes.
+    pub fn bytes_arg<T>(
+        args: &mut serde_json::Map<String, serde_json::Value>,
+        name: &'static str,
+        decode: fn(serde_json::Value) -> Result<T, serde_json::Error>,
+    ) -> Result<T, serde_json::Error> {
+        use serde::de::Error as _;
+        args.remove(name)
+            .map_or_else(|| Err(serde_json::Error::missing_field(name)), decode)
+    }
+
     /// The action name and arguments of an action's JSON form
     /// (`{"action": .., "args": ..}`, the arguments `null` when absent).
     ///
@@ -906,5 +921,4 @@ pub mod __private {
     }
 }
 
-/// Bounded observations of named scopes on this thread.
 pub mod profiling;

@@ -220,6 +220,8 @@ fn list_row(row: &Row, engine: &str) -> Suggestion {
             }),
         ),
         RowKind::Suggestion => (Icon::Search, None),
+        // Which extension it goes to.
+        RowKind::Extension => (Icon::Box, Some(row.detail.clone())),
     };
     let suggestion = Suggestion::labelled(row.url.clone(), row.title.clone()).with_icon(icon);
     match subtitle.filter(|line| !line.is_empty()) {
@@ -238,7 +240,7 @@ fn row_key(row: &Row) -> String {
 
 fn describe(row: &Row) -> String {
     match row.kind {
-        RowKind::History => row.detail.clone(),
+        RowKind::History | RowKind::Extension => row.detail.clone(),
         RowKind::Go => format!("Open {}", row.detail),
         RowKind::Search | RowKind::Suggestion => format!("Search for {}", row.title),
     }
@@ -384,6 +386,10 @@ impl Widget for AddressSuggestions {
             .collect()
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        self.items.is_empty()
+    }
+
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -417,7 +423,7 @@ impl Widget for AddressSuggestions {
                 .with_name("Address suggestions")
                 .with_bounds(self.get_rect())
                 .with_state(AccessState {
-                    hidden: self.items.is_empty(),
+                    hidden: self.accessibility_hidden(),
                     expanded: Some(!self.items.is_empty()),
                     ..Default::default()
                 })

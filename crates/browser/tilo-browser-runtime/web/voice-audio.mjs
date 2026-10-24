@@ -22,6 +22,9 @@ const PUBLISHER_ID = /^[0-9a-f]{64}$/;
 // [20 ms, 160 ms] -- low mouth-to-ear delay on good links, fewer late-frame
 // gaps on jittery ones (see voice-audio-worklet.mjs).
 const PLAYOUT_JITTER = Object.freeze({adaptive: true, initial: 1_920, min: 960, max: 7_680});
+/** A microphone that ends again this soon after it was picked up again is
+ * lost, not picked up once more. */
+const RECOVERY_SPACING_MS = 2_000;
 
 const encoderConfig = Object.freeze({
   codec: CODEC,
@@ -193,7 +196,12 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
 
   return {
     capabilities,
-    async start({inputId, muted = true, onFrame, onLevels = () => {}, onError = () => {}, signal} = {}) {
+    /**
+     * `onCaptureLost(error)`: the microphone went away and no other could
+     * take its place; capture is off, playback goes on. `onInputChanged(id)`:
+     * capture moved to another microphone (`undefined`: the default).
+     */
+    async start({inputId, muted = true, onFrame, onLevels = () => {}, onError = () => {}, onCaptureLost = () => {}, onInputChanged = () => {}, signal} = {}) {
       if (typeof onFrame !== 'function') throw new TypeError('onFrame must be a function');
       if (signal?.aborted) throw abortError(signal);
       if (['AudioEncoder', 'AudioDecoder', 'AudioData', 'EncodedAudioChunk'].some(name => typeof environment[name] !== 'function')) {
@@ -211,6 +219,8 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
       let currentTrackCleanup;
       let source;
       let worklet;
+      /** The gain between playout and the speakers: zero while deafened. */
+      let output;
       let worker;
       let stopped = false;
       let captureMuted = Boolean(muted);
@@ -290,6 +300,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
             timestamp: message.timestamp,
             duration: message.duration,
             reservedSamples: message.reservedSamples ?? message.duration,
+            gain: publisher.gain,
           }, [message.samples]);
           return;
         }
@@ -370,6 +381,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         publishers.clear();
         detachInput();
         worklet?.disconnect();
+        output?.disconnect();
         worklet?.port.close?.();
         worker?.terminate();
         try { contextClosePromise = Promise.resolve(context.close()); }
@@ -410,11 +422,13 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         const handleTrackEnded = () => {
           if (stopped || currentStream !== stream) return;
           selectionGeneration++;
+          const wasCapturing = !captureMuted;
           captureMuted = true;
           captureGeneration++;
           postCaptureState('muted', true);
           detachInput();
-          report({type: 'error', stage: 'capture-track-ended', error: 'Audio input track ended'});
+          report({type: 'capture-lost', stage: 'capture-track-ended', error: 'Audio input track ended'});
+          if (wasCapturing) void recoverInput();
         };
         const handleTrackMute = () => {
           if (stopped || currentStream !== stream) return;
@@ -467,6 +481,31 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         }).catch(() => {});
         return operation;
       };
+      /** The microphone that was capturing went away (unplugged, taken by
+       * the system): capture goes on from the browser's default microphone,
+       * the one left. Without one, or again within moments, the microphone
+       * is lost (`onCaptureLost`) and capture stays off; the call does not
+       * end over it. */
+      let recoveredAt = -Infinity;
+      const recoverInput = async () => {
+        const at = performance.now();
+        const again = at - recoveredAt < RECOVERY_SPACING_MS;
+        recoveredAt = at;
+        try {
+          if (again) throw new DOMException('Audio input keeps ending', 'NotFoundError');
+          if (selectedInputId !== undefined) {
+            selectedInputId = undefined;
+            try { onInputChanged(undefined); } catch {}
+          }
+          await beginUnmute();
+        } catch (error) {
+          if (stopped) return;
+          report({type: 'capture-lost', stage: 'capture-recovery', error: error?.message ?? String(error)});
+          try { onCaptureLost(error); } catch {}
+          return;
+        }
+        if (!stopped && !captureMuted) report({type: 'capture-recovered', stage: 'capture-input'});
+      };
 
       abortListener = () => {
         rejectAbort(abortError(signal));
@@ -493,7 +532,11 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
         });
         worklet.port.addEventListener('message', handleWorkletMessage);
         worklet.port.start?.();
-        worklet.connect(context.destination);
+        // Deafening silences what reaches the speakers while playout runs
+        // on, so undeafening plays the call as it is then, not a backlog.
+        output = context.createGain();
+        worklet.connect(output);
+        output.connect(context.destination);
         worklet.addEventListener?.('processorerror', event => {
           if (stopped) return;
           report({type: 'error', stage: 'audio-worklet', error: event.error?.message ?? 'Audio worklet processor failed'});
@@ -540,7 +583,8 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
             }
             return attachInput(requestedInputId);
           },
-          play({publisherId, timestamp, duration, payload}) {
+          /** `gain` is how loud this device plays the publisher (0 to 2). */
+          play({publisherId, timestamp, duration, payload, gain = 1}) {
             if (stopped) return false;
             if (!PUBLISHER_ID.test(publisherId)
               || typeof timestamp !== 'bigint'
@@ -569,6 +613,7 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
               return false;
             }
             publisher.reservedSamples += duration;
+            publisher.gain = gain;
             const bytes = payload.slice();
             try {
               worker.postMessage({
@@ -594,6 +639,12 @@ export function createBrowserAudio({environment = globalThis, onReport = () => {
             await context.setSinkId(sinkId ?? '');
             return true;
           },
+          /** Play nothing of the call (`true`), or play it again. */
+          setDeafened(value) {
+            if (stopped || !output) return;
+            output.gain.value = value ? 0 : 1;
+          },
+          get deafened() { return output?.gain.value === 0; },
           get captureActive() { return !stopped && !captureMuted && Boolean(currentStream); },
           get muted() { return captureMuted; },
           get inputId() { return selectedInputId; },

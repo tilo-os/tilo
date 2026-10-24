@@ -211,7 +211,12 @@ class ShippedBudgets(unittest.TestCase):
             self.assertIn(f"os-image-{arch}", size["needs"])
             self.assertIn(f"tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/image/oci",
                           size["run"])
-            self.assertIn(f"os-image-size-{arch}", checks[f"nightly-os-image-{arch}"]["needs"])
+            self.assertIn(f"os-image-size-{arch}", checks[f"os-acceptance-{arch}"]["needs"])
+            release = checks[f"os-release-image-size-{arch}"]
+            self.assertIn(f"os-release-image-{arch}", release["needs"])
+            self.assertIn(f"tools/ci/os/image-size.sh production-{arch} /target/os/{arch}/release-image/oci",
+                          release["run"])
+            self.assertIn(f"os-release-image-size-{arch}", checks[f"os-release-seal-{arch}"]["needs"])
         for board in boards:
             size = checks[f"os-board-size-{board}"]
             self.assertIn(f"os-board-{board}", size["needs"])

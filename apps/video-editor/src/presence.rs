@@ -179,7 +179,7 @@ const FACETS: usize = 2;
 
 /// Publishes the local participant's place in the edit, one frame at a time.
 ///
-/// [`ui::widget::Widget::presence_payload`] hands the host a *single*
+/// [`PublishesPresence::presence_payload`](ui::presence::capability::PublishesPresence::presence_payload) hands the host a *single*
 /// key-and-payload per poll, and the host broadcasts it only when it differs
 /// from the last one — which is the right contract for a text caret and an
 /// awkward one here, because this editor has two things to say at once: where

@@ -468,6 +468,289 @@ fn the_file_chooser_sheet_goes_on_the_window_its_handle_names() {
     crate::compositor::window_handles::forget(0xdead_0000_0001);
 }
 
+/// Escape takes the chooser down as Cancel does, also when the window that
+/// asked is the only one, which shows no focus accent.
+#[test]
+fn escape_cancels_the_file_chooser_of_a_lone_window() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let mut tree = app_tree();
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .retain(|group| group.id == ON_MONITOR);
+    let (mut desk, pickers) = Desk::with_queue(tree);
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let mut answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    assert!(
+        matches!(
+            desk.fb.host().file_picker_place(),
+            PickerPlace::Window { focused: true, .. }
+        ),
+        "the lone window that asked is the one in use"
+    );
+    for pressed in [true, false] {
+        desk.dispatch(&crate::shell::test_control::keyboard_input_event(
+            &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
+            pressed,
+        ));
+    }
+    let _ = desk.fb.host_mut().pump_file_picker();
+    desk.settle();
+    assert!(desk.fb.host().file_picker().is_none(), "Escape closed it");
+    assert_eq!(
+        answer.try_recv().ok(),
+        Some(None),
+        "and the app hears it was cancelled"
+    );
+}
+
+/// A second window on the asking window's display, so the pointer reaching
+/// it does not move the display in use.
+const BESIDE: GroupId = id(1005);
+
+/// A chooser up on the focused window that asked, with [`BESIDE`] showing
+/// on the same display: the desk, the request's answer, the waiting
+/// window, and a point on `BESIDE` clear of the sheet and that window.
+fn chooser_beside_another_window() -> (
+    Desk,
+    tempfile::TempDir,
+    tokio::sync::oneshot::Receiver<Option<Vec<std::path::PathBuf>>>,
+    Rect,
+    Point,
+) {
+    use crate::shell::file_picker_overlay::PickerPlace;
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let mut tree = app_tree();
+    let mut beside = group(BESIDE);
+    beside.tabs[0].tile = TileContent::Foreign {
+        app_id: "org.tilo.other".into(),
+        surface_id: tab_of(BESIDE),
+    };
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .push(beside);
+    tree.desktop.outputs.home.insert(BESIDE, MONITOR_KEY.into());
+    let (mut desk, pickers) = Desk::with_queue(tree);
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    let PickerPlace::Window {
+        window,
+        display,
+        focused: true,
+        ..
+    } = desk.fb.host().file_picker_place()
+    else {
+        panic!("the sheet is on the focused window that asked");
+    };
+    let other = desk
+        .fb
+        .host()
+        .active_tile_rect(BESIDE)
+        .expect("the other window is laid out")
+        .intersect(display);
+    assert!(other.area() > 0.0, "the other window shows on that display");
+    let other = other.center();
+    assert!(!window.contains(other), "the other window is elsewhere");
+    assert!(!desk.sheet().contains(other), "and clear of the sheet");
+    (desk, folder, answer, window, other)
+}
+
+/// With the window that asked focused, its sheet types, but the pointer
+/// over another window is that window's, as with no chooser up: the
+/// press that moves focus there reaches its app. The waiting window and
+/// the sheet still take the pointer.
+#[test]
+fn a_click_on_another_window_reaches_it_while_the_asking_window_has_the_keys() {
+    use crate::shell::input_policy::{
+        chrome_captures_input, chrome_captures_pointer, chrome_captures_touch_at,
+    };
+
+    let (mut desk, _folder, _answer, window, other) = chooser_beside_another_window();
+    desk.dispatch(&ui::synthetic_input::cursor_moved(other.x, other.y));
+    assert!(
+        chrome_captures_input(&desk.fb),
+        "the keys stay with the sheet"
+    );
+    assert!(
+        !chrome_captures_pointer(&desk.fb),
+        "the pointer over another window is that window's"
+    );
+    assert!(
+        !chrome_captures_touch_at(&desk.fb, other),
+        "and so is a finger landing there"
+    );
+
+    let centre = window.center();
+    desk.dispatch(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
+    assert!(
+        chrome_captures_pointer(&desk.fb),
+        "the waiting window stays closed to the pointer"
+    );
+    assert!(chrome_captures_touch_at(&desk.fb, desk.sheet().center()));
+}
+
+/// Input from another device follows the same decision as local input: a
+/// click on another window reaches it while the chooser waits on the
+/// focused window that asked, the waiting window stays closed to it, and
+/// no key from that device gets past the sheet.
+#[test]
+fn a_click_from_another_device_reaches_another_window_while_a_chooser_waits() {
+    use crate::network::input_firewall::{Denial, RemoteInputFirewall, ShellView};
+    use crate::network::streaming::InputEvent;
+    use crate::shell::input_policy::{foreign_tiles, input_capture};
+
+    const PEER: crate::network::protocol::PeerId = 9;
+    let (desk, _folder, _answer, _window, other) = chooser_beside_another_window();
+    let tiles = {
+        let chrome = desk.fb.chrome();
+        let tree = chrome.tree();
+        foreign_tiles(&tree, desk.fb.host())
+    };
+    let tile = |group: GroupId| {
+        tiles
+            .iter()
+            .find(|hit| hit.group == group)
+            .map(|hit| (hit.surface_id, hit.rect))
+            .expect("laid out")
+    };
+    let (asking, asking_rect) = tile(ON_MONITOR);
+    let (beside, beside_rect) = tile(BESIDE);
+    let mut firewall = RemoteInputFirewall::new();
+    firewall.publish_view(ShellView::new(
+        tiles.iter().map(|hit| (hit.surface_id, hit.rect)).collect(),
+        Some(asking),
+        input_capture(&desk.fb),
+        false,
+    ));
+    let now = std::time::Instant::now();
+
+    let press = InputEvent::PointerButton {
+        button: 0x110,
+        pressed: true,
+    };
+    let at = (other.x - beside_rect.x0, other.y - beside_rect.y0);
+    assert_eq!(
+        firewall.review(
+            PEER,
+            beside,
+            &InputEvent::PointerMotion { x: at.0, y: at.1 },
+            now
+        ),
+        Ok(InputEvent::PointerMotion {
+            x: other.x,
+            y: other.y
+        }),
+        "the pointer from another device reaches the other window"
+    );
+    assert_eq!(
+        firewall.review(PEER, beside, &press, now),
+        Ok(press.clone()),
+        "and so does its click"
+    );
+
+    let centre = (asking_rect.width() / 2.0, asking_rect.height() / 2.0);
+    assert_eq!(
+        firewall.review(
+            PEER,
+            asking,
+            &InputEvent::PointerMotion {
+                x: centre.0,
+                y: centre.1
+            },
+            now
+        ),
+        Err(Denial::Occluded),
+        "the waiting window stays closed to it"
+    );
+    assert_eq!(
+        firewall.review(
+            PEER,
+            asking,
+            &InputEvent::Key {
+                keysym: 30,
+                pressed: true,
+                modifiers: 0
+            },
+            now
+        ),
+        Err(Denial::FocusMuted),
+        "keys from another device do not get past the sheet"
+    );
+}
+
+/// While another window has the keyboard, the compositor lets its keys
+/// and its pointer through to that window; the chooser holds the keyboard
+/// only while the window that asked is focused, and the pointer only over
+/// that window and its sheet. A chooser held back every key wherever the
+/// person had gone, and ignored them itself.
+#[test]
+fn a_file_chooser_holds_back_input_only_for_the_window_it_blocks() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+    use crate::shell::input_policy::{chrome_captures_input, chrome_captures_touch_at};
+
+    let folder = tempfile::tempdir().expect("tempdir");
+    let (mut desk, pickers) = Desk::with_queue(app_tree());
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let _answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    assert!(
+        chrome_captures_input(&desk.fb),
+        "the asking window is focused: its sheet has the keys"
+    );
+
+    let other = desk.display(0).center();
+    desk.click(other);
+    let PickerPlace::Window {
+        window,
+        focused: false,
+        ..
+    } = desk.fb.host().file_picker_place()
+    else {
+        panic!("the other window took the keyboard");
+    };
+    assert!(
+        !chrome_captures_input(&desk.fb),
+        "the focused window gets its keys while the sheet waits on another"
+    );
+    assert!(
+        !chrome_captures_touch_at(&desk.fb, other),
+        "and the pointer over it"
+    );
+    assert!(
+        chrome_captures_touch_at(&desk.fb, window.center()),
+        "the waiting window stays closed to the pointer"
+    );
+    assert!(
+        chrome_captures_touch_at(&desk.fb, desk.sheet().center()),
+        "and its sheet takes it"
+    );
+
+    desk.click(window.center());
+    assert!(
+        chrome_captures_input(&desk.fb),
+        "a click back on the waiting window gives its sheet the keys again"
+    );
+}
+
 /// The sheet closes only its own window to input: the other window takes
 /// a click and the keys that follow, the sheet's name field stays as it
 /// was, and a click back on the waiting window gives the sheet the keys.

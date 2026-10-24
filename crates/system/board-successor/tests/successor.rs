@@ -57,7 +57,7 @@ fn documents() -> (Value, Value, String) {
                                "firmwareManifestSha256": "d".repeat(64)},
         "resolvedDependencies": [{"uri": format!("git+ssh://code.tilo.so/tilo/tilo@{}", source())},
                                  {"uri": format!("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64))}]},
-        "runDetails": {"builder": {"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
+        "runDetails": {"builder": {"id": "https://code.tilo.so/tilo/t/os-release-v1"},
                        "byproducts": [{"name": "independent-rebuild",
                                        "uri": "urn:tilo:verification:manifest-digest-equal"}]}});
     let freshness = json!({"schema": FRESHNESS, "repository": REPOSITORY,

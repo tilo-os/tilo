@@ -14,8 +14,9 @@ use std::sync::Arc;
 
 use vello::kurbo::Rect;
 
-use super::{NodeId, TreeChildState, TreeModel, TreeMove, TreeRowKey, TreeView};
+use super::{NodeId, TreeModel, TreeMove, TreeRowKey, TreeView};
 use crate::a11y::{AccessNode, AccessState, Role};
+use crate::arriving::Arrival;
 use crate::widget::Widget;
 
 /// The rows the last walk kept, and what every one of them shared.
@@ -254,7 +255,7 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         rows
     }
 
-    /// The node rows [`Self::access_rows`] built rather than kept, since the
+    /// The node rows `Self::access_rows` built rather than kept, since the
     /// tree was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn access_row_builds_for_test(&self) -> usize {
@@ -398,15 +399,17 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
                 self.selection.is_selected(&id),
             ),
             TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index) {
-                TreeChildState::Ready(_) => return None,
-                TreeChildState::Loading => (
-                    delegate_label.unwrap_or_else(|| "Loading".to_owned()),
+                Arrival::Ready(_) => return None,
+                Arrival::Pending { .. } => (
+                    delegate_label.unwrap_or_else(|| {
+                        crate::i18n::I18nManager::lookup_plain("arriving-loading")
+                    }),
                     None,
                     true,
                     false,
                     false,
                 ),
-                TreeChildState::Error { message } => {
+                Arrival::Failed(message) => {
                     let label = delegate_label.unwrap_or_else(|| {
                         format!("{}. Activate to retry", message.unwrap_or("Could not load"))
                     });

@@ -674,10 +674,10 @@ def _judge_cpu_and_input(name, st, b, timed_input) -> tuple[list[str], list[str]
 
 
 def _judge_instant(name, st, b) -> tuple[list[str], list[str]]:
-    """(problems, unobservable) for a keyboard overview toggle, which by design lands
-    in its end state on the first frame instead of fading: no compositor transition
-    frame run, a prompt first frame, no CPU stall. Other paints in the window (a
-    client's frame, the cursor) are not the overview's and are not counted."""
+    """(problems, unobservable) for a change that by design lands in its end state on
+    the first frame (a keyboard overview toggle, a workspace switch): no compositor
+    transition frame run, a prompt first frame, no CPU stall. Other paints in the
+    window (a client's frame, the cursor) are not the change's and are not counted."""
     problems, unseen = [], []
     if not st["settled"]:
         unseen.append(f"{name}: the compositor kept asking for frames for {TRANSITION_TIMEOUT_S} s")
@@ -687,7 +687,7 @@ def _judge_instant(name, st, b) -> tuple[list[str], list[str]]:
                       "(paint_reasons); the installed compositor predates it")
     elif st["transition_frames"]:
         problems.append(f"{name}: {st['transition_frames']} frames painted for a transition's frame "
-                        "run; the keyboard toggle must arrive on its first frame, without the fade")
+                        "run; it must arrive on its first frame, without a run of frames")
     p, u = _judge_cpu_and_input(name, st, b, True)
     return problems + p, unseen + u
 
@@ -727,8 +727,9 @@ def _judge(name, st, b, hardware, software=False, timed_input=True) -> tuple[lis
 def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: bool) -> list[str]:
     """Problems in the compositor's own `WORKSPACE-SWITCH` timing of `expected` switches.
 
-    Everywhere: one line per switch, and a frame run rather than a jump. On real display
-    hardware also the first frame shown and the intervals without a new frame. A virtual
+    Everywhere: one line per switch. A switch draws the other workspace in one frame, so
+    it is not judged by how many frames it ran. On real display hardware also the first
+    frame shown and the intervals without a new frame. A virtual
     display presents on its own timer and holds frames back, so there its times are only
     recorded; the trace-based judgement above takes the display's waits out instead."""
     if len(switches) != expected:
@@ -736,9 +737,6 @@ def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: b
     problems = []
     for index, switch in enumerate(switches, 1):
         name = f"switch {index}"
-        if switch["frames"] < b["animation_min_frames"]:
-            problems.append(f"{name}: {switch['frames']} frames in the switch's frame run "
-                            f"(want >= {b['animation_min_frames']})")
         if not hardware:
             continue
         first = switch["first_shown_us"] / 1000
@@ -750,8 +748,9 @@ def judge_switch_lines(switches: list[dict], expected: int, b: dict, hardware: b
     return problems
 
 
-@check("W16", AREA, "Animations are paced: overview and workspace transitions paint many frames "
-                    "with no stalls, and the keyboard overview arrives at once", needs=("workspaces",))
+@check("W16", AREA, "Animations are paced: the overview's transition paints many frames with no "
+                    "stalls; the keyboard overview and workspace switches arrive at once",
+       needs=("workspaces",))
 def animations(ctx, res):
     # The compositor's side is judged everywhere: frames painted per transition, their
     # lateness against its own deadlines, CPU per tick, input to first frame. On a
@@ -787,12 +786,12 @@ def animations(ctx, res):
     res.metrics["workspace_switch_lines"] = switches
     b = ctx.config["budgets"]
     problems, unseen = [], []
-    for name, timed_input in (("overview_open", False), ("overview_close", False),
-                              ("workspace_switch", True), ("workspace_back", True)):
-        p, u = _judge(name, res.metrics[name], b, hardware, software, timed_input)
+    for name in ("overview_open", "overview_close"):
+        p, u = _judge(name, res.metrics[name], b, hardware, software, False)
         problems += p
         unseen += u
-    for name in ("overview_key_open", "overview_key_close"):
+    # A workspace switch swaps the desktop in one frame; nothing of it moves after.
+    for name in ("overview_key_open", "overview_key_close", "workspace_switch", "workspace_back"):
         p, u = _judge_instant(name, res.metrics[name], b)
         problems += p
         unseen += u

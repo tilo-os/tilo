@@ -408,6 +408,8 @@ qs-bluetooth-device-paired-a11y = Gekoppelt; zum Verbinden aktivieren
 
 # Schnelleinstellungen: VPN
 qs-vpn-empty = Keine VPN-Profile. Füge eines in den Einstellungen hinzu.
+qs-device-vpn-through = Über { $device }
+qs-device-vpn-unnamed = dein anderes Gerät
 
 # Fehler der Schnelleinstellungen als Benachrichtigungen
 qs-action-failed-refreshing = { $error }. Der aktuelle Gerätezustand wird aktualisiert.
@@ -434,6 +436,7 @@ portal-shortcut-duplicate = In dieser Anfrage bereits vergeben. Wähle ein ander
 portal-shortcut-taken = Bereits von { $app } verwendet. Wähle ein anderes Tastenkürzel.
 portal-shortcut-another-app = einer anderen App
 portal-auth-heading = Administratorzugriff
+portal-auth-as = Als { $user }
 portal-auth-ended = Die Authentifizierung wurde unerwartet beendet.
 portal-auth-rejected = Dieses Passwort wurde nicht akzeptiert.
 portal-grant-title = { $app } möchte { $target } verwenden
@@ -548,6 +551,25 @@ topbar-clocks-notification-body = Die Zeit ist abgelaufen
 
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
+host-activity-workspace-not-shown = Wechsle zu diesem Arbeitsbereich, um seinen Verlauf zu ändern.
+host-activity-personal-only = Das kann nur die Person an diesem Gerät.
+host-activity-action-feed = Verlauf lesen
+host-activity-action-summary = Neues lesen
+host-activity-action-replay = Layout abspielen
+host-activity-action-detail = Änderungen lesen
+host-activity-action-focus = Lesen, was gezeigt werden soll
+host-activity-action-mark-viewed = Als gesehen markieren
+host-activity-action-focused = Melden, was gezeigt wurde
+host-activity-action-name = Änderungen benennen
+host-activity-action-split = Arbeitsgruppe teilen
+host-activity-action-merge = Arbeitsgruppen zusammenführen
+host-activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
+host-activity-action-undo = Änderungen rückgängig machen
+host-activity-action-restore = Auf den Stand davor zurücksetzen
+host-activity-action-undo-run = Agentenaufgabe rückgängig machen
+host-activity-action-open = Öffnen
+host-activity-action-choose-source = Morgenquelle wählen
+host-activity-action-source = Morgenquelle verwenden
 host-activity-working-in = Arbeitet in { $app }
 host-activity-editing = Bearbeitet gemeinsame Inhalte
 host-activity-organizing = Ordnet gemeinsame Inhalte
@@ -1111,6 +1133,8 @@ launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werde
 launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
+app-open-unavailable-title = Keine App zum Öffnen
+app-open-unavailable-body = { $app } wollte eine App öffnen, die weder auf diesem Computer noch im Store ist.
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
 # An app, or a process it started, that the system ended because memory ran out
@@ -1395,8 +1419,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = { $app } · enthält Ressourcen
-search-app-action-launches = { $resource } · { $app } · startet die Anwendung
+search-app-resource-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden
@@ -1521,6 +1544,9 @@ search-action-tab-split-right = Diesen Tab nach rechts teilen
 search-action-tab-split-right-subtitle = Den fokussierten Tab in eine neue Fenstergruppe neben der aktuellen verschieben
 search-action-tab-move-to-new-group = Diesen Tab in eine neue Gruppe verschieben
 search-action-tab-move-to-new-group-subtitle = Den fokussierten Tab in eine neue Fenstergruppe am Ende seiner Leiste verschieben
+search-action-tab-move-to-workspace = Diesen Tab in einen anderen Arbeitsbereich verschieben
+search-action-tab-move-to-workspace-subtitle = Den fokussierten Tab in einen anderen deiner Arbeitsbereiche verschieben
+search-action-tab-move-to-workspace-missing = Diesen Arbeitsbereich gibt es nicht.
 search-action-window-focus-previous = Vorheriges Fenster fokussieren
 search-action-window-focus-previous-subtitle = Den Fokus auf das Fenster links in der Leiste setzen
 search-action-window-focus-next = Nächstes Fenster fokussieren
@@ -1569,6 +1595,12 @@ search-action-tab-move-to-group-next = Diesen Tab in die rechte Gruppe verschieb
 search-action-tab-move-to-group-next-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe rechts verschieben
 search-action-notifications-dnd-toggle = Bitte nicht stören
 search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner zurückhalten, bis du wieder da bist
+search-action-notifications-open = Benachrichtigungen anzeigen
+search-action-notifications-open-subtitle = Verpasste Benachrichtigungen lesen, beantworten oder löschen
+search-action-notifications-clear = Alle Benachrichtigungen löschen
+search-action-notifications-clear-subtitle = Die Benachrichtigungsliste leeren; acht Sekunden lang kannst du sie zurückholen
+search-action-notifications-clear-undo = Gelöschte Benachrichtigungen zurückholen
+search-action-notifications-clear-undo-subtitle = Die eben gelöschten Benachrichtigungen in ihrer Reihenfolge wiederherstellen
 search-action-appearance-theme-dark = Dunkles Design
 search-action-appearance-theme-dark-subtitle = Dunkle Oberfläche und Apps
 search-action-appearance-theme-light = Helles Design
@@ -1793,6 +1825,13 @@ search-continuity-unlock-deny = { $device } gesperrt lassen (Code { $code })
 search-continuity-unlock-subtitle = Es wurde neu gestartet und möchte seine verschlüsselte Festplatte öffnen
 search-continuity-device-remove = { $device } aus deinen Geräten entfernen
 search-continuity-device-remove-subtitle = Es kann nicht mehr für dich handeln und seine Festplatte nicht mehr über deine Geräte entsperren
+search-continuity-vpn-through = Datenverkehr dieses Geräts über { $device } leiten
+search-continuity-vpn-stop = Datenverkehr nicht mehr über { $device } leiten
+search-continuity-vpn-subtitle = Deine Geräte als VPN
+search-continuity-vpn-exit-stop = { $device } die Verbindung dieses Geräts nicht mehr nutzen lassen
+search-continuity-vpn-exit-subtitle = Die Verbindung dieses Geräts mit deinen anderen Geräten teilen
+search-continuity-vpn-share = Die Verbindung dieses Geräts mit deinen anderen Geräten teilen
+search-continuity-vpn-unshare = Die Verbindung dieses Geräts nicht mehr teilen
 device-unlock-error-not-pending = Diese Entsperranfrage wartet nicht mehr
 device-unlock-error-cannot-remove = Dieses Gerät kann jenes Gerät nicht entfernen
 device-unlock-error-no-identity = Dieses Gerät hat deine Identität nicht
@@ -2311,6 +2350,9 @@ search-action-workspace-create = Arbeitsbereich erstellen
 search-action-workspace-create-subtitle = Einen neuen leeren Arbeitsbereich erstellen und dorthin wechseln
 search-action-workspace-create-default-name = Unbenannt
 search-action-workspace-create-invalid-name = Gib einen Namen mit 1 bis 120 Zeichen ohne Steuerzeichen ein.
+search-action-workspace-rename = Diesen Arbeitsbereich umbenennen
+search-action-workspace-rename-subtitle = Dem angezeigten Arbeitsbereich einen neuen Namen geben
+search-action-workspace-rename-refused = Nur wer diesen Arbeitsbereich leitet, kann ihn umbenennen.
 search-action-strip-create = Leiste erstellen
 search-action-strip-create-subtitle = Eine benannte Leiste zu diesem Arbeitsbereich hinzufügen und dorthin wechseln
 search-action-strip-create-default-name = Neue Leiste
@@ -3064,6 +3106,9 @@ search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, l
 search-kw-group-restore = wiederherstellen, verkleinern, normale größe, maximierung aufheben
 search-kw-tab-move-to-new-group = neue gruppe, lösen, abtrennen, tab abtrennen
 search-kw-notifications-dnd-toggle = nicht stören, bitte nicht stören, ruhemodus, benachrichtigungen aus, benachrichtigungen stumm, fokus, ruhig
+search-kw-notifications-open = benachrichtigungen, mitteilungen, benachrichtigungszentrale, verpasst, hinweise
+search-kw-notifications-clear = benachrichtigungen löschen, alle löschen, alle verwerfen, mitteilungen entfernen, benachrichtigungen leeren
+search-kw-notifications-clear-undo = löschen rückgängig, benachrichtigungen wiederherstellen, benachrichtigungen zurückholen
 search-kw-appearance-theme-dark = dunkelmodus, dunkles design, nachtmodus, dunkel, nachtdesign, dark mode
 search-kw-appearance-theme-light = hellmodus, helles design, tagmodus, hell, tagdesign, light mode
 search-kw-appearance-language = sprache, sprache wechseln, lokalisierung, deutsch, englisch, spracheinstellung
@@ -3096,6 +3141,10 @@ storage-full-body = Nur noch { $free } frei für { $volume }. Neue Dateien und �
 graphics-app-name = Grafik
 graphics-stopped-title = Die Grafik reagiert nicht mehr
 graphics-stopped-body = Alles funktioniert weiter, kann aber langsamer sein, bis du den Computer neu startest.
+crash-notice-app-name = Desktop
+crash-notice-title = Der Desktop wurde neu gestartet
+crash-notice-froze-body = Er reagierte um { $time } nicht mehr. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Bericht darüber bleibt auf diesem Computer.
 
 ## Desk widgets
 

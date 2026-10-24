@@ -1043,7 +1043,7 @@ pub struct AddArgs {
     #[arg(long)]
     pub key: Option<PathBuf>,
     /// Let the --ssh user run commands as root without a password
-    /// (/etc/sudoers.d/tilo-vm-<user> on the device, checked by visudo); sudo
+    /// (`/etc/sudoers.d/tilo-vm-<user>` on the device, checked by visudo); sudo
     /// asks for that user's password once, on this terminal.
     #[arg(long)]
     pub grant_sudo: bool,
@@ -1123,14 +1123,14 @@ pub enum ImageCommand {
         after_help = "Examples:\n  tilo-vm image build                  # target/tilo-vm/image, the dev image as an OCI layout\n  tilo-vm image build --disk           # and target/tilo-vm/disk.qcow2\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nOn another machine instead of here: run image build there in a synced copy of\nthe worktree (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) when it has no git),\nbring target/tilo-vm back, then:\n  tilo-vm vm upgrade --image target/tilo-vm/image\n  tilo-vm image disk                   # a disk from it, written here (where loop devices are)\n\nThe build is the one vm upgrade --from local runs: the production base is\nrebuilt only when its inputs changed, podman's layer cache and the builder\nstage's cargo cache skip unchanged steps, and a failed step reruns on its own.\nScratch goes to <out>-build (next to the output). tilo-vm guide images."
     )]
     Build {
-        /// Also write the dev disk, <out>/disk.qcow2.
+        /// Also write the dev disk, `<out>/disk.qcow2`.
         #[arg(long)]
         disk: bool,
         /// Output directory, relative to the worktree.
         #[arg(long, default_value = "target/tilo-vm")]
         out: std::path::PathBuf,
     },
-    /// Write the dev disk from an image image build left, without building: <layout dir>/../disk.qcow2.
+    /// Write the dev disk from an image image build left, without building: `<layout dir>/../disk.qcow2`.
     #[command(
         after_help = "Examples:\n  tilo-vm image disk                          # from target/tilo-vm/image\n  tilo-vm vm create dev --image target/tilo-vm/disk.qcow2\n\nFor an image built elsewhere, such as on another machine (tilo-vm image\nbuild --help): the layout goes into this host's podman storage as\nlocalhost/tilo-vm:latest and os/dev/build-image.sh (TILO_SKIP_BUILD=1) installs\nit to a disk, the disk step of the build itself. It needs passwordless sudo\n(loop device and mounts)."
     )]

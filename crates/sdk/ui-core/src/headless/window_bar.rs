@@ -16,6 +16,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::FrameHarness;
+#[cfg(test)]
 use crate::widget::tabs::TAB_BAR_HEIGHT;
 use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearch, WindowSearchRequest};
 
@@ -31,7 +32,7 @@ impl FrameHarness {
     /// Show the app as a desktop window shows it: its slots, search and
     /// History in the window's bar, its frame under the bar. The window
     /// keeps the size it had; the app gets the part under the bar, and a
-    /// capture ([`super::write_capture`]) names the whole window.
+    /// capture (`super::write_capture`) names the whole window.
     pub fn present_in_window_bar(&mut self) {
         self.invalidate_local();
         if self.window_bar {
@@ -264,7 +265,10 @@ impl FrameHarness {
     /// Press one of the app's own slots in the window's bar (a mode, an
     /// action, the sidebar toggle), as the desktop hands the press to the
     /// app. The press is a press on the app: it hands the app the keyboard
-    /// ([`Self::hand_keyboard_to_app`]), as in the native window.
+    /// (`Self::hand_keyboard_to_app`), as in the native window. What the
+    /// app asked of the host when its sync took the press (the Undo beside a
+    /// notice asks for an undo) is done and shown, as the live window's idle
+    /// service does after that sync.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
         let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
@@ -272,6 +276,9 @@ impl FrameHarness {
         if hands_keyboard {
             self.hand_keyboard_to_app();
         }
+        self.relayout();
+        self.host_tick();
+        self.invalidate_local();
         self.relayout();
     }
 
@@ -305,7 +312,12 @@ impl FrameHarness {
     /// The app's frame for a window of `viewport`: the part under the bar.
     pub(super) fn content_viewport(&self, viewport: (u32, u32)) -> (u32, u32) {
         if self.window_bar {
-            (viewport.0, viewport.1.saturating_sub(bar_height_px()))
+            (
+                viewport.0,
+                viewport
+                    .1
+                    .saturating_sub(self.window_bar_height_px(viewport.0)),
+            )
         } else {
             viewport
         }
@@ -339,7 +351,7 @@ impl FrameHarness {
     /// Where the app's frame starts in the window.
     fn frame_top(&self) -> f64 {
         if self.window_bar {
-            f64::from(bar_height_px())
+            f64::from(self.window_bar_height_px(self.viewport.0))
         } else {
             0.0
         }
@@ -373,11 +385,170 @@ impl FrameHarness {
         let mut bar = TabBar::new("headless-window", vec![tab], TAB);
         bar.set_window_controls(true);
         bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
-        bar.set_toolbar(TAB, crate::window_toolbar::declared());
+        bar.set_toolbar(TAB, crate::window_toolbar::shown());
         bar.set_history_control(TAB, self.window_history_control());
         bar.set_group_focused(true);
+        // The first layout gives the bar its width; the second measures a
+        // compact window's notice strip for it.
+        lay_out_bar(&mut bar, width, &self.theme);
         lay_out_bar(&mut bar, width, &self.theme);
         bar
+    }
+
+    /// The bar's height in whole logical pixels across a window `width`
+    /// wide: its row, and a compact window's notice strip under it.
+    pub(super) fn window_bar_height_px(&self, width: u32) -> u32 {
+        let height = self.window_bar(f64::from(width)).bar_height().ceil();
+        // A bar is a row or two and a strip tall, far inside `u32`.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the bar's height is a small positive layout length"
+        )]
+        let px = height.max(0.0) as u32;
+        px
+    }
+
+    /// The window's bar as the desktop draws it across a window `width`
+    /// wide, at rest, its labels measured as painted.
+    fn painted_window_bar(&mut self, width: f64) -> TabBar {
+        let _settled = crate::motion::testing::settled();
+        let mut bar = self.window_bar(width);
+        bar.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+        );
+        lay_out_bar(&mut bar, width, &self.theme);
+        bar
+    }
+
+    /// How the window's bar, as the desktop draws it across a window
+    /// `width` wide, shows the notice up (none: no notice is up).
+    #[must_use]
+    pub fn window_bar_notice(&mut self, width: f64) -> Option<WindowBarNotice> {
+        let bar = self.painted_window_bar(width);
+        let bar_height = bar.bar_height();
+        let row = bar.toolbar_row();
+        let toolbar = row.toolbar()?;
+        let slots = row.slots();
+        let plain_leading = slots
+            .leading
+            .iter()
+            .zip(&toolbar.leading)
+            .filter(|(rect, action)| !action.navigates && rect.area() > 0.0)
+            .count();
+        let beside = slots.actions.len() + plain_leading;
+        let buttons = |notice: &crate::window_toolbar::ToolbarNotice,
+                       rects: &[Rect],
+                       labelled: &dyn Fn(usize) -> bool| {
+            notice
+                .actions
+                .iter()
+                .zip(rects)
+                .enumerate()
+                .map(|(i, (action, rect))| WindowBarNoticeButton {
+                    name: action.name.clone(),
+                    bounds: *rect,
+                    labelled: labelled(i),
+                })
+                .collect()
+        };
+        // A compact window's notice, in its strip under the row.
+        if let Some((notice, text, whole, rects)) = row.strip_notice() {
+            return Some(WindowBarNotice {
+                text: notice.text.clone(),
+                text_bounds: text,
+                whole,
+                buttons: buttons(notice, &rects, &|_| true),
+                beside,
+                strip: Some(row.strip_rect()),
+                bar_height,
+            });
+        }
+        let notice = toolbar.notice.as_ref()?;
+        Some(WindowBarNotice {
+            text: notice.text.clone(),
+            whole: row.notice_whole().unwrap_or(false),
+            buttons: buttons(notice, &slots.notice, &|i| {
+                slots.notice_labelled.get(i).copied().unwrap_or(false)
+            }),
+            text_bounds: slots.location,
+            beside,
+            strip: None,
+            bar_height,
+        })
+    }
+
+    /// Click the notice's button `index` where the window's bar, as the
+    /// desktop draws it across a window `width` wide, puts it (in the
+    /// location's place, or in a compact window's strip), and hand the app
+    /// what the press runs, as [`Self::press_window_slot`] does.
+    ///
+    /// # Errors
+    /// When no notice with that button is up, or the press runs nothing.
+    pub fn click_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
+        let mut bar = self.painted_window_bar(width);
+        let at = self
+            .window_bar_notice(width)
+            .and_then(|notice| {
+                notice
+                    .buttons
+                    .get(index)
+                    .map(|button| button.bounds.center())
+            })
+            .ok_or_else(|| format!("no notice button {index} stands in the bar at {width} px"))?;
+        let row = bar.toolbar_row_mut();
+        if !(row.press(at) && row.release(at)) {
+            return Err(format!("the notice button {index} took no press at {at:?}"));
+        }
+        self.deliver_bar_events(&mut bar)
+    }
+
+    /// Run the notice's button `index` through its semantic action, as
+    /// assistive technology and automation do, on the window's bar as the
+    /// desktop draws it across a window `width` wide, and hand the app
+    /// what it runs, as [`Self::press_window_slot`] does.
+    ///
+    /// # Errors
+    /// When the bar lists no such button, or its action runs nothing.
+    pub fn invoke_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
+        fn targets(node: &crate::a11y::AccessNode, out: &mut Vec<String>) {
+            if let Some(target) = node.action_target.as_deref()
+                && target.starts_with(crate::widget::window_toolbar_row::NOTICE_TARGET_PREFIX)
+            {
+                out.push(target.to_owned());
+            }
+            for child in &node.children {
+                targets(child, out);
+            }
+        }
+        let mut bar = self.painted_window_bar(width);
+        let mut found = Vec::new();
+        if let Some(tree) = bar.accessibility() {
+            targets(&tree, &mut found);
+        }
+        let target = found
+            .get(index)
+            .ok_or_else(|| format!("the bar lists no notice button {index} at {width} px"))?;
+        if !bar.toolbar_row_mut().perform(target) {
+            return Err(format!("{target} ran nothing"));
+        }
+        self.deliver_bar_events(&mut bar)
+    }
+
+    /// Hand the app what was done in `bar`'s slots.
+    fn deliver_bar_events(&mut self, bar: &mut TabBar) -> Result<(), String> {
+        let events = bar.take_toolbar_events();
+        if events.is_empty() {
+            return Err("the bar ran nothing".into());
+        }
+        for (_, event) in events {
+            self.press_window_slot(event);
+        }
+        Ok(())
     }
 
     /// Paint the window's bar across the top of a `width`-wide window.
@@ -435,8 +606,44 @@ impl FrameHarness {
     }
 }
 
-/// The bar's height in whole logical pixels: one row, the slots in it.
-pub(super) fn bar_height_px() -> u32 {
+/// How the window's bar shows the notice up
+/// ([`FrameHarness::window_bar_notice`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowBarNotice {
+    /// What it says.
+    pub text: String,
+    /// Where its text stands, its kind's icon first.
+    pub text_bounds: Rect,
+    /// Its text stands whole, not cut short.
+    pub whole: bool,
+    /// Its buttons, in order, where they stand (none: it has none, or the
+    /// row has no room for its text).
+    pub buttons: Vec<WindowBarNoticeButton>,
+    /// How many of the app's actions and the leading actions that do not
+    /// move through the content stand in the row beside it, not in the
+    /// overflow menu: what yields to it.
+    pub beside: usize,
+    /// Its strip under the bar's row, where the window is compact (none:
+    /// it stands inline, in the location's place).
+    pub strip: Option<Rect>,
+    /// The whole bar's height, the strip included: where the app's frame
+    /// starts.
+    pub bar_height: f64,
+}
+
+/// The notice's button as the window's bar shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowBarNoticeButton {
+    pub name: String,
+    pub bounds: Rect,
+    /// It names itself, not only its icon.
+    pub labelled: bool,
+}
+
+/// The bar's height in whole logical pixels without a notice strip: one
+/// row, the slots in it.
+#[cfg(test)]
+fn bar_height_px() -> u32 {
     // A fixed layout constant, far inside `u32`.
     #[allow(
         clippy::cast_possible_truncation,
@@ -727,6 +934,206 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
+    /// A compact (420 px) window with a long title and no location: the
+    /// title takes the room the row leaves it, with no slots and beside one
+    /// trailing action alike, and is cut short only where none is left.
+    #[test]
+    fn a_compact_windows_long_title_takes_the_room_the_row_leaves_it() {
+        use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+        const TITLE: &str = "Video Player Library";
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            NamedApp,
+            (420, 800),
+            crate::theme::Theme::dark(),
+        );
+        // The location names it in the body style.
+        let style = harness.theme.text(crate::tokens::TextRole::Body);
+        let title_w = f64::from(harness.text.measure_style(TITLE, None, &style).0);
+        let one_action = WindowToolbar {
+            actions: vec![ToolbarAction::new("open", "folder-open", "Open")],
+            ..WindowToolbar::default()
+        };
+        for toolbar in [None, Some(one_action)] {
+            let mut tab = TabDescriptor::new(TAB, TITLE);
+            tab.app_kind = Some(crate::widget::AppKind::Files);
+            let mut bar = TabBar::new("headless-window", vec![tab], TAB);
+            bar.set_window_controls(true);
+            bar.set_search_control(Some(SEARCH_CONTROL_ROOM));
+            let slots = toolbar.is_some();
+            bar.set_toolbar(TAB, toolbar);
+            // Painting measures the title; the layout after it sizes it.
+            for _ in 0..2 {
+                lay_out_bar(&mut bar, 420.0, &harness.theme);
+                bar.draw(
+                    &mut Scene::new(),
+                    Affine::IDENTITY,
+                    &mut harness.text,
+                    &harness.theme,
+                    &harness.presence,
+                );
+            }
+            if slots {
+                let row = bar.toolbar_row();
+                let location = row.slots().location;
+                assert_eq!(
+                    row.toolbar()
+                        .and_then(|toolbar| toolbar.location.as_ref())
+                        .map(|location| location.label.as_str()),
+                    Some(TITLE),
+                    "the title stands in the location's place"
+                );
+                assert!(
+                    location.width() >= title_w,
+                    "beside one action the title stands whole: {location:?}, {title_w} px"
+                );
+                assert_eq!(row.slots().actions.len(), 1, "and the action beside it");
+            } else {
+                assert_eq!(
+                    bar.visible_title(0, &mut harness.text, &harness.theme)
+                        .as_deref(),
+                    Some(TITLE),
+                    "with no slots the title stands whole"
+                );
+            }
+        }
+    }
+
+    /// A compact window's notice has a strip of its own under the bar's
+    /// row: its whole text and its actions as buttons that name themselves,
+    /// the row standing as it does without a notice, and the app's frame
+    /// moved down by the strip until the notice goes, then back. A wide
+    /// window's notice stands inline, with no strip. Either button reaches
+    /// the app, by pointer and by its semantic action, at either width.
+    #[test]
+    fn a_compact_windows_notice_has_its_own_strip_and_a_wide_ones_stands_inline() {
+        use crate::widget::toast::ToastKind;
+        use crate::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNotice, WindowToolbar};
+        let _hosted = HostedReset;
+        let mut harness = FrameHarness::for_app(
+            crate::State::new(),
+            NamedApp,
+            (420, 800),
+            crate::theme::Theme::dark(),
+        );
+        harness.present_in_window_bar();
+        crate::window_toolbar::declare(Some(WindowToolbar {
+            sidebar: Some(false),
+            location: Some(ToolbarLocation {
+                label: "Launch checklist".into(),
+                ..ToolbarLocation::default()
+            }),
+            actions: vec![
+                ToolbarAction::new("share", "share", "Share"),
+                ToolbarAction::new("pin", "pin", "Pin"),
+            ],
+            ..WindowToolbar::default()
+        }));
+        let quiet = harness.content_viewport((420, 800)).1;
+        assert_eq!(quiet, 800 - bar_height_px(), "without a notice, one row");
+        let text = "Save failed: your disk is full, so the note was not written";
+        crate::window_toolbar::notify(Some(
+            ToolbarNotice::new(text, ToastKind::Error)
+                .action(ToolbarAction::new(
+                    "save-status-retry",
+                    "rotate-cw",
+                    "Try again",
+                ))
+                .action(ToolbarAction::new(
+                    "open-settings",
+                    "settings",
+                    "Open Settings",
+                )),
+        ));
+
+        let shown = harness.window_bar_notice(420.0).expect("the notice is up");
+        let strip = shown
+            .strip
+            .expect("a compact window gives the notice a strip");
+        assert_eq!(shown.text, text);
+        assert!(shown.whole, "its whole text stands: {shown:?}");
+        assert_eq!(
+            shown
+                .buttons
+                .iter()
+                .map(|button| button.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Try again", "Open Settings"],
+            "both stand in the strip, in order: {shown:?}"
+        );
+        for button in &shown.buttons {
+            assert!(
+                button.labelled
+                    && button.bounds.width() > crate::widget::window_controls::CONTROL_PX
+                    && strip.contains(button.bounds.center()),
+                "{} names itself in the strip: {shown:?}",
+                button.name
+            );
+        }
+        assert!(
+            (strip.y0 - TAB_BAR_HEIGHT).abs() < 0.5 && (shown.bar_height - strip.y1).abs() < 0.5,
+            "the strip stands under the row, in the bar: {shown:?}"
+        );
+        let bar = harness.window_bar(420.0);
+        let row = bar.toolbar_row();
+        assert_eq!(
+            row.toolbar()
+                .and_then(|toolbar| toolbar.location.as_ref())
+                .map(|location| location.label.as_str()),
+            Some("Launch checklist"),
+            "the row stands as it does without a notice"
+        );
+        assert!(row.slots().notice.is_empty());
+        let pushed = harness.content_viewport((420, 800)).1;
+        assert!(
+            f64::from(quiet - pushed) >= strip.height() - 1.0,
+            "the app's frame moves down by the strip: {quiet} to {pushed}"
+        );
+
+        let wide = harness.window_bar_notice(1280.0).expect("the notice is up");
+        assert!(wide.strip.is_none(), "a wide window's notice stands inline");
+        assert!(
+            wide.whole
+                && wide.buttons.len() == 2
+                && wide.buttons.iter().all(|button| button.labelled),
+            "with Try again and Open Settings named after it: {wide:?}"
+        );
+        for (width, index, id) in [
+            (420.0, 0, "save-status-retry"),
+            (420.0, 1, "open-settings"),
+            (1280.0, 0, "save-status-retry"),
+            (1280.0, 1, "open-settings"),
+        ] {
+            harness
+                .click_window_notice_action(width, index)
+                .unwrap_or_else(|why| panic!("{id} at {width} px: {why}"));
+            assert!(
+                crate::window_toolbar::take_notice_press(id),
+                "a click on {id} reaches the app at {width} px"
+            );
+            harness
+                .invoke_window_notice_action(width, index)
+                .unwrap_or_else(|why| panic!("{id} at {width} px: {why}"));
+            assert!(
+                crate::window_toolbar::take_notice_press(id),
+                "{id}'s semantic action reaches the app at {width} px"
+            );
+        }
+        assert_eq!(
+            harness.content_viewport((1280, 800)).1,
+            800 - bar_height_px()
+        );
+
+        crate::window_toolbar::notify(None);
+        assert_eq!(
+            harness.content_viewport((420, 800)).1,
+            quiet,
+            "the app's frame moves back up once the notice goes"
+        );
+        crate::window_toolbar::declare(None);
+    }
+
     /// The 1st of the calendar's weeks across a month: Mon, Jun 29 to
     /// Sun, Jul 5, 2026.
     fn week_across_a_month() -> crate::format::Period {
@@ -760,7 +1167,7 @@ mod tests {
                 leading: vec![
                     ToolbarAction::new("previous", "chevron-left", "Previous week").navigating(),
                     ToolbarAction::new("next", "chevron-right", "Next week").navigating(),
-                    ToolbarAction::new("today", "calendar", "Today"),
+                    ToolbarAction::new("today", "calendar", "Today").labelled(),
                 ],
                 location: Some(ToolbarLocation::period(week_across_a_month())),
                 views: Some(ToolbarViews {

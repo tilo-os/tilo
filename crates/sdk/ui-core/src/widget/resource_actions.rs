@@ -389,6 +389,10 @@ impl Widget for ResourceActionHost {
         self.root.accessibility()
     }
 
+    fn accessibility_hidden(&self) -> bool {
+        self.root.accessibility_hidden()
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         self.root.synthetic_accessibility_rect(path)
     }

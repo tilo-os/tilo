@@ -3062,6 +3062,34 @@ fn detail_chips_cycle_into_the_crdt_and_the_exported_ics_file() {
     }
 }
 
+/// Every alert the editor offers is one the event keeps: the pick reaches the
+/// document, not only the editor's own copy, which the next sync replaces.
+#[test]
+fn every_offered_alert_reaches_the_document() {
+    let mut app = CalendarApp::new_demo();
+    let mut state = demo_document(&app);
+    present(&mut app, &mut state, &automerge::ROOT);
+    let Some(Sel::Event(id)) = app.selection else {
+        panic!("event selected");
+    };
+    for (minutes, _) in editor::ALERTS {
+        pick(
+            &mut app,
+            &mut state,
+            |choices| &mut choices.alert,
+            &minutes.to_string(),
+        );
+        assert_eq!(
+            crate::resource::read_doc(&state)
+                .event(id)
+                .unwrap()
+                .reminder_min,
+            Some(minutes),
+            "the {minutes}-minute alert is kept"
+        );
+    }
+}
+
 // --- Export writes a real file ----------------------------------------
 
 // --- keyboard dispatch through the real handle_event -------------------

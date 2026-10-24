@@ -134,6 +134,12 @@ pub struct SettingsApp {
     /// page was opened from it.
     found_over: Option<NavPane>,
     value_follows: crate::setting::Follows,
+    /// The revision of the pages the panes drilled into
+    /// ([`crate::pages::PanePages`]) the content was last built for.
+    pages_seen: u64,
+    /// The password prompt a pane asked for, shown over the window
+    /// ([`crate::secrets`]).
+    secret: Option<crate::secrets::ShownPrompt>,
 }
 
 impl Default for SettingsApp {
@@ -195,6 +201,8 @@ impl SettingsApp {
             found_reads: Vec::new(),
             found_over: None,
             value_follows: crate::setting::Follows::default(),
+            pages_seen: 0,
+            secret: None,
         }
     }
 
@@ -284,6 +292,9 @@ impl SettingsApp {
         }
         if self.selected != category {
             self.selected = category;
+            // Another pane opens on its first page.
+            self.cx.pages().clear();
+            self.pages_seen = self.cx.pages().revision();
             self.structure_dirty = true;
             self.refresh_shell_children();
         }
@@ -433,6 +444,8 @@ impl SettingsApp {
                 tracing::warn!(%error, "the device's account file could not follow the person's accounts");
             }
         }
+        // One trail of pages for the window's header and every pane.
+        let cx = cx.with_pages(self.cx.pages().clone());
         self.areas = crate::area::Areas::of(&crate::area::AreaContext {
             cx: &cx,
             account_root: &self.account_root,
@@ -664,6 +677,10 @@ impl SettingsApp {
             &self.staged_filter,
             &self.sidebar_selection,
         );
+        // A page a pane drilled into has the shell's Back chip; Back leaves
+        // it for the page under it.
+        let can_go_back = self.cx.pages().clone();
+        let go_back = self.cx.pages().clone();
         let mut shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("settings.shell")
@@ -671,7 +688,13 @@ impl SettingsApp {
             .sidebar(nav)
             .sidebar_header("", Vec::new())
             .content(self.build_content())
-            .content_header(self.content_title(), Vec::new());
+            .content_header(self.content_title(), Vec::new())
+            .on_back(
+                move || can_go_back.can_go_back(),
+                move || {
+                    go_back.back();
+                },
+            );
         shell.show(self.narrow_screen);
         shell
     }
@@ -680,7 +703,10 @@ impl SettingsApp {
     /// search found.
     fn content_title(&self) -> String {
         if self.found.is_empty() {
-            self.selected.label()
+            self.cx
+                .pages()
+                .top(self.selected)
+                .map_or_else(|| self.selected.label(), |page| page.title)
         } else {
             crate::i18n::t("settings-found-title")
         }
@@ -971,8 +997,26 @@ impl Widget for SettingsApp {
             self.refresh_shell_children();
         }
 
+        // A pane drilled into a page or came back out of one: the page is
+        // built from its top, titled in the header.
+        let pages = self.cx.pages().revision();
+        if pages != self.pages_seen {
+            self.pages_seen = pages;
+            self.pane_scroll.borrow_mut().remove(&self.selected);
+            self.structure_dirty = true;
+            self.refresh_shell_children();
+        }
+
+        // A pane asked for a secret, or is done with the one it asked.
+        if crate::secrets::ShownPrompt::follow(&mut self.secret, self.cx.secrets()) {
+            self.structure_dirty = true;
+        }
+
         if let Some(shell) = &mut self.shell {
             shell.sync(state, path);
+        }
+        if let Some(shown) = &mut self.secret {
+            shown.dialog.sync(state, path);
         }
     }
 
@@ -1120,6 +1164,21 @@ impl Widget for SettingsApp {
                 observe_map(child, event);
             }
         }
+        // The password prompt takes every event while it is open.
+        if let Some(shown) = &mut self.secret {
+            shown.dialog.handle_detached(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                &mut ctx.state,
+                ctx.path,
+            );
+            *ctx.handled = true;
+            if crate::secrets::ShownPrompt::answered(&mut self.secret, self.cx.secrets()) {
+                self.structure_dirty = true;
+            }
+            return;
+        }
         if self.selected == Category::Keyboard
             && let Some(shell) = &mut self.shell
         {
@@ -1132,18 +1191,59 @@ impl Widget for SettingsApp {
         }
     }
 
+    /// The window's shell, or while it is open the password prompt alone:
+    /// nothing under it is reachable.
     fn children(&self) -> Vec<&dyn Widget> {
+        if let Some(shown) = &self.secret {
+            return vec![&shown.dialog as &dyn Widget];
+        }
         self.shell
             .as_ref()
             .map(|s| vec![s as &dyn Widget])
             .unwrap_or_default()
     }
 
+    /// The shell, laid out under the prompt too: the prompt is drawn over
+    /// it, outside the layout.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        if let Some(shell) = &self.shell {
+            visitor(shell);
+        }
+        true
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        if let Some(shown) = &mut self.secret {
+            return vec![&mut shown.dialog as &mut (dyn Widget + '_)];
+        }
         self.shell
             .as_mut()
             .map(|s| vec![s as &mut (dyn Widget + '_)])
             .unwrap_or_default()
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: vello::kurbo::Affine,
+        text: &mut ui::text_render::TextRenderer,
+        theme: &ui::Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) {
+        if let Some(shell) = &mut self.shell {
+            shell.draw_overlay(scene, transform, text, theme, presence);
+        }
+        if let Some(shown) = &mut self.secret {
+            shown
+                .dialog
+                .draw_overlay(scene, transform, text, theme, presence);
+        }
+    }
+
+    fn modal_capture(&self) -> Option<vello::kurbo::Rect> {
+        self.secret
+            .as_ref()
+            .and_then(|shown| shown.dialog.modal_capture())
     }
 
     fn collect_damage(&self, regions: &mut Vec<vello::kurbo::Rect>) {
@@ -1191,7 +1291,10 @@ impl Widget for SettingsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.highlight.is_some()
+        self.secret
+            .as_ref()
+            .is_some_and(|shown| shown.dialog.needs_animation_frame())
+            || self.highlight.is_some()
             || self.areas.iter().any(crate::area::PaneArea::busy)
             || self
                 .shell

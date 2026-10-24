@@ -68,6 +68,7 @@ mod topology_namespace;
 #[cfg(feature = "agents")]
 mod views;
 mod voice;
+mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -87,6 +88,7 @@ pub use admin::RoomAdminProtocol;
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use pages::PreAdmitRequest;
+pub use wait_list::WaitListed;
 // The administration vocabulary (the actions' names and answers, and the
 // wire door's) and the device's client, under the daemon's historic paths.
 pub use tilo_relay_session::rooms::{
@@ -214,6 +216,8 @@ struct GovernedRoom {
     stewardship: Option<Arc<stewardship::Steward>>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
+    /// The requests of people who asked at its door without an invitation.
+    wait_list: wait_list::WaitList,
     /// Admits the governance each settle retains to the host's order, after
     /// the room's lock is released.
     publisher: Arc<publisher::RoomPublisher>,
@@ -313,6 +317,7 @@ impl GovernedRoom {
         )?;
         prepare_governance(&mut peer, key, now)?;
         let outgoing = peer
+            .publication_mut()
             .durable_bootstrap_messages(key, now, 1)?
             .iter()
             .map(|message| publication(message, true))
@@ -333,6 +338,7 @@ impl GovernedRoom {
         };
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
+            wait_list: wait_list::WaitList::open(&path)?,
             parts,
             path,
             stewardship: stewardship(dir, &room, authority, key),
@@ -391,6 +397,7 @@ impl GovernedRoom {
             .and_then(|dir| stewardship(dir, &record.room, authority, key));
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
+            wait_list: wait_list::WaitList::open(&path)?,
             record,
             peer,
             parts,
@@ -592,6 +599,7 @@ impl GovernedRoom {
             // this commit must still publish at the governance rollover.
             let changed_records = candidate
                 .clone()
+                .publication_mut()
                 .durable_mutation_messages(&self.peer, key, now, generation)?
                 .into_iter()
                 .filter_map(|message| match message {
@@ -603,6 +611,7 @@ impl GovernedRoom {
                 .collect::<std::collections::BTreeSet<_>>();
             rebased = joined && candidate.rebase_room()?;
             record.outgoing = candidate
+                .publication_mut()
                 .durable_bootstrap_messages(key, now, generation)?
                 .iter()
                 .filter(|message| match message {
@@ -617,7 +626,9 @@ impl GovernedRoom {
             record.published = 0;
         } else {
             let diffing = crate::timing::start();
-            let messages = candidate.durable_mutation_messages(&self.peer, key, now, generation)?;
+            let messages = candidate
+                .publication_mut()
+                .durable_mutation_messages(&self.peer, key, now, generation)?;
             for message in messages.iter().filter(|message| for_members(message)) {
                 record.outgoing.push(publication(message, false)?);
             }
@@ -1603,7 +1614,7 @@ impl Rooms {
         // relay retains a member's changes only as a tail of a checkpoint
         // that resolves their dependencies.
         let mut candidate = room.peer().clone();
-        candidate.publish_document(
+        candidate.publication_mut().publish_document(
             &app_id,
             &record_id,
             automerge::AutoCommit::new().save(),
@@ -1621,7 +1632,9 @@ impl Rooms {
             let written = candidate
                 .document(&app_id, &record_id)
                 .ok_or("created record missing")?;
-            candidate.publish_document(&app_id, &record_id, written, &host.key, now)?;
+            candidate
+                .publication_mut()
+                .publish_document(&app_id, &record_id, written, &host.key, now)?;
         }
         room.commit(candidate, &host.key, now, |record, _| {
             Ok(record.collaboration.clone())

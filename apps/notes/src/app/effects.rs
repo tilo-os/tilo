@@ -217,7 +217,7 @@ impl NotesApp {
         {
             return Err("the clipboard is unavailable".into());
         }
-        self.transfer_toasts.push(
+        self.notify(
             ui::i18n::I18nManager::format(
                 "notes-link-copied",
                 &[("title", ui::i18n::ArgValue::from(label.to_string()))],
@@ -236,7 +236,7 @@ impl NotesApp {
             |app: &mut Self, opened, _| {
                 if let Err(error) = &opened {
                     tracing::warn!(%error, "notes: the link did not open");
-                    app.transfer_toasts.push(
+                    app.notify(
                         ui::i18n!("notes-link-open-failed"),
                         ui::widget::toast::ToastKind::Error,
                     );
@@ -293,7 +293,7 @@ impl NotesApp {
             }),
         );
         self.open_when_present(page);
-        self.transfer_toasts.push(
+        self.notify(
             ui::i18n::I18nManager::format(
                 "notes-imported",
                 &[("title", ui::i18n::ArgValue::from(title.to_string()))],
@@ -304,7 +304,7 @@ impl NotesApp {
     }
 
     fn import_failed(&mut self, error: &str) {
-        self.transfer_toasts.push(
+        self.notify(
             ui::i18n::I18nManager::format(
                 "notes-import-failed",
                 &[("error", ui::i18n::ArgValue::from(error.to_string()))],
@@ -418,7 +418,7 @@ impl NotesApp {
                 return Ok(Effected::done());
             };
             if let Err(error) = super::check_image(&file.bytes) {
-                app.transfer_toasts.push(
+                app.notify(
                     format!("Image import failed: {error}"),
                     ui::widget::toast::ToastKind::Error,
                 );
@@ -432,7 +432,7 @@ impl NotesApp {
             cx.submit(app.image_insertion(page, alt.trim(), file.bytes));
             app.bound_page = None;
             app.self_dirty = true;
-            app.transfer_toasts.push(
+            app.notify(
                 ui::i18n!("notes-image-inserted"),
                 ui::widget::toast::ToastKind::Success,
             );

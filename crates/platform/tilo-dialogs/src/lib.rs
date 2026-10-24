@@ -19,7 +19,7 @@
 //! | Target | Choosers | Open a file / reveal | Open a URI |
 //! |---|---|---|---|
 //! | Linux | XDG Desktop Portal `FileChooser` | portal `OpenURI` (by descriptor) | portal `OpenURI`, else the desktop opener |
-//! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime ([`confined`]) | `NSWorkspace` | `NSWorkspace` |
+//! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime (`confined`) | `NSWorkspace` | `NSWorkspace` |
 //! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
 //! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
 //! | App launched by a Tilo session ([`shell`]) | the shell's own chooser, over the app's granted files | the shell opens it in its app | the shell opens it in the app that claims its scheme, else the target's |

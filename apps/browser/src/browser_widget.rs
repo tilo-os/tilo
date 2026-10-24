@@ -59,11 +59,14 @@ use ui::tilo_resource::Resource as _;
 
 #[cfg(test)]
 mod action_surface_tests;
+mod address_rows;
 mod continuity;
 mod library;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
+mod review_hooks;
+mod side_panel;
 mod toolbar;
 mod window_bar;
 
@@ -88,6 +91,25 @@ const PAGE_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 const PAGE_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 /// A page action that started a navigation waits this long for it to load.
 const PAGE_NAVIGATION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// What a page action answers while the page waits on its own question:
+/// the page runs nothing until the question is answered.
+fn page_question_failure(
+    invocation: ui::tilo_actions::InvocationId,
+) -> ui::tilo_actions::InvocationUpdate {
+    ui::tilo_actions::InvocationUpdate::Failed {
+        invocation,
+        error: ui::tilo_actions::ActionFailure {
+            code: "browser.page.question".into(),
+            message: format!(
+                "The page waits for an answer to its question: answer it on {}",
+                crate::page_dialogs::ROW
+            ),
+            details: None,
+            retryable: false,
+        },
+    }
+}
 
 /// A page action admitted through the resource surface.
 struct PageOperation {
@@ -149,7 +171,9 @@ fn is_supported_web_url(value: &str) -> bool {
 pub(super) fn row_destination(row: &omnibox::Row, engine: &str) -> String {
     match row.kind {
         omnibox::RowKind::Search | omnibox::RowKind::Suggestion => search_url(engine, &row.url),
-        omnibox::RowKind::Go | omnibox::RowKind::History => row.url.clone(),
+        omnibox::RowKind::Go | omnibox::RowKind::History | omnibox::RowKind::Extension => {
+            row.url.clone()
+        }
     }
 }
 
@@ -317,6 +341,8 @@ struct CompositionKey {
     hosted: bool,
     compact: bool,
     immersive: bool,
+    /// The extension whose side panel shows, and whether it docks.
+    side_panel: Option<(String, bool)>,
 }
 
 /// Root widget for the browser app. See module docs.
@@ -372,6 +398,10 @@ pub struct BrowserWidget {
     site: crate::site_controls::SiteControls,
     /// The page's popup windows (a sign-in), shown in the panel.
     page_popups: crate::page_popups::PagePopups,
+    /// The question the page waits on (`alert`, `confirm`, `prompt`,
+    /// "leave this page?"), shown over the window, and its dialog's node.
+    page_dialogs: crate::page_dialogs::PageDialogs,
+    page_dialog_node: Option<NodeId>,
     credentials: crate::credentials::Credentials,
     /// The popover open next to the toolbar control it belongs to: the site
     /// or autofill panel, a permission or download question, or the no-video
@@ -411,6 +441,12 @@ pub struct BrowserWidget {
     /// the bar last said (`ToolbarEvent::Edit`); `None` while it is not
     /// being edited there.
     bar_query: Option<String>,
+    /// The address's text as the extensions' keywords last saw it, whether
+    /// it then followed one (the rows are the extension's), and whether the
+    /// extension's rows changed since they were shown.
+    keyword_typed: String,
+    keyword_active: bool,
+    keyword_dirty: bool,
     audio_muted: bool,
     media_playing: bool,
     media_document_generation: Option<u64>,
@@ -1227,6 +1263,8 @@ impl BrowserWidget {
             page_menu: crate::page_menu::PageMenu::default(),
             site: crate::site_controls::SiteControls::default(),
             page_popups: crate::page_popups::PagePopups::default(),
+            page_dialogs: crate::page_dialogs::PageDialogs::default(),
+            page_dialog_node: None,
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             anchored_panel: None,
             panel_dismissed: ui::LocalState::new(None),
@@ -1250,6 +1288,9 @@ impl BrowserWidget {
             favicon: None,
             favicon_png: None,
             bar_query: None,
+            keyword_typed: String::new(),
+            keyword_active: false,
+            keyword_dirty: false,
             audio_muted: false,
             media_playing: false,
             media_document_generation: None,
@@ -1447,266 +1488,6 @@ impl BrowserWidget {
         Browser::site_switch(&origin, protected)
             .into_iter()
             .collect()
-    }
-
-    /// Stage the window for a screenshot scenario: the chrome state each one
-    /// shows, as the engine, the network and the person would leave it.
-    pub(crate) fn stage(&mut self, scenario: Option<&str>) {
-        match scenario {
-            Some("pip-active") => self.debug_show_active_pip(),
-            Some("pip-empty") => self.debug_show_empty_pip_feedback(),
-            Some("settings") => self.debug_show_settings(),
-            Some("history-paused") => self.debug_show_history_paused(),
-            Some("loading") => self.debug_show_loading(),
-            Some("error") => self.debug_show_load_error(),
-            Some("permission") => self.debug_request_permission(),
-            Some("suggestions") => {
-                self.debug_force_typed_suggestions("youtube.com");
-                self.suggestions.move_selection(1);
-            }
-            Some("library-history") => self.debug_show_library("history"),
-            Some("library-bookmarks") => self.debug_show_library("bookmarks"),
-            Some("library-extensions") => self.debug_show_library("extensions"),
-            Some("library-filtered") => {
-                self.debug_show_library("history");
-                self.debug_set_library_filter("rust");
-            }
-            Some(downloads) if downloads.starts_with("downloads-") => {
-                self.debug_show_downloads(downloads.trim_start_matches("downloads-"));
-            }
-            _ => {}
-        }
-        self.structure_dirty = true;
-    }
-
-    /// Test hook: pin a suggestion list into view (bypasses focus/query)
-    /// so the overlay can be rendered headlessly for inspection.
-    pub fn debug_force_suggestions(&mut self, items: &[crate::history::HistoryEntry]) {
-        self.suggestions
-            .set_suggestions(items.iter().map(omnibox::Row::history).collect());
-        self.force_suggestions = true;
-    }
-
-    /// Screenshot hook: the suggestions for `typed`, as the omnibox ranks
-    /// them over visited pages that include a few on `YouTube`.
-    fn debug_force_typed_suggestions(&mut self, typed: &str) {
-        let mut entries = crate::history::sample_entries();
-        for (url, title, last_visit, visit_count) in [
-            ("https://www.youtube.com/", "YouTube", 9, 40),
-            (
-                "https://www.youtube.com/watch?v=jNQXAC9IVRw",
-                "Me at the zoo - YouTube",
-                8,
-                2,
-            ),
-        ] {
-            entries.push(crate::history::HistoryEntry {
-                url: url.into(),
-                title: title.into(),
-                last_visit,
-                visit_count,
-            });
-        }
-        let mut index = omnibox::HistoryIndex::default();
-        index.rebuild(&entries);
-        let matches = index.search(typed, omnibox::MAX_ROWS, 10);
-        let rows = omnibox::build_rows(typed, &matches, &[], "", omnibox::MAX_ROWS);
-        self.suggestions
-            .set_search_engine(&crate::settings::search_engine_name(
-                &self.settings.search_engine,
-            ));
-        self.suggestions.set_suggestions(rows);
-        self.force_suggestions = true;
-    }
-
-    /// Headless visual-review hook: show the settled no-video guidance note.
-    pub fn debug_show_empty_pip_feedback(&mut self) {
-        self.set_pip_feedback(Some(PipFeedback::persistent(PipFeedbackKind::NoVideo)));
-    }
-
-    /// Headless visual-review hook for the toolbar's adopted `PiP` state.
-    pub fn debug_show_active_pip(&mut self) {
-        self.active_pip = true;
-        self.active_pip_element = Some(MediaElementInfo {
-            element_id: "media:debug".into(),
-            viewport_rect: [0.14, 0.16, 0.72, 0.62],
-            intrinsic_size: [1_920, 1_080],
-            label: "The active film".into(),
-        });
-    }
-
-    /// Headless visual-review hook for the recoverable navigation error state.
-    pub fn debug_show_load_error(&mut self) {
-        self.current_uri = "https://offline.example.test".into();
-        self.initial_url = self.current_uri.clone();
-        // The offline state owns the address shown in visual review.  Without
-        // this, the headless engine's normal startup address made the chrome
-        // claim DuckDuckGo while the recovery panel described a different
-        // failed destination.
-        self.address.set(self.current_uri.clone());
-        self.title = "Couldn’t open this page".into();
-        self.load_error =
-            Some("The site did not respond. Check your connection and try again.".into());
-        self.forced_load_error = true;
-    }
-
-    /// Headless visual-review hook for the in-flight navigation state.
-    pub fn debug_show_loading(&mut self) {
-        self.current_uri = "https://loading.example.test".into();
-        self.initial_url = self.current_uri.clone();
-        self.address.set(self.current_uri.clone());
-        self.title = "Opening loading.example.test".into();
-        self.progress = 0.42;
-        self.forced_loading = true;
-    }
-
-    /// Seed the responsive breakpoint before a single-frame offscreen render.
-    pub fn debug_set_viewport_width(&mut self, width: u32) {
-        self.compact_chrome = is_compact_chrome(f64::from(width), self.compact_breakpoint);
-        // The desktop Library cap also needs the viewport before its first
-        // retained layout pass. Production windows already have this rect by
-        // the time a user opens Library; headless review does not.
-        self.rect = Rect::new(0.0, 0.0, f64::from(width), 0.0);
-    }
-
-    /// Populate and open a browser-library section for deterministic review.
-    /// Stage the same bounded local filter that the framework and actions use.
-    pub fn debug_set_library_filter(&mut self, query: &str) {
-        self.library_filter.set(bounded_library_filter(query));
-        self.structure_dirty = true;
-    }
-
-    pub fn debug_show_library(&mut self, section: &str) {
-        // Visits over the past days, so the history shows its day groups.
-        let now = u64::try_from(ui::clock::local_now().timestamp()).unwrap_or_default();
-        for (url, title, ago) in [
-            (
-                "https://en.wikipedia.org/wiki/Web_browser",
-                "Web browser - Wikipedia",
-                4 * 24 * 3600,
-            ),
-            ("https://www.rust-lang.org/learn", "Learn Rust", 26 * 3600),
-            (
-                "https://developer.mozilla.org/en-US/docs/Web",
-                "MDN Web Docs",
-                3 * 3600,
-            ),
-            (
-                "https://example.org/long-form",
-                "Long-form reading",
-                20 * 60,
-            ),
-        ] {
-            self.history.record_at(url, title, now.saturating_sub(ago));
-        }
-        self.library_section = match section {
-            "bookmarks" => LibrarySection::Bookmarks,
-            "downloads" => LibrarySection::Downloads,
-            "extensions" => LibrarySection::Extensions,
-            _ => LibrarySection::History,
-        };
-        self.show_library = true;
-        self.show_settings = false;
-    }
-
-    /// Deterministic download-model fixtures for visual review. These use the
-    /// same lifecycle methods as live engine events rather than a parallel UI
-    /// representation, so every captured row has a real resource/action shape.
-    pub fn debug_show_downloads(&mut self, state: &str) {
-        self.downloads = Downloads::default();
-        match state {
-            "empty" => {}
-            "error" => {
-                self.downloads.requested(
-                    "review-failed".into(),
-                    "https://example.org/archive.zip".into(),
-                    "project-assets.zip",
-                );
-                self.downloads.failed(
-                    "review-failed",
-                    "The connection was interrupted. Your partial file was removed.".into(),
-                    false,
-                );
-            }
-            "completed" => {
-                self.downloads.requested(
-                    "review-complete".into(),
-                    "https://example.org/guide.pdf".into(),
-                    "Design-guide.pdf",
-                );
-                self.downloads.finished(
-                    "review-complete",
-                    "/home/alex/Downloads/Design-guide.pdf".into(),
-                );
-            }
-            _ => {
-                self.downloads.requested(
-                    "review-progress".into(),
-                    "https://example.org/tilo-sdk.tar.zst".into(),
-                    "Tilo-SDK.tar.zst",
-                );
-                self.downloads.destination(
-                    "review-progress",
-                    "/home/alex/Downloads/Tilo-SDK.tar.zst".into(),
-                );
-                self.downloads.progress(
-                    "review-progress",
-                    503_316_480,
-                    Some(1_073_741_824),
-                    0.46875,
-                );
-            }
-        }
-        self.library_section = LibrarySection::Downloads;
-        self.show_library = true;
-        self.show_settings = false;
-        self.structure_dirty = true;
-    }
-
-    /// Headless visual-review hook: the passwords panel, or the address
-    /// autofill panel.
-    pub fn debug_show_autofill(&mut self, addresses: bool) {
-        self.review_stage = Some(ReviewStage::Autofill { addresses });
-    }
-
-    /// Headless visual-review hook: a site asking for the camera.
-    pub fn debug_request_permission(&mut self) {
-        self.capabilities.apply(WebViewEvent::PermissionRequested {
-            id: 1,
-            origin: "https://meet.example.org".into(),
-            permissions: "camera and microphone".into(),
-        });
-        self.structure_dirty = true;
-    }
-
-    pub fn debug_show_settings(&mut self) {
-        self.show_settings = true;
-        self.show_library = false;
-    }
-
-    /// Headless visual-review hook for the history-pause boundary. Existing
-    /// entries deliberately remain visible: pausing recording is not a
-    /// private-storage mode and must not hide prior durable history.
-    pub fn debug_show_history_paused(&mut self) {
-        if self.history.is_empty() {
-            self.history
-                .record_at("https://example.org/reading", "Existing reading", 2);
-            self.history
-                .record_at("https://www.rust-lang.org/learn", "Learn Rust", 1);
-        }
-        self.history_paused
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        self.show_library = true;
-        self.show_settings = false;
-        self.library_section = LibrarySection::History;
-    }
-
-    /// Real-engine integration hook used by `browser --shots-live --probe-pip`.
-    /// It enters through the same probe/state machine as the toolbar button;
-    /// only the synthetic pointer event is skipped.
-    #[doc(hidden)]
-    pub fn debug_request_picture_in_picture(&mut self) {
-        self.begin_pip_probe();
     }
 
     /// Perform a browser operation and report inputs that the Browser is not
@@ -1983,6 +1764,15 @@ impl BrowserWidget {
                 self.structure_dirty = true;
             }
             BrowserOperation::AddExtension => self.extensions.offer_store_item()?,
+            BrowserOperation::AnswerPageDialog {
+                dialog,
+                accept,
+                text,
+            } => {
+                self.page_dialogs
+                    .answer(&self.engine, dialog, accept, text)?;
+                self.structure_dirty = true;
+            }
             BrowserOperation::Zoom { step } => {
                 self.daily.zoom_by(step, &self.engine)?;
                 self.structure_dirty = true;
@@ -2068,6 +1858,12 @@ impl BrowserWidget {
         if self.page_operation.is_some() || self.page_operation_result.is_some() {
             return Err("another page action is already running in this tab".into());
         }
+        // The page runs nothing while it waits on its question: an action
+        // sent now would only time out.
+        if self.page_dialogs.current().is_some() {
+            self.page_operation_result = Some(page_question_failure(invocation));
+            return Ok(());
+        }
         self.page_request_seq = self.page_request_seq % i32::MAX.unsigned_abs() + 1;
         let now = std::time::Instant::now();
         self.page_operation = Some(PageOperation {
@@ -2129,6 +1925,17 @@ impl BrowserWidget {
                 }
             }
         });
+    }
+
+    /// The page asked a question while a page action waits on it: the page
+    /// stops until the question is answered, so the action answers now with
+    /// what to do, rather than when it times out.
+    fn settle_page_operation_on_question(&mut self) {
+        let Some(operation) = self.page_operation.take() else {
+            return;
+        };
+        self.reader_request = None;
+        self.page_operation_result = Some(page_question_failure(operation.invocation));
     }
 
     fn accept_page_result(&mut self, request_id: u32, result: Result<PageReply, PageFailure>) {
@@ -2778,6 +2585,7 @@ impl BrowserWidget {
             hosted: ui::window_toolbar::is_hosted(),
             compact: self.compact_chrome,
             immersive: self.content_fullscreen && self.window_fullscreen_active,
+            side_panel: self.side_panel_key(theme),
         };
         if !self.composition_dirty
             && !self.structure_dirty
@@ -2916,12 +2724,7 @@ impl BrowserWidget {
             } else {
                 self.title.clone()
             };
-            Box::new(
-                WebView::new(self.engine.clone())
-                    .with_scale_factor(self.window_scale)
-                    .with_accessible_name(page_name)
-                    .with_test_id("browser.surface"),
-            )
+            self.page_beside_side_panel(page_name, theme)
         };
         // Loading is drawn on the toolbar's bottom edge (`draw`), not as a
         // band of its own: a band pushed the page down when a load began
@@ -3082,8 +2885,20 @@ impl BrowserWidget {
                 }
                 event @ (WebViewEvent::ExtensionAction { .. }
                 | WebViewEvent::ExtensionActionReset
-                | WebViewEvent::ExtensionOpenPopup { .. }) => {
+                | WebViewEvent::ExtensionMenu { .. }
+                | WebViewEvent::ExtensionOpenPopup { .. }
+                | WebViewEvent::ExtensionExecuteAction { .. }
+                | WebViewEvent::ExtensionNotification { .. }
+                | WebViewEvent::ExtensionPermissionRequest { .. }
+                | WebViewEvent::ExtensionPermissions { .. }
+                | WebViewEvent::ExtensionSignIn { .. }
+                | WebViewEvent::ExtensionSidePanel { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
+                }
+                // What an extension suggests for its keyword in the address.
+                event @ (WebViewEvent::ExtensionOmniboxSuggestions { .. }
+                | WebViewEvent::ExtensionOmniboxDefault { .. }) => {
+                    self.keyword_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
@@ -3153,7 +2968,8 @@ impl BrowserWidget {
                 | WebViewEvent::PermissionClosed { .. }
                 | WebViewEvent::NativeDownloadRequested { .. }
                 | WebViewEvent::DownloadUpdated { .. }
-                | WebViewEvent::DownloadRuntime { .. }) => {
+                | WebViewEvent::DownloadRuntime { .. }
+                | WebViewEvent::ExtensionDownloadOpen { .. }) => {
                     self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
@@ -3393,6 +3209,12 @@ impl BrowserWidget {
                 WebViewEvent::PageResult { request_id, result } => {
                     self.accept_page_result(request_id, result);
                 }
+                event @ (WebViewEvent::PageDialog(_) | WebViewEvent::PageDialogClosed { .. }) => {
+                    if matches!(event, WebViewEvent::PageDialog(_)) {
+                        self.settle_page_operation_on_question();
+                    }
+                    self.structure_dirty |= self.page_dialogs.apply(&event);
+                }
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
                 | WebViewEvent::DownloadFinished { .. }
@@ -3599,6 +3421,16 @@ impl BrowserWidget {
     /// Navigate to whatever the address bar currently holds.
     fn navigate_to_input(&mut self) {
         let url = self.address.with(Clone::clone);
+        // After an extension's keyword, Enter is the extension's: it acts on
+        // the words, often sending the page somewhere, as Send words to
+        // extension does.
+        if let Some(request) = self.extensions.omnibox_enter(&url) {
+            if let Err(error) = self.extensions.request(&request) {
+                tracing::warn!(%error, "the extension's keyword was not sent");
+            }
+            self.structure_dirty = true;
+            return;
+        }
         let trimmed = url.trim();
         if !trimmed.is_empty() {
             self.queue_navigate(trimmed.to_string());
@@ -3633,172 +3465,6 @@ impl BrowserWidget {
                     Vec::new(),
                 )));
         }
-    }
-
-    /// Forget everything the omnibox derived from the text being typed.
-    fn reset_omnibox(&mut self) {
-        self.suggestions.clear();
-        self.bar_rows.clear();
-        self.suggest_debounce.cancel();
-        self.remote.clear();
-        self.last_query = None;
-        self.last_typed.clear();
-        self.inline = None;
-        self.select_completion = None;
-    }
-
-    /// Refresh the address-bar suggestions while the address input is being
-    /// edited; hide them otherwise. Runs every frame, does bounded work, and
-    /// never waits on the network: the engine's suggestions arrive later
-    /// through `suggest_fetcher`.
-    fn update_suggestions(&mut self) {
-        if self.force_suggestions {
-            return; // headless overlay render — keep the pinned list
-        }
-        let text = if ui::window_toolbar::is_hosted() {
-            // The address is edited in the window's bar: what the bar said
-            // is being typed there.
-            self.bar_query.clone().unwrap_or_default()
-        } else if self.show_settings || !self.url_input_focused() {
-            String::new()
-        } else {
-            self.address.with(Clone::clone)
-        };
-        // The bar echoing the completion we put there is not new typing.
-        let typed = match &self.inline {
-            Some((typed, full)) if *full == text => typed.clone(),
-            _ => {
-                self.inline = None;
-                text
-            }
-        };
-        let query = typed.trim();
-        // Only suggest while the user is editing a *query* — not when the
-        // bar merely shows the loaded page's URL, and not for an empty bar.
-        let editing = !query.is_empty() && query != self.current_uri.trim();
-        if !editing {
-            if self.last_query.is_some()
-                || self.suggestions.is_visible()
-                || !self.bar_rows.is_empty()
-            {
-                self.reset_omnibox();
-            }
-            return;
-        }
-        let query = query.to_owned();
-        let mut dirty = self.last_query.as_deref() != Some(query.as_str());
-        if dirty {
-            self.on_query_changed(&query);
-        }
-        if let Some(answer) = self.suggest_fetcher.take()
-            && self.suggest_debounce.is_current(answer.generation)
-            && answer.query == query
-        {
-            self.remote = answer.suggestions;
-            dirty = true;
-        }
-        if let Some((generation, wanted)) = self
-            .suggest_debounce
-            .due(ui::time::now(), omnibox::DEBOUNCE)
-            && let Some(endpoint) = omnibox::suggest_endpoint(&self.settings.search_engine, &wanted)
-        {
-            self.suggest_fetcher.fetch(generation, wanted, endpoint);
-        }
-        if dirty || self.omni_stale {
-            self.rebuild_rows(&query);
-        }
-    }
-
-    /// The typed text changed: restart the quiet period for the engine's
-    /// suggestions and keep only the old ones that still fit.
-    fn on_query_changed(&mut self, query: &str) {
-        let lower = query.to_lowercase();
-        self.remote
-            .retain(|suggestion| suggestion.to_lowercase().starts_with(&lower));
-        if query.chars().count() >= 2 && !omnibox::looks_like_address(query) {
-            self.suggest_debounce.typed(query, ui::time::now());
-        } else {
-            self.suggest_debounce.cancel();
-            self.remote.clear();
-        }
-    }
-
-    /// Select the untyped tail of an inline completion, once the address
-    /// field holds the completed text.
-    fn select_inline_completion(&mut self) {
-        fn select(widget: &mut dyn Widget, state: &str) -> bool {
-            if widget.test_id() == Some(URL_INPUT_ID) {
-                ui::undo::set_state(widget, state);
-                return true;
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| select(child, state))
-        }
-        let Some((end, start)) = self.select_completion.take() else {
-            return;
-        };
-        if let Some(c) = self.composed.element_mut() {
-            select(c, &format!("{end}:b:{start}"));
-        }
-    }
-
-    /// Match, merge and complete for `query`; set the dropdown's rows.
-    fn rebuild_rows(&mut self, query: &str) {
-        if self.omni_stale {
-            self.omni_index.rebuild(self.history.entries());
-            self.omni_stale = false;
-        }
-        let now = tilo_clock::unix_now();
-        let matches = self.omni_index.search(query, omnibox::MAX_ROWS, now);
-        let mut rows = omnibox::build_rows(
-            query,
-            &matches,
-            &self.remote,
-            &self.current_uri,
-            omnibox::MAX_ROWS,
-        );
-        // Complete inline only when the person is adding characters; after a
-        // deletion the text is theirs.
-        let growing = query.len() > self.last_typed.len() && query.starts_with(&self.last_typed);
-        if growing
-            && self.inline.is_none()
-            && let Some(full) = omnibox::inline_completion(query, matches.first())
-        {
-            self.select_completion = Some((full.len(), query.len()));
-            self.address.set(full.clone());
-            self.inline = Some((query.to_owned(), full));
-        }
-        if let Some((typed, full)) = &self.inline
-            && typed == query
-        {
-            omnibox::lead_with_address(&mut rows, full);
-        }
-        query.clone_into(&mut self.last_typed);
-        self.last_query = Some(query.to_owned());
-        if ui::window_toolbar::is_hosted() {
-            // The bar lists them under its address; the window lists none.
-            self.suggestions.clear();
-            self.bar_rows = rows;
-        } else {
-            self.bar_rows.clear();
-            self.suggestions
-                .set_search_engine(&crate::settings::search_engine_name(
-                    &self.settings.search_engine,
-                ));
-            self.suggestions.set_suggestions(rows);
-        }
-    }
-
-    /// Open a chosen dropdown row.
-    fn choose_row(&mut self, row: &omnibox::Row) {
-        self.suggestions.clear();
-        self.last_query = None;
-        self.inline = None;
-        let destination = row_destination(row, &self.settings.search_engine);
-        self.address.set(destination.clone());
-        self.queue_navigate(destination);
     }
 
     /// Rect of the address `TextInput` in the composed tree, for anchoring
@@ -3846,7 +3512,9 @@ impl BrowserWidget {
                 anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
-        if let Some((content, mut anchors)) = self.extensions.panel(width, max_height) {
+        if !self.capabilities.asks_for_extension()
+            && let Some((content, mut anchors)) = self.extensions.panel(width, max_height)
+        {
             anchors.push(toolbar::OVERFLOW_ID.to_owned());
             anchors.push(URL_INPUT_ID.to_owned());
             return Some((PanelKind::Extension, content, anchors));
@@ -4216,9 +3884,12 @@ impl BrowserWidget {
             return false;
         };
         let modifiers = modifiers.state();
+        // Ctrl+Shift+L is not the address's: password managers suggest it
+        // for filling a login (an extension's keyboard shortcut).
         let requested = key.state == ElementState::Pressed
             && (modifiers.control_key() || modifiers.super_key())
             && !modifiers.alt_key()
+            && !modifiers.shift_key()
             && matches!(&key.logical_key, WKey::Character(c) if c.eq_ignore_ascii_case("l"));
         // F6 moves to the address bar on its own, as in every browser.
         let f6 = key.state == ElementState::Pressed
@@ -4754,6 +4425,14 @@ impl Widget for BrowserWidget {
             children.push(panel_node);
             self.anchored_panel = Some(panel);
         }
+        // The page's question stands over everything, the panel too: the
+        // dialog's node covers the window out of flow.
+        self.page_dialog_node = None;
+        if let Some(dialog) = self.page_dialogs.widget_mut() {
+            let node = dialog.build_layout(taffy, theme, node_map);
+            children.push(node);
+            self.page_dialog_node = Some(node);
+        }
         taffy.widget_node(style, &children, node_map, self)
     }
 
@@ -4775,6 +4454,10 @@ impl Widget for BrowserWidget {
             && let Some(&panel_node) = children.get(1)
         {
             panel.apply_layout(taffy, panel_node, Point::new(self.rect.x0, self.rect.y0));
+        }
+        if let (Some(node), Some(dialog)) = (self.page_dialog_node, self.page_dialogs.widget_mut())
+        {
+            dialog.apply_layout(taffy, node, Point::new(self.rect.x0, self.rect.y0));
         }
         // The suggestions hang under the address field, as wide as it.
         if let Some(r) = self.address_input_rect() {
@@ -4854,6 +4537,9 @@ impl Widget for BrowserWidget {
             .draw(scene, transform, text_renderer, theme, presence);
         self.back_menu
             .draw(scene, transform, text_renderer, theme, presence);
+        if let Some(dialog) = self.page_dialogs.widget_mut() {
+            dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -4867,6 +4553,10 @@ impl Widget for BrowserWidget {
             || self
                 .composed
                 .element()
+                .is_some_and(Widget::needs_animation_frame)
+            || self
+                .page_dialogs
+                .widget()
                 .is_some_and(Widget::needs_animation_frame)
     }
 
@@ -4882,7 +4572,11 @@ impl Widget for BrowserWidget {
         // Toggling the settings pane swaps the content widget → rebuild.
         let own = std::mem::take(&mut self.structure_dirty);
         self.composition_dirty |= own;
-        own || self.composed.take_structure_dirty()
+        let dialog = self
+            .page_dialogs
+            .widget_mut()
+            .is_some_and(Widget::take_structure_dirty);
+        own || self.composed.take_structure_dirty() || dialog
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -4899,6 +4593,24 @@ impl Widget for BrowserWidget {
         if let Some((node, id)) = self.pending_chrome_focus.take() {
             self.focus_control_preserving_selection(id);
             *ctx.focus_target = Some(node);
+        }
+        if let (Some(node), Some(dialog)) = (self.page_dialog_node, self.page_dialogs.widget_mut())
+        {
+            // The page waits on its question: the dialog owns the pointer
+            // and the keyboard until it is answered.
+            dialog.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            self.structure_dirty |= self.page_dialogs.poll(&self.engine);
+            if matches!(
+                event,
+                WindowEvent::KeyboardInput { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::CursorMoved { .. }
+                    | WindowEvent::Ime(_)
+            ) {
+                *ctx.handled = true;
+                return;
+            }
         }
         if let Some(panel) = &mut self.anchored_panel {
             // The popover owns the pointer and the keyboard while it is up:
@@ -4923,11 +4635,7 @@ impl Widget for BrowserWidget {
         }
         if self.page_menu.menu.is_open() {
             self.page_menu.menu.handle_event(event, ctx);
-            if let Some(index) = self.page_menu.menu.take_selection() {
-                self.page_menu.choose(index, &self.engine);
-            } else if !self.page_menu.menu.is_open() {
-                self.page_menu.cancel(&self.engine);
-            }
+            self.page_menu.settle(&self.engine);
             if matches!(
                 event,
                 WindowEvent::KeyboardInput { .. }
@@ -5322,6 +5030,9 @@ impl Widget for BrowserWidget {
             .min()
     }
     fn modal_capture(&self) -> Option<Rect> {
+        if let Some(capture) = self.page_dialogs.widget().and_then(Widget::modal_capture) {
+            return Some(capture);
+        }
         if let Some(panel) = &self.anchored_panel {
             return Some(panel.get_rect());
         }
@@ -5343,6 +5054,7 @@ impl Widget for BrowserWidget {
                     .as_ref()
                     .map(|p| p.as_ref() as &dyn Widget),
             )
+            .chain(self.page_dialogs.widget())
             .collect()
     }
 
@@ -5356,6 +5068,7 @@ impl Widget for BrowserWidget {
                     .as_mut()
                     .map(|p| p.as_mut() as &mut (dyn Widget + '_)),
             )
+            .chain(self.page_dialogs.widget_mut())
             .collect()
     }
 
@@ -5389,6 +5102,13 @@ impl BrowserWidget {
     /// The row a history or download hit opens, beyond the published page
     /// of rows too.
     pub(crate) fn search_row(&self, id: &str) -> Option<ui::framework::LiveRow> {
+        // The page's question, asked since the rows were last published.
+        if id == crate::page_dialogs::ROW {
+            return self
+                .page_dialogs
+                .resource()
+                .map(ui::framework::LiveRow::from_resource);
+        }
         self.search_index
             .resource(id)
             .or_else(|| crate::personal_bookmarks::resolve(&self.personal_bookmarks, id))
@@ -5712,6 +5432,7 @@ impl BrowserWidget {
             page, session, history, bookmarks, downloads, extensions, library, settings,
         ];
         browser.children.extend(bookmark_rows);
+        browser.children.extend(self.page_dialogs.resource());
         for selection in &self.service_selections {
             browser.children.push(selection.resource());
         }
@@ -5915,6 +5636,8 @@ impl BrowserWidget {
 
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.page_popups.sync(&self.engine);
+        self.structure_dirty |= self.page_dialogs.sync(&self.engine);
+        self.structure_dirty |= self.page_dialogs.poll(&self.engine);
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;
         self.structure_dirty |= self.site.sync(&self.engine);
@@ -5941,6 +5664,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
+        self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;
         // The download that kept the tab from closing finished or was
@@ -5955,6 +5679,9 @@ impl BrowserWidget {
 
         if let Some(c) = self.composed.element_mut() {
             c.sync(state, path);
+        }
+        if let Some(dialog) = self.page_dialogs.widget_mut() {
+            dialog.sync(state, path);
         }
         self.select_inline_completion();
         self.poll_active_pip_element();
@@ -6005,7 +5732,9 @@ impl BrowserWidget {
             }
             let enabled = !self.reader_view;
             self.start_page_operation(invocation, PageRequest::Reader { enabled })?;
-            self.reader_request = Some(enabled);
+            // Refused at once (the page waits on its question), nothing is
+            // to follow the reply.
+            self.reader_request = self.page_operation.is_some().then_some(enabled);
             return Ok(ui::framework::Effected::Pending);
         }
         let is_navigation = matches!(
@@ -6069,6 +5798,9 @@ impl BrowserWidget {
                 }
                 BrowserOperation::OpenInNewTab { .. } => {
                     local_output("Asked the desktop for a new Browser tab beside this one.")
+                }
+                BrowserOperation::AnswerPageDialog { .. } => {
+                    local_output("The page has its answer.")
                 }
                 _ => ui::tilo_actions::ActionOutput::default(),
             };

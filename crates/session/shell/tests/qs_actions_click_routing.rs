@@ -164,11 +164,19 @@ fn open_quick_settings(
         state.quick_settings.brightness_available = true;
         state.quick_settings.radios.wifi_available = true;
         state.quick_settings.bluetooth_available = true;
+        state.quick_settings.status.volume = Some(SOUND_OUTPUT_READING);
         state.bump();
     }
     host.force_quick_settings_settled();
     layout_host(host)
 }
+
+/// A volume slider shows only once the sound output has been read, as a
+/// real session reads it on open.
+const SOUND_OUTPUT_READING: os_actions::VolumeState = os_actions::VolumeState {
+    level: 0.4,
+    muted: false,
+};
 
 #[test]
 #[allow(
@@ -214,6 +222,7 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
             let mut st = chrome.borrow_mut();
             st.overlays.quick_settings = true;
             st.quick_settings.brightness_available = true;
+            st.quick_settings.status.volume = Some(SOUND_OUTPUT_READING);
             st.bump();
         }
         host.force_quick_settings_settled();
@@ -259,14 +268,16 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
             Key::Named(NamedKey::ArrowRight),
             ModifiersState::empty(),
         ));
-        // One more Tab moves brightness → volume.
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
+        // Two more Tabs move brightness → the volume's mute switch → volume.
+        for _ in 0..2 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
         assert!(press_key(
             &mut host,
             &taffy,

@@ -33,7 +33,7 @@ impl Membership {
 
     /// Replace the membership with a new set. A set that leaves out a device
     /// of the old one wakes the sessions admitted under it to re-check
-    /// ([`crate::authority_epoch`]). One that only adds devices narrows
+    /// (`crate::authority_epoch`). One that only adds devices narrows
     /// nobody's access and wakes nobody: a public room admitting a crowd
     /// re-audited every member's session for every newcomer.
     pub fn set(&mut self, devices: Vec<[u8; 32]>) {

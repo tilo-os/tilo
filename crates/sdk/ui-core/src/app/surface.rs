@@ -72,9 +72,13 @@ impl App {
         crate::widget::context_menu::note_input(&event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
+        #[cfg(test)]
+        let replay_probe = crate::profiling::frame_probe::span("input.replay");
         if let Some(moved) = self.input.pointer_replay.before(&event) {
             self.dispatch_surface_input(window, moved, synthesized_touch);
         }
+        #[cfg(test)]
+        drop(replay_probe);
         let ends_press = crate::pointer_replay::PointerReplay::ends_press(&event);
         let handled = self.dispatch_surface_input(window, event, synthesized_touch);
         if ends_press {
@@ -99,7 +103,11 @@ impl App {
         self.mark_semantic_tree_stale();
         let marks = self.accessibility.semantic_tree_marks;
         let pointer_move = matches!(event, WindowEvent::CursorMoved { .. });
+        #[cfg(test)]
+        let route_probe = crate::profiling::frame_probe::span("input.route");
         let handled = self.route_surface_input(window, event, synthesized_touch);
+        #[cfg(test)]
+        drop(route_probe);
         self.drain_local_input_capture();
         let inert = pointer_move
             && !handled
@@ -778,7 +786,7 @@ impl App {
         if handled {
             let commit = phases.start();
             if view_only_scroll && !history_handled && focus_target.is_none() {
-                app.commit_action_with_invalidation(false);
+                app.commit_view_change();
             } else {
                 app.finalize_handled_native_event(&event, is_undo_redo, history_handled);
                 app.needs_sync = true;
@@ -912,7 +920,11 @@ impl App {
         // collaboration (inbound edits, directory requests, publication),
         // invocations, idle model work and the record. A different record
         // is a different document under the same widgets.
+        #[cfg(test)]
+        let pump_probe = crate::profiling::frame_probe::span("frame.pump");
         let record_changed = self.pump_hosted_model_record_changed();
+        #[cfg(test)]
+        drop(pump_probe);
         if self.layout.root_node.is_none() {
             self.init_layout();
         }
@@ -927,7 +939,11 @@ impl App {
         // children, and its damage covers them) keeps the frame's damage: the
         // widgets' own, and every widget box that came, went or moved. Any
         // other reason to rebuild this frame disarms it.
+        #[cfg(test)]
+        let structure_probe = crate::profiling::frame_probe::span("frame.structure");
         let changed = self.take_root_structure_dirty();
+        #[cfg(test)]
+        drop(structure_probe);
         if replaced {
             self.layout.request_rebuild();
         }
@@ -935,7 +951,11 @@ impl App {
         let structure_rebuilt = self.layout.structure_dirty;
         // Every widget and its box as the last frame left them, before
         // anything is rebuilt: compared by identity only, never reached.
+        #[cfg(test)]
+        let boxes_probe = crate::profiling::frame_probe::span("frame.boxes");
         let boxes_before = widget_boxes(self.root_widget.as_ref());
+        #[cfg(test)]
+        drop(boxes_probe);
         if structure_rebuilt {
             self.rebuild_structure();
         }
@@ -943,8 +963,10 @@ impl App {
             damage.repaint("no layout");
             return true;
         };
-        let rebuilds = self.layout.rebuilds;
-        let Some((geometry_changed, _, _)) = run_layout_pass(
+        let rebuilds = (self.layout.rebuilds, self.layout.remounts);
+        #[cfg(test)]
+        let layout_probe = crate::profiling::frame_probe::span("frame.layout");
+        let laid_out = run_layout_pass(
             self,
             root_node,
             size.width,
@@ -952,7 +974,10 @@ impl App {
             scale_factor,
             structure_rebuilt,
             None,
-        ) else {
+        );
+        #[cfg(test)]
+        drop(layout_probe);
+        let Some((geometry_changed, _, _)) = laid_out else {
             damage.repaint("no layout");
             return true;
         };
@@ -978,10 +1003,14 @@ impl App {
         // was and is: what else is there is drawn by widgets that did not
         // move, and their own damage covers any change to them.
         // A layout pass that recomposed the tree may have replaced widgets.
-        let recomposed = self.layout.rebuilds != rebuilds;
+        let recomposed = (self.layout.rebuilds, self.layout.remounts) != rebuilds;
         let described = (structure_rebuilt || recomposed) && self.layout.frame_rebuilds_described;
         let relaid = !described && !recomposed && geometry_changed && !structure_rebuilt;
+        #[cfg(test)]
+        let boxes_probe = crate::profiling::frame_probe::span("frame.boxes");
         let boxes_after = (described || relaid).then(|| widget_boxes(self.root_widget.as_ref()));
+        #[cfg(test)]
+        drop(boxes_probe);
         let moved = match &boxes_after {
             Some(after) if described => Some(changed_boxes(&boxes_before, after)),
             Some(after) => moved_boxes(&boxes_before, after),
@@ -1000,10 +1029,18 @@ impl App {
         ]
         .into_iter()
         .find_map(|(repaint, why)| repaint.then_some(why));
+        #[cfg(test)]
+        let draw_probe = crate::profiling::frame_probe::span("frame.draw");
         let drawn = draw_frame_content(self, scene, size.width, size.height, scale_factor, None);
+        #[cfg(test)]
+        drop(draw_probe);
         // The surface a handled input left for this frame, now that its sync
         // ran and the frame built the tree, as a window of its own pays it.
+        #[cfg(test)]
+        let publish_probe = crate::profiling::frame_probe::span("frame.publish");
         self.publish_owed_action_surface();
+        #[cfg(test)]
+        drop(publish_probe);
         // Collaborators' marks over the widgets, for a host that shows the
         // app as a window of its own does ([`SurfaceDamage::painting_peers`]).
         let surface_rect = KurboRect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height));
@@ -1080,6 +1117,8 @@ impl App {
             device_extent(size.width, damage.copy_scale),
             device_extent(size.height, damage.copy_scale),
         );
+        #[cfg(test)]
+        let damage_probe = crate::profiling::frame_probe::span("frame.damage");
         damage.frame(full, &drawn, scale, peers.as_ref(), |regions| {
             let root = self.root_widget.as_ref();
             if !copying {
@@ -1118,11 +1157,17 @@ impl App {
                 plan_size,
             )
         });
+        #[cfg(test)]
+        drop(damage_probe);
         if let Some(mut peers) = peer_layer {
             peers.layer.presented();
             damage.peers = Some(peers);
         }
+        #[cfg(test)]
+        let complete_probe = crate::profiling::frame_probe::span("frame.complete");
         complete_native_frame_content(self, |_| {});
+        #[cfg(test)]
+        drop(complete_probe);
         search_pending
             || self.needs_sync
             || self.layout.layout_dirty
@@ -2045,20 +2090,29 @@ mod tests {
         };
         assert!(settle(&mut app), "the app alone comes to rest");
         // A click opens it, so it moves (a key chord would land it at once).
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        app.open_action_palette();
-        let _ = app.surface_frame(&region, &mut Scene::new());
-        assert!(
-            app.actions
-                .action_palette
-                .as_ref()
-                .is_some_and(crate::action_palette::ActionPalette::is_moving),
-            "a palette a click opened arrives"
-        );
-        assert!(
-            app.surface_frame(&region, &mut Scene::new()),
-            "the arriving palette asks for the frame that draws it further in"
-        );
+        // Its frames run at fixed instants a frame apart, as a host presents
+        // them: how long the test machine takes between them is not the
+        // palette's time.
+        let opened = crate::time::now();
+        let next = opened + crate::time::Duration::from_millis(16);
+        crate::time::testing::with_monotonic_time(opened, || {
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            app.open_action_palette();
+            let _ = app.surface_frame(&region, &mut Scene::new());
+            assert!(
+                app.actions
+                    .action_palette
+                    .as_ref()
+                    .is_some_and(crate::action_palette::ActionPalette::is_moving),
+                "a palette a click opened arrives"
+            );
+        });
+        crate::time::testing::with_monotonic_time(next, || {
+            assert!(
+                app.surface_frame(&region, &mut Scene::new()),
+                "the arriving palette asks for the frame that draws it further in"
+            );
+        });
         let _settled = crate::motion::testing::settled();
         assert!(
             settle(&mut app),

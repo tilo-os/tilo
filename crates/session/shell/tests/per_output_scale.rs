@@ -259,32 +259,17 @@ fn patch_in(rect: Rect, side: u32) -> Region {
     Region::new((c.x - half) as u32, (c.y - half) as u32, side, side)
 }
 
-/// The workspace recap is a tiled window, and drawing it once opened a
-/// layer it never closed. Each display's pass is the logical desktop
-/// appended inside that display's clip, so the first display's clip stayed
-/// open around the second display's whole pass, which nested inside it and
-/// drew nothing: with a second, scaled monitor, opening Activity (or
-/// Super+H) blanked it. The arrangement is the acceptance VM's, a 1x monitor
-/// with a 1.25x one beside it.
+/// Each display's pass is the logical desktop appended inside that display's
+/// clip, so a layer one overlay opens and never closes nests the next
+/// display's whole pass inside the first display's clip, and that display
+/// draws nothing. The arrangement is the acceptance VM's, a 1x monitor with
+/// a 1.25x one beside it.
 #[test]
-fn opening_the_activity_window_leaves_every_display_drawn() {
+fn a_scaled_second_display_is_drawn_and_no_layer_is_left_open() {
     let outputs = resolve_output_arrangement("1920x1080@1,1280x800@1.25").expect("arrangement");
     let (mut fb, outputs) = frame_on(outputs);
-    fb.with_chrome(|st| st.open_room_activity(None));
     let _ = fb.paint_settled();
     let scene = fb.paint_settled();
-
-    // The recap is drawn into the logical desktop, which every display's
-    // pass appends, so where it sits does not matter; that it is laid out
-    // on a display does, or this would prove nothing about it.
-    let recap = fb.host().room_activity().rect();
-    assert!(
-        recap.area() > 0.0
-            && outputs
-                .iter()
-                .any(|o| o.logical_rect().contains(recap.center())),
-        "the recap window is laid out on a display, got {recap:?}"
-    );
     assert_eq!(
         scene.encoding().n_open_clips,
         0,
@@ -300,7 +285,7 @@ fn opening_the_activity_window_leaves_every_display_drawn() {
         assert_eq!(
             blank,
             0,
-            "display {} ({:?}) has {blank} fully transparent pixels at its centre with the recap open",
+            "display {} ({:?}) has {blank} fully transparent pixels at its centre",
             output.id.0,
             output.scene_rect()
         );

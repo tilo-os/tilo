@@ -2,9 +2,10 @@
 # Everything Windows apps need that is large: the FEX payload and the x86 guest
 # root (ARM), Proton, the Steam runtime and the virtio-win media, about 3.1 GB.
 # It is packed here as tilo-windows-compat.raw, a sysext overlaying those exact
-# /usr paths, and is NOT part of the OS image. build-image.yml exports the
-# `windows-compat-sysext` target, publishes the image next to the signed
-# manifest tools/extensions/sysext_image.py writes, and a device installs it
+# /usr paths, and is NOT part of the OS image. OS release publication exports
+# the `windows-compat-sysext` target (no t check does yet), publishes the image
+# next to the signed manifest tools/extensions/sysext_image.py writes, and a
+# device installs it
 # when its owner first enables Windows apps or creates a Windows VM
 # (/usr/share/tilo/system-extensions/sysext.d/windows-compat.json).
 FROM ${BASE_REF} AS windows-compat-sysext-build

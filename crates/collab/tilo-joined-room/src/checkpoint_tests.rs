@@ -56,7 +56,7 @@ fn mutate(fixture: &Fixture, route: &CheckpointRoute, value: &str) {
             .unwrap();
             document.put(automerge::ROOT, "authored", value).unwrap();
             document.commit_edit("fixture", "authored");
-            view.peer().clone().publish_document(
+            view.peer().clone().publication_mut().publish_document(
                 &route.app,
                 &route.record,
                 document.save(),
@@ -96,7 +96,7 @@ fn publish_peer_change(
         .with_current(room(), |view| {
             let mut peer = view.peer().clone();
             change(&mut peer)?;
-            peer.durable_mutation_messages(
+            peer.publication_mut().durable_mutation_messages(
                 view.peer(),
                 &fixture.key,
                 fixture.now,
@@ -1153,7 +1153,7 @@ fn checkpoint_captures_full_stored_schema_identity() {
                 .put(automerge::ROOT, "tilo:version", 7_u64)
                 .unwrap();
             document.commit_edit("fixture", "stored schema identity");
-            view.peer().clone().publish_document(
+            view.peer().clone().publication_mut().publish_document(
                 &route.app,
                 &route.record,
                 document.save(),

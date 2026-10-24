@@ -104,7 +104,6 @@ pub mod encode;
 pub mod engine;
 pub mod event;
 pub mod event_sound;
-/// Registry refresh when system extensions (the codec pack) merge or unmerge.
 #[cfg(any(gst_decode, gst_encode, gst_realtime))]
 pub mod extensions;
 pub mod frame;

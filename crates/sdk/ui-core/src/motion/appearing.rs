@@ -49,6 +49,7 @@ impl Appearing {
 
     /// Follow the owner's `open` state with the motion the person allows
     /// (`theme.motion()`), as the last input asked for it.
+    #[track_caller]
     pub fn follow(&mut self, open: bool, motion: EffectiveMotion) {
         self.follow_from(open, motion, super::source::input_source());
     }
@@ -56,6 +57,7 @@ impl Appearing {
     /// Open or close it with the motion it last drew with, as the last input
     /// asked for it: what an owner's `open` and `close` call, so a surface
     /// whose owner stops drawing it once closed still arrives the next time.
+    #[track_caller]
     pub fn show(&mut self, open: bool) {
         let motion = self.motion;
         self.follow(open, motion);
@@ -63,6 +65,7 @@ impl Appearing {
 
     /// [`Self::follow`] for a change `source` asked for (a hover dwell is the
     /// pointer's, whatever was pressed last).
+    #[track_caller]
     pub fn follow_from(&mut self, open: bool, motion: EffectiveMotion, source: MotionSource) {
         self.motion = motion;
         if open == self.presence.is_open() {

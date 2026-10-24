@@ -14,7 +14,7 @@
 //! subscriber asks for it, so a publisher sends, and the relay forwards, only
 //! the layers someone shows.
 //! Every session is served from its own host-owned view of the shared origin
-//! ([`crate::mirror`]), which revocation drops before anything else.
+//! (`crate::mirror`), which revocation drops before anything else.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{
@@ -138,6 +138,10 @@ pub trait SessionAuthorization: Send + Sync {
             merge_status(status, self.status(Direction::Subscribe, name))
         })
     }
+    /// Told every authority interval while this session's connection is
+    /// open (its idle timeout ends one whose device went away): the owner
+    /// may count it as the holder being present. The default ignores it.
+    fn connected(&self) {}
 }
 
 /// Admission runs before any origin is attached. The opaque proof is passed
@@ -577,6 +581,7 @@ impl Relay {
                     let gap = ticked.duration_since(last_tick).as_millis().try_into().unwrap_or(u64::MAX);
                     self.counters.max_tick_gap_ms.fetch_max(gap, Ordering::Relaxed);
                     last_tick = ticked;
+                    authorization.connected();
                     self.observe(authorization.as_ref(), offered.as_mut())
                 }) => match verdict {
                     Verdict::Continue => {}

@@ -23,7 +23,7 @@ use super::scrollbar::{BarFade, PAGE_FRACTION, PressOutcome, ScrollMetrics, Scro
 use crate::color_compat::ColorCompat;
 use crate::theme::Theme;
 
-/// See the [module docs](self).
+/// See the module docs.
 #[derive(Debug)]
 pub struct ScrollRegion {
     axis: ScrollAxis,
@@ -52,6 +52,22 @@ pub struct ScrollRegion {
     /// The rounded corners of the window the region sits in, learned where
     /// it last drew: its bars keep out of them.
     corners: Cell<crate::widget::scrollbar::SurfaceCorners>,
+    /// Wheel and touchpad motion along the region's main axis: a detented
+    /// wheel's notches and a touchpad flick glide on as every scroller's do
+    /// ([`crate::virtual_viewport::glide_step`]), in the frames the host
+    /// asks for and steps through [`Self::advance`].
+    glide: crate::virtual_viewport::ScrollMomentum,
+    /// The motion toward what the host asked to show ([`Self::glide_to`]).
+    scroll_to: crate::motion::ScrollTo,
+    /// The theme's motion, at the last [`Self::set_viewport`], and device
+    /// pixels per logical pixel where the region last handled input.
+    motion: crate::tokens::EffectiveMotion,
+    device_scale: f64,
+    /// The content's opacity in the frame being drawn and in the frame on
+    /// screen: below 1 while it fades in after a long jump, when no copy of
+    /// it is offered.
+    fade_drawn: Cell<f32>,
+    fade_shown: f32,
 }
 
 /// Where a frame shows the content: its offset, the clip it paints into,
@@ -111,6 +127,12 @@ impl ScrollRegion {
             persisted: None,
             shown: crate::scroll_copy::ShownFrames::default(),
             corners: Cell::new(crate::widget::scrollbar::SurfaceCorners::default()),
+            glide: crate::virtual_viewport::ScrollMomentum::new(),
+            scroll_to: crate::motion::ScrollTo::new(),
+            motion: crate::tokens::EffectiveMotion::default(),
+            device_scale: 1.0,
+            fade_drawn: Cell::new(1.0),
+            fade_shown: 1.0,
         }
     }
 
@@ -173,6 +195,7 @@ impl ScrollRegion {
         self.viewport = viewport;
         self.lane = lane;
         self.line = f64::from(theme.tokens.metrics.wheel_line);
+        self.motion = theme.motion();
         self.clamp();
     }
 
@@ -266,10 +289,52 @@ impl ScrollRegion {
         moved
     }
 
-    /// Scroll to `offset` (clamped).
+    /// Scroll to `offset` (clamped), at once.
     pub fn set_offset(&mut self, offset: Vec2) {
+        self.glide.stop();
+        self.scroll_to.take_over(crate::motion::frame_now());
         self.offset = offset;
         self.clamp();
+    }
+
+    /// Move to `offset` (clamped) the way a view moves to what it was asked
+    /// to show (a find's next match, a search hit opened): a short jump the
+    /// person just asked for glides there and a long one fades in at the
+    /// target; one nobody asked for, or under reduced motion, lands
+    /// ([`crate::motion::ScrollTo`]). The host steps it from its `update`
+    /// ([`Self::advance`]), as it does a glide.
+    pub fn glide_to(&mut self, offset: Vec2) {
+        let now = crate::motion::frame_now();
+        let max = self.max_offset();
+        let target = Vec2::new(offset.x.clamp(0.0, max.x), offset.y.clamp(0.0, max.y));
+        let shown = self.content_rect();
+        self.glide.stop();
+        let jump = self.scroll_to.go(
+            self.offset,
+            target,
+            Vec2::new(shown.width(), shown.height()),
+            self.motion,
+            now,
+        );
+        if jump == crate::motion::ScrollJump::Glide {
+            self.follow_scroll_to(now);
+        } else {
+            self.scroll_by(target - self.offset);
+        }
+    }
+
+    /// Follow a [`Self::glide_to`] in progress to where it is drawn at
+    /// `now`; returns whether the offset moved.
+    fn follow_scroll_to(&mut self, now: crate::time::Instant) -> bool {
+        let Some(at) = self
+            .scroll_to
+            .offset_in_device_pixels(now, self.device_scale)
+        else {
+            return false;
+        };
+        let moved = self.scroll_by(at - self.offset);
+        let _ = self.scroll_to.arrived(now);
+        moved
     }
 
     /// Scroll the least that shows `rect` (in content coordinates).
@@ -359,6 +424,8 @@ impl ScrollRegion {
     /// draws its content itself (with [`Self::paint_bars`]) and offers its
     /// scrolls as copies ([`Self::offer_copy`]); [`Self::paint`] notes it.
     pub fn note_shown(&self, transform: Affine, theme: &Theme) {
+        self.fade_drawn
+            .set(self.scroll_to.opacity(crate::motion::frame_now()));
         self.corners
             .set(crate::widget::scrollbar::SurfaceCorners::seen(
                 theme, transform,
@@ -418,6 +485,10 @@ impl ScrollRegion {
     /// transform, or the offset did not move: the host then damages the
     /// region as it would without copies.
     pub fn offer_copy<T: ?Sized>(&self, owner: &T, regions: &mut Vec<Rect>) -> bool {
+        // Content fading in after a long jump is not where a copy finds it.
+        if self.fade_drawn.get() < 1.0 || self.fade_shown < 1.0 {
+            return false;
+        }
         if self.shown.compare(owner, regions) != crate::scroll_copy::Since::Copied {
             return false;
         }
@@ -432,6 +503,7 @@ impl ScrollRegion {
     /// its next scroll repaints.
     pub fn mark_presented(&mut self) {
         self.shown.present();
+        self.fade_shown = self.fade_drawn.get();
     }
 
     /// Paint the content with `draw` (handed the scene and the content
@@ -445,7 +517,14 @@ impl ScrollRegion {
     ) {
         self.note_shown(transform, theme);
         let shown = self.content_rect();
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shown);
+        // After a long jump the content fades in where it landed.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            self.fade_drawn.get(),
+            transform,
+            &shown,
+        );
         draw(scene, self.content_transform(transform));
         scene.pop_layer();
         if self.edge_fade {
@@ -518,11 +597,56 @@ impl ScrollRegion {
         }
     }
 
-    /// Whether the bar's fade needs frames now.
+    /// Whether the bar's fade or a glide needs frames now. A host that
+    /// forwards this steps the glide from its `update` ([`Self::advance`]).
     #[must_use]
     pub fn needs_animation_frame(&self, theme: &Theme) -> bool {
-        self.fade
-            .fading_at(crate::motion::frame_now(), self.held(theme))
+        let now = crate::motion::frame_now();
+        self.glide.is_active()
+            || self.scroll_to.target().is_some()
+            || self.scroll_to.is_moving(now)
+            || self.fade_drawn.get() < 1.0
+            || self.fade_shown < 1.0
+            || self.fade.fading_at(now, self.held(theme))
+    }
+
+    /// Step a glide in progress to the frame's time, from the host's
+    /// `update`; returns whether the offset moved, which the host treats
+    /// as the scroll an event would have made (a copy, not a repaint). A
+    /// glide that meets the content's end stops there.
+    pub fn advance(&mut self) -> bool {
+        let now = crate::motion::frame_now();
+        // A fade-in after a long jump repaints its frames, as a scroll does.
+        let fading = self.scroll_to.opacity(now) < 1.0 || self.fade_shown < 1.0;
+        if self.scroll_to.target().is_some() {
+            return self.follow_scroll_to(now) | fading;
+        }
+        if !self.glide.is_active() {
+            return fading;
+        }
+        let delta = self.glide.advance(crate::motion::frame_now());
+        let step = if self.glides_vertically() {
+            Vec2::new(0.0, delta)
+        } else {
+            Vec2::new(delta, 0.0)
+        };
+        let moved = self.scroll_by(step);
+        if !moved && delta != 0.0 {
+            self.glide.stop();
+        }
+        moved
+    }
+
+    /// Whether a glide is in progress.
+    #[must_use]
+    pub fn is_gliding(&self) -> bool {
+        self.glide.is_active()
+    }
+
+    /// The axis wheel motion glides along: the vertical one when the region
+    /// scrolls both ways.
+    fn glides_vertically(&self) -> bool {
+        self.has_vertical()
     }
 
     /// When the bar starts to fade, for the host's `next_wake_deadline`.
@@ -576,6 +700,7 @@ impl ScrollRegion {
         handled: &mut bool,
         theme: &Theme,
     ) -> bool {
+        self.device_scale = scale_factor;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -620,13 +745,20 @@ impl ScrollRegion {
                 self.cancel_interaction()
             }
             // Ctrl+scroll zooms (`crate::content_zoom`): the window takes it.
-            WindowEvent::MouseWheel { delta, .. }
+            WindowEvent::MouseWheel { delta, phase, .. }
                 if self.viewport.contains(self.cursor)
                     && !crate::content_zoom::is_zoom_modifier(
                         crate::platform::PlatformConventions::default(),
                         modifiers,
                     ) =>
             {
+                // The hand takes over a jump in progress from where it is drawn.
+                self.scroll_to.take_over(crate::motion::frame_now());
+                if let Some(moved) =
+                    self.wheel_glide(delta, *phase, scale_factor, modifiers, theme, handled)
+                {
+                    return moved;
+                }
                 let (mut dx, mut dy) = match delta {
                     MouseScrollDelta::LineDelta(x, y) => {
                         (-f64::from(*x) * self.line, -f64::from(*y) * self.line)
@@ -655,6 +787,9 @@ impl ScrollRegion {
             } => match state {
                 ElementState::Pressed => {
                     for vertical in [true, false] {
+                        if self.glide.is_active() {
+                            self.glide.stop();
+                        }
                         let (track, metrics) = if vertical {
                             (self.v_track(theme), self.v_metrics())
                         } else {
@@ -670,11 +805,13 @@ impl ScrollRegion {
                         };
                         match bar.press(track, metrics, self.cursor) {
                             PressOutcome::Thumb => {
+                                self.scroll_to.take_over(crate::motion::frame_now());
                                 self.fade.wake(crate::time::now());
                                 *handled = true;
                                 return true;
                             }
                             PressOutcome::Page(target) => {
+                                self.scroll_to.take_over(crate::motion::frame_now());
                                 let delta = if vertical {
                                     Vec2::new(0.0, target - self.offset.y)
                                 } else {
@@ -721,6 +858,8 @@ impl ScrollRegion {
                     }
                     _ => return false,
                 };
+                self.glide.stop();
+                self.scroll_to.take_over(crate::motion::frame_now());
                 let moved = self.scroll_by(delta);
                 if moved {
                     *handled = true;
@@ -729,6 +868,72 @@ impl ScrollRegion {
             }
             _ => false,
         }
+    }
+
+    /// Wheel motion along the axis the region glides on, through the
+    /// shared momentum: a notch moves at once and glides on, fingers move
+    /// the content 1:1 and a flick glides on after they lift. `None` for
+    /// motion across that axis (Shift+wheel sideways, a sideways swipe),
+    /// which moves the content directly. Marks the event handled when it
+    /// moved the content or started a glide; returns whether it moved.
+    fn wheel_glide(
+        &mut self,
+        delta: &MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+        scale_factor: f64,
+        modifiers: winit::keyboard::ModifiersState,
+        theme: &Theme,
+        handled: &mut bool,
+    ) -> Option<bool> {
+        let (x, y) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (f64::from(*x), f64::from(*y)),
+            MouseScrollDelta::PixelDelta(p) => (p.x, p.y),
+        };
+        let vertical = self.glides_vertically();
+        let across = if vertical { x } else { y };
+        let along = if vertical { y } else { x };
+        let sideways = vertical && modifiers.shift_key() && self.has_horizontal();
+        if sideways || across.abs() > along.abs() {
+            self.glide.stop();
+            return None;
+        }
+        // The momentum reads a wheel's vertical motion: a region that only
+        // scrolls sideways hands it the sideways motion in its place.
+        let delta = if vertical {
+            *delta
+        } else {
+            match delta {
+                MouseScrollDelta::LineDelta(_, _) => MouseScrollDelta::LineDelta(0.0, along as f32),
+                MouseScrollDelta::PixelDelta(_) => {
+                    MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, along))
+                }
+            }
+        };
+        self.glide.set_device_scale(scale_factor);
+        let step = match self.glide.wheel(&delta, phase, theme.reduce_motion) {
+            crate::virtual_viewport::WheelStep::Scroll(step) => step,
+            crate::virtual_viewport::WheelStep::Fling => {
+                // The glide moves the content in the frames that follow.
+                *handled = true;
+                return Some(false);
+            }
+            crate::virtual_viewport::WheelStep::Ignored => return Some(false),
+        };
+        // A notch is the theme's line, not the momentum's own step.
+        let step = match delta {
+            MouseScrollDelta::LineDelta(_, y) => -f64::from(y) * self.line,
+            MouseScrollDelta::PixelDelta(_) => step,
+        };
+        let moved = self.scroll_by(if vertical {
+            Vec2::new(0.0, step)
+        } else {
+            Vec2::new(step, 0.0)
+        });
+        self.glide.wheel_applied(step, moved);
+        if moved {
+            *handled = true;
+        }
+        Some(moved)
     }
 
     /// The region as the host's primary vertical scroll, for assistive
@@ -857,6 +1062,205 @@ mod tests {
             (region.to_content(Point::new(10.0, 10.0)).y - 810.0).abs() < 1e-9,
             "hit-testing goes through the offset"
         );
+    }
+
+    fn swipe(dy: f64, phase: winit::event::TouchPhase) -> WindowEvent {
+        WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, dy)),
+            phase,
+        }
+    }
+
+    /// Swipe the fingers up `steps` times, a frame apart, and lift them.
+    fn flick(region: &mut ScrollRegion, start: crate::time::Instant, steps: u64) -> u64 {
+        use crate::time::testing::with_monotonic_time;
+        use winit::event::TouchPhase;
+        send(region, &crate::synthetic_input::cursor_moved(100.0, 100.0));
+        for tick in 0..steps {
+            with_monotonic_time(start + frame(tick), || {
+                send(region, &swipe(-20.0, TouchPhase::Moved));
+            });
+        }
+        with_monotonic_time(start + frame(steps), || {
+            send(region, &swipe(0.0, TouchPhase::Ended));
+        });
+        steps
+    }
+
+    fn frame(tick: u64) -> std::time::Duration {
+        std::time::Duration::from_micros(tick * 8_333)
+    }
+
+    #[test]
+    fn a_flick_glides_on_in_whole_steps_and_rests_at_the_end() {
+        use crate::time::testing::with_monotonic_time;
+        let mut region = region(100_000.0);
+        let start = crate::time::now();
+        let mut tick = flick(&mut region, start, 6);
+        let lifted = region.offset().y;
+        assert!((lifted - 120.0).abs() < 1e-9, "the fingers moved it 1:1");
+        assert!(region.needs_animation_frame(&Theme::dark()), "it glides");
+        let mut frames = 0;
+        while region.is_gliding() && frames < 2_000 {
+            tick += 1;
+            frames += 1;
+            let moved = with_monotonic_time(start + frame(tick), || region.advance());
+            let y = region.offset().y;
+            assert!(
+                !moved || (y - y.round()).abs() < 1e-9,
+                "a glide moves whole pixels, so the host copies it: {y}"
+            );
+        }
+        assert!(region.offset().y > lifted + 100.0, "{:?}", region.offset());
+        assert!(!region.is_gliding(), "it comes to rest");
+
+        let mut short = self::region(400.0);
+        let start = crate::time::now();
+        let mut tick = flick(&mut short, start, 6);
+        while short.is_gliding() && tick < 2_000 {
+            tick += 1;
+            with_monotonic_time(start + frame(tick), || short.advance());
+        }
+        assert!(
+            (short.offset().y - 200.0).abs() < 1e-9,
+            "it stops at the end"
+        );
+        assert!(!short.is_gliding());
+    }
+
+    #[test]
+    fn a_held_key_or_the_fingers_catch_a_glide_and_reduced_motion_never_starts_one() {
+        use crate::time::testing::with_monotonic_time;
+        use winit::event::TouchPhase;
+        let mut region = region(100_000.0);
+        let start = crate::time::now();
+        let tick = flick(&mut region, start, 6);
+        assert!(region.is_gliding());
+        with_monotonic_time(start + frame(tick + 1), || {
+            send(&mut region, &swipe(-5.0, TouchPhase::Started));
+        });
+        assert!(!region.is_gliding(), "fingers back down catch it");
+
+        let mut region = self::region(100_000.0);
+        let tick = flick(&mut region, start, 6);
+        region.set_focused(true);
+        with_monotonic_time(start + frame(tick + 1), || {
+            send(
+                &mut region,
+                &crate::synthetic_input::key_input(
+                    &Key::Named(NamedKey::ArrowDown),
+                    ElementState::Pressed,
+                ),
+            );
+        });
+        assert!(!region.is_gliding(), "a key lands where it says");
+
+        let mut theme = Theme::dark();
+        theme.reduce_motion = true;
+        let mut calm = self::region(100_000.0);
+        calm.handle_window_event(
+            &crate::synthetic_input::cursor_moved(100.0, 100.0),
+            1.0,
+            winit::keyboard::ModifiersState::empty(),
+            &mut false,
+            &theme,
+        );
+        for tick in 0..6 {
+            with_monotonic_time(start + frame(tick), || {
+                calm.handle_window_event(
+                    &swipe(-20.0, TouchPhase::Moved),
+                    1.0,
+                    winit::keyboard::ModifiersState::empty(),
+                    &mut false,
+                    &theme,
+                );
+            });
+        }
+        with_monotonic_time(start + frame(6), || {
+            calm.handle_window_event(
+                &swipe(0.0, TouchPhase::Ended),
+                1.0,
+                winit::keyboard::ModifiersState::empty(),
+                &mut false,
+                &theme,
+            );
+        });
+        assert!((calm.offset().y - 120.0).abs() < 1e-9);
+        assert!(
+            !calm.is_gliding(),
+            "reduced motion moves only with the fingers"
+        );
+    }
+
+    #[test]
+    fn a_jump_asked_for_glides_or_fades_in_and_one_nobody_asked_for_lands() {
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let start = crate::time::now();
+        let at = |ms: u64| start + std::time::Duration::from_millis(ms);
+        let theme = Theme::dark();
+        let mut region = region(100_000.0);
+        // A find's next match a view down glides there in whole pixels.
+        with_monotonic_time(start, || {
+            crate::motion::note_source(MotionSource::Keyboard);
+            region.glide_to(Vec2::new(0.0, 300.0));
+        });
+        assert_eq!(region.offset().y, 0.0, "it starts where it is");
+        assert!(region.needs_animation_frame(&theme));
+        let drawn = with_monotonic_time(at(40), || {
+            assert!(region.advance(), "a step is a scroll");
+            region.offset().y
+        });
+        assert!(drawn > 0.0 && drawn < 300.0, "on its way: {drawn}");
+        assert_eq!(drawn.fract(), 0.0, "in whole pixels, which copy");
+        // The wheel takes over from where it is drawn.
+        with_monotonic_time(at(40), || {
+            send(
+                &mut region,
+                &crate::synthetic_input::cursor_moved(100.0, 100.0),
+            );
+            send(&mut region, &swipe(0.0, winit::event::TouchPhase::Moved));
+        });
+        with_monotonic_time(at(400), || {
+            region.advance();
+            assert!(
+                !region.needs_animation_frame(&theme),
+                "nothing moves after the wheel"
+            );
+        });
+        assert_eq!(region.offset().y, drawn);
+
+        // Undisturbed, it arrives exactly.
+        with_monotonic_time(at(1000), || {
+            crate::motion::note_source(MotionSource::Keyboard);
+            region.glide_to(Vec2::new(0.0, 500.0));
+        });
+        with_monotonic_time(at(1500), || {
+            region.advance();
+        });
+        assert_eq!(region.offset().y, 500.0);
+
+        // Many views away it lands, fades in there, and offers no copy of
+        // the fading content.
+        with_monotonic_time(at(2000), || {
+            crate::motion::note_source(MotionSource::Keyboard);
+            region.glide_to(Vec2::new(0.0, 50_000.0));
+            assert_eq!(region.offset().y, 50_000.0, "no scrolling through");
+            let mut scene = Scene::new();
+            region.paint(&mut scene, Affine::IDENTITY, &theme, |_, _| {});
+            let mut regions = Vec::new();
+            assert!(!region.offer_copy(&region, &mut regions));
+            assert!(region.needs_animation_frame(&theme));
+        });
+
+        // A jump nobody's hand asked for lands.
+        let mut calm = self::region(100_000.0);
+        with_monotonic_time(at(5000), || {
+            calm.glide_to(Vec2::new(0.0, 300.0));
+        });
+        assert_eq!(calm.offset().y, 300.0);
+        assert!(!calm.needs_animation_frame(&theme));
     }
 
     #[test]

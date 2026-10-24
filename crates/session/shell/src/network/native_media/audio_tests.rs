@@ -25,6 +25,11 @@ use collab_types::ChannelId;
 
 const RATE: f64 = 48_000.0;
 const FRAME: usize = 960;
+/// A loop turn this late let a received frame wait past the client's
+/// 200 ms receive budget, with margin for when in the turn it arrived.
+const LOOP_STALL: Duration = Duration::from_millis(100);
+/// How long before a stall a frame may have been sent and still be waiting.
+const EXPOSURE_MARGIN: Duration = Duration::from_millis(200);
 const CALL: &str = "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0";
 
 fn namespace(publisher: char) -> String {
@@ -91,6 +96,13 @@ fn bursts(frequency: f64, offset_ms: usize, seconds: usize) -> Vec<i16> {
         .collect()
 }
 
+/// Whether frame `sequence` of a burst track offset by `offset_ms` lies
+/// wholly inside a 200 ms burst.
+fn is_tone_frame(sequence: usize, offset_ms: usize) -> bool {
+    let start = (sequence * 20 + 1000 - offset_ms % 1000) % 1000;
+    start + 20 <= 200
+}
+
 /// Share of block energy at `frequency` (1.0 for a pure matching tone).
 fn tone_share(samples: &[i16], frequency: f64) -> f64 {
     let c = 2.0 * (std::f64::consts::TAU * frequency / RATE).cos();
@@ -111,6 +123,7 @@ fn tone_share(samples: &[i16], frequency: f64) -> f64 {
 struct Side {
     client: Client,
     frequency: f64,
+    offset_ms: usize,
     packets: Vec<Vec<u8>>,
     sealing: Sealing,
 }
@@ -177,6 +190,7 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         sides.push(Side {
             client: start(&relay, own, other, proof),
             frequency,
+            offset_ms: offset,
             packets,
             sealing: Sealing {
                 keys: keys.clone(),
@@ -213,11 +227,23 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
     ];
     let mut received = [Vec::new(), Vec::new()];
     let mut ticker = tokio::time::interval(Duration::from_millis(20));
-    let started = Instant::now();
-    let deadline = started + Duration::from_secs(seconds as u64 + 2);
+    let bound = Instant::now() + tilo_test_env::hang_bound();
+    // Once every frame is sent, a second for the last of them to arrive.
+    let mut drain_until = None;
+    // When this loop itself did not run for longer than a received frame
+    // waits for its reader: frames arriving then expired unread, as a call's
+    // audio does when its player cannot run. That is the scheduler, not the
+    // transport this test measures.
+    let mut stalls: Vec<(Instant, Instant)> = Vec::new();
+    let mut last_turn = Instant::now();
     let mut next = 0;
-    while Instant::now() < deadline {
+    while drain_until.is_none_or(|until| Instant::now() < until) && Instant::now() < bound {
         ticker.tick().await;
+        let turn = Instant::now();
+        if turn.duration_since(last_turn) > LOOP_STALL {
+            stalls.push((last_turn, turn));
+        }
+        last_turn = turn;
         if next < frames {
             for (index, side) in sides.iter().enumerate() {
                 let now = Instant::now();
@@ -236,6 +262,9 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
                 sent_at[index][next] = Some(now);
             }
             next += 1;
+            if next == frames {
+                drain_until = Some(Instant::now() + Duration::from_secs(1));
+            }
         }
         for (receiver, side) in sides.iter().enumerate() {
             while let Some(frame) = side.client.try_recv() {
@@ -273,6 +302,23 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
         let own = sides[receiver].frequency;
         let expected = sides[sender].frequency;
         let mut latencies: Vec<f64> = rows.iter().map(|row| row.1).collect();
+        // Frames sent while this loop was stalled may have expired unread.
+        let exposed: Vec<usize> = (0..frames)
+            .filter(|n| {
+                sent_at[sender][*n].is_some_and(|at| {
+                    stalls
+                        .iter()
+                        .any(|(from, to)| at + EXPOSURE_MARGIN >= *from && at <= *to)
+                })
+            })
+            .collect();
+        let delivered_unexposed = rows.iter().filter(|row| !exposed.contains(&row.0)).count();
+        let unexposed = frames - exposed.len();
+        let offset = sides[sender].offset_ms;
+        let tone_expected = rows
+            .iter()
+            .filter(|row| is_tone_frame(row.0, offset))
+            .count();
         let decoded_samples: usize = rows.iter().map(|row| row.2.len()).sum();
         let tone_frames = rows
             .iter()
@@ -295,6 +341,9 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "ownToneFrames": own_frames,
             "senderCounters": format!("{:?}", sides[sender].client.counters()),
             "receiverCounters": format!("{:?}", sides[receiver].client.counters()),
+            "deliveredTonePositions": tone_expected,
+            "loopStalls": stalls.iter().map(|(from, to)| to.duration_since(*from).as_millis()).collect::<Vec<_>>(),
+            "exposedFrames": exposed.len(),
             "missing": (0..frames).filter(|n| !rows.iter().any(|row| row.0 == *n)).collect::<Vec<_>>(),
             "transportLatencyMs": if latencies.is_empty() { serde_json::Value::Null } else { serde_json::json!({
                 "p50": percentile(&mut latencies, 0.5), "p90": percentile(&mut latencies, 0.9), "max": percentile(&mut latencies, 1.0)}) },
@@ -312,14 +361,17 @@ async fn native_opus_moq_voice_roundtrip_both_directions_with_tone_and_latency()
             "{} of {frames} frames vanished without a drop reason: {counters:?}",
             frames as u64 - accounted
         );
+        // Of the frames sent while the reader could run, the transport
+        // delivers nearly all; those it could not read were counted above.
         assert!(
-            rows.len() * 100 >= frames * 95,
-            "delivered {} of {frames}: {counters:?}",
-            rows.len()
+            delivered_unexposed * 100 >= unexposed * 95,
+            "delivered {delivered_unexposed} of {unexposed} frames sent while the reader ran \
+             ({} more sent during loop stalls {stalls:?}): {counters:?}",
+            exposed.len()
         );
         assert!(
-            tone_frames * 10 >= expected_tone_frames * 8,
-            "tone frames {tone_frames} of {expected_tone_frames}"
+            tone_frames * 10 >= tone_expected * 8,
+            "tone frames {tone_frames} of {tone_expected} delivered at tone positions"
         );
         assert_eq!(own_frames, 0, "a receiver never hears its own publication");
         assert!(

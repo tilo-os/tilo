@@ -22,11 +22,13 @@
 //! keymap to a `memfd`, hand the fd to the compositor via `keymap(xkb_v1, …)`,
 //! then for each symbol emit `key(press)` + `key(release)` and flush. Because
 //! each symbol owns its keycode and the keysym already encodes the exact
-//! character, no modifier juggling is needed — we always send modifiers = 0.
+//! character, text needs no modifiers. A chord ([`Keypress`] with Ctrl or
+//! Alt) holds the core Control or Mod1 modifier around its key, so Ctrl+C
+//! arrives as a real Ctrl+C.
 //!
 //! ## What is and isn't unit-tested
 //!
-//! The pure logic — keymap-string generation, [`KeyAction`] → keysym mapping,
+//! The pure logic — keymap-string generation, [`KeyAction`](crate::KeyAction) → keysym mapping,
 //! and the [`NullInjector`] recorder — is unit-tested in this file (see the
 //! `tests` module). The live Wayland path (binding globals, creating the
 //! virtual keyboard, sending key events) **cannot run headlessly**: it needs a
@@ -54,6 +56,11 @@ pub trait TextInjector {
     /// Press each symbol in order.
     fn send(&mut self, symbols: &[Symbol]);
 
+    /// Press one key with `modifiers` held, as a real keyboard does: the
+    /// modifiers go down, the key is pressed and released, the modifiers come
+    /// up. Ctrl+C reaches a terminal as ^C this way, not as text.
+    fn press(&mut self, keypress: Keypress);
+
     /// Wait until the compositor has processed every key sent so far. Needed
     /// before a request on another connection that must land after them.
     fn sync(&mut self) {}
@@ -77,6 +84,66 @@ pub enum Symbol {
     Left,
     /// Move the caret one character right.
     Right,
+    Up,
+    Down,
+    Escape,
+}
+
+/// The modifiers held with a key: those a terminal reads in a chord.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Modifiers {
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+impl Modifiers {
+    pub const NONE: Self = Self {
+        ctrl: false,
+        alt: false,
+    };
+
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self == Self::NONE
+    }
+
+    /// The `wl_keyboard.modifiers` depressed mask: XKB's core modifiers,
+    /// whose indices every keymap shares (Control is 2, Mod1, which Alt
+    /// sets, is 3).
+    #[must_use]
+    pub fn xkb_mask(self) -> u32 {
+        (u32::from(self.ctrl) << 2) | (u32::from(self.alt) << 3)
+    }
+
+    /// The modifiers as a chord prefix (`Control+Alt+`), for logs and the
+    /// recording injector.
+    #[must_use]
+    pub fn prefix(self) -> String {
+        let mut prefix = String::new();
+        if self.ctrl {
+            prefix.push_str("Control+");
+        }
+        if self.alt {
+            prefix.push_str("Alt+");
+        }
+        prefix
+    }
+}
+
+/// One key pressed with the modifiers held for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Keypress {
+    pub symbol: Symbol,
+    pub modifiers: Modifiers,
+}
+
+impl From<Symbol> for Keypress {
+    fn from(symbol: Symbol) -> Self {
+        Self {
+            symbol,
+            modifiers: Modifiers::NONE,
+        }
+    }
 }
 
 impl Symbol {
@@ -113,6 +180,9 @@ impl Symbol {
             Symbol::Tab => "Tab".to_string(),
             Symbol::Left => "Left".to_string(),
             Symbol::Right => "Right".to_string(),
+            Symbol::Up => "Up".to_string(),
+            Symbol::Down => "Down".to_string(),
+            Symbol::Escape => "Escape".to_string(),
             Symbol::Unicode(c) => format!("U{:04X}", c as u32),
         }
     }
@@ -212,6 +282,14 @@ impl TextInjector for NullInjector {
             .extend(symbols.iter().map(|sym| sym.keysym_name()));
     }
 
+    fn press(&mut self, keypress: Keypress) {
+        self.keys.push(format!(
+            "{}{}",
+            keypress.modifiers.prefix(),
+            keypress.symbol.keysym_name()
+        ));
+    }
+
     fn backend_name(&self) -> &'static str {
         "null"
     }
@@ -247,7 +325,7 @@ mod wayland {
         zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
     };
 
-    use super::{Symbol, TextInjector, build_keymap};
+    use super::{Keypress, Symbol, TextInjector, build_keymap};
 
     /// `wl_keyboard.key_state` value for a press / release.
     const KEY_PRESSED: u32 = 1;
@@ -427,15 +505,19 @@ mod wayland {
             self.flush()
         }
 
-        /// Press then release a single XKB keycode with modifiers cleared.
-        fn tap(&mut self, keycode: u32) {
+        /// Press then release a single XKB keycode with the `mods` depressed
+        /// mask held, then clear it. Each keysym is encoded directly, so text
+        /// needs no shift; a chord holds Control or Mod1 like a real keyboard.
+        fn tap(&mut self, keycode: u32, mods: u32) {
             let keycode = super::wire_keycode(keycode);
-            // Clear modifiers — each keysym is encoded directly, no shift etc.
-            self.keyboard.modifiers(0, 0, 0, 0);
+            self.keyboard.modifiers(mods, 0, 0, 0);
             self.keyboard.key(self.time, keycode, KEY_PRESSED);
             self.time = self.time.wrapping_add(1);
             self.keyboard.key(self.time, keycode, KEY_RELEASED);
             self.time = self.time.wrapping_add(1);
+            if mods != 0 {
+                self.keyboard.modifiers(0, 0, 0, 0);
+            }
         }
 
         /// Flush queued requests to the compositor.
@@ -456,7 +538,7 @@ mod wayland {
                 return;
             };
             for code in codes {
-                self.tap(code);
+                self.tap(code, 0);
             }
             let _ = self.flush();
             // Keep the (otherwise unused-in-tests) state field live so the
@@ -473,6 +555,16 @@ mod wayland {
 
         fn send(&mut self, symbols: &[Symbol]) {
             self.inject_symbols(symbols);
+        }
+
+        fn press(&mut self, keypress: Keypress) {
+            let Some(codes) = self.ensure_keymap(&[keypress.symbol]) else {
+                return;
+            };
+            for code in codes {
+                self.tap(code, keypress.modifiers.xkb_mask());
+            }
+            let _ = self.flush();
         }
 
         fn sync(&mut self) {

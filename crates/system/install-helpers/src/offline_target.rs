@@ -35,7 +35,7 @@ const IMAGE: [&str; 2] = [
 /// The SLSA build type of a Tilo OS release.
 pub const BUILD_TYPE: &str = "https://tilo.sh/buildtypes/bootc-os/v1";
 /// The builder every Tilo OS release names.
-pub const BUILDER: &str = "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1";
+pub const BUILDER: &str = "https://code.tilo.so/tilo/t/os-release-v1";
 const MIB: u64 = 1024 * 1024;
 
 /// The installer the target is checked in. The provided methods are the

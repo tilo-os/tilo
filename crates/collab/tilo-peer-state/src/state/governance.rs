@@ -98,7 +98,7 @@ impl PeerGovernance<'_> {
     /// ([`collab_types::ChannelRoute::proves`]). For each such record
     /// [`RecordReaders::withheld`] lists every device of
     /// [`Self::governed_access`] that may not read it
-    /// ([`Self::check_document_read`], the decision every door applies), so a
+    /// ([`StatePeer::check_document_read`](crate::StatePeer::check_document_read), the decision every door applies), so a
     /// Deny on the record, on its app or on any pattern over it withholds its
     /// key, and the room's other records are unaffected.
     ///

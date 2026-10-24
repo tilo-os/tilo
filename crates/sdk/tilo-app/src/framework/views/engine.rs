@@ -28,6 +28,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use tilo_resource::SearchBody;
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
 use ui_core::WakeHandle;
+use ui_core::arriving::{Arrival, ArrivalClock, Source, Step};
 use ui_core::background::Background;
 use ui_core::time::{Duration, Instant};
 
@@ -90,6 +91,13 @@ pub trait RemoteSource: Send + Sync + 'static {
     /// What its section is headed ("`YouTube` Music").
     fn label(&self) -> String;
 
+    /// Where its answers come from, as its section's placeholder names it
+    /// while one is on the way: a host serving the catalogue by default; a
+    /// collaborator's library is a peer.
+    fn origin(&self) -> Source {
+        Source::host(self.label())
+    }
+
     /// Whether it answers `query` at all: a source does not know the
     /// person's own marks (Liked), so a query narrowed by them stays local.
     fn accepts(&self, query: &QuerySpec) -> bool {
@@ -136,29 +144,78 @@ pub struct ResultGroup {
     pub more: usize,
 }
 
-/// How a remote section stands.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RemoteState {
-    /// The query is not one it answers.
-    Idle,
-    Waiting,
-    /// It answered.
-    Loaded,
-    /// It could not be reached, in words.
-    Unreachable(String),
-}
-
 /// What one remote source has found for the query.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RemoteSection {
     pub source: String,
     pub label: String,
-    pub state: RemoteState,
+    /// Where its answer stands: pending (its rows streaming in), answered,
+    /// or unreachable, in words (empty when it gave none). `None` when the
+    /// query is not one it answers.
+    pub state: Option<Arrival<(), RemoteError>>,
+    /// The timing of its answer, for its placeholder
+    /// ([`ui_core::widget::ArrivalFace`]): set when it was asked.
+    pub clock: Option<ArrivalClock>,
     /// Its rows, as groups in the order they are shown.
     pub groups: Vec<ResultGroup>,
 }
 
 impl RemoteSection {
+    /// A section of a source not asked.
+    fn unasked(source: String, label: String) -> Self {
+        Self {
+            source,
+            label,
+            state: None,
+            clock: None,
+            groups: Vec::new(),
+        }
+    }
+
+    /// Whether its answer is still on the way.
+    #[must_use]
+    pub fn is_waiting(&self) -> bool {
+        self.state.as_ref().is_some_and(Arrival::is_pending)
+    }
+
+    /// Whether it answered in full.
+    #[must_use]
+    pub fn is_answered(&self) -> bool {
+        matches!(self.state, Some(Arrival::Ready(())))
+    }
+
+    /// Why it could not answer, once it could not.
+    #[must_use]
+    pub fn failure(&self) -> Option<&RemoteError> {
+        self.state.as_ref().and_then(Arrival::failure)
+    }
+
+    /// The timing of the placeholder that stands where its rows will be:
+    /// while its answer is on the way and no row has come yet. A painter
+    /// paints [`ui_core::widget::ArrivalFace`] from it in the space of a row.
+    #[must_use]
+    pub fn placeholder(&self) -> Option<&ArrivalClock> {
+        if self.is_waiting() && self.groups.is_empty() {
+            self.clock.as_ref()
+        } else {
+            None
+        }
+    }
+
+    /// It was asked at `now`; its answer comes from `from`.
+    fn ask(&mut self, from: Source, now: Instant) {
+        self.state = Some(Arrival::Pending { from: from.clone() });
+        self.clock = Some(ArrivalClock::new(now, from));
+    }
+
+    /// Its answer (or why there is none) landed at `now`.
+    fn settle(&mut self, answer: Result<(), RemoteError>, now: Instant) {
+        self.state = Some(answer.into());
+        if let Some(clock) = self.clock.as_mut() {
+            clock.arrive(now);
+        }
+    }
+
     /// The rows shown, in order.
     pub fn rows(&self) -> impl Iterator<Item = &Item> {
         self.groups.iter().flat_map(|group| &group.items)
@@ -186,9 +243,29 @@ impl QueryResults {
     /// line shows while it is.
     #[must_use]
     pub fn pending(&self) -> bool {
+        self.remote.iter().any(RemoteSection::is_waiting)
+    }
+
+    /// The placeholder step each section shows at `now` (`None` where it
+    /// shows none): a painter that kept what it drew repaints when this
+    /// changes.
+    #[must_use]
+    pub fn placeholder_steps(&self, now: Instant) -> Vec<Option<Step>> {
         self.remote
             .iter()
-            .any(|section| section.state == RemoteState::Waiting)
+            .map(|section| section.placeholder().map(|clock| clock.step(now)))
+            .collect()
+    }
+
+    /// When a section's placeholder next changes step: the deadline its
+    /// window wakes at, so the steps take no frames in between.
+    #[must_use]
+    pub fn next_placeholder_step(&self, now: Instant) -> Option<Instant> {
+        self.remote
+            .iter()
+            .filter_map(RemoteSection::placeholder)
+            .filter_map(|clock| clock.next_step_at(now))
+            .min()
     }
 
     /// Whether nothing was found anywhere, and nothing is still coming.
@@ -1081,12 +1158,7 @@ impl QueryEngine {
             .collect();
         let kinds = self.kinds.clone();
         let Some(slot) = self.remotes.get_mut(at) else {
-            return RemoteSection {
-                source: String::new(),
-                label: String::new(),
-                state: RemoteState::Idle,
-                groups: Vec::new(),
-            };
+            return RemoteSection::unasked(String::new(), String::new());
         };
         if let Some(cancel) = slot.cancel.take() {
             cancel.cancel();
@@ -1095,12 +1167,7 @@ impl QueryEngine {
         slot.answered.clear();
         slot.due = None;
         slot.sent_at = None;
-        let mut section = RemoteSection {
-            source: slot.source.id().to_owned(),
-            label: slot.source.label(),
-            state: RemoteState::Idle,
-            groups: Vec::new(),
-        };
+        let mut section = RemoteSection::unasked(slot.source.id().to_owned(), slot.source.label());
         if !slot.source.accepts(&query) {
             return section;
         }
@@ -1109,7 +1176,7 @@ impl QueryEngine {
             let items: Vec<Item> = cached.items.iter().filter(not_local).cloned().collect();
             section.groups = grouped(&kinds, items, GROUP_LIMIT);
             if now.saturating_duration_since(cached.at) < FRESH {
-                section.state = RemoteState::Loaded;
+                section.state = Some(Arrival::Ready(()));
                 if let Some(first) = self.timings.remote_first.get_mut(at) {
                     *first = Some(Duration::ZERO);
                 }
@@ -1139,7 +1206,7 @@ impl QueryEngine {
                 .map(|item| (item.kind, item.id.clone()))
                 .collect();
         }
-        section.state = RemoteState::Waiting;
+        section.ask(slot.source.origin(), now);
         let ready = slot
             .last_sent
             .map_or(now, |sent| sent.checked_add(THROTTLE).unwrap_or(now));
@@ -1187,7 +1254,7 @@ impl QueryEngine {
         if spawned.is_err()
             && let Some(section) = self.results.remote.get_mut(at)
         {
-            section.state = RemoteState::Unreachable(String::new());
+            section.settle(Err(RemoteError(String::new())), now);
         }
     }
 
@@ -1227,14 +1294,14 @@ impl QueryEngine {
                     *done = since;
                 }
                 if let Some(section) = self.results.remote.get_mut(at) {
-                    section.state = RemoteState::Loaded;
+                    section.settle(Ok(()), now);
                 }
                 self.relayout(at);
             }
             AnswerEvent::Failed(message) => {
                 slot.cancel = None;
                 if let Some(section) = self.results.remote.get_mut(at) {
-                    section.state = RemoteState::Unreachable(message);
+                    section.settle(Err(RemoteError(message)), now);
                 }
             }
         }
@@ -1289,7 +1356,7 @@ impl QueryEngine {
         else {
             return;
         };
-        if section.state != RemoteState::Loaded {
+        if !section.is_answered() {
             return;
         }
         let mut seen = HashSet::new();

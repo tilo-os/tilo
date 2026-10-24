@@ -204,6 +204,9 @@ mime_guess.workspace = true
 # Settings app can call the same bindings without depending on the
 # compositor. Quick Settings keeps only dispatcher aliases and fixture policy.
 os-actions = { path = "../../system/os-actions" }
+# Your devices as a VPN: the tunnel, and the helper's protocol (not the
+# helper itself).
+tilo-device-vpn = { path = "../../system/device-vpn", default-features = false, features = ["tunnel"] }
 # Where the device is, for a time zone that follows it.
 tilo-location = { path = "../../platform/tilo-location" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
@@ -319,7 +322,9 @@ tilo-dialogs.workspace = true
 # readings its own System monitor widget shows; `udisks` adds each drive's
 # health to the storage it describes (Disks).
 tilo-system-stats = { path = "../../system/system-stats", features = ["udisks"] }
-package-store = { path = "../../packaging/package-store" }
+# `store`: opening a downloaded app records its use for the size sweep
+# (`launcher::recorded_use`).
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # What leaves the person's apps goes to their Trash (`app_list`).
 host-fs = { path = "../../system/host-fs" }

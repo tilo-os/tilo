@@ -104,9 +104,9 @@ impl Widget for WordProcessorWidget {
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document_ref(state, root);
-        if self.toast.expire() {
-            self.lifecycle.dirty = true;
-        }
+        // A transient cue says so in the window's bar while it lasts.
+        self.toast.expire();
+        self.toast.publish();
         #[cfg(test)]
         if self.source.is_none() && self.dispatch.is_some() {
             self.source = ui::framework::testing::detached_live(state).ok();
@@ -335,7 +335,7 @@ impl Widget for WordProcessorWidget {
     }
 
     /// Top-layer pass: paint the right-click context menu (when open) so it
-    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`].
+    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`](ui::widget::context_menu::ContextMenu).
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -344,8 +344,6 @@ impl Widget for WordProcessorWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Toast first, so an open menu stacks above it.
-        self.draw_toast(scene, transform, text_renderer, theme);
         let viewport = self.floating_viewport();
         for menu in [
             &mut self.context_menu,
@@ -431,9 +429,7 @@ impl Widget for WordProcessorWidget {
         if !self.styles_panel_full_window() {
             tree.node = tree.node.with_name(t("a11y-document-editor"));
         }
-        let mut node = tree.into_access_node();
-        node.children.extend(self.toast.access_node());
-        Some(node)
+        Some(tree.into_access_node())
     }
 
     fn perform_semantic_action(

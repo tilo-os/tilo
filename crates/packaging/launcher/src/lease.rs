@@ -28,7 +28,7 @@ use runtime_bundle::gc::BundleRoot;
 use crate::manifest::ManifestView;
 use crate::run::{RunError, RunOptions};
 
-/// Where [`LaunchLeases::take_observed`] has got to, for a test that
+/// Where `LaunchLeases::take_observed` has got to, for a test that
 /// interleaves an update with a launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {

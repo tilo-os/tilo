@@ -41,6 +41,16 @@ Both directories contain `PROVENANCE.md`, licences and focused regression
 tests. No insecure verifier, alternative trust loader or policy exception is
 introduced.
 
+## DAVE for Discord voice
+
+`davey` 0.1.5 is the checksum-verified MIT registry release, moved from
+openmls 0.8 to the openmls 0.9 generation the workspace builds (the two pin
+incompatible `hax-lib` versions). openmls 0.9 surfaces one's own commit as
+`OwnPendingCommit` instead of failing with `OwnCommit`; davey merges its
+pending commit on that variant. The Node and Python bindings are left out.
+See `vendor/davey/PROVENANCE.md` and `TILO-PATCH.md`; the Discord worker's
+voice tests run the full handshake against it.
+
 ## iroh idle timers
 
 `iroh` 1.0.3, `netwatch` 0.19.1 and `iroh-gossip` 0.101.0 are the
@@ -621,6 +631,9 @@ those compiles before encoding and install the finished ones. A render can't
 wait for a promise, so a deferred pipeline it dispatches whose compile is not
 in yet is created synchronously, and the GPU process compiles it before the
 dispatch. This works on every target; native windows keep the threads.
+`new_async_deferring_reporting` takes a callback that runs each time one of
+the awaited pipelines is compiled, so the browser can bound a stalled compile
+without failing one that is slow but still finishing pipelines.
 
 ## zlink-macros
 

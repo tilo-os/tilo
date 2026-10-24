@@ -633,7 +633,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let message = joined
         .owner
         .with_current(room, |view| {
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),
@@ -685,7 +685,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     let message = joined
         .owner
         .with_current(room, |view| {
-            view.peer().clone().publish_incremental(
+            view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),

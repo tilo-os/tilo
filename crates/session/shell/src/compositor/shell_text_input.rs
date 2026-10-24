@@ -47,6 +47,9 @@ pub type FieldRequest = ui::ime::ImeWindowState;
 pub enum NativeFieldId {
     Widget(u64),
     Palette,
+    /// A shell password prompt: the compositor's sheet or Quick Settings'
+    /// Wi-Fi prompt.
+    Prompt,
 }
 
 /// Private opaque edit metadata, never surrounding text or a persisted hash.
@@ -195,6 +198,7 @@ impl ShellTextInput {
         }
         self.pump();
         self.update_enable();
+        state.shell_field_active = self.holds_focus(state);
         let events = std::mem::take(&mut self.state.events);
         if changed { Vec::new() } else { events }
     }
@@ -343,6 +347,23 @@ pub fn translate_key(keysym: u32, pressed: bool) -> Option<WindowEvent> {
     Some(crate::shell::test_control::keyboard_input_event(
         &key, pressed,
     ))
+}
+
+/// The modifiers a virtual keyboard's `wl_keyboard.modifiers` mask holds.
+/// The on-screen keyboard's keymap keeps XKB's core modifiers, whose bits
+/// every keymap shares: Shift 0, Control 2, Mod1 (Alt) 3, Mod4 (Super) 6.
+#[must_use]
+pub fn modifiers_state(mask: u32) -> winit::keyboard::ModifiersState {
+    use winit::keyboard::ModifiersState as M;
+    [
+        (1 << 0, M::SHIFT),
+        (1 << 2, M::CONTROL),
+        (1 << 3, M::ALT),
+        (1 << 6, M::SUPER),
+    ]
+    .into_iter()
+    .filter(|(bit, _)| mask & bit != 0)
+    .fold(M::empty(), |held, (_, modifier)| held | modifier)
 }
 
 impl wayland_client::Dispatch<wl_registry::WlRegistry, ()> for ClientSide {

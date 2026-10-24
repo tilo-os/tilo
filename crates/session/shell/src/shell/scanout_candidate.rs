@@ -4,7 +4,7 @@
 //! opaque, covering the output exactly at one buffer pixel per output pixel,
 //! looks the same composited as scanned out: KMS can flip the client's own
 //! buffer instead of the compositor rendering a copy of it. The frame builder
-//! proves the "topmost" part while it builds the scene ([`DrawnOnTop`]); the
+//! proves the "topmost" part while it builds the scene (`DrawnOnTop`); the
 //! DRM presenter proves the rest against the output and its plane.
 //!
 //! Every proof here is structural, about the encoded scene, so an overlay
@@ -216,7 +216,7 @@ impl SceneFingerprint {
 
 /// The whole-pixel origin of a `size` image drawn through `transform`, when
 /// that maps one image pixel onto one scene pixel: a translation by whole
-/// pixels, up to [`PIXEL_EPSILON`] at the image's far edge.
+/// pixels, up to `PIXEL_EPSILON` at the image's far edge.
 pub fn pixel_exact_origin(transform: Affine, size: (u32, u32)) -> Option<(i32, i32)> {
     let [xx, yx, xy, yy, tx, ty] = transform.as_coeffs();
     if size.0 == 0 || size.1 == 0 || !transform.as_coeffs().iter().all(|c| c.is_finite()) {

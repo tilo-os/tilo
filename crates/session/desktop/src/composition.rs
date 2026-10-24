@@ -1252,10 +1252,26 @@ impl DesktopSurface {
         theme: &Theme,
         presence: &PresenceCtx,
     ) -> Option<Rect> {
+        let bounds =
+            self.draw_chrome_sections(backdrop, topbar, transform, text, theme, presence)?;
+        self.draw_workspace_area(workspace, transform, text, theme, presence)?;
+        Some(bounds)
+    }
+
+    /// The backdrop and the bar of [`Self::draw_sections`], without the
+    /// workspace's windows: the bounds of the bar, or zero under external
+    /// navigation.
+    pub fn draw_chrome_sections(
+        &mut self,
+        backdrop: &mut Scene,
+        topbar: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<Rect> {
         child_mut(self.root.as_mut(), &[0, 0])?.draw(backdrop, transform, text, theme, presence);
         if self.external_navigation {
-            child_mut(self.root.as_mut(), &[0, 1, 0])?
-                .draw(workspace, transform, text, theme, presence);
             return Some(Rect::ZERO);
         }
         let bar = child_mut(self.root.as_mut(), &[0, 1, 0])?;
@@ -1264,9 +1280,26 @@ impl DesktopSurface {
         if let Some(display_chrome) = child_mut(self.root.as_mut(), &[0, 2]) {
             display_chrome.draw(topbar, transform, text, theme, presence);
         }
-        child_mut(self.root.as_mut(), &[0, 1, 1])?
-            .draw(workspace, transform, text, theme, presence);
         Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
+    }
+
+    /// The workspace's windows of [`Self::draw_sections`] alone: what a
+    /// workspace switch moves.
+    pub fn draw_workspace_area(
+        &mut self,
+        workspace: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) -> Option<()> {
+        let path: &[usize] = if self.external_navigation {
+            &[0, 1, 0]
+        } else {
+            &[0, 1, 1]
+        };
+        child_mut(self.root.as_mut(), path)?.draw(workspace, transform, text, theme, presence);
+        Some(())
     }
 }
 impl Widget for DesktopSurface {

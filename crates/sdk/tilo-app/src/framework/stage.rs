@@ -21,7 +21,7 @@
 //! toolkit's `Widget::has_pending_visual_work`.
 //!
 //! [`stage`] is the whole capture after the fixture: the launcher calls it
-//! for `--shots`, and [`TestApp::capture`](super::testing::HeadlessApp::capture)
+//! for `--shots`, and [`HeadlessApp::capture`](super::headless::HeadlessApp::capture)
 //! composes the same frame in a test.
 
 use std::cell::RefCell;
@@ -269,7 +269,7 @@ pub fn time_frames<A: ResourceApp>(
 ) -> Result<Vec<ui_core::time::Duration>, String> {
     #[cfg(tilo_native_runner)]
     {
-        let mut app = super::testing::HeadlessApp::<A>::capture(scenario)
+        let mut app = super::headless::HeadlessApp::<A>::capture(scenario)
             .map_err(|error| error.to_string())?;
         let harness = app.harness();
         harness.relayout();

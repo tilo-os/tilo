@@ -276,10 +276,9 @@ pub fn duplicate_active_tab(st: &mut ChromeState) -> Result<Option<TabId>, Dupli
                 drop(tree);
                 return open_another_window(st, &app_id, anchor).map(|()| None);
             }
-            // None can be duplicated: the workspace recap, or a window
+            // None can be duplicated: a live client's surface, or a window
             // belonging to somebody else's machine.
-            TileContent::WorkspaceActivity
-            | TileContent::Foreign { .. }
+            TileContent::Foreign { .. }
             | TileContent::PeerWindow { .. }
             | TileContent::HostedWindow { .. }
             | TileContent::LocalApp { .. } => {
@@ -709,9 +708,7 @@ pub fn transfer_tab_to_workspace(
         }
         if matches!(
             tile,
-            TileContent::WorkspaceActivity
-                | TileContent::PeerWindow { .. }
-                | TileContent::HostedWindow { .. }
+            TileContent::PeerWindow { .. } | TileContent::HostedWindow { .. }
         ) {
             return Err(MoveTabError::Pinned);
         }

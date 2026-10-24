@@ -50,7 +50,7 @@ use std::{cell::Cell, io::Write};
 
 /// Counts visible rows/characters visited by the projection, including skipped prefixes,
 /// against [`Limits::scan_entries`]. Iterator internals are additionally bounded by the
-/// document operation ceiling checked in [`begin`].
+/// document operation ceiling checked in [`begin`](source::Source::begin).
 pub struct Work {
     remaining: Cell<usize>,
 }

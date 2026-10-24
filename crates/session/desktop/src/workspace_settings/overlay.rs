@@ -1441,7 +1441,7 @@ impl WorkspaceSettingsOverlay {
             text_renderer.draw_style(
                 scene,
                 &subject,
-                colors.intent.accent_hover,
+                accent_text_on(theme, theme.tokens.colors.surfaces.content),
                 transform.pre_translate((card.x0 + 20.0, card.y0 + 48.0).into()),
                 None,
                 &tokens.typography.style(TextRole::Caption),
@@ -1615,7 +1615,7 @@ impl WorkspaceSettingsOverlay {
             text_renderer.draw_style(
                 scene,
                 &caption,
-                colors.intent.accent_hover,
+                accent_text_on(theme, colors.surfaces.raised),
                 transform.pre_translate((identity.x0 + 76.0, identity.y0 + 8.0).into()),
                 None,
                 &tokens.typography.style(TextRole::Caption),
@@ -1636,7 +1636,7 @@ impl WorkspaceSettingsOverlay {
         text_renderer.draw_style(
             scene,
             &t("workspace-settings-current-workspace"),
-            colors.intent.accent_hover,
+            accent_text_on(theme, colors.surfaces.raised),
             transform.pre_translate((identity.x0 + 76.0, identity.y0 + 12.0).into()),
             None,
             &tokens.typography.style(TextRole::Caption),
@@ -1714,7 +1714,7 @@ impl WorkspaceSettingsOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.text_primary.with_alpha_factor(0.18),
+            colors.text_primary.with_alpha_factor(IDENTITY_TILE_WASH),
             None,
             &RoundedRect::from_rect(mark, f64::from(tokens.radii.control)),
         );
@@ -1723,7 +1723,7 @@ impl WorkspaceSettingsOverlay {
             transform,
             mark.inset(-14.0),
             ui::icons::Icon::LayoutGrid,
-            colors.intent.accent_hover,
+            accent_icon_on_tile(theme, IDENTITY_TILE_WASH),
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         let close = self.close_rect();
@@ -2424,7 +2424,7 @@ impl WorkspaceSettingsOverlay {
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.text_primary.with_alpha_factor(0.16),
+            colors.text_primary.with_alpha_factor(SHARE_TILE_WASH),
             None,
             &RoundedRect::from_rect(share_icon, f64::from(tokens.radii.control)),
         );
@@ -2433,7 +2433,7 @@ impl WorkspaceSettingsOverlay {
             transform,
             share_icon.inset(-8.0),
             ui::icons::Icon::Copy,
-            colors.intent.accent_hover,
+            accent_icon_on_tile(theme, SHARE_TILE_WASH),
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         text_renderer.draw_style(
@@ -3130,9 +3130,87 @@ pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
     needs.iter().map(|need| need / total * nav_width).collect()
 }
 
+/// Accent-toned text on `ground`: the accent as ink, stepped out until it
+/// reads there as text. `intent.accent_hover` is a fill: on the dark theme
+/// it read at 2.7:1 on the raised card.
+fn accent_text_on(theme: &Theme, ground: vello::peniko::Color) -> vello::peniko::Color {
+    use ui::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
+    let colors = &theme.tokens.colors;
+    let floor = if colors.palette.high_contrast {
+        HIGH_CONTRAST_TEXT_MIN_CONTRAST
+    } else {
+        BODY_TEXT_MIN_CONTRAST
+    };
+    colors.ink_on(ground, colors.intent.accent_ink, floor)
+}
+
+/// How strongly the identity card's and the sharing card's icon tiles wash
+/// the raised card with primary ink.
+const IDENTITY_TILE_WASH: f32 = 0.18;
+const SHARE_TILE_WASH: f32 = 0.16;
+
+/// An accent icon on a tile washed `wash` over a raised card: the accent as
+/// ink, stepped out until it stands there as a mark (WCAG 1.4.11).
+fn accent_icon_on_tile(theme: &Theme, wash: f32) -> vello::peniko::Color {
+    let colors = &theme.tokens.colors;
+    let tile = ui::tokens::colors::over(colors.surfaces.raised, colors.text_primary, wash);
+    colors.ink_on(
+        tile,
+        colors.intent.accent_ink,
+        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accent_captions_read_as_text_on_their_ground_in_every_theme() {
+        use ui::theme::Preset;
+        use ui::tokens::contrast::{BODY_TEXT_MIN_CONTRAST, HIGH_CONTRAST_TEXT_MIN_CONTRAST};
+        for preset in Preset::ALL {
+            let theme = Theme::preset(preset);
+            let floor = if theme.tokens.colors.palette.high_contrast {
+                HIGH_CONTRAST_TEXT_MIN_CONTRAST
+            } else {
+                BODY_TEXT_MIN_CONTRAST
+            };
+            // The identity card's caption on the raised card; a member
+            // sheet's subject on the panel, through the panel's own theme.
+            let panel = ui::chrome::shell::on_panel(&theme);
+            for (what, theme, ground) in [
+                (
+                    "identity caption",
+                    &theme,
+                    theme.tokens.colors.surfaces.raised,
+                ),
+                (
+                    "sheet subject",
+                    &panel,
+                    panel.tokens.colors.surfaces.content,
+                ),
+            ] {
+                let ratio = ui::a11y::contrast_ratio(accent_text_on(theme, ground), ground);
+                assert!(
+                    ratio >= floor,
+                    "{}: {what} reads at {ratio:.2}:1, needs {floor}:1",
+                    preset.id()
+                );
+            }
+            let colors = &theme.tokens.colors;
+            for wash in [IDENTITY_TILE_WASH, SHARE_TILE_WASH] {
+                let tile =
+                    ui::tokens::colors::over(colors.surfaces.raised, colors.text_primary, wash);
+                let ratio = ui::a11y::contrast_ratio(accent_icon_on_tile(&theme, wash), tile);
+                assert!(
+                    ratio >= ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    "{}: an icon on a {wash} tile stands at {ratio:.2}:1",
+                    preset.id()
+                );
+            }
+        }
+    }
 
     #[test]
     fn rename_selection_paint_tracks_selected_range_and_caret() {

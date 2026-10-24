@@ -9,7 +9,7 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     /// Apply a preference change a control asked for (see
-    /// [`Widget::take_accessibility_request`](crate::widget::Widget::take_accessibility_request)).
+    /// [`Widget::take_accessibility_request`]).
     /// Returns whether one was pending.
     pub fn apply_accessibility_request(&mut self) -> bool {
         let Some(request) = self.root_widget.take_accessibility_request() else {
@@ -415,13 +415,21 @@ impl App {
         // The sweep follows every mapped node: forget widgets replaced since
         // the map was admitted first. Survivors keep what they queued for the
         // sweep after the next layout.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("history.forget");
         self.forget_replaced_widgets();
+        #[cfg(test)]
+        drop(probe);
+        let sweep = self.history_sweep_nodes();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("history.record");
         // SAFETY: App exclusively owns this stable live layout for the sweep.
         let mut changed = unsafe {
             crate::undo::record_dispatched_action_bound(
                 &mut self.state,
                 std::ptr::from_mut(self.root_widget.as_mut()),
                 &self.layout.node_map,
+                sweep.nodes.iter().copied(),
                 &self.bindings,
                 &self.collaboration.local_author,
                 &self.permission_ctx,
@@ -430,30 +438,56 @@ impl App {
         // What the whole view says about history is read once per sweep, not
         // once per node (each read walks the tree, a bound status opens its
         // record): only a request taken in the sweep can change it.
+        #[cfg(test)]
+        drop(probe);
+        #[cfg(test)]
+        let _probe = crate::profiling::frame_probe::span("history.nodes");
         let mut embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
         let mut local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
         let mut bound_statuses: Vec<(
             crate::bound_dispatch::CallbackBinding,
             crate::undo::UndoStatus,
         )> = Vec::new();
+        let mut history_exists: Option<bool> = None;
+        // The nodes the sweep skips are outside any bound component: what
+        // their status read did to the transaction is done once here.
+        if sweep.any_unbound {
+            self.keep_history_boundary(embedded, &mut history_exists);
+        }
         let mut visited = std::collections::HashSet::new();
-        for (&node, pointer) in &self.layout.node_map {
+        for &node in &sweep.nodes {
+            let Some(pointer) = self.layout.node_map.get(&node) else {
+                continue;
+            };
             // SAFETY: this layout is unchanged, so every node pointer is live.
             if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
             let binding = self.bindings.binding_for(node);
             // SAFETY: no target reference escapes and this layout is unchanged.
-            let request = unsafe {
+            let control = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| crate::undo::take_undo_request(widget),
+                    |widget| {
+                        crate::widget::capability::capability_mut::<dyn crate::undo::UndoControl>(
+                            widget,
+                        )
+                        .map(crate::undo::UndoControl::take_undo_request)
+                    },
                 )
             }
             .ok()
             .flatten();
+            // A node that neither shows nor asks for undo, outside any bound
+            // history, has nothing to take or to be told: only the boundary
+            // below applies to it.
+            if control.is_none() && binding.is_none() {
+                self.keep_history_boundary(embedded, &mut history_exists);
+                continue;
+            }
+            let request = control.flatten();
             if let Some(request) = request {
                 let entry = if let Some(binding) = &binding {
                     binding
@@ -489,19 +523,13 @@ impl App {
                 embedded = crate::history_mode::embedded::has_surfaces(self.root_widget.as_ref());
                 local_status = crate::undo::local_undo_status(self.root_widget.as_ref());
                 bound_statuses.clear();
+                history_exists = None;
             }
             // The former eager status read flushed open transactions whenever
-            // history existed. Preserve that boundary without deriving labels.
-            if binding.is_none()
-                && !embedded
-                && (self
-                    .state
-                    .can_undo_as(Some(&self.collaboration.local_author))
-                    || self
-                        .state
-                        .can_redo_as(Some(&self.collaboration.local_author)))
-            {
-                self.state.doc.get_heads();
+            // history existed. Preserve that boundary without deriving labels;
+            // whether history exists is read once until a request changes it.
+            if binding.is_none() {
+                self.keep_history_boundary(embedded, &mut history_exists);
             }
             // Bound histories intentionally keep completed-action labels warm
             // across pending edits and dynamically mounted controls.
@@ -549,7 +577,68 @@ impl App {
                 )
             };
         }
+        // A request taken above may have opened history the skipped nodes'
+        // status read would have closed the transaction on.
+        if sweep.any_unbound && history_exists.is_none() {
+            self.keep_history_boundary(embedded, &mut history_exists);
+        }
+        self.layout.history_nodes = sweep;
         changed
+    }
+
+    /// The mapped nodes the history sweep visits, found again when the map
+    /// was built and admitted anew (or emptied) since they were last found.
+    /// Taken out of the layout; the sweep puts them back.
+    fn history_sweep_nodes(&mut self) -> runtime::HistoryNodes {
+        let found_for = Some((self.layout.admissions, self.layout.node_map.len()));
+        let mut sweep = std::mem::take(&mut self.layout.history_nodes);
+        if sweep.found_for == found_for {
+            return sweep;
+        }
+        sweep.nodes.clear();
+        sweep.any_unbound = false;
+        for &node in self.layout.node_map.keys() {
+            sweep.any_unbound |= self.bindings.binding_for(node).is_none();
+            // SAFETY: the admitted layout is unchanged and nothing escapes.
+            let takes_part = self.bindings.has_owner(node)
+                || unsafe {
+                    crate::bound_dispatch::inspect_bound_node(
+                        &self.bindings,
+                        &self.layout.node_map,
+                        node,
+                        |widget| {
+                            crate::widget::capability::capability::<dyn crate::undo::UndoControl>(
+                                widget,
+                            )
+                            .is_some()
+                                || crate::widget::capability::capability::<
+                                    dyn crate::undo::CommittedActions,
+                                >(widget)
+                                .is_some()
+                        },
+                    )
+                }
+                .unwrap_or(false);
+            if takes_part {
+                sweep.nodes.push(node);
+            }
+        }
+        sweep.found_for = found_for;
+        sweep
+    }
+
+    /// The transaction boundary a status read made when history exists:
+    /// read whether it does once, until a request changes it.
+    fn keep_history_boundary(&mut self, embedded: bool, history_exists: &mut Option<bool>) {
+        if embedded {
+            return;
+        }
+        let author = Some(&self.collaboration.local_author);
+        if *history_exists
+            .get_or_insert_with(|| self.state.can_undo_as(author) || self.state.can_redo_as(author))
+        {
+            self.state.doc.get_heads();
+        }
     }
 
     /// Finalize the document boundary for a handled native event. Shared host
@@ -569,10 +658,19 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        self.commit_action_with_invalidation(true);
+        self.commit_action_with(CommitKind::Action);
     }
 
-    fn commit_action_with_invalidation(&mut self, invalidate: bool) {
+    /// Commit after an input that only moved the view (a wheel or touchpad
+    /// pan): nothing in it can ask for undo or redo, so the history sweep,
+    /// which visits every mapped widget, is left to the next input that can
+    /// (what earlier input queued, its own sweep took).
+    #[cfg(feature = "native")]
+    pub(super) fn commit_view_change(&mut self) {
+        self.commit_action_with(CommitKind::ViewOnly);
+    }
+
+    fn commit_action_with(&mut self, commit: CommitKind) {
         if self.framework_input.get()
             || self
                 .history
@@ -581,7 +679,8 @@ impl App {
         {
             return;
         }
-        let history_changed = self.service_history();
+        let invalidate = commit == CommitKind::Action;
+        let history_changed = commit == CommitKind::Action && self.service_history();
         if history_changed {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -1339,7 +1438,7 @@ impl App {
     ///
     /// A refresh after nothing the tree is read from changed (no input, no
     /// document or widget change, no layout, no focus move since the last
-    /// refresh: [`Self::mark_semantic_tree_stale`]) is that empty diff
+    /// refresh: `Self::mark_semantic_tree_stale`) is that empty diff
     /// without walking the widgets, so a frame that changed nothing costs
     /// the host's accessibility walk nothing. Any such change publishes on
     /// the refresh that follows it.
@@ -1714,3 +1813,18 @@ impl App {
         Ok(true)
     }
 }
+
+/// What a handled input asks [`App::commit_action_with`] to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitKind {
+    /// Any input: sweep the widgets for history requests, commit, and
+    /// invalidate what the input may have changed.
+    Action,
+    /// An input that only moved the view.
+    #[cfg(feature = "native")]
+    ViewOnly,
+}
+
+#[cfg(test)]
+#[path = "history_sweep_tests.rs"]
+mod history_sweep_tests;

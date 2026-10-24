@@ -528,6 +528,8 @@ pub struct ProjectionOverlay {
     focus: SheetFocus,
     /// The sheet sliding in from its edge (`ui::motion::PanelSlide`).
     transition: ui::motion::Presence,
+    /// Its switches, sliding as a click turns them.
+    faces: ui::widget::FaceMotions,
     was_open: bool,
     /// Whether the open-time state (display snapshot, initial focus) was
     /// taken for the current opening. Events can arrive before the first
@@ -574,6 +576,7 @@ impl ProjectionOverlay {
             displays: DisplayLayouts::default(),
             focus: SheetFocus::Layout(DisplayLayoutMode::Extend),
             transition: ui::motion::Presence::closed(),
+            faces: ui::widget::FaceMotions::default(),
             was_open: false,
             session_open: false,
             host_rect: Rect::ZERO,
@@ -668,6 +671,12 @@ impl ProjectionOverlay {
     /// compositor published and what changed in settings. Painting reads
     /// none of it again. Waiting itself is not animation; the existing native
     /// wake schedules this update and only a change invalidates the sheet.
+    /// Step the remote list's glide after a flick to the frame's time;
+    /// returns whether it moved.
+    pub(crate) fn advance_scroll(&mut self) -> bool {
+        self.was_open && self.remote_scroll.advance()
+    }
+
     pub(crate) fn poll_storage(&mut self, open: bool) -> bool {
         let opened = open && !self.session_open;
         self.sync_open_state(open);
@@ -712,6 +721,7 @@ impl ProjectionOverlay {
     }
 
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
+        // Its painted switches ask the motion clock for their own frames.
         self.transition.is_moving(now)
             || matches!(
                 self.controller.status,
@@ -2128,9 +2138,15 @@ impl ProjectionOverlay {
             })
             .collect();
         let disabled = !self.shared_display_editable();
+        let faces = &self.faces;
         self.remote_scroll
             .paint(scene, transform, theme, |scene, transform| {
                 for (index, (display, row)) in remote.iter().zip(&rows).enumerate() {
+                    let pose = faces.switch(
+                        ("remote-display", &display.device, &display.output),
+                        display.enabled,
+                        theme.motion(),
+                    );
                     Self::paint_remote_row(
                         scene,
                         transform,
@@ -2138,6 +2154,7 @@ impl ProjectionOverlay {
                         theme,
                         *row,
                         display,
+                        pose,
                         ui::widget::ToggleInteract {
                             focused: focused == Some(index),
                             disabled,
@@ -2155,6 +2172,7 @@ impl ProjectionOverlay {
         theme: &Theme,
         row: Rect,
         display: &RemoteDisplay,
+        pose: ui::widget::SwitchPose,
         interact: ui::widget::ToggleInteract,
     ) {
         let title = t_args(
@@ -2186,6 +2204,7 @@ impl ProjectionOverlay {
                 Rect::new(label_rect.x1, row.y0, row.x1, row.y1),
                 display.enabled,
             )
+            .pose(pose)
             .focused(interact.focused)
             .disabled(interact.disabled),
         );
@@ -2268,7 +2287,10 @@ impl ProjectionOverlay {
             scene,
             transform,
             theme,
-            &ui::widget::ToggleFace::new(toggle, self.controller.options.audio),
+            &ui::widget::ToggleFace::new(toggle, self.controller.options.audio).pose(
+                self.faces
+                    .switch("share-audio", self.controller.options.audio, theme.motion()),
+            ),
         );
     }
 

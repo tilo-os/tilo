@@ -307,6 +307,35 @@ time.sleep(float(sys.argv[2]))
                     process.terminate()
                 process.communicate(timeout=HANG_BOUND)
 
+    def test_close_requests_during_its_exit_never_end_the_supervisor_by_signal(self):
+        # The caller sends TERM while waiting for the supervisor's exit; one
+        # landing as the interpreter shuts down must not turn a proven clean
+        # close into an exit by signal.
+        process = subprocess.Popen(
+            [sys.executable, str(REPO / 'tools/web/owned_browser.py'),
+             sys.executable, '-c', 'import time; time.sleep(60)'],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + HANG_BOUND
+            status = Path(f'/proc/{process.pid}/status')
+            while not any(line.startswith('SigCgt:') and int(line.split()[1], 16) & (1 << (signal.SIGTERM - 1))
+                          for line in status.read_text().splitlines()):
+                self.assertIsNone(process.poll(), 'supervisor exited before handling TERM')
+                self.assertLess(time.monotonic(), deadline, 'supervisor never handled TERM')
+                time.sleep(.001)
+            while process.poll() is None:
+                self.assertLess(time.monotonic(), deadline, 'supervisor did not exit')
+                try:
+                    process.send_signal(signal.SIGTERM)
+                except ProcessLookupError:
+                    break
+            stdout, stderr = process.communicate(timeout=HANG_BOUND)
+            self.assertEqual(process.returncode, 0, stdout + stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.communicate(timeout=HANG_BOUND)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -26,7 +26,7 @@ ARG RPMS_REF
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key. The image build verifies the
 # digest-pinned tilo-kernel image's cosign signature and provenance before
-# consuming it (os/dev/verify-kernel-provenance.sh, run by build-image.yml);
+# consuming it (os/dev/verify-kernel-provenance.sh);
 # os/etc/containers/policy.json has no tilo-kernel scope, and an installed
 # machine never pulls that image.
 #

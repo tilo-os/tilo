@@ -391,7 +391,7 @@ impl InProcessApps {
     /// records of its scratch tabs.
     ///
     /// # Errors
-    /// As [`Self::at`].
+    /// As `Self::at`.
     pub fn native(author: &str) -> Result<Self, LaunchError> {
         let person = crate::shell::settings_records::person_dir()
             .ok_or_else(|| LaunchError::Operation("no data home".into()))?;
@@ -1473,7 +1473,11 @@ mod tests {
     }
 
     /// Frames of `shown` until `done`, bounded.
-    fn until(shown: &mut [&mut Shown], what: &str, mut done: impl FnMut() -> bool) {
+    fn until(
+        shown: &mut [&mut Shown],
+        what: impl std::fmt::Display,
+        mut done: impl FnMut() -> bool,
+    ) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             for app in shown.iter_mut() {

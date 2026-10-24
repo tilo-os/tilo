@@ -392,7 +392,11 @@ impl TestGovernor {
             .max(admitted_generation)
             .checked_add(1)
             .ok_or("fixture checkpoint generation exhausted")?;
-        let messages = candidate.durable_bootstrap_messages(&self.governor_key, now, generation)?;
+        let messages = candidate.publication_mut().durable_bootstrap_messages(
+            &self.governor_key,
+            now,
+            generation,
+        )?;
         self.outgoing = messages
             .iter()
             .map(|message| postcard::to_stdvec(message).map_err(|error| error.to_string()))
@@ -581,6 +585,7 @@ mod empty_interactive_tests {
         let messages = governor
             .peer()
             .clone()
+            .publication_mut()
             .durable_bootstrap_messages(&key, std::time::SystemTime::now(), 20)
             .unwrap();
         for message in messages {

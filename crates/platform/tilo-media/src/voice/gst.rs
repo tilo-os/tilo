@@ -64,12 +64,17 @@ pub struct VoiceAudio {
     closed: bool,
     jitter: JitterBuffer,
     decoders: BTreeMap<PublicationId, Decoder>,
+    /// How loud each publication plays here, in percent, by namespace;
+    /// one not named plays as it arrives.
+    volumes: BTreeMap<String, u16>,
     last_output: Option<Instant>,
     timeline: CaptureTimeline,
     /// The microphone's speech: contiguous transmitted frames up to the
     /// last one, which DTX silence never adds to.
     capture_run: u32,
     capture_last: Option<Instant>,
+    /// Plays silence in place of the call: the person is deafened.
+    deafened: bool,
 }
 impl VoiceAudio {
     /// Start the persistent output pipeline on the observer's exact socket.
@@ -142,10 +147,12 @@ impl VoiceAudio {
             closed: false,
             jitter: JitterBuffer::default(),
             decoders: BTreeMap::new(),
+            volumes: BTreeMap::new(),
             last_output: None,
             timeline: CaptureTimeline::default(),
             capture_run: 0,
             capture_last: None,
+            deafened: false,
         })
     }
     /// Enqueue bounded startup. The current-authority callback must be a
@@ -478,11 +485,22 @@ impl VoiceAudio {
         } else {
             now
         };
-        let frames: Vec<Vec<i16>> = self
+        let mut frames: Vec<Vec<i16>> = self
             .decoders
-            .values_mut()
-            .filter_map(|decoder| decoder.render(now))
+            .iter_mut()
+            .filter_map(|(publisher, decoder)| {
+                let frame = decoder.render(now)?;
+                Some(match self.volumes.get(&publisher.namespace) {
+                    Some(&percent) => louder(frame, percent),
+                    None => frame,
+                })
+            })
             .collect();
+        // Deafened, the call plays on unheard: undeafening hears it as it
+        // is then, never a backlog.
+        if self.deafened {
+            frames.clear();
+        }
         // Keep the playback graph clocked while listening or waiting for remote audio.
         // An idle live appsrc can leave a shared PipeWire graph waiting for its first
         // buffer, including independent capture streams. Empty mixing produces one
@@ -504,6 +522,21 @@ impl VoiceAudio {
             .map_err(|_| AudioError::DeviceLost)?;
         self.last_output = Some(output_at);
         Ok(())
+    }
+    /// Play each publication named in `volumes` (by namespace) at its
+    /// percent of as it arrives, the rest as they arrive. Who is heard
+    /// talking stays as they speak.
+    pub fn set_volumes(&mut self, volumes: BTreeMap<String, u16>) {
+        self.volumes = volumes;
+    }
+    /// Play silence in place of the call (`true`), or play it again.
+    pub const fn set_deafened(&mut self, deafened: bool) {
+        self.deafened = deafened;
+    }
+    /// Whether the call plays silence here.
+    #[must_use]
+    pub const fn deafened(&self) -> bool {
+        self.deafened
     }
     /// The publishers heard talking at `now`.
     pub fn heard(&self, now: Instant) -> Vec<PublicationId> {
@@ -863,6 +896,18 @@ fn configure_pipewire(
         element.set_property_from_value("on-disconnect", &error);
     }
     Ok(())
+}
+
+/// `frame` at `percent` of its level, clipped.
+fn louder(frame: Vec<i16>, percent: u16) -> Vec<i16> {
+    let percent = i32::from(percent);
+    frame
+        .into_iter()
+        .map(|sample| {
+            let scaled = i32::from(sample).saturating_mul(percent) / 100;
+            i16::try_from(scaled).unwrap_or(if scaled < 0 { i16::MIN } else { i16::MAX })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1679,6 +1724,57 @@ mod tests {
     }
 
     #[test]
+    fn deafened_playout_plays_silence_and_consumes_the_call_unheard() {
+        let _device_test = device_test_lock();
+        let (mut audio, sink) = observed_output();
+        let id = PublicationId {
+            namespace: "deafened".into(),
+            carrier_generation: 1,
+            incarnation: 1,
+        };
+        // One frame of the call played at `at`, read back off the output.
+        let played = |audio: &mut VoiceAudio, at: Instant| {
+            let mut decoder = audio
+                .decoders
+                .remove(&id)
+                .unwrap_or_else(|| Decoder::new().unwrap());
+            decoder.ready.push_back(PcmFrame {
+                samples: vec![1000; 960],
+                expires_at: at + RECEIVE_LIFETIME,
+            });
+            audio.decoders.insert(id.clone(), decoder);
+            audio.playout(at).unwrap();
+            let sample = sink
+                .try_pull_sample(hang_bound())
+                .expect("the output carries a frame");
+            let buffer = sample.buffer().unwrap().map_readable().unwrap();
+            buffer
+                .chunks_exact(2)
+                .map(|pair| i16::from_le_bytes([pair[0], pair[1]]).unsigned_abs())
+                .max()
+                .unwrap_or(0)
+        };
+        let start = Instant::now();
+        assert!(played(&mut audio, start) > 0, "the call is heard");
+        audio.set_deafened(true);
+        assert!(audio.deafened());
+        assert_eq!(
+            played(&mut audio, start + FRAME_DURATION),
+            0,
+            "deafened, the output is silent"
+        );
+        assert!(
+            audio.decoders[&id].ready.len() <= 1,
+            "the call plays on unheard, no backlog builds"
+        );
+        audio.set_deafened(false);
+        assert!(
+            played(&mut audio, start + FRAME_DURATION * 2) > 0,
+            "undeafened, heard again"
+        );
+    }
+
+    #[test]
     fn encoder_uses_the_actual_voice_profile() {
         let _device_test = device_test_lock();
         gst::init().unwrap();
@@ -2035,6 +2131,16 @@ mod tests {
         assert_eq!(
             audio.receive(frame("alice", 2), now),
             Err(AudioError::Closed)
+        );
+    }
+
+    #[test]
+    fn a_publication_plays_at_its_volume_clipped() {
+        assert_eq!(super::louder(vec![1000, -1000, 0], 0), vec![0, 0, 0]);
+        assert_eq!(super::louder(vec![1000, -1000], 50), vec![500, -500]);
+        assert_eq!(
+            super::louder(vec![i16::MAX, i16::MIN], 200),
+            vec![i16::MAX, i16::MIN]
         );
     }
 }

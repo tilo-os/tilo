@@ -4,7 +4,7 @@
 //! A message is a document, so the reader paints it, reading every value from
 //! the theme; the controls inside it (attachment chips, the remote-content
 //! banner) are the toolkit's faces. An HTML body is a sealed document in an
-//! isolated engine ([`html`]); a plain one is text whose addresses are links.
+//! isolated engine (`html`); a plain one is text whose addresses are links.
 
 mod html;
 
@@ -604,7 +604,7 @@ impl MessageReader {
 
     fn paint_empty(&self, ctx: &mut PaintCtx<'_>, state: &MailState) {
         // Mail is still arriving: nothing to say about a selection yet.
-        if state.fetching_first && state.mailbox.messages.is_empty() {
+        if state.first_fetch.is_some() && state.mailbox.messages.is_empty() {
             return;
         }
         let count = state.selected_bulk_ids().len();
@@ -1368,8 +1368,10 @@ impl MessageReader {
         } else {
             offset
         };
+        // A find's match glides into view, or fades in when far
+        // (`ScrollRegion::glide_to`).
         self.region
-            .set_offset(Vec2::new(0.0, target.clamp(0.0, self.scroll_max)));
+            .glide_to(Vec2::new(0.0, target.clamp(0.0, self.scroll_max)));
         self.dirty = true;
     }
 
@@ -1574,6 +1576,12 @@ impl Widget for MessageReader {
                 .bodies
                 .values()
                 .any(|body| body.input.needs_animation_frame())
+    }
+
+    /// A glide after a flick scrolls the message as the wheel does.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.dirty |= self.region.advance();
+        false
     }
 
     /// An HTML message still on its way to the screen.

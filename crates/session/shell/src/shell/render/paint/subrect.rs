@@ -18,13 +18,13 @@ pub struct SubrectSource<'a> {
 /// `src_w * 4`) into an XRGB8888 destination (`[B, G, R, X]`, row stride `dst_pitch`).
 ///
 /// The per-output present primitive for multi-monitor: the compositor renders one scene
-/// spanning the combined output geometry into `source.src_rgba` (via [`VelloDrmBridge::paint`]),
+/// spanning the combined output geometry into `source.src_rgba` (via [`super::VelloDrmBridge::paint`]),
 /// then each output presents the sub-rect at its `Output.position`/`size` into its own scanout
 /// dumb buffer. `source.src_x`/`source.src_y` is the sub-rect's top-left in the source; `out_w`×`out_h`
 /// is the output's size.
 ///
 /// Rows/cols outside the source or destination bounds are skipped (clamped, not panicking). For
-/// a single output at the origin matching the combined geometry, this is byte-for-byte [`VelloDrmBridge::paint_into_xrgb8888`].
+/// a single output at the origin matching the combined geometry, this is byte-for-byte [`super::VelloDrmBridge::paint_into_xrgb8888`].
 pub fn swizzle_subrect_rgba_to_xrgb8888(
     source: SubrectSource<'_>,
     dst: &mut [u8],

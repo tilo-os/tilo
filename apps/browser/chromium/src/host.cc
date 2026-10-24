@@ -280,16 +280,66 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OpenTab(const CefString& url,bool background) {
     if(url.length()>8192) return;auto d=CefDictionaryValue::Create();d->SetString("url",url);d->SetBool("background",background);Event("open_tab",d);
   }
-  bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,const CefString& url,cef_window_open_disposition_t disposition,bool) override {
-    if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) { OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true; }return false;
+  bool OnOpenURLFromTab(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url,cef_window_open_disposition_t disposition,bool) override {
+    if(disposition==CEF_WOD_NEW_BACKGROUND_TAB || disposition==CEF_WOD_NEW_FOREGROUND_TAB || disposition==CEF_WOD_NEW_WINDOW) {
+      if(extension_tabs && url.length()<=8192)extension_tabs->Opening(id_,!frame || frame->IsMain(),frame?frame->GetURL().ToString():std::string(),url.ToString(),0);
+      OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
+    }
+    return false;
   }
   CefRefPtr<CefDialogHandler> GetDialogHandler() override { return this; }
   CefRefPtr<CefJSDialogHandler> GetJSDialogHandler() override { return this; }
-  // A page asking to be kept open (`beforeunload`) lets the person go, as
-  // closing its tab does. There is no prompt to answer here: refusing would
-  // leave the address field, back and reload all doing nothing.
-  bool OnBeforeUnloadDialog(CefRefPtr<CefBrowser>,const CefString&,bool,CefRefPtr<CefJSDialogCallback> callback) override {
-    callback->Continue(true,CefString());return true;
+  // A page's own questions: alert, confirm, prompt and "leave this page?"
+  // (`beforeunload`). The embedder that asked for them (`js_dialogs`) shows
+  // each as a `js_dialog` and answers it with `js_dialog_reply`; for any
+  // other embedder a question is declined at once and the page may always be
+  // left, so a page never waits on a question nobody sees. A tab closing
+  // lets its page go unasked.
+  bool OnJSDialog(CefRefPtr<CefBrowser>,const CefString& origin_url,JSDialogType type,const CefString& message,const CefString& default_text,CefRefPtr<CefJSDialogCallback> callback,bool& suppress_message) override {
+    suppress_message=false;
+    if(!AsksDialogs()) {suppress_message=true;return false;}
+    auto d=CefDictionaryValue::Create();
+    d->SetString("kind",type==JSDIALOGTYPE_ALERT?"alert":type==JSDIALOGTYPE_CONFIRM?"confirm":"prompt");
+    d->SetString("origin",tilo::Origin(origin_url.ToString()));
+    d->SetString("message",tilo::BoundedText(message.ToString(),kMaxDialogText));
+    d->SetString("default_text",type==JSDIALOGTYPE_PROMPT?tilo::BoundedText(default_text.ToString(),kMaxDialogText):std::string());
+    AskDialog(callback,false,d);return true;
+  }
+  bool OnBeforeUnloadDialog(CefRefPtr<CefBrowser> browser,const CefString&,bool is_reload,CefRefPtr<CefJSDialogCallback> callback) override {
+    if(!AsksDialogs()) {callback->Continue(true,CefString());return true;}
+    // Chromium shows no text of the page's here: what it asks is fixed.
+    auto d=CefDictionaryValue::Create();d->SetString("kind","beforeunload");d->SetBool("reload",is_reload);
+    d->SetString("origin",tilo::Origin(browser->GetMainFrame()->GetURL().ToString()));d->SetString("message","");d->SetString("default_text","");
+    AskDialog(callback,true,d);return true;
+  }
+  // Chromium let the question go (the page navigated or closed): it no
+  // longer waits on an answer.
+  void OnResetDialogState(CefRefPtr<CefBrowser>) override { CloseDialog(); }
+  bool AsksDialogs() const { return js_dialogs_ && !transfer_owner_ && !native_closing_ && !closing; }
+  void AskDialog(CefRefPtr<CefJSDialogCallback> callback,bool unload,CefRefPtr<CefDictionaryValue> d) {
+    // Chromium asks one question of a page at a time; one still open is
+    // declined before the next.
+    if(dialog_callback_) {auto previous=dialog_callback_;const bool leave=dialog_unload_;CloseDialog();previous->Continue(leave,CefString());}
+    dialog_id_=dialog_id_%2147483647+1;dialog_callback_=callback;dialog_unload_=unload;
+    d->SetInt("id",dialog_id_);Event("js_dialog",d);
+  }
+  void CloseDialog() {
+    if(!dialog_callback_) return;
+    dialog_callback_=nullptr;auto d=CefDictionaryValue::Create();d->SetInt("id",dialog_id_);Event("js_dialog_closed",d);
+  }
+  // Cancel, and stay when the page asked to be left: the navigation that
+  // asked is superseded by the one declining it.
+  void DeclineDialog() {
+    if(!dialog_callback_) return;
+    auto callback=dialog_callback_;CloseDialog();callback->Continue(false,CefString());
+  }
+  void AnswerDialog(int id,bool accept,const CefString& text) {
+    if(!dialog_callback_ || id!=dialog_id_) return;
+    auto callback=dialog_callback_;const bool unload=dialog_unload_;CloseDialog();
+    callback->Continue(accept,text);
+    // Staying on the page cancels the navigation that asked: it never starts,
+    // so nothing else would settle it.
+    if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
 #if defined(OS_MAC)
@@ -298,7 +348,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     return false;
 #endif
   }
-  void PublishZoom() { if(browser_) { auto d=CefDictionaryValue::Create();d->SetDouble("level",browser_->GetHost()->GetZoomLevel());Event("zoom",d); } }
+  void PublishZoom() {
+    if(!browser_) return;
+    const double level=browser_->GetHost()->GetZoomLevel();
+    auto d=CefDictionaryValue::Create();d->SetDouble("level",level);Event("zoom",d);
+    // Extensions hear of a change: from a tab's first page on.
+    if(published_zoom_ && *published_zoom_!=level && extension_tabs)extension_tabs->Zoomed(id_,std::pow(1.2,*published_zoom_),std::pow(1.2,level));
+    published_zoom_=level;
+  }
   CefRefPtr<CefContextMenuHandler> GetContextMenuHandler() override { return this; }
   void OnBeforeContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model) override {
     if(!params->GetLinkUrl().empty()) { model->AddItem(26501,"Open link in new tab");model->AddItem(26502,"Copy link address"); }
@@ -316,23 +373,71 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       case CM_MEDIATYPE_AUDIO: menu_context_.media="audio";break;
       default: break;
     }
-    menu_offers_=extension_tabs->MenuOffers(menu_context_);
-    if(menu_offers_.size()>kMaxMenuOffers) menu_offers_.resize(kMaxMenuOffers);
-    if(!menu_offers_.empty() && model->GetCount()) model->AddSeparator();
-    for(size_t i=0;i<menu_offers_.size();++i) model->AddItem(kFirstMenuOffer+static_cast<int>(i),menu_offers_[i].label);
+    const auto offers=extension_tabs->MenuOffers(menu_context_);
+    if(!offers.empty() && model->GetCount()) model->AddSeparator();
+    int group=0;
+    AddMenuOffers(model,offers,group);
+  }
+  // Extensions' items into `model`, each chosen by its command from
+  // kFirstMenuOffer: checkbox and radio items with their state, a run of
+  // radio items as one group, and an item with items under it as a submenu.
+  void AddMenuOffers(CefRefPtr<CefMenuModel> model,const std::vector<tilo::MenuOffer>& offers,int& group) {
+    bool radio=false;
+    for(const auto& offer:offers) {
+      if(offer.type=="separator") { model->AddSeparator();radio=false;continue; }
+      if(menu_offers_.size()>=kMaxMenuOffers) return;
+      const int command=kFirstMenuOffer+static_cast<int>(menu_offers_.size());
+      // The page menu reads `&` as marking a key; `&&` is one.
+      std::string label;
+      for(char c:offer.label) { label+=c;if(c=='&') label+='&'; }
+      tilo::MenuOffer chosen=offer;chosen.children.clear();menu_offers_.push_back(std::move(chosen));
+      if(!offer.children.empty()) AddMenuOffers(model->AddSubMenu(command,label),offer.children,group);
+      else if(offer.type=="checkbox") model->AddCheckItem(command,label);
+      else if(offer.type=="radio") { if(!radio) ++group;model->AddRadioItem(command,label,group); }
+      else model->AddItem(command,label);
+      radio=offer.type=="radio";
+      if(offer.type=="checkbox" || offer.type=="radio") model->SetChecked(command,offer.checked);
+      if(!offer.enabled) model->SetEnabled(command,false);
+    }
+  }
+  // The menu's items as the Browser shows them: at most 24 at each level,
+  // four levels deep and 200 in all, the page's own disabled items left out.
+  CefRefPtr<CefListValue> MenuItems(CefRefPtr<CefMenuModel> model,int depth,size_t& left) {
+    auto items=CefListValue::Create();
+    for(size_t i=0;i<model->GetCount() && items->GetSize()<24 && left>0;++i) {
+      const auto type=model->GetTypeAt(i);
+      if(type==MENUITEMTYPE_SEPARATOR) {
+        const size_t last=items->GetSize();
+        if(last && !items->GetDictionary(last-1)->HasKey("separator")) { auto item=CefDictionaryValue::Create();item->SetBool("separator",true);items->SetDictionary(last,item);--left; }
+        continue;
+      }
+      const int command=model->GetCommandIdAt(i);
+      const bool extension=command>=kFirstMenuOffer && command<kFirstMenuOffer+static_cast<int>(kMaxMenuOffers);
+      if(command<=0 || (!model->IsEnabledAt(i) && !extension)) continue;
+      if(model->GetLabelAt(i).ToString().size()>4096) continue;
+      auto item=CefDictionaryValue::Create();item->SetInt("id",command);item->SetString("label",model->GetLabelAt(i));
+      if(!model->IsEnabledAt(i)) item->SetBool("enabled",false);
+      --left;
+      if(type==MENUITEMTYPE_SUBMENU) {
+        auto children=depth<4 && model->GetSubMenuAt(i) ? MenuItems(model->GetSubMenuAt(i),depth+1,left) : CefListValue::Create();
+        if(!children->GetSize()) { ++left;continue; }
+        item->SetList("items",children);
+      } else {
+        if(type==MENUITEMTYPE_CHECK || type==MENUITEMTYPE_RADIO) item->SetBool("checked",model->IsCheckedAt(i));
+        if(model->IsEnabledAt(i)) context_commands_.insert(command);
+      }
+      items->SetDictionary(items->GetSize(),item);
+    }
+    const size_t last=items->GetSize();
+    if(last && items->GetDictionary(last-1)->HasKey("separator")) { items->Remove(last-1);++left; }
+    return items;
   }
   bool RunContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model,CefRefPtr<CefRunContextMenuCallback> callback) override {
     if(context_callback_) context_callback_->Cancel();
     if(params->GetLinkUrl().ToString().size()>8192) { callback->Cancel();return true; }
     context_callback_=callback;context_id_=context_id_%2147483647+1;context_commands_.clear();
     auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);d->SetInt("x",params->GetXCoord());d->SetInt("y",params->GetYCoord());d->SetString("link",params->GetLinkUrl());
-    auto items=CefListValue::Create();
-    for(size_t i=0;i<model->GetCount() && items->GetSize()<24;++i) {
-      int command=model->GetCommandIdAt(i);if(command<=0 || !model->IsEnabledAt(i) || model->GetTypeAt(i)==MENUITEMTYPE_SUBMENU) continue;
-      if(model->GetLabelAt(i).ToString().size()>4096) continue;
-      auto item=CefDictionaryValue::Create();item->SetInt("id",command);item->SetString("label",model->GetLabelAt(i));items->SetDictionary(items->GetSize(),item);context_commands_.insert(command);
-    }
-    d->SetList("items",items);Event("context_menu",d);return true;
+    size_t left=200;d->SetList("items",MenuItems(model,1,left));Event("context_menu",d);return true;
   }
   bool OnContextMenuCommand(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,int command,EventFlags) override {
     if(command==26501) { OpenTab(params->GetLinkUrl(),false);return true; }
@@ -342,6 +447,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     return false;
   }
+  // Answer a page menu still open: Chromium closing the browser with it
+  // pending crashes the host, a tab closed alone as much as the host's
+  // last.
+  void CancelMenu() { if(context_callback_){auto callback=context_callback_;context_callback_=nullptr;callback->Cancel();} }
   void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
   void OnFindResult(CefRefPtr<CefBrowser>,int identifier,int count,const CefRect& selection,int active,bool final_update) override {
@@ -461,7 +570,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -509,6 +618,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    // A sign-in panel going to its extension's own address ends the sign-in
+    // there: the page goes no further, and the panel closes.
+    if(extension_panel_ && frame->IsMain() && extension_tabs && extension_tabs->SignInNavigating(id_,request->GetURL().ToString())) return true;
     if(sealed_documents && !SealedDocumentUrl(request->GetURL().ToString())) {
       // A link the person followed opens with the embedder; a refresh, a
       // redirect or a frame goes nowhere.
@@ -517,7 +629,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
-  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame>,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
+  bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
     // A popup window the page opens (window.open with a size: a sign-in, a
     // payment) stays its popup, so it can answer the page that opened it.
@@ -530,8 +642,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto d=CefDictionaryValue::Create();d->SetInt("popup",id);d->SetString("url",url);
       d->SetInt("width",features.widthSet?std::clamp(features.width,0,10000):0);d->SetInt("height",features.heightSet?std::clamp(features.height,0,10000):0);
       Event("popup",d);
+      if(extension_tabs)extension_tabs->Opening(id_,!frame || frame->IsMain(),frame?frame->GetURL().ToString():std::string(),url.ToString(),id);
       return false;
     }
+    if(extension_tabs && url.length()<=8192)extension_tabs->Opening(id_,!frame || frame->IsMain(),frame?frame->GetURL().ToString():std::string(),url.ToString(),0);
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false);favicon_.clear();
@@ -581,6 +695,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
     CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    // A sign-in out of sight ends once its page loaded.
+    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,browser->GetMainFrame()->GetURL().ToString());
     // Not at OnLoadEnd: the browser still counts as loading there, and an
     // action's reply waiting on the load would say it is still loading.
     if(page_automation_)page_automation_->NavigationFinished();
@@ -834,7 +950,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(op=="site_exceptions") {std::set<std::string> origins;auto list=d->GetList("origins");for(size_t i=0;i<list->GetSize();++i)origins.insert(list->GetString(i));request_filter->Exceptions(origins);PublishFilters();return;}
     if(op=="audio_muted") { browser_->GetHost()->SetAudioMuted(d->GetBool("muted"));auto state=CefDictionaryValue::Create();state->SetBool("muted",browser_->GetHost()->IsAudioMuted());Event("audio_muted",state);return; }
-    if((op=="scoped_navigation" || op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") && DeferNavigation(d))return;
+    if(op=="scoped_navigation" || op=="navigate" || op=="back" || op=="forward" || op=="reload" || op=="history_entry") {
+      // Going elsewhere answers the page's open question: Chromium holds a
+      // navigation back while the page waits on it.
+      DeclineDialog();
+      if(DeferNavigation(d))return;
+    }
     auto host=browser_->GetHost();auto frame=browser_->GetMainFrame();
     if(op=="visibility") {
       const bool was_visible=visible_;
@@ -849,6 +970,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
       } else {frame_.reset();popup_.clear();}
     }
+    else if(op=="js_dialogs") {
+      js_dialogs_=d->GetBool("enabled");
+      // An embedder that stops answering lets the open question go.
+      if(!js_dialogs_ && dialog_callback_) AnswerDialog(dialog_id_,dialog_unload_,CefString());
+    }
+    else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
     else if(op=="context_action") {
       if(context_callback_ && d->GetInt("id")==context_id_) {
         int command=d->GetInt("command");auto callback=context_callback_;context_callback_=nullptr;
@@ -931,8 +1058,27 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       // Opened by its toolbar button: like a click, it may script the page.
       if(d->HasKey("action") && extension_tabs)extension_tabs->Grant(d->GetString("action"),panel_opener_);
     }
+    // The page an extension asked the person to sign in on, shown in a
+    // panel over the page used last or loaded out of sight: the host
+    // watches where it goes. One for no sign-in going on closes.
+    else if(op=="extension_sign_in_panel") {
+      extension_panel_=true;panel_opener_=last_focused_tab;
+      if(!extension_tabs || !extension_tabs->SignInPanel(d->GetString("id"),d->GetInt("flow"),id_))
+        CefPostTask(TID_UI,base::BindOnce([](int tab){auto found=clients.find(tab);if(found!=clients.end())found->second->CloseNative();},id_));
+    }
     // A click on an extension's toolbar button over this page.
     else if(op=="extension_click") {if(extension_tabs)extension_tabs->Clicked(d->GetString("id"),id_);}
+    // An item of an extension's toolbar button menu, chosen over this page.
+    else if(op=="extension_menu_action") {if(extension_tabs)extension_tabs->ActionMenuChosen(id_,d->GetString("id"),d->GetString("key"));}
+    // What the person types after an extension's keyword in this page's address.
+    else if(op=="extension_omnibox") {
+      // The window the person types in is theirs now: an extension's
+      // "current window" for what it does with the words.
+      if(!extension_panel_ && last_focused_tab!=id_) {last_focused_tab=id_;if(extension_tabs)extension_tabs->Focused(id_);}
+      if(extension_tabs)extension_tabs->Omnibox(d->GetString("id"),id_,d->GetString("input"),d->HasKey("text")?d->GetString("text").ToString():std::string(),d->HasKey("request")?d->GetInt("request"):0);
+    }
+    // The person opened an extension's side panel beside this page.
+    else if(op=="extension_side_panel") {if(extension_tabs)extension_tabs->OpenSidePanel(d->GetString("id"),id_);}
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -963,7 +1109,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
           const bool again=click_count_>0 && type==click_button_ && now-click_time_<=std::chrono::milliseconds(500)
             && std::abs(event.x-click_x_)<=4 && std::abs(event.y-click_y_)<=4;
           click_count_=again?std::min(click_count_+1,3):1;
-          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;
+          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;activated_=now;
         }
         host->SendMouseClickEvent(event,type,!down,std::max(click_count_,1)); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
@@ -971,7 +1117,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto frame=browser_->GetFocusedFrame();
       if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
     }
-    else if(op=="key") Key(d);
+    else if(op=="key") {if(d->GetBool("down"))activated_=std::chrono::steady_clock::now();Key(d);}
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
@@ -993,6 +1139,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     key_modifiers_=e.modifiers;
     std::string key=d->GetString("key");
+    // An extension's keyboard shortcut runs its command, and the page gets
+    // neither its press nor its release (extension_commands.h). A release
+    // is known by the key's name: it may read otherwise ("y" once Shift is up).
+    if(auto shortcut=tilo::KeyShortcut(key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
+      if(!d->GetBool("down")) { if(commanded_keys_.erase(shortcut->key)) return; }
+      else if(!extension_panel_ && extension_tabs && extension_tabs->Key(id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
+    }
 #if defined(OS_MAC)
     // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
     // Execute against the focused frame, preserving native clipboard semantics.
@@ -1048,7 +1201,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // This tab as extensions are told of it.
   tilo::ExtensionTab ExtensionState() const {
     tilo::ExtensionTab tab;tab.tab=id_;
-    if(browser_) {tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
+    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
     tab.title=title_;tab.favicon=favicon_;tab.width=geometry_.logical_width();tab.height=geometry_.logical_height();
     tab.panel=extension_panel_;tab.opener=panel_opener_;return tab;
   }
@@ -1062,8 +1215,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void LoadUrl(const std::string& url) {if(browser_)browser_->GetMainFrame()->LoadURL(url);}
   void ReloadPage(bool bypass) {if(!browser_)return;if(bypass)browser_->ReloadIgnoreCache();else browser_->Reload();}
   bool detached() const {return transfer_owner_;}
+  // The person clicked here or pressed a key within the last few seconds,
+  // as long as Chromium counts it as their activation of the page.
+  bool activated() const {return activated_ && std::chrono::steady_clock::now()-*activated_<=std::chrono::seconds(5);}
   bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
-  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
+  void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;CancelMenu();browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
   void DetachVisible() {
     if(transfer_owner_ || native_closing_)return;const bool retained=downloads->Detach(id_);if(!retained){CloseNative();return;}
     // Every busy visible owner reserved this slot at admission, so detaching
@@ -1352,6 +1508,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
+  std::optional<std::chrono::steady_clock::time_point> activated_;
+  // The zoom level last told of (PublishZoom), none before the first page.
+  std::optional<double> published_zoom_;
   CefRefPtr<tilo::TabInspector> inspector_;CefRefPtr<tilo::DocumentScripts> extension_scripts_;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
@@ -1393,9 +1552,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The pointer shape the page last asked for, by its CSS name.
   std::string cursor_;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
+  // Keys pressed for an extension's command, whose release is the command's too.
+  std::set<std::string> commanded_keys_;
+  // The page's open question, if any, and whether the embedder answers them.
+  static constexpr size_t kMaxDialogText=16*1024;
+  CefRefPtr<CefJSDialogCallback> dialog_callback_;int dialog_id_=0;bool dialog_unload_=false,js_dialogs_=false;
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
-  static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=24;
+  static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
   std::vector<tilo::MenuOffer> menu_offers_;tilo::MenuContext menu_context_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
@@ -1434,13 +1598,37 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   if(op=="create_tab") {CreateTab(id);return;}
   if(op=="devtools_call") {DevToolsCall(d,id);return;}
   if(op=="extension_access") {
-    std::set<std::string> permissions;std::vector<std::string> hosts;
+    std::set<std::string> permissions;std::vector<std::string> hosts,scriptable;
     auto list=d->GetList("permissions");for(size_t i=0;i<list->GetSize();++i)permissions.insert(list->GetString(i));
     list=d->GetList("hosts");for(size_t i=0;i<list->GetSize();++i)hosts.push_back(list->GetString(i));
-    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),d->HasKey("token")?d->GetString("token").ToString():std::string());
+    // Where its content scripts run, apart from its host permissions.
+    list=d->GetList("scriptable");for(size_t i=0;list && i<list->GetSize();++i)scriptable.push_back(list->GetString(i));
+    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),std::move(scriptable),d->HasKey("token")?d->GetString("token").ToString():std::string(),
+      d->GetType("commands")==VTYPE_DICTIONARY?d->GetDictionary("commands"):nullptr);
     return;
   }
+  // What an extension may ask for later, and what of it the person granted,
+  // as the Browser keeps it (extension_permissions.h).
+  if(op=="extension_grants") {
+    auto set=[&](const char* key) {
+      tilo::PermissionSet read;auto inner=d->GetDictionary(key);
+      for(const char* name:{"permissions","hosts"}) {
+        auto list=inner->GetList(name);auto& into=std::string(name)=="permissions"?read.permissions:read.origins;
+        for(size_t i=0;list && i<list->GetSize();++i)into.push_back(list->GetString(i));
+      }
+      return read;
+    };
+    if(extension_tabs)extension_tabs->SetOptional(d->GetString("id"),set("optional"),set("granted"));
+    return;
+  }
+  // The person answered an extension's request for more access.
+  if(op=="extension_permission_decision") {if(extension_tabs)extension_tabs->PermissionDecision(d->GetInt("request"),d->GetBool("allow"));return;}
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
+  // The person chose an extension's notification, or one of its buttons.
+  if(op=="extension_notification_chosen") {
+    if(extension_tabs)extension_tabs->NotificationChosen(d->GetString("id"),d->GetString("notification"),d->HasKey("button")?std::optional<int>(d->GetInt("button")):std::nullopt);
+    return;
+  }
   // The Browser's own extension, which tells which tab a page is.
   if(op=="extension_identity") {if(extension_tabs)extension_tabs->SetIdentity(d->GetString("id"));return;}
   if(op=="download_start") {
@@ -1579,6 +1767,26 @@ void StartExtensionTabs() {
   hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
   hooks.event=[](int tab,const std::string& name,CefRefPtr<CefDictionaryValue> fields) {if(auto client=ClientOf(tab))client->Event(name,fields);};
+  // An extension's download belongs to a page, as every download here
+  // does: the one it was asked on, else any the person can see.
+  hooks.download=[](int tab,const std::string& url,const std::string& name,tilo::Downloads::Started done) {
+    auto client=ClientOf(tab);
+    if(client && !client->accepts_downloads()) {client=nullptr;tab=0;}
+    for(const auto& [id,other]:clients)if(!client && other->accepts_downloads() && !other->ExtensionState().panel) {client=other;tab=id;}
+    if(!downloads || !client) {done(0,"No page to download from");return;}
+    downloads->Expect(tab,url,name,std::move(done));
+    client->browser_->GetHost()->StartDownload(url);
+  };
+  hooks.open_download=[](int tab,int id,bool reveal)->std::string {
+    if(!downloads || !downloads->Known(id))return "Invalid downloadId";
+    if(downloads->CompletedPath(id).empty())return "Download must be complete";
+    auto client=ClientOf(tab);
+    if(!client)return "No window to open it in";
+    auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("reveal",reveal);
+    client->Event("extension_download_open",fields);
+    return "";
+  };
+  hooks.activated=[](int tab) {auto client=ClientOf(tab);return client && client->activated();};
   hooks.pipe_listen=[](const std::string& session,tilo::ExtensionTabs::PipeListener listener) {
     if(listener)pipe_listeners[session]=std::move(listener);else pipe_listeners.erase(session);
   };
@@ -1637,6 +1845,8 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
   if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
+  if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);
   if(op=="stop_find") return true;
@@ -1754,7 +1964,46 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action")return false;
     return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
   }
-  if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
+  if(op=="extension_click" || op=="extension_side_panel" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
+  if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
+  if(op=="extension_notification_chosen") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="notification" && key!="button")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("notification",VTYPE_STRING) &&
+           d->GetString("notification").length()<=tilo::ExtensionNotifications::kMaxId &&
+           (!d->HasKey("button") || (type("button",VTYPE_INT) && d->GetInt("button")>=0 && d->GetInt("button")<(int)tilo::ExtensionNotifications::kMaxButtons));
+  }
+  if(op=="extension_grants") {
+    // Two sets, each of permissions and site patterns, as extension_access names them.
+    auto set=[&](const char* key) {
+      if(!type(key,VTYPE_DICTIONARY))return false;auto inner=d->GetDictionary(key);
+      for(const char* name:{"permissions","hosts"}) {
+        if(!inner->HasKey(name))continue;
+        if(inner->GetType(name)!=VTYPE_LIST)return false;auto list=inner->GetList(name);if(list->GetSize()>512)return false;
+        for(size_t i=0;i<list->GetSize();++i)if(list->GetType(i)!=VTYPE_STRING || list->GetString(i).length()>2048)return false;
+      }
+      return true;
+    };
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && set("optional") && set("granted");
+  }
+  if(op=="extension_permission_decision") return type("request",VTYPE_INT) && d->GetInt("request")>0 && type("allow",VTYPE_BOOL);
+  if(op=="extension_sign_in_panel") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="flow")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("flow",VTYPE_INT) && d->GetInt("flow")>0;
+  }
+  if(op=="extension_omnibox") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="input" && key!="text" && key!="request")return false;
+    if(!type("id",VTYPE_STRING) || !tilo::ExtensionId(d->GetString("id")) || !type("input",VTYPE_STRING))return false;
+    const auto input=d->GetString("input").ToString();
+    // Typed text comes with what was typed; a change also with its request.
+    const bool typed=input=="changed" || input=="entered";
+    if(!typed && input!="started" && input!="cancelled")return false;
+    if(typed != d->HasKey("text") || (input=="changed") != d->HasKey("request"))return false;
+    if(typed && (!type("text",VTYPE_STRING) || d->GetString("text").length()>tilo::kMaxOmniboxText))return false;
+    return input!="changed" || (type("request",VTYPE_INT) && d->GetInt("request")>=0);
+  }
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;
@@ -1763,7 +2012,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     };
     // The token the extension's worker shows the bridge (extension_tabs.h).
     const bool token=!d->HasKey("token") || (type("token",VTYPE_STRING) && d->GetString("token").length()>=32 && d->GetString("token").length()<=128);
-    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && token;
+    // Its keyboard shortcuts, as its manifest declares them (extension_commands.h).
+    const bool commands=!d->HasKey("commands") || type("commands",VTYPE_DICTIONARY);
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && (!d->HasKey("scriptable") || strings("scriptable")) && token && commands;
   }
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
@@ -1909,7 +2160,7 @@ void CloseHost() {
   closing=true;
   if(downloads) downloads->Close();
   if(clients.empty()) {CefQuitMessageLoop();return;}
-  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
+  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->CancelMenu();client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
 }
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);

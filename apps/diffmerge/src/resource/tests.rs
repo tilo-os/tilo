@@ -148,6 +148,68 @@ fn a_change_takes_both_sides_or_custom_text() {
     assert_eq!(session.state().unwrap().merged, "a\nCUSTOM\nc\n");
 }
 
+/// Resolving one change with text of its own leaves the rest of the merge
+/// open: the other changes still take a side, the written text stays, and a
+/// side taken later for the same change replaces it.
+#[test]
+fn a_change_resolved_with_text_leaves_the_others_open() {
+    let mut session = Replica::<Session>::new();
+    session
+        .apply(Session::OPEN_MERGE.with(session::OpenMerge {
+            base_label: "base".into(),
+            base: "a\nb\nc\nd\ne\n".into(),
+            ours_label: "ours".into(),
+            ours: "a\nB1\nc\nD1\ne\n".into(),
+            theirs_label: "theirs".into(),
+            theirs: "a\nB2\nc\nD2\ne\n".into(),
+        }))
+        .unwrap();
+    let conflicts: Vec<u64> = session
+        .state()
+        .unwrap()
+        .merge_model()
+        .hunks
+        .iter()
+        .enumerate()
+        .filter(|(_, h)| h.resolution.is_conflict())
+        .map(|(index, _)| u64::try_from(index).unwrap())
+        .collect();
+    let [first, second] = conflicts[..] else {
+        panic!("two conflicts: {conflicts:?}");
+    };
+
+    session
+        .apply(Session::RESOLVE.with(session::Resolve {
+            hunk: first,
+            text: "B\nB'".into(),
+        }))
+        .unwrap();
+    let state = session.state().unwrap();
+    assert!(state.composed(&state.merge_model()), "{:?}", state.merged);
+    assert_eq!(
+        children_of_kind(&session.published().unwrap(), "diffmerge.session.change").len(),
+        2,
+        "every change is still offered"
+    );
+
+    session
+        .apply(Session::TAKE_THEIRS.with(session::TakeTheirs { hunk: second }))
+        .expect("the other change still takes a side");
+    let state = session.state().unwrap();
+    assert_eq!(state.merged, "a\nB\nB'\nc\nD2\ne\n");
+    let model = state.merge_model();
+    assert!(model.fully_resolved());
+    assert_eq!(
+        model.hunks[usize::try_from(first).unwrap()].resolution,
+        Resolution::Written
+    );
+
+    session
+        .apply(Session::TAKE_OURS.with(session::TakeOurs { hunk: first }))
+        .expect("a written change can still take a side");
+    assert_eq!(session.state().unwrap().merged, "a\nB1\nc\nD2\ne\n");
+}
+
 /// Two people typing in the merged result converge character by
 /// character; inputs opened at once end as one of the two, never a mix.
 #[test]

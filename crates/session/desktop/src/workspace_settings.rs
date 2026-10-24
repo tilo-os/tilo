@@ -2,7 +2,7 @@
 //! workspace-name button, with General / People / Agents / Privacy & Security /
 //! Apps & Files tabs.
 //!
-//! Members and Permissions are both views of [`Workspace::capabilities`]
+//! Members and Permissions are both views of [`Workspace::policy`]
 //! — the single list `decide_capability` consults, the sandbox turns
 //! into bwrap/Landlock rules, and the room replicates. A member's role
 //! *is* the verb on their membership capability
@@ -979,7 +979,7 @@ pub enum WsTab {
     /// separate from people and rendered from [`Workspace::agent_members`].
     Agents,
     /// Every capability the workspace has granted, and the affordance
-    /// to grant another. Rendered from [`Workspace::capabilities`].
+    /// to grant another. Rendered from [`Workspace::policy`].
     Permissions,
     /// Shared default-app policy plus this person's explicit override.
     Apps,

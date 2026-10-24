@@ -232,7 +232,7 @@ pub fn follow_moves() {
 /// a caller that must see its own change.
 ///
 /// Every window reaches this worker through the X11 tracer's queue
-/// ([`crate::compositor::x11_windows`]), so the wait goes through that
+/// (`crate::compositor::x11_windows`), so the wait goes through that
 /// queue first: a window that named itself before this call has been
 /// looked at when it returns.
 pub fn settle(wait: Duration) -> bool {
@@ -336,7 +336,7 @@ fn observe(window: &ObservedWindow) {
     #[cfg(target_os = "linux")]
     {
         if let Some(expected) = window.pid_start_time
-            && crate::shell::launcher::proc_stat(window.pid).map(|(_, start)| start)
+            && crate::shell::host_runtime::proc_stat(window.pid).map(|(_, start)| start)
                 != Some(expected)
         {
             return;

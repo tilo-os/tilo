@@ -369,6 +369,13 @@ pub struct AvailabilityRegistry {
     /// Announces each bump of `hydration_generation`, so the pinned
     /// hydration worker waits for one instead of polling.
     hydration_watch: tokio::sync::watch::Sender<u64>,
+    /// Records whose committed state changed since
+    /// [`Self::take_changed_records`] last took them, kept only while
+    /// someone subscribes through [`Self::subscribe_changes`].
+    changed: BTreeSet<FileRecordId>,
+    /// Announces that `changed` grew, so the mount can tell the folders
+    /// those files are in (`crate::change_signal`).
+    changes_watch: tokio::sync::watch::Sender<()>,
     #[cfg(test)]
     persists: std::sync::atomic::AtomicU64,
 }
@@ -411,6 +418,8 @@ impl AvailabilityRegistry {
                 deferred: false,
                 hydration_generation: 0,
                 hydration_watch: tokio::sync::watch::Sender::new(0),
+                changed: BTreeSet::new(),
+                changes_watch: tokio::sync::watch::Sender::new(()),
                 #[cfg(test)]
                 persists: std::sync::atomic::AtomicU64::new(0),
             });
@@ -436,6 +445,8 @@ impl AvailabilityRegistry {
             deferred: false,
             hydration_generation: 0,
             hydration_watch: tokio::sync::watch::Sender::new(0),
+            changed: BTreeSet::new(),
+            changes_watch: tokio::sync::watch::Sender::new(()),
             #[cfg(test)]
             persists: std::sync::atomic::AtomicU64::new(0),
         })
@@ -465,6 +476,31 @@ impl AvailabilityRegistry {
     #[must_use]
     pub fn subscribe_hydration(&self) -> tokio::sync::watch::Receiver<u64> {
         self.hydration_watch.subscribe()
+    }
+
+    /// A receiver told of each committed change to any record, from any
+    /// writer of this registry; [`Self::take_changed_records`] says which.
+    #[must_use]
+    pub fn subscribe_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.changes_watch.subscribe()
+    }
+
+    /// The records whose committed state changed since this was last asked,
+    /// while anyone subscribed through [`Self::subscribe_changes`].
+    pub fn take_changed_records(&mut self) -> BTreeSet<FileRecordId> {
+        std::mem::take(&mut self.changed)
+    }
+
+    /// Note that `ids` were committed changed, for whoever subscribes.
+    fn note_changed(&mut self, ids: impl IntoIterator<Item = FileRecordId>) {
+        if self.changes_watch.receiver_count() == 0 {
+            return;
+        }
+        let before = self.changed.len();
+        self.changed.extend(ids);
+        if self.changed.len() != before {
+            self.changes_watch.send_replace(());
+        }
     }
 
     fn bump_hydration_generation(&mut self) {
@@ -553,8 +589,8 @@ impl AvailabilityRegistry {
             return Ok(false);
         }
         let previous = self.records.clone();
-        for id in ids {
-            if let Some(record) = self.records.get_mut(&id) {
+        for id in &ids {
+            if let Some(record) = self.records.get_mut(id) {
                 record.transfer = TransferState::default();
             }
         }
@@ -562,6 +598,7 @@ impl AvailabilityRegistry {
             self.records = previous;
             return Err(error);
         }
+        self.note_changed(ids);
         Ok(true)
     }
 
@@ -679,6 +716,13 @@ impl AvailabilityRegistry {
         if hydration_changed {
             self.bump_hydration_generation();
         }
+        let changed: Vec<FileRecordId> = self
+            .records
+            .iter()
+            .filter(|(id, record)| before.get(id) != Some(*record))
+            .map(|(id, _)| *id)
+            .collect();
+        self.note_changed(changed);
         Ok(value)
     }
 
@@ -708,6 +752,9 @@ impl AvailabilityRegistry {
         }
         if previous.as_ref().map(hydration_view) != self.records.get(&id).map(hydration_view) {
             self.bump_hydration_generation();
+        }
+        if previous.as_ref() != self.records.get(&id) {
+            self.note_changed([id]);
         }
         Ok(())
     }
@@ -1037,6 +1084,46 @@ mod tests {
         record.current_version = Some(version);
         record.residency = Residency::Resident { bytes: 1024 };
         record
+    }
+
+    /// Whoever subscribes learns which records changed, by any writer: a
+    /// put, a batch, an unpin clearing transfers. Nothing is kept for
+    /// nobody, and a write that changes nothing is no change.
+    #[test]
+    fn a_subscriber_learns_which_records_changed() {
+        let dir = TempDir::new().unwrap();
+        let mut registry = AvailabilityRegistry::open(dir.path().join("a.json")).unwrap();
+        let (first, second) = (FileRecordId::new(), FileRecordId::new());
+        registry.put(file(first, FileVersionId::new())).unwrap();
+        assert!(
+            registry.take_changed_records().is_empty(),
+            "nothing is kept while nobody subscribes"
+        );
+
+        let mut changes = registry.subscribe_changes();
+        let mut record = registry.get(first).unwrap().clone();
+        registry.put(record.clone()).unwrap();
+        assert!(!changes.has_changed().unwrap(), "an identical write");
+        record.transfer.last_error = Some(TransferError {
+            message: fs_protocol::NO_PEER_DELIVERED_ERROR.into(),
+            occurred_at_ms: 3,
+        });
+        registry.put(record).unwrap();
+        assert!(changes.has_changed().unwrap());
+        changes.borrow_and_update();
+        assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
+
+        registry
+            .batch(|registry| {
+                let _ = registry.put(file(second, FileVersionId::new()));
+            })
+            .unwrap();
+        assert!(changes.has_changed().unwrap());
+        assert_eq!(registry.take_changed_records(), BTreeSet::from([second]));
+
+        assert!(registry.clear_automatic_transfer_subtree(first).unwrap());
+        assert_eq!(registry.take_changed_records(), BTreeSet::from([first]));
+        assert!(registry.take_changed_records().is_empty());
     }
 
     fn safe_evidence(record: &mut RecordAvailability, version: FileVersionId, now_ms: u64) {

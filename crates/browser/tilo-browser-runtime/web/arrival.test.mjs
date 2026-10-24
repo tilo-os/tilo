@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import {existsSync} from 'node:fs';
-import {arrivalLines, arrivalLocale, createArrival, createRotation, failureMessage, FAILURES, fill, inviteLinkTarget, isCoffeeHost, lineParts, refusedByHost,
+import {arrivalLines, arrivalLocale, createArrival, createRotation, doorCopy, failureMessage, FAILURES, fill, inviteLinkTarget, isCoffeeHost, lineParts, refusedByHost, waitListFailure,
   parseMessages, progressIn, SEGMENTS, segmentOf, STEP_NOTES, stoppedInside, visitLine} from './arrival.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -339,4 +339,33 @@ test('a watching page promises a join only where the door gives one', () => {
   assert.match(visitLine({entered: 'seatless', because: 'full', presence: open}).line, /when a seat frees up/);
   // A member of an invite-only room without a seat still joins once one frees.
   assert.equal(visitLine({entered: 'seatless', because: 'full', presence: {admission: 'invite', joins: true}}).join, 'seat');
+});
+
+test('the door apologises and asks for an email where there is a wait list, else names the workspace', () => {
+  assert.deepEqual(doorCopy({workspace: 'Lounge', waitList: true}), {
+    heading: 'Sorry, Tilo is invite-only right now',
+    body: 'It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.',
+  });
+  assert.deepEqual(doorCopy({workspace: 'Lounge'}), {heading: 'Lounge is invite-only for now',
+    body: 'Ask someone in it for an invite link, then paste it here.'});
+  assert.equal(doorCopy().heading, 'This workspace is invite-only for now');
+  const german = doorCopy({waitList: true, messages: locale('de-DE')});
+  assert.match(german.heading, /Einladung/);
+  assert.match(german.body, /Warteliste|E-Mail/);
+  assert.equal(waitListFailure('invalid-email'), 'That doesn’t look like an email address.');
+  assert.match(waitListFailure('wait-list-full'), /full for now/);
+  assert.match(waitListFailure('too-many'), /Try again later/);
+  assert.equal(waitListFailure('unavailable'), waitListFailure(undefined));
+  assert.match(waitListFailure('invalid-email', locale('de-DE')), /E-Mail-Adresse/);
+});
+
+test('both locales word the whole door, its wait list and signing in', () => {
+  const en = locale('en-US');
+  const de = locale('de-DE');
+  const door = [...en.keys()].filter(id => /^arrival-(door|wait|sign-in|invite)/.test(id));
+  assert.ok(door.length >= 25, `${door.length} door messages`);
+  for (const id of door) assert.ok(de.has(id), `de-DE: ${id}`);
+  for (const [id, arg] of [['arrival-wait-done', 'email'], ['arrival-wait-removal', 'contact'], ['arrival-sign-in-not-member', 'workspace']]) {
+    for (const messages of [en, de]) assert.ok(messages.get(id).includes(`{ $${arg} }`), id);
+  }
 });

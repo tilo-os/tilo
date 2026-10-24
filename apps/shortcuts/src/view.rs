@@ -28,12 +28,12 @@ use ui::prelude::*;
 use ui::tilo_actions::{ActionParam, ParamType};
 use ui::tilo_resource::Path;
 use ui::widget::{
-    Actions as ActionGroup, ButtonRole, ControlSize, ListRow, ModalDialog, NumberInput, Section,
-    SectionHeader, labeled_field,
+    Actions as ActionGroup, ArrivingView, ButtonRole, ControlSize, ListRow, ModalDialog,
+    NumberInput, Section, SectionHeader, SkeletonShape, labeled_field,
 };
 use ui::{LocalState, RemoteActions, TextKind};
 
-use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Loaded, Notice, RunStatus};
+use crate::door::{self, Door, DoorCore, DoorEffect, DoorState, Notice, RunStatus};
 use crate::editor::{self, Choice};
 use crate::model::{Draft, INPUT_TYPES, Workbench, block_at};
 use tilo_automation::grant::{self, Permission};
@@ -62,7 +62,7 @@ pub struct EditorInput {
     /// The saved shortcut whose page is open, when no draft is.
     pub open_saved: Option<String>,
     pub catalog: ActionCatalog,
-    pub catalogue: Loaded<()>,
+    pub catalogue: Arrival<()>,
     pub saved: Vec<Shortcut>,
     pub problems: BTreeMap<String, Vec<String>>,
     pub picker: Option<String>,
@@ -407,11 +407,7 @@ fn follow(live: Live<Workbench>, ui: &Ui) -> Box<dyn FnMut()> {
         let next = EditorInput {
             draft,
             open_saved,
-            catalogue: match &door.catalogue {
-                Loaded::Loading => Loaded::Loading,
-                Loaded::Ready(_) => Loaded::Ready(()),
-                Loaded::Failed(reason) => Loaded::Failed(reason.clone()),
-            },
+            catalogue: door.catalogue.as_ref().map(|_| ()).map_err(Clone::clone),
             catalog,
             saved,
             problems,
@@ -587,11 +583,7 @@ fn overview_page(ui: &Ui) -> Element {
             (
                 drafting_offered(door),
                 door.drafted.clone(),
-                match &door.library {
-                    Loaded::Loading => Loaded::Loading,
-                    Loaded::Failed(reason) => Loaded::Failed(reason.clone()),
-                    Loaded::Ready(library) => Loaded::Ready(library.len()),
-                },
+                door.library.as_ref().map(Vec::len).map_err(Clone::clone),
                 door.runs
                     .iter()
                     .map(|run| (run.serial, run.name.clone(), run.status.clone()))
@@ -610,19 +602,18 @@ fn overview_body(ui: &Ui, description: &LocalState<String>, door: &DoorState) ->
         items.push(describe_panel(ui, description, door.drafted.as_ref()));
     }
     match &door.library {
-        Loaded::Loading => items.push(Box::new(
-            Row::new()
-                .push(Box::new(Spinner::new()))
-                .push(Box::new(caption("shortcuts-loading"))),
+        Arrival::Pending { from } => items.push(ArrivingView::placeholder(
+            from.clone(),
+            SkeletonShape::Text { lines: 2 },
         )),
-        Loaded::Failed(reason) => items.push(Box::new(
+        Arrival::Failed(reason) => items.push(Box::new(
             Banner::warning(ui::i18n!("shortcuts-library-unavailable"))
                 .with_message(reason.clone()),
         )),
-        Loaded::Ready(_) => {}
+        Arrival::Ready(_) => {}
     }
     if door.runs.is_empty() {
-        if matches!(&door.library, Loaded::Ready(library) if library.is_empty()) {
+        if matches!(&door.library, Arrival::Ready(library) if library.is_empty()) {
             items.push(Box::new(
                 EmptyState::new(ui::i18n!("shortcuts-saved-empty")).with_message(ui::i18n!(
                     if drafting {
@@ -1135,7 +1126,7 @@ fn build_editor(ui: &Ui, input: &EditorInput) -> Element {
         Box::new(labeled_field("shortcuts-name", name)),
         Box::new(problems),
     ];
-    if let Loaded::Failed(reason) = &input.catalogue {
+    if let Arrival::Failed(reason) = &input.catalogue {
         items.push(Box::new(
             Banner::warning(ui::i18n!("shortcuts-catalogue-unavailable"))
                 .with_message(reason.clone()),
@@ -1159,11 +1150,11 @@ pub(crate) fn save_blocker(input: &EditorInput) -> Option<String> {
         return Some(String::from("Add a step to save this shortcut"));
     }
     match &input.catalogue {
-        Loaded::Loading => Some(String::from("Reading the actions your apps offer…")),
-        Loaded::Failed(_) => Some(String::from(
+        Arrival::Pending { .. } => Some(String::from("Reading the actions your apps offer…")),
+        Arrival::Failed(_) => Some(String::from(
             "Can't save here: the actions your apps offer could not be read",
         )),
-        Loaded::Ready(()) => None,
+        Arrival::Ready(()) => None,
     }
 }
 
@@ -1608,9 +1599,9 @@ fn action_picker(ui: &Ui, input: &EditorInput, draft_id: &Id, address: &str) -> 
     }
     if groups.is_empty() {
         groups.push(Box::new(caption(match input.catalogue {
-            Loaded::Loading => "shortcuts-catalogue-loading",
-            Loaded::Failed(_) => "shortcuts-catalogue-unavailable",
-            Loaded::Ready(()) => "shortcuts-catalogue-empty",
+            Arrival::Pending { .. } => "shortcuts-catalogue-loading",
+            Arrival::Failed(_) => "shortcuts-catalogue-unavailable",
+            Arrival::Ready(()) => "shortcuts-catalogue-empty",
         })));
     }
     Box::new(

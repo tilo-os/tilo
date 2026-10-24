@@ -304,10 +304,12 @@ fn source_title(source: &media::Source) -> String {
 }
 
 /// The video a capture plays when its launch named none: a four-second
-/// generated H.264/AAC clip (the decode fixture, `tests/fixtures`; no
+/// generated VP9/AAC clip (a decode fixture, `tests/fixtures`; no
 /// third-party media), decoded by the system's engine like any opened file.
+/// VP9 decodes with the royalty-free software decoders in the OS image, so
+/// a capture shows a picture wherever it runs.
 #[cfg(feature = "decode")]
-const DEMO_CLIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/h264-aac.mp4"));
+const DEMO_CLIP: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vp9-aac.mp4"));
 
 /// What the capture's demo clip is called.
 const DEMO_TITLE: &str = "Demo clip";

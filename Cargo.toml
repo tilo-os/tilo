@@ -41,6 +41,7 @@ exclude = [
     "vendor/atspi-proxies",
     "vendor/rustypipe",
     "vendor/miracast",
+    "vendor/davey",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -84,6 +85,7 @@ members = [
     "crates/sdk/ui-core",
 
     # Applications
+    "apps/activity",
     "apps/agent",
     "apps/api-tester",
     "apps/backups",
@@ -148,7 +150,6 @@ members = [
     "apps/typst-editor",
     "apps/video-editor",
     "apps/video-player",
-    "apps/vpn",
     "apps/weather",
     "apps/web-search",
     "apps/windows",
@@ -203,6 +204,7 @@ members = [
 
     # Dev
     "crates/dev/collab-link",
+    "crates/dev/workspace-unify",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
     "crates/dev/room-load",
@@ -432,6 +434,7 @@ members = [
     "crates/system/libvirt-domain",
     "crates/system/messaging-protocol",
     "crates/system/net-answers",
+    "crates/system/device-vpn",
     "crates/system/ntfs-mount",
     "crates/system/os-actions",
     "crates/system/pam-tilo",
@@ -439,6 +442,7 @@ members = [
     "crates/system/projector",
     "crates/system/sandbox-core",
     "crates/system/secret-service",
+    "crates/system/seat-peer",
     "crates/system/secret-vault",
     "crates/system/settings-store",
     "crates/system/settings-sections",
@@ -671,6 +675,7 @@ tar = "0.4"
 # `CryptoRng` is required).
 # ---------------------------------------------------------------------------
 ed25519-dalek = "3"
+x25519-dalek = { version = "3", features = ["static_secrets"] }
 rand = "0.10"
 rand_core = "0.10"
 rand_chacha = "0.10"
@@ -730,6 +735,10 @@ mdns-sd = "=0.20.3"
 # Miracast (Wi-Fi Display) source for tilo-projector: Tilo's own standalone
 # crate, kept in vendor/miracast until it is published (see its PROVENANCE.md).
 miracast = { path = "vendor/miracast", default-features = false }
+# Discord's DAVE end-to-end encryption for the Discord connector's voice:
+# davey 0.1.5 moved to the openmls generation the workspace builds (see
+# vendor/davey/TILO-PATCH.md).
+davey = { path = "vendor/davey" }
 # FFT for acoustic calibration: deconvolving a recorded sweep into the
 # speaker's impulse response and reading its magnitude response.
 rustfft = "6.2"

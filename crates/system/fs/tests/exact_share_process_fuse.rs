@@ -1238,9 +1238,19 @@ fn idle_serve_mount_stays_asleep() {
 /// 95472, 95473): 53.6-54.9/s before change awaits, when every 5 s poll was up to
 /// three fresh connections and peer handshakes, and 9.85/s after, on one
 /// held stream (iroh's relays and the connection's keepalive). The host
-/// answering it went from 54.6-55.3/s to 9.7/s. The budget lets the held
-/// stream through; a fallback to a single 5 s poll does not fit in it.
-const IDLE_SHARE_WAKEUP_BUDGET: f64 = 15.0;
+/// answering it went from 54.6-55.3/s to 9.7/s. With idle connections kept
+/// alive every 25 s instead of 5 s and an unchanged net report resting the
+/// next (`vendor/iroh/TILO-PATCH.md`), t's `real-fuse` check measured the
+/// recipient at 6.30-8.57/s and its host at 4.15-8.75/s (runs r263fec94c2,
+/// r251cc66096, rfa903b2cd7), all on iroh's runtime workers; the high pair
+/// came from a node loaded enough that another real-FUSE test failed in the
+/// same run. The budgets leave that loaded run a third of headroom, and a
+/// fallback to a single 5 s poll does not fit in them.
+const IDLE_SHARE_WAKEUP_BUDGET: f64 = 12.0;
+
+/// Voluntary wakeups per second the host serving that idle recipient may
+/// make across all of its threads; see [`IDLE_SHARE_WAKEUP_BUDGET`].
+const IDLE_SHARE_HOST_WAKEUP_BUDGET: f64 = 12.0;
 
 /// How long an idle share recipient is watched: one host await limit, so
 /// the window holds the recipient's once-a-minute renewal.
@@ -1505,5 +1515,11 @@ fn idle_share_recipient_stays_asleep() {
         per_second <= IDLE_SHARE_WAKEUP_BUDGET,
         "an idle fs mount-share woke {per_second:.2} times a second (budget \
          {IDLE_SHARE_WAKEUP_BUDGET}):\n{wakeups}"
+    );
+    let host_per_second = host_wakeups.blocking_per_second();
+    assert!(
+        host_per_second <= IDLE_SHARE_HOST_WAKEUP_BUDGET,
+        "the fs serve answering an idle recipient woke {host_per_second:.2} times a second \
+         (budget {IDLE_SHARE_HOST_WAKEUP_BUDGET}):\n{host_wakeups}"
     );
 }

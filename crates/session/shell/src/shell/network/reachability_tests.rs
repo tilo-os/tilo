@@ -17,14 +17,17 @@ use crate::network::actor::gossip_caches_drain_within;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
-/// How often a desktop whose relays rest may block, every thread of the
-/// process counted: what a desktop that never collaborated wakes.
-const RESTED_WAKEUP_BUDGET: f64 = 0.1;
-
 /// How long a test desktop's relays stay up once nothing needs them: long
 /// enough that a pair still converging keeps them, short enough to watch
 /// them rest.
 pub(super) const REST_AFTER: Duration = Duration::from_secs(2);
+
+/// Most times per second a desktop whose collaborator left may wake once its
+/// relays rest and gossip's caches have drained. Measured 0.05/s in five
+/// focused runs (96954-96958): the test thread's own `/proc` read, which is
+/// no longer counted, and not one wakeup of the network runtime. The budget
+/// allows two wakeups in [`LONE_IDLE`]: 0.10/s.
+const RESTED_WAKEUP_BUDGET: f64 = 0.1;
 
 /// Relays nobody listens on, so a woken test desktop's probes fail at once
 /// and its peers are reached directly over loopback.
@@ -327,12 +330,17 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         rested.elapsed().as_secs()
     );
 
-    // Nothing drives this desktop now, so every thread of the process counts.
-    let before = session_threads(None);
+    // Nothing drives this desktop now, so every thread of the process counts
+    // but this one, which only sleeps and reads `/proc`: a loaded runner
+    // blocks it on page faults (6 times in 20 s, run r3d54512c6c), which is
+    // the runner and not the desktop.
+    let measurer = Some(tilo_test_env::idle::current_thread_id().expect("this thread's id"));
+    let before = session_threads(measurer);
     let started = Instant::now();
     std::thread::sleep(LONE_IDLE);
     let measured = started.elapsed();
-    let wakeups = tilo_test_env::idle::Wakeups::between(before, session_threads(None), measured);
+    let wakeups =
+        tilo_test_env::idle::Wakeups::between(before, session_threads(measurer), measured);
     eprintln!(
         "a desktop whose collaborator left, its threads {wakeups}  blocked {:.2} times a second",
         wakeups.blocking_per_second()

@@ -1297,54 +1297,15 @@ fn ensure_collaboration_identity_in_context(
     // identity-keyed certificate for the same device key.
     let device_owner = claim_device_owner(&paths.user_pubkey, &root_public)?;
 
-    let mut device_label = approved_label
-        .unwrap_or(if device_owner {
-            "Primary device"
-        } else {
-            "Shared device"
-        })
-        .to_owned();
-    let (device, _) =
-        persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
-    if device_owner && paths.device_cert.exists() {
-        let cert = persist::read_device_cert(&paths.device_cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        if cert.user_public_key != root_public
-            || cert.device_public_key != device.verifying_key().to_bytes()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "device certificate does not match the provisioned identity keys",
-            ));
-        }
-        device_label.clone_from(&cert.device_label);
-        if class.must_reissue(&cert, tilo_clock::unix_now_ns()) {
-            let cert = issue_device_certificate(
-                &signer,
-                cert.device_public_key,
-                &cert.device_label,
-                class,
-            )?;
-            persist::write_device_cert(&paths.device_cert, &cert)
-                .map_err(|e| io::Error::other(e.to_string()))?;
-        }
-    } else if device_owner {
-        let cert = issue_device_certificate(
-            &signer,
-            device.verifying_key().to_bytes(),
-            &device_label,
-            class,
-        )?;
-        persist::write_device_cert(&paths.device_cert, &cert)
-            .map_err(|e| io::Error::other(e.to_string()))?;
-    }
+    let device_label = approved_label.unwrap_or(if device_owner {
+        "Primary device"
+    } else {
+        "Shared device"
+    });
 
-    // Keep an identity-keyed copy as well. A device has one keypair, but it
-    // needs a separate root-signed certificate for every identity it may
-    // present in a workspace.
-    ensure_device_certificate_for_identity(&signer, paths, &device_label, class)?;
+    // The device's certificate for this identity: the owner's is also the
+    // device's system-facing certificate, one certificate in both places.
+    ensure_device_certificate_for_identity(&signer, paths, device_label, class)?;
 
     // Register the primary record in the multi-identity registry. A registry
     // write failure is a provisioning failure: silently creating a key that no
@@ -1463,7 +1424,7 @@ fn read_claimed_owner(path: &Path) -> io::Result<[u8; 32]> {
 /// Whether the identity this account signs in with owns the device.
 ///
 /// The owner is the identity that claimed the machine at its first login
-/// ([`claim_device_owner`]) and holds the device's primary certificate; the
+/// (`claim_device_owner`) and holds the device's primary certificate; the
 /// account that signs in with it is the device admin. Another account on the
 /// same machine has its own identity and a shared-device certificate, and an
 /// account that has not finished first login has no identity at all: both
@@ -1520,6 +1481,16 @@ pub fn ensure_device_certificate_for_record(
     ensure_device_certificate_for_identity(&identity, paths, "This device", DeviceClass::Native)
 }
 
+/// Ensure this device holds its certificate for `identity`, labelled
+/// `device_label` when it is issued now. A device presents one certificate
+/// per identity: for the identity that owns the device it is written both
+/// as the device's system-facing certificate (`device_cert`) and as the
+/// identity-keyed one, the same bytes, so the network's custody and the
+/// broker's trusted device are the same certificate. A certificate already
+/// held for the device's key is kept (the system-facing one first) and
+/// written wherever the other copy differs; a new one is issued only when
+/// none is held or the held one is due for renewal, and then written to
+/// every place at once.
 fn ensure_device_certificate_for_identity(
     identity: &runtime_identity::SigningIdentity,
     paths: &IdentityPaths,
@@ -1528,32 +1499,53 @@ fn ensure_device_certificate_for_identity(
 ) -> Result<PathBuf, io::Error> {
     let (device, _) =
         persist::load_or_create_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
+    let device_public_key = device.verifying_key().to_bytes();
     let user_public_key = identity.group_public_key();
     let cert_path = paths.device_cert_for_user(&user_public_key);
-    let label = if cert_path.exists() {
-        let cert = persist::read_device_cert(&cert_path)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        tilo_user_identity::verify_device_cert(&cert)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        if cert.user_public_key != user_public_key
-            || cert.device_public_key != device.verifying_key().to_bytes()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "identity-specific device certificate does not match its keys",
-            ));
+    let owns_device =
+        read_claimed_owner(&paths.user_pubkey).is_ok_and(|owner| owner == user_public_key);
+    let mut places = Vec::with_capacity(2);
+    if owns_device {
+        places.push((
+            paths.device_cert.clone(),
+            "device certificate does not match the provisioned identity keys",
+        ));
+    }
+    places.push((
+        cert_path.clone(),
+        "identity-specific device certificate does not match its keys",
+    ));
+    let mut held = Vec::with_capacity(places.len());
+    for (path, mismatch) in places {
+        let cert = if path.exists() {
+            let cert = persist::read_device_cert(&path)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            tilo_user_identity::verify_device_cert(&cert)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+            if cert.user_public_key != user_public_key
+                || cert.device_public_key != device_public_key
+            {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, mismatch));
+            }
+            Some(cert)
+        } else {
+            None
+        };
+        held.push((path, cert));
+    }
+    let current = held.iter().find_map(|(_, cert)| cert.clone());
+    let cert = match current {
+        Some(cert) if !class.must_reissue(&cert, tilo_clock::unix_now_ns()) => cert,
+        Some(cert) => {
+            issue_device_certificate(identity, device_public_key, &cert.device_label, class)?
         }
-        if !class.must_reissue(&cert, tilo_clock::unix_now_ns()) {
-            return Ok(cert_path);
-        }
-        cert.device_label
-    } else {
-        device_label.to_owned()
+        None => issue_device_certificate(identity, device_public_key, device_label, class)?,
     };
-
-    let cert =
-        issue_device_certificate(identity, device.verifying_key().to_bytes(), &label, class)?;
-    persist::write_device_cert(&cert_path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
+    for (path, existing) in &held {
+        if existing.as_ref() != Some(&cert) {
+            persist::write_device_cert(path, &cert).map_err(|e| io::Error::other(e.to_string()))?;
+        }
+    }
     Ok(cert_path)
 }
 
@@ -1758,6 +1750,9 @@ fn protect_identity_record_at(
 
 #[cfg(test)]
 mod renewal_tests;
+
+#[cfg(test)]
+mod one_cert_tests;
 
 #[cfg(test)]
 mod tests {

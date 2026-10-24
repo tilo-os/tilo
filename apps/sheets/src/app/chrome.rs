@@ -1,6 +1,6 @@
-//! The window chrome around the grid: the formula bar and the sheet tabs,
-//! plus the transient status bubble. The commands are the window bar's slots
-//! ([`super::window_bar`]).
+//! The window chrome around the grid: the formula bar and the sheet tabs.
+//! The commands are the window bar's slots ([`super::window_bar`]), and its
+//! notice says the sheet's status.
 //!
 //! Everything is laid out from measured role line boxes and spacing tokens,
 //! and painted through the toolkit's faces (`ButtonFace`, `SegmentedFace`,
@@ -559,51 +559,6 @@ impl SheetsApp {
             .control_size(ControlSize::Small)
             .hovered(hovered);
         Button::paint(scene, transform, tr, theme, &face);
-    }
-
-    /// The area the status bubble floats in: the grid body, clear of the
-    /// scroll bar gutters and the sheet tabs.
-    pub(super) fn status_area(&self) -> Rect {
-        Rect::new(
-            self.grid_rect.x0,
-            self.grid_rect.y0,
-            self.grid_rect.x1 - self.grid.scrollbar_thickness(),
-            self.grid_rect.y1 - self.grid.scrollbar_thickness(),
-        )
-    }
-
-    /// Every pixel the status bubble paints where it floats now, its shadow
-    /// included.
-    pub(super) fn status_bubble_bounds(&self, tr: &mut TextRenderer, theme: &Theme) -> Rect {
-        let rect = self.status_bubble.rect_in(self.status_area(), tr, theme);
-        ui::widget::floating_surface::painted_bounds(rect, theme)
-    }
-
-    /// Paint the transient status bubble over the grid's bottom-trailing
-    /// corner. It shows when the composed status text changes (a selection
-    /// move, a fresh action message) or while the pointer rests in its corner,
-    /// then fades.
-    pub(super) fn draw_status_bubble(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let now = ui::time::now();
-        let area = self.status_area();
-        // Resting in the bubble's corner pins it open; so does a staged
-        // capture.
-        let gutter = self.metrics.s6;
-        let zone = self
-            .status_bubble
-            .rect_in(area, tr, theme)
-            .inflate(gutter, gutter);
-        let over = !self.status_bubble.text().is_empty()
-            && (self.staged_status || zone.contains(self.last_mouse));
-        self.status_bubble.set_hover(over, now);
-        self.status_bubble
-            .paint(scene, transform, tr, theme, area, now);
     }
 
     /// Paint per-peer "presence-in-navigation" on the sheet tabs: for each

@@ -53,7 +53,7 @@ pub(crate) const CHILD_ACTION_TYPE: &str = "tilo.app.child-action";
 pub(crate) const LIFECYCLE_TYPE: &str = "tilo.app.child-lifecycle";
 
 /// A resource whose records are children a record lists. See the
-/// [module docs](self).
+/// module docs.
 pub trait ChildRecord: Resource<State: tilo_resource::Model + Default> {
     /// The resource whose record lists these children.
     type Parent: Resource;
@@ -1104,7 +1104,7 @@ impl<C: ChildRecord> ChildrenState<C> {
 }
 
 /// The children of `C` a record lists, held for a view or surface. See the
-/// [module docs](self).
+/// module docs.
 pub struct Children<C: ChildRecord> {
     state: Rc<ChildrenState<C>>,
     me: String,

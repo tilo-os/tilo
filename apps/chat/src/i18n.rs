@@ -68,6 +68,7 @@ mod tests {
         "chat-call-issue-transport-failed",
         "chat-call-issue-session-ended",
         "chat-call-issue-stale",
+        "chat-call-issue-unsupported",
         "chat-emoji-insert",
         "chat-emoji-choose",
         "chat-emoji-group",

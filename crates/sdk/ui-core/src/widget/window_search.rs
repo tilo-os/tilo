@@ -11,7 +11,7 @@
 //! everything.
 //!
 //! The app draws no field and keeps no find state of its own: it provides
-//! the [`Findable`] document or the [`Filterable`] list it already has, and
+//! the [`Findable`] document or the [`Filterable`](crate::widget::Filterable) list it already has, and
 //! the window reaches them through its tile ([`SearchableWindow`] for an app
 //! that runs inside its own runtime). An app in a process of its own is
 //! reached over its shell connection instead: the search sends it the query,
@@ -28,7 +28,7 @@
 //! Escape returns the window to the view it showed before.
 //!
 //! On a document the open search carries one more control after the steps:
-//! the find's options ([`options`]), a panel under the field with Match case
+//! the find's options (`options`), a panel under the field with Match case
 //! and Whole word, Regular expression or Text / Hex where the document
 //! offers them ([`FindAbilities`]), and for a document that can replace, the
 //! replacement with Replace and Replace all. The replace chord (Ctrl+H,
@@ -72,7 +72,7 @@ pub enum InPlace {
     Nothing,
     /// A document ([`Findable`]): matches are highlighted and stepped through.
     Document,
-    /// A list ([`Filterable`]): it narrows to what matches.
+    /// A list ([`Filterable`](crate::widget::Filterable)): it narrows to what matches.
     List,
     /// The app's views ([`Queryable`]): the window shows a query view of the
     /// app's resources.
@@ -1755,7 +1755,7 @@ impl Widget for WindowSearch {
     fn needs_redraw(&self) -> bool {
         self.presence.is_moving(crate::motion::frame_now())
             || self.field.needs_redraw()
-            || self.panel.is_moving()
+            || self.panel.needs_redraw()
             || (self.panel.is_drawn() && self.panel.replace_field.needs_redraw())
     }
 

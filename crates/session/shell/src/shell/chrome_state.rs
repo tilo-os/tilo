@@ -914,6 +914,8 @@ pub struct ChromeState {
     /// Happening now offers to join ([`Self::publish_live_calls`]).
     pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     activity_focus_request: Option<ActivityFocus>,
+    /// Activity was asked to open; the overlay host launches its app.
+    activity_open_request: bool,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
@@ -1256,6 +1258,7 @@ impl ChromeState {
             wave_notice: None,
             live_calls: Vec::new(),
             activity_focus_request: None,
+            activity_open_request: false,
             workspace_view_request: None,
             history_action_request: None,
             pending_grants: VecDeque::new(),
@@ -1929,7 +1932,7 @@ impl ChromeState {
     /// Never wait on the disk to open or create a tab's record: this runs on
     /// the compositor's loop, where a `mkdir` stuck behind the journal froze
     /// the desktop. The store's own thread opens the document; a tab asks
-    /// again once `wake` reports it done (see [`Self::retry_new_tab_records`]).
+    /// again once `wake` reports it done (see `Self::retry_new_tab_records`).
     pub fn open_records_without_waiting(&mut self, wake: crate::session_runtime::Wake) {
         self.records_wake = Some(RecordsWake(wake));
         self.install_records_wake();
@@ -2299,21 +2302,23 @@ impl ChromeState {
         self.workspace_view_request.take()
     }
 
+    /// Open the Activity app, showing `focus` when one is named. The
+    /// overlay host launches it, or brings its window forward, on its next
+    /// frame ([`Self::take_activity_open_request`]).
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
-        self.activity_focus_request = focus;
-        {
-            let mut tree = self.tree_mut();
-            crate::shell::tab_binding::open_workspace_activity(&mut tree);
+        if focus.is_some() {
+            self.activity_focus_request = focus;
         }
-        // Kept as a request edge for compatibility with older control/state
-        // clients; Activity itself is no longer a modal overlay.
+        self.activity_open_request = true;
         self.overlays.room_activity = false;
         self.overlays.collaborators = false;
         self.bump();
     }
 
-    pub fn take_activity_focus_request(&mut self) -> Option<ActivityFocus> {
-        self.activity_focus_request.take()
+    /// Whether Activity was asked to open since last taken, and what it
+    /// was asked to show.
+    pub fn take_activity_open_request(&mut self) -> Option<Option<ActivityFocus>> {
+        std::mem::take(&mut self.activity_open_request).then(|| self.activity_focus_request.take())
     }
 
     /// Open Activity and run a selected-row history action (`history.compare`,
@@ -3521,7 +3526,7 @@ impl ChromeState {
         true
     }
 
-    /// Enforces the [`MAX_NOTIFICATIONS`] cap. While
+    /// Enforces the [`tilo_desktop::notifications::MAX_NOTIFICATIONS`] cap. While
     /// [`Self::notifications_quiet`], goes straight to history instead of a
     /// banner, unless it carries [`Notification::bypass_dnd`] (shell-only;
     /// D-Bus can't set it).
@@ -3859,24 +3864,34 @@ impl ChromeState {
     /// Clear the history log (the "Clear all" affordance in the
     /// notification centre). Bumps the revision so the surface re-syncs.
     pub fn clear_notification_history(&mut self) {
-        if self
-            .notification_log
-            .clear_history(std::time::Instant::now())
-        {
+        if self.notification_log.clear_history(ui::time::now()) {
             self.bump();
         }
     }
 
-    /// Whether Clear all can still be undone.
+    /// Whether Clear all can still be undone. The undo ends at its deadline,
+    /// not at the next frame that notices: an action can ask after an idle
+    /// while in which nothing painted.
     pub fn can_undo_notification_history_clear(&self) -> bool {
-        self.notification_log.can_undo_clear()
+        self.notification_log
+            .clear_deadline()
+            .is_some_and(|deadline| ui::time::now() < deadline)
+    }
+
+    /// When the undo of Clear all ends, for the compositor to wake then and
+    /// take its Undo away.
+    pub fn notification_history_clear_deadline(&self) -> Option<ui::time::Instant> {
+        self.notification_log.clear_deadline()
     }
 
     /// Restore the cleared oldest-first snapshot ahead of notifications that
     /// arrived during the undo window, preserving exact chronological order.
+    /// Past the window nothing comes back, whether or not a frame has run
+    /// since.
     pub fn undo_notification_history_clear(&mut self) -> bool {
+        let expired = self.notification_log.expire_clear(ui::time::now());
         let restored = self.notification_log.undo_clear();
-        if restored {
+        if expired || restored {
             self.bump();
         }
         restored

@@ -205,13 +205,13 @@ pub struct Config {
     pub model_timeout: Duration,
     /// What the agent may enumerate and perform. A denied operation is
     /// absent from what it discovers, never merely refused — see
-    /// [`crate::surface::offers`].
+    /// [`crate::surface::Catalogue::offers`].
     pub permissions: PermissionContext,
     /// The agent's content store, created once when it starts: content an
     /// operation produced is read from here by the operation consuming it.
     pub content: ui::content::ContentStore,
     /// Applications started beside the agent whose actions its first run
-    /// waits for ([`Session::await_companions`]).
+    /// waits for (`Session::await_companions`).
     pub companions: Vec<String>,
     /// The model the desktop chose for this agent, when it launched it with
     /// one; otherwise the Settings default this process can read, if any.

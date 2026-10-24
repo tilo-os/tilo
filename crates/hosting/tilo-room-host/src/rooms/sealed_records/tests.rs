@@ -130,7 +130,12 @@ async fn a_node_compacts_a_sealed_history_before_it_fills() {
     }
     assert_eq!(readable(&rooms, &room).await.as_deref(), Some("line 4199"));
     let state = rooms.room(&room).await.unwrap();
-    let due = state.lock().await.peer().sealed_records_to_compact();
+    let due = state
+        .lock()
+        .await
+        .peer()
+        .publication()
+        .sealed_records_to_compact();
     assert!(due.is_empty(), "the history was compacted: {due:?}");
     // Members hold every write it covers: the compaction stays with the
     // governor's copy and is never pushed to them.
@@ -567,7 +572,12 @@ async fn a_member_opens_a_call_in_a_chat_its_members_seal() {
         .await;
     let state = rooms.room(&room).await.unwrap();
     assert!(
-        state.lock().await.peer().is_sealed_record(CHAT, LOBBY),
+        state
+            .lock()
+            .await
+            .peer()
+            .publication()
+            .is_sealed_record(CHAT, LOBBY),
         "the member's write is sealed"
     );
     drop(state);
@@ -678,6 +688,7 @@ async fn a_record_written_in_the_clear_is_sealed_with_its_whole_history() {
         let now = SystemTime::now();
         for bytes in [automerge::AutoCommit::new().save(), written.save()] {
             candidate
+                .publication_mut()
                 .publish_document(APP, LEGACY, bytes, &key, now)
                 .unwrap();
         }

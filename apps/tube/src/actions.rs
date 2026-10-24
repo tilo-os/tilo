@@ -56,6 +56,21 @@ pub enum TubeEffect {
     /// Play or pause.
     #[effect(kind = "read")]
     TogglePlayback,
+    /// Seek to seconds.
+    ///
+    /// Moves the open video to a moment; a segment you chose to skip is
+    /// skipped from there as during playback.
+    #[effect(kind = "read")]
+    Seek {
+        #[param("Position in the open video, in seconds from its start")]
+        seconds: f64,
+    },
+    /// Skip segment.
+    ///
+    /// Jumps to the end of the marked segment playing now, one you chose to
+    /// see with a skip button rather than skip on its own.
+    #[effect(kind = "read")]
+    SkipSegment,
     /// Copy share link.
     #[effect(kind = "read")]
     Share {

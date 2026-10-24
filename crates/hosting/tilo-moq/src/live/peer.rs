@@ -1,4 +1,4 @@
-//! A native `LIVE_V1` participant: the client side of [`super::LiveRelay`].
+//! A native `LIVE_V1` participant: the client side of [`LiveRelay`].
 //!
 //! It publishes its own namespace broadcast (with the `presence` track) and
 //! one record broadcast per record it writes, and receives the room's egress

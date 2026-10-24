@@ -3162,7 +3162,7 @@ impl BlockEditor {
 
     /// [`Widget::accessibility_shared`], with `control` added to every
     /// block's row. Each row is the one of the last frame while nothing it
-    /// is built from changed ([`Self::access_rows`]), so a keystroke builds
+    /// is built from changed (`Self::access_rows`), so a keystroke builds
     /// the row of the block it typed into, not the document's.
     pub fn accessibility_shared_with(
         &self,
@@ -3329,7 +3329,7 @@ impl BlockEditor {
             .collect()
     }
 
-    /// The block rows [`Self::access_rows`] built rather than kept, since
+    /// The block rows `Self::access_rows` built rather than kept, since
     /// the editor was made.
     #[cfg(any(test, feature = "test-support"))]
     pub fn access_row_builds_for_test(&self) -> usize {

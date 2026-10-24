@@ -22,7 +22,6 @@ use ui::collaboration::{
 };
 use ui::framework::{EffectAnswer, EffectCx, EffectReply, Effected, LiveRow};
 use ui::tilo_resource::{self, Effect};
-use ui::time::{Duration, Instant};
 use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
 
 use room_canvas::{RoomCanvas, RoomGesture};
@@ -52,22 +51,18 @@ crate::area::pane_area! {
     fn poll(&self) {
         SpeakersArea::poll(self);
     }
+
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        if let Some(model) = self.model.get() {
+            model.borrow_mut().handle_collab_event(event);
+        }
+    }
 }
 
 /// The window's [`SpeakersArea`].
 pub fn area(app: &crate::settings_app::SettingsApp) -> Option<&SpeakersArea> {
     app.areas().find()
 }
-
-/// How often a shown pane asks for the speaker sets again while something
-/// moves on its own: a setup flow is open, a calibration runs, or a device
-/// was asked to join and has not answered.
-const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
-
-/// How often an idle pane asks. The compositor has no way to say the sets
-/// changed, so a device coming or going still shows within a minute; every
-/// change Settings makes asks again at once.
-const IDLE_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// What reaches the compositor's speaker sets.
 #[derive(Clone, Debug, PartialEq, Eq, tilo_resource::Effect)]
@@ -320,6 +315,16 @@ fn role_from_slug(slug: &str) -> Option<SpeakerRoleSpec> {
     .find(|role| role_slug(*role) == slug)
 }
 
+/// Where the ask for the speaker sets stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refresh {
+    Idle,
+    Asked,
+    /// The compositor said the sets changed while the ask was unanswered:
+    /// its answer may show them from before, so one more ask follows it.
+    AskedBeforeChange,
+}
+
 /// What a finished background call was for.
 enum Purpose {
     Refresh,
@@ -412,9 +417,7 @@ pub struct SpeakersModel {
     finished_tx: Sender<Finished>,
     finished_rx: Receiver<Finished>,
     in_flight: usize,
-    refreshing: bool,
-    /// When the sets were last asked for.
-    last_refresh: Instant,
+    refresh: Refresh,
     /// What a shown pane holds; a pane shown anew asks at once.
     shown: std::rc::Weak<()>,
     arrangement_state: ui::LocalState<String>,
@@ -448,8 +451,7 @@ impl SpeakersModel {
             finished_tx,
             finished_rx,
             in_flight: 0,
-            refreshing: false,
-            last_refresh: ui::time::now(),
+            refresh: Refresh::Idle,
             shown: std::rc::Weak::new(),
             arrangement_state: ui::LocalState::new(Arrangement::Stereo.label()),
             name_state: ui::LocalState::new(t("speakers-default-name")),
@@ -542,43 +544,30 @@ impl SpeakersModel {
         }
     }
 
+    /// Ask for the sets, unless an ask is already out.
     fn refresh(&mut self) {
-        if !self.refreshing {
-            self.refreshing = true;
+        if self.refresh == Refresh::Idle {
+            self.refresh = Refresh::Asked;
             self.call(Purpose::Refresh, SpeakerCommand::Snapshot);
         }
-        self.last_refresh = ui::time::now();
     }
 
-    /// When the sets are asked for again: soon while something moves on
-    /// its own, else after [`IDLE_REFRESH_INTERVAL`].
-    fn next_refresh(&self) -> Instant {
-        self.last_refresh
-            + if self.settling() {
-                REFRESH_INTERVAL
-            } else {
-                IDLE_REFRESH_INTERVAL
-            }
-    }
-
-    /// Whether the sets change without anyone here acting: a setup flow is
-    /// open (devices come and go from its choices), a calibration measures,
-    /// or a device was asked to join and has not answered.
-    fn settling(&self) -> bool {
-        use ui::collaboration::{CalibrationPhaseInfo, SpeakerMemberStatus};
-        let snapshot = self.setup.snapshot();
-        *self.setup.step() != Step::Overview
-            || snapshot.calibrations.iter().any(|run| {
-                matches!(
-                    run.phase,
-                    CalibrationPhaseInfo::WaitingForMicrophones | CalibrationPhaseInfo::Measuring
-                )
-            })
-            || snapshot
-                .groups
-                .iter()
-                .flat_map(|group| &group.members)
-                .any(|member| member.status == SpeakerMemberStatus::AwaitingConsent)
+    /// The compositor says what the sets show may have changed (a device came
+    /// or went, a member answered, a calibration moved on): a shown pane asks
+    /// once, a burst of changes during that ask once more. Nothing asks on a
+    /// timer; a hidden pane asks when it is shown again.
+    pub(crate) fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
+        if !matches!(event, ui::collaboration::CollabEvent::SpeakersChanged)
+            || self.shown.upgrade().is_none()
+        {
+            return;
+        }
+        if self.refresh == Refresh::Idle {
+            self.refresh();
+        } else {
+            // The ask that is out may show the sets from before the change.
+            self.refresh = Refresh::AskedBeforeChange;
+        }
     }
 
     /// Ask the compositor for `effect`; `reply` is told how it ends.
@@ -701,7 +690,8 @@ impl SpeakersModel {
             self.in_flight = self.in_flight.saturating_sub(1);
             match finished.purpose {
                 Purpose::Refresh => {
-                    self.refreshing = false;
+                    let again = self.refresh == Refresh::AskedBeforeChange;
+                    self.refresh = Refresh::Idle;
                     match finished.result {
                         Ok(SpeakerReply::Snapshot { snapshot }) => self.adopt(snapshot),
                         Ok(SpeakerReply::Rejected { reason }) | Err(reason) => {
@@ -709,6 +699,9 @@ impl SpeakersModel {
                             self.changed = true;
                         }
                         Ok(SpeakerReply::Done { .. }) => {}
+                    }
+                    if again {
+                        self.refresh();
                     }
                 }
                 Purpose::Effect(effect) => {
@@ -1555,7 +1548,7 @@ impl SpeakersModel {
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
-        if !self.setup.snapshot().media_enabled && !self.refreshing {
+        if !self.setup.snapshot().media_enabled && self.refresh == Refresh::Idle {
             return page(vec![section(
                 &t("speakers-overview-title"),
                 rows(vec![note(&t("speakers-media-off"))]),
@@ -1632,9 +1625,6 @@ impl PaneModel for SpeakersModel {
         self.poll_finished();
         self.read_controls();
         self.sync_bound_states();
-        if ui::time::now() >= self.next_refresh() {
-            self.refresh();
-        }
         std::mem::take(&mut self.changed)
     }
 
@@ -1646,15 +1636,11 @@ impl PaneModel for SpeakersModel {
         self.in_flight > 0
     }
 
-    fn next_wake(&self) -> Option<Instant> {
-        Some(self.next_refresh())
-    }
-
     fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
         let anew = self.shown.upgrade().is_none();
         let shown = crate::watch::shared(&mut self.shown, || ());
         if anew {
-            // What an idle model last asked for may be a minute old.
+            // Changes while no pane showed the model were not asked for.
             self.refresh();
         }
         Some(shown)
@@ -1735,6 +1721,8 @@ mod tests {
         SpeakerDeviceInfo, SpeakerEndpointInfo, SpeakerGroupInfo, SpeakerMemberInfo,
         SpeakerMemberStatus,
     };
+
+    use ui::time::Duration;
 
     use super::*;
 
@@ -1858,12 +1846,16 @@ mod tests {
         settle(model);
     }
 
-    /// An idle pane asks for the speaker sets once a minute, not every two
-    /// seconds; it asks at once when shown anew, and every two seconds only
-    /// while something moves on its own (here a device asked to join).
+    /// The pane never asks on a timer, not even while something moves on
+    /// its own (a setup flow, a device yet to answer): it asks when shown
+    /// anew, once per change the compositor announces while shown, and once
+    /// more for changes announced during an unanswered ask.
     #[test]
-    fn an_idle_pane_asks_rarely_and_a_settling_one_often() {
+    fn a_shown_pane_asks_once_per_announced_change_and_never_on_a_timer() {
+        use ui::collaboration::CollabEvent;
         let service = fake();
+        service.snapshot.lock().unwrap().groups[0].members[0].status =
+            SpeakerMemberStatus::AwaitingConsent;
         let mut pane = model(service.clone());
         settle(&mut pane);
         let asked = || {
@@ -1875,32 +1867,43 @@ mod tests {
                 .filter(|command| matches!(command, SpeakerCommand::Snapshot))
                 .count()
         };
+        let shown = pane.follow();
+        settle(&mut pane);
         let first = asked();
-        assert!(
-            pane.next_wake().unwrap() >= ui::time::now() + Duration::from_secs(30),
-            "an idle pane looks again in a minute"
+        assert_eq!(
+            pane.next_wake(),
+            None,
+            "a device yet to answer sets no wake"
         );
+        press(&mut pane, SpeakerFlow::BeginSpeakerSetup);
+        assert_eq!(pane.next_wake(), None, "nor does an open setup flow");
         for _ in 0..3 {
             let _ = pane.poll();
         }
-        assert_eq!(asked(), first, "and asks nothing meanwhile");
+        assert_eq!(asked(), first, "and nothing is asked meanwhile");
 
-        let shown = pane.follow();
+        pane.handle_collab_event(&CollabEvent::SpeakersChanged);
         settle(&mut pane);
-        assert_eq!(asked(), first + 1, "a pane shown anew asks at once");
-        let also = pane.follow();
-        settle(&mut pane);
-        assert_eq!(asked(), first + 1, "a second pane shares the first's ask");
-        drop((shown, also));
+        assert_eq!(asked(), first + 1, "a change asks once");
 
-        service.snapshot.lock().unwrap().groups[0].members[0].status =
-            SpeakerMemberStatus::AwaitingConsent;
+        for _ in 0..3 {
+            pane.handle_collab_event(&CollabEvent::SpeakersChanged);
+        }
+        settle(&mut pane);
+        assert_eq!(
+            asked(),
+            first + 3,
+            "a burst asks once, and once more for what came during that ask"
+        );
+        assert_eq!(pane.next_wake(), None, "after which nothing is due");
+
+        drop(shown);
+        pane.handle_collab_event(&CollabEvent::SpeakersChanged);
+        settle(&mut pane);
+        assert_eq!(asked(), first + 3, "a hidden pane does not ask");
         let _shown = pane.follow();
         settle(&mut pane);
-        assert!(
-            pane.next_wake().unwrap() <= ui::time::now() + REFRESH_INTERVAL,
-            "a device yet to answer is looked at every two seconds"
-        );
+        assert_eq!(asked(), first + 4, "it asks when shown again");
     }
 
     #[test]

@@ -312,6 +312,11 @@ pub struct NavPerson {
     pub colour: Color,
     /// They are speaking now.
     pub speaking: bool,
+    /// The name their initials come from, when the label says more than
+    /// their name ("Dana (via Discord)"); else the label.
+    pub name: Option<String>,
+    /// Their picture; their initials stand in while there is none.
+    pub image: Option<vello::peniko::ImageData>,
 }
 
 /// A row's status dot, as [`NavItem::status`] keeps it.
@@ -518,7 +523,24 @@ impl NavItem {
             identity: identity.into(),
             colour,
             speaking,
+            name: None,
+            image: None,
         });
+        self
+    }
+
+    /// The face of the person the row stands for ([`Self::person`]): the
+    /// name their initials come from and their picture.
+    #[must_use]
+    pub fn person_face(
+        mut self,
+        name: impl Into<String>,
+        image: Option<vello::peniko::ImageData>,
+    ) -> Self {
+        if let Some(person) = &mut self.person {
+            person.name = Some(name.into());
+            person.image = image;
+        }
         self
     }
 

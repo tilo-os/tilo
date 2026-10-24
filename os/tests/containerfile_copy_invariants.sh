@@ -306,7 +306,15 @@ containerfile="$repo/os/Containerfile"
 # tilo-clock-floor, its service, timer and shutdown service keep the clock
 # floor PID 1 starts from at chrony's authenticated time: four payload rows
 # riding existing COPY instructions.
-expected_contract=61c50071c9b6a110148bcb7f86f47c44f3cf179dde223f35ae1eefd8e3871d43
+# The device VPN helper's units (tilo-device-vpn.socket, .service and
+# -reset.service) ride the system-unit COPY; its tmpfiles entry, firewalld zone
+# and policy, and NetworkManager drop-in (30-tilo-device-vpn.conf) are four
+# payload rows (docs/device-vpn.md).
+# After the boot loader went back from a deployment that failed its tries,
+# tilo-boot-fallback.service settles bootc on the running one and the session's
+# tilo-boot-fallback-notice (script and user unit) tells the person: three
+# payload rows on the existing recovery-files and user-unit COPY instructions.
+expected_contract=75e13497c82537ec28c88f6c7f56ca4b31fb24ce623ad571e6750491ef853ebd
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {

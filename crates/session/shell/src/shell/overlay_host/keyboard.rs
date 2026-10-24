@@ -310,7 +310,7 @@ impl ShellOverlayHost {
                 // Both directions. Page Down's following frames were already
                 // cheap; Page Up fell through to a full upload of the desktop
                 // just restored.
-                self.start_workspace_switch_frames(ui::tokens::MotionSource::Keyboard);
+                self.start_workspace_switch(ui::tokens::MotionSource::Keyboard);
             }
             *handled = true;
             return true;
@@ -559,7 +559,7 @@ impl ShellOverlayHost {
                 if let Some(chrome) = self.chrome.clone()
                     && chrome.borrow_mut().switch_workspace(direction)
                 {
-                    self.start_workspace_switch_frames(source);
+                    self.start_workspace_switch(source);
                 }
             }
             _ => return false,
@@ -731,6 +731,8 @@ impl ShellOverlayHost {
             A::PreviousTab
                 | A::NextTab
                 | A::ToggleMaximize
+                | A::MaximizeWindow
+                | A::RestoreWindow
                 | A::DetachTab
                 | A::AttachTabLeft
                 | A::AttachTabRight

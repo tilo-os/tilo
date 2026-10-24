@@ -151,6 +151,17 @@ pub enum BrowserEffect {
         #[param("The extension's id")]
         id: String,
     },
+    /// Send words to extension
+    ///
+    /// What Enter does after its keyword in the address: the extension acts
+    /// on the words, often by opening a page in this window.
+    #[effect(row, returns)]
+    SendToExtension {
+        #[param("The extension's id")]
+        id: String,
+        #[param("The words, as typed after its keyword")]
+        text: String,
+    },
     /// Add extension from the Web Store
     ///
     /// On an extension's Chrome Web Store page: shows what it may do, and
@@ -160,6 +171,21 @@ pub enum BrowserEffect {
     /// Open extension settings
     #[effect(row, returns)]
     OpenExtensionSettings {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Open side panel
+    ///
+    /// Shows the extension's side panel beside this page, where it has one
+    /// for the page.
+    #[effect(row, returns)]
+    OpenExtensionSidePanel {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Close side panel
+    #[effect(row, returns)]
+    CloseExtensionSidePanel {
         #[param("The extension's id")]
         id: String,
     },
@@ -371,6 +397,26 @@ pub enum BrowserEffect {
         #[param("Allow sending the form to another site than the page's own (default false)")]
         cross_origin: Option<bool>,
     },
+    /// Answer the page's question
+    ///
+    /// What its Close, Allow, Send, Leave or Reload button does: the page
+    /// waits on its question until it is answered.
+    #[effect(row, returns)]
+    AcceptPageDialog {
+        #[param("The question's id")]
+        dialog: u32,
+        #[param("The answer to a prompt; what its field holds when absent")]
+        text: Option<String>,
+    },
+    /// Cancel the page's question
+    ///
+    /// What its Cancel button does: a confirm answers no, a prompt nothing,
+    /// and a page asking to be left stays.
+    #[effect(row, returns)]
+    DismissPageDialog {
+        #[param("The question's id")]
+        dialog: u32,
+    },
     /// Bookmark this page personally
     #[effect(row, returns, idempotent)]
     BookmarkPersonalPage {
@@ -475,12 +521,21 @@ impl BrowserEffect {
                 BrowserOperation::Extension(ExtensionRequest::Pin(id, false))
             }
             Self::UseExtension { id } => BrowserOperation::Extension(ExtensionRequest::Use(id)),
+            Self::SendToExtension { id, text } => {
+                BrowserOperation::Extension(ExtensionRequest::Send(id, text))
+            }
             Self::AddExtension => BrowserOperation::AddExtension,
             Self::ZoomIn => BrowserOperation::Zoom { step: 1 },
             Self::ZoomOut => BrowserOperation::Zoom { step: -1 },
             Self::ResetZoom => BrowserOperation::Zoom { step: 0 },
             Self::OpenExtensionSettings { id } => {
                 BrowserOperation::Extension(ExtensionRequest::OpenSettings(id))
+            }
+            Self::OpenExtensionSidePanel { id } => {
+                BrowserOperation::Extension(ExtensionRequest::OpenSidePanel(id))
+            }
+            Self::CloseExtensionSidePanel { id } => {
+                BrowserOperation::Extension(ExtensionRequest::CloseSidePanel(id))
             }
             Self::RemoveExtension { id } => {
                 BrowserOperation::Extension(ExtensionRequest::Remove(id))
@@ -498,6 +553,16 @@ impl BrowserEffect {
             Self::RetryDownload { id } => BrowserOperation::RetryDownload { id },
             Self::OpenDownload { id } => BrowserOperation::OpenDownload { id },
             Self::RevealDownload { id } => BrowserOperation::RevealDownload { id },
+            Self::AcceptPageDialog { dialog, text } => BrowserOperation::AnswerPageDialog {
+                dialog,
+                accept: true,
+                text,
+            },
+            Self::DismissPageDialog { dialog } => BrowserOperation::AnswerPageDialog {
+                dialog,
+                accept: false,
+                text: None,
+            },
             Self::ReadPage => page(PageRequest::Outline),
             Self::ReadPageChanges => page(PageRequest::Changes),
             Self::ReadPageElementAt { x, y } => page(PageRequest::At { x, y }),
@@ -564,6 +629,11 @@ pub enum ExtensionRequest {
     OpenSettings(String),
     /// What its toolbar button does: open its popup, or tell it of the click.
     Use(String),
+    /// Words for its keyword in the address, as Enter sends them.
+    Send(String, String),
+    /// Show its side panel beside the page, or close it.
+    OpenSidePanel(String),
+    CloseSidePanel(String),
     Remove(String),
 }
 
@@ -640,6 +710,13 @@ pub enum BrowserOperation {
         id: String,
     },
     Page(PageRequest),
+    /// Answer the page's question `dialog`: OK, Leave or Reload when
+    /// `accept`, else Cancel, with a prompt's `text`.
+    AnswerPageDialog {
+        dialog: u32,
+        accept: bool,
+        text: Option<String>,
+    },
     Extension(ExtensionRequest),
     /// Offer the Web Store item on the page, as Add to Tilo Browser does.
     AddExtension,

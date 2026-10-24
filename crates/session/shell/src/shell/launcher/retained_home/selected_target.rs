@@ -1,11 +1,12 @@
 //! An admitted selected object continued through the ordinary signed launch queue.
-use super::super::{InstalledApp, LaunchCommand, action_authority};
+use super::super::{InstalledApp, LaunchCommand};
 use super::{
     Registration,
     bootstrap::{self, ProofCustody},
     open_selected::{Dispatcher, Objects},
     refused,
 };
+use crate::shell::action_authority;
 use crate::shell::{
     native_workspace_owner::NativeWorkspaceOwner,
     state::{RoomId, WorkspaceTreeHandle},
