@@ -84,7 +84,9 @@ fn desk() -> Desk {
     let mut registry = SearchRegistry::new();
     registry.register(Rc::new(PeopleProvider::new()));
     registry.register(Rc::new(WaitingOnYouProvider::new()));
-    registry.register(Rc::new(ContinueProvider::without_broker()));
+    registry.register(Rc::new(ContinueProvider::without_broker(
+        std::sync::Arc::new(crate::shell::search::app_content_index::AppContentIndex::in_memory()),
+    )));
     registry.register(Rc::new(ApplicationsProvider::new()));
     let desk = Desk {
         chrome,

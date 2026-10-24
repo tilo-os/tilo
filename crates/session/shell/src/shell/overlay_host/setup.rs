@@ -38,7 +38,10 @@ impl ShellOverlayHost {
             .register(std::rc::Rc::clone(&app_content)
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ContinueProvider::new(broker.clone()),
+            crate::shell::search::providers::ContinueProvider::new(
+                crate::shell::search::app_content_index::session(),
+                broker.clone(),
+            ),
         ));
         // The catalogue again, now able to run a closed app's offered action
         // for an app this device does not have yet.
@@ -226,7 +229,9 @@ impl ShellOverlayHost {
         // Where the windows were: the launcher's Continue. Reopening at an
         // anchor goes through the broker once one is attached.
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ContinueProvider::without_broker(),
+            crate::shell::search::providers::ContinueProvider::without_broker(
+                crate::shell::search::app_content_index::session(),
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::QuickAnswersProvider::new(),
