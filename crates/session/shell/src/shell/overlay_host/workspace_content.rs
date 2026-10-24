@@ -293,12 +293,15 @@ impl ShellOverlayHost {
         let swapped = self.rebuild_workspace_content(&chrome, &desktop, &failures);
         if swapped {
             // A chord announced its switch before making it; any other
-            // switch follows the input the person last used (a click in the
-            // workspace menu, a key on its row) and owes its frame now.
+            // switch follows the input that just caused it (a click in the
+            // workspace menu, a key on its row) and owes its frame now. One
+            // no input caused just now (an agent's, a script's, a sync's)
+            // lands.
             let made_by = if self.workspace_switch_owed() {
                 self.workspace_switch_source
             } else {
-                self.input_source
+                ui::motion::recent_input(ui::motion::frame_now())
+                    .unwrap_or(ui::tokens::MotionSource::Action)
             };
             self.slide_workspace(shown_before, &desktop, made_by);
             if !self.workspace_switch_owed() {
