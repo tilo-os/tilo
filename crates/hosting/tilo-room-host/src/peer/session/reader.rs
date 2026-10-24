@@ -3,8 +3,6 @@
 //! frames overtake a state frame still in progress, and hands every reply to
 //! the writer.
 
-#[cfg(test)]
-use crate::peer::observe_reader_backlog;
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery,
@@ -123,8 +121,6 @@ impl<R: tokio::io::AsyncRead + Unpin> Inbound<'_, R> {
         let bytes = inbound_bytes(&frame);
         self.backlog
             .push_back((frame, crate::persistence::delivery_budget(bytes)?));
-        #[cfg(test)]
-        observe_reader_backlog(&self.backlog.back().unwrap().0, self.backlog.len());
         Ok(())
     }
 

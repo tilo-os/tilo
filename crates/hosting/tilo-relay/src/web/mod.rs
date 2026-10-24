@@ -1185,10 +1185,8 @@ async fn admitted_anywhere(web: &Web, user: [u8; 32]) -> bool {
         .collect();
     for workspace in workspaces {
         let workspace = workspace.lock().await;
-        // A governed room names its members' roots apart from
-        // the roots its signed authority admitted.
-        if workspace.admitted_users.contains(&user) || workspace.governed_user_roots.contains(&user)
-        {
+        // A governed room names its members' roots.
+        if workspace.governed_user_roots.contains(&user) {
             return true;
         }
     }

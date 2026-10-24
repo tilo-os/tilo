@@ -145,65 +145,6 @@ fn eligible_checkpoint_prefix_requires_a_coherent_distinct_checkpoint_run() {
 }
 
 #[test]
-fn checkpoint_batch_mode_requires_an_exact_completed_projection_shape() {
-    use crate::store::shell_selection::{
-        BatchProjectionReason, BatchSelectionOutcome, IncomingDisposition, Publication,
-    };
-    let represented = BatchSelectionOutcome {
-        supplemental_recovery: None,
-        publication: Publication::Suppress,
-        dispositions: vec![IncomingDisposition::Covered; 2],
-        reason: BatchProjectionReason::Represented,
-    };
-    assert_eq!(
-        checkpoint_mode_for(Some(&represented), 2),
-        CheckpointBatchMode::Represented
-    );
-    let all_original = BatchSelectionOutcome {
-        supplemental_recovery: None,
-        publication: Publication::Original,
-        dispositions: vec![IncomingDisposition::Original; 2],
-        reason: BatchProjectionReason::FinalBasisOmission,
-    };
-    assert_eq!(
-        checkpoint_mode_for(Some(&all_original), 2),
-        CheckpointBatchMode::AllOriginal
-    );
-    for rejected in [
-        BatchSelectionOutcome {
-            supplemental_recovery: None,
-            publication: Publication::Original,
-            dispositions: vec![IncomingDisposition::Original],
-            reason: BatchProjectionReason::FinalBasisOmission,
-        },
-        BatchSelectionOutcome {
-            supplemental_recovery: None,
-            publication: Publication::Original,
-            dispositions: vec![IncomingDisposition::Covered, IncomingDisposition::Original],
-            reason: BatchProjectionReason::FinalBasisOmission,
-        },
-        BatchSelectionOutcome {
-            supplemental_recovery: None,
-            publication: Publication::Activate(std::path::PathBuf::from("selected")),
-            dispositions: vec![IncomingDisposition::Original; 2],
-            reason: BatchProjectionReason::FinalBasisOmission,
-        },
-        BatchSelectionOutcome {
-            supplemental_recovery: None,
-            publication: Publication::Original,
-            dispositions: vec![IncomingDisposition::Original; 2],
-            reason: BatchProjectionReason::UnresolvedTailDependencies,
-        },
-    ] {
-        assert_eq!(
-            checkpoint_mode_for(Some(&rejected), 2),
-            CheckpointBatchMode::Serial
-        );
-    }
-    assert_eq!(checkpoint_mode_for(None, 2), CheckpointBatchMode::Serial);
-}
-
-#[test]
 fn eligible_checkpoint_prefix_stops_at_every_identity_kind_and_malformed_barrier() {
     let EnvelopeV2::State(current) = retained(7, 1, 1, true, 3) else {
         unreachable!()

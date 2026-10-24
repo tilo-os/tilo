@@ -114,7 +114,7 @@ impl AdmissionMode {
     }
 }
 
-/// The plane asking. Planes differ only in the four properties below.
+/// The plane asking. Planes differ only in the three properties below.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoomOperation {
     /// A subscribe, and the periodic audit of a live subscription.
@@ -184,12 +184,6 @@ impl RoomOperation {
             Self::Watch => true,
             _ => false,
         }
-    }
-
-    /// Whether a user root the room's authority admits stands in for an exact
-    /// device on this plane. Compute admits exact devices only.
-    const fn admits_user_roots(self) -> bool {
-        !matches!(self, Self::Compute)
     }
 
     const fn owner_device(self) -> OwnerDevice {
@@ -544,7 +538,6 @@ pub(crate) fn listed(room: Room<'_>, peer: &AuthenticatedPeer, op: RoomOperation
             .known_peer_relays
             .contains(&peer.device_public_key))
         || room.lists(&peer.device_public_key)
-        || (op.admits_user_roots() && room.runtime.admitted_users.contains(&peer.user_public_key))
 }
 
 /// The one admission decision for every plane, at the current time.

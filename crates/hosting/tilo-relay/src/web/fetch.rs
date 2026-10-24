@@ -179,8 +179,7 @@ async fn member_of(web: &Web, user: [u8; 32]) -> Vec<Room> {
         {
             return Vec::new();
         }
-        if workspace.admitted_users.contains(&user) || workspace.governed_user_roots.contains(&user)
-        {
+        if workspace.governed_user_roots.contains(&user) {
             rooms.push(Room(id));
         }
     }

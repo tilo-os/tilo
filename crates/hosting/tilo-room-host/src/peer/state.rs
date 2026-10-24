@@ -5,9 +5,8 @@
 
 use super::{
     AgentRegistry, Arc, AuthenticatedPeer, Envelope, HashMap, PeerError, RelayTrust, ReplayCatchup,
-    ReplayPendingTarget, RoomOperation, SessionCtx, SharedWorkspace,
-    checkpoint_prefix_recovery_allowed, current_session, enqueue_checkpoint_prefix, enqueue_state,
-    lost_session, mpsc, over_change_limit, room_access, trace_native_publication,
+    ReplayPendingTarget, RoomOperation, SessionCtx, SharedWorkspace, current_session,
+    enqueue_state, lost_session, mpsc, over_change_limit, room_access, trace_native_publication,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -451,23 +450,6 @@ pub(super) fn captured_live_current(
                 .is_some_and(|session| Arc::ptr_eq(&lease.live, &session.live))
     })
 }
-pub(super) fn union_session_lives<'a>(
-    prepared: impl IntoIterator<Item = &'a PreparedRecipients>,
-) -> SessionLives {
-    let mut result: SessionLives = Vec::new();
-    for item in prepared {
-        for lease in &item.session_lives {
-            if !result.iter().any(|current| {
-                current.device == lease.device
-                    && current.outbound.same_channel(&lease.outbound)
-                    && Arc::ptr_eq(&current.live, &lease.live)
-            }) {
-                result.push(lease.clone());
-            }
-        }
-    }
-    result
-}
 pub(super) struct StateCommit {
     pub(super) continuity: Option<crate::store::continuity::Receipt>,
     pub(super) envelope: Arc<Envelope>,
@@ -489,94 +471,6 @@ pub(super) struct PreparedRecipients {
     pub(super) sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     pub(super) replay_targets: Vec<ReplayPendingTarget>,
     pub(super) logical_offline_bytes: u64,
-}
-
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the membership guard is read by the iterator closures until the recipient snapshot is complete"
-)]
-pub(super) async fn prepare_recipients(
-    workspace: &SharedWorkspace,
-    source: &StateSource,
-    author: [u8; 32],
-    role: crate::auth::PeerRole,
-    delta_len: usize,
-) -> Result<PreparedRecipients, crate::store::StoreError> {
-    let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    if !source.authorized(&runtime) {
-        return Err(crate::persistence::error(
-            "state source authorization changed",
-        ));
-    }
-    let mut recipients = runtime
-        .membership
-        .devices
-        .iter()
-        .copied()
-        .filter(|key| key != &author)
-        .collect::<std::collections::HashSet<_>>();
-    if role == crate::auth::PeerRole::Device {
-        recipients.extend(
-            runtime
-                .known_peer_relays
-                .iter()
-                .copied()
-                .filter(|key| key != &author),
-        );
-    }
-    let sessions = runtime
-        .subscribers
-        .iter()
-        .filter(|(key, sub)| {
-            **key != author
-                && !(role == crate::auth::PeerRole::PeerRelay
-                    && sub.role == crate::auth::PeerRole::PeerRelay)
-        })
-        .map(|(key, sub)| (*key, sub.tx.clone()))
-        .collect::<Vec<_>>();
-    let session_lives = sessions
-        .iter()
-        .filter_map(|(device, tx)| {
-            runtime
-                .state_sessions
-                .get(device)
-                .map(|session| SessionLease {
-                    device: *device,
-                    outbound: tx.clone(),
-                    live: session.live.clone(),
-                })
-        })
-        .collect();
-    let replay_targets = sessions
-        .iter()
-        .filter_map(|(device, _)| {
-            let session = runtime.state_sessions.get(device)?;
-            let catchup = session.replay.as_ref()?.clone();
-            (session.live.load(std::sync::atomic::Ordering::SeqCst)
-                && catchup.phase.load(std::sync::atomic::Ordering::SeqCst) == ReplayCatchup::ACTIVE)
-                .then(|| ReplayPendingTarget {
-                    device: *device,
-                    live: session.live.clone(),
-                    catchup,
-                })
-        })
-        .collect::<Vec<_>>();
-    recipients.extend(sessions.iter().map(|(key, _)| *key));
-    if role == crate::auth::PeerRole::PeerRelay {
-        recipients.retain(|key| !runtime.known_peer_relays.contains(key));
-    }
-    let logical_offline_bytes = (delta_len as u64).saturating_mul(
-        recipients
-            .iter()
-            .filter(|key| !runtime.subscribers.contains_key(*key))
-            .count() as u64,
-    );
-    Ok(PreparedRecipients {
-        session_lives,
-        sessions,
-        replay_targets,
-        logical_offline_bytes,
-    })
 }
 
 pub(super) async fn handle_delta(
@@ -810,13 +704,7 @@ pub(super) async fn handle_delta_prefix(
             return Ok(None);
         }
     }
-    let (governed_source, governor_tap) = {
-        let runtime = workspace.lock().await;
-        (
-            checkpoint_prefix_recovery_allowed(&runtime, peer, *author_device_public_key, &source),
-            runtime.governor_tap.clone(),
-        )
-    };
+    let governor_tap = workspace.lock().await.governor_tap.clone();
     // Every change of the prefix reaches the room's governor once it is
     // kept, as one sent alone does (`handle_delta`): an access request and
     // the next checkpoint arriving together must not hide the request from
@@ -826,28 +714,16 @@ pub(super) async fn handle_delta_prefix(
     } else {
         Vec::new()
     };
-    if governed_source {
-        enqueue_checkpoint_prefix(
+    for (envelope, budget) in envelopes.into_iter().zip(inbound_budget) {
+        enqueue_state(
             &workspace,
-            envelopes,
-            source,
+            envelope,
+            Some(source.clone()),
             peer.role,
             session.metrics.clone(),
-            inbound_budget,
         )
         .await?;
-    } else {
-        for (envelope, budget) in envelopes.into_iter().zip(inbound_budget) {
-            enqueue_state(
-                &workspace,
-                envelope,
-                Some(source.clone()),
-                peer.role,
-                session.metrics.clone(),
-            )
-            .await?;
-            drop(budget);
-        }
+        drop(budget);
     }
     if let Some(tap) = governor_tap {
         for body in notices {

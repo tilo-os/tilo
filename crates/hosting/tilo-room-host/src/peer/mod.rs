@@ -13,7 +13,6 @@ mod access_audit;
 mod actions;
 mod admission;
 mod checkpoint;
-mod checkpoint_commit;
 mod commit;
 mod compaction;
 mod delivery;
@@ -28,26 +27,14 @@ mod state;
 mod subscribe;
 mod test_hooks;
 
-use crate::store;
 pub use admission::enqueue_federated;
 pub(crate) use admission::{HostAdmission, enqueue_host_state};
 use admission::{enqueue_state, enqueue_state_inner};
 #[cfg(test)]
+use checkpoint::buffered_retention_prefix_with_limits;
 use checkpoint::{
-    CHECKPOINT_PROGRESS, CheckpointProgress, buffered_retention_prefix_with_limits,
-    checkpoint_mode_for, new_checkpoint_batch, step_checkpoint_batch, track_checkpoint_batch_modes,
-};
-use checkpoint::{
-    CheckpointBatch, CheckpointBatchInput, CheckpointBatchMode, RETENTION_PREFIX_BYTE_CAP,
-    RETENTION_PREFIX_FRAME_CAP, ReplayPendingTarget, ReplayPendingWork, buffered_retention_prefix,
-    checkpoint_prefix_recovery_allowed, commit_and_materialize, eligible_checkpoint_prefix,
-    enqueue_checkpoint_prefix, retention_publication_kind, state_commit_for, step_commit_replay,
-    union_sessions,
-};
-use checkpoint_commit::{
-    CheckpointCommitFence, ProjectedCheckpointCommit, ProjectedCheckpointStep,
-    SerialCheckpointCommit, promote_checkpoint_input, publish_checkpoint_commit,
-    publish_checkpoint_commit_fenced,
+    RETENTION_PREFIX_BYTE_CAP, RETENTION_PREFIX_FRAME_CAP, ReplayPendingTarget, ReplayPendingWork,
+    buffered_retention_prefix, eligible_checkpoint_prefix, retention_publication_kind,
 };
 #[cfg(test)]
 use delivery::write_state_delivery;
@@ -69,15 +56,11 @@ use state::{
     FanoutStamp, LiveEnvelope, PreparedRecipients, SelectedPublication, SessionLease, SessionLives,
     StateCommit, authorized_state_source, captured_live_current, desktop_refusal,
     gated_checkpoint_channel, governor_notice, handle_delta, handle_delta_prefix, live_audience,
-    prepare_recipients, steward_audience, steward_only_delta, union_session_lives, unpublished,
+    steward_audience, steward_only_delta, unpublished,
 };
 pub use state::{Lag, StateSource};
 pub(crate) use state::{StateDelivery, StateSession};
-#[cfg(feature = "test-support")]
-pub use test_hooks::CheckpointPrefixPromotionFaultState;
-use test_hooks::{checkpoint_prefix_post_first_promotion_fault, test_point};
-#[cfg(test)]
-use test_hooks::{observe_reader_backlog, stop_tracking_reader_backlog, track_reader_backlog};
+use test_hooks::test_point;
 
 use access::{
     action_peer_admitted, audit_subscriber_access, current_action_peer, current_session,
