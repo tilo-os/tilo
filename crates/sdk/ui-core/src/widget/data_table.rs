@@ -880,11 +880,8 @@ pub struct DataTableCore {
     /// ([`Self::host_scrolled`]).
     host_scrolled: bool,
     /// Shown rows on their way after a sort or a change the person made
-    /// (`motion::ListChange`).
-    row_motion: crate::collection_transition::RowMotions<RowIdentity>,
-    /// The rows the last frame showed and their tops: where a change the
-    /// person makes moves them from.
-    drawn_rows: Vec<(RowIdentity, f64)>,
+    /// (`motion::ListChange`), kept across rebuilds.
+    moving: row_motion::Moving,
 }
 
 /// A row whose type the table no longer names: what [`DataTableCore`] holds
@@ -1273,8 +1270,7 @@ impl DataTableCore {
             hover_row: None,
             headerless: false,
             host_scrolled: false,
-            row_motion: crate::collection_transition::RowMotions::default(),
-            drawn_rows: Vec::new(),
+            moving: row_motion::Moving::default(),
         }
     }
 
@@ -2693,7 +2689,7 @@ impl DataTableCore {
             self.sort_by_column(&key, ascending)
         };
         if !sorted {
-            self.row_motion.cancel();
+            self.moving.rows.cancel();
             return None;
         }
         if let Some(state) = &self.sort_state {
@@ -2806,7 +2802,7 @@ impl DataTableCore {
         let band = self.columns_band();
         let ground = tokens.colors.surfaces.content;
         let pressable = self.rows_pressable();
-        let now = crate::time::now();
+        let now = crate::motion::frame_now();
         for ri in vis_start..vis_end {
             let Some(row_state) = self.row_state_at(ri) else {
                 continue;
@@ -2816,7 +2812,7 @@ impl DataTableCore {
             // (`motion::ListChange`); the body clip trims what is outside.
             let (dy, alpha) = self
                 .row_identity_at(ri)
-                .map_or((0.0, 1.0), |key| self.row_motion.pose(&key, now));
+                .map_or((0.0, 1.0), |key| self.moving.rows.pose(&key, now));
             // Internal virtualization subtracts the viewport offset; when
             // driven by an outer Scrollable, it stays zero and the whole rect is
             // translated instead — both paths render correctly.
@@ -3652,6 +3648,7 @@ impl Widget for DataTableCore {
         if self.reduce_motion {
             self.momentum.stop();
         }
+        self.take_up_row_motion();
         self.apply_type_metrics(theme);
         self.measure_theme = Some(theme.clone());
         self.reconcile_mounted_cells();
@@ -4108,7 +4105,7 @@ impl Widget for DataTableCore {
 
     fn needs_animation_frame(&self) -> bool {
         self.momentum.is_active()
-            || self.row_motion.is_moving(crate::time::now())
+            || self.moving.rows.is_moving(crate::motion::frame_now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
             || self
                 .mounted_cells
@@ -4156,7 +4153,7 @@ impl Widget for DataTableCore {
     /// Redrawn while rows are on their way after a sort or a change, as
     /// well as whenever a cell control asks (or always, with none).
     fn needs_redraw(&self) -> bool {
-        self.row_motion.is_moving(crate::time::now())
+        self.moving.rows.is_moving(crate::motion::frame_now())
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
