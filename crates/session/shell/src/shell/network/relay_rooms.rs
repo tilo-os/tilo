@@ -1001,20 +1001,26 @@ impl ShellNetwork {
 
     /// Install every shared room whose enrollment completed. How each that
     /// ended went is said where it is polled ([`Self::poll_enrollment`]).
-    pub(super) fn finish_shared_rooms(&self) {
+    ///
+    /// Answers whether any finished: finishing one changes more than the
+    /// tree (a site join's progress, the room's enrollment), which the
+    /// frame loop shows.
+    pub(super) fn finish_shared_rooms(&self) -> bool {
         let Ok(mut shared) = self.relay_rooms.shared.lock() else {
-            return;
+            return false;
         };
         #[cfg(test)]
         self.relay_rooms
             .shared_passes
             .fetch_add(1, Ordering::Relaxed);
+        let before = shared.len();
         shared.retain(|id| {
             matches!(
                 self.poll_enrollment(*id),
                 Ok(PeerSyncResponse::EnrollmentPending { .. })
             )
         });
+        shared.len() != before
     }
 
     /// The passes installing shared rooms run so far.

@@ -74,37 +74,71 @@ impl ShellNetwork {
                     let Some(network) = network.upgrade() else {
                         break;
                     };
+                    // What each request changes that the frame loop shows,
+                    // and so whether the loop is woken after it:
+                    // - a job: answers through a reply the loop polls; always.
+                    // - finishing shared rooms: installs rooms (the tree) and
+                    //   ends site joins and enrollments (network state); when
+                    //   one finished.
+                    // - a placement pass: the tree; its own gates only make
+                    //   the loop ask for less, and an enrollment it starts
+                    //   wakes the loop when it lands.
+                    // - following the person's list, entering a host's rooms:
+                    //   the tree; enrollments wake on landing.
+                    // - a sync round: sends only, via the actor.
+                    // - governance and receipts: the tree when one is refused
+                    //   or waits again; their gates only make the loop ask
+                    //   for less, and what a governor applies arrives as an
+                    //   event of its own.
+                    // Any change to the tree wakes it too, and a panic does.
+                    let before = network.tree.generation();
                     // A panicking request must not take later ones with it.
                     let ran =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match item {
-                            Work::Job(job) => job(),
+                            Work::Job(job) => {
+                                job();
+                                true
+                            }
                             Work::FinishSharedRooms => {
                                 queued.store(false, Ordering::Release);
-                                network.finish_shared_rooms();
+                                network.finish_shared_rooms()
                             }
-                            Work::FollowList(adoption) => network.follow_list(adoption),
-                            Work::HostRooms(host) => network.enter_configured_host_rooms(host),
+                            Work::FollowList(adoption) => {
+                                network.follow_list(adoption);
+                                false
+                            }
+                            Work::HostRooms(host) => {
+                                network.enter_configured_host_rooms(host);
+                                false
+                            }
                             Work::PlaceWorkspaces => {
                                 network.placement_pass_started();
                                 network.place_pending_workspaces();
+                                false
                             }
                             Work::SyncRound => {
                                 sync_queued.store(false, Ordering::Release);
                                 network.publish_sync_requests_now();
+                                false
                             }
                             Work::Governance(requests) => {
                                 network.send_governance_requests(requests);
+                                false
                             }
                             Work::Receipts(receipts) => {
                                 network.record_unrecorded_receipts(receipts);
+                                false
                             }
                         }));
                     if ran.is_err() {
                         tracing::error!("a peer-sync request panicked on its worker");
                     }
+                    let changed = network.tree.generation() != before;
                     drop(network);
-                    // The loop applies what the request answered.
-                    if let Some(wake) = wake.get() {
+                    // The loop applies what the request answered or changed.
+                    if (ran.unwrap_or(true) || changed)
+                        && let Some(wake) = wake.get()
+                    {
                         wake();
                     }
                 }
