@@ -287,12 +287,17 @@ async fn a_camera_a_shared_screen_and_a_mute_reach_everyone_watching_the_call() 
         "a foreign VoiceShow changed nothing"
     );
 
-    // She mutes: everyone sees it, and sees her unmuted again.
+    // She mutes, then deafens: everyone sees it, and sees her unmuted and
+    // hearing again.
     let muted = Showing {
         muted: true,
         ..screen
     };
-    for showing in [muted, screen] {
+    let deafened = Showing {
+        deafened: true,
+        ..muted
+    };
+    for showing in [muted, deafened, screen] {
         owner
             .send(Envelope::VoiceShow {
                 workspace_id: room.workspace_id,

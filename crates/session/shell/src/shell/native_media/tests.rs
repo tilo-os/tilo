@@ -28,6 +28,8 @@ struct Device {
     /// Pictures waiting for the app.
     pictures: Mutex<Vec<Picture>>,
     arrived: Arc<tokio::sync::Notify>,
+    /// Whether the call plays silence, as last told.
+    deafened: AtomicBool,
 }
 struct BackendFixture(Arc<Device>);
 impl MediaSession for BackendFixture {
@@ -92,6 +94,9 @@ impl MediaSession for BackendFixture {
     }
     fn show(&mut self, shown: Vec<Shown>) {
         *self.0.shown.lock().unwrap() = shown;
+    }
+    fn set_deafened(&mut self, deafened: bool) {
+        self.0.deafened.store(deafened, Ordering::SeqCst);
     }
     fn take_pictures(&mut self, after: u64, _budget: usize) -> (Vec<Picture>, u64) {
         let pictures = std::mem::take(&mut *self.0.pictures.lock().unwrap());
@@ -789,6 +794,53 @@ async fn joining_asks_nothing_and_the_first_unmute_asks_once_for_as_long_as_allo
     fixture.command(Command::SetMuted { muted: false });
     assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 2).await);
     assert_eq!(fixture.prompts.queued_len(), 0, "allowed: not asked again");
+}
+
+#[tokio::test]
+async fn deafening_silences_the_call_and_mutes_and_undeafening_puts_the_microphone_back() {
+    let fixture = Fixture::new();
+    fixture.join().await;
+    fixture.command(Command::SetMuted { muted: false });
+    let prompt = fixture.prompts.drain().pop().expect("unmuting asks");
+    prompt.reply.send(PromptOutcome::AllowAlways).unwrap();
+    assert!(settle(|| fixture.command(Command::Status).capture_active).await);
+    let stops = fixture.device.stops.load(Ordering::SeqCst);
+    let deafened = fixture.command(Command::SetDeafened { deafened: true });
+    assert!(deafened.deafened && deafened.muted && !deafened.capture_active);
+    assert!(
+        fixture.device.deafened.load(Ordering::SeqCst),
+        "the call plays silence"
+    );
+    assert!(
+        fixture.device.stops.load(Ordering::SeqCst) > stops,
+        "the microphone stops"
+    );
+    // Unmuted before: unmuted again, under the same allowance.
+    let heard = fixture.command(Command::SetDeafened { deafened: false });
+    assert!(!heard.deafened);
+    assert!(!fixture.device.deafened.load(Ordering::SeqCst));
+    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 2).await);
+    assert!(!fixture.command(Command::Status).muted);
+    // Muted before: muted after.
+    fixture.command(Command::SetMuted { muted: true });
+    fixture.command(Command::SetDeafened { deafened: true });
+    let heard = fixture.command(Command::SetDeafened { deafened: false });
+    assert!(!heard.deafened && heard.muted);
+    tokio::task::yield_now().await;
+    assert_eq!(fixture.device.starts.load(Ordering::SeqCst), 2);
+    // Unmuting while deafened hears the call again.
+    fixture.command(Command::SetDeafened { deafened: true });
+    fixture.command(Command::SetMuted { muted: false });
+    assert!(!fixture.device.deafened.load(Ordering::SeqCst));
+    assert!(settle(|| fixture.device.starts.load(Ordering::SeqCst) == 3).await);
+    let status = fixture.command(Command::Status);
+    assert!(!status.deafened && !status.muted);
+    // A new call hears.
+    fixture.command(Command::SetDeafened { deafened: true });
+    fixture.command(Command::Leave);
+    assert!(!fixture.command(Command::Status).deafened);
+    fixture.join().await;
+    assert!(!fixture.command(Command::Status).deafened);
 }
 
 #[tokio::test]

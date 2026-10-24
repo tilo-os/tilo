@@ -1160,7 +1160,7 @@ impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
 #[derive(Serialize)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "each bool is its own field the page reads: publishes, camera, screen, muted"
+    reason = "each bool is its own field the page reads: publishes, camera, screen, muted, deafened"
 )]
 struct JsVoiceParticipant {
     device: String,
@@ -1172,6 +1172,8 @@ struct JsVoiceParticipant {
     screen: bool,
     /// Its microphone is off, or it may not publish.
     muted: bool,
+    /// It hears nothing of the call.
+    deafened: bool,
     /// Who a bridge's participation stands for; absent for everyone else.
     #[serde(skip_serializing_if = "Option::is_none")]
     bridged: Option<JsBridged>,
@@ -1207,6 +1209,7 @@ fn voice_participants(
                 avatar: bridged.avatar,
                 linked: bridged.linked.map(hex::encode),
             }),
+            deafened: participant.showing.deafened,
         })
         .collect()
 }
@@ -1975,20 +1978,25 @@ impl WasmPeer {
     }
 
     /// Show this session's camera (`camera`) or a shared screen (`screen`)
-    /// besides its voice in the call of `room`, or stop, and whether its
-    /// microphone is off (`muted`): everyone in the call learns it from the
-    /// room.
+    /// besides its voice in the call of `room`, or stop, whether its
+    /// microphone is off (`muted`) and whether it hears the call
+    /// (`deafened`): everyone in the call learns it from the room.
     ///
     /// # Errors
     ///
     /// Throws for a malformed room or a closed session.
     #[wasm_bindgen(js_name = voiceShow)]
+    #[allow(
+        clippy::fn_params_excessive_bools,
+        reason = "the page's call says each of what it shows as its own flag, as `Showing` holds them"
+    )]
     pub fn voice_show(
         &self,
         room: &str,
         camera: bool,
         screen: bool,
         muted: bool,
+        deafened: bool,
     ) -> Result<(), JsError> {
         self.handle
             .voice_show(
@@ -1997,6 +2005,7 @@ impl WasmPeer {
                     camera,
                     screen,
                     muted,
+                    deafened,
                 },
             )
             .map_err(js_error)
