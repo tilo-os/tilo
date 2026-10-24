@@ -93,6 +93,7 @@ pub mod committed_document;
 #[cfg(feature = "client")]
 pub mod live_activity;
 pub mod native_media;
+pub mod route;
 #[cfg(feature = "client")]
 pub mod settings;
 #[cfg(feature = "client")]
