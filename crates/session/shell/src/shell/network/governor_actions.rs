@@ -317,12 +317,6 @@ impl ShellNetwork {
         })
     }
 
-    /// Whether this device knows `room`'s governor to ask it: the room is
-    /// held here, so its host is the one its admitted state names.
-    pub(super) fn governed_by_a_reachable_host(&self, room: RoomId) -> bool {
-        self.governor_route(room).is_ok()
-    }
-
     /// Whether a device other than this one governs `room`: its windows
     /// and records are created by that governor.
     pub(crate) fn governed_elsewhere(&self, room: RoomId) -> bool {
@@ -403,47 +397,6 @@ impl ShellNetwork {
         answer
     }
 
-    /// Have `room`'s governor apply the desktop `command` as this device's
-    /// person: the one way a governance change made here reaches the room.
-    pub(crate) fn govern_with_command(
-        &self,
-        room: RoomId,
-        command: tilo_desktop_model::commands::DesktopCommand,
-    ) -> Pending<Result<serde_json::Value, String>> {
-        use tilo_desktop_model::commands::{BoundCommand, CommandSource};
-        let bound = serde_json::to_string(&BoundCommand {
-            source: CommandSource {
-                room: room.to_string(),
-                heads: Vec::new(),
-            },
-            command,
-        });
-        match bound {
-            Ok(bound) => self.invoke_governor(
-                room,
-                tilo_desktop_model::commands::APP_ID,
-                tilo_desktop_model::commands::RESOURCE,
-                tilo_desktop_model::commands::ACTION,
-                Some(serde_json::json!({ "command": bound })),
-            ),
-            Err(error) => {
-                let (completer, answer) = tilo_actions::remote::pending();
-                completer.complete(Err(error.to_string()));
-                answer
-            }
-        }
-    }
-
-    /// [`Self::govern_with_command`], waiting for the governor's answer:
-    /// for the peer-sync worker, never the frame loop.
-    pub(crate) fn govern_with_command_and_wait(
-        &self,
-        room: RoomId,
-        command: tilo_desktop_model::commands::DesktopCommand,
-    ) -> Result<(), String> {
-        wait_for_governor(self.govern_with_command(room, command))
-    }
-
     /// This device's key for `room`, once its custody as `owner` admits it
     /// is current: what signs proposals and decisions made there.
     pub(crate) fn native_signing_key_of(
@@ -456,18 +409,6 @@ impl ShellNetwork {
             .as_ref()
             .map(|identity| identity.device_signing_key.clone())
             .ok_or_else(|| "this device has no identity".into())
-    }
-}
-
-/// Wait for a governor's `answer`: for the peer-sync worker, never the
-/// frame loop.
-pub(super) fn wait_for_governor(
-    answer: Pending<Result<serde_json::Value, String>>,
-) -> Result<(), String> {
-    match answer.wait_timeout(governor_timeout().saturating_add(STATUS_INTERVAL)) {
-        Ok(Some(result)) => result.map(drop),
-        Ok(None) => Err("the workspace host stopped before applying the change".into()),
-        Err(_) => Err("the workspace host did not apply the change in time".into()),
     }
 }
 
