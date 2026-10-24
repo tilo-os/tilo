@@ -86,7 +86,7 @@ pub const CHOICE_TARGET_PREFIX: &str = "window-toolbar-choice:";
 pub const LEADING_TARGET_PREFIX: &str = "window-toolbar-leading:";
 pub const VIEW_TARGET_PREFIX: &str = "window-toolbar-view:";
 pub const VIEWS_MENU_TARGET: &str = "window-toolbar-views";
-pub const NOTICE_TARGET: &str = "window-toolbar-notice";
+pub const NOTICE_TARGET_PREFIX: &str = "window-toolbar-notice:";
 
 /// The size of the view switcher's segments: a strip no taller than the
 /// bar's buttons.
@@ -433,8 +433,13 @@ impl ToolbarRow {
             notice: self
                 .toolbar()
                 .and_then(|toolbar| toolbar.notice.as_ref())
-                .and_then(|notice| notice.action.as_ref())
-                .map(|action| action.name.clone())
+                .map(|notice| {
+                    notice
+                        .actions
+                        .iter()
+                        .map(|action| action.name.clone())
+                        .collect()
+                })
                 .unwrap_or_default(),
             text_scale: theme.text_scale.to_bits(),
         };
@@ -456,18 +461,18 @@ impl ToolbarRow {
         let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
-            // The notice's button as a text button, its label in it.
-            let action = if key.notice.is_empty() {
-                0.0
-            } else {
-                labelled_face(Rect::ZERO, &key.notice).intrinsic_width(text, theme)
-            };
+            // The notice's buttons as text buttons, each its label in it.
+            let actions = key
+                .notice
+                .iter()
+                .map(|name| labelled_face(Rect::ZERO, name).intrinsic_width(text, theme))
+                .collect();
             let style = theme.text(TextRole::Body);
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
                 chrome: location_chrome((key.editable, key.picker, key.icon), theme),
-                action,
+                actions,
             };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
             let views = (!labels.is_empty()).then_some(ViewsMeasure {
@@ -688,23 +693,23 @@ impl ToolbarRow {
     }
 
     /// The notice up in the strip, where its text stands, whether whole,
-    /// and its button (none: no strip).
+    /// and its buttons (none: no strip).
     pub(crate) fn strip_notice(
         &self,
-    ) -> Option<(&crate::window_toolbar::ToolbarNotice, Rect, bool, Rect)> {
+    ) -> Option<(&crate::window_toolbar::ToolbarNotice, Rect, bool, Vec<Rect>)> {
         let notice = self.strip.notice()?;
         Some((
             notice,
             self.strip.text_rect(),
             self.strip.whole(),
-            self.strip.button(),
+            self.strip.buttons(),
         ))
     }
 
-    /// The slot at `p`: the strip's button, else one of the row's.
+    /// The slot at `p`: one of the strip's buttons, else one of the row's.
     fn hit_slot(&self, p: Point) -> Option<Slot> {
-        if self.strip.button().contains(p) {
-            return Some(Slot::Notice);
+        if let Some(i) = self.strip.buttons().iter().position(|r| r.contains(p)) {
+            return Some(Slot::Notice(i));
         }
         self.slots.hit(p)
     }
@@ -896,7 +901,7 @@ impl ToolbarRow {
                 .is_some_and(|views| *i < views.choices.len()),
             Slot::ViewsMenu => self.slots.views_menu.area() > 0.0,
             Slot::Action(i) => toolbar.actions.get(*i).is_some_and(|a| a.enabled),
-            Slot::Notice => self.notice_action().is_some_and(|a| a.enabled),
+            Slot::Notice(i) => self.notice_action(*i).is_some_and(|a| a.enabled),
             Slot::Overflow => self.slots.overflow.area() > 0.0,
         }
     }
@@ -1069,11 +1074,16 @@ impl ToolbarRow {
         true
     }
 
-    /// The notice's button, while a notice with one is up.
-    fn notice_action(&self) -> Option<&crate::window_toolbar::ToolbarAction> {
+    /// The notice up, in the strip or in the location's place.
+    fn notice_up(&self) -> Option<&crate::window_toolbar::ToolbarNotice> {
         self.strip
-            .action()
-            .or_else(|| self.toolbar()?.notice.as_ref()?.action.as_ref())
+            .notice()
+            .or_else(|| self.toolbar()?.notice.as_ref())
+    }
+
+    /// The notice's button `index`, while a notice with it is up.
+    fn notice_action(&self, index: usize) -> Option<&crate::window_toolbar::ToolbarAction> {
+        self.notice_up()?.actions.get(index)
     }
 
     /// Run leading action `index`.
@@ -1138,8 +1148,8 @@ impl ToolbarRow {
                 return self.open_action_menu(*i);
             }
             Slot::Action(i) => return self.run_action(*i),
-            Slot::Notice => {
-                let Some(id) = self.notice_action().map(|action| action.id.clone()) else {
+            Slot::Notice(i) => {
+                let Some(id) = self.notice_action(*i).map(|action| action.id.clone()) else {
                     return false;
                 };
                 self.push(ToolbarEvent::Action { id });
@@ -1190,13 +1200,14 @@ impl ToolbarRow {
                 let action = toolbar.actions.get(i)?;
                 Some((*self.slots.actions.get(i)?, action.name.clone()))
             }
-            Slot::Notice => {
-                let rect = if self.slots.notice.area() > 0.0 {
-                    self.slots.notice
-                } else {
-                    self.strip.button()
-                };
-                Some((rect, self.notice_action()?.name.clone()))
+            Slot::Notice(i) => {
+                let rect = self
+                    .slots
+                    .notice
+                    .get(i)
+                    .copied()
+                    .or_else(|| self.strip.buttons().get(i).copied())?;
+                Some((rect, self.notice_action(i)?.name.clone()))
             }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
             // A segment, the views menu and the location say what they are.
@@ -1413,7 +1424,7 @@ impl ToolbarRow {
     /// location field and the bar's menus take the keyboard themselves.
     pub(crate) fn pressing_app_slot(&self) -> bool {
         match &self.pressed {
-            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_) | Slot::Notice) => true,
+            Some(Slot::Sidebar | Slot::Leading(_) | Slot::View(_) | Slot::Notice(_)) => true,
             Some(Slot::Action(i)) => self
                 .toolbar()
                 .and_then(|toolbar| toolbar.actions.get(*i))

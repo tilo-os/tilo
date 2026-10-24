@@ -3353,7 +3353,7 @@ fn opening_over_unsaved_work_asks_saves_and_reports() {
         assert!(shown.text.starts_with("Could not save"), "{}", shown.text);
         assert_eq!(shown.kind, ui::widget::toast::ToastKind::Error);
         assert_eq!(
-            shown.action.as_ref().map(|action| action.id.as_str()),
+            shown.actions.first().map(|action| action.id.as_str()),
             Some(notices::SAVE_RETRY_ACTION),
             "with Try again beside it",
         );

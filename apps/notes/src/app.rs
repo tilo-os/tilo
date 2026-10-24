@@ -4132,7 +4132,7 @@ mod tests {
         let held = ui::window_toolbar::notice().expect("the failure is said in the window's bar");
         assert_eq!(held.kind, ToastKind::Error);
         assert!(held.text.starts_with("Save failed: "), "{held:?}");
-        let retry = held.action.clone().expect("Try again beside it");
+        let retry = held.actions.first().cloned().expect("Try again beside it");
         assert_eq!(retry.name, "Try again");
         // In the window's bar, wide and compact, Try again stands right
         // after the failure, naming itself where the row has room, and never
@@ -4144,7 +4144,7 @@ mod tests {
                 .harness()
                 .window_bar_notice(width)
                 .expect("the failure is up in the bar");
-            let button = shown.button.as_ref().expect("Try again stands in the row");
+            let button = shown.buttons.first().expect("Try again stands in the row");
             assert_eq!(button.name, "Try again");
             assert!(
                 button.bounds.x0 > shown.text_bounds.x1,
@@ -4185,7 +4185,7 @@ mod tests {
         assert!(!host.take_save_retry().unwrap(), "no second retry remains");
         let said = ui::window_toolbar::notice().expect("the save that ends it says so");
         assert_eq!(
-            (said.text.as_str(), said.kind, said.action),
+            (said.text.as_str(), said.kind, said.actions.first()),
             ("Saved", ToastKind::Success, None),
             "the failure is down"
         );
@@ -4222,7 +4222,7 @@ mod tests {
         let notice = app.save_surface.notice().expect("said in the bar");
         assert_eq!(notice.text, "Not saved");
         assert_eq!(
-            notice.action.map(|action| action.name).as_deref(),
+            notice.actions.first().map(|action| action.name.as_str()),
             Some("Try again")
         );
         assert!(app.save_surface.failure().is_none(), "no failure reason");

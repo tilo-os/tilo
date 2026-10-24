@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(shown.text, "Moved 2 items to Trash");
         assert_eq!(shown.kind, ToastKind::Success);
         assert_eq!(
-            shown.action.map(|action| action.id),
+            shown.actions.first().map(|action| action.id.clone()),
             Some(NOTICE_ACTION.to_owned()),
             "Undo is the bar's action while the notice shows"
         );

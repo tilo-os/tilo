@@ -5233,7 +5233,9 @@ mod responsive_body_tests {
         let shown = ui::window_toolbar::notice().expect("the window's bar says it");
         assert_eq!(shown.text, told);
         let undo = shown
-            .action
+            .actions
+            .into_iter()
+            .next()
             .expect("Undo is the bar's action while it shows");
         assert_eq!(undo.name, t("files-notice-undo"));
         ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action { id: undo.id });
@@ -5309,7 +5311,7 @@ mod responsive_body_tests {
             let shown = harness
                 .window_bar_notice(width)
                 .expect("the move is said in the bar");
-            let button = shown.button.as_ref().expect("Undo stands in the row");
+            let button = shown.buttons.first().expect("Undo stands in the row");
             assert_eq!(button.name, t("files-notice-undo"));
             assert!(
                 button.bounds.x0 > shown.text_bounds.x1,

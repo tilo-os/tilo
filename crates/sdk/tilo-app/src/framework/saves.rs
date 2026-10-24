@@ -366,7 +366,7 @@ mod tests {
         let held = ui_core::window_toolbar::notice().expect("the bar says the failure");
         assert_eq!(held.text, "Save failed: The disk is full");
         assert_eq!(
-            held.action.as_ref().map(|action| action.name.as_str()),
+            held.actions.first().map(|action| action.name.as_str()),
             Some("Try again")
         );
         indicator.sync(at(t0, 600));
@@ -492,8 +492,12 @@ mod window_tests {
 
     /// What the window's bar says, and the button beside it.
     fn bar() -> Option<(String, Option<String>)> {
-        ui_core::window_toolbar::notice()
-            .map(|notice| (notice.text, notice.action.map(|action| action.name)))
+        ui_core::window_toolbar::notice().map(|notice| {
+            (
+                notice.text,
+                notice.actions.into_iter().next().map(|action| action.name),
+            )
+        })
     }
 
     /// Bring the window's save status to `at`, as its wake there would,

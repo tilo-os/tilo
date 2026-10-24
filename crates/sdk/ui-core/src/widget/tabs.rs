@@ -778,6 +778,11 @@ impl TabBar {
         &self.toolbar_row
     }
 
+    /// The row the active tab's toolbar stands in, to press and perform.
+    pub(crate) fn toolbar_row_mut(&mut self) -> &mut super::window_toolbar_row::ToolbarRow {
+        &mut self.toolbar_row
+    }
+
     /// The slots `id`'s app declared.
     #[must_use]
     pub fn toolbar(&self, id: u64) -> Option<&crate::window_toolbar::WindowToolbar> {

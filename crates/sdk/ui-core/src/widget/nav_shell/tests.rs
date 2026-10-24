@@ -1686,7 +1686,7 @@ fn a_notices_button_is_the_window_bars_and_a_press_reports_it() {
     let shell = h.root_mut::<NavShell>();
     shell.toast_with_action("Deleted Groceries", ToastKind::Info, "undo-2", "Undo");
     let shown = notice().expect("the bar shows the notice");
-    let button = shown.action.expect("with its button");
+    let button = shown.actions.into_iter().next().expect("with its button");
     assert_eq!(button.name, "Undo");
     crate::window_toolbar::deliver(ToolbarEvent::Action { id: button.id });
     assert!(

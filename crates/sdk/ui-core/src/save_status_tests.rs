@@ -15,7 +15,7 @@ fn bar() -> Option<(String, ToastKind, Option<String>)> {
         (
             notice.text,
             notice.kind,
-            notice.action.map(|action| action.name),
+            notice.actions.into_iter().next().map(|action| action.name),
         )
     })
 }

@@ -21,8 +21,8 @@ pub(crate) enum Slot {
     /// press away.
     ViewsMenu,
     Action(usize),
-    /// The notice's own button, right after its text.
-    Notice,
+    /// Button `n` of the notice's own, after its text.
+    Notice(usize),
     /// The button whose menu holds the actions the row has no room for.
     Overflow,
 }
@@ -52,10 +52,11 @@ pub(crate) struct Slots {
     /// The labelled leading actions in the row are text buttons
     /// ([`crate::window_toolbar::ToolbarAction::labelled`]), not icons.
     pub labelled: bool,
-    /// The notice's button, right after its text (`Rect::ZERO`: none).
-    pub notice: Rect,
-    /// The notice's button names itself, not only its icon.
-    pub notice_labelled: bool,
+    /// The notice's buttons, in order right after its text (none: it has
+    /// none, or the row has no room for its text).
+    pub notice: Vec<Rect>,
+    /// Which of the notice's buttons name themselves, not only their icon.
+    pub notice_labelled: Vec<bool>,
 }
 
 /// What the row lays out beside the toolbar: the view switcher's size and
@@ -86,9 +87,9 @@ pub(crate) struct LocationForms {
     /// What stands beside the text in the location at rest: its icon, a
     /// field's frame.
     pub chrome: f64,
-    /// The notice's button as a text button (`0.0`: the notice up has
-    /// none, or it is not measured).
-    pub action: f64,
+    /// Each of the notice's buttons as a text button (none: the notice up
+    /// has none, or it is not measured).
+    pub actions: Vec<f64>,
 }
 
 impl LocationForms {
@@ -119,29 +120,39 @@ impl LocationForms {
     }
 
     /// How a notice up in the location stands where the location has
-    /// `room` beside the navigation alone: its button's width, whether that
-    /// names itself, and the room the location keeps for the notice to
-    /// stand whole, its button included. The button names itself where it
-    /// stands so beside the whole text in `room`; the location keeps no more
-    /// than `room`, everything that yields before it in the menu, the text
-    /// cut short beside its button.
+    /// `room` beside the navigation alone: its buttons' widths, which name
+    /// themselves, and the room the location keeps for the notice to stand
+    /// whole, its buttons included. The buttons name themselves, in order,
+    /// as far as they stand so beside the whole text in `room`: the last
+    /// is its icon first. The location keeps no more than `room`,
+    /// everything that yields before it in the menu, the text cut short
+    /// beside the buttons.
     pub(super) fn notice(&self, toolbar: &WindowToolbar, room: f64) -> Option<NoticeFit> {
         let notice = toolbar.notice.as_ref()?;
         let whole = self.width(0) + self.chrome;
-        let (button, labelled) = match notice.action {
-            None => (0.0, false),
-            Some(_) if self.action > 0.0 && whole + CONTROL_GAP + self.action <= room => {
-                (self.action, true)
-            }
-            Some(_) => (CONTROL_PX, false),
+        let count = notice.actions.len();
+        let fit = |named: usize| -> (Vec<f64>, Vec<bool>, f64) {
+            let labelled: Vec<bool> = (0..count)
+                .map(|i| i < named && self.actions.get(i).is_some_and(|w| *w > 0.0))
+                .collect();
+            let buttons: Vec<f64> = (0..count)
+                .map(|i| match (labelled[i], self.actions.get(i)) {
+                    (true, Some(width)) => *width,
+                    _ => CONTROL_PX,
+                })
+                .collect();
+            let beside = buttons.iter().map(|button| CONTROL_GAP + button).sum();
+            (buttons, labelled, beside)
         };
-        let beside = if button > 0.0 {
-            CONTROL_GAP + button
-        } else {
-            0.0
-        };
+        let (buttons, labelled, beside) = (0..=count)
+            .rev()
+            .map(fit)
+            .find(|(_, labelled, beside)| {
+                labelled.iter().all(|named| !named) || whole + beside <= room
+            })
+            .unwrap_or_else(|| fit(0));
         Some(NoticeFit {
-            button,
+            buttons,
             labelled,
             least: (whole + beside).min(room),
         })
@@ -150,12 +161,12 @@ impl LocationForms {
 
 /// How a notice up in the location stands in the row
 /// ([`LocationForms::notice`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(super) struct NoticeFit {
-    /// Its button's width (`0.0`: it has none).
-    pub(super) button: f64,
-    /// The button names itself.
-    pub(super) labelled: bool,
+    /// Its buttons' widths, in order.
+    pub(super) buttons: Vec<f64>,
+    /// Which of them name themselves.
+    pub(super) labelled: Vec<bool>,
     /// The room the location keeps for it.
     pub(super) least: f64,
 }
@@ -183,8 +194,8 @@ pub(super) struct MeasureKey {
     pub(super) editable: bool,
     pub(super) picker: bool,
     pub(super) icon: bool,
-    /// The notice's button's name (empty: none).
-    pub(super) notice: String,
+    /// The notice's buttons' names.
+    pub(super) notice: Vec<String>,
     pub(super) text_scale: u32,
 }
 
@@ -339,7 +350,9 @@ impl Slots {
             .width();
         let form = forms.fitting(room);
         let notice = forms.notice(toolbar, room);
-        let least = notice.map_or_else(|| forms.least(form, room), |notice| notice.least);
+        let least = notice
+            .as_ref()
+            .map_or_else(|| forms.least(form, room), |notice| notice.least);
         let shown = (forms.width(form), least, form > 0);
         let icons = Self::arranged(toolbar, row, views, shown, &[]);
         let mut slots = if form == 0
@@ -365,25 +378,32 @@ impl Slots {
         slots
     }
 
-    /// Put the notice's button right after its text, `text` wide with its
-    /// icon, and inside the location's end where the text is cut short;
-    /// the location keeps what is left before it.
+    /// Put the notice's buttons in order right after its text, `text` wide
+    /// with its icon, and inside the location's end where the text is cut
+    /// short; the location keeps what is left before them.
     fn place_notice(&mut self, notice: NoticeFit, text: f64) {
         let location = self.location;
-        if notice.button <= 0.0 || location.area() <= 0.0 {
+        if notice.buttons.is_empty() || location.area() <= 0.0 {
             return;
         }
-        let x0 = (location.x0 + text + CONTROL_GAP)
-            .min(location.x1 - notice.button)
+        let span = notice.buttons.iter().sum::<f64>()
+            + CONTROL_GAP
+                * f64::from(u32::try_from(notice.buttons.len().saturating_sub(1)).unwrap_or(0));
+        let first = (location.x0 + text + CONTROL_GAP)
+            .min(location.x1 - span)
             .max(location.x0);
-        self.notice = Rect::new(
-            x0,
-            location.y0,
-            (x0 + notice.button).min(location.x1),
-            location.y1,
-        );
+        let mut x0 = first;
+        self.notice = notice
+            .buttons
+            .iter()
+            .map(|width| {
+                let rect = Rect::new(x0, location.y0, (x0 + width).min(location.x1), location.y1);
+                x0 = rect.x1 + CONTROL_GAP;
+                rect
+            })
+            .collect();
         self.notice_labelled = notice.labelled;
-        self.location.x1 = (x0 - CONTROL_GAP).max(location.x0);
+        self.location.x1 = (first - CONTROL_GAP).max(location.x0);
     }
 
     /// Whether these slots keep everything of `toolbar` in the row: every
@@ -684,8 +704,8 @@ impl Slots {
         if let Some(i) = self.actions.iter().position(|r| r.contains(p)) {
             return Some(Slot::Action(i));
         }
-        if self.notice.contains(p) {
-            return Some(Slot::Notice);
+        if let Some(i) = self.notice.iter().position(|r| r.contains(p)) {
+            return Some(Slot::Notice(i));
         }
         if self.overflow.contains(p) {
             return Some(Slot::Overflow);

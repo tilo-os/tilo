@@ -152,10 +152,12 @@ pub struct WindowToolbar {
 
 /// What just happened, said in the window's bar for a while: an operation's
 /// result or failure ("Page 1 captured"). The bar shows it in the
-/// location's place, its kind's icon first, and announces it; its one
-/// action ("Undo") stands right after its text, a button that names
-/// itself where the row has room and its icon where not, and never goes
-/// into the overflow menu.
+/// location's place, its kind's icon first, and announces it. A notice that
+/// asks the person to act carries what they can do: at most
+/// [`MAX_NOTICE_ACTIONS`] actions ("Sync again", "Open Settings"), standing
+/// in order right after its text, each a button that names itself where the
+/// row has room and its icon where not (the last first), and never in the
+/// overflow menu.
 /// Notices replace each other; none stack. A message the person must act
 /// on before it goes is not a notice.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,11 +167,15 @@ pub struct ToolbarNotice {
     /// Whether it is a confirmation, information, a warning or a failure.
     #[serde(default)]
     pub kind: crate::widget::toast::ToastKind,
-    /// The one thing the person can do about it, sent as
-    /// [`ToolbarEvent::Action`] when pressed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub action: Option<ToolbarAction>,
+    /// What the person can do about it, in order, at most
+    /// [`MAX_NOTICE_ACTIONS`]; each is sent as [`ToolbarEvent::Action`] when
+    /// pressed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ToolbarAction>,
 }
+
+/// The most actions a notice carries.
+pub const MAX_NOTICE_ACTIONS: usize = 2;
 
 impl ToolbarNotice {
     #[must_use]
@@ -177,28 +183,29 @@ impl ToolbarNotice {
         Self {
             text: text.into(),
             kind,
-            action: None,
+            actions: Vec::new(),
         }
     }
 
-    /// The notice with `action` ("Undo") beside it.
+    /// The notice with `action` ("Undo") beside it, after any it has.
     #[must_use]
     pub fn action(mut self, action: ToolbarAction) -> Self {
-        self.action = Some(action);
+        self.actions.push(action);
         self
     }
 
     /// As [`WindowToolbar::bounded`] takes it: its texts cut, an action
-    /// without an icon of the set dropped.
+    /// without an icon of the set dropped, at most [`MAX_NOTICE_ACTIONS`].
     fn bound(&mut self) {
         cut(&mut self.text);
-        self.action = self.action.take().and_then(|mut action| {
-            crate::icons::Icon::from_name(&action.icon)?;
+        self.actions
+            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+        self.actions.truncate(MAX_NOTICE_ACTIONS);
+        for action in &mut self.actions {
             cut(&mut action.id);
             cut(&mut action.name);
             action.items.clear();
-            Some(action)
-        });
+        }
     }
 }
 
@@ -1154,7 +1161,7 @@ pub fn hands_keyboard_to_app(event: &ToolbarEvent) -> bool {
     )
 }
 
-/// The id of the notice's button `event` presses, if it presses it: such a
+/// The id of the notice's button `event` presses, if it presses one: such a
 /// press is the notice's poster's ([`take_notice_press`]), never among the
 /// app's slot events.
 pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent) -> Option<String> {
@@ -1162,8 +1169,7 @@ pub(crate) fn notice_press(notice: Option<&ToolbarNotice>, event: &ToolbarEvent)
         return None;
     };
     notice
-        .and_then(|notice| notice.action.as_ref())
-        .filter(|action| action.id == *id)
+        .filter(|notice| notice.actions.iter().any(|action| action.id == *id))
         .map(|_| id.clone())
 }
 

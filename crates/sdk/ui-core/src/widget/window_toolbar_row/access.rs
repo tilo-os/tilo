@@ -3,7 +3,7 @@
 
 use super::{
     ACTION_TARGET_PREFIX, BACK_TARGET, CHOICE_TARGET_PREFIX, FORWARD_TARGET, LEADING_TARGET_PREFIX,
-    LOCATION_TARGET, MenuEntry, NOTICE_TARGET, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX,
+    LOCATION_TARGET, MenuEntry, NOTICE_TARGET_PREFIX, OVERFLOW_TARGET, Rect, SEGMENT_TARGET_PREFIX,
     SIDEBAR_TARGET, SUGGESTION_TARGET_PREFIX, Slot, ToolbarEvent, ToolbarRow, VIEW_TARGET_PREFIX,
     VIEWS_MENU_TARGET, Widget, edited_word, sidebar_key,
 };
@@ -149,22 +149,19 @@ impl ToolbarRow {
                 ));
             }
         }
-        // The notice's button, right after its text.
-        if let Some(action) = toolbar
-            .notice
-            .as_ref()
-            .and_then(|notice| notice.action.as_ref())
-            .filter(|_| self.slots.notice.area() > 0.0)
-        {
-            nodes.push(button(
-                action.name.clone(),
-                NOTICE_TARGET.into(),
-                self.slots.notice,
-                action.enabled,
-            ));
+        // The notice's buttons, in order right after its text.
+        if let Some(notice) = toolbar.notice.as_ref() {
+            for (action, rect) in notice.actions.iter().zip(&self.slots.notice) {
+                nodes.push(button(
+                    action.name.clone(),
+                    format!("{NOTICE_TARGET_PREFIX}{}", action.id),
+                    *rect,
+                    action.enabled,
+                ));
+            }
         }
         // A compact window's notice, in its strip under the row: read out
-        // as it arrives, its button after it.
+        // as it arrives, its buttons after it.
         if let Some((notice, text, _, at)) = self.strip_notice() {
             nodes.push(
                 AccessNode::new(Role::StaticText)
@@ -172,13 +169,11 @@ impl ToolbarRow {
                     .with_bounds(text)
                     .with_live(crate::a11y::Politeness::Polite),
             );
-            if let Some(action) = notice.action.as_ref()
-                && at.area() > 0.0
-            {
+            for (action, rect) in notice.actions.iter().zip(&at) {
                 nodes.push(button(
                     action.name.clone(),
-                    NOTICE_TARGET.into(),
-                    at,
+                    format!("{NOTICE_TARGET_PREFIX}{}", action.id),
+                    *rect,
                     action.enabled,
                 ));
             }
@@ -475,7 +470,6 @@ impl ToolbarRow {
             BACK_TARGET => Slot::Back,
             FORWARD_TARGET => Slot::Forward,
             LOCATION_TARGET => Slot::Location,
-            NOTICE_TARGET => Slot::Notice,
             OVERFLOW_TARGET => Slot::Overflow,
             VIEWS_MENU_TARGET => Slot::ViewsMenu,
             _ => {
@@ -493,6 +487,15 @@ impl ToolbarRow {
                     };
                     self.push(ToolbarEvent::Commit { text: value });
                     return true;
+                }
+                if let Some(id) = target.strip_prefix(NOTICE_TARGET_PREFIX) {
+                    let Some(i) = self
+                        .notice_up()
+                        .and_then(|notice| notice.actions.iter().position(|a| a.id == id))
+                    else {
+                        return false;
+                    };
+                    return self.activate(&Slot::Notice(i));
                 }
                 if let Some(id) = target.strip_prefix(LEADING_TARGET_PREFIX) {
                     let Some(i) = self

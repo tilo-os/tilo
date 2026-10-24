@@ -112,15 +112,15 @@ fn a_notice_stands_in_the_location_and_is_read_out_politely() {
     assert!(row.measure_views(&Theme::dark()), "the notice is measured");
     let slots = row.slots();
     assert!(
-        slots.notice_labelled && slots.notice.width() > CONTROL_PX,
+        slots.notice_labelled == [true] && slots.notice[0].width() > CONTROL_PX,
         "Undo names itself in a wide row: {slots:?}"
     );
     assert!(
-        (slots.notice.x0 - slots.location.x1 - CONTROL_GAP).abs() < 1e-9,
+        (slots.notice[0].x0 - slots.location.x1 - CONTROL_GAP).abs() < 1e-9,
         "right after the notice's text"
     );
     assert_eq!(row.slots().actions.len(), 1, "and is not among the actions");
-    let button = row.slots().notice.center();
+    let button = row.slots().notice[0].center();
     assert!(row.press(button));
     assert!(row.release(button));
     assert_eq!(
@@ -1140,11 +1140,27 @@ fn an_unavailable_sidebar_holds_its_place_and_cannot_act() {
     );
 }
 
-/// The bars of a held failure and of an undoable deletion, each with its
-/// notice up.
-fn noticed() -> [(WindowToolbar, &'static str); 2] {
+/// The bars of a sync that failed (Sync again, Open Settings), a held save
+/// failure (Try again) and an undoable deletion (Undo), each with its
+/// notice up, and the names of the notice's buttons.
+fn noticed() -> [(WindowToolbar, Vec<&'static str>); 3] {
     use crate::widget::toast::ToastKind;
     use crate::window_toolbar::ToolbarNotice;
+    let sync = WindowToolbar {
+        notice: Some(
+            ToolbarNotice::new(
+                "Sync failed: the account needs signing in",
+                ToastKind::Error,
+            )
+            .action(ToolbarAction::new("sync-again", "refresh", "Sync again"))
+            .action(ToolbarAction::new(
+                "open-settings",
+                "settings",
+                "Open Settings",
+            )),
+        ),
+        ..calendar()
+    };
     let failed = WindowToolbar {
         notice: Some(
             ToolbarNotice::new("Save failed: the disk is full", ToastKind::Error).action(
@@ -1165,50 +1181,72 @@ fn noticed() -> [(WindowToolbar, &'static str); 2] {
         )],
         ..file_toolbar(3)
     };
-    [(failed, "Try again"), (deleted, "Undo")]
+    [
+        (sync, vec!["Sync again", "Open Settings"]),
+        (failed, vec!["Try again"]),
+        (deleted, vec!["Undo"]),
+    ]
+}
+
+/// Every node named `name` in `nodes` and under them.
+fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>) {
+    for node in nodes {
+        if node.name.as_deref() == Some(name) {
+            out.push(node);
+        }
+        named(&node.children, name, out);
+    }
 }
 
 /// A notice's text stands whole before any action that yields to the
 /// location stands beside it, and is cut short only once they are all in
-/// the overflow menu. Its button stands right after the text at every
-/// width: it names itself where the row has room for that beside the whole
-/// text, from there on at every wider width, and is its icon where not;
-/// it is never in the overflow menu.
+/// the overflow menu. Its buttons stand in order right after the text at
+/// every width: each names itself where the row has room for that beside
+/// the whole text, from there on at every wider width, the last giving its
+/// label up first, and is its icon where not; none is ever in the
+/// overflow menu.
 #[test]
-fn a_notice_stands_whole_before_the_actions_and_its_button_stays_in_the_row() {
-    fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>) {
-        for node in nodes {
-            if node.name.as_deref() == Some(name) {
-                out.push(node);
-            }
-            named(&node.children, name, out);
-        }
-    }
-    for (toolbar, name) in noticed() {
-        let mut labelled_from = None;
-        // From a compact (420 px) window's row (220 px) to a wide one's.
-        for width in (200..=1100).step_by(4).map(f64::from) {
+fn a_notice_stands_whole_before_the_actions_and_its_buttons_stay_in_the_row() {
+    for (toolbar, names) in noticed() {
+        let mut labelled_from = vec![None; names.len()];
+        // From the row of the narrowest window that says its notice in
+        // the row (one at the compact breakpoint: its bar's row is 200 px
+        // narrower, as a 420 px window's is 220 px) to a wide one's.
+        // Narrower windows say it in a strip of their own.
+        let narrowest = f64::from(crate::tokens::Metrics::BASE.compact_breakpoint) - 200.0;
+        for width in (0..)
+            .map(|step: u32| narrowest + 4.0 * f64::from(step))
+            .take_while(|width| *width <= 1100.0)
+        {
             let row = calendar_row_of(&toolbar, width);
             let slots = row.slots();
-            assert!(
-                slots.notice.area() > 0.0,
-                "{name} stands in a {width} px row: {slots:?}"
+            assert_eq!(
+                slots.notice.len(),
+                names.len(),
+                "{names:?} stand in a {width} px row: {slots:?}"
             );
             assert!(
-                slots.notice.x0 >= slots.location.x1 + CONTROL_GAP - 1e-9
-                    && slots.location.area() > 0.0,
-                "{name} stands after the notice's text at {width} px: {slots:?}"
+                slots.location.area() > 0.0
+                    && slots.notice[0].x0 >= slots.location.x1 + CONTROL_GAP - 1e-9
+                    && slots
+                        .notice
+                        .windows(2)
+                        .all(|pair| pair[1].x0 >= pair[0].x1 + CONTROL_GAP - 1e-9),
+                "{names:?} stand in order after the notice's text at {width} px: {slots:?}"
             );
             let nodes = row.accessibility();
-            let mut found = Vec::new();
-            named(&nodes, name, &mut found);
-            assert!(
-                !found.is_empty()
-                    && found
-                        .iter()
-                        .all(|node| node.action_target.as_deref() == Some(NOTICE_TARGET)),
-                "{name} is the notice's button alone, never an overflow item, at {width} px"
-            );
+            for name in &names {
+                let mut found = Vec::new();
+                named(&nodes, name, &mut found);
+                assert!(
+                    !found.is_empty()
+                        && found.iter().all(|node| node
+                            .action_target
+                            .as_deref()
+                            .is_some_and(|target| target.starts_with(NOTICE_TARGET_PREFIX))),
+                    "{name} is the notice's button alone, never an overflow item, at {width} px"
+                );
+            }
             if row.notice_whole() != Some(true) {
                 assert!(
                     slots.actions.is_empty()
@@ -1221,46 +1259,77 @@ fn a_notice_stands_whole_before_the_actions_and_its_button_stays_in_the_row() {
                      in the menu: {slots:?}"
                 );
             }
-            match (slots.notice_labelled, labelled_from) {
-                (true, None) => labelled_from = Some(width),
-                (false, Some(from)) => {
-                    panic!("{name} named itself at {from} px and not at {width} px")
+            assert!(
+                slots
+                    .notice_labelled
+                    .windows(2)
+                    .all(|pair| pair[0] || !pair[1]),
+                "the last gives its label up first at {width} px: {slots:?}"
+            );
+            for (i, name) in names.iter().enumerate() {
+                let labelled = slots.notice_labelled[i];
+                match (labelled, labelled_from[i]) {
+                    (true, None) => labelled_from[i] = Some(width),
+                    (false, Some(from)) => {
+                        panic!("{name} named itself at {from} px and not at {width} px")
+                    }
+                    _ => {}
                 }
-                _ => {}
-            }
-            if !slots.notice_labelled {
-                assert!(
-                    (slots.notice.width() - CONTROL_PX).abs() < 1e-9,
-                    "folded, {name} is its icon"
-                );
+                if !labelled {
+                    assert!(
+                        (slots.notice[i].width() - CONTROL_PX).abs() < 1e-9,
+                        "folded, {name} is its icon"
+                    );
+                }
             }
         }
         assert!(
-            labelled_from.is_some_and(|from| from < 1100.0),
-            "{name} names itself where the row has room"
+            labelled_from
+                .iter()
+                .all(|from| from.is_some_and(|from| from < 1100.0)),
+            "{names:?} name themselves where the row has room"
         );
     }
 }
 
 /// In a compact window a notice says itself in a strip of its own under
-/// the row: its whole text, read out as it arrives, and its action a button
-/// that names itself and runs by pointer and by its semantic action alike.
-/// The row stands as it does without a notice.
+/// the row: its whole text, read out as it arrives, and its actions as
+/// buttons that name themselves, after the text where the whole text
+/// stands beside them and on a row of their own under it where not, each
+/// run by pointer and by its semantic action alike. The row stands as it
+/// does without a notice.
 #[test]
-fn a_compact_windows_notice_has_a_strip_whose_button_runs_by_pointer_and_semantics() {
+fn a_compact_windows_notice_has_a_strip_whose_buttons_run_by_pointer_and_semantics() {
     use crate::widget::toast::ToastKind;
     use crate::window_toolbar::ToolbarNotice;
     let theme = Theme::dark();
-    let text = "Save failed: your disk is full, so the note was not written";
-    for (name, id) in [("Try again", "save-status-retry"), ("Undo", "notice-undo")] {
+    let long = "Save failed: your disk is full, so the note was not written";
+    let short = "Sync failed";
+    let cases: [(&str, Vec<(&str, &str)>); 4] = [
+        (long, vec![("Try again", "save-status-retry")]),
+        (long, vec![("Undo", "notice-undo")]),
+        (
+            long,
+            vec![
+                ("Sync again", "sync-again"),
+                ("Open Settings", "open-settings"),
+            ],
+        ),
+        (
+            short,
+            vec![
+                ("Sync again", "sync-again"),
+                ("Open Settings", "open-settings"),
+            ],
+        ),
+    ];
+    for (text, actions) in cases {
+        let notice = actions.iter().fold(
+            ToolbarNotice::new(text, ToastKind::Error),
+            |notice, (name, id)| notice.action(ToolbarAction::new(*id, "rotate-cw", *name)),
+        );
         let noticed = WindowToolbar {
-            notice: Some(
-                ToolbarNotice::new(text, ToastKind::Error).action(ToolbarAction::new(
-                    id,
-                    "rotate-cw",
-                    name,
-                )),
-            ),
+            notice: Some(notice),
             ..file_toolbar(3)
         };
         let mut quiet = ToolbarRow::new();
@@ -1288,30 +1357,39 @@ fn a_compact_windows_notice_has_a_strip_whose_button_runs_by_pointer_and_semanti
         assert!(row.measure_strip(&theme, 404.0), "the strip is measured");
         let height = row.strip_height();
         assert!(height >= CONTROL_PX, "{height}");
-        row.place_strip(Rect::new(8.0, 44.0, 412.0, 44.0 + height));
-        let (shown, text_at, whole, button) = row.strip_notice().expect("the strip says it");
+        let strip = Rect::new(8.0, 44.0, 412.0, 44.0 + height);
+        row.place_strip(strip);
+        let (shown, text_at, whole, buttons) = row.strip_notice().expect("the strip says it");
         assert_eq!(shown.text, text);
-        assert!(whole, "the whole text stands, on up to two lines");
-        assert!(
-            button.width() > CONTROL_PX && text_at.x1 <= button.x0,
-            "{name} names itself after the text: {text_at:?} {button:?}"
-        );
+        assert!(whole, "the whole text stands, on up to two lines: {text}");
+        assert_eq!(buttons.len(), actions.len());
+        for (button, (name, _)) in buttons.iter().zip(&actions) {
+            assert!(
+                button.width() > CONTROL_PX
+                    && strip.contains(button.center())
+                    && (text_at.x1 <= button.x0 || text_at.y1 <= button.y0),
+                "{name} names itself after the text or under it: {text_at:?} {button:?}"
+            );
+        }
         let nodes = row.accessibility();
         let said = nodes
             .iter()
             .find(|node| node.name.as_deref() == Some(text))
             .expect("the strip's text is a node");
         assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
-        assert!(
-            nodes.iter().any(|node| node.name.as_deref() == Some(name)
-                && node.action_target.as_deref() == Some(NOTICE_TARGET)),
-            "{name} is the notice's button"
-        );
-        let pressed = vec![(3, ToolbarEvent::Action { id: id.into() })];
-        assert!(row.press(button.center()));
-        assert!(row.release(button.center()));
-        assert_eq!(row.take_events(), pressed, "{name} runs by pointer");
-        assert!(row.perform(NOTICE_TARGET));
-        assert_eq!(row.take_events(), pressed, "{name} runs by its action");
+        for (button, (name, id)) in buttons.iter().zip(&actions) {
+            let target = format!("{NOTICE_TARGET_PREFIX}{id}");
+            assert!(
+                nodes.iter().any(|node| node.name.as_deref() == Some(*name)
+                    && node.action_target.as_deref() == Some(target.as_str())),
+                "{name} is the notice's button"
+            );
+            let pressed = vec![(3, ToolbarEvent::Action { id: (*id).into() })];
+            assert!(row.press(button.center()));
+            assert!(row.release(button.center()));
+            assert_eq!(row.take_events(), pressed, "{name} runs by pointer");
+            assert!(row.perform(&target));
+            assert_eq!(row.take_events(), pressed, "{name} runs by its action");
+        }
     }
 }
