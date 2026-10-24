@@ -918,3 +918,242 @@ fn a_controls_mark_goes_quicker_than_it_comes() {
     assert!((mark.level(mid) - drawn).abs() < 1e-6);
     assert!(!mark.is_on());
 }
+
+// ---------------------------------------------------------------------------
+// Scroll to what was asked for
+// ---------------------------------------------------------------------------
+
+fn down(y: f64) -> vello::kurbo::Vec2 {
+    vello::kurbo::Vec2::new(0.0, y)
+}
+
+/// A view 600 px tall.
+const VIEW: vello::kurbo::Vec2 = vello::kurbo::Vec2::new(800.0, 600.0);
+
+#[test]
+fn a_short_jump_glides_at_fast_and_then_asks_for_no_frames() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    let jump = to.go_from(
+        down(0.0),
+        down(900.0),
+        VIEW,
+        on(),
+        MotionSource::Pointer,
+        start,
+    );
+    assert_eq!(jump, ScrollJump::Glide);
+    assert_eq!(
+        to.offset(start),
+        Some(down(0.0)),
+        "it starts where it is drawn"
+    );
+    let mid = to.offset(ms(start, 40)).expect("gliding");
+    assert!(mid.y > 100.0 && mid.y < 900.0, "on its way: {mid:?}");
+    assert_eq!(to.opacity(ms(start, 40)), 1.0, "a glide does not fade");
+    let fast = ScrollTo::SPEC.settle_time(Direction::Enter, on(), MotionSource::Pointer);
+    assert_eq!(fast, Motion::default().durations.fast());
+    // `fast` brings a spring within a thousandth of the jump; the glide
+    // goes on to within a quarter pixel, a whole device pixel at twice the
+    // density, which a long jump reaches a little later.
+    let rest = to.settles_at().expect("moving");
+    assert!(rest >= start + fast.mul_f64(0.9), "not sooner than fast");
+    assert!(
+        rest <= start + fast.mul_f64(1.5),
+        "about fast: {:?}",
+        rest - start
+    );
+    assert!(!to.is_moving(rest), "arrived");
+    assert_eq!(to.arrived(rest), Some(down(900.0)));
+    assert_eq!(
+        to.offset(rest),
+        None,
+        "at rest the scroller's offset is the target"
+    );
+    assert!(!to.is_moving(ms(start, 1000)));
+    assert_eq!(to.settles_at(), None, "a settled jump holds no deadline");
+}
+
+#[test]
+fn a_glide_steps_in_whole_device_pixels_and_lands_exactly() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    to.go_from(
+        down(3.0),
+        down(410.5),
+        VIEW,
+        on(),
+        MotionSource::Pointer,
+        start,
+    );
+    for frame in 1..20 {
+        let at = start + Duration::from_nanos(frame * 8_333_333);
+        let drawn = to.offset_in_device_pixels(at, 2.0).expect("gliding");
+        assert_eq!((drawn.y * 2.0).fract(), 0.0, "frame {frame}: {drawn:?}");
+    }
+    let rest = to.settles_at().expect("moving");
+    assert_eq!(to.offset_in_device_pixels(rest, 2.0), Some(down(410.5)));
+}
+
+#[test]
+fn a_second_jump_retargets_from_the_drawn_offset_and_speed() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    to.go_from(
+        down(0.0),
+        down(600.0),
+        VIEW,
+        on(),
+        MotionSource::Keyboard,
+        start,
+    );
+    let next = ms(start, 30);
+    let drawn = to.offset(next).expect("gliding");
+    // Enter pressed again in the find field: the next hit, further down.
+    let jump = to.go_from(
+        down(0.0),
+        down(1200.0),
+        VIEW,
+        on(),
+        MotionSource::Keyboard,
+        next,
+    );
+    assert_eq!(jump, ScrollJump::Glide, "measured from where it is drawn");
+    let after = to.offset(next).expect("gliding");
+    assert!((after - drawn).hypot() < 1e-6, "no jump at the retarget");
+    assert!(
+        to.offset(ms(start, 40)).expect("gliding").y > drawn.y,
+        "it keeps going"
+    );
+    assert_eq!(to.target(), Some(down(1200.0)));
+}
+
+#[test]
+fn the_hand_takes_over_from_where_the_content_is_drawn() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    to.go_from(
+        down(0.0),
+        down(800.0),
+        VIEW,
+        on(),
+        MotionSource::Pointer,
+        start,
+    );
+    let wheel = ms(start, 35);
+    let drawn = to.offset(wheel).expect("gliding");
+    assert_eq!(to.take_over(wheel), Some(drawn));
+    assert!(!to.is_moving(wheel), "the wheel stops it at once");
+    assert_eq!(
+        to.offset(ms(start, 60)),
+        None,
+        "and it never moves the content again"
+    );
+    assert_eq!(to.settles_at(), None);
+    assert_eq!(to.take_over(wheel), None, "nothing to take over at rest");
+}
+
+#[test]
+fn a_long_jump_fades_in_at_the_target_instead_of_scrolling_through() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    let far = down(VIEW.y * ScrollTo::GLIDE_VIEWPORTS + 1.0);
+    let jump = to.go_from(down(0.0), far, VIEW, on(), MotionSource::Pointer, start);
+    assert_eq!(jump, ScrollJump::FadeIn);
+    assert_eq!(
+        to.offset(start),
+        None,
+        "the content is at the target at once"
+    );
+    assert!(to.opacity(start) < 0.05, "and fades in there");
+    assert!(to.is_moving(ms(start, 40)));
+    let rest = to.settles_at().expect("fading");
+    assert_eq!(to.opacity(rest), 1.0);
+    assert!(!to.is_moving(rest));
+    // Exactly three viewports still glides.
+    let mut near = ScrollTo::new();
+    let three = down(VIEW.y * ScrollTo::GLIDE_VIEWPORTS);
+    assert_eq!(
+        near.go_from(down(0.0), three, VIEW, on(), MotionSource::Pointer, start),
+        ScrollJump::Glide
+    );
+}
+
+#[test]
+fn reduced_motion_lands_and_a_long_jump_still_fades() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    let jump = to.go_from(
+        down(0.0),
+        down(500.0),
+        VIEW,
+        reduced(),
+        MotionSource::Pointer,
+        start,
+    );
+    assert_eq!(jump, ScrollJump::Land);
+    assert_eq!(to.offset(start), None);
+    assert!(!to.is_moving(start));
+    let jump = to.go_from(
+        down(500.0),
+        down(9000.0),
+        VIEW,
+        reduced(),
+        MotionSource::Pointer,
+        start,
+    );
+    assert_eq!(jump, ScrollJump::FadeIn, "what is shown changed: it fades");
+    assert!(to.opacity(start) < 0.05);
+}
+
+#[test]
+fn focus_walking_by_key_and_a_reveal_nobody_asked_for_land() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    // Tab moving focus off screen lands it.
+    to.land(down(300.0));
+    assert!(!to.is_moving(start));
+    assert_eq!(to.offset(start), None);
+    // An agent's action lands.
+    crate::time::testing::with_monotonic_time(start, || {
+        note_source(MotionSource::Action);
+        assert_eq!(
+            to.go(down(0.0), down(300.0), VIEW, on(), start),
+            ScrollJump::Land
+        );
+    });
+    // A reveal long after the last input (a sync) lands.
+    crate::time::testing::with_monotonic_time(start, || note_source(MotionSource::Pointer));
+    let later = ms(start, 2_000);
+    crate::time::testing::with_monotonic_time(later, || {
+        assert_eq!(
+            to.go(down(0.0), down(300.0), VIEW, on(), later),
+            ScrollJump::Land
+        );
+    });
+    // A click just now glides.
+    crate::time::testing::with_monotonic_time(later, || {
+        note_source(MotionSource::Pointer);
+        assert_eq!(
+            to.go(down(0.0), down(300.0), VIEW, on(), later),
+            ScrollJump::Glide
+        );
+    });
+}
+
+#[test]
+fn the_settled_clock_shows_a_scroll_jump_arrived() {
+    let start = crate::time::now();
+    let mut to = ScrollTo::new();
+    to.go_from(
+        down(0.0),
+        down(400.0),
+        VIEW,
+        on(),
+        MotionSource::Pointer,
+        start,
+    );
+    let _settled = testing::settled();
+    assert!(!to.is_moving(start));
+    assert_eq!(to.offset(start), Some(down(400.0)));
+}
