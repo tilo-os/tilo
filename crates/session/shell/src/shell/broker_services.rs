@@ -21,6 +21,9 @@ mod nearby_transfer;
 mod owner_source;
 mod person_chat;
 #[cfg(test)]
+#[path = "broker_services/room_status_tests.rs"]
+mod room_status_tests;
+#[cfg(test)]
 pub(crate) use owner_source::OPENING as NATIVE_OWNER_OPENING;
 mod resource_views;
 #[cfg(target_os = "linux")]
@@ -156,6 +159,13 @@ impl tilo_owner_commit::OwnerCommitService for NativeOwnerCommitService {
     }
 }
 
+impl NativeOwnerCommitService {
+    /// The rooms' status, as this service's tree and network tell it.
+    fn rooms(&self) -> RoomStatusSource {
+        RoomStatusSource::new(self.tree.clone(), self.network.clone())
+    }
+}
+
 impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitService {
     fn checkpoint_result_access(
         &self,
@@ -241,10 +251,21 @@ impl tilo_action_broker::services::WorkspaceMemberships for NativeOwnerCommitSer
         })
     }
 
-    fn room_unavailable(&self, room: &str) -> Option<String> {
-        super::state::RoomId::parse(room)
-            .and_then(|room| self.tree.read().documents_unavailable(room))
-            .map(super::i18n::t)
+    fn room_status(&self, room: &str) -> runtime_collab::RoomStatus {
+        super::state::RoomId::parse(room).map_or_else(runtime_collab::RoomStatus::default, |room| {
+            self.rooms().status(room)
+        })
+    }
+
+    fn room_status_change(
+        &self,
+        room: &str,
+        seen: runtime_collab::RoomStatus,
+    ) -> tilo_action_broker::services::RoomStatusFuture {
+        match super::state::RoomId::parse(room) {
+            Some(room) => Box::pin(self.rooms().change(room, seen)),
+            None => Box::pin(std::future::ready(runtime_collab::RoomStatus::default())),
+        }
     }
     fn requires_room(&self, room: &str) -> bool {
         tilo_owner_commit::OwnerCommitService::requires_room(self, room)
@@ -1097,6 +1118,91 @@ impl LauncherServices for NativeLauncher {
             app_id: app.to_string(),
             room: workspace.room(),
         })
+    }
+}
+
+/// Where each room stands for the apps on this device: what a join into one
+/// waits on, and a launch into one ([`super::launcher`]).
+#[derive(Clone)]
+pub(crate) struct RoomStatusSource {
+    tree: WorkspaceTreeHandle,
+    network: Option<Arc<super::network::ShellNetwork>>,
+}
+
+impl RoomStatusSource {
+    pub(crate) const fn new(
+        tree: WorkspaceTreeHandle,
+        network: Option<Arc<super::network::ShellNetwork>>,
+    ) -> Self {
+        Self { tree, network }
+    }
+
+    /// Where `room` stands now.
+    pub(crate) fn status(&self, room: super::state::RoomId) -> runtime_collab::RoomStatus {
+        room_status(&self.tree, self.network.as_deref(), room)
+    }
+
+    /// `room`'s status once it is no longer `seen`, woken by the change
+    /// itself ([`super::state::RoomReadiness`]), never by a clock.
+    pub(crate) fn change(
+        &self,
+        room: super::state::RoomId,
+        seen: runtime_collab::RoomStatus,
+    ) -> impl std::future::Future<Output = runtime_collab::RoomStatus> + Send + 'static {
+        let source = self.clone();
+        async move {
+            let mut changes = source.tree.room_readiness().subscribe();
+            loop {
+                let now = source.status(room);
+                if now != seen {
+                    return now;
+                }
+                // Subscribed before looking: a change after the look wakes
+                // this. With the tree gone, nothing changes any more.
+                if changes.changed().await.is_err() {
+                    return now;
+                }
+            }
+        }
+    }
+
+    /// Wake whoever waits on a room to look again.
+    pub(crate) fn wake(&self) {
+        self.tree.room_readiness().announce();
+    }
+}
+
+/// Where `room` stands for the apps on this device. On this device only, or
+/// a join that failed or needs the person, is refused; a room still being
+/// joined or placed on its host waits, saying what last held its placement
+/// up.
+fn room_status(
+    tree: &WorkspaceTreeHandle,
+    network: Option<&super::network::ShellNetwork>,
+    room: super::state::RoomId,
+) -> runtime_collab::RoomStatus {
+    let (on_this_device_only, placing, unavailable) = {
+        let tree = tree.read();
+        (
+            tree.on_this_device_only(room),
+            tree.pending_placements.contains(&room),
+            tree.documents_unavailable(room),
+        )
+    };
+    let Some(reason) = unavailable else {
+        return runtime_collab::RoomStatus::Ready;
+    };
+    if on_this_device_only {
+        return runtime_collab::RoomStatus::Refused(super::i18n::t(reason));
+    }
+    // A placement that failed is placed again once what it depends on
+    // changes: it waits. A join that failed waits for the person.
+    if !placing && let Some(refusal) = network.and_then(|network| network.join_refusal(room)) {
+        return runtime_collab::RoomStatus::Refused(refusal);
+    }
+    runtime_collab::RoomStatus::Waiting {
+        reason: super::i18n::t(reason),
+        detail: network.and_then(|network| network.placement_failure(room)),
     }
 }
 

@@ -269,6 +269,21 @@ impl ShellNetwork {
         }
     }
 
+    /// Why `room` will not be joined on this device until the person acts:
+    /// its join failed, or its host admits them no more.
+    pub(crate) fn join_refusal(&self, room: RoomId) -> Option<String> {
+        match self.hosted_sites.join_of(room)?.progress {
+            JoinProgress::Joining => None,
+            JoinProgress::Failed(error) => Some(crate::shell::i18n::t_args(
+                "directory-join-failed-line",
+                &[("error", error.into())],
+            )),
+            JoinProgress::NeedsJoinAgain => {
+                Some(crate::shell::i18n::t("workspace-needs-join-again"))
+            }
+        }
+    }
+
     /// Where the joins of site workspaces this session runs stand: each
     /// joining, or failed and why.
     pub(crate) fn site_joins(&self) -> Vec<SiteJoinState> {
