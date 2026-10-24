@@ -966,7 +966,7 @@ pub trait ContinuationServices: Send + Sync {
     fn clear(&self, room: RoomId, app: &str, instance: u64) -> Result<(), String>;
     /// One application instance answering a handoff request, or reporting
     /// that the document it shows arrived retired. `message` is an encoded
-    /// `ui::collaboration::handoff::HandoffReport`.
+    /// `collab_types::handoff::HandoffReport`.
     fn handoff(
         &self,
         room: RoomId,

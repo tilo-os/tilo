@@ -5666,7 +5666,7 @@ impl ShellNetwork {
     pub(crate) fn pump_owner_views(
         &self,
     ) -> Vec<(
-        ui::collaboration::owner_view::OwnerView,
+        collab_types::handoff::OwnerView,
         Option<AuthenticatedPersonalRoute>,
     )> {
         // Owner claims whose continuity value has reached the disk since the

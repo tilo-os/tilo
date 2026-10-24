@@ -387,7 +387,7 @@ impl SessionFollowDispatcher {
         room: &str,
         app: &str,
         instance: u64,
-        request: ui::collaboration::handoff::HandoffRequest,
+        request: collab_types::handoff::HandoffRequest,
     ) {
         self.fanout.fanout_to_route(
             &CollabEvent::Handoff { request },

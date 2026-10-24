@@ -1843,8 +1843,8 @@ impl ContinuationServices for NativeContinuations {
         message: Vec<u8>,
     ) -> Result<(), String> {
         if matches!(
-            ui::collaboration::handoff::HandoffReport::decode(&message),
-            Some(ui::collaboration::handoff::HandoffReport::OwnerSubscribe { .. })
+            collab_types::handoff::HandoffReport::decode(&message),
+            Some(collab_types::handoff::HandoffReport::OwnerSubscribe { .. })
         ) {
             super::personal_continuity_registry::global_registry()
                 .lock()
@@ -1856,11 +1856,11 @@ impl ContinuationServices for NativeContinuations {
                 );
             return Ok(());
         }
-        if let Some(ui::collaboration::handoff::HandoffReport::OwnerTakeover {
+        if let Some(collab_types::handoff::HandoffReport::OwnerTakeover {
             token,
             schema,
             metadata,
-        }) = ui::collaboration::handoff::HandoffReport::decode(&message)
+        }) = collab_types::handoff::HandoffReport::decode(&message)
         {
             use super::continuity_policy::{ContinuityCapability, ContinuityPolicySnapshot};
             if !ContinuityPolicySnapshot::current().permits(ContinuityCapability::AppContinuations)

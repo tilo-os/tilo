@@ -52,6 +52,7 @@ pub mod crypto;
 pub mod document_import;
 pub mod document_transfer;
 pub mod event;
+pub mod handoff;
 pub mod history;
 pub mod identity;
 pub mod inbound;

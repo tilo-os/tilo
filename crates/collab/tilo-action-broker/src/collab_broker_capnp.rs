@@ -1522,7 +1522,7 @@ enum ContextEnvelope {
         peer_id: Option<String>,
     },
     SnapshotRequested,
-    /// An encoded `ui::collaboration::handoff::HandoffRequest`.
+    /// An encoded `collab_types::handoff::HandoffRequest`.
     Handoff(Vec<u8>),
     /// The room's delegated agents the session verified, for history.
     HistoryAgents(Vec<collab_types::history::RosterAgent>),
@@ -19623,7 +19623,7 @@ pub mod tests {
             state.subscribe_context(&key("dev.tilo.notes", "continuation:6"), 8, None);
         let mut other_app =
             state.subscribe_context(&key("dev.tilo.sheets", "continuation:5"), 9, None);
-        let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
+        let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
         // The route SessionFollowDispatcher::request_handoff addresses.
         state.fanout_to_route(
             &CollabEvent::Handoff {
@@ -19635,7 +19635,7 @@ pub mod tests {
         assert!(matches!(
             addressed.try_recv(),
             Ok(ContextEnvelope::Handoff(message))
-                if ui::collaboration::handoff::HandoffRequest::decode(&message) == Some(request)
+                if collab_types::handoff::HandoffRequest::decode(&message) == Some(request)
         ));
         assert!(
             sibling.try_recv().is_err(),
@@ -19663,7 +19663,7 @@ pub mod tests {
         state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
         state.alias_private_context(&document.channel_key(), &private.channel_key(), 7);
         state.alias_private_context(&document.channel_key(), &private.channel_key(), 99);
-        let request = ui::collaboration::handoff::HandoffRequest::Checkpoint { token: 3 };
+        let request = collab_types::handoff::HandoffRequest::Checkpoint { token: 3 };
         state.fanout_to_route(
             &CollabEvent::Handoff {
                 request: request.clone(),
@@ -19673,7 +19673,7 @@ pub mod tests {
         );
         assert!(
             matches!(current.try_recv(), Ok(ContextEnvelope::Handoff(message))
-            if ui::collaboration::handoff::HandoffRequest::decode(&message) == Some(request))
+            if collab_types::handoff::HandoffRequest::decode(&message) == Some(request))
         );
         assert!(
             current.try_recv().is_err(),

@@ -481,7 +481,7 @@ impl DrainQueues {
                 format!("continuation:{}", view.instance),
             );
             let event = CollabEvent::Handoff {
-                request: ui::collaboration::handoff::HandoffRequest::OwnerView { view },
+                request: collab_types::handoff::HandoffRequest::OwnerView { view },
             };
             if let Some(source) = source_route {
                 let _ = self.net.with_current_personal_route(&source, || {
