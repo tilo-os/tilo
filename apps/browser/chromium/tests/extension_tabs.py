@@ -18,7 +18,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A script a click injects where the extension has no content script of its
   own gets a content script's storage, i18n and messaging, both ways.
 - Such a script and the worker open ports to each other, either way, and
-  the script hears of the extension's storage changing.
+  the script hears of the extension's storage changing. Many messages the
+  script sends at once on a port all reach the worker, in order.
 - Such a script's message and port reach the extension's open popup when
   its worker answers neither.
 - A tab is captured as it shows, as PNG or JPEG at the quality asked for, by
@@ -539,6 +540,15 @@ class ExtensionTabs(unittest.TestCase):
             'named': 'from-worker', 'echo': 'hello', 'pong': 'ping:true', 'unanswered': True,
             'changed': 'green>blue', 'area': True, 'closed': True,
         })
+
+    def test_a_burst_on_a_port_from_an_injected_script_reaches_the_worker_whole(self):
+        # More messages at once than the host lets wait for a worker one by
+        # one: each arrives, in order, and the port stays open.
+        host, ids = self.start('burster', access={'burster': (['activeTab', 'scripting'], [])})
+        host.navigate(self.url + '/burst')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['burster'])
+        self.assertEqual(self.title(host, 1, 'burst:'), 'burst:{"count":300,"ordered":true}')
 
     def test_a_script_a_popup_injects_reaches_the_popup_when_the_worker_does_not_answer(self):
         host, ids = self.start('pager', access={'pager': (['activeTab', 'scripting'], [])})
