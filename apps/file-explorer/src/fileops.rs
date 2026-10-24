@@ -1335,8 +1335,15 @@ mod tests {
         fs::write(&source, b"private notes").expect("source contents");
         delete_to_trash(std::slice::from_ref(&source)).expect("production legacy delete");
         assert!(!source.exists());
+        // Ask for the Trash root rather than assuming `$XDG_DATA_HOME`: macOS
+        // keeps it under `~/Library/Application Support`.
+        let files = trash_dir().expect("test Trash path");
+        let data = files
+            .parent()
+            .and_then(Path::parent)
+            .expect("data directory");
         for directory in ["Trash", "Trash/files", "Trash/info"] {
-            let path = home.data().join(directory);
+            let path = data.join(directory);
             let metadata = fs::symlink_metadata(&path).expect("created Trash directory");
             assert!(metadata.is_dir());
             assert_eq!(metadata.mode() & 0o777, 0o700, "{}", path.display());

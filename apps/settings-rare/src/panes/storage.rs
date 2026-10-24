@@ -290,9 +290,10 @@ fn open_tool(
     opened: &'static str,
 ) -> Effected {
     let device = area.device();
+    let on_behalf_of = ui::invocation_scope::delivered_invocation().map(|id| id.0.into_bytes());
     crate::device_read::job(
         cx,
-        move || device.open_tool(intent),
+        move || device.open_tool(intent, on_behalf_of),
         move |_: &mut SettingsApp, result: Result<(), String>, _| {
             result.map(|()| Effected::value(t(opened)))
         },
@@ -371,7 +372,7 @@ pub(crate) trait StorageDevice: Send + Sync {
     ///
     /// # Errors
     /// Why the shell did not open it.
-    fn open_tool(&self, intent: ToolIntent) -> Result<(), String>;
+    fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String>;
 }
 
 /// This device's storage, or, in a window nobody uses, none: nothing is
@@ -420,12 +421,12 @@ impl StorageDevice for DeviceStorage {
             .map_err(|error| error.to_string())
     }
 
-    fn open_tool(&self, intent: ToolIntent) -> Result<(), String> {
+    fn open_tool(&self, intent: ToolIntent, on_behalf_of: Option<[u8; 16]>) -> Result<(), String> {
         crate::device_read::off_ui_thread();
         if !self.reaches_shell {
             return Err("only a window someone uses opens a storage tool".into());
         }
-        os_actions::open_tool(intent)
+        os_actions::open_tool(intent, on_behalf_of)
     }
 }
 
@@ -1595,7 +1596,7 @@ mod tests {
             self.wait()
         }
 
-        fn open_tool(&self, _: ToolIntent) -> Result<(), String> {
+        fn open_tool(&self, _: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
             crate::device_read::off_ui_thread();
             self.wait()
         }
@@ -1685,6 +1686,73 @@ mod tests {
             )
         });
         assert!(opened, "the job says Disks opened");
+    }
+
+    /// A device that records every tool the shell is asked for, and for
+    /// which broker invocation.
+    struct RecordingStorage(ToolsAsked);
+
+    /// Each tool asked for, with the invocation it names.
+    type ToolsAsked = std::sync::Arc<std::sync::Mutex<Vec<(ToolIntent, Option<[u8; 16]>)>>>;
+
+    impl StorageDevice for RecordingStorage {
+        fn scan(&self) -> StorageScan {
+            StorageScan::unavailable()
+        }
+
+        fn clean_up(&self, _: &CleanupPreview) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn open_tool(
+            &self,
+            intent: ToolIntent,
+            on_behalf_of: Option<[u8; 16]>,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push((intent, on_behalf_of));
+            Ok(())
+        }
+    }
+
+    /// Open Disks pressed by the person asks the shell plainly: their press
+    /// in the window is what the shell checks. The same action an agent
+    /// invokes through the broker names that invocation, so the shell admits
+    /// the open as the agent's.
+    #[test]
+    fn an_agents_open_disks_names_its_invocation_and_the_persons_does_not() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&asked);
+        app.with_widget::<SettingsApp, _>(move |settings| {
+            settings
+                .areas()
+                .find::<crate::panes::storage::StorageArea>()
+                .unwrap()
+                .use_device(std::sync::Arc::new(RecordingStorage(record)));
+        })
+        .expect("the Settings window is mounted");
+        let open_disks = crate::effects::SettingsEffect::from(StorageEffect::OpenDisks);
+
+        app.effect(&open_disks).expect("the person opens Disks");
+        app.effect_by("agent:scribe", &open_disks)
+            .expect("the agent opens Disks");
+
+        let asked = std::mem::take(&mut *asked.lock().unwrap());
+        let disks = ToolIntent::Disks {
+            route: DisksRoute::Overview,
+        };
+        assert_eq!(asked.len(), 2, "{asked:?}");
+        assert_eq!(
+            asked[0],
+            (disks.clone(), None),
+            "the person's press names nothing"
+        );
+        assert_eq!(asked[1].0, disks);
+        assert!(
+            asked[1].1.is_some(),
+            "the agent's open names its invocation"
+        );
     }
 
     /// Every cache size an agent may choose maps to a budget the daemon

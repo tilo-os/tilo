@@ -283,6 +283,22 @@ class Lanes(unittest.TestCase):
         self.assertEqual(budgets.owner("render.frame_cpu_ms"), "vm-acceptance")
         self.assertEqual(budgets.owner("render.shell.redraw_us.4k"), "perf-scheduled")
 
+    def test_every_benchmark_test_perf_scheduled_runs_exists(self):
+        # A filter that matches no test runs nothing and exits 0, so a renamed
+        # or removed benchmark is only noticed when its samples are missing.
+        script = SCHEDULED.read_text().replace("\\\n", " ")
+        filters = re.findall(r"cargo test [^\n]*?--lib\s+([\w:]+)\s+--", script)
+        self.assertIn("native_task_benchmark", [name.rsplit("::", 1)[-1] for name in filters])
+        # Cargo selects every test whose name contains the filter. One file
+        # at a time: the whole tree's sources at once do not fit the check.
+        missing = {name: re.compile(rf"\bfn \w*{name.rsplit('::', 1)[-1]}\w*\(") for name in filters}
+        for path in (path for top in ("apps", "crates") for path in (ROOT / top).rglob("*.rs")):
+            if not missing:
+                break
+            text = path.read_text(errors="replace")
+            missing = {name: pattern for name, pattern in missing.items() if not pattern.search(text)}
+        self.assertEqual(sorted(missing), [], "perf-scheduled.sh runs test filters that no test defines")
+
     def test_perf_scheduled_selects_exactly_its_lanes_groups(self):
         budgets = compare.load_budgets(compare.BUDGETS)
         groups = scheduled_groups()

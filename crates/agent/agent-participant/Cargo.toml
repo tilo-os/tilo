@@ -16,6 +16,8 @@ tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # published tree is the door.
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+# The dates a step's computed arguments (`{{= workday(…) }}`) work with.
+chrono.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 # A bot's record events: the dispatcher's event shape and its reader of
 # recorded entries, shared with the shell.

@@ -94,6 +94,11 @@ pub struct WindowState {
     /// Seats that has keyboard focus on that window.
     seat_focus: HashSet<ObjectId>,
 
+    /// The seat and serial of the last press in the window: a pointer button
+    /// press, a key press or a touch down. An activation token carries it so
+    /// the compositor can tell the request came from the person.
+    last_press: Option<(WlSeat, u32)>,
+
     /// The scale factor of the window.
     scale_factor: f64,
 
@@ -219,6 +224,7 @@ impl WindowState {
             frame: None,
             frame_callback_state: FrameCallbackState::None,
             seat_focus: Default::default(),
+            last_press: None,
             has_pending_move: None,
             ime_allowed: false,
             ime_purpose: ImePurpose::Normal,
@@ -1164,6 +1170,18 @@ impl WindowState {
     #[inline]
     pub fn add_seat_focus(&mut self, seat: ObjectId) {
         self.seat_focus.insert(seat);
+    }
+
+    /// Remember a press in the window on `seat` with the event's `serial`.
+    #[inline]
+    pub fn record_press(&mut self, seat: &WlSeat, serial: u32) {
+        self.last_press = Some((seat.clone(), serial));
+    }
+
+    /// The seat and serial of the last press in the window.
+    #[inline]
+    pub fn last_press(&self) -> Option<&(WlSeat, u32)> {
+        self.last_press.as_ref()
     }
 
     /// Remove seat focus from the window.

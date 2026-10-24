@@ -62,6 +62,16 @@ pub struct DesktopAction {
     pub exec: Option<String>,
 }
 
+/// How many main windows an app opens (`SingleMainWindow=`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MainWindows {
+    /// Opened again, it opens another window: the spec's default.
+    #[default]
+    Many,
+    /// `SingleMainWindow=true`: opened again, it raises the window it has.
+    One,
+}
+
 /// A parsed `[Desktop Entry]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopEntry {
@@ -96,6 +106,9 @@ pub struct DesktopEntry {
     /// system file of the same id.
     pub hidden: bool,
     pub terminal: bool,
+    /// `SingleMainWindow=`: whether the app opens a second main window or,
+    /// opened again, only raises the one it has.
+    pub main_windows: MainWindows,
     /// `X-GNOME-Autostart-enabled`, `None` when absent: `Some(false)` switches an
     /// autostart entry off without deleting it.
     pub autostart_enabled: Option<bool>,
@@ -260,6 +273,11 @@ pub fn parse(contents: &str, id: &str, path: &Path, locales: &[String]) -> Optio
         no_display: boolean(raw("NoDisplay")),
         hidden: boolean(raw("Hidden")),
         terminal: boolean(raw("Terminal")),
+        main_windows: if boolean(raw("SingleMainWindow")) {
+            MainWindows::One
+        } else {
+            MainWindows::Many
+        },
         autostart_enabled: raw("X-GNOME-Autostart-enabled").map(|value| boolean(Some(value))),
         only_show_in: string_list(raw("OnlyShowIn")),
         not_show_in: string_list(raw("NotShowIn")),

@@ -72,8 +72,21 @@ class SelectTests(unittest.TestCase):
     def test_a_check_red_on_main_runs_all_the_same(self):
         # t compares its failures with main's: a push that adds one is refused however red main is.
         scope = {"base": "base", "checks": ["clippy/shell", "policy/source-file-size"]}
-        self.assertEqual(pre_push.select(scope, [])["run"],
+        self.assertEqual(pre_push.select(scope, ["crates/session/shell/src/lib.rs"])["run"],
                          ["fmt-changed", "changes", "clippy/shell", "policy/source-file-size"])
+
+    def test_a_change_to_a_library_lints_that_library_and_none_of_its_dependents(self):
+        # t names the lint of every package whose key the change moves: the library's
+        # dependents too. A push lints only the packages whose files it changes.
+        scope = {"base": "base", "checks": ["clippy/tilo-desktop-entry", "clippy/shell", "clippy/settings"]}
+        chosen = pre_push.select(scope, ["crates/system/desktop-entry/src/entry.rs"])
+        self.assertEqual(chosen["run"], ["fmt-changed", "changes", "clippy/tilo-desktop-entry"])
+        self.assertEqual(chosen["left"], ["clippy/shell", "clippy/settings"])
+        both = pre_push.select(scope, ["crates/system/desktop-entry/src/entry.rs",
+                                       "crates/session/shell/src/shell/window_actions.rs"])
+        self.assertEqual(both["run"], ["fmt-changed", "changes", "clippy/tilo-desktop-entry", "clippy/shell"])
+        # Outside every package (the workspace manifest, docs) nothing is linted.
+        self.assertEqual(pre_push.select(scope, ["Cargo.toml", "docs/t.md"])["run"], ["fmt-changed", "changes"])
 
     def test_opt_in_names_what_t_suggest_says_the_change_touches(self):
         suggest = {"checks": [
@@ -201,12 +214,16 @@ class HookTests(unittest.TestCase):
         for path in (".githooks/pre-push", "tools/ci/pre_push.py"):
             (self.work / path).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / path, self.work / path)
+        for package in ("shell", "notes"):
+            (self.work / package / "src").mkdir(parents=True)
+            (self.work / package / "Cargo.toml").write_text(f'[package]\nname = "{package}"\n', encoding="utf-8")
         self.git("add", ".")
         self.git("commit", "-qm", "chore: base")
         self.base = self.git("rev-parse", "HEAD").stdout.strip()
         self.git("remote", "add", "origin", str(remote))
         self.git("push", "-q", "origin", "main")
-        (self.work / "change.rs").write_text("fn main() {}\n", encoding="utf-8")
+        (self.work / "shell/src/main.rs").write_text("fn main() {}\n", encoding="utf-8")
+        (self.work / "notes/src/lib.rs").write_text("pub fn note() {}\n", encoding="utf-8")
         self.git("add", ".")
         self.git("commit", "-qm", "feat: a change")
         self.git("config", "core.hooksPath", ".githooks")
@@ -255,7 +272,7 @@ class HookTests(unittest.TestCase):
         self.assertIn("this change passed the gate as", pushed.stderr)
         self.assertEqual(self.gate_runs(), 1)
         # Another patch runs it.
-        (self.work / "change.rs").write_text("fn main() { let _x = 1; }\n", encoding="utf-8")
+        (self.work / "shell/src/main.rs").write_text("fn main() { let _x = 1; }\n", encoding="utf-8")
         self.git("commit", "-qam", "feat: a change of the change")
         pushed = self.git("push", "origin", "main", env=self.env, check=False)
         self.assertEqual(pushed.returncode, 0, pushed.stderr)

@@ -1,0 +1,526 @@
+// Tabs and windows for Chrome extensions, which Chromium does not give them in
+// an offscreen embedding: its tab registry holds only the tabs of its own
+// windows, and Tilo draws every page offscreen. Run in an extension's service
+// worker and its own pages, this answers the tab and window APIs, the toolbar
+// click, a tab's capture, context menu items and scripts on a tab from the
+// host's tabs instead, over a request the host answers itself. A page of the
+// extension is known by its address; its worker, which has none, by a token
+// the Browser wrote with this script into the worker it runs first
+// (extensions.rs).
+(() => {
+  const runtime = globalThis.chrome && chrome.runtime;
+  if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
+  const token = globalThis.__tiloBridgeToken || null;
+  delete globalThis.__tiloBridgeToken;
+  if (globalThis.__tiloExtensionTabs) return;
+  const BRIDGE = 'https://extension-bridge.tilo.invalid/';
+
+  const call = async (method, args) => {
+    const response = await fetch(BRIDGE + method, {
+      method: 'POST',
+      // A plain body is a simple request: no preflight before each call.
+      headers: {'Content-Type': 'text/plain'},
+      body: JSON.stringify({token, args: args === undefined ? null : args}),
+      credentials: 'omit',
+      cache: 'no-store',
+    });
+    const reply = await response.json();
+    if (reply.error) throw new Error(reply.error);
+    return reply.result;
+  };
+
+  // Calls not answered yet. In Chrome a call is on its way once made, so a
+  // popup acts and closes at once (`tabs.reload(tab.id); window.close()`,
+  // as Privacy Badger's "Disable for this site" and uBlock Origin Lite's
+  // element zapper do). Here a call is a request its page cancels as it
+  // closes, so the page closes once its calls are answered, or after
+  // two seconds.
+  let pending = 0;
+  const unblocked = [];
+  const settle = () => {
+    pending -= 1;
+    if (!pending) for (const resume of unblocked.splice(0)) resume();
+  };
+  if (typeof document !== 'undefined' && typeof globalThis.close === 'function') {
+    const close = globalThis.close.bind(globalThis);
+    let closing = false;
+    globalThis.close = () => {
+      if (!pending) { close(); return; }
+      if (closing) return;
+      closing = true;
+      const late = setTimeout(close, 2000);
+      unblocked.push(() => { clearTimeout(late); close(); });
+    };
+  }
+
+  // Chrome's APIs return a promise, or call a trailing callback instead.
+  // A callback learns of a failure as Chrome tells it: runtime.lastError is
+  // set while it runs, which is what extensions check before they read
+  // what they were given.
+  const failed = (callback, error) => {
+    const message = String((error && error.message) || error);
+    let checked = false;
+    let set = false;
+    try {
+      Object.defineProperty(runtime, 'lastError', {
+        configurable: true,
+        enumerable: true,
+        get() { checked = true; return {message}; },
+      });
+      set = true;
+    } catch (ignored) {
+      // Chromium's own lastError stays; the callback still runs.
+    }
+    try {
+      callback();
+    } finally {
+      if (set) delete runtime.lastError;
+      if (!checked) console.error(`Unchecked runtime.lastError: ${message}`);
+    }
+  };
+  const api = (method) => (...args) => {
+    const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
+    const result = method(...args);
+    pending += 1;
+    result.then(settle, settle);
+    if (!callback) return result;
+    result.then((value) => callback(value), (error) => failed(callback, error));
+    return undefined;
+  };
+  const replace = (namespace, name, method) => {
+    if (namespace) namespace[name] = api(method);
+  };
+
+  // Events the host fires: a toolbar click, a tab that changed. The host
+  // fires only those an extension listens to, so it is told of each.
+  const listeners = new Map();
+  const listened = new Set();
+  const event = (namespace, key, name) => {
+    const target = namespace && namespace[key];
+    if (!target) return;
+    const own = new Set();
+    listeners.set(name, own);
+    target.addListener = (listener) => {
+      if (typeof listener !== 'function') return;
+      own.add(listener);
+      if (!listened.has(name)) {
+        listened.add(name);
+        call('listen', {event: name}).catch(() => listened.delete(name));
+      }
+    };
+    target.removeListener = (listener) => own.delete(listener);
+    target.hasListener = (listener) => own.has(listener);
+    target.hasListeners = () => own.size > 0;
+  };
+  // Ports to the scripts the host runs in pages where the extension has no
+  // world of its own (extension_content.js): one it opens with tabs.connect,
+  // or one such a script opens with runtime.connect. What they carry goes to
+  // the host in order: while one request is under way, the next gathers all
+  // that follows.
+  const emitter = () => {
+    const own = new Set();
+    return {
+      own,
+      addListener: (listener) => { if (typeof listener === 'function') own.add(listener); },
+      removeListener: (listener) => { own.delete(listener); },
+      hasListener: (listener) => own.has(listener),
+      hasListeners: () => own.size > 0,
+    };
+  };
+  const fire = (target, ...args) => {
+    for (const listener of [...target.own]) {
+      try {
+        listener(...args);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  };
+  let outbox = [];
+  let sending = false;
+  const post = async (op) => {
+    outbox.push(op);
+    if (sending) return;
+    sending = true;
+    while (outbox.length) {
+      const ops = outbox;
+      outbox = [];
+      await call('ports', {ops}).catch((error) => console.error(error));
+    }
+    sending = false;
+  };
+  const ports = new Map();
+  const port = (id, name, sender) => {
+    const own = {onMessage: emitter(), onDisconnect: emitter()};
+    own.port = {
+      name,
+      onMessage: own.onMessage,
+      onDisconnect: own.onDisconnect,
+      postMessage(value) {
+        if (ports.get(id) !== own) throw new Error('Attempting to use a disconnected port object');
+        // Copied now, as Chrome copies it: a later change is not sent.
+        post({op: 'post', port: id, message: value === undefined ? null : JSON.parse(JSON.stringify(value))});
+      },
+      disconnect() {
+        if (ports.get(id) !== own) return;
+        ports.delete(id);
+        post({op: 'disconnect', port: id});
+      },
+    };
+    if (sender) own.port.sender = sender;
+    ports.set(id, own);
+    return own.port;
+  };
+
+  // Those scripts hear of the extension's storage changing. The worker
+  // hears of every change, also of one that wakes it, which only a listener
+  // its first script adds is in time for; a page tells of them only for an
+  // extension without a worker. Once no such script is left, the host says
+  // so and the listener goes, so a sleeping worker is not woken for them.
+  const manifest = runtime.getManifest();
+  const worker = typeof ServiceWorkerGlobalScope === 'function' && globalThis instanceof ServiceWorkerGlobalScope;
+  const tells = worker || !(manifest.background && manifest.background.service_worker);
+  const storageEvents = globalThis.chrome.storage && chrome.storage.onChanged;
+  let watched = 0;
+  const forward = (changes, area) => {
+    const asked = watched;
+    call('storage.changed', {changes, area}).then((wanted) => {
+      if (!wanted && asked === watched) storageEvents.removeListener(forward);
+    }, () => {});
+  };
+  const watch = () => {
+    if (!tells || !storageEvents) return false;
+    ++watched;
+    if (!storageEvents.hasListener(forward)) storageEvents.addListener(forward);
+    return true;
+  };
+  if ((manifest.permissions || []).includes('scripting')) watch();
+
+  // The worker's first script has run once this task ends: its listeners
+  // are registered, and an event may reach them.
+  let ready = false;
+  setTimeout(() => { ready = true; });
+  Object.defineProperty(globalThis, '__tiloExtensionTabs', {
+    value: Object.freeze({
+      get ready() { return ready; },
+      watch,
+      // A script in a page opened a port to the extension: taken here when
+      // something listens for one.
+      connected(id, name, sender) {
+        const onConnect = runtime.onConnect;
+        if (!onConnect || !onConnect.hasListeners() || ports.has(id)) return false;
+        onConnect.dispatch(port(id, name, sender));
+        return true;
+      },
+      // A message on a port, or its other end closing: false for a port not
+      // known here (the worker slept since it opened).
+      port(id, op, value) {
+        const own = ports.get(id);
+        if (!own) return false;
+        if (op === 'message') {
+          fire(own.onMessage, value, own.port);
+        } else {
+          ports.delete(id);
+          fire(own.onDisconnect, own.port);
+        }
+        return true;
+      },
+      // The host tells the extension of a tab event: every listener runs.
+      dispatch(name, args) {
+        for (const listener of listeners.get(name) || []) {
+          try {
+            listener(...args);
+          } catch (error) {
+            console.error(error);
+          }
+        }
+        return (listeners.get(name) || new Set()).size;
+      },
+    }),
+  });
+
+  // The host asks which frame of a page the extension's world there is, by
+  // a message from that world: Chromium tells only the extension
+  // (`sender.frameId`). It is answered here and never reaches the
+  // extension's own listeners.
+  const onMessage = runtime.onMessage;
+  if (onMessage) {
+    const probe = (message) => message !== null && typeof message === 'object' && message.__tiloFrame === true;
+    const add = onMessage.addListener.bind(onMessage);
+    const remove = onMessage.removeListener.bind(onMessage);
+    add((message, sender, reply) => {
+      if (probe(message) && sender.id === runtime.id && sender.tab && typeof sender.frameId === 'number') reply(sender.frameId);
+    });
+    const own = new Map();
+    onMessage.addListener = (listener) => {
+      if (typeof listener !== 'function' || own.has(listener)) return;
+      const filtered = function (message, ...rest) {
+        return probe(message) ? undefined : listener.call(this, message, ...rest);
+      };
+      own.set(listener, filtered);
+      add(filtered);
+    };
+    onMessage.removeListener = (listener) => {
+      const filtered = own.get(listener);
+      if (!filtered) return;
+      own.delete(listener);
+      remove(filtered);
+    };
+    onMessage.hasListener = (listener) => own.has(listener);
+    onMessage.hasListeners = () => own.size > 0;
+  }
+
+  const {tabs, windows, scripting, action} = chrome;
+  const relative = (url) => (typeof url === 'string' ? new URL(url, location.href).href : url);
+  replace(tabs, 'query', (query) => call('tabs.query', query || {}));
+  replace(tabs, 'get', (tabId) => call('tabs.get', {tabId}));
+  // In a popup or a worker there is no tab of one's own: undefined, as in Chrome.
+  replace(tabs, 'getCurrent', async () => (await call('tabs.getCurrent')) ?? undefined);
+  replace(tabs, 'create', (properties) =>
+    call('tabs.create', {...(properties || {}), url: relative((properties || {}).url)}));
+  replace(tabs, 'update', (tabId, properties) => {
+    if (typeof tabId === 'object' && tabId !== null) [tabId, properties] = [undefined, tabId];
+    return call('tabs.update', {tabId, properties: {...(properties || {}), url: relative((properties || {}).url)}});
+  });
+  replace(tabs, 'reload', (tabId, options) => call('tabs.reload', {tabId, options}));
+  replace(tabs, 'remove', (tabIds) => call('tabs.remove', {tabIds: [].concat(tabIds)}));
+  replace(tabs, 'captureVisibleTab', (windowId, options) => {
+    if (typeof windowId === 'object' && windowId !== null) [windowId, options] = [undefined, windowId];
+    return call('tabs.captureVisibleTab', {windowId: windowId ?? null, options: options || {}});
+  });
+  replace(tabs, 'sendMessage', (tabId, message, options) =>
+    call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId}));
+  if (tabs) {
+    tabs.connect = (tabId, info) => {
+      const id = 'x' + crypto.randomUUID();
+      const opened = port(id, info && info.name !== undefined ? String(info.name) : '');
+      post({op: 'open', port: id, tabId, name: opened.name});
+      return opened;
+    };
+  }
+  replace(tabs, 'detectLanguage', (tabId) => call('tabs.detectLanguage', {tabId}));
+  replace(tabs, 'getZoom', (tabId) => call('tabs.getZoom', {tabId}));
+  replace(tabs, 'getZoomSettings', (tabId) => call('tabs.getZoomSettings', {tabId}));
+  replace(windows, 'get', (windowId, query) => call('windows.get', {windowId, query}));
+  replace(windows, 'getCurrent', (query) => call('windows.getCurrent', {query}));
+  replace(windows, 'getLastFocused', (query) => call('windows.getLastFocused', {query}));
+  replace(windows, 'getAll', (query) => call('windows.getAll', {query}));
+  replace(windows, 'create', (data) => call('windows.create', {...(data || {}), url: [].concat((data || {}).url || []).map(relative)}));
+  replace(windows, 'update', (windowId, info) => call('windows.update', {windowId, info}));
+  event(tabs, 'onCreated', 'tabs.onCreated');
+  event(tabs, 'onUpdated', 'tabs.onUpdated');
+  event(tabs, 'onActivated', 'tabs.onActivated');
+  event(tabs, 'onRemoved', 'tabs.onRemoved');
+  event(windows, 'onFocusChanged', 'windows.onFocusChanged');
+  event(action, 'onClicked', 'action.onClicked');
+  event(chrome.browserAction, 'onClicked', 'action.onClicked');
+
+  // The toolbar button's look, which the Browser draws. For every tab
+  // Chromium keeps it and answers for it; each change it accepted is told to
+  // the host as well, which tells the Browser. For one tab (an ad blocker's
+  // count for the page) Chromium finds no tab, these being none of its
+  // windows', and refuses ("No tab with id"): the host keeps it until the
+  // tab's next document, answers for it, and tells the Browser. A badge
+  // colour is taken and not shown: the toolbar's colours are the system's.
+  const toolbar = (button) => {
+    if (!button) return;
+    const native = {};
+    for (const name of ['setBadgeText', 'setTitle', 'setPopup', 'setIcon', 'enable', 'disable', 'getBadgeText',
+      'getTitle', 'getPopup', 'isEnabled', 'setBadgeBackgroundColor', 'setBadgeTextColor']) {
+      if (typeof button[name] === 'function') native[name] = button[name].bind(button);
+    }
+    // The callback form: MV2's browserAction has no promises.
+    const run = (name, ...args) => new Promise((resolve, reject) => {
+      native[name](...args, (value) => {
+        const error = runtime.lastError;
+        if (error) reject(new Error(error.message)); else resolve(value);
+      });
+    });
+    const forTab = (details) => details !== null && typeof details === 'object' && Number.isInteger(details.tabId);
+    const set = (tabId, key, value) =>
+      call('action.set', {tabId: Number.isInteger(tabId) ? tabId : null, key, value: value ?? null}).then(() => undefined);
+    // For every tab Chromium has it already; a page the host serves no
+    // bridge to only goes untold.
+    const tellAll = (key, value) => set(null, key, value).catch(() => {});
+    // An icon image the Browser can draw: the size nearest toolbar size.
+    const nearest = (sizes) => {
+      if (!sizes || typeof sizes !== 'object' || 'width' in sizes) return sizes;
+      const keys = Object.keys(sizes).map(Number).filter((size) => size > 0).sort((a, b) => a - b);
+      const key = keys.find((size) => size >= 32) || keys[keys.length - 1];
+      return key === undefined ? undefined : sizes[key];
+    };
+    const iconOf = (details) => {
+      const path = nearest(typeof details.path === 'string' ? {32: details.path} : details.path);
+      if (typeof path === 'string') return {path: new URL(path, location.href).pathname};
+      const image = nearest(details.imageData);
+      if (!image || !(image.data instanceof Uint8ClampedArray)) return null;
+      const {width, height, data} = image;
+      if (width < 1 || height < 1 || width > 128 || height > 128 || data.length !== width * height * 4) return null;
+      let binary = '';
+      for (let at = 0; at < data.length; at += 0x8000) binary += String.fromCharCode(...data.subarray(at, at + 0x8000));
+      return {width, height, data: btoa(binary)};
+    };
+    const text = (value) => (typeof value === 'string' ? value : null);
+    // A popup is named from the extension's root, wherever it is set from.
+    const popupOf = (popup) => (typeof popup !== 'string' ? null
+      : popup && !popup.startsWith('chrome-extension:') ? runtime.getURL(popup.replace(/^\//, '')) : popup);
+    const setters = {
+      setBadgeText: ['text', (details) => text(details.text)],
+      setTitle: ['title', (details) => text(details.title)],
+      setPopup: ['popup', (details) => popupOf(details.popup)],
+      setIcon: ['icon', iconOf],
+    };
+    for (const [name, [key, valueOf]] of Object.entries(setters)) {
+      if (!native[name]) continue;
+      replace(button, name, async (details) => {
+        if (forTab(details)) return set(details.tabId, key, valueOf(details));
+        await run(name, details);
+        // The popup for every tab as Chromium resolved it.
+        await tellAll(key, key === 'popup' && native.getPopup ? await run('getPopup', {}) : valueOf(details || {}));
+        return undefined;
+      });
+    }
+    for (const [name, key] of [['getBadgeText', 'text'], ['getTitle', 'title'], ['getPopup', 'popup']]) {
+      if (!native[name]) continue;
+      replace(button, name, async (details) => {
+        if (!forTab(details)) return run(name, details || {});
+        const value = await call('action.get', {tabId: details.tabId, key});
+        return value === undefined || value === null ? run(name, {}) : value;
+      });
+    }
+    for (const name of ['setBadgeBackgroundColor', 'setBadgeTextColor']) {
+      if (!native[name]) continue;
+      replace(button, name, (details) => (forTab(details)
+        ? call('tabs.get', {tabId: details.tabId}).then(() => undefined)
+        : run(name, details)));
+    }
+    for (const [name, enabled] of [['enable', true], ['disable', false]]) {
+      if (!native[name]) continue;
+      replace(button, name, async (tabId) => {
+        if (Number.isInteger(tabId)) return set(tabId, 'enabled', enabled);
+        await run(name);
+        await tellAll('enabled', enabled);
+        return undefined;
+      });
+    }
+    if (native.isEnabled) {
+      replace(button, 'isEnabled', async (tabId) => {
+        if (!Number.isInteger(tabId)) return run('isEnabled');
+        const value = await call('action.get', {tabId, key: 'enabled'});
+        return typeof value === 'boolean' ? value : run('isEnabled');
+      });
+    }
+    // Chromium finds no window to open it in: the Browser opens it over the
+    // page the window shows, as a click on the button would, if that page
+    // has a popup.
+    if (native.getPopup) {
+      replace(button, 'openPopup', async (options) => {
+        const windowId = options && options.windowId;
+        const window = await (Number.isInteger(windowId)
+          ? call('windows.get', {windowId})
+          : call('windows.getLastFocused', {})).catch(() => {
+          throw new Error('Could not find an active browser window.');
+        });
+        const tabId = window.id;
+        const popup = await button.getPopup({tabId});
+        const enabled = native.isEnabled ? await button.isEnabled(tabId) : true;
+        if (!popup || !enabled) throw new Error('Extension does not have a popup on the active tab.');
+        await call('action.openPopup', {tabId, popup});
+      });
+    }
+  };
+  toolbar(action);
+  toolbar(chrome.browserAction);
+
+  // Context menu items: the host keeps them and shows them in the page's
+  // menu (extension_menus.h); a choice comes back as onClicked.
+  if (!chrome.contextMenus && (runtime.getManifest().permissions || []).includes('contextMenus')) {
+    chrome.contextMenus = {onClicked: {}};
+  }
+  const menus = chrome.contextMenus;
+  if (menus) {
+    // Changes reach the host in the order they were made: an extension
+    // often removes all its items and makes them anew.
+    let queue = Promise.resolve();
+    const inOrder = (method, args) => {
+      const result = queue.then(() => call(method, args));
+      queue = result.catch(() => {});
+      return result;
+    };
+    // A script's own `onclick` cannot cross to the host; onClicked can.
+    const plain = (properties) => {
+      const own = {...(properties || {})};
+      delete own.onclick;
+      return own;
+    };
+    let generated = 0;
+    // `create` answers with the item's id at once, and calls back once made.
+    menus.create = (properties, callback) => {
+      const own = plain(properties);
+      if (own.id === undefined) own.id = ++generated;
+      inOrder('contextMenus.create', {properties: own}).then(() => {
+        if (typeof callback === 'function') callback();
+      }, (error) => {
+        if (typeof callback === 'function') failed(callback, error);
+        else console.error(`Unchecked runtime.lastError: ${error.message}`);
+      });
+      return own.id;
+    };
+    replace(menus, 'update', (id, properties) => inOrder('contextMenus.update', {id, properties: plain(properties)}));
+    replace(menus, 'remove', (id) => inOrder('contextMenus.remove', {id}));
+    replace(menus, 'removeAll', () => inOrder('contextMenus.removeAll'));
+    event(menus, 'onClicked', 'contextMenus.onClicked');
+  }
+
+  if (scripting) {
+    // A script's files are the extension's own: read here, run on the tab.
+    const sources = (files) =>
+      Promise.all((files || []).map((file) => fetch(runtime.getURL(file)).then((r) => r.text())));
+    // What a script run where the extension has no world of its own needs
+    // of a content script's `chrome` (extension_content.js).
+    let content = null;
+    const contentOf = async () => {
+      if (content) return content;
+      const manifest = runtime.getManifest();
+      const language = chrome.i18n ? chrome.i18n.getUILanguage() : navigator.language;
+      const messages = {};
+      const load = async (locale) => {
+        try {
+          const response = await fetch(runtime.getURL(`_locales/${locale}/messages.json`));
+          if (!response.ok) return;
+          for (const [key, value] of Object.entries(await response.json())) messages[key.toLowerCase()] = value;
+        } catch (error) {
+          // No such locale.
+        }
+      };
+      if (manifest.default_locale) {
+        const ui = language.replace('-', '_');
+        await load(manifest.default_locale);
+        if (ui.split('_')[0] !== manifest.default_locale) await load(ui.split('_')[0]);
+        if (ui.includes('_') && ui !== manifest.default_locale) await load(ui);
+      }
+      messages['@@extension_id'] = {message: runtime.id};
+      messages['@@ui_locale'] = {message: language.replace('-', '_')};
+      content = {manifest, messages, language};
+      return content;
+    };
+    replace(scripting, 'executeScript', async (injection) => {
+      const {target, func, args, files, world} = injection || {};
+      const results = await call('scripting.executeScript', {
+        target,
+        world,
+        func: typeof func === 'function' ? func.toString() : undefined,
+        args: args || [],
+        files: await sources(files),
+        content: await contentOf(),
+      });
+      // The script may run in a world the host made, which hears of storage.
+      if (world !== 'MAIN') watch();
+      return results;
+    });
+    replace(scripting, 'insertCSS', async (injection) => {
+      const {target, css, files} = injection || {};
+      return call('scripting.insertCSS', {target, css: [css || '', ...(await sources(files))].join('\n')});
+    });
+  }
+})();

@@ -605,6 +605,10 @@ impl Widget for WebView {
         true
     }
 
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        true
+    }
+
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
         let receipt = self.focused.then(|| self.text_input.start()).flatten();
         Some(receipt.unwrap_or_else(|| {

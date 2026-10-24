@@ -64,21 +64,18 @@ impl VideoPictures {
                 continue;
             }
             let at = self.shown.iter().position(|s| s.element == element);
-            let mut shown = match at.map(|at| self.shown.remove(at)) {
-                Some(shown) => {
-                    renderer.override_image(&shown.image, None);
-                    shown
+            let mut shown = if let Some(shown) = at.map(|at| self.shown.remove(at)) {
+                renderer.override_image(&shown.image, None);
+                shown
+            } else {
+                if self.shown.len() >= ELEMENTS {
+                    let oldest = self.shown.remove(0);
+                    renderer.override_image(&oldest.image, None);
                 }
-                None => {
-                    if self.shown.len() >= ELEMENTS {
-                        let oldest = self.shown.remove(0);
-                        renderer.override_image(&oldest.image, None);
-                    }
-                    Shown {
-                        texture: picture_texture(device, width, height),
-                        element: element.clone(),
-                        image: picture.image.clone(),
-                    }
+                Shown {
+                    texture: picture_texture(device, width, height),
+                    element: element.clone(),
+                    image: picture.image.clone(),
                 }
             };
             if shown.texture.width() != width || shown.texture.height() != height {

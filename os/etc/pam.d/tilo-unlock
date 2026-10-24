@@ -10,10 +10,11 @@
 # It mirrors the greetd auth/account phases so an unlock accepts the same
 # factors a login does: fingerprint (pam_fprintd) and systemd-homed are each
 # offered as a *sufficient* factor and short-circuit to success on a match;
-# otherwise PAM falls through to the distro's maintained `password-auth` stack
-# (pam_unix). The leading "-" makes a factor a silent no-op when its module is
-# absent, so this file ships safely whether or not fingerprint / homed support
-# is installed.
+# otherwise PAM falls through to the distro's maintained `password-auth` stack,
+# where pam_tilo asks tilo-authd before pam_unix (os/scripts/authselect-tilo.py).
+# The leading "-" makes a factor a silent no-op when its module is absent, so
+# this file ships safely whether or not fingerprint / homed support is
+# installed.
 -auth      sufficient   pam_fprintd.so
 -auth      sufficient   pam_systemd_home.so
 auth       substack     password-auth

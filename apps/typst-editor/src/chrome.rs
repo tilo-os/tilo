@@ -17,7 +17,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::toggle_group::{Segment, SegmentedFace, ToggleGroup};
+use ui::widget::toggle_group::{Segment, SegmentedFace};
 use ui::widget::toolbar::{Orientation, Toolbar};
 use ui::widget::{Button, ControlSize, Text, Widget};
 
@@ -61,7 +61,7 @@ pub struct Chrome {
     toolbar_for: ToolbarFor,
     document: Text,
     document_name: Rc<RefCell<String>>,
-    view: ToggleGroup,
+    view: ui::widget::ViewTabs,
     close_problems: Button,
     /// The window's History control, at the bar's trailing edge: the bar is
     /// the window's header row, so the window draws no History bar above it.
@@ -169,16 +169,17 @@ impl Chrome {
             .with_heading_level(1)
             .with_kind(ui::TextKind::Identifier);
         let view_queue = Rc::clone(&queue);
-        let view = ToggleGroup::new(vec![Segment::new("Edit"), Segment::new("Preview")], 0)
-            .with_id("typst.view")
-            .on_view("typst.view", move |index| {
-                let command = if index == 0 {
-                    Command::ShowEditor
-                } else {
-                    Command::ShowPreview
-                };
-                view_queue.borrow_mut().push(command);
-            });
+        let view =
+            ui::widget::ViewTabs::new(vec![Segment::new("Edit"), Segment::new("Preview")], 0)
+                .with_id("typst.view")
+                .on_view("typst.view", move |index| {
+                    let command = if index == 0 {
+                        Command::ShowEditor
+                    } else {
+                        Command::ShowPreview
+                    };
+                    view_queue.borrow_mut().push(command);
+                });
         let toolbar_for = ToolbarFor {
             problems: 0,
             shown: false,

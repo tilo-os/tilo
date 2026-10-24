@@ -272,6 +272,7 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-firstboot-autologin-cleanup \
     os/usr/libexec/tilo-session-recovery \
     os/usr/libexec/tilo-cage-session \
+    os/usr/libexec/tilo-clock-floor \
     /usr/libexec/
 # The graphical-session user target. (`systemctl --global enable` further down
 # resolves each unit file at build time, so a unit that was never copied in
@@ -293,14 +294,32 @@ COPY --from=remote-capture-files / /
 COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 COPY --from=virtio-gallivm-cpu /virtio-gallivm-cpu.so /usr/lib/tilo/virtio-gallivm-cpu.so
 
-# PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
-# fingerprint can satisfy login; falls back to password-auth, and starts /
-# unlocks the user's Secret Service for the authenticated session).
+# PAM stack for the greetd auth service (the boot sign-in first, tolerant
+# pam_fprintd so a fingerprint can satisfy login; falls back to password-auth,
+# and starts / unlocks the user's Secret Service for the authenticated session).
 # PAM stack for in-session unlock (tilo-unlock-helper). Auth + account only.
+# tilo-auth-legacy: the old password database alone, which tilo-authd checks
+# once per person before moving them onto their user key.
 COPY \
     os/etc/pam.d/greetd \
     os/etc/pam.d/tilo-unlock \
+    os/etc/pam.d/tilo-auth-legacy \
     /etc/pam.d/
+# One check for every PAM service: system-auth and password-auth, which the
+# greeter, the lock screen, polkit, sudo, su and passwd all include, ask
+# tilo-authd (pam_tilo) before the old password hash. A custom authselect
+# profile over the configured one, with its features, so authselect keeps
+# owning the files; an image whose base has no authselect configuration fails
+# here rather than shipping a stack that skips the daemon.
+RUN --mount=type=bind,source=os/scripts/authselect-tilo.py,target=/run/authselect-tilo.py,ro \
+    current="$(authselect current --raw)" \
+    && base="${current%% *}" \
+    && features="$(printf '%s' "$current" | cut -s -d' ' -f2-)" \
+    && authselect create-profile tilo --base-on="$base" \
+    && python3 /run/authselect-tilo.py /etc/authselect/custom/tilo \
+    && authselect select custom/tilo $features --force \
+    && grep -q pam_tilo.so /etc/pam.d/system-auth \
+    && grep -q pam_tilo.so /etc/pam.d/password-auth
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
@@ -498,7 +517,14 @@ COPY \
     os/usr/lib/systemd/system/tilo-security-audit.service \
     os/usr/lib/systemd/system/tilo-security-audit.timer \
     os/usr/lib/systemd/system/tilo-pstore-console.service \
+    os/usr/lib/systemd/system/tilo-clock-floor.service \
+    os/usr/lib/systemd/system/tilo-clock-floor.timer \
+    os/usr/lib/systemd/system/tilo-clock-floor-shutdown.service \
     /usr/lib/systemd/system/
+# tilo-clock-floor keeps the clock floor PID 1 starts the clock from
+# (/var/lib/systemd/timesync/clock) at chrony's authenticated time, so a
+# real-time clock that comes up behind never starts the system before the last
+# recorded time. Its units ride the COPY above, the helper the libexec COPY.
 # A reset leaves its kernel log in pstore on boards that reserve a ramoops
 # region (os/kernel/patches/0021); systemd-pstore moves it into the journal on
 # the next boot, and tilo-pstore-console.service makes the console log in it
@@ -679,10 +705,13 @@ RUN systemctl enable greetd.service && \
     systemctl --global enable pipewire.socket pipewire-pulse.socket wireplumber.service && \
     systemctl enable cups.socket && \
     systemctl enable tilo-security-audit.timer && \
+    systemctl enable tilo-clock-floor.timer tilo-clock-floor-shutdown.service && \
     systemctl enable systemd-pstore.service tilo-pstore-console.service && \
+    systemctl enable tilo-authd.service && \
     systemctl enable tilo-rollback-harden.timer && \
     systemctl enable tilo-rollback-confirm.timer && \
     systemctl enable tilo-boot-entries.timer tilo-boot-health.service && \
+    systemctl enable tilo-deployment-status.socket && \
     systemctl enable bootc-fetch-apply-updates.timer && \
     systemctl enable tilo-network-start.service && \
     systemctl enable tilo-extension-activate.service tilo-extension-refresh.timer && \

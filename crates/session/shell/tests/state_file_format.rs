@@ -25,6 +25,7 @@ fn tab(id: u64, title: &str, content: TileContent) -> Tab {
         id,
         title: title.into(),
         tile: content,
+        app_title: None,
     }
 }
 

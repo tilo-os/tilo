@@ -58,6 +58,7 @@ fn shell_with_a_claimed_editor(
             app_id: EDITOR.into(),
             surface_id: 7,
         },
+        app_title: None,
     });
     tree.continuation_closed_tabs.insert(CLOSED_TAB, room);
     let (mut net, commands) = personal_continuity_network_for_test([0x7C; 32]);

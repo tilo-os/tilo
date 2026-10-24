@@ -26,7 +26,7 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::arithmetic_side_effects,
-    reason = "byte counts, file counts and microseconds of a bounded 1,000-edit run fit every \
+    reason = "byte counts, file counts and microseconds of a bounded 256-edit run fit every \
               conversion and sum"
 )]
 #![allow(
@@ -60,17 +60,23 @@ const ROUTES: [(&str, &str); 4] = [
     ("so.tilo.sheets", "tab:0000000000000003"),
     ("so.tilo.code-editor", "tab:0000000000000004"),
 ];
-const KEYSTROKES: usize = 1_000;
+/// Eight words in each document: every keystroke is a durable relay commit,
+/// whose barriers take a tenth of a second or more on a busy CI disk. What
+/// is gated is the size of single frames, which more keystrokes repeat:
+/// 1,000 of them took 5 to 16 minutes and measured 2 to 3 B more at the
+/// medians and maxima, as their later edits' larger counters took more
+/// bytes. Each document still grows to the compactor's 64-entry check.
+const KEYSTROKES: usize = 256;
 /// Characters in each document before the first keystroke (~10 kB).
 const DOCUMENT_CHARS: usize = 10_000;
 
 /// Ceiling for the median one-character keystroke frame uncoded:
 /// 481 B measured on Linux CI before every change named its action, plus
 /// the keystroke's compact continuation of its word's gesture (~60 B; a
-/// cleartext op carries no second copy of it). Measured here: 544 B.
+/// cleartext op carries no second copy of it). Measured here: 542 B.
 const BUDGET_COMPACT_FRAME_P50_BYTES: u64 = 550;
 /// Ceiling for the largest such frame, a word's first keystroke carrying
-/// the gesture's full entry in its compact form: measured 673 B, held to
+/// the gesture's full entry in its compact form: measured 599 B, held to
 /// the 697 B of the frame before changes named their actions.
 const BUDGET_COMPACT_FRAME_MAX_BYTES: u64 = 697;
 /// Ceiling for the median keystroke frame as the relay writes it, coded

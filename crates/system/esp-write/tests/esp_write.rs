@@ -84,6 +84,7 @@ impl Fixture {
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap())
             .env("TILO_ESP", &self.esp)
+            .env("TILO_EFIVARS", self.root.join("no-efivars"))
             .env("TILO_ESP_PLAN_ROOT", &self.plans)
             .env("TILO_ESP_PLAN_OWNER", uid())
             .env("TILO_ESP_WRITE_NO_REMOUNT", "1");
@@ -199,7 +200,7 @@ impl Fixture {
 
     fn run_deployment(&self, source: Option<&str>, fail_writer: bool, repair: bool) -> Output {
         let text = deployment();
-        let helpers = between(&text, "esp_path() {", "# --- listing");
+        let helpers = between(&text, "# --- the ESP ---", "# --- listing");
         let (counters, repair_stub) = if repair {
             (between(&text, "cmd_entries() {", "\ncase \""), "")
         } else {

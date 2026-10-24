@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one number for all of them. The app host is an
 # interface of its own (crates/packaging/app-host/interface.toml).
 name = "runtime"
-version = 6
+version = 7
 version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
 served_to_apps = true
@@ -154,6 +154,7 @@ capnp = [
 "ToolReply.message" = "#1 String"
 "ToolRequest" = "struct"
 "ToolRequest.intent" = "#2 ToolIntent"
+"ToolRequest.on_behalf_of" = "#3 Option<String>"
 "ToolRequest.protocol" = "#0 u32"
 "ToolRequest.workspace_id" = "#1 String"
 "VpnRoute" = "enum external"

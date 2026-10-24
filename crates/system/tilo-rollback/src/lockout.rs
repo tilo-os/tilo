@@ -85,8 +85,10 @@ pub struct Params {
     pub in_lockout: bool,
 }
 
-/// What we ask for: 8 tries and a 2-hour decay, chosen so a human can mistype a 6-digit PIN
-/// a few times freely while capping sustained offline guessing at 12 attempts a day.
+/// What we ask for: 10 tries, then one every two hours — about where phones start making
+/// people wait. Sustained guessing is capped by the decay alone, at 12 attempts a day;
+/// `maxTries` only sizes the burst before it, so it is set for the owner's typos, not for the
+/// attacker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target {
     pub max_tries: u32,
@@ -97,7 +99,7 @@ pub struct Target {
 impl Default for Target {
     fn default() -> Self {
         Self {
-            max_tries: 8,
+            max_tries: 10,
             recovery_time: 7200,
             lockout_recovery: 86400,
         }
@@ -278,6 +280,28 @@ pub fn tighten(
         );
     }
     read(runner)
+}
+
+/// Reset the failure counter and leave lockout, with `lockoutAuth` passed by file.
+///
+/// # Errors
+///
+/// Returns an error if the scratch file cannot be written or `tpm2_dictionarylockout` fails.
+pub fn clear(runner: &dyn Runner, lockout_auth: &[u8], scratch: &Path) -> Result<()> {
+    let auth_file = AuthFile::write(scratch, "lockout.clear", lockout_auth)?;
+    let auth_spec = auth_file.spec();
+    let out = runner.run(
+        "tpm2_dictionarylockout",
+        &argv!["--clear-lockout", "--auth", &auth_spec],
+        None,
+    )?;
+    if !out.ok() {
+        bail!(
+            "resetting the TPM's failure counter failed: {}",
+            out.last_error_line()
+        );
+    }
+    Ok(())
 }
 
 /// Set `lockoutAuth`.
@@ -503,7 +527,7 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
         }
         {
             let p = Params {
-                max_tries: 32,
+                max_tries: 64,
                 recovery_time: 600,
                 lockout_recovery: 600,
                 lockout_auth_set: true,

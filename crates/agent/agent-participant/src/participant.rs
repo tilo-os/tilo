@@ -41,6 +41,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 
 pub mod actions;
 mod authors;
+mod bound;
 mod context;
 mod introduce;
 mod logs;
@@ -1328,6 +1329,10 @@ impl AgentParticipant {
         };
         let (settled, arguments) = self.settle(&route, address, step.carries.as_deref(), arguments);
         let address = &settled;
+        // Values the plan quotes or computes (`{{…}}`) are the record's as
+        // the step runs: what the action log records, while the plan log
+        // keeps what the model wrote.
+        let arguments = self.bind_values(step, &route, address, arguments)?;
         let generation = self.generation;
         let outcome = self.invoke_step(&route, address, &arguments, false);
         if self.generation != generation {

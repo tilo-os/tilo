@@ -47,6 +47,7 @@ impl ShellDriver {
                         kind: AppKind::Terminal,
                         label: "Terminal".into(),
                     },
+                    app_title: None,
                 });
             }
             group.active_tab = TERMINAL_TAB;

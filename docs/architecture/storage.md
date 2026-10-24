@@ -1445,6 +1445,18 @@ app's own actions on an enrolled, authenticated device of the same
 person. A device that is offline shows no card; an answer is taken only
 for a device the latest list names.
 
+**A read that cannot arrive fails.** A process that reads bytes a peer
+must supply waits in the kernel, and so does anyone touching the same
+pages. No such read waits longer than 30 seconds
+(`hydration::BLOCKED_READ_BOUND`), through FUSE and through the native
+placeholders alike: past it the read fails with `EIO`, and the fetch
+already under way keeps going, so a retry can find the bytes local. The
+bound sits well inside the kernel's two-minute hung-task report. On the
+native plane an access waiting for another reader's fill, or queued behind
+fills of other files, is held to the same bound, and an access to resident
+bytes is answered by the thread that reads the events, so it never queues
+behind a fill at all.
+
 ### 12.4 Read-ahead and prediction
 
 - **In-file:** sequential reads of a partial file trigger read-ahead. The
@@ -2442,5 +2454,6 @@ stopped.
 15. **Record type ownership (Q15).** Should the system own record kinds, so
     one library view can show books, playlists and documents together, or the
     apps? This carries forward `rooms.md`, "Still open".
-16. **Offline placeholder read (Q16).** `EIO` (today, honest), or block
-    indefinitely with a UI prompt for interactive apps?
+16. **Offline placeholder read (Q16).** Today `EIO` once the bytes have
+    not arrived within the blocked-read bound (§12.3). Should interactive
+    apps get a UI prompt instead?

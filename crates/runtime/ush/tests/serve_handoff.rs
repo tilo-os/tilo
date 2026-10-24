@@ -342,6 +342,60 @@ fn a_terminal_gets_a_shell_in_its_environment_over_the_service_socket() {
     run_handoff();
 }
 
+/// A guest's shell starts as the Host's does: it is the session's login
+/// shell, so it reads the environment home's `~/.bash_profile`; Tab completes
+/// a unique path prefix on its pty; and it marks each run with the
+/// session's key.
+#[test]
+fn a_guest_shell_is_a_login_shell_that_marks_runs_and_tab_completes() {
+    let _guest = GUEST_ENV.lock().expect("guest env lock");
+    tilo_test_env::require_capability!(
+        NamespaceEntry,
+        namespace_entry(),
+        "the guest's network namespace"
+    );
+    assert_eq!(
+        guest_unavailable(),
+        None,
+        "the native guest must be observable"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, store, socket, _granted) = serve_fixture(dir.path());
+    let home = store.environment_home(DEFAULT_RECORD);
+    std::fs::create_dir_all(home.join("fixture-unique-directory")).unwrap();
+    std::fs::write(
+        home.join(".bash_profile"),
+        "export FROM_PROFILE=login\n[ -f ~/.bashrc ] && . ~/.bashrc\n",
+    )
+    .unwrap();
+
+    let key = "k3y0fth1ss3ss10n";
+    let (_stream, master) = open_marked_session(&socket, Some(key));
+    let fd = master.as_raw_fd();
+    let prompt = read_until(fd, "Fixture", tilo_test_env::hang_bound());
+    assert!(prompt.contains("Fixture"), "no prompt appeared:\n{prompt}");
+
+    let line = "echo \"[$FROM_PROFILE]\" fixture-uni\t\r";
+    // SAFETY: `fd` is a live pty master.
+    let written = unsafe { libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len()) };
+    assert!(written > 0, "could not write to the pty");
+    let expected = "[login] fixture-unique-directory/";
+    let seen = read_until(fd, expected, tilo_test_env::hang_bound());
+    assert!(
+        seen.contains(expected),
+        "the profile was not read or Tab did not complete:\n{seen}"
+    );
+    let mark = format!("\x1b]133;D;0;k={key}\x07");
+    let seen = format!(
+        "{seen}{}",
+        read_until(fd, &mark, tilo_test_env::hang_bound())
+    );
+    assert!(
+        seen.contains(&mark),
+        "the guest's shell marks the run it finished:\n{seen:?}"
+    );
+}
+
 /// The installed public spelling creates Default on first use and runs a
 /// command through the actual native guest, without a host-shell grant.
 #[test]
@@ -443,6 +497,11 @@ fn fixture_environment(store: &Store, granted: &Path) {
 
 /// Ask for the default environment and receive its pty master.
 fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
+    open_marked_session(socket, None)
+}
+
+/// [`open_default_session`], whose shell marks its runs with `runs`.
+fn open_marked_session(socket: &Path, runs: Option<&str>) -> (UnixStream, OwnedFd) {
     let stream = UnixStream::connect(socket).expect("connect");
     let mut request = serde_json::to_vec(&ServeRequest::OpenSession {
         target: Target::default_environment(),
@@ -452,7 +511,7 @@ fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
         command: Vec::new(),
         requested_by: ush::host::RequestedBy::Person,
         relay_session: None,
-        runs: None,
+        runs: runs.map(str::to_owned),
         editor_protocol: None,
         end_report: false,
     })
@@ -482,9 +541,11 @@ fn open_default_session(socket: &Path) -> (UnixStream, OwnedFd) {
     (stream, fd)
 }
 
-fn run_handoff() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let images = dir.path().join("images");
+/// A supervisor serving the fixture environment from `dir`: the scoped
+/// variables its sessions inherit, its store, its socket, and the directory
+/// the record grants.
+fn serve_fixture(dir: &Path) -> (tilo_test_env::ScopedEnv, Store, PathBuf, PathBuf) {
+    let images = dir.join("images");
     fixture_images(&images);
 
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -494,15 +555,15 @@ fn run_handoff() {
     env.set("TILO_USH_IMAGES", &images);
     env.set("SHELL", "/usr/bin/bash");
 
-    let store = Store::at(dir.path().join("store"));
+    let store = Store::at(dir.join("store"));
     store.ensure().expect("store");
-    let granted = dir.path().join("granted");
+    let granted = dir.join("granted");
     std::fs::create_dir_all(&granted).unwrap();
     let granted = granted.canonicalize().unwrap();
 
     fixture_environment(&store, &granted);
 
-    let socket = dir.path().join("ush.sock");
+    let socket = dir.join("ush.sock");
     let serve_socket = socket.clone();
     let serve_store = store.clone();
     std::thread::spawn(move || {
@@ -513,6 +574,12 @@ fn run_handoff() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(socket.exists(), "the supervisor never bound its socket");
+    (env, store, socket, granted)
+}
+
+fn run_handoff() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (_env, store, socket, granted) = serve_fixture(dir.path());
 
     // The connection is the session's lifetime: it stays open until the end.
     let (_stream, master) = open_default_session(&socket);

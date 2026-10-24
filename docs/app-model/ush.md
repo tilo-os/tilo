@@ -268,11 +268,15 @@ marks its runs with, chosen by Terminal for that session:
 {"op":"open-session","target":{"kind":"environment"},"runs":"3f6c…"}
 ```
 
-`runs` is 16 to 64 letters and digits. An interactive session answers
-`"runs":true`: when its shell is `bash`, `ush` starts it with an rc file of its
-own (`/run/ush/runs.bash` in a guest; for the Host target one that reads
-`/etc/profile` first, as the login shell would) that sources the person's
-`~/.bashrc` and then writes three marks into the pty stream:
+`runs` is 16 to 64 letters and digits. An interactive session's shell starts
+the same way on the Host and in a guest: as the session's login shell. A
+`bash` starts on an rc file of `ush`'s own (`/run/ush/shell.bash` in a guest)
+that runs what must come before the person's files (the native editor's
+builtin, in a guest), then what `bash --login` reads (`/etc/profile`, then the
+first of `~/.bash_profile`, `~/.bash_login` and `~/.profile`, else
+`~/.bashrc`); any other shell starts with `-l`. With a key, the session
+answers `"runs":true`, and the rc file ends by writing three marks into the
+pty stream:
 
 ```text
 ESC ] 133 ; A ; k=<key> BEL                           the prompt is shown

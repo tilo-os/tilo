@@ -26,6 +26,8 @@ use crate::record::{SavedConnection, Workspace as Record, id_of, uuid_of};
 use crate::resource::DbEffect;
 use crate::session::{MainTab, RunStatus, Session};
 use crate::workspace::Workspace;
+use ui::icons::Icon;
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews};
 
 /// What a saved connection's keyring entry holds.
 const PASSWORD_PURPOSE: &str = "password";
@@ -137,15 +139,14 @@ impl DbClientApp {
 
     fn build(session: Session) -> Self {
         let link = Link::new();
-        let search = ui::search::search_button(ui::search::SearchRequest::this_app());
-        let actions: Vec<ui::widget::Element> = vec![Box::new(search)];
+        // The window bar's search narrows the tables (the navigator's
+        // filterable section); its views are the workspace's tabs.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("db-client")
+            .with_window_toolbar()
             .sidebar(Box::new(Navigator::new(&link)))
-            .with_filter(ui::widget::SearchField::filter().with_placeholder("Filter tables"))
-            .content(Box::new(Workspace::new(&link)))
-            .content_header("", actions);
+            .content(Box::new(Workspace::new(&link)));
         let mut app = Self {
             shell,
             link,
@@ -899,8 +900,7 @@ impl ui::widget::Decorator for DbClientApp {
         }
 
         self.publish();
-        let title = self.link.read(|model| model.active_name.clone());
-        self.shell.set_content_title(title);
+        self.run_window_toolbar();
         Widget::sync(&mut self.shell, state, path);
     }
 
@@ -939,7 +939,66 @@ impl ui::widget::Decorator for DbClientApp {
     }
 }
 
-impl DbClientApp {}
+/// The window bar's action that runs the query in the editor.
+pub(crate) const RUN_QUERY: &str = "db.query.run";
+
+impl DbClientApp {
+    /// Run what the person did in the window's bar, then declare its slots:
+    /// the shell's own, the open connection as the location, and the
+    /// workspace's tabs as the views once there is a connection.
+    fn run_window_toolbar(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = &event
+                && let Some(tab) = MainTab::all().into_iter().find(|tab| tab.view_id() == id)
+            {
+                self.apply(Intent::SelectTab(tab));
+                self.publish();
+            } else if let ToolbarEvent::Action { id } = &event
+                && id == RUN_QUERY
+                && self.link.read(|model| model.connected && !model.busy)
+            {
+                self.apply(Intent::Run(self.link.sql()));
+                self.publish();
+            }
+        }
+        let (name, connected, tab, can_run) = self.link.read(|model| {
+            (
+                model.active_name.clone(),
+                !model.connections.is_empty(),
+                model.tab,
+                model.connected && !model.busy,
+            )
+        });
+        let mut toolbar = self.shell.window_toolbar();
+        // Run stands in the bar while the query is in front; it waits for a
+        // connection that is not busy.
+        if tab == MainTab::Query && connected {
+            ui::widget::NavShell::push_window_actions(
+                &mut toolbar,
+                [ToolbarAction::new(RUN_QUERY, Icon::Play.name(), "Run query").enabled(can_run)],
+            );
+        }
+        toolbar.location = (!name.is_empty()).then(|| ToolbarLocation {
+            label: name,
+            ..ToolbarLocation::default()
+        });
+        toolbar.views = connected.then(|| ToolbarViews {
+            name: "View".to_owned(),
+            choices: MainTab::all()
+                .into_iter()
+                .map(|tab| ToolbarView {
+                    id: tab.view_id().to_owned(),
+                    label: tab.label().to_owned(),
+                })
+                .collect(),
+            chosen: tab.view_id().to_owned(),
+        });
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+}
 
 /// A workspace document whose SQL buffer holds the starter query, as a
 /// capture stages it: what the tests show beside a sampled client.
@@ -1393,6 +1452,52 @@ mod tests {
         assert!(inspection.contains("No connections yet"), "{inspection}");
     }
 
+    /// The window bar's views are the workspace's tabs and its location
+    /// the open connection; its search narrows the tables. The window
+    /// draws no tabs, header row or filter field of its own.
+    #[test]
+    fn the_connection_its_views_and_the_table_filter_are_in_the_window_bar() {
+        use ui::widget::{FindOptions, InPlace, SearchDriver};
+        let mut harness = mounted(DbClientApp::sampled());
+        harness.present_in_window_bar();
+        harness.relayout();
+        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+        let name = app(&harness).link.read(|model| model.active_name.clone());
+        assert!(!name.is_empty(), "the sample is connected");
+        assert_eq!(bar.location.map(|location| location.label), Some(name));
+        let views = bar.views.expect("the tabs are the bar's views");
+        let labels: Vec<&str> = views
+            .choices
+            .iter()
+            .map(|view| view.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Query", "Data", "Structure"]);
+        assert_eq!(views.chosen, MainTab::Query.view_id());
+        let targets = harness.targets();
+        assert!(!targets.contains_key("db.tabs"), "no tabs of its own");
+        assert!(
+            harness.root::<DbClientApp>().shell.filter().is_none(),
+            "no filter field of its own"
+        );
+
+        let root = harness.root_mut::<DbClientApp>();
+        assert_eq!(
+            InPlace::of(root),
+            InPlace::List,
+            "the search narrows a list"
+        );
+        let mut driver = SearchDriver::default();
+        driver.open(InPlace::List);
+        driver.drive(root, "album", FindOptions::default(), None, false);
+        let mut count = None;
+        assert!(ui::widget::with_filterable(root, &mut |list| count = list.filter_count()));
+        let count = count.expect("the tables say how many match");
+        assert!(
+            count.shown >= 1 && count.shown < count.total,
+            "the tables narrow to what the bar's search names: {count:?}"
+        );
+    }
+
     /// The tabs show their view, a table opened from the sidebar shows its rows, and the structure follows the selected table.
     #[test]
     fn tabs_and_the_sidebar_choose_what_is_shown() {
@@ -1400,11 +1505,11 @@ mod tests {
         harness.relayout();
         assert_eq!(app(&harness).session.tab, MainTab::Query);
 
-        // --- phase: a_tab_click_shows_that_tab ---
+        // --- phase: choosing_a_view_in_the_bar_shows_that_tab ---
         {
-            let rect = harness.targets()["db.tabs"];
-            // The strip is split equally; the second of three segments is Data.
-            harness.click_at(rect.x0 + rect.width() / 2.0, rect.center().y);
+            harness.press_window_slot(ToolbarEvent::Action {
+                id: MainTab::Data.view_id().to_owned(),
+            });
             harness.relayout();
             assert_eq!(app(&harness).session.tab, MainTab::Data);
             assert!(
@@ -1512,9 +1617,21 @@ mod tests {
             let mut harness = mounted(DbClientApp::sampled());
             harness.relayout();
             write_sql(&mut harness, "SELECT 42 AS answer");
-            harness
-                .click_named("db.query.run")
-                .expect("Run is on the toolbar");
+            let bar = ui::window_toolbar::declared().expect("the window declares its slots");
+            assert!(
+                bar.actions
+                    .iter()
+                    .any(|action| action.id == RUN_QUERY && action.enabled),
+                "Run is a window bar action: {:?}",
+                bar.actions
+            );
+            assert!(
+                !harness.targets().contains_key("db.query.run"),
+                "the editor draws no Run of its own"
+            );
+            harness.press_window_slot(ToolbarEvent::Action {
+                id: RUN_QUERY.into(),
+            });
             harness.relayout();
             harness.root_mut::<DbClientApp>().session.block_until_idle();
             harness.relayout();

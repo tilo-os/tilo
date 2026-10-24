@@ -767,6 +767,24 @@ files = [
   { link = "tilo", to = "/usr/bin/tilo-rollback" },
 ]
 
+# Signing in: tilo-authd checks every secret, pam_tilo asks it from every PAM
+# service, and tilo-auth signs in at boot. tilo-auth is in the rollback layer
+# so the initramfs, built after it, can carry it as it carries tilo-rollback.
+[[component]]
+name = "sign-in"
+kind = "userspace"
+scope = "vm"
+outside_sessions = true
+packages = ["tilo-auth", "pam-tilo"]
+bins = ["tilo-authd", "tilo-auth"]
+units = ["tilo-authd.service"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-authd", to = "/usr/libexec/tilo/tilo-authd", mode = "0755" },
+  { from = "tilo-auth", to = "/usr/libexec/tilo/tilo-auth", mode = "0755" },
+  { from = "libpam_tilo.so", to = "/usr/lib64/security/pam_tilo.so", mode = "0755" },
+]
+
 [[component]]
 name = "sibling-unlock"
 kind = "boot"
@@ -778,6 +796,21 @@ layer = "rollback-files"
 files = [
   { from = "tilo-sibling-unlock", to = "/usr/libexec/tilo/tilo-sibling-unlock", mode = "0755" },
   { link = "tilo", to = "/usr/bin/tilo-sibling-unlock" },
+]
+
+# The sign-in screen before the system volume is open. It runs only in the
+# initramfs (os/usr/lib/dracut/modules.d/91tilo-rollback copies it there), so
+# it has no PATH link.
+[[component]]
+name = "boot-signin"
+kind = "boot"
+scope = "vm"
+scenario = "os/dev/test-encrypted-install.sh"
+packages = ["tilo-boot-signin"]
+bins = ["tilo-boot-signin"]
+layer = "rollback-files"
+files = [
+  { from = "tilo-boot-signin", to = "/usr/libexec/tilo/tilo-boot-signin", mode = "0755" },
 ]
 
 [[component]]
@@ -871,9 +904,9 @@ files = [
 # VM-wide as the next boot entry and reboots. The others stay scenario-only, and
 # a swap of them is redirected to the scenario that cold-boots them.
 # `installer`, `rollback` and `sibling-unlock` above are boot components too:
-# the installer runs from installer media, tilo-rollback is copied into the
-# initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback, and
-# tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
+# the installer runs from installer media, tilo-rollback and tilo-boot-signin
+# are copied into the initramfs by os/usr/lib/dracut/modules.d/91tilo-rollback,
+# and tilo-sibling-unlock by os/usr/lib/dracut/modules.d/92tilo-sibling-unlock.
 
 [[component]]
 name = "kernel"

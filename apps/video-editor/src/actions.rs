@@ -1,5 +1,6 @@
-//! What the editor does that is no edit of the project — revealing an item,
-//! the project file and render jobs ([`VideoEditorEffect`]) — and the verbs
+//! What the editor does beyond the project's own verbs — revealing an item,
+//! showing a panel, splitting what its person selected, the project file and
+//! render jobs ([`VideoEditorEffect`]) — and the verbs
 //! it offers bound to where its person is: their playhead, and the mix their
 //! monitor measured ([`surface_declarations`]).
 //!
@@ -12,8 +13,10 @@ use ui::tilo_resource::{self, ActionDecl, Effect};
 use crate::model::Project;
 use crate::resource::video_project;
 
-/// What the editor does that is no edit of the project: revealing a track,
-/// clip, effect, marker or source, and the project file and render jobs.
+/// What the editor does beyond the project's own verbs: revealing a track,
+/// clip, effect, marker or source, showing the media, the inspector or the
+/// export settings, splitting the selection, and the project file and render
+/// jobs.
 #[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "video_editor.effect")]
 pub enum VideoEditorEffect {
@@ -108,6 +111,24 @@ pub enum VideoEditorEffect {
     /// answers its content address. Changes nothing.
     #[effect(kind = "read", returns, idempotent, audience = "agents")]
     ExportTimelineContent,
+    /// Show export settings.
+    ///
+    /// Opens the export dialog: where the video goes, its format and size,
+    /// and a running export's progress and Cancel.
+    #[effect(view, idempotent)]
+    ShowExport,
+    /// Show or hide media.
+    #[effect(view)]
+    ToggleMedia,
+    /// Show or hide the inspector.
+    #[effect(view)]
+    ToggleInspector,
+    /// Split selected clips at playhead.
+    ///
+    /// Cuts every selected clip that covers the playhead, and the clips
+    /// linked to it, as one step.
+    #[effect(edit)]
+    SplitSelection,
     /// Render video.
     ///
     /// Renders the timeline, or a part of it, on this device into a video
@@ -116,7 +137,7 @@ pub enum VideoEditorEffect {
     /// another action that takes the content. An agent's host renders it in
     /// its render service, as mp4 at 720p or 1080p.
     #[effect(kind = "read", job, cancellable, returns, host_render)]
-    Render {
+    RenderTimeline {
         #[param("Seconds on the timeline where it begins; omit for the render range's start")]
         start: Option<f64>,
         #[param("Seconds where it ends; omit for the render range's end")]

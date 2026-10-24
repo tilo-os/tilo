@@ -593,7 +593,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 C::container_path(),
                 EditOp::InsertItem {
                     id: Some(id.clone()),
-                    at,
+                    at: at.into(),
                     value: tilo_resource::Model::to_json(&reference),
                 },
             )],
@@ -694,7 +694,7 @@ impl<C: ChildRecord> ChildrenState<C> {
                 C::container_path(),
                 EditOp::MoveTo {
                     id: child.clone(),
-                    at,
+                    at: at.into(),
                 },
             ),
         ];

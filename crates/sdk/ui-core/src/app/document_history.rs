@@ -31,6 +31,10 @@ impl App {
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return true;
         }
+        #[cfg(feature = "native")]
+        if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
+            return self.accessibility.zoom.in_window();
+        }
         self.history_local_resources().iter().flat_map(|resource| &resource.actions).any(|action| matches!(&action.input, tilo_actions::ActionInput::Immediate(value) if value.as_ref() == encoded))
     }
     pub(super) fn with_native_presentation<R>(
@@ -213,6 +217,8 @@ impl App {
                 resources.push(crate::search::search_resource());
             }
             resources.extend(self.unsaved_changes_resources());
+            #[cfg(feature = "native")]
+            resources.extend(self.zoom_resource());
             return resources;
         }
         let revision = self.document_history.revision();
@@ -234,6 +240,8 @@ impl App {
         let mut resources = resources;
         resources.extend(self.close_admission.resources());
         resources.extend(self.unsaved_changes_resources());
+        #[cfg(feature = "native")]
+        resources.extend(self.zoom_resource());
         resources
     }
 
@@ -290,6 +298,10 @@ impl App {
         }
         if encoded.type_id == crate::host_chrome::edit::EDIT_OPERATION {
             return self.execute_edit_operation(encoded);
+        }
+        #[cfg(feature = "native")]
+        if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
+            return self.execute_zoom_operation(encoded);
         }
         let pane = self
             .document_history
