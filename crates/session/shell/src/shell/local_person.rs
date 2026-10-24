@@ -203,12 +203,21 @@ mod tests {
         let person = tilo_action_broker::collab_broker_capnp::principal_id_for_root(
             certificate.user_public_key,
         );
+        // The workspace is a room this device's host holds and its native
+        // owner entered, governed by the person this device's protected
+        // identity names.
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
-        let room = tree.desktop.workspaces[0].room();
+        let room = RoomId::parse(tilo_joined_room::testing::ROOM).unwrap();
+        let active = tree.desktop.active;
+        assert!(tree.stand_in_room(active, room));
         tree.desktop.workspaces[0].set_owner(&person);
         tree.persist_path = Some(directory.path().join("state.json"));
         let tree = tree.shared();
         let owner = super::super::native_workspace_owner::open(tree.clone()).unwrap();
+        let (key, _) =
+            tilo_identity_host::broker::trusted_current_device(&room.to_string()).unwrap();
+        tilo_joined_room::testing::enroll_interactive_governor(&owner, &key, &certificate).unwrap();
+        assert!(tree.read().holds_room(room));
         super::super::action_authority::Export::of(&tree.read()).publish();
         let service = NativeLocalPerson {
             tree: tree.downgrade(),
@@ -262,25 +271,8 @@ mod tests {
                 .certificate(&RoomId::new().to_string(), &person)
                 .is_err()
         );
-        crate::shell::persist::wait_for_saves();
-        // Hold the state writer: this change stays unpublished behind the job.
-        let (release, held) = std::sync::mpsc::channel::<()>();
-        crate::shell::durable_writer::global().submit(
-            directory.path().join("hold-the-writer"),
-            move || {
-                let _ = held.recv();
-            },
-        );
-        tree.write().desktop.workspaces[0].policy.owner = None;
-        assert!(
-            service.certificate(&room.to_string(), &person).is_err(),
-            "unpublished policy changes revoke the captured native origin"
-        );
-        release.send(()).unwrap();
-        crate::shell::persist::wait_for_saves();
-        tree.write().desktop.workspaces[0].set_owner(person.clone());
-        crate::shell::persist::wait_for_saves();
-        super::super::action_authority::Export::of(&tree.read()).publish();
+        // The room's permissions are its host's admitted document's, read
+        // through the native owner, which grants this device's person.
         assert!(service.certificate(&room.to_string(), &person).is_ok());
         drop(owner);
         assert!(

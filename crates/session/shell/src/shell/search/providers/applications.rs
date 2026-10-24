@@ -1346,7 +1346,7 @@ mod tests {
             next_id,
         };
         let tab_id = next_id();
-        let mut workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
+        let workspace = Workspace::new(WorkspaceId::from(next_id()), "Home");
         let mut strip = Strip::new(StripId::from(next_id()), "Main");
         let group_id = next_id();
         strip.window_groups.push(WindowGroup {
@@ -1365,12 +1365,21 @@ mod tests {
             maximized: false,
             focus_history: Vec::new(),
         });
-        workspace.strips.push(strip);
         let mut tree = WorkspaceTree::default();
         tree.set_salt_override(crate::shell::state::peer_salt_of(tab_id));
         tree.desktop.active = workspace.id;
         tree.desktop.workspaces = vec![workspace];
         let handle = crate::shell::state::WorkspaceTreeHandle::new(tree);
+        // Apps open in a room a host holds and this device's native owner
+        // entered: the workspace's room is placed on this device's host.
+        let _hosted = crate::shell::test_support::host_active_room(&handle);
+        handle
+            .write()
+            .desktop
+            .active_workspace_mut()
+            .expect("the workspace")
+            .strips
+            .push(strip);
         let chrome = ChromeState::new_with_handle(handle);
         let rows = ApplicationsProvider::new()
             .results_for("terminal", vec![app("so.tilo.terminal", "Terminal")]);
