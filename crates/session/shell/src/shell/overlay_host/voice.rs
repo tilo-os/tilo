@@ -385,7 +385,7 @@ mod tests {
         let (host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
 
         let mut presence = ui::presence::PresenceCtx::default();
-        presence.set_room_in_front(Some(front_room.clone()));
+        presence.set_room_in_front(Some(front_room));
         presence.apply_remote_presence(
             "bo".into(),
             PresenceKey::Workspace {
