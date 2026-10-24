@@ -252,12 +252,10 @@ pub struct WindowGroup {
     external_navigation: bool,
     /// Transient presentation from the parent row; never a persisted maximize.
     fullscreen_presentation: bool,
-    /// While fullscreen, the bar shows over the window because the person
-    /// reached for the top edge: drawn over the content, which keeps its
-    /// whole size.
+    /// While fullscreen, the bar the person reached for the top edge for:
+    /// drawn over the content, which keeps its whole size.
     fullscreen_bar_revealed: bool,
-    /// That bar fading in and out with it (`motion::CROSS_FADE`); under
-    /// reduced motion it is there or not.
+    /// That bar's fade (`motion::CROSS_FADE`); reduced motion cuts.
     fullscreen_bar_fade: crate::motion::Presence,
     /// The last layout stood that bar over the content; once its fade-out
     /// ends the next one drops it, so nothing takes input where it was.
@@ -690,9 +688,8 @@ impl WindowGroup {
         if self.fullscreen_bar_revealed != revealed {
             self.fullscreen_bar_revealed = revealed;
             self.style_dirty = true;
-            // It fades in place, so nothing it covers moves; under reduced
-            // motion it is there or not, as a maximized window's bar is
-            // (`TopEdgeReveal::opacity`).
+            // It fades in place, so nothing under it moves; reduced motion
+            // cuts, as for a maximized window's bar (`TopEdgeReveal::opacity`).
             if self.chrome_motion.reduced() {
                 self.fullscreen_bar_fade.snap(revealed);
             } else {
@@ -4069,8 +4066,7 @@ impl Widget for WindowGroup {
             }
         }
         self.draw_closing_hosts(scene, transform, tr, theme, presence);
-        // A fullscreen window's bar the person reached for stands over its
-        // content.
+        // A fullscreen window's bar stands over its content.
         if bar_over {
             let alpha =
                 crate::motion::unit_opacity(self.fullscreen_bar_fade.progress(crate::time::now()));

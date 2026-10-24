@@ -2,7 +2,7 @@
 //! bar, and touch reaching everything.
 
 use vello::kurbo::Point;
-use winit::event::WindowEvent;
+use winit::event::{MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::super::driver::ShellDriver;
@@ -136,4 +136,43 @@ pub(super) fn touch_swipe(driver: &mut ShellDriver, from: Point, to: Point) {
         driver.dispatch(&touch(winit::event::TouchPhase::Moved, p));
     }
     driver.dispatch(&touch(winit::event::TouchPhase::Ended, to));
+}
+
+/// A secondary click on the named target: what a long-press by touch becomes.
+pub(super) fn secondary_click_named(driver: &mut ShellDriver, name: &str) {
+    let Some(p) = driver.resolve_named_centre(name) else {
+        eprintln!("scenario: could not resolve named target '{name}'");
+        return;
+    };
+    driver.move_cursor(p);
+    for action in [
+        ui::synthetic_input::PointerAction::Press(MouseButton::Right),
+        ui::synthetic_input::PointerAction::Release(MouseButton::Right),
+    ] {
+        driver.dispatch(&action.event(1.0));
+    }
+}
+
+/// A notification banner arrives.
+pub(super) fn notify(driver: &ShellDriver, title: &'static str, body: &'static str) {
+    driver
+        .chrome_handle()
+        .borrow_mut()
+        .push_notification(title, body);
+}
+
+/// The focused window goes full screen, or leaves it.
+pub(super) fn full_screen_focused(driver: &ShellDriver, on: bool) {
+    let handle = driver.chrome_handle();
+    let group = {
+        let st = handle.borrow();
+        let tree = st.tree();
+        let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+        let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+        drop(tree);
+        group
+    };
+    handle
+        .borrow_mut()
+        .set_user_fullscreen_group(if on { group } else { None });
 }

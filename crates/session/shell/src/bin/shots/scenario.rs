@@ -21,7 +21,6 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use vello::kurbo::Point;
-use winit::event::MouseButton;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use shell::shell::chrome_state::{ChromeState, WsTab};
@@ -985,40 +984,11 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
             let snapshot = identify_snapshot(driver.host().output_geometry());
             driver.host_mut().identify_displays_now(&snapshot);
         }
-        Action::SecondaryClickNamed(name) => match driver.resolve_named_centre(name) {
-            Some(p) => {
-                driver.move_cursor(p);
-                driver.dispatch(
-                    &ui::synthetic_input::PointerAction::Press(MouseButton::Right).event(1.0),
-                );
-                driver.dispatch(
-                    &ui::synthetic_input::PointerAction::Release(MouseButton::Right).event(1.0),
-                );
-            }
-            None => eprintln!("scenario: could not resolve named target '{name}'"),
-        },
+        Action::SecondaryClickNamed(name) => one_place::secondary_click_named(driver, name),
         Action::TouchSwipe(from, to) => one_place::touch_swipe(driver, *from, *to),
         Action::FullscreenBarKey => driver.host_mut().reveal_fullscreen_bar_by_key(),
-        Action::Notify(title, body) => {
-            driver
-                .chrome_handle()
-                .borrow_mut()
-                .push_notification(*title, *body);
-        }
-        Action::FullScreenFocused(on) => {
-            let handle = driver.chrome_handle();
-            let group = {
-                let st = handle.borrow();
-                let tree = st.tree();
-                let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
-                let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
-                drop(tree);
-                group
-            };
-            handle
-                .borrow_mut()
-                .set_user_fullscreen_group(if *on { group } else { None });
-        }
+        Action::Notify(title, body) => one_place::notify(driver, title, body),
+        Action::FullScreenFocused(on) => one_place::full_screen_focused(driver, *on),
         Action::MoveCursorNamed(name) => match driver.resolve_named_centre(name) {
             Some(p) => driver.move_cursor(p),
             None => eprintln!(
