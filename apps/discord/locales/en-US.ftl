@@ -3,6 +3,7 @@ discord-empty-body = Bridge a server with the Discord Bridge bot and its channel
 discord-bridge-server = Bridge a server
 discord-status-importing = Bringing in the server's channels. Nothing changes in Discord.
 discord-status-bridged = Messages go both ways between this room's Chat and the server.
+discord-voice-problem = Calls in the voice channels don't reach Discord: { $problem }
 discord-channels = { $count ->
     [one] 1 channel
    *[other] { $count } channels
@@ -72,6 +73,7 @@ discord-block-persona = Blocked a Discord user from the room
 discord-unblock-persona = Unblocked a Discord user
 discord-remember-avatar = Saved a Discord avatar
 discord-finish-import = Finished importing the server
+discord-report-voice = Said whether calls reach Discord
 
 ## History: changes to the server record.
 discord-guild-name = Renamed the server to { $new }
@@ -84,6 +86,7 @@ discord-guild-vanished = Updated the channels gone from Discord
 discord-guild-tilo-only = Changed the channels kept only in Tilo
 discord-guild-discord-only = Changed the channels kept only on Discord
 discord-guild-outbox = Updated the queue of changes for Discord
+discord-guild-voice-problem = Changed why calls don't reach Discord
 discord-d-channel-kind = Changed a Discord channel's type
 discord-d-channel-name = Renamed a Discord channel to { $new }
 discord-d-channel-parent = Moved a Discord channel to another category
