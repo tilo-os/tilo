@@ -748,6 +748,11 @@ impl ShellOverlayHost {
             self.apply_peer_sync(follow, outcome);
         }
         changed |= self.pump_arrivals();
+        if let Some(chrome) = self.chrome.as_ref() {
+            changed |= crate::shell::workspace_governance::report_governance_refusals(
+                &mut chrome.borrow_mut(),
+            );
+        }
         // One enrollment poll at a time: a poll that installs the room
         // publishes the state file on the worker.
         let polling = self

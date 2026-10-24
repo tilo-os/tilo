@@ -4723,6 +4723,17 @@ async fn publish(
         );
         return;
     }
+    let retention = retention(&msg, shell_checkpoint);
+    // Live traffic (pointers, carets, presence) is for whoever hears it now:
+    // in a room with no session up there is no one, and nothing keeps it.
+    if retention.is_none()
+        && !topics.contains_key(&ws)
+        && host_sessions
+            .keys()
+            .all(|(session_ws, _)| *session_ws != ws)
+    {
+        return;
+    }
     let bytes = match postcard::to_allocvec(&msg) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -4730,7 +4741,6 @@ async fn publish(
             return;
         }
     };
-    let retention = retention(&msg, shell_checkpoint);
 
     // Host clients enqueue synchronously into their already-authenticated
     // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
@@ -4767,6 +4777,7 @@ async fn publish(
         {
             tracing::warn!(
                 ws,
+                kind = msg.kind(),
                 "collaboration publish has no direct topic or workspace host"
             );
         }
