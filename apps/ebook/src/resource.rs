@@ -182,8 +182,10 @@ impl Ebook {
     /// Remove from library
     ///
     /// Takes the book off the shelf. Where the reader was and what they
-    /// marked in it stay, so adding it again brings them back.
-    #[action(destructive, writes = annotations)]
+    /// marked in it stay, so adding it again brings them back. Undo puts the
+    /// row back but not this device's access to the book's file, which the
+    /// reader forgets with it, so this is asked first.
+    #[action(destructive, irreversible, writes = annotations)]
     pub fn remove_from_library(&mut self, #[param("The book's id")] book: String) {
         self.entries.remove(&Id::from_raw(book));
     }

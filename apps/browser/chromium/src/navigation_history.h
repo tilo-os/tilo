@@ -28,6 +28,27 @@ inline bool OnlyBootstrapBehind(CefRefPtr<CefBrowser> browser) {
   CefRefPtr<Shape> shape=new Shape;browser->GetHost()->GetNavigationEntries(shape,false);
   return shape->bootstrap && shape->current==1;
 }
+// The first page a tab opens takes the blank page's place: once it has
+// committed, the session history forgets the blank page, so neither the page's
+// own history.back() nor history.length can reach it. Called as the page
+// commits, before its scripts can ask the browser to go back.
+inline void ForgetBootstrap(CefRefPtr<CefBrowser> browser) {
+  class Shape final : public CefNavigationEntryVisitor {
+   public:
+    bool Visit(CefRefPtr<CefNavigationEntry> entry,bool current,int index,int total) override {
+      if(index==0) bootstrap=BootstrapEntry(index,entry->GetURL().ToString());
+      if(current) this->current=index;
+      this->total=total;
+      return true;
+    }
+    bool bootstrap=false;int current=-1,total=0;
+    IMPLEMENT_REFCOUNTING(Shape);
+  };
+  CefRefPtr<Shape> shape=new Shape;browser->GetHost()->GetNavigationEntries(shape,false);
+  // Only the blank page and the page now open: nothing a person visited goes.
+  if(shape->bootstrap && shape->current==1 && shape->total==2)
+    browser->GetHost()->ExecuteDevToolsMethod(0,"Page.resetNavigationHistory",nullptr);
+}
 // Browser-process-only session history. Page content never receives this API.
 class NavigationHistory final : public CefDevToolsMessageObserver {
  public:

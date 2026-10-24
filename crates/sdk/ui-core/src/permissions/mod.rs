@@ -14,7 +14,6 @@
 //! The host installs both via [`PermissionContext::new`]; nothing here decides
 //! anything itself.
 
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -69,47 +68,10 @@ pub const LOCAL_USER: &str = "local";
 pub const LOCAL_ROOM: &str = "local";
 
 /// Which system app a presence key or a permission scope refers to.
-///
-/// This is an *identity*, not a policy: it names an app so a presence
-/// cursor can be scoped to it. The stable string [`AppKind::app_id`]
-/// returns is the same app id the compositor's portal and a
-/// `Principal::App` subject use.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub enum AppKind {
-    Terminal,
-    FileExplorer,
-    Browser,
-    Settings,
-    Unknown,
-}
-
-impl AppKind {
-    /// The stable app id.
-    pub fn app_id(self) -> &'static str {
-        match self {
-            AppKind::Terminal => "terminal",
-            AppKind::FileExplorer => "file-explorer",
-            AppKind::Browser => "browser",
-            AppKind::Settings => "settings",
-            AppKind::Unknown => "unknown",
-        }
-    }
-}
+pub use collab_types::presence::AppKind;
 
 /// A person's stable id, as apps and presence spell it.
-///
-/// Interchangeable with [`Principal::Person`] — see
-/// [`UserId::principal`]. Kept as a distinct newtype since presence and
-/// app code pass a bare user string around and gain nothing from a
-/// tagged enum.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, Serialize, Deserialize)]
-pub struct UserId(pub String);
-
-impl UserId {
-    pub fn principal(&self) -> Principal {
-        Principal::Person(self.0.clone())
-    }
-}
+pub use collab_types::presence::UserId;
 
 /// What a widget or a launch asks permission for.
 #[derive(Clone, Debug, PartialEq, Eq)]

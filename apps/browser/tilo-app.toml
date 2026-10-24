@@ -69,9 +69,9 @@ mode = "host"
 [sandbox.portals]
 
 [sandbox.services]
-collab = "optional@8"
-tilo-fs = "optional@8"
-shell-ui = "optional@14"
+collab = "optional@9"
+tilo-fs = "optional@9"
+shell-ui = "optional@15"
 app-host = "optional@3"
 
 [entrypoint]

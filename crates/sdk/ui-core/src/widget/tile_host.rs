@@ -215,10 +215,10 @@ impl ContentDamage {
     }
 
     /// Note that `app` was just drawn at `placement`, clipped to `clip`, and
-    /// say what changed since its last drawing. No hint when it moved, when
-    /// its widgets are not the ones drawn before (which pixels moved cannot
-    /// be said), or when widgets paint other people's marks placed from
-    /// their content, which their damage does not cover.
+    /// say what changed since its last drawing: where its widgets were and
+    /// are, and what they damaged. No hint when it moved, or when widgets
+    /// paint other people's marks placed from their content, which their
+    /// damage does not cover.
     fn hint(
         &mut self,
         app: &dyn Widget,
@@ -234,7 +234,7 @@ impl ContentDamage {
             .filter(|(placed, _)| *placed == placement)
             .and_then(|(_, before)| {
                 let (_, after) = self.painted.as_ref()?;
-                crate::damage::moved_boxes(&before, after)
+                Some(crate::damage::changed_boxes(&before, after))
             });
         let Some(moved) = moved.filter(|_| !presence.places_content_marks(crate::time::now()))
         else {

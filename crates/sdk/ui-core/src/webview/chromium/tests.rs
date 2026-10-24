@@ -212,7 +212,6 @@ fn an_unavailable_engine_fails_startup_without_page_pixels() {
 fn private_engines_own_and_remove_their_disposable_roots() {
     // phase: private_helper_gets_incognito_flag_and_owned_root_is_removed_after_exit
     {
-        use std::os::unix::fs::PermissionsExt;
         let fixture = tempfile::tempdir().unwrap();
         let host = fixture.path().join("private-helper");
         let arguments = fixture.path().join("arguments");
@@ -224,16 +223,14 @@ fn private_engines_own_and_remove_their_disposable_roots() {
         )
         .unwrap();
         let encoded: String = bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect();
-        std::fs::write(
-        &host,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '{encoded}'\ncat >/dev/null\nprintf done > '{}'\n",
-            arguments.display(),
-            exited.display()
-        ),
-    )
-    .unwrap();
-        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testing::write_executable(
+            &host,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '{encoded}'\ncat >/dev/null\nprintf done > '{}'\n",
+                arguments.display(),
+                exited.display()
+            ),
+        );
         let root = private_root();
 
         let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
@@ -262,8 +259,6 @@ fn private_engines_own_and_remove_their_disposable_roots() {
     }
     // phase: private_startup_failures_remove_owned_roots_after_reaping
     {
-        use std::os::unix::fs::PermissionsExt;
-
         let missing_root = private_root();
         assert!(
             ChromiumEngine::with_private_host(Path::new("/missing/tilo-host"), &missing_root)
@@ -273,8 +268,7 @@ fn private_engines_own_and_remove_their_disposable_roots() {
 
         let fixture = tempfile::tempdir().unwrap();
         let host = fixture.path().join("not-ready");
-        std::fs::write(&host, "#!/bin/sh\nexit 7\n").unwrap();
-        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::testing::write_executable(&host, "#!/bin/sh\nexit 7\n");
         // A host that exits before it is ready fails the page once it is
         // reaped; the window never waited for it.
         let readiness_root = private_root();
@@ -561,8 +555,7 @@ const PROFILE_FROM_ARGUMENTS: &str =
     "for argument; do case $argument in --profile=*) profile=${argument#--profile=};; esac; done\n";
 
 #[cfg(unix)]
-fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
-    use std::os::unix::fs::PermissionsExt;
+pub(super) fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("helper");
     let mut bytes = Vec::new();
@@ -572,12 +565,10 @@ fn helper_fixture(trailing: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     )
     .unwrap();
     let encoded: String = bytes.iter().map(|byte| format!("\\{:03o}", byte)).collect();
-    std::fs::write(
+    crate::testing::write_executable(
         &path,
-        format!("#!/bin/sh\nprintf '{encoded}'\n{trailing}\n"),
-    )
-    .unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        &format!("#!/bin/sh\nprintf '{encoded}'\n{trailing}\n"),
+    );
     (dir, path)
 }
 
@@ -712,7 +703,6 @@ fn an_idle_host_never_wakes_its_supervisor_and_its_exit_is_seen_at_once() {
 #[test]
 #[cfg(unix)]
 fn an_engine_is_ready_to_use_before_its_host_is() {
-    use std::os::unix::fs::PermissionsExt;
     let mut ready = Vec::new();
     protocol::write_json(
         &mut ready,
@@ -723,9 +713,9 @@ fn an_engine_is_ready_to_use_before_its_host_is() {
     let dir = tempfile::tempdir().unwrap();
     let host = dir.path().join("host");
     // Reads nothing and says nothing until the test lets it start.
-    std::fs::write(
+    crate::testing::write_executable(
         &host,
-        format!(
+        &format!(
             "#!/bin/sh\n\
              {PROFILE_FROM_ARGUMENTS}\
              while [ ! -f \"$profile/start\" ]; do sleep 0.01; done\n\
@@ -733,9 +723,7 @@ fn an_engine_is_ready_to_use_before_its_host_is() {
              exec 3>&1\n\
              exec cat > \"$profile/commands\"\n"
         ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o755)).unwrap();
+    );
     let profile = dir.path().join("profile");
     // Returns while the host waits: a constructor that waited for `ready`
     // would give up after its 20 s and fail here.
@@ -1042,6 +1030,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         *engine.frames().lock().unwrap() = Some(super::super::Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(vec![255, 0, 0, 255]),
             width: 1,
             height: 1,

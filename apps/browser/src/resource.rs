@@ -387,9 +387,11 @@ impl ResourceSurface<Browser, BrowserEffect> for BrowserWindow {
             // Visits and addresses are the person's own: they follow them to
             // their other devices and never reach a collaborator. A private
             // window keeps none.
-            // Downloads stay on this device, in its settings.
+            // Downloads stay on this device, in its settings, as do the
+            // widths side panels are dragged to.
             if !cx.is_private() {
                 self.attach_downloads(cx.storage().settings());
+                self.attach_side_panel_widths(cx.storage().settings());
             }
             if !cx.is_private()
                 && let Some(bookmarks) = cx.person::<crate::personal_bookmarks::PersonalBookmarks>()

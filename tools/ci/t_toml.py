@@ -585,10 +585,11 @@ def size_checks(manifest: suites.Manifest, packages: dict[str, dict]) -> str:
             lines += [f'requirement = {{ cores = 8, memory = "{memory}" }}', f"needs = [{json.dumps(shared)}]"]
         lines += ["timeout_secs = 5400", 'cost = "heavy"', "default = false"]
         if shared is None:
-            # Kept built for main's newest head when t has room, so the push gate's size check of
-            # an app a commit changes (tools/ci/pre_push.py, aarch64) and one named for a working
-            # tree compile only that app.
-            lines.append('on = ["idle"]')
+            # Built for every main push that changes it (`main`), so the push gate's size check of
+            # an app a commit changes (tools/ci/pre_push.py, aarch64) finds the runtime of the main
+            # it lands on built and compiles only that app; `idle` would wait for t to have room,
+            # which a busy t rarely has. A push that leaves the runtime's inputs alone reuses it.
+            lines.append('on = ["main", "idle"]')
         return "\n".join(lines) + "\n" + cargo_check(name, spec, manifest, packages, ROOT)
 
     shared = [check(f"thin-runtime-{arch}", f"bash tools/apps/t-release.sh thin-runtime {arch}",

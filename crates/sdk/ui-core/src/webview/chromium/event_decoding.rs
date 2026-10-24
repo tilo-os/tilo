@@ -248,3 +248,38 @@ pub(super) fn decode_page_dialog(value: &Value) -> Option<crate::webview::PageDi
         default_text: text("default_text")?,
     })
 }
+
+/// An `extension_shortcuts` event: the keys extensions' commands hold, each
+/// a key as Chrome names it with its modifiers, at most 256.
+pub(super) fn decode_extension_shortcuts(
+    value: &Value,
+) -> Option<Vec<crate::webview::ExtensionShortcut>> {
+    const NAMED: [&str; 13] = [
+        "Comma", "Period", "Space", "Home", "End", "PageUp", "PageDown", "Delete", "Tab", "Up",
+        "Down", "Left", "Right",
+    ];
+    let list = value["shortcuts"]
+        .as_array()
+        .filter(|list| list.len() <= 256)?;
+    list.iter()
+        .map(|entry| {
+            let key = entry["key"].as_str().filter(|key| {
+                (key.len() == 1
+                    && key
+                        .bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()))
+                    || NAMED.contains(key)
+            })?;
+            let flag = |name: &str| entry[name].as_bool();
+            Some(crate::webview::ExtensionShortcut {
+                key: key.to_owned(),
+                modifiers: crate::webview::KeyModifiers {
+                    ctrl: flag("ctrl")?,
+                    shift: flag("shift")?,
+                    alt: flag("alt")?,
+                    meta: flag("meta")?,
+                },
+            })
+        })
+        .collect()
+}

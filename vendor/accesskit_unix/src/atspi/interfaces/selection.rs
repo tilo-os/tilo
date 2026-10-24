@@ -43,12 +43,14 @@ impl SelectionInterface {
     }
 
     fn select_child(&self, child_index: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node
             .select_child(map_child_index(child_index)?)
             .map_err(self.map_error())
     }
 
     fn deselect_selected_child(&self, selected_child_index: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node
             .deselect_selected_child(map_child_index(selected_child_index)?)
             .map_err(self.map_error())
@@ -61,14 +63,17 @@ impl SelectionInterface {
     }
 
     fn select_all(&self) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node.select_all().map_err(self.map_error())
     }
 
     fn clear_selection(&self) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node.clear_selection().map_err(self.map_error())
     }
 
     fn deselect_child(&self, child_index: i32) -> fdo::Result<bool> {
+        crate::read_only::admit()?;
         self.node
             .deselect_child(map_child_index(child_index)?)
             .map_err(self.map_error())

@@ -593,6 +593,36 @@ pub(super) fn with_session_blobs<T>(
     result
 }
 
+/// How long the filesystem names an agent as the cause of the writes to the
+/// paths it was told: long enough for an action's writes to land, short
+/// enough that a later write of the person's own stays theirs.
+const WRITE_ATTRIBUTION_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Name `agent` (`agent:<id>`, which the broker took from its custody of a
+/// live invocation and which acts for this session's person) as the cause of
+/// this device's next writes to `paths`: each version the filesystem then
+/// makes of them records the agent, for the person who signs it, in the
+/// agent's presence colour. Over the session-only document media socket, which
+/// no sandbox reaches. It grants nothing.
+///
+/// # Errors
+/// Returns why the filesystem could not be reached or refused.
+pub(super) fn attribute_session_writes(agent: &str, paths: Vec<String>) -> Result<(), String> {
+    let label = ui::history_source::agent_principal_name(agent)
+        .ok_or("only an agent is named as the cause of a write")?;
+    let (red, green, blue) = ui::presence::user_color(agent);
+    with_session_blobs(|client| {
+        client.attribute_writes(runtime_fs::blobs::WriteAttribution {
+            paths,
+            actor: agent.to_owned(),
+            label,
+            color: [red, green, blue],
+            ttl: WRITE_ATTRIBUTION_TTL,
+        })
+    })
+    .map_err(|error| error.to_string())
+}
+
 /// The filesystem daemon's content store, as content puts write to it:
 /// each room's under the neutral [`CONTENT_PUT_SCOPE`], which every app of
 /// the room reads by reference.
@@ -2069,6 +2099,7 @@ pub fn native_services(
             .chain([
                 super::settings_records::broker_door(),
                 super::activity_provider::broker_door(),
+                super::crash_records::broker_door(),
             ])
             .collect(),
         legacy_workspace: membership.map(|tree| {

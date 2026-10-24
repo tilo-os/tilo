@@ -4,6 +4,8 @@
 #include <istream>
 #include <stdexcept>
 #include <string>
+#include <vector>
+#include <algorithm>
 namespace tilo {
 constexpr uint32_t kMaxPacket = 64 * 1024 * 1024;
 constexpr uint32_t kMaxDimension = 8192;
@@ -49,6 +51,54 @@ inline std::string FramePacket(uint32_t tab,uint32_t width,uint32_t height,const
   AppendU32(out,static_cast<uint32_t>(size+offset-4)); out.push_back(static_cast<char>(tab==1?2:3));
   if(tab!=1) AppendU32(out,tab);
   AppendU32(out,width); AppendU32(out,height); out.append(pixels,size); return out;
+}
+// A rect of a frame that changed, in its pixels.
+struct DamageRect { uint32_t x=0,y=0,width=0,height=0; };
+// The most rects one damaged frame carries; past it, their bounding box.
+constexpr size_t kMaxDamageRects=16;
+// Where a damaged frame packet's rects start: after its length, kind, tab,
+// dimensions and rect count.
+constexpr size_t kDamageRectsOffset=21;
+// `rects` clipped to a `width`x`height` frame, the empty ones gone, more than
+// kMaxDamageRects merged into their bounding box. Empty when the frame is
+// better sent whole: nothing is left, or the rects cover half of it or more.
+inline std::vector<DamageRect> ClipDamage(const std::vector<DamageRect>& rects,uint32_t width,uint32_t height) {
+  std::vector<DamageRect> out;uint64_t area=0;
+  for(const auto& rect:rects) {
+    if(rect.x>=width || rect.y>=height) continue;
+    DamageRect clipped{rect.x,rect.y,std::min(rect.width,width-rect.x),std::min(rect.height,height-rect.y)};
+    if(!clipped.width || !clipped.height) continue;
+    out.push_back(clipped);
+  }
+  if(out.size()>kMaxDamageRects) {
+    DamageRect box=out.front();uint32_t x1=box.x+box.width,y1=box.y+box.height;
+    for(const auto& rect:out) {box.x=std::min(box.x,rect.x);box.y=std::min(box.y,rect.y);x1=std::max(x1,rect.x+rect.width);y1=std::max(y1,rect.y+rect.height);}
+    box.width=x1-box.x;box.height=y1-box.y;out.assign(1,box);
+  }
+  for(const auto& rect:out) area+=uint64_t(rect.width)*rect.height;
+  if(out.empty() || area*2>=uint64_t(width)*height) out.clear();
+  return out;
+}
+// One tab's damaged frame as a whole packet: kind 4, the tab, the frame's
+// dimensions, the rect count and the rects, then each rect's rows of BGRA
+// pixels in turn, taken from the whole frame `pixels`. The receiver applies
+// it to the frame it has of that tab. Empty when the rects do not fit the
+// frame or the pixels do not match its dimensions.
+inline std::string DamagePacket(uint32_t tab,uint32_t width,uint32_t height,const char* pixels,size_t size,const std::vector<DamageRect>& rects) {
+  if(!tab || !size || size!=FrameSize(width,height) || rects.empty() || rects.size()>kMaxDamageRects) return {};
+  size_t body=kDamageRectsOffset-4+rects.size()*16;
+  for(const auto& rect:rects) {
+    if(!rect.width || !rect.height || rect.x>=width || rect.y>=height || rect.width>width-rect.x || rect.height>height-rect.y) return {};
+    body+=size_t(rect.width)*rect.height*4;
+  }
+  if(body>kMaxPacket) return {};
+  std::string out;out.reserve(body+4);
+  AppendU32(out,static_cast<uint32_t>(body));out.push_back(4);
+  AppendU32(out,tab);AppendU32(out,width);AppendU32(out,height);AppendU32(out,static_cast<uint32_t>(rects.size()));
+  for(const auto& rect:rects) {AppendU32(out,rect.x);AppendU32(out,rect.y);AppendU32(out,rect.width);AppendU32(out,rect.height);}
+  for(const auto& rect:rects)
+    for(uint32_t row=0;row<rect.height;++row) out.append(pixels+(size_t(rect.y+row)*width+rect.x)*4,size_t(rect.width)*4);
+  return out;
 }
 // At most `limit` bytes of UTF-8 `text`, cut where a character starts.
 inline std::string BoundedText(std::string text,size_t limit) {

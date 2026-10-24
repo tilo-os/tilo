@@ -1995,6 +1995,7 @@ impl ShellDriver {
             "palette_rechner" => self.scene_palette_query("rechner"),
             "palette_sum" => self.scene_palette_query("2+2"),
             "palette_move" => self.scene_palette_query("move"),
+            "palette_keyboard_layout" => self.scene_palette_query("keyboard layout"),
             "palette_files" => self.scene_palette_query("files"),
             "palette_finder" => self.scene_seeded_query("finder"),
             "palette_spotify" => self.scene_seeded_query("spotify"),

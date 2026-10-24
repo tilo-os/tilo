@@ -99,15 +99,11 @@ fn playlists_and_annotations_change_through_verbs_and_field_edits() {
     let shown = state.annotations.get(&note).unwrap();
     assert_eq!((shown.text.as_str(), shown.time_ms), ("New", 1_250));
 
-    assert!(
-        library
-            .apply(Library::DELETE_PLAYLIST.with(trip.clone()))
-            .is_err(),
-        "deleting asks first"
-    );
+    // Undo takes a deleted playlist back, videos and all, so deleting asks
+    // nothing (the one undo step is proved in the app's tests).
     library
-        .apply_confirmed(Library::DELETE_PLAYLIST.with(trip))
-        .unwrap();
+        .apply(Library::DELETE_PLAYLIST.with(trip))
+        .expect("an undoable delete asks nothing");
     assert!(library.state().unwrap().playlists.is_empty());
     assert!(
         library.state().unwrap().items.is_empty(),

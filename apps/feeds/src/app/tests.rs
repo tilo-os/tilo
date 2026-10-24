@@ -1104,17 +1104,15 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     assert_eq!(a.core().store.unread_for_feed(&feed), 0);
     assert_eq!(loaded(doc).unread_for_feed(&feed), 0);
 
-    // Unsubscribe is the host's to confirm: the window asks nothing of its
-    // own and removes nothing before the person agreed (resource tests
-    // confirm it through the host).
+    // Undo takes an unsubscription back, so it runs at once: no dialog of
+    // the window's own and nothing asked by the host (the resource tests
+    // drive it through the host, Undo included).
     a.core_mut().apply_menu_action(
-        MenuAction::Unsubscribe(feed.clone()),
+        MenuAction::Unsubscribe(feed),
         &mut ui::widget::Edits::lend(doc),
     );
     a.take_pending_modal();
     assert!(a.modal.is_none(), "the window asks nothing itself");
-    assert!(a.core().store.feed(&feed).is_some(), "not until confirmed");
-    assert!(loaded(doc).feed(&feed).is_some());
 
     // The menu stays inside a shrinking window and captures host undo.
     let other = nth_feed(a, 0);

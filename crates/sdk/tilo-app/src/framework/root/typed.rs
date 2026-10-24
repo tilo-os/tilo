@@ -247,9 +247,33 @@ pub(crate) struct Typed<R: Resource> {
 fn state_of<R: Resource>(state: &dyn Any) -> Option<&R::State> {
     let typed = state.downcast_ref::<R::State>();
     if typed.is_none() {
-        tracing::error!(kind = R::KIND, "a root was handed another resource's state");
+        foreign_state(R::KIND);
     }
     typed
+}
+
+/// `resource` with each declaration `decl_at` gives, from the first until
+/// it gives none, bound ([`tilo_resource::bind_declaration`]): compiled once
+/// rather than in every app's root.
+#[inline(never)]
+fn bind_each<'a>(
+    mut resource: tilo_actions::Resource,
+    decl_at: &dyn Fn(usize) -> Option<&'a tilo_resource::Declaration>,
+) -> tilo_actions::Resource {
+    let mut at = 0usize;
+    while let Some(decl) = decl_at(at) {
+        resource = tilo_resource::bind_declaration(resource, decl);
+        at = at.saturating_add(1);
+    }
+    resource
+}
+
+/// Log that a root of `kind` was handed another resource's state: one
+/// event site in the runtime rather than one in every app for each root.
+#[cold]
+#[inline(never)]
+fn foreign_state(kind: &'static str) {
+    tracing::error!(kind, "a root was handed another resource's state");
 }
 
 /// The resource's own actions `encoded` applies: itself, or each member of
@@ -403,10 +427,8 @@ impl<R: Resource> TypedRoot for Typed<R> {
         mut resource: tilo_actions::Resource,
         declarations: Box<dyn Any>,
     ) -> tilo_actions::Resource {
-        if let Ok(declarations) = declarations.downcast::<Vec<ActionDecl<R>>>() {
-            for decl in *declarations {
-                resource = tilo_resource::bind_declaration(resource, &decl);
-            }
+        if let Some(declarations) = declarations.downcast_ref::<Vec<ActionDecl<R>>>() {
+            resource = bind_each(resource, &|at| declarations.get(at).map(|decl| &**decl));
         }
         resource
     }

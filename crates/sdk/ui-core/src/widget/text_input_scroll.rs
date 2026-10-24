@@ -4,6 +4,17 @@
 use super::TextInput;
 
 impl TextInput {
+    pub fn scroll_y(&self) -> f64 {
+        self.scroll_y
+    }
+
+    /// The scroll the text is drawn at: where it is scrolled, and past an
+    /// end by the give fingers pull it there with
+    /// ([`crate::motion::RubberBand`]).
+    pub(crate) fn shown_scroll_y(&self) -> f64 {
+        self.scroll_y + self.wheel_glide.give(crate::motion::frame_now())
+    }
+
     /// No-op for a single-line field.
     pub fn scroll_by(&mut self, dy: f64) {
         if !self.multiline {
@@ -34,6 +45,16 @@ impl TextInput {
             }
             winit::event::MouseScrollDelta::PixelDelta(_) => {
                 self.wheel_glide.set_device_scale(scale_factor);
+                let view_h = self.rect.height() - self.multiline_padding_y() * 2.0;
+                let room = self.content_height() - self.multiline_padding_y() * 2.0 - view_h;
+                self.wheel_glide.set_view(
+                    view_h,
+                    self.multiline && room > 0.0,
+                    crate::tokens::EffectiveMotion::new(
+                        crate::tokens::Motion::default(),
+                        self.reduce_motion,
+                    ),
+                );
                 match self.wheel_glide.wheel(delta, phase, self.reduce_motion) {
                     WheelStep::Scroll(dy) => dy,
                     WheelStep::Fling => {
@@ -46,8 +67,7 @@ impl TextInput {
         };
         let before = self.scroll_y;
         self.scroll_by(dy);
-        let moved = (self.scroll_y - before).abs() > f64::EPSILON;
-        self.wheel_glide.wheel_applied(dy, moved);
+        let moved = self.wheel_glide.wheel_applied(dy, self.scroll_y - before);
         if moved {
             self.hand_scrolled = true;
             *handled = true;

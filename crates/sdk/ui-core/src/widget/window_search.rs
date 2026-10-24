@@ -168,6 +168,11 @@ pub struct SearchDriver {
     /// A find the document ran on its own that the search took over, until
     /// the field it drives from takes its query ([`Self::take_adopted`]).
     adopted: Option<(String, FindOptions)>,
+    /// What of the document the search's options cover, in its coordinates
+    /// ([`Self::set_cover`]), and what the document was last told (it
+    /// starts out covered by nothing).
+    cover: Option<Rect>,
+    cover_told: Option<Rect>,
 }
 
 impl SearchDriver {
@@ -217,6 +222,14 @@ impl SearchDriver {
         self.applied = None;
         self.count = None;
         self.adopted = None;
+        self.cover_told = None;
+    }
+
+    /// What of the document the search's options cover now, in the app's
+    /// coordinates (`None`: nothing). The next drive tells the document,
+    /// which shows the current match clear of it.
+    pub fn set_cover(&mut self, cover: Option<Rect>) {
+        self.cover = cover;
     }
 
     /// The query and options of a find the document ran on its own
@@ -244,15 +257,24 @@ impl SearchDriver {
                 let session = &mut self.session;
                 let abilities = &mut self.abilities;
                 let adopted = &mut self.adopted;
+                let cover = self.cover.filter(|_| !finishing);
+                let cover_moved = self.cover_told != cover;
+                self.cover_told = cover;
                 let mut shown = query.to_owned();
                 with_findable(root, &mut |target: &mut dyn Findable| {
                     *abilities = FindAbilities::of(target);
                     let options = abilities.allow(options);
+                    if cover_moved {
+                        // Told before anything is revealed, so what this
+                        // drive reveals stands clear of it.
+                        target.set_find_cover(cover);
+                    }
                     if finishing {
                         session.clear(target);
                         touched = true;
                         return;
                     }
+                    let mut revealed = false;
                     if let Some(own) = target.take_own_find() {
                         // The document went to a match on its own: the
                         // search runs its query from that match on.
@@ -261,9 +283,11 @@ impl SearchDriver {
                         shown.clone_from(&own.query);
                         *adopted = Some((own.query, options));
                         touched = true;
+                        revealed = true;
                     } else if session.is_stale(query, options) {
                         session.search(target, query, options, Some(0));
                         touched = true;
+                        revealed = true;
                     } else if session.content_moved(target) {
                         session.refresh(target, query, options);
                         touched = true;
@@ -271,6 +295,12 @@ impl SearchDriver {
                     if let Some(forward) = step {
                         session.step(target, forward);
                         touched = true;
+                        revealed = true;
+                    }
+                    if cover_moved && !revealed {
+                        // The options opened over the current match, or
+                        // closed: it is shown again, clear of them.
+                        touched |= session.reveal_current(target);
                     }
                     if let Some((total, current)) = target.take_engine_results() {
                         session.set_results(total, current);
@@ -472,6 +502,16 @@ pub struct WindowSearch {
     /// The furthest the open search may reach: rightwards to the window's
     /// own controls, or (trailing) leftwards to an app's location.
     limit: f64,
+    /// The furthest the search reaches back when the query would otherwise
+    /// be narrower than it can be typed in: over the location and the
+    /// app's other slots, or over the tabs it follows.
+    cramped: f64,
+    /// Where the app's coordinates start in the search's: what the open
+    /// options cover of the app is told in the app's.
+    frame_origin: Point,
+    /// What of the app in its own process the options were last said to
+    /// cover (it starts out covered by nothing).
+    cover_sent: Option<Rect>,
     /// The control ends an app's slots in the bar, so the open search grows
     /// back over them, on the bar's ground.
     trailing: bool,
@@ -546,6 +586,9 @@ impl WindowSearch {
                 .control_size(ControlSize::Small),
             anchor: Rect::ZERO,
             limit: 0.0,
+            cramped: 0.0,
+            frame_origin: Point::ZERO,
+            cover_sent: None,
             trailing: false,
             ground: None,
             field_rect: Rect::ZERO,
@@ -632,6 +675,19 @@ impl WindowSearch {
         self.is_open() && self.panel.is_open()
     }
 
+    /// The open options panel as laid out, in the search's coordinates.
+    #[must_use]
+    pub fn options_rect(&self) -> Option<Rect> {
+        self.panel.rect().filter(|_| self.is_open())
+    }
+
+    /// The narrowest the query is laid out: the parts after it give way
+    /// first, then the search reaches back over the app's slots.
+    #[must_use]
+    pub fn query_min_width(theme: &Theme) -> f64 {
+        field_min(theme)
+    }
+
     /// Whether the replacement field holds the keyboard.
     #[must_use]
     pub fn replacing(&self) -> bool {
@@ -686,16 +742,44 @@ impl WindowSearch {
     pub fn place(&mut self, anchor: Rect, limit: f64) {
         self.anchor = anchor;
         self.limit = limit;
+        self.cramped = anchor.x0;
         self.trailing = false;
+    }
+
+    /// Where the open search, placed after the tabs ([`Self::place`]), may
+    /// start back over them when a narrow window leaves the query too
+    /// narrow to type in.
+    pub fn set_cramped_start(&mut self, x: f64) {
+        if !self.trailing {
+            self.cramped = x.min(self.anchor.x0);
+        }
     }
 
     /// Place the control at the end of an app's slots: open, the search ends
     /// at `anchor` and reaches back as far as `reach`, covering the slots it
-    /// stands over on the bar's ground.
-    pub fn place_trailing(&mut self, anchor: Rect, reach: f64) {
+    /// stands over on the bar's ground. Where that leaves the query too
+    /// narrow to type in (a narrow window), it reaches back as far as
+    /// `cramped` instead (the start of the app's slots).
+    pub fn place_trailing(&mut self, anchor: Rect, reach: f64, cramped: f64) {
         self.anchor = anchor;
         self.limit = reach;
+        self.cramped = cramped.min(reach);
         self.trailing = true;
+    }
+
+    /// Where the app's own coordinates start in the search's (the top left
+    /// of the frame it lays out in): what the open options cover of the
+    /// app is told to it in its coordinates ([`Findable::set_find_cover`]).
+    pub fn set_frame_origin(&mut self, origin: Point) {
+        self.frame_origin = origin;
+    }
+
+    /// What the open options cover of the app, in its coordinates.
+    fn cover(&self) -> Option<Rect> {
+        self.panel
+            .rect()
+            .filter(|rect| rect.area() > 0.0)
+            .map(|rect| rect - self.frame_origin.to_vec2())
     }
 
     /// The colour the bar stands on.
@@ -708,6 +792,7 @@ impl WindowSearch {
         let shift = vello::kurbo::Vec2::new(dx, 0.0);
         self.anchor = self.anchor + shift;
         self.limit += dx;
+        self.cramped += dx;
         self.field_rect = self.field_rect + shift;
         for (_, rect) in &mut self.parts {
             *rect = *rect + shift;
@@ -883,6 +968,7 @@ impl WindowSearch {
             self.remote = false;
             self.sent = None;
             self.options_sent = None;
+            self.cover_sent = None;
             self.step = None;
             self.replace = None;
             self.in_place = InPlace::Nothing;
@@ -896,6 +982,13 @@ impl WindowSearch {
         if self.in_place == InPlace::Document && self.options_sent != Some(options) {
             events.push(ToolbarEvent::SearchOptions { options });
             self.options_sent = Some(options);
+        }
+        let cover = self.cover();
+        if self.in_place == InPlace::Document && self.cover_sent != cover {
+            events.push(ToolbarEvent::SearchCover {
+                cover: cover.map(crate::window_toolbar::WholeRect::around),
+            });
+            self.cover_sent = cover;
         }
         let query = self.field.value();
         if self.sent.as_deref() != Some(query) {
@@ -1035,6 +1128,7 @@ impl WindowSearch {
         let step = self.step.take();
         let finishing = std::mem::take(&mut self.finishing);
         let options = self.options;
+        self.driver.set_cover(self.cover());
         let mut touched = self.driver.drive(root, &query, options, step, finishing);
         if let Some((query, options)) = self.driver.take_adopted() {
             self.show_query(&query, options);
@@ -1072,6 +1166,7 @@ impl WindowSearch {
         self.replace_wanted = false;
         self.sent = None;
         self.options_sent = None;
+        self.cover_sent = None;
         self.remote = false;
         self.field.set_count(None);
     }
@@ -1353,11 +1448,15 @@ impl WindowSearch {
         let height = ControlSize::Small.height(theme);
         let y0 = self.anchor.center().y - height / 2.0;
         let y1 = y0 + height;
-        let room = if self.trailing {
-            (self.anchor.x1 - self.limit).max(CONTROL_PX)
-        } else {
-            (self.limit - self.anchor.x0).max(CONTROL_PX)
+        // Where the open search may stand, left to right: from the control
+        // to its reach, or, cramped, as far back as `cramped` too.
+        let span = |cramped: bool| match (self.trailing, cramped) {
+            (true, false) => (self.limit, self.anchor.x1),
+            (true, true) => (self.cramped, self.anchor.x1),
+            (false, false) => (self.anchor.x0, self.limit),
+            (false, true) => (self.cramped, self.limit),
         };
+        let room_of = |(lo, hi): (f64, f64)| (hi - lo).max(CONTROL_PX);
         let app_label = self.app_label();
         let everywhere_label = tr("window-search-everywhere");
         let width_of = |label: &str, text: &mut TextRenderer| {
@@ -1401,6 +1500,10 @@ impl WindowSearch {
         // The field's width when the bar has room for it: eleven controls.
         let field_max = 11.0 * height;
         let field_min = field_min(theme);
+        // Where the reach leaves the query too narrow to type in even once
+        // every part that gives way is gone, it reaches further back.
+        let (lo, hi) = span(room_of(span(false)) - after(false, false, false, false) < field_min);
+        let room = room_of((lo, hi));
         for give_way in 0..4 {
             if room - after(want_everywhere, want_app, want_previous, want_next) >= field_min {
                 break;
@@ -1420,7 +1523,8 @@ impl WindowSearch {
         let start = if self.trailing {
             self.anchor.x1 - block
         } else {
-            self.anchor.x0
+            // Cramped, it starts back over the tabs as far as it must.
+            (hi - block).min(self.anchor.x0).max(lo)
         };
         let p = progress.clamp(0.0, 1.0);
         let drawn_x0 = self.anchor.x0 + (start - self.anchor.x0) * p;
@@ -1462,11 +1566,7 @@ impl WindowSearch {
         match options {
             Some(anchor) => {
                 let end = x + CONTROL_PX;
-                let span = if self.trailing {
-                    (self.limit, self.anchor.x1.max(end))
-                } else {
-                    (self.anchor.x0, self.limit.max(end))
-                };
+                let span = (lo, hi.max(end));
                 let field = Rect::new(start, y0, start + field_w, y1);
                 self.panel
                     .layout(field, anchor, span, self.abilities, text, theme);
@@ -1689,10 +1789,11 @@ impl Widget for WindowSearch {
             return;
         }
         self.layout(progress, text, theme);
-        if self.trailing
+        if (self.trailing || self.field_rect.x0 < self.anchor.x0)
             && let Some(ground) = self.ground
         {
-            // Over an app's slots the open search covers what it stands on.
+            // Over an app's slots, or a narrow window's tabs, the open
+            // search covers what it stands on.
             let end = self
                 .parts
                 .last()

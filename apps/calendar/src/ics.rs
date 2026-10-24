@@ -13,7 +13,11 @@
 //! Calendar retains TZIDs explicitly while keeping datetimes as wall time in
 //! that named zone. IANA transition data resolves folds to the earlier instant
 //! and advances gaps to their first valid minute, identically on every peer.
+//! A TZID that is no IANA name (Outlook's `W. Europe Standard Time`, or a
+//! `VTIMEZONE` the file defines) becomes the IANA zone it stands for; one that
+//! stands for none keeps its time as written, and the import says so.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime};
@@ -23,6 +27,7 @@ use uuid::Uuid;
 use crate::model::{
     Attendee, Calendar, Event, Id, InviteStatus, Palette, Priority, Recurrence, Task,
 };
+use crate::timezone::{Observance, OnsetDay, YearlyRule};
 use ui::tilo_resource::Keyed;
 
 const DT_LOCAL: &str = "%Y%m%dT%H%M%S";
@@ -91,12 +96,23 @@ pub fn export(model: &Calendar) -> String {
             // RRULE is a structured value — written raw (no TEXT escaping).
             raw(&mut out, "RRULE", &rr);
         }
+        // RFC 5545 matches an exclusion against DTSTART's value type: a
+        // timed series excludes the occurrence's own date-time.
         for date in e.recurrence_exdates.iter() {
-            raw(
-                &mut out,
-                "EXDATE;VALUE=DATE",
-                &date.format(D_ONLY).to_string(),
-            );
+            if e.all_day {
+                raw(
+                    &mut out,
+                    "EXDATE;VALUE=DATE",
+                    &date.format(D_ONLY).to_string(),
+                );
+            } else {
+                emit_datetime(
+                    &mut out,
+                    "EXDATE",
+                    date.and_time(e.start.time()),
+                    &e.timezone,
+                );
+            }
         }
         if let Some(organizer) = e
             .organizer
@@ -242,12 +258,28 @@ fn recurrence_rule(event: &Event) -> String {
         let _ = write!(rule, ";INTERVAL={}", event.recurrence_interval);
     }
     if let Some(until) = event.recurrence_until {
-        let _ = write!(rule, ";UNTIL={}", until.format(D_ONLY));
+        let _ = write!(rule, ";UNTIL={}", series_until_value(event, until));
     }
     if let Some(count) = event.recurrence_count {
         let _ = write!(rule, ";COUNT={count}");
     }
     rule
+}
+
+/// UNTIL in DTSTART's value type (RFC 5545 §3.3.10): a date for an all-day
+/// series, the last occurrence's local start for a floating one, and that
+/// start in UTC for a zoned one.
+fn series_until_value(event: &Event, until: NaiveDate) -> String {
+    if event.all_day {
+        return until.format(D_ONLY).to_string();
+    }
+    let last = until.and_time(event.start.time());
+    if event.timezone == "floating" {
+        return last.format(DT_LOCAL).to_string();
+    }
+    let instant = crate::timezone::wall_to_utc(&event.timezone, last)
+        .map_or(last, |(instant, _)| instant.naive_utc());
+    format!("{}Z", instant.format(DT_LOCAL))
 }
 
 fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
@@ -271,6 +303,22 @@ fn participant_line(out: &mut String, property: &str, attendee: &Attendee) {
 /// Parse an iCalendar string into events + tasks. Best-effort: unknown
 /// properties and components are skipped.
 pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
+    let parsed = parse_calendar(text);
+    (parsed.events, parsed.tasks)
+}
+
+/// What an iCalendar file holds, and what of it Calendar could not place.
+#[derive(Debug, Default)]
+pub struct Parsed {
+    pub events: Vec<Event>,
+    pub tasks: Vec<Task>,
+    /// The TZIDs that name no zone Calendar knows, in the order they first
+    /// appear. Events in them keep their times as written, on no zone.
+    pub unknown_zones: Vec<String>,
+}
+
+/// Parse an iCalendar string, reporting the time zones it could not place.
+pub fn parse_calendar(text: &str) -> Parsed {
     let mut events = Vec::new();
     let mut overrides = Vec::new();
     let mut tasks = Vec::new();
@@ -279,6 +327,8 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
         .iter()
         .map(|line| ContentLine::parse(line))
         .collect();
+    // A VTIMEZONE may follow the events that name it.
+    let mut zones = Zones::defined_in(&lines);
     let mut i = 0;
     while i < lines.len() {
         let Some(cur) = lines.get(i) else { break };
@@ -288,7 +338,7 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
             .map(|line| line.value.trim().to_ascii_uppercase());
         match component.as_deref() {
             Some("VEVENT") => {
-                let (ev, ni) = parse_vevent(&lines, i + 1);
+                let (ev, ni) = parse_vevent(&lines, i + 1, &mut zones);
                 if let Some((ev, recurrence_id, cancelled)) = ev {
                     if let Some((original_date, original_time)) = recurrence_id {
                         overrides.push((
@@ -326,14 +376,227 @@ pub fn parse(text: &str) -> (Vec<Event>, Vec<Task>) {
             event.occurrence_overrides.push(edit);
         }
     }
-    (events, tasks)
+    Parsed {
+        events,
+        tasks,
+        unknown_zones: zones.unknown,
+    }
+}
+
+/// The time zones a file defines in `VTIMEZONE` components, by TZID, and
+/// the IANA zone each TZID it names resolves to.
+#[derive(Default)]
+struct Zones {
+    defined: HashMap<String, DefinedZone>,
+    resolved: HashMap<(String, i32), Option<String>>,
+    unknown: Vec<String>,
+}
+
+#[derive(Default)]
+struct DefinedZone {
+    /// `X-LIC-LOCATION`, the IANA name libical-based publishers add.
+    location: Option<String>,
+    observances: Vec<Observance>,
+}
+
+impl Zones {
+    fn defined_in(lines: &[Option<ContentLine>]) -> Self {
+        let mut defined = HashMap::new();
+        let mut zone: Option<(String, DefinedZone)> = None;
+        let mut observance: Option<Observance> = None;
+        for line in lines.iter().flatten() {
+            if line.begins("VTIMEZONE") {
+                zone = Some((String::new(), DefinedZone::default()));
+            } else if line.ends("VTIMEZONE") {
+                if let Some((tzid, zone)) = zone.take()
+                    && !tzid.is_empty()
+                {
+                    defined.insert(tzid, zone);
+                }
+            } else if let Some((tzid, zone)) = zone.as_mut() {
+                if line.begins("STANDARD") || line.begins("DAYLIGHT") {
+                    observance = Some(Observance {
+                        onset: NaiveDateTime::default(),
+                        offset_from: i32::MIN,
+                        offset_to: i32::MIN,
+                        rule: None,
+                        rdates: Vec::new(),
+                    });
+                } else if line.ends("STANDARD") || line.ends("DAYLIGHT") {
+                    if let Some(mut done) = observance.take()
+                        && done.offset_to != i32::MIN
+                    {
+                        if done.offset_from == i32::MIN {
+                            done.offset_from = done.offset_to;
+                        }
+                        zone.observances.push(done);
+                    }
+                } else if let Some(observance) = observance.as_mut() {
+                    observance_property(observance, line);
+                } else if line.name == "TZID" {
+                    *tzid = tzid_key(&line.value);
+                } else if line.name == "X-LIC-LOCATION" {
+                    zone.location = Some(line.value.trim().to_string());
+                }
+            }
+        }
+        Self {
+            defined,
+            ..Self::default()
+        }
+    }
+
+    /// The zone of a date-time property's value, in the year it falls in:
+    /// `UTC` for a `Z` value, the IANA zone its TZID stands for, and
+    /// `floating` without a TZID or for one that stands for none, which is
+    /// then noted.
+    fn of(&mut self, line: &ContentLine, year: i32) -> String {
+        if line.value.ends_with('Z') {
+            return "UTC".into();
+        }
+        let Some(tzid) = line.param_value("TZID") else {
+            return "floating".into();
+        };
+        let tzid = tzid_key(&tzid);
+        if let Some(zone) = crate::timezone::zone_from_tzid(&tzid) {
+            return zone;
+        }
+        let key = (tzid, year);
+        let zone = if let Some(zone) = self.resolved.get(&key) {
+            zone.clone()
+        } else {
+            let zone = self.defined.get(&key.0).and_then(|defined| {
+                defined
+                    .location
+                    .as_deref()
+                    .and_then(crate::timezone::zone_from_tzid)
+                    .or_else(|| crate::timezone::zone_following(&defined.observances, year, &key.0))
+            });
+            self.resolved.insert(key.clone(), zone.clone());
+            zone
+        };
+        zone.unwrap_or_else(|| {
+            if !self.unknown.contains(&key.0) {
+                self.unknown.push(key.0);
+            }
+            "floating".into()
+        })
+    }
+}
+
+/// A TZID as a lookup key: Outlook quotes some parameters, and escapes the
+/// commas of the property naming one.
+fn tzid_key(tzid: &str) -> String {
+    unescape(tzid.trim().trim_matches('"').trim())
+}
+
+/// Read one property of a STANDARD or DAYLIGHT observance.
+fn observance_property(observance: &mut Observance, line: &ContentLine) {
+    let value = line.value.trim();
+    match line.name.as_str() {
+        "DTSTART" => {
+            if let Some((onset, _)) = parse_cal_datetime(line) {
+                observance.onset = onset;
+            }
+        }
+        "TZOFFSETFROM" => {
+            if let Some(offset) = parse_utc_offset(value) {
+                observance.offset_from = offset;
+            }
+        }
+        "TZOFFSETTO" => {
+            if let Some(offset) = parse_utc_offset(value) {
+                observance.offset_to = offset;
+            }
+        }
+        "RRULE" => observance.rule = yearly_rule(value),
+        "RDATE" => observance
+            .rdates
+            .extend(value.split(',').filter_map(|part| {
+                NaiveDateTime::parse_from_str(part.trim().trim_end_matches('Z'), DT_LOCAL).ok()
+            })),
+        _ => {}
+    }
+}
+
+/// An RFC 5545 UTC offset (`+0100`, `-0430`, `+053000`) in seconds.
+fn parse_utc_offset(value: &str) -> Option<i32> {
+    let (sign, digits) = match value.split_at_checked(1)? {
+        ("+", digits) => (1, digits),
+        ("-", digits) => (-1, digits),
+        _ => return None,
+    };
+    if !matches!(digits.len(), 4 | 6) || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let part =
+        |range: std::ops::Range<usize>| digits.get(range).and_then(|text| text.parse::<i32>().ok());
+    let seconds = if digits.len() == 6 { part(4..6)? } else { 0 };
+    let total = part(0..2)? * 3600 + part(2..4)? * 60 + seconds;
+    (total < 24 * 3600).then_some(sign * total)
+}
+
+/// The yearly transition rule of an observance's RRULE, if Calendar can
+/// follow it: a month, and a weekday in it or a day of it.
+fn yearly_rule(rule: &str) -> Option<YearlyRule> {
+    if !rrule_value(rule, "FREQ")?.eq_ignore_ascii_case("YEARLY") {
+        return None;
+    }
+    let month = rrule_u32(rule, "BYMONTH").filter(|month| (1..=12).contains(month))?;
+    let first_month_day = rrule_value(rule, "BYMONTHDAY").and_then(|days| {
+        days.split(',')
+            .filter_map(|day| day.trim().parse::<u32>().ok())
+            .filter(|day| (1..=31).contains(day))
+            .min()
+    });
+    let day = match (rrule_value(rule, "BYDAY"), first_month_day) {
+        (Some(byday), month_day) => {
+            let byday = byday.split(',').next()?.trim();
+            let split = byday.len().checked_sub(2)?;
+            let (ordinal, weekday) = (byday.get(..split)?, byday.get(split..)?);
+            let weekday = match weekday.to_ascii_uppercase().as_str() {
+                "MO" => chrono::Weekday::Mon,
+                "TU" => chrono::Weekday::Tue,
+                "WE" => chrono::Weekday::Wed,
+                "TH" => chrono::Weekday::Thu,
+                "FR" => chrono::Weekday::Fri,
+                "SA" => chrono::Weekday::Sat,
+                "SU" => chrono::Weekday::Sun,
+                _ => return None,
+            };
+            match (ordinal, month_day) {
+                ("", Some(month_day)) => OnsetDay::OnOrAfter(month_day, weekday),
+                (ordinal, _) => OnsetDay::Nth(
+                    ordinal
+                        .trim_start_matches('+')
+                        .parse::<i8>()
+                        .ok()
+                        .filter(|n| *n != 0 && (-5..=5).contains(n))?,
+                    weekday,
+                ),
+            }
+        }
+        (None, Some(day)) => OnsetDay::Fixed(day),
+        (None, None) => return None,
+    };
+    let until = rrule_value(rule, "UNTIL").and_then(|until| {
+        let until = until.trim().trim_end_matches('Z');
+        NaiveDateTime::parse_from_str(until, DT_LOCAL)
+            .ok()
+            .or_else(|| parse_cal_date(until).and_then(|date| date.and_hms_opt(23, 59, 59)))
+    });
+    Some(YearlyRule { month, day, until })
 }
 
 #[allow(
     clippy::too_many_lines,
     reason = "VEVENT parsing keeps property state and component termination in one auditable pass"
 )]
-fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEvent>, usize) {
+fn parse_vevent(
+    lines: &[Option<ContentLine>],
+    mut i: usize,
+    zones: &mut Zones,
+) -> (Option<ParsedEvent>, usize) {
     let mut id: Option<Id> = None;
     let mut title = String::new();
     let mut start: Option<NaiveDateTime> = None;
@@ -345,6 +608,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
     let mut color = Palette::Indigo;
     let mut reminder: Option<i64> = None;
     let mut timezone = "floating".to_string();
+    let mut end_timezone = None;
     let mut attendees: Vec<Attendee> = Vec::new();
     let mut organizer = None;
     let mut recurrence_interval = 1;
@@ -421,7 +685,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                     let Some((dt, ad)) = parse_cal_datetime(line) else {
                         return (None, i);
                     };
-                    timezone = timezone_from_property(line);
+                    timezone = zones.of(line, dt.year());
                     all_day = all_day || ad;
                     start = Some(dt);
                 }
@@ -429,6 +693,7 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
                     let Some((dt, _)) = parse_cal_datetime(line) else {
                         return (None, i);
                     };
+                    end_timezone = Some(zones.of(line, dt.year()));
                     end = Some(dt);
                 }
                 "DURATION" => {
@@ -454,7 +719,22 @@ fn parse_vevent(lines: &[Option<ContentLine>], mut i: usize) -> (Option<ParsedEv
         rrule_value(&rrule, "UNTIL").and_then(|value| series_until(value, start, &timezone));
     let mut end_later_fold = false;
     let mut end = match (end, duration) {
-        (Some(end), _) => end,
+        // A flight leaves in one zone and lands in another; the event keeps
+        // its start's zone, so the end becomes that instant there.
+        (Some(end), _) => match end_timezone.filter(|zone| {
+            !all_day && *zone != timezone && *zone != "floating" && timezone != "floating"
+        }) {
+            Some(zone) => {
+                let Some((end, later_fold)) = crate::timezone::wall_to_utc(&zone, end)
+                    .and_then(|(instant, _)| wall_in(&timezone, instant))
+                else {
+                    return (None, i);
+                };
+                end_later_fold = later_fold;
+                end
+            }
+            None => end,
+        },
         (None, Some((days, time))) => {
             let Some((end, later_fold)) = duration_span(start, &timezone, days, time) else {
                 return (None, i);
@@ -645,15 +925,6 @@ fn parse_uid(value: &str) -> Option<Id> {
     ))
 }
 
-fn timezone_from_property(line: &ContentLine) -> String {
-    if line.value.ends_with('Z') {
-        "UTC".into()
-    } else {
-        line.param_value("TZID")
-            .unwrap_or_else(|| "floating".to_string())
-    }
-}
-
 fn parse_participant(line: &ContentLine) -> Option<Attendee> {
     let value = line.value.trim();
     let email = value
@@ -809,12 +1080,21 @@ fn duration_span(
         return Some((wall.checked_add_signed(time)?, false));
     }
     let (instant, _) = crate::timezone::wall_to_utc(zone, wall)?;
-    let end = instant.checked_add_signed(time)?;
-    let end_wall = end
-        .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
-        .naive_local();
-    let later_fold = crate::timezone::wall_to_utc(zone, end_wall)?.0 != end;
-    Some((end_wall, later_fold))
+    wall_in(zone, instant.checked_add_signed(time)?)
+}
+
+/// The wall time `instant` shows in `zone`, and whether it is the later of a
+/// repeated hour's two instants.
+fn wall_in(zone: &str, instant: chrono::DateTime<chrono::Utc>) -> Option<(NaiveDateTime, bool)> {
+    let wall = if zone == "UTC" {
+        instant.naive_utc()
+    } else {
+        instant
+            .with_timezone(&zone.parse::<chrono_tz::Tz>().ok()?)
+            .naive_local()
+    };
+    let later_fold = crate::timezone::wall_to_utc(zone, wall)?.0 != instant;
+    Some((wall, later_fold))
 }
 
 /// Minutes before the start a VALARM's relative TRIGGER rings: `-PT15M`,
@@ -1355,6 +1635,287 @@ mod tests {
             );
             let (events, _) = parse(&ics);
             assert_eq!(events[0].title, title);
+        }
+    }
+
+    /// The VTIMEZONE Outlook and Exchange send with an invite in Central
+    /// European time, under the TZID `tzid`.
+    fn outlook_zone(tzid: &str) -> String {
+        format!(
+            "BEGIN:VTIMEZONE\r\nTZID:{tzid}\r\n\
+             BEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETFROM:+0200\r\n\
+             TZOFFSETTO:+0100\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=10\r\n\
+             END:STANDARD\r\n\
+             BEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\nTZOFFSETFROM:+0100\r\n\
+             TZOFFSETTO:+0200\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=-1SU;BYMONTH=3\r\n\
+             END:DAYLIGHT\r\nEND:VTIMEZONE\r\n"
+        )
+    }
+
+    /// An invite as Exchange writes it: `zone` (a VTIMEZONE or nothing)
+    /// before the event, whose times name `tzid`.
+    fn outlook_invite(zone: &str, tzid: &str, start: &str, end: &str) -> String {
+        format!(
+            "BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nPRODID:Microsoft Exchange Server 2010\r\n\
+             VERSION:2.0\r\n{zone}BEGIN:VEVENT\r\n\
+             ORGANIZER;CN=Jane Doe:mailto:jane@contoso.com\r\n\
+             ATTENDEE;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=Sam Example:\r\n \
+             mailto:sam@example.com\r\n\
+             DESCRIPTION;LANGUAGE=en-US:Agenda to follow\\n\r\n\
+             UID:040000008200E00074C5B7101A82E00800000000B0E0F5A2C1E3DC0100000000000000001\r\n \
+             0000000F3A1C2B4D5E6F708192A3B4C5D6E7F80\r\n\
+             SUMMARY;LANGUAGE=en-US:Quarterly planning\r\n\
+             DTSTART;TZID={tzid}:{start}\r\nDTEND;TZID={tzid}:{end}\r\n\
+             CLASS:PUBLIC\r\nPRIORITY:5\r\nDTSTAMP:20261020T081500Z\r\nTRANSP:OPAQUE\r\n\
+             STATUS:CONFIRMED\r\nSEQUENCE:0\r\nLOCATION;LANGUAGE=en-US:Room 4.12\r\n\
+             X-MICROSOFT-CDO-BUSYSTATUS:TENTATIVE\r\nX-MICROSOFT-CDO-ALLDAYEVENT:FALSE\r\n\
+             BEGIN:VALARM\r\nDESCRIPTION:REMINDER\r\nTRIGGER;RELATED=START:-PT15M\r\n\
+             ACTION:DISPLAY\r\nEND:VALARM\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n"
+        )
+    }
+
+    /// The zone an imported invite's event keeps, and the instant it starts.
+    fn imported_at(payload: &str) -> (String, String) {
+        let parsed = parse_calendar(payload);
+        assert_eq!(parsed.events.len(), 1, "the invite's event is kept");
+        let event = &parsed.events[0];
+        let instant = crate::timezone::wall_to_utc(&event.timezone, event.start)
+            .map(|(instant, _)| instant.to_rfc3339())
+            .unwrap_or_default();
+        (event.timezone.clone(), instant)
+    }
+
+    /// Outlook and Exchange name zones the Windows way; with or without the
+    /// VTIMEZONE they send, the invite imports at its instant.
+    #[test]
+    fn outlook_invites_import_at_their_instant() {
+        let at_ten = "2026-11-03T09:00:00+00:00".to_string();
+        for zone in [String::new(), outlook_zone("W. Europe Standard Time")] {
+            let payload = outlook_invite(
+                &zone,
+                "W. Europe Standard Time",
+                "20261103T100000",
+                "20261103T110000",
+            );
+            assert_eq!(
+                imported_at(&payload),
+                ("Europe/Berlin".to_string(), at_ten.clone())
+            );
+            let (events, _) = crate::actions::import_payload(&payload)
+                .expect("an Outlook invite is something to import");
+            assert_eq!(events[0].timezone, "Europe/Berlin");
+            assert_eq!(events[0].reminder, 15);
+            assert!(parse_calendar(&payload).unknown_zones.is_empty());
+        }
+        // Summer time, through the Windows name of US Pacific time.
+        assert_eq!(
+            imported_at(&outlook_invite(
+                "",
+                "Pacific Standard Time",
+                "20260710T090000",
+                "20260710T100000"
+            )),
+            (
+                "America/Los_Angeles".to_string(),
+                "2026-07-10T16:00:00+00:00".to_string()
+            )
+        );
+        // A zone Outlook names after its cities, or a customised one, is
+        // known only by its VTIMEZONE's rules: the zone that keeps them, and
+        // one of the cities when it names one.
+        let cities = "(UTC+01:00) Amsterdam\\, Berlin\\, Bern\\, Rome\\, Stockholm\\, Vienna";
+        let quoted = "\"(UTC+01:00) Amsterdam, Berlin, Bern, Rome, Stockholm, Vienna\"";
+        assert_eq!(
+            imported_at(&outlook_invite(
+                &outlook_zone(cities),
+                quoted,
+                "20261103T100000",
+                "20261103T110000"
+            )),
+            ("Europe/Berlin".to_string(), at_ten)
+        );
+        let (zone, instant) = imported_at(&outlook_invite(
+            &outlook_zone("Customized Time Zone"),
+            "Customized Time Zone",
+            "20260710T100000",
+            "20260710T110000",
+        ));
+        assert_eq!(instant, "2026-07-10T08:00:00+00:00");
+        let winter = NaiveDate::from_ymd_opt(2026, 1, 15)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        assert_eq!(
+            crate::timezone::wall_to_utc(&zone, winter)
+                .unwrap()
+                .0
+                .to_rfc3339(),
+            "2026-01-15T11:00:00+00:00",
+            "{zone} keeps Central European winter time"
+        );
+        // Southern-hemisphere rules count weekdays from a month's start.
+        let sydney = "BEGIN:VTIMEZONE\r\nTZID:Customized Time Zone 1\r\n\
+             BEGIN:STANDARD\r\nDTSTART:16010101T030000\r\nTZOFFSETFROM:+1100\r\n\
+             TZOFFSETTO:+1000\r\nRRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=4\r\n\
+             END:STANDARD\r\nBEGIN:DAYLIGHT\r\nDTSTART:16010101T020000\r\n\
+             TZOFFSETFROM:+1000\r\nTZOFFSETTO:+1100\r\n\
+             RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=10\r\nEND:DAYLIGHT\r\n\
+             END:VTIMEZONE\r\n";
+        assert_eq!(
+            imported_at(&outlook_invite(
+                sydney,
+                "Customized Time Zone 1",
+                "20261201T090000",
+                "20261201T100000"
+            )),
+            (
+                "Australia/Sydney".to_string(),
+                "2026-11-30T22:00:00+00:00".to_string()
+            )
+        );
+        // libical's VTIMEZONE says which zone it is.
+        let located = "BEGIN:VTIMEZONE\r\nTZID:/citadel.org/20250101_1/Custom\r\n\
+             X-LIC-LOCATION:America/New_York\r\nEND:VTIMEZONE\r\n";
+        assert_eq!(
+            imported_at(&outlook_invite(
+                located,
+                "/citadel.org/20250101_1/Custom",
+                "20260710T090000",
+                "20260710T100000"
+            ))
+            .0,
+            "America/New_York"
+        );
+    }
+
+    /// A zone nothing places keeps the event at its time as written, and
+    /// the import names the zone.
+    #[test]
+    fn an_unknown_zone_keeps_the_time_as_written() {
+        let no_fit = "BEGIN:VTIMEZONE\r\nTZID:Lunar Standard Time\r\nBEGIN:STANDARD\r\n\
+             DTSTART:16010101T000000\r\nTZOFFSETFROM:+0123\r\nTZOFFSETTO:+0123\r\n\
+             END:STANDARD\r\nEND:VTIMEZONE\r\n";
+        for (zone, tzid) in [
+            ("", "Olympus Mons Standard Time"),
+            (no_fit, "Lunar Standard Time"),
+        ] {
+            let payload = outlook_invite(zone, tzid, "20261103T100000", "20261103T110000");
+            let parsed = parse_calendar(&payload);
+            assert_eq!(parsed.unknown_zones, vec![tzid.to_string()]);
+            let event = &parsed.events[0];
+            assert_eq!(event.timezone, "floating");
+            assert_eq!(event.start.to_string(), "2026-11-03 10:00:00");
+            assert_eq!(event.end.to_string(), "2026-11-03 11:00:00");
+            let (import, unknown) =
+                crate::resource::import_reporting(&payload).expect("the event is imported");
+            assert_eq!(unknown, vec![tzid.to_string()]);
+            assert_eq!(
+                crate::resource::imported_status("invite.ics", &unknown),
+                format!(
+                    "Imported calendar items from invite.ics. Times in {tzid} stay as written, as that time zone is unknown"
+                )
+            );
+            let mut calendar = ui::tilo_resource::Replica::<Calendar>::new();
+            calendar.apply(import).unwrap();
+            assert_eq!(calendar.state().unwrap().events.len(), 1);
+        }
+    }
+
+    /// A flight leaves in one zone and lands in another: the event keeps its
+    /// departure's zone and lands at the right instant.
+    #[test]
+    fn an_end_in_another_zone_is_the_same_instant() {
+        let payload = "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:flight@example.com\r\n\
+             SUMMARY:Flight\r\nDTSTART;TZID=W. Europe Standard Time:20260710T100000\r\n\
+             DTEND;TZID=Eastern Standard Time:20260710T123000\r\nEND:VEVENT\r\n\
+             END:VCALENDAR\r\n";
+        let (events, _) = parse(payload);
+        assert_eq!(events[0].timezone, "Europe/Berlin");
+        assert_eq!(events[0].end.to_string(), "2026-07-10 18:30:00");
+        assert_eq!(
+            events[0].end_instant().unwrap().to_rfc3339(),
+            "2026-07-10T16:30:00+00:00"
+        );
+    }
+
+    /// RFC 5545 has a timed series write UNTIL and EXDATE as date-times of
+    /// DTSTART's kind; the export reads back to the same series.
+    #[test]
+    fn a_timed_series_exports_its_end_and_exclusions_as_date_times() {
+        let date = |day| NaiveDate::from_ymd_opt(2026, 10, day).unwrap();
+        for (zone, all_day, until, exdate) in [
+            (
+                "Europe/Berlin",
+                false,
+                "UNTIL=20261026T080000Z",
+                "EXDATE;TZID=Europe/Berlin:20261012T090000",
+            ),
+            (
+                "UTC",
+                false,
+                "UNTIL=20261026T090000Z",
+                "EXDATE:20261012T090000Z",
+            ),
+            (
+                "floating",
+                false,
+                "UNTIL=20261026T090000",
+                "EXDATE:20261012T090000",
+            ),
+            (
+                "floating",
+                true,
+                "UNTIL=20261026",
+                "EXDATE;VALUE=DATE:20261012",
+            ),
+        ] {
+            let start = date(5)
+                .and_hms_opt(if all_day { 0 } else { 9 }, 0, 0)
+                .unwrap();
+            let event = Event {
+                id: Uuid::new_v4(),
+                title: "Standup".into(),
+                start,
+                end: start + chrono::Duration::minutes(if all_day { 24 * 60 } else { 30 }),
+                all_day,
+                recurrence: Recurrence::Weekly,
+                recurrence_until: Some(date(26)),
+                recurrence_exdates: [date(12)].into_iter().collect(),
+                timezone: zone.into(),
+                ..Event::default()
+            };
+            let exported = export(&Calendar {
+                events: vec![event.clone()].into(),
+                ..Calendar::default()
+            });
+            assert!(
+                exported.contains(&format!("RRULE:FREQ=WEEKLY;{until}\r\n")),
+                "{exported}"
+            );
+            assert!(exported.contains(&format!("{exdate}\r\n")), "{exported}");
+            let (events, _) = parse(&exported);
+            let back = &events[0];
+            assert_eq!(
+                (
+                    back.recurrence_until,
+                    &back.recurrence_exdates,
+                    &back.timezone
+                ),
+                (
+                    event.recurrence_until,
+                    &event.recurrence_exdates,
+                    &event.timezone
+                )
+            );
+            let window = (date(1), date(31) + chrono::Duration::days(60));
+            assert_eq!(
+                back.occurrences_in(window.0, window.1),
+                vec![date(5), date(19), date(26)]
+            );
+            assert_eq!(
+                back.occurrences_in(window.0, window.1),
+                event.occurrences_in(window.0, window.1)
+            );
         }
     }
 }

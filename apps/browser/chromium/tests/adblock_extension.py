@@ -6,7 +6,10 @@ Manifest V3 extensions that block requests by declarativeNetRequest rules.
 A fixture blocker with one such rule (block `/ads/`) keeps a page's ad script
 and its tracking request from loading, when added to the running engine as
 the Browser adds one from the Web Store, and when the engine starts with it,
-as after a restart. Without it the same page loads both.
+as after a restart. Without it the same page loads both. A second rule puts
+the blocker's own stand-in in place of the page's analytics script, at an
+address of its own for the session (`use_dynamic_url`), as uBlock Origin
+Lite does: the page's calls to the analytics API then still work.
 """
 import http.server
 import json
@@ -18,8 +21,8 @@ import time
 import unittest
 from native_regressions import HANG_BOUND, Host
 
-BLOCKED = {'ad': 'blocked', 'tracking': 'untracked'}
-SHOWN = {'ad': 'shown', 'tracking': 'tracked'}
+BLOCKED = {'ad': 'blocked', 'tracking': 'untracked', 'analytics': 'stand-in'}
+SHOWN = {'ad': 'shown', 'tracking': 'tracked', 'analytics': 'site'}
 
 SOURCE = Path(__file__).parent.joinpath('adblock-fixture')
 # Loaded from a copy: Chromium writes its compiled rules beside the manifest.
@@ -33,11 +36,14 @@ def setUpModule():
     FIXTURE = str(Path(shutil.copytree(SOURCE, Path(copy.name, 'blocker'))).resolve())
 PAGE = b'''<!doctype html><title>loading</title>
 <script src="/ads/ad.js"></script>
+<script src="/analytics/ga.js"></script>
 <script>
 addEventListener('load', async () => {
   let tracked = 'tracked';
   try { await fetch('/ads/beacon'); } catch (error) { tracked = 'untracked'; }
-  document.title = JSON.stringify({ad: window.adShown ? 'shown' : 'blocked', tracking: tracked});
+  let analytics = 'missing';
+  try { ga('send', 'pageview'); analytics = ga.standIn ? 'stand-in' : 'site'; } catch (error) {}
+  document.title = JSON.stringify({ad: window.adShown ? 'shown' : 'blocked', tracking: tracked, analytics});
 });
 </script>'''
 
@@ -56,6 +62,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/javascript')
             self.end_headers()
             self.wfile.write(b'window.adShown = true;')
+        elif self.path == '/analytics/ga.js':
+            self.send_header('Content-Type', 'text/javascript')
+            self.end_headers()
+            self.wfile.write(b'window.ga = function () {};')
         elif self.path == '/ads/beacon':
             self.send_header('Content-Type', 'text/plain')
             self.end_headers()

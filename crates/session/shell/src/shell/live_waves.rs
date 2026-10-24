@@ -27,7 +27,7 @@ pub struct LiveWaves {
 
 #[must_use]
 pub fn roster_id(device: &[u8; 32]) -> String {
-    format!("peer@{}", neighbour_wire::peer_handle(device))
+    crate::shell::peer_presence::presence_id(neighbour_wire::peer_handle(device))
 }
 
 impl LiveWaves {

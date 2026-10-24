@@ -91,6 +91,19 @@ literals and integer offsets by `tools/regex-syntax-tables.py`: about 121 KB
 the shared runtime no longer relocates in every app process. Every set,
 name and fold is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
 
+## JSON value code compiled once
+
+`serde_json` 1.0.151 is the checksum-verified MIT/Apache-2.0 registry release
+with the `Value` code every crate compiled for itself moved into serde_json,
+which the shared runtime holds once: the parser a raw value is read back
+with (reached from every generic read of a `Value` once `raw_value` is on),
+the map's insertion, cloning and comparing, which `#[inline]` copied into
+each caller, and `Value`'s derived, and so inlined, `Clone` and `PartialEq`.
+Measured on the x86_64 app binaries at dcac562fe9: the 64 apps lose 966,311
+loadable bytes (median 17 KB each), the shared runtime 246,289 and its engines
+183,000. Behaviour is unchanged; see its `TILO-PATCH.md` and `PROVENANCE.md`.
+Keep the copy while apps link serde_json through the shared runtime.
+
 ## Exportable histories
 
 The fork changes also live in two standalone histories, disconnected from the
@@ -197,7 +210,8 @@ one, as it always has, and its process is restarted.
 
 ## Accessibility and YouTube manifests
 
-Four crates differ from their crates.io release only in `Cargo.toml`. Each
+Four crates differ from their crates.io release in `Cargo.toml`, and
+`accesskit_unix` also in its source (the read-only tree below). Each
 directory's `PROVENANCE.md` has the exact edit. They used to be git forks on
 code.tilo.so, which made every Cargo command in the workspace fail whenever
 that host was down. Now they are path crates here:
@@ -213,6 +227,20 @@ crates.io releases. `vendor/miracast` is Tilo's own Miracast crate at a pinned
 revision of its repository, vendored for the same reason until it is
 published. Remove a row and its `[patch.crates-io]` entry once upstream
 releases the change.
+
+`accesskit_unix` also carries a read-only tree: when `TILO_ATSPI_READ_ONLY`
+is `1` in the process's environment, every AT-SPI method that acts on the tree
+(`Action.DoAction`, `EditableText`, setting `Value.CurrentValue`, selecting,
+`Component.GrabFocus`, moving the caret or a text selection) answers
+`org.freedesktop.DBus.Error.AccessDenied` before it reaches the app's action
+handler, while everything a screen reader reads stays served. A method call on
+the bus carries no proof that a person asked for it, so the launcher sets the
+variable for every sandboxed graphical app except on the dev image
+(`launcher::dbus_proxy::atspi_read_only`): apps act through the action broker
+and through the person's own input, which the compositor sees. The public API
+is the release's, so the published SDK still builds on crates.io's
+`accesskit_unix`. It is Tilo policy rather than a fix, so it has no upstream
+contribution.
 
 ## Vello changes
 
@@ -583,6 +611,22 @@ atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
 precedence over an `override_image` texture for the same image.
 `Renderer::image_source_writes()` counts the writes and their bytes.
 
+## `vendor/vello_encoding/src/image_delta.rs` (new), `image_cache.rs`, `vendor/vello/src/render.rs`, `recording.rs`, `wgpu_engine.rs`: images that changed a few rects
+
+`register_image_delta(from, to, rects)` says the image whose blob id is `to`
+is the image `from` changed only in `rects` (x, y, width, height); a bounded
+process-wide list keeps the latest 64. When the image cache meets `to` and
+holds `from` (or an image a few deltas back) as uploaded and not drawn in the
+same pass, `to` takes over `from`'s atlas slot and the pass lists only the
+rects (`Images::regions`), which the renderer writes with
+`Command::WriteImageRegion`: one `write_texture` at the rect's origin and
+extent, reading the blob from the rect's offset. Any other cache, or an image
+it does not hold, uploads the image whole as before. A web page's frame is a
+new image at every paint; a blinking caret now uploads its few hundred bytes,
+not the 16 MB frame. `image_delta(to)` reads the list back. `vello_encoding`'s
+manifest gains an empty `[workspace]` table so t's `vendored` check runs its
+tests (`tools/ci/test-vendored-crates.sh`).
+
 ## `vendor/vello_shaders/build.rs`, `vendor/vello/src/lib.rs`: shader fingerprint
 
 The build script also emits `SOURCE_FINGERPRINT`, an FNV-1a hash over every
@@ -700,6 +744,18 @@ compositor that checks the serial, as `xdg_activation_v1` lets it, refuses
 every token a native app asks for. The press is recorded per window from the
 input handlers; releases, motion and focus changes are not presses and are
 not recorded. A token still proves only what the compositor checks.
+
+## `vendor/winit`: chords on a non-Latin source keep the Latin letter
+
+Under Ctrl, Alt or Super, a key whose active layout types a letter outside the
+Latin script reports as its logical key the Latin character another layout of
+the keymap puts on that key at the base level, as GTK does. With Russian or
+Arabic active, Ctrl+C copies; with French or German as the Latin source, the
+chord keeps that arrangement's letter rather than a US position's, so the key
+labelled Z stays undo instead of closing a tab. Text, `key_without_modifiers`,
+Latin letters with diacritics and keys no other layout gives a Latin
+character are unchanged. Tilo's shell wire test
+`non_latin_chord_wire` covers it against the real compositor keymap.
 
 ## Build-script-generated protobuf descriptors
 

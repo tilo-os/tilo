@@ -4,12 +4,15 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod audio;
+mod damage;
 mod extension_notification;
 mod extension_omnibox;
 mod extension_permissions;
 mod extension_sign_in;
+mod frame_memory;
 pub mod install;
 mod menus;
+mod page_clipboard;
 mod protocol;
 pub mod runtime;
 mod service_session_probe;
@@ -75,6 +78,7 @@ struct Shared {
     dialogs_can: AtomicBool,
     dialogs_asked: AtomicBool,
     dialogs_told: AtomicBool,
+    clipboard: page_clipboard::Sharing,
     /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
     /// The endpoints of popups the page opened, not yet adopted: each is
@@ -90,6 +94,10 @@ struct Shared {
     /// The pointer shape the page last asked for.
     cursor: Mutex<Option<winit::window::CursorIcon>>,
     frames: FrameSlot,
+    /// The tab's frame whole, which the host's damage packets change.
+    frame_store: Mutex<damage::FrameStore>,
+    /// The host was asked to send the tab's frame whole and has not yet.
+    frame_asked: AtomicBool,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     uri: Mutex<String>,
@@ -525,6 +533,7 @@ fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
 /// frame drawn here is converted.
 fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     if let Some(shared) = route(routes, tab) {
+        shared.frame_asked.store(false, Ordering::Relaxed);
         if let Some(outbox) = &shared.remote {
             outbox.frame(tab, frame);
             return;
@@ -533,33 +542,62 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     }
 }
 
+/// What changed of a tab's frame goes on to a client tab's process as the
+/// host sent it, and is applied to the tab's frame here otherwise. Where the
+/// frame it changes is missing, the host is asked, once, for it whole.
+fn deliver_damage(routes: &Routes, tab: u32, damage: damage::WireDamage, tx: &CommandQueue) {
+    let Some(shared) = route(routes, tab) else {
+        return;
+    };
+    let delivered = match &shared.remote {
+        Some(outbox) => outbox.damage(tab, damage),
+        None => present_damage(&shared, tab, damage),
+    };
+    if !delivered && !shared.frame_asked.swap(true, Ordering::Relaxed) {
+        let _ = tx.push(json!({"op":"resend_frame","tab":tab}));
+    }
+}
+
 /// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
 /// what the tab already has.
-fn present_frame(shared: &Shared, tab: u32, frame: super::Frame) {
-    // Comparing a full-resolution frame may scan tens of megabytes.
-    // The UI takes this same lock while handling input and drawing; keep
-    // that scan outside it, retaining only the immutable pixel allocation.
-    let previous = shared.frames.lock().ok().and_then(|slot| slot.clone());
-    let unchanged = previous.as_ref().is_some_and(|previous| {
-        previous.width == frame.width
-            && previous.height == frame.height
-            && previous.rgba == frame.rgba
-    });
+fn present_frame(shared: &Shared, tab: u32, mut frame: super::Frame) {
+    // Comparing a full-resolution frame may scan tens of megabytes. The UI
+    // takes the slot's lock while handling input and drawing; the store's
+    // is this thread's alone.
+    let changed = shared.frame_store.lock_recover().replace(&mut frame);
     if let Ok(mut slot) = shared.frames.lock() {
-        if unchanged
-            && let (Some(previous), Some(current)) = (&previous, slot.as_ref())
-            && current.width == previous.width
-            && current.height == previous.height
-            && Arc::ptr_eq(&previous.rgba, &current.rgba)
-        {
+        if !changed && let Some(current) = slot.as_ref() {
             super::frame_trace::unchanged(tab, frame.trace_id, current.trace_id);
             return;
         }
-        // A cleared/replaced slot during comparison still needs this
-        // frame, even if it matched the earlier snapshot.
+        // A view whose frame was cleared needs this one, even unchanged.
         *slot = Some(frame);
     }
     shared.wake();
+}
+
+/// Applies `damage` to the tab's frame and shows the result, as
+/// [`present_frame`] shows a whole frame. Returns `false` when there is no
+/// frame for it to change.
+fn present_damage(shared: &Shared, tab: u32, damage: damage::WireDamage) -> bool {
+    let mut store = shared.frame_store.lock_recover();
+    let frame = match store.apply(tab, damage) {
+        damage::Applied::Missing => return false,
+        damage::Applied::Changed(frame) => frame,
+        damage::Applied::Unchanged => {
+            let cleared = shared.frames.lock().is_ok_and(|slot| slot.is_none());
+            match store.frame(None) {
+                Some(frame) if cleared => frame,
+                _ => return true,
+            }
+        }
+    };
+    drop(store);
+    if let Ok(mut slot) = shared.frames.lock() {
+        *slot = Some(frame);
+    }
+    shared.wake();
+    true
 }
 
 /// Error-only surface used when the engine is not installed or cannot start.
@@ -589,10 +627,13 @@ impl UnavailableEngine {
                 dialogs_can: AtomicBool::default(),
                 dialogs_asked: AtomicBool::default(),
                 dialogs_told: AtomicBool::default(),
+                clipboard: page_clipboard::Sharing::default(),
                 popups: Mutex::default(),
                 unadopted: Mutex::default(),
                 cursor: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
+                frame_store: Mutex::default(),
+                frame_asked: AtomicBool::new(false),
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
                 uri: Mutex::new(String::new()),
@@ -706,15 +747,23 @@ fn spawn_command_writer(
     })
 }
 
-fn spawn_frame_reader(
+/// The host's output: its events, and its frames, piped or in `memory`.
+struct HostOutput {
     stdout: std::process::ChildStdout,
+    memory: Option<frame_memory::FrameMemory>,
+}
+
+fn spawn_frame_reader(
+    output: HostOutput,
     reader_shared: Arc<Shared>,
     reader_routes: Routes,
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
     ready_tx: std::sync::mpsc::SyncSender<()>,
     hub: Arc<shared::Hub>,
+    tx: Arc<CommandQueue>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     spawn_named("chromium-frames", move || {
+        let HostOutput { stdout, memory } = output;
         let mut reader = BufReader::new(stdout);
         loop {
             match protocol::read_packet(&mut reader) {
@@ -723,6 +772,19 @@ fn spawn_frame_reader(
                 }
                 Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
                     deliver_frame(&reader_routes, tab, frame);
+                }
+                Ok(Some(protocol::Packet::TabDamage(tab, damage))) => {
+                    deliver_damage(&reader_routes, tab, damage, &tx);
+                }
+                Ok(Some(protocol::Packet::SharedFrame(notice))) => {
+                    let delivered = memory.as_ref().map_or_else(
+                        || Err(std::io::Error::other("no frame memory was handed over")),
+                        |memory| frame_memory::deliver(&reader_routes, memory, &notice),
+                    );
+                    if let Err(error) = delivered {
+                        reader_shared.fail(format!("Invalid Chromium output: {error}"));
+                        break;
+                    }
                 }
                 Ok(Some(protocol::Packet::Json(value))) => {
                     if let Err(error) =
@@ -927,10 +989,19 @@ fn launch_host(
     extensions: &[String],
     private_root: Option<&Path>,
     mode: HostMode<'_>,
-) -> Result<std::process::Child, String> {
+) -> Result<(std::process::Child, Option<frame_memory::FrameMemory>), String> {
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
+    // Without frame memory the host pipes its frames: slower, still whole.
+    let mut memory = frame_memory::FrameMemory::create()
+        .inspect_err(|error| tracing::warn!(%error, "Chromium frame memory unavailable"))
+        .ok();
+    if let Some(memory) = &memory {
+        memory.hand_to(&mut command);
+    }
     command.args(host_audio_switches(media::audio_output::is_governed()));
+    // A frame's changed rects, not the frame again (`damage`).
+    command.arg("--tilo-frame-damage");
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -959,6 +1030,9 @@ fn launch_host(
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| format!("Could not start Chromium at {}: {error}", host.display()))?;
+    if let Some(memory) = &mut memory {
+        memory.spawned();
+    }
     if let Some(root) = private_root
         && let Err(error) = record_private_helper(root, child.id())
     {
@@ -968,7 +1042,7 @@ fn launch_host(
             "Could not record private Chromium process: {error}"
         ));
     }
-    Ok(child)
+    Ok((child, memory))
 }
 
 /// What a starting host's supervisor needs: it serves the profile to other
@@ -1229,7 +1303,8 @@ impl ChromiumEngine {
                 }
             }
         };
-        let mut child = launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
+        let (mut child, memory) =
+            launch_host(host, profile, &extensions, private_root.as_deref(), mode)?;
         let Some(stdin) = child.stdin.take() else {
             let _ = child.kill();
             let _ = child.wait();
@@ -1270,12 +1345,13 @@ impl ChromiumEngine {
         let reader_shared = shared.clone();
         let reader_routes = routes;
         if let Err(error) = spawn_frame_reader(
-            stdout,
+            HostOutput { stdout, memory },
             reader_shared,
             reader_routes,
             download_events,
             ready_tx,
             hub.clone(),
+            tx.clone(),
         ) {
             tx.close();
             let _ = child.kill();
@@ -1365,6 +1441,13 @@ impl ChromiumEngine {
         {
             shared.dialogs_told.store(false, Ordering::Release);
         }
+    }
+
+    fn tell_clipboard(&self) {
+        (self.shared.clipboard).tell(|mut command| {
+            command["tab"] = json!(self.tab);
+            self.tx.push(command).is_ok()
+        });
     }
 
     fn tell_document_size(&self) {
@@ -1518,6 +1601,11 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_page_dialogs(&self) {
         self.shared.dialogs_asked.store(true, Ordering::Release);
         self.tell_dialogs();
+    }
+
+    fn share_clipboard(&self) {
+        self.shared.clipboard.asked.store(true, Ordering::Release);
+        self.tell_clipboard();
     }
 
     fn take_popups(&self) -> Vec<super::Popup> {
@@ -1684,6 +1772,7 @@ impl WebViewEngine for ChromiumEngine {
         self.tell_document_size();
         self.tell_popups();
         self.tell_dialogs();
+        self.tell_clipboard();
         self.shared
             .events
             .lock()
@@ -1810,6 +1899,7 @@ fn route_native_event(
                 value["selection_text"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            (shared.clipboard.can).store(value["page_clipboard"] == true, Ordering::Release);
         }
         if event_name == "popup"
             && let Some(popup) = value["popup"]
@@ -1993,6 +2083,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         | "extension_omnibox_default"
         | "extension_side_panel" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
+        "extension_shortcuts" => decode_extension_shortcuts(value).is_some(),
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value).is_some()
         }
@@ -2066,6 +2157,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
                 && value.get("selection_text").is_none_or(Value::is_boolean)
+                && value.get("page_clipboard").is_none_or(Value::is_boolean)
                 && value.get("sealed_documents").is_none_or(Value::is_boolean)
         }
         "tab_ready" => {
@@ -2080,6 +2172,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_none_or(Value::is_boolean)
                 && value.get("document_size").is_none_or(Value::is_boolean)
         }
+        "clipboard" | "clipboard_read" => page_clipboard::decode(value).is_some(),
         "selection_text" => {
             value["request_id"]
                 .as_u64()
@@ -2295,7 +2388,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id }
-        | WebViewCommand::ExtensionOpenSidePanel { id } => extension_id(id),
+        | WebViewCommand::ExtensionOpenSidePanel { id }
+        | WebViewCommand::ExtensionSidePanelPage { id } => extension_id(id),
         WebViewCommand::ExtensionMenuChoice { id, key } => {
             extension_id(id) && !key.is_empty() && key.len() <= 1024
         }
@@ -2329,6 +2423,11 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             key: KeyInput::Character(text),
             ..
         } => text.len() <= 65536,
+        // A shortcut's key is one character, or a named key.
+        WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Character(text),
+            ..
+        } => text.len() <= 16,
         WebViewCommand::SetUserScripts(scripts) | WebViewCommand::SetBlockingScripts(scripts) => {
             scripts.len() <= 1024
                 && scripts
@@ -2474,6 +2573,9 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             extension_permissions::decode(value)?
         }
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
+        "extension_shortcuts" => {
+            WebViewEvent::ExtensionShortcuts(decode_extension_shortcuts(value)?)
+        }
         "extension_download_open" => WebViewEvent::ExtensionDownloadOpen {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             reveal: value["reveal"].as_bool()?,
@@ -2590,6 +2692,7 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             let (request_id, result) = super::page::decode_result(value)?;
             WebViewEvent::PageResult { request_id, result }
         }
+        "clipboard" | "clipboard_read" => page_clipboard::decode(value)?,
         "selection_text" => WebViewEvent::SelectionText {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             text: value["text"].as_str()?.into(),
@@ -2790,6 +2893,16 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ExtensionOpenSidePanel { id } => {
             json!({"op":"extension_side_panel","id":id})
         }
+        WebViewCommand::ExtensionSidePanelPage { id } => {
+            json!({"op":"extension_panel","side_panel":id})
+        }
+        WebViewCommand::ExtensionCommandKey { key, modifiers } => {
+            let key = match key {
+                KeyInput::Character(value) => value,
+                KeyInput::Named(named) => format!("{named:?}"),
+            };
+            json!({"op":"extension_command_key","key":key,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta})
+        }
         WebViewCommand::DevTools {
             request_id,
             method,
@@ -2847,6 +2960,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::CopySelection { request_id } => {
             json!({"op":"selection_text","request_id":request_id})
         }
+        WebViewCommand::AnswerClipboardRead { request_id, text } => {
+            page_clipboard::answer(request_id, text.as_deref())?
+        }
         WebViewCommand::CancelNativeDownload { id } => json!({"op":"download_cancel","id":id}),
         WebViewCommand::RetryDownload { id } => json!({"op":"download_retry","id":id}),
         WebViewCommand::CancelAllDownloads => json!({"op":"download_cancel_all"}),
@@ -2879,7 +2995,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
 
 mod event_decoding;
 use event_decoding::{
-    decode_extension_event, decode_page_dialog, decode_site_event, valid_site_event,
+    decode_extension_event, decode_extension_shortcuts, decode_page_dialog, decode_site_event,
+    valid_site_event,
 };
 #[cfg(test)]
 mod extension_tests;

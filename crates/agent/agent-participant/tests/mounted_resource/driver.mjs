@@ -230,14 +230,23 @@ try {
   // The full-tab entry page marks its outcome on <html data-entry>: open,
   // refused (no access) or failed.
   const entryOutcome = 'document.documentElement.dataset.entry';
+  // The page asks which account opens the link once it loaded the runtime
+  // and read this browser's accounts: it shows its account choice
+  // (`data-card="accounts"`), or settles without one, or stops loading. Each
+  // is the page's own answer, so this waits for one of them, within the
+  // journey's own bound, rather than against a short clock a busy machine
+  // overruns while the page is still loading.
+  const accountChoice = '.tilo-entry-card[data-card=accounts]';
   const waitForAccounts = async () => {
-    const outcome = await tab.waitFor(`document.querySelectorAll(".tilo-entry-card button").length === 2
-      ? 'accounts' : (${entryOutcome} || false)`, {timeout:15_000});
+    const outcome = await tab.waitFor(`document.querySelector(${JSON.stringify(accountChoice)})
+      ? 'accounts' : (${entryOutcome} || (document.documentElement.dataset.arrival === 'stopped' && 'stopped') || false)`);
     assert.equal(outcome, 'accounts', `entry settled as ${outcome} instead of offering both fixture accounts`);
+    const offered = await tab.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(accountChoice + ' button')}), button => button.textContent)`);
+    assert.equal(offered.length, 2, `the account choice offers both fixture accounts: ${JSON.stringify(offered)}`);
   };
   const chooseAccount = async name => {
     await waitForAccounts();
-    await tab.evaluate(`Array.from(document.querySelectorAll(".tilo-entry-card button")).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
+    await tab.evaluate(`Array.from(document.querySelectorAll(${JSON.stringify(accountChoice + ' button')})).find(button => button.textContent.includes(${JSON.stringify(name)})).click()`);
   };
   observer.mark('navigate-link');
   await tab.navigate(link);

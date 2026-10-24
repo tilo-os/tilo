@@ -1336,6 +1336,10 @@ pub struct FileClipboardContext {
     pub(crate) workspace: String,
     pub(crate) owner: String,
     pub(crate) history_compensation: bool,
+    /// The agent behind this command, when the broker's custody of its
+    /// original invocation names an agent acting for the person whose
+    /// session Files runs in (`agent:<id>`). Presentation only.
+    pub(crate) attributed_agent: Option<String>,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
@@ -1360,6 +1364,14 @@ impl FileClipboardContext {
     }
     pub fn owner(&self) -> &str {
         &self.owner
+    }
+    /// The agent (`agent:<id>`) whose invocation this command continues,
+    /// acting for the person whose session Files runs in, as the broker's
+    /// custody of that invocation names it; `None` for anyone else. What the
+    /// transfer writes is recorded as that agent's, for its person. It grants
+    /// nothing.
+    pub fn attributed_agent(&self) -> Option<&str> {
+        self.attributed_agent.as_deref()
     }
     /// Whether the broker admitted this command through a declared document Undo.
     /// This is minted from original invocation custody, never caller parameters.
@@ -1513,6 +1525,20 @@ pub trait FileClipboardServices: Send + Sync {
         command: runtime_collab::file_clipboard::Command,
     ) -> Result<runtime_collab::file_clipboard::Reply, String>;
     fn disconnect(&self, peer: u64);
+
+    /// Name `agent`, an `agent:<id>` principal the broker took from its own
+    /// custody of a live Files invocation and that acts for the person whose
+    /// session Files runs in, as the cause of this device's next writes to
+    /// `paths` (absolute paths under the workspace mount; a folder covers
+    /// what is under it). Presentation only: it grants nothing.
+    ///
+    /// # Errors
+    /// Refuses when the host records no write attribution, or the filesystem
+    /// refused it.
+    fn attribute_writes(&self, agent: &str, paths: Vec<String>) -> Result<(), String> {
+        let _ = (agent, paths);
+        Err("write attribution is unavailable".into())
+    }
 }
 /// Where grants a person gives an application for another app's action are
 /// recorded. The broker decides whether to ask and builds the grant; the

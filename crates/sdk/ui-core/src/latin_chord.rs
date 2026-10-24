@@ -9,6 +9,13 @@
 //! carries is left as typed. Latin letters with diacritics (German `ö`,
 //! French `é`) stay as they are: they are shortcuts of their own on the
 //! layouts that have them.
+//!
+//! This is the fallback. On Linux, Winit already names such a chord by the
+//! Latin character another configured source puts on the key, so a French
+//! or German arrangement keeps its own letters (the key labelled Z is undo,
+//! where a US keyboard prints W or Y); a chord reaches here still non-Latin
+//! only when no configured source is Latin, or on a platform that does not
+//! name it.
 
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey, SmolStr};

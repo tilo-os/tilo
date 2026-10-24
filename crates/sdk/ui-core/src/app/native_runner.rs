@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tilo_lock::MutexRecover as _;
 
 mod held_frame;
+mod ime;
 #[cfg(target_os = "linux")]
 mod linux_header;
 mod private_text_input;
@@ -19,6 +20,13 @@ mod slot_bar;
 #[cfg(any(windows, target_os = "linux"))]
 pub(super) mod startup;
 mod wheel_batch;
+
+use ime::{
+    NativeImeWindowState, PrimaryPreeditUpdate, apply_native_ime, apply_native_ime_content,
+    pending_floating_ime_state, preedit_after_event, primary_floating_ime_state,
+    primary_ime_state_for_held_child, retained_return_ime_state, routes_to_floating_ime,
+    secondary_ime_state,
+};
 
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
@@ -792,92 +800,6 @@ fn dispatch_native_surface_accessibility(
     root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
 }
 
-/// A held protocol resource can anchor an editor outside its native window.
-/// Wayland cursor positions are signed; the shared widget/browser contract
-/// stays unchanged, while native handoff translations must not clamp to zero.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct NativeImeWindowState {
-    content: crate::ime::InputContent,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-}
-
-impl NativeImeWindowState {
-    fn from_rect(content: crate::ime::InputContent, rect: KurboRect) -> Self {
-        let shared = ImeWindowState::from_rect(content, rect);
-        let signed = |value: f64| {
-            if value.is_finite() {
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "rounded coordinate is bounded to the signed Wayland position range"
-                )]
-                {
-                    value
-                        .round()
-                        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-                }
-            } else {
-                0
-            }
-        };
-        Self {
-            content,
-            x: signed(rect.x0),
-            y: signed(rect.y0),
-            width: shared.width,
-            height: shared.height,
-        }
-    }
-}
-
-impl From<NativeImeWindowState> for ImeWindowState {
-    fn from(native: NativeImeWindowState) -> Self {
-        Self::from_rect(
-            native.content,
-            KurboRect::from_origin_size(
-                (f64::from(native.x), f64::from(native.y)),
-                (f64::from(native.width), f64::from(native.height)),
-            ),
-        )
-    }
-}
-
-impl From<ImeWindowState> for NativeImeWindowState {
-    fn from(shared: ImeWindowState) -> Self {
-        Self::from_rect(
-            shared.content,
-            KurboRect::from_origin_size(
-                (f64::from(shared.x), f64::from(shared.y)),
-                (f64::from(shared.width), f64::from(shared.height)),
-            ),
-        )
-    }
-}
-
-fn apply_native_ime(
-    window: &Window,
-    next: Option<NativeImeWindowState>,
-    previous: &mut Option<NativeImeWindowState>,
-) {
-    if next == *previous {
-        return;
-    }
-    match next {
-        Some(intent) => {
-            apply_native_ime_content(window, intent);
-            window.set_ime_allowed(true);
-            window.set_ime_cursor_area(
-                winit::dpi::LogicalPosition::new(intent.x, intent.y),
-                winit::dpi::LogicalSize::new(intent.width, intent.height),
-            );
-        }
-        None => window.set_ime_allowed(false),
-    }
-    *previous = next;
-}
-
 /// App-owned surfaces remain fixed to their live presentation rectangle.
 /// Winit's non-resizable Wayland window captures min/max at creation; a
 /// later request_inner_size does not advance those hints. Keep them aligned
@@ -887,170 +809,6 @@ fn resize_native_floating_window(window: &Window, rect: KurboRect) {
     window.set_min_inner_size(Some(size));
     window.set_max_inner_size(Some(size));
     let _ = window.request_inner_size(size);
-}
-
-fn apply_native_ime_content(window: &Window, intent: NativeImeWindowState) {
-    // Wayland takes the field's whole content type; other platforms take
-    // no more than winit's own purposes.
-    let (hint, purpose) = intent.content.wayland();
-    tilo_presentation::text_input::set_content_type(window, hint, purpose);
-    window.set_ime_purpose(intent.content.winit_purpose());
-}
-
-fn secondary_ime_state(
-    root: &dyn Widget,
-    id: &str,
-    desktop_rect: KurboRect,
-    focused: bool,
-) -> Option<NativeImeWindowState> {
-    if !focused {
-        return None;
-    }
-    let (content, rect) = root.floating_surface_ime(id)?;
-    Some(NativeImeWindowState::from_rect(
-        content,
-        rect - desktop_rect.origin().to_vec2(),
-    ))
-}
-
-fn primary_floating_ime_state(
-    root: &dyn Widget,
-    id: &str,
-    coordinate_offset: Vec2,
-) -> Option<NativeImeWindowState> {
-    let (content, rect) = root.floating_surface_ime(id)?;
-    Some(NativeImeWindowState::from_rect(
-        content,
-        rect - coordinate_offset,
-    ))
-}
-
-fn pending_floating_ime_state(
-    app: &App,
-    preedit_active: bool,
-    previous: Option<NativeImeWindowState>,
-) -> Option<NativeImeWindowState> {
-    preedit_active.then_some(())?;
-    app.pending_floating_ime_source()?;
-    previous
-}
-
-fn primary_ime_state_for_held_child(
-    primary: Option<ImeWindowState>,
-    primary_origin: Vec2,
-    child_origin: Vec2,
-) -> Option<NativeImeWindowState> {
-    let primary = primary?;
-    let rect = KurboRect::new(
-        f64::from(primary.x),
-        f64::from(primary.y),
-        f64::from(primary.x.saturating_add(primary.width)),
-        f64::from(primary.y.saturating_add(primary.height)),
-    ) + primary_origin
-        - child_origin;
-    Some(NativeImeWindowState::from_rect(primary.content, rect))
-}
-
-/// Refresh a held child's caret when the returned editor projects one, while
-/// keeping its real protocol alive across a transient missing projection.
-/// Only the exact retained, still-composing source may preserve prior state;
-/// every definitive lifecycle end returns the projected `None` and disables.
-fn retained_return_ime_state(
-    projected: Option<NativeImeWindowState>,
-    retained: Option<NativeImeWindowState>,
-    exact_source_active: bool,
-) -> Option<NativeImeWindowState> {
-    if exact_source_active {
-        projected.or(retained)
-    } else {
-        projected
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PrimaryPreeditUpdate {
-    Active,
-    PendingClear,
-    Finished,
-}
-
-fn preedit_after_event(event: &WindowEvent) -> Option<PrimaryPreeditUpdate> {
-    match event {
-        WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) if text.is_empty() => {
-            Some(PrimaryPreeditUpdate::PendingClear)
-        }
-        WindowEvent::Ime(winit::event::Ime::Preedit(_, _)) => Some(PrimaryPreeditUpdate::Active),
-        WindowEvent::Ime(winit::event::Ime::Commit(_) | winit::event::Ime::Disabled) => {
-            Some(PrimaryPreeditUpdate::Finished)
-        }
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-mod floating_ime_continuation_tests {
-    use super::*;
-
-    #[test]
-    fn returned_caret_keeps_signed_child_coordinates_and_content_type() {
-        let primary = ImeWindowState {
-            content: crate::ime::InputContent {
-                purpose: crate::ime::InputPurpose::Email,
-                hints: crate::ime::InputHints {
-                    multiline: true,
-                    ..crate::ime::InputHints::default()
-                },
-            },
-            x: 20,
-            y: 30,
-            width: 2,
-            height: 24,
-        };
-        let projected = primary_ime_state_for_held_child(
-            Some(primary),
-            Vec2::new(100.0, 80.0),
-            Vec2::new(300.0, 200.0),
-        )
-        .unwrap();
-        assert_eq!((projected.x, projected.y), (-180, -90));
-        assert_eq!((projected.width, projected.height), (2, 24));
-        assert_eq!(projected.content, primary.content);
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), true),
-            Some(projected)
-        );
-        assert_eq!(
-            retained_return_ime_state(None, Some(projected), false),
-            None
-        );
-    }
-
-    #[test]
-    fn empty_preedit_does_not_retire_custody_before_the_commit_in_the_same_batch() {
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Preedit(
-                String::new(),
-                None
-            ))),
-            Some(PrimaryPreeditUpdate::PendingClear)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Commit("文字".into()))),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert_eq!(
-            preedit_after_event(&WindowEvent::Ime(winit::event::Ime::Disabled)),
-            Some(PrimaryPreeditUpdate::Finished)
-        );
-        assert!(!routes_to_floating_ime(&WindowEvent::Focused(false)));
-    }
-}
-
-fn routes_to_floating_ime(event: &WindowEvent) -> bool {
-    matches!(
-        event,
-        WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
-    )
 }
 
 fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
@@ -3037,7 +2795,7 @@ impl AppHandler {
                 .is_none_or(|history| history.live_interactive())
             && app.history_layout.is_none()
             && app.close_admission.dialog.is_none())
-        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let layout_phase = slow_event::phase("layout");
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
@@ -3238,7 +2996,7 @@ impl AppHandler {
                 let moves = (!offers.is_empty()).then(|| {
                     crate::scroll_copy::moves_besides(
                         before,
-                        &crate::scroll_copy::placed(root),
+                        &crate::damage::widget_boxes(root),
                         &offers,
                     )
                 });

@@ -17,6 +17,22 @@
 use crate::channel::ArtifactId;
 use crate::op::SignedOp;
 
+/// One entry of a history as people read it. Opaque: only ever compared
+/// for equality (revert/restore callbacks pass it back to the caller). The
+/// caller picks the byte layout — UUID-v4 today, a content hash later.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct HistoryEntryId(pub [u8; 16]);
+
+impl HistoryEntryId {
+    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
+        Self(bytes)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
 /// Collect up to `max` ops of `artifact` with `seq < before_seq`: the newest
 /// such window, in ascending `seq` order, plus whether nothing older remains.
 /// The page semantics every history host shares.

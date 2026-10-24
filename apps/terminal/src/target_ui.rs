@@ -441,6 +441,17 @@ impl TerminalWidget {
                 let reason = t("terminal-host-denied");
                 self.show_status(&reason);
                 self.sessions.state = OpenState::Failed(reason);
+                // A refusal is not where the tab runs: reopened (the next
+                // login restores it), it goes where a new tab would rather
+                // than put the same question to the person unasked.
+                if self
+                    .recorded_target
+                    .as_ref()
+                    .is_some_and(SessionTarget::is_host)
+                {
+                    let back = self.sessions.default_target();
+                    self.record_target(&back);
+                }
             }
             None => {}
         }

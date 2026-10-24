@@ -731,6 +731,24 @@ impl NavGeometry {
             .unwrap_or(Rect::ZERO)
     }
 
+    /// The sidebar's header, or `Rect::ZERO` where it has none.
+    #[must_use]
+    pub fn sidebar_header(&self) -> Rect {
+        self.header(Column::Sidebar)
+    }
+
+    /// The content's header, or `Rect::ZERO` where it holds nothing.
+    #[must_use]
+    pub fn content_header(&self) -> Rect {
+        self.header(Column::Content)
+    }
+
+    /// Where the content's own view stands, under its header if it has one.
+    #[must_use]
+    pub fn content_body(&self) -> Rect {
+        self.body(Column::Content)
+    }
+
     fn translated(&self, by: Vec2) -> Self {
         let t = |r: Rect| if r == Rect::ZERO { r } else { r + by };
         Self {
@@ -1088,14 +1106,21 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         Column::Inspector => g.inspector != InspectorPlacement::Drawer,
         Column::Overview | Column::Content => true,
     };
+    // The shell's own buttons (and a window's controls merged into the
+    // row) may stand over any column, so they keep the row across them
+    // all; otherwise a column whose header holds nothing has none, and
+    // its body starts at the top beside the headers that do.
+    let shell_row = (inputs.has_sidebar && !inputs.toggle_in_bar)
+        || inputs.has_inspector
+        || inputs.history.is_some()
+        || inputs.window_controls.is_some()
+        || (!inputs.toggle_in_bar && (inputs.content_back || drills));
     let needs_header = !inputs.slots_in_bar()
-        && ((inputs.has_sidebar && !inputs.toggle_in_bar)
-            || inputs.has_inspector
-            || inputs.history.is_some()
+        && (shell_row
             || Column::ALL
                 .iter()
-                .any(|c| in_row(*c) && inputs.header_wanted(*c))
-            || (!inputs.toggle_in_bar && (inputs.content_back || drills)));
+                .any(|c| in_row(*c) && inputs.header_wanted(*c)));
+    let rows = |column: Column| shell_row || inputs.header_wanted(column);
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
@@ -1113,6 +1138,7 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     let hh = g.header_height;
     let bt = if in_bar { 0.0 } else { hh };
+    let bt_of = |column: Column| if rows(column) { bt } else { 0.0 };
     // A header in the window's bar stands below whatever overlays the
     // window's top edge (the desktop's top bar while it shows).
     let top = if in_bar {
@@ -1120,8 +1146,9 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         0.0
     };
-    let header_of = |col: Rect| {
-        if hh > 0.0 && col.width() > 0.0 {
+    // A column's header and the top its body starts at.
+    let header_of = |col: Rect, column: Column| {
+        if hh > 0.0 && col.width() > 0.0 && rows(column) {
             Rect::new(col.x0, col.y0 + top, col.x1, col.y0 + top + hh)
         } else {
             Rect::ZERO
@@ -1165,8 +1192,8 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.sidebar_column = Rect::new(0.0, 0.0, docked_now, h);
                 // The body keeps its width and slides under the edge, so its
                 // rows never reflow while it collapses.
-                sidebar_body = Rect::new(docked_now - sw, bt, docked_now, h);
-                sidebar_header = header_of(g.sidebar_column);
+                sidebar_body = Rect::new(docked_now - sw, bt_of(Column::Sidebar), docked_now, h);
+                sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
             }
         }
         SidebarPlacement::Drawer => {
@@ -1187,8 +1214,8 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             let x = screen_x(NavPane::Sidebar);
             if x > -w && x < w {
                 g.sidebar_column = Rect::new(x, 0.0, x + w, h);
-                sidebar_body = Rect::new(x, bt, x + w, h);
-                sidebar_header = header_of(g.sidebar_column);
+                sidebar_body = Rect::new(x, bt_of(Column::Sidebar), x + w, h);
+                sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
             }
         }
     }
@@ -1224,8 +1251,13 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         InspectorPlacement::Docked => {
             if inspector_now > 0.0 {
                 g.inspector_column = Rect::new(w - inspector_now, 0.0, w, h);
-                inspector_body = Rect::new(w - inspector_now, bt, w - inspector_now + iw, h);
-                inspector_header = header_of(g.inspector_column);
+                inspector_body = Rect::new(
+                    w - inspector_now,
+                    bt_of(Column::Inspector),
+                    w - inspector_now + iw,
+                    h,
+                );
+                inspector_header = header_of(g.inspector_column, Column::Inspector);
             }
         }
         InspectorPlacement::Drawer => {
@@ -1245,21 +1277,21 @@ fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     // 7. Headers and bodies.
     g.headers = [
         sidebar_header,
-        header_of(g.overview_column),
-        header_of(g.content_column),
+        header_of(g.overview_column, Column::Overview),
+        header_of(g.content_column, Column::Content),
         inspector_header,
     ];
-    let body_of = |col: Rect| {
+    let body_of = |col: Rect, column: Column| {
         if col.width() > 0.0 {
-            Rect::new(col.x0, col.y0 + bt, col.x1, col.y1)
+            Rect::new(col.x0, col.y0 + bt_of(column), col.x1, col.y1)
         } else {
             Rect::ZERO
         }
     };
     g.bodies = [
         sidebar_body,
-        body_of(g.overview_column),
-        body_of(g.content_column),
+        body_of(g.overview_column, Column::Overview),
+        body_of(g.content_column, Column::Content),
         inspector_body,
     ];
     if g.rail.width() > 0.0 {

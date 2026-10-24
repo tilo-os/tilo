@@ -832,76 +832,8 @@ impl WakeTally {
     }
 }
 
-/// A lock-state edge replaces every pixel on screen.  Keep that edge pending
-/// until a frame is actually accepted by the presenter; consuming it while
-/// the asynchronous render queue is full would leave the previous lock or
-/// desktop frame visible until unrelated input happens to trigger a repaint.
-fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
-    session_changed && !frame_submitted
-}
-
-/// Wall clock and date for the lock surface, read here rather than in its
-/// pure paint and tree builders.
-struct LockClock {
-    clock: String,
-    date: String,
-}
-
-impl LockClock {
-    fn now() -> Self {
-        let now = ui::clock::local_now();
-        Self {
-            clock: ui::clock::time_of_day(&now),
-            date: ui::format::day_heading(now.date_naive(), false),
-        }
-    }
-
-    fn view<'a>(
-        &'a self,
-        lock: &'a LockController,
-        notification_count: usize,
-        now_playing: Option<&'a crate::shell::now_playing::PlayerSnapshot>,
-        keyboard: Option<ui::passcode_keyboard::PasscodeKeyboard>,
-        alert: Option<&'a str>,
-    ) -> LockView<'a> {
-        LockView {
-            alert,
-            keyboard,
-            password_len: lock.buffer_len(),
-            error: lock.error(),
-            clock: &self.clock,
-            date: &self.date,
-            notification_count,
-            verifying: lock.is_verifying(),
-            now_playing,
-        }
-    }
-}
-
-/// Hand AccessKit the current semantic tree. It needs a laid-out widget tree,
-/// not a presented frame: an activation or action is answered in the tick
-/// that drained it, whether or not that tick paints.
-fn publish_accessibility_tree(
-    accessibility: &mut NativeAccessibility,
-    frame_builder: &FrameBuilder,
-    outputs: &[Output],
-    lock: Option<&LockView<'_>>,
-    focus: Option<NodeId>,
-) {
-    accessibility.set_window_focus(true);
-    if let Some(view) = lock {
-        let outputs = lock_outputs(
-            outputs,
-            frame_builder.scene_size(),
-            focused_display_id(frame_builder),
-        );
-        accessibility.update_if_active(|| {
-            lock_screen::build_accessibility_tree(&outputs, frame_builder.theme(), view)
-        });
-    } else {
-        accessibility.update_if_active(|| frame_builder.build_a11y_tree_update(focus, 1.0));
-    }
-}
+mod lock_view;
+use lock_view::{LockClock, publish_accessibility_tree, retain_session_redraw};
 
 /// A widget poll already ran in this tick's pump. Its deadline waking the
 /// loop is not a present: the tree, the layout, and any animation are the
@@ -9443,6 +9375,8 @@ pub fn run() {
     crate::shell::continuity_policy::follow(&live_settings);
     #[cfg(target_os = "linux")]
     crate::shell::device_vpn::follow(&live_settings);
+    #[cfg(target_os = "linux")]
+    crate::shell::device_vpn::profile_block::start(&live_settings);
     spawn_auto_brightness_worker(live_settings.clone());
 
     // `--backend drm|winit` selects the native backend implementation.
@@ -10359,6 +10293,7 @@ pub fn run() {
     );
     // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
+    let mut retained_lock = lock_screen::RetainedLockScene::default();
     // Other devices' focus changes arrive over the network at human pace;
     // copying the feed into chrome a few times a second is plenty.
     let mut continuity_feed_polled: Option<Instant> = None;
@@ -10815,9 +10750,6 @@ pub fn run() {
     // the reflecting frame.
     let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
-    // Privacy's `pw-dump` monitor restarts only on the edge into a requested
-    // frame. An idle park must not arm that watch on a timer.
-    let mut privacy_frame_open = false;
     // Park spent waiting on a full presenter. Applied on the next tick,
     // before animation demand is sampled, so the transition does not finish
     // in the model with nothing presented.
@@ -11371,6 +11303,20 @@ pub fn run() {
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     if state.input_origin == InputOrigin::Here {
                         state.remote_input_firewall.note_local_input(Instant::now());
+                    }
+                    // Super going down asks for a fullscreen window's bar,
+                    // as reaching for the top edge does; the key never
+                    // reaches the app, so this takes nothing from it.
+                    if let WindowEvent::KeyboardInput { event: key, .. } = wev
+                        && key.state == ElementState::Pressed
+                        && !key.repeat
+                        && matches!(
+                            key.logical_key,
+                            Key::Named(NamedKey::Super | NamedKey::Meta)
+                        )
+                        && !session.is_locked()
+                    {
+                        frame_builder.host_mut().reveal_fullscreen_bar_by_key();
                     }
                     // Super alone, tapped or held, opens the Super surface.
                     // Observed ahead of every branch below, so a chord one of
@@ -12578,6 +12524,7 @@ pub fn run() {
             lock.reset();
         }
         if session.is_locked() != prev_locked {
+            retained_lock.clear();
             crate::portal::inhibit::publish_screensaver_state(session.is_locked());
             if session.is_locked() {
                 let _ = state.release_all_personal_fabric_input();
@@ -14105,14 +14052,6 @@ pub fn run() {
             (content_changed && !cadence_due)
                 || (!session.is_locked() && !display_dark && animating),
         );
-        let (frame_open, notify_privacy) = crate::shell::status::privacy_frame_interest(
-            privacy_frame_open,
-            should_paint || cadence_needed,
-        );
-        privacy_frame_open = frame_open;
-        if notify_privacy && let Some(bridge) = frame_builder.host().status_bridge() {
-            bridge.notify_frame_requested();
-        }
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -14359,13 +14298,6 @@ pub fn run() {
                         )
                     })
                 };
-                let mut lock_scene = lock_screen::draw_lock_scene_with_wallpaper(
-                    &lock_outputs,
-                    &theme,
-                    frame_builder.text_renderer_mut(),
-                    &view,
-                    wallpaper.as_ref(),
-                );
                 // Media keys stay live while locked; their readout is drawn
                 // here because the desktop chrome that normally paints it is
                 // hidden. Expiring on paint mirrors the unlocked host.
@@ -14374,17 +14306,17 @@ pub fn run() {
                     chrome.expire_osd(iter_t0);
                     lock_osd = chrome.osd;
                 });
-                if let Some(osd) = lock_osd {
-                    lock_screen::draw_lock_osd(
-                        &mut lock_scene,
-                        &lock_outputs,
-                        &theme,
-                        frame_builder.text_renderer_mut(),
-                        osd,
-                        iter_t0,
-                    );
-                }
-                FramePaint::full(lock_scene)
+                retained_lock.draw(
+                    &mut frame_builder,
+                    &lock_screen::LockComposition {
+                        outputs: &lock_outputs,
+                        theme: &theme,
+                        view: &view,
+                        wallpaper: wallpaper.as_ref(),
+                        osd: lock_osd,
+                        now: iter_t0,
+                    },
+                )
             } else {
                 frame_builder.set_frame_only_moved(
                     redraw_reasons.only_motion(session.is_locked()) && !transition_run,
@@ -20088,51 +20020,71 @@ mod tests {
     #[test]
     fn state_dump_names_what_animates_with_the_top_bar_drawn() {
         use crate::shell::state::{
-            Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
-            WorkspaceTree,
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
         };
-        // A window asked for but not drawn yet holds animation frames, so the
-        // dump walks the content tree, top bar included.
-        let mut tree = WorkspaceTree::default();
-        let mut workspace = Workspace::new(WorkspaceId(73), "Animating");
-        workspace.strips.push(Strip::new(StripId(74), "Main"));
-        workspace.strips[0].window_groups.push(WindowGroup {
-            id: 75,
+        let group = |id: u64, title: &str| WindowGroup {
+            id,
             tabs: vec![Tab {
-                id: 76,
-                title: "Opening".into(),
-                tile: TileContent::Foreign {
-                    app_id: "so.tilo.fixture".into(),
-                    surface_id: 0x7e57_0000_0027,
+                id: id + 1,
+                title: title.into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("Test".into()),
+                    label: title.into(),
                 },
                 app_title: None,
             }],
-            active_tab: 76,
+            active_tab: id + 1,
             focus_history: Vec::new(),
             width: WindowWidth::Normal,
             maximized: false,
-        });
+        };
+        let mut tree = WorkspaceTree::default();
+        let mut workspace = Workspace::new(WorkspaceId(73), "Animating");
+        workspace.strips.push(Strip::new(StripId(74), "Main"));
+        workspace.strips[0].window_groups.push(group(75, "Open"));
         tree.desktop.workspaces.push(workspace);
         tree.set_active(WorkspaceId(73));
-        let mut fb = FrameBuilder::with_handle(tree.shared(), false, (1600, 900));
-        let _ = fb.paint();
-        let state = FrameBuilderControlState {
-            fb: &fb,
-            doc: None,
-            shares: None,
-            lock: None,
-            seat: None,
-            resolved: None,
-        };
-        let animating = state.chrome_state_json()["animating"].clone();
-        assert!(
-            animating
-                .as_array()
-                .is_some_and(|owners| owners.iter().any(|owner| owner
-                    .as_str()
-                    .is_some_and(|owner| owner.contains("ForeignSurfaceWidget")))),
-            "the dump names the opening window: {animating}"
-        );
+        // One instant for the whole frame: the window opening below is still
+        // opening when the dump asks, however long the machine takes.
+        let at = ui::time::now();
+        ui::time::testing::with_monotonic_time(at, || {
+            let mut fb = FrameBuilder::with_handle(tree.shared(), false, (1600, 900));
+            let _ = fb.paint();
+            // A window opens: its slot grows from nothing, so the content
+            // asks for frames and the dump walks the content tree, top bar
+            // included.
+            fb.with_chrome(|chrome| {
+                chrome.tree_mut().desktop.workspaces[0].strips[0]
+                    .window_groups
+                    .push(group(77, "Opening"));
+                chrome.bump();
+            });
+            let mut doc = automerge::AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            fb.relayout();
+            let _ = fb.paint();
+            let state = FrameBuilderControlState {
+                fb: &fb,
+                doc: None,
+                shares: None,
+                lock: None,
+                seat: None,
+                resolved: None,
+            };
+            let animating = state.chrome_state_json()["animating"].clone();
+            assert!(
+                animating
+                    .as_array()
+                    .is_some_and(
+                        |owners| owners.iter().any(|owner| owner
+                            .as_str()
+                            .is_some_and(|owner| owner.starts_with("content/")
+                                && owner.contains("WindowGroup")))
+                    ),
+                "the dump names the opening window: {animating}"
+            );
+        });
     }
 
     /// `chrome.displays` names what is painted: every connected display and

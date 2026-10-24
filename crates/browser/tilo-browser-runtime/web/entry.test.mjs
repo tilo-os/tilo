@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {boot, chosenRoute, initialRoute, readEntry, scopeHost} from './entry.mjs';
-import {UNAVAILABLE, openTarget, untilViewable, viewInvocation} from './open-target.mjs';
+import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 
 const message = {kind: 'chat.message', id: 'chat.message:1'};
 const views = [
@@ -52,6 +52,37 @@ test('a refused view reads like a missing one', async () => {
   const mount = {actions: () => views, invokeAction: () => { throw new Error('permission: Viewer cannot'); }};
   await assert.rejects(openTarget({mount, mode: 'app', target: {app: 'so.tilo.chat', record: '', resource: message}}),
     {message: UNAVAILABLE});
+});
+
+// Catches a slow device losing the whole page ("Something went wrong
+// opening Lounge") 10 s after its desktop drew, while the link's window
+// was still on its way.
+test('a link waits for its window as long as the desktop has not drawn the frames to show it', async () => {
+  const pending = [];
+  const timers = {setTimeout: fn => { pending.push(fn); return pending.length; }, clearTimeout: () => {}};
+  const fire = () => pending.shift()?.();
+  let frames = 1;
+  let listener;
+  const navigation = {getSnapshot: () => ({active: null}), subscribe: next => { listener = next; return () => { listener = null; }; }};
+  let outcome = null;
+  const shown = untilSnapshot(navigation, next => next.active === 'chat', {timers, frames: () => frames});
+  shown.then(() => { outcome = 'shown'; }, () => { outcome = 'failed'; });
+  // Long past the deadline, but the desktop drew one frame since: waiting.
+  for (let i = 0; i < 50; i++) fire();
+  frames = 3;
+  for (let i = 0; i < 50; i++) fire();
+  await Promise.resolve();
+  assert.equal(outcome, null);
+  listener({active: 'chat'});
+  await shown;
+  assert.equal(outcome, 'shown');
+  // A desktop that drew its frames and still did not show it gives up.
+  pending.length = 0;
+  frames = 10;
+  const never = untilSnapshot(navigation, next => next.active === 'chat', {timers, frames: () => frames});
+  frames = 13;
+  fire();
+  await assert.rejects(never, /did not show the link in time/);
 });
 
 test('a link waits for its resource to reach the page, then says it is not there', async () => {

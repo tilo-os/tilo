@@ -99,6 +99,8 @@ tilo-content-device = { version = "0.1.0", path = "../../system/content-device" 
 tilo-runner-native = { version = "0.1.0", path = "../runner-native", default-features = false, optional = true }
 
 [dev-dependencies]
+# The integration tests use the test tools behind `test-support`.
+tilo-app = { path = ".", features = ["test-support"] }
 tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 
 [lints]

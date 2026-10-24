@@ -539,12 +539,12 @@ impl CommandEntry {
     /// whose text is the action's primary parameter (its first required one,
     /// else its first), as the action's own prompt reads it.
     pub fn from_flat_action(fa: &FlatAction<'_>) -> Self {
-        let mut entry = CommandEntry::new(
-            fa.key.clone(),
-            format!("{} — {}", fa.resource_label, fa.action.label),
-        );
-        if let Some(desc) = &fa.action.description {
-            entry = entry.description(desc.clone());
+        // The action's own label, and what it acts on or means under it
+        // (`tilo_actions::listed_row`): never "Feeds — New folder".
+        let row = fa.row();
+        let mut entry = CommandEntry::new(fa.key.clone(), row.title);
+        if let Some(subtitle) = row.subtitle {
+            entry = entry.description(subtitle);
         }
         if let ActionInput::Prompted {
             prompt,

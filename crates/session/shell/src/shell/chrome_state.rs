@@ -917,6 +917,9 @@ pub struct ChromeState {
     /// as the people panel reads them from presence: what search's
     /// Happening now offers to join ([`Self::publish_live_calls`]).
     pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
+    /// The person arrived where others are: the bar pulses their faces and
+    /// slides a short name out of them (`overlay_host::arrival`).
+    pub(crate) arrival_notice: Option<tilo_desktop::chrome::ArrivalNotice>,
     activity_focus_request: Option<ActivityFocus>,
     /// Activity was asked to open; the overlay host launches its app.
     activity_open_request: bool,
@@ -1119,6 +1122,8 @@ pub struct ChromeState {
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
     input_source_request: Option<usize>,
+    /// The keyboard whose sources the next-source chord and action cycle.
+    pub(crate) keyboard_scope: String,
     /// The strip switcher is open: its card, the workspace's strips and
     /// its workspaces, beside the strip ribbon. The overlay host opens it on
     /// pointer intent or Super+S and mirrors it here, so a state dump and
@@ -1270,6 +1275,7 @@ impl ChromeState {
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
             live_calls: Vec::new(),
+            arrival_notice: None,
             activity_focus_request: None,
             activity_open_request: false,
             workspace_view_request: None,
@@ -1335,6 +1341,7 @@ impl ChromeState {
             axis_gather_requested: false,
             feedback_pointing: false,
             input_source_request: None,
+            keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:
@@ -3531,9 +3538,8 @@ impl ChromeState {
     }
 
     /// Add a strip named `name` at the bottom of the active workspace and
-    /// move to it, as the workspace menu's New strip asks, once the
-    /// desktop's policy allows it. `false` when it does not, or the model
-    /// refuses the name.
+    /// move to it, once the desktop's policy allows it. `false` when it
+    /// does not, or the model refuses the name.
     pub fn add_named_strip(&mut self, name: &str) -> bool {
         let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
             name: name.to_owned(),

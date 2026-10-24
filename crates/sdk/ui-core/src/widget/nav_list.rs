@@ -67,9 +67,15 @@ pub struct NavSection {
 impl NavSection {
     #[must_use]
     pub fn new(id: impl Into<String>, title: impl Into<String>, items: Vec<NavItem>) -> Self {
+        Self::new_owned(id.into(), title.into(), items)
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, title: String, items: Vec<NavItem>) -> Self {
         Self {
-            id: id.into(),
-            title: title.into(),
+            id,
+            title,
             collapsible: false,
             collapsed: false,
             trailing_action: None,
@@ -172,10 +178,16 @@ pub struct NavAction {
 impl NavAction {
     #[must_use]
     pub fn new(id: impl Into<String>, icon: Icon, label: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), icon, label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, icon: Icon, label: String) -> Self {
         Self {
-            id: id.into(),
+            id,
             icon,
-            label: label.into(),
+            label,
             opens_menu: false,
         }
     }
@@ -334,9 +346,15 @@ impl NavItemStatus {
 impl NavItem {
     #[must_use]
     pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, label: String) -> Self {
         Self {
-            id: id.into(),
-            label: label.into(),
+            id,
+            label,
             icon: None,
             count: None,
             actions: true,

@@ -1,0 +1,4 @@
+Oops#1 Part1
+<1>[  904.100512] Unable to handle kernel paging request at virtual address ffff80008a3c0000
+<4>[  904.100530] Call trace:
+<4>[  904.100534]  ath12k_dp_rx_process+0x2a8/0x9c0

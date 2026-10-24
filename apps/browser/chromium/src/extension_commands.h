@@ -147,25 +147,35 @@ inline std::optional<Shortcut> KeyShortcut(const std::string& key, bool ctrl, bo
 // answers before a page sees them (apps/browser: browser_widget.rs
 // handle_browser_shortcut and handle_address_shortcut, browser_window.rs
 // and ui::shell_tabs for the desktop's tab chords), and on macOS the editing
-// keys the host runs itself (host.cc, Key).
-inline bool BrowserKeeps(const Shortcut& shortcut, bool mac) {
-  const bool command = mac ? shortcut.meta : shortcut.ctrl;
-  const auto& key = shortcut.key;
-  if (command && !shortcut.alt) {
-    // Find, find again, bookmark, reload and zoom back, Shift or not.
-    if (key == "F" || key == "G" || key == "D" || key == "R" || key == "0") return true;
-    // A new tab, the closed one back, the next tab, a private window.
-    if (key == "T" || key == "Tab" || (key == "W" && !shortcut.shift) || (key == "N" && shortcut.shift)) return true;
-    // The address.
-    if (key == "L" && !shortcut.shift) return true;
-    if (mac && !shortcut.ctrl && (key == "A" || key == "C" || key == "X" || key == "V" || key == "Z")) return true;
+// keys the host runs itself (host.cc, Key). The list is browser_keeps.inc,
+// which the Browser's own test holds against what it answers.
+inline std::vector<std::string> BrowserKeptText(bool mac) {
+  static const char* const kept[] = {
+#include "browser_keeps.inc"
+  };
+  const std::string platform = mac ? "mac " : "linux ";
+  const std::string host = " (host)";
+  std::vector<std::string> texts;
+  for (const char* entry : kept) {
+    std::string text(entry);
+    if (text.rfind(platform, 0) != 0) continue;
+    text = text.substr(platform.size());
+    if (text.size() > host.size() && text.compare(text.size() - host.size(), host.size(), host) == 0)
+      text.resize(text.size() - host.size());
+    texts.push_back(std::move(text));
   }
-  // Reload and the address take either Ctrl or Command.
-  if ((shortcut.ctrl || shortcut.meta) && !shortcut.alt && (key == "R" || (key == "L" && !shortcut.shift))) return true;
-  // Back and forward, except on macOS, where Option and an arrow move the
-  // caret by word.
-  if (!mac && shortcut.alt && !shortcut.ctrl && !shortcut.meta && (key == "Left" || key == "Right")) return true;
-  return false;
+  return texts;
+}
+inline bool BrowserKeeps(const Shortcut& shortcut, bool mac) {
+  static const auto parsed = [](bool on_mac) {
+    std::vector<Shortcut> keys;
+    for (const auto& text : BrowserKeptText(on_mac))
+      if (auto key = ParseShortcut(text, on_mac)) keys.push_back(*key);
+    return keys;
+  };
+  static const std::vector<Shortcut> on_mac = parsed(true), on_linux = parsed(false);
+  const auto& kept = mac ? on_mac : on_linux;
+  return std::find(kept.begin(), kept.end(), shortcut) != kept.end();
 }
 
 // What Chrome's `commands.getAll` shows of a key: "Ctrl+Shift+Y" on Linux,
@@ -221,6 +231,13 @@ class ExtensionCommands {
     auto found = assigned_.find(shortcut);
     if (found == assigned_.end()) return std::nullopt;
     return found->second;
+  }
+
+  // Every key a command holds now, in a stable order.
+  std::vector<Shortcut> Assigned() const {
+    std::vector<Shortcut> keys;
+    for (const auto& [key, owner] : assigned_) keys.push_back(key);
+    return keys;
   }
 
   // The extension's commands with the key each was given, empty for none:

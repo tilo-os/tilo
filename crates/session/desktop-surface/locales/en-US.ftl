@@ -42,6 +42,11 @@ topbar-capture-privacy = Privacy settings for active capture
 topbar-control = Top bar control
 topbar-invite = Invite
 topbar-waved-at-you = { $name } waved at you
+topbar-arrived-one = { $name } is here
+topbar-arrived-more = { $name } and { $count ->
+    [one] one other
+   *[other] { $count } others
+} are here
 topbar-clock-resume = Resume
 topbar-clock-pause = Pause
 topbar-clock-lap = Lap
@@ -60,20 +65,7 @@ topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
-topbar-strips = Strips in this workspace
-topbar-strip-go = Go to { $name }, { $count ->
-    [0] nobody there
-    [one] one person there
-   *[other] { $count } people there
-}
 topbar-strip-name = Show strips, now on { $strip }
-topbar-strip-add = Add a strip
-topbar-strips-more-label = +{ $count }
-topbar-strips-more = { $count ->
-    [one] One more strip
-   *[other] { $count } more strips
-}, go to { $name }
-topbar-strip-name-placeholder = Name the new strip
 topbar-workspace-name-placeholder = Name the workspace
 topbar-workspace-menu = { $workspace }: workspaces, overview and strips
 topbar-profile = { $name } (you): your profile
@@ -1103,3 +1095,5 @@ strip-switcher-rename-named = Rename { $name }
 strip-switcher-name-placeholder = Strip name
 strip-switcher-refused = Couldn't change the strip
 strip-switcher-remove-named = Remove { $name }
+strip-switcher-rename = Rename
+strip-switcher-remove = Remove

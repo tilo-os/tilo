@@ -571,10 +571,12 @@ pub struct TerminalWidget {
     /// Rows scrolled up from the bottom of the buffer. 0 == pinned to the
     /// live output; a new keystroke or fresh PTY output snaps it back to 0.
     scroll_offset: usize,
-    /// Sub-row precision retained between high-resolution touchpad events.
-    /// Terminal storage is row based, but discarding each fractional delta
-    /// made slow two-finger gestures feel sticky and unpredictable.
+    /// Sub-row precision retained between high-resolution touchpad events
+    /// the terminal hands on as rows (to a program that reads the mouse, or
+    /// as arrow keys in the alternate screen).
     wheel_remainder_px: f64,
+    /// The scrollback as a scroll view (`scrollback_ui.rs`).
+    view: ScrollbackView,
     /// Shared toolkit interaction model for the terminal history bar.
     scrollbar: Scrollbar,
 
@@ -850,6 +852,7 @@ impl TerminalWidget {
             modes: TermModes::default(),
             scroll_offset: 0,
             wheel_remainder_px: 0.0,
+            view: ScrollbackView::default(),
             scrollbar: Scrollbar::vertical(),
             conventions: ui::PlatformConventions::default(),
             find_matches: Vec::new(),
@@ -1513,7 +1516,7 @@ impl TerminalWidget {
         let visible = self.current_visible_rows().max(1);
         let max_top = self.view_rows().saturating_sub(visible);
         let top = found.row.saturating_sub(visible / 2).min(max_top);
-        self.scroll_offset = max_top.saturating_sub(top);
+        self.set_scroll_offset(max_top.saturating_sub(top));
     }
 
     /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
@@ -1831,39 +1834,13 @@ impl TerminalWidget {
         let total = self.view_rows() as f64;
         // Scrollbar offsets are measured from the top; terminal history is
         // measured back from the live bottom.
-        let from_top = self.max_scroll().saturating_sub(self.scroll_offset) as f64;
+        let from_top = self.scroll_from_top() / self.char_h.max(1.0);
         ScrollMetrics::new(total, visible, from_top)
     }
 
     fn set_scrollbar_offset(&mut self, from_top: f64) {
-        let max = self.max_scroll();
-        let top = from_top.round().clamp(0.0, max as f64) as usize;
-        self.scroll_offset = max.saturating_sub(top);
-        self.wheel_remainder_px = 0.0;
-    }
-
-    /// Scroll the viewport back (toward older output) by `n` rows.
-    pub fn scroll_up(&mut self, n: usize) {
-        if self.alt_active {
-            return;
-        }
-        self.scroll_offset = (self.scroll_offset + n).min(self.max_scroll());
-    }
-    /// Scroll the viewport forward (toward the live bottom) by `n` rows.
-    pub fn scroll_down(&mut self, n: usize) {
-        self.scroll_offset = self.scroll_offset.saturating_sub(n);
-    }
-    /// Jump to the oldest retained line.
-    pub fn scroll_to_top(&mut self) {
-        if self.alt_active {
-            return;
-        }
-        self.scroll_offset = self.max_scroll();
-    }
-    /// Pin the viewport back to the live output.
-    pub fn scroll_to_bottom(&mut self) {
-        self.scroll_offset = 0;
-        self.wheel_remainder_px = 0.0;
+        let to = from_top.clamp(0.0, self.max_scroll() as f64) * self.char_h.max(1.0);
+        self.scroll_by_px(to - self.scroll_from_top());
     }
 
     /// Drain queued PTY bytes and replay them through the vte parser onto the
@@ -1911,7 +1888,7 @@ impl TerminalWidget {
             // never be painted over them.
             self.ever_nonblank = true;
             // Fresh output snaps the viewport back to the live bottom.
-            self.scroll_offset = 0;
+            self.set_scroll_offset(0);
         }
         // An image read on the worker arrived to paint.
         let images = self.images.take_finished();
@@ -2108,7 +2085,7 @@ impl TerminalWidget {
             out.extend_from_slice(normalised.as_bytes());
         }
         self.try_write_input(&out)?;
-        self.scroll_offset = 0;
+        self.set_scroll_offset(0);
         Ok(())
     }
 
@@ -2943,6 +2920,7 @@ impl Widget for TerminalWidget {
     }
 
     fn update(&mut self, _state: &AppModel, _root: &ModelPath) -> bool {
+        self.advance_glide();
         self.pump()
     }
 
@@ -2971,7 +2949,33 @@ impl Widget for TerminalWidget {
             .or_else(|| self.output_rx.try_recv().ok());
         let queued = pending.is_some();
         self.deferred_output.set(pending);
-        queued || self.folder_picker_pending()
+        // A glide, or the give past an end springing back.
+        let gliding = self.view.glide.is_active()
+            || self.view.glide.give_needs_frame(ui::motion::frame_now());
+        queued || gliding || self.folder_picker_pending()
+    }
+
+    /// The rows that changed, came into view or went, and a scroll as a
+    /// copy of the rows it only moved, for a host that copies; the whole
+    /// terminal when anything else it paints changed. What its top layer
+    /// paints (the context menu, the environments panel) repaints it.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        if self.view.overlay_drawn || self.view.overlay_presented {
+            regions.push(self.rect);
+            return;
+        }
+        self.view.shown.damage_within(self, self.rect, regions);
+    }
+
+    fn mark_drawn(&mut self) {
+        self.view.shown.present();
+        self.view.overlay_presented = self.view.overlay_drawn;
+    }
+
+    /// An outer cache keeps the terminal's scene: what it showed is not
+    /// known to be on screen where the next frame scrolls from.
+    fn release_scene_cache(&mut self) {
+        self.view.shown.forget();
     }
 
     fn build_layout(
@@ -3037,6 +3041,7 @@ impl Widget for TerminalWidget {
         self.set_geometry(self.rect);
         let grid_rect = self.grid_rect;
 
+        self.view.motion = theme.motion();
         let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.view_rows().saturating_sub(visible_rows);
         // Alt screen has no scrollback; clamp the offset for the main buffer.
@@ -3045,6 +3050,9 @@ impl Widget for TerminalWidget {
         } else {
             self.scroll_offset.min(max_top)
         };
+        if scroll != self.scroll_offset || scroll == 0 {
+            self.view.sub = 0.0;
+        }
         self.scroll_offset = scroll;
         let start_y = max_top.saturating_sub(scroll);
 
@@ -3067,12 +3075,17 @@ impl Widget for TerminalWidget {
         if !self.grid_is_blank() {
             self.ever_nonblank = true;
         }
-        self.draw_target_header(scene, transform, text_renderer, theme);
+        // What the terminal paints that does not scroll: the header and the
+        // bands above the grid, or what stands in place of the grid.
+        let mut outside = Scene::new();
+        self.draw_target_header(&mut outside, transform, text_renderer, theme);
         // A shell that could not start says so, with a retry, in place of
         // the grid.
         if let Some(reason) = self.start_failure().map(str::to_owned) {
-            self.draw_start_failure(scene, transform, text_renderer, theme, &reason);
-            self.draw_top_bands(scene, transform, text_renderer, theme);
+            self.draw_start_failure(&mut outside, transform, text_renderer, theme, &reason);
+            self.draw_top_bands(&mut outside, transform, text_renderer, theme);
+            scene.append(&outside, None);
+            self.view.shown.forget();
             return;
         }
         self.life.retry_rect = Rect::ZERO;
@@ -3085,32 +3098,14 @@ impl Widget for TerminalWidget {
             && !self.closing_for_exit()
             && (self.headless || self.is_disconnected())
         {
-            self.draw_empty_state(scene, transform, text_renderer, theme);
-            self.draw_top_bands(scene, transform, text_renderer, theme);
+            self.draw_empty_state(&mut outside, transform, text_renderer, theme);
+            self.draw_top_bands(&mut outside, transform, text_renderer, theme);
+            scene.append(&outside, None);
+            self.view.shown.forget();
             return;
         }
-
-        // Images sit beneath selections and glyphs: text printed over a Kitty
-        // placement remains legible, and selecting cells still has the same
-        // visible feedback as plain terminal content. Their row anchors are
-        // buffer-absolute, so scrollback and history retention move them with
-        // the corresponding rows rather than pinning them to the viewport.
-        self.draw_terminal_images(scene, transform, theme, grid_rect, start_y, visible_rows);
-
-        // Paint the selection BEFORE the cell text so glyphs read on top of
-        // the highlight.
-        self.draw_selection_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
-        self.draw_find_match_highlight(scene, transform, theme, grid_rect, start_y, visible_rows);
-
-        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
-        self.draw_cell_rows(&mut ctx, &cell_style, start_y, visible_rows);
-        self.draw_block_cursor(&mut ctx, &cell_style, start_y, visible_rows);
-
-        // A themed scrollbar indicator in the reserved right gutter, shown only
-        // when the buffer overflows the viewport.
-        self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
-        self.draw_top_bands(scene, transform, text_renderer, theme);
-        self.draw_peer_marks(scene, transform, theme, presence);
+        self.draw_top_bands(&mut outside, transform, text_renderer, theme);
+        self.draw_grid(scene, transform, text_renderer, theme, presence, outside);
     }
 
     /// The right-click Copy/Paste menu is a floating Panel: it paints in the
@@ -3124,6 +3119,7 @@ impl Widget for TerminalWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        let before = scene.encoding().draw_tags.len();
         if self.context_menu.is_open() {
             Widget::draw_overlay(
                 &mut self.context_menu,
@@ -3135,6 +3131,7 @@ impl Widget for TerminalWidget {
             );
         }
         self.draw_environments_panel(scene, transform, text_renderer, theme, presence);
+        self.view.overlay_drawn = scene.encoding().draw_tags.len() != before;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -3168,10 +3165,16 @@ impl Widget for TerminalWidget {
 
         match event {
             // Ctrl+scroll zooms the window, and with it the grid's font.
-            WindowEvent::MouseWheel { delta, .. }
+            WindowEvent::MouseWheel { delta, phase, .. }
                 if !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers) =>
             {
-                self.handle_wheel_event(delta, *ctx.modifiers, ctx.handled);
+                self.handle_wheel_event(
+                    delta,
+                    *phase,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.handled,
+                );
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved_event(
@@ -3231,7 +3234,7 @@ impl Widget for TerminalWidget {
                 if self.focused && !text.is_empty() =>
             {
                 self.commit_ordinary_ime(text);
-                self.scroll_offset = 0;
+                self.set_scroll_offset(0);
                 *ctx.handled = true;
             }
             _ => {}
@@ -3289,7 +3292,7 @@ impl Widget for TerminalWidget {
                 .saturating_add(self.cursor_y)
                 .saturating_sub(self.viewport_start_y);
             let x = self.grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-            let y = self.grid_rect.y0 + row as f64 * self.char_h;
+            let y = self.grid_rect.y0 + row as f64 * self.char_h - self.view.sub;
             Rect::new(x, y, x + self.char_w.max(1.0), y + self.char_h.max(1.0))
         })
     }
@@ -3701,71 +3704,6 @@ impl TerminalWidget {
 }
 
 impl TerminalWidget {
-    /// Helper for [`Widget::handle_event`]'s `WindowEvent::MouseWheel` arm.
-    fn handle_wheel_event(
-        &mut self,
-        delta: &MouseScrollDelta,
-        modifiers: winit::event::Modifiers,
-        handled: &mut bool,
-    ) {
-        if !self.rect.contains(self.last_cursor_pos) {
-            return;
-        }
-        let lines = match delta {
-            MouseScrollDelta::LineDelta(_, y) => (*y * 3.0).round() as i32,
-            MouseScrollDelta::PixelDelta(pos) => {
-                self.wheel_remainder_px += pos.y;
-                let lines = (self.wheel_remainder_px / self.char_h.max(1.0)).trunc() as i32;
-                self.wheel_remainder_px -= f64::from(lines) * self.char_h.max(1.0);
-                lines
-            }
-        };
-        if lines == 0 {
-            return;
-        }
-        if self.modes.mouse_report
-            && !modifiers.state().shift_key()
-            && self.grid_rect.contains(self.last_cursor_pos)
-        {
-            // xterm encodes wheel up/down as virtual buttons 4/5. One report
-            // per platform wheel event avoids turning high-resolution touchpad
-            // deltas into an input flood; the application owns acceleration.
-            self.report_mouse(if lines > 0 { 64 } else { 65 }, true, modifiers);
-            *handled = true;
-            return;
-        }
-        if self.alt_active && !self.modes.mouse_report {
-            // In the alternate screen (pager / editor) forward wheel
-            // notches as arrow keys so `less`/`man` scroll naturally.
-            // Honour DECCKM so apps that requested application cursor
-            // keys (`vim`, `less -R`) receive the SS3 form they expect.
-            let seq: &[u8] = match (lines > 0, self.modes.app_cursor_keys) {
-                (true, false) => b"\x1b[A",
-                (false, false) => b"\x1b[B",
-                (true, true) => b"\x1bOA",
-                (false, true) => b"\x1bOB",
-            };
-            let reps = lines.unsigned_abs() as usize;
-            let mut out = Vec::new();
-            for _ in 0..reps {
-                out.extend_from_slice(seq);
-            }
-            self.write_input(&out);
-        } else if !self.alt_active {
-            if lines > 0 {
-                self.scroll_up(lines as usize);
-            } else {
-                self.scroll_down((-lines) as usize);
-            }
-            // Reviewing history moves the viewport over the scrollback and
-            // nothing the terminal publishes; the text it exposes to
-            // assistive technology follows with the frame's accessibility
-            // refresh.
-            ui::widget::note_view_only_pan();
-        }
-        *handled = true;
-    }
-
     /// Helper for [`Widget::handle_event`]'s `WindowEvent::CursorMoved` arm.
     fn handle_cursor_moved_event(
         &mut self,
@@ -4114,68 +4052,8 @@ impl TerminalWidget {
         if let Some(b) = bytes {
             let _ = self.try_write_input(&b);
             // Typing snaps the viewport back to the live bottom.
-            self.scroll_offset = 0;
+            self.set_scroll_offset(0);
             *handled = true;
-        }
-    }
-
-    /// Paint the flow-selection highlight, if any, before the cell text so
-    /// glyphs read on top of it. Selection rows are buffer-absolute, so a
-    /// row only paints when it falls inside the current viewport window
-    /// `[start_y, start_y + visible_rows)`, translated to an on-screen row.
-    /// Helper for [`Widget::draw`].
-    fn draw_selection_highlight(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        grid_rect: Rect,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let Some(sel) = self.selection else { return };
-        // The selection tint is already translucent, so glyphs show through.
-        let sel_color = theme.tokens.colors.intent.selection_tint;
-        for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
-            if row < start_y || row >= start_y + visible_rows {
-                continue;
-            }
-            let vrow = row - start_y;
-            let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = grid_rect.x0 + start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + end_col as f64 * self.char_w;
-            let band = snap_to_device_pixels(transform, Rect::new(x0, py, x1, py + self.char_h));
-            scene.fill(Fill::NonZero, transform, sel_color, None, &band);
-        }
-    }
-
-    /// Paint the visible find matches over their glyphs, the current one
-    /// emphasised. The matches stay local and are never serialized into the
-    /// shared transcript; this is a visual locator over already-rendered
-    /// cells.
-    fn draw_find_match_highlight(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        grid_rect: Rect,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let end_y = start_y.saturating_add(visible_rows);
-        for (index, found) in self.find_matches.iter().enumerate() {
-            if found.row < start_y || found.row >= end_y {
-                continue;
-            }
-            let row = found.row - start_y;
-            let x0 = grid_rect.x0 + found.start_col as f64 * self.char_w;
-            let x1 = grid_rect.x0 + found.end_col as f64 * self.char_w;
-            let y0 = grid_rect.y0 + row as f64 * self.char_h;
-            let marker = snap_to_device_pixels(
-                transform,
-                Rect::new(x0, y0, x1.max(x0 + self.char_w), y0 + self.char_h),
-            );
-            paint_find_match(scene, transform, marker, index == self.find_current, theme);
         }
     }
 
@@ -4320,53 +4198,6 @@ impl TerminalWidget {
         scene.pop_layer();
     }
 
-    /// Paint every visible row's cell text as colour runs (consecutive cells
-    /// sharing one [`Attr`] drawn in a single [`Self::draw_run`] call), in
-    /// `cell_style`'s size and monospace family. Helper for [`Widget::draw`].
-    fn draw_cell_rows(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        cell_style: &TextStyle,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let grid_rect = self.grid_rect;
-        let PaintCtx {
-            scene,
-            transform,
-            text,
-            theme,
-        } = ctx.reborrow();
-        for (y, line_text) in self
-            .grid
-            .iter()
-            .skip(start_y)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
-            let attrs_idx = y + start_y;
-            let Some(attrs) = self.grid_attrs.get(attrs_idx) else {
-                continue;
-            };
-            // Each row on screen is a damage part: typing repaints its row.
-            // Glyphs may overhang their row by up to a row above and below,
-            // and the widget's width by up to two cells.
-            let band = Rect::new(
-                self.rect.x0 - 2.0 * self.char_w,
-                py - self.char_h,
-                self.rect.x1 + 2.0 * self.char_w,
-                py + 2.0 * self.char_h,
-            );
-            let key = ui::scene_parts::PartKey::new("terminal.row", y);
-            let bounds = vec![transform.transform_rect_bbox(band)];
-            ui::scene_parts::part(scene, key, bounds, |scene| {
-                let mut ctx = PaintCtx::new(scene, transform, text, theme);
-                self.draw_cell_row(&mut ctx, cell_style, line_text, attrs, py);
-            });
-        }
-    }
-
     /// Paint one row of cells, run by run of shared attributes, with its top
     /// at `py`.
     fn draw_cell_row(
@@ -4419,84 +4250,6 @@ impl TerminalWidget {
                 Point::new(run_start_cell_idx as f64 * self.char_w, py),
             );
         }
-    }
-
-    /// Paint the block cursor, pinned to the live output — while the user
-    /// has scrolled back into history it hides (matching xterm/kitty), so
-    /// it doesn't imply the caret is somewhere on an old line. Helper for
-    /// [`Widget::draw`].
-    fn draw_block_cursor(
-        &self,
-        ctx: &mut PaintCtx<'_>,
-        cell_style: &TextStyle,
-        start_y: usize,
-        visible_rows: usize,
-    ) {
-        let PaintCtx {
-            scene,
-            transform,
-            text: text_renderer,
-            ..
-        } = ctx.reborrow();
-        let palette = &self.palette;
-        let grid_rect = self.grid_rect;
-        let scroll = self.scroll_offset;
-        let cursor_color = self.last_cursor_color;
-        // Absolute grid row of the cursor → visible row (may be scrolled off).
-        let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
-        let scrolled_back = !self.alt_active && scroll > 0;
-        let shown = self.modes.cursor_visible
-            && !scrolled_back
-            && cursor_abs >= start_y
-            && cursor_abs < start_y + visible_rows.max(1);
-        let cy_local = cursor_abs.saturating_sub(start_y);
-        let cx = grid_rect.x0 + self.cursor_x as f64 * self.char_w;
-        let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
-        // The cursor is a damage part of its own: moving it repaints the
-        // cell it left and the cell it entered. Its glyph may overhang the
-        // cell by up to a cell on every side.
-        let bounds = if shown {
-            vec![transform.transform_rect_bbox(Rect::new(
-                cx - self.char_w,
-                cy - self.char_h,
-                cx + 2.0 * self.char_w,
-                cy + 2.0 * self.char_h,
-            ))]
-        } else {
-            Vec::new()
-        };
-        let key = ui::scene_parts::PartKey::new("terminal.cursor", ());
-        ui::scene_parts::part(scene, key, bounds, |scene| {
-            if !shown {
-                return;
-            }
-            // An unmistakable, theme-coloured "inverted cell" cursor.
-            let cursor_rect = snap_to_device_pixels(
-                transform,
-                Rect::new(cx, cy, cx + self.char_w, cy + self.char_h),
-            );
-            scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
-
-            // Re-punch the glyph beneath the block in the background color so
-            // the character under the caret stays legible (a solid block that
-            // hides its own cell reads as a blank cursor). This is the standard
-            // "inverted cell" block cursor.
-            if let Some(ch) = self
-                .grid
-                .get(cursor_abs)
-                .and_then(|line| cell_char_at(line, self.cursor_x))
-                && !ch.is_whitespace()
-            {
-                text_renderer.draw_style(
-                    scene,
-                    &ch.to_string(),
-                    palette.bg_default,
-                    transform * Affine::translate((cx, cy)),
-                    None,
-                    cell_style,
-                );
-            }
-        });
     }
 
     /// Paint one run of cells sharing `attr`, starting `at.x` into the grid
@@ -4644,14 +4397,13 @@ impl TerminalWidget {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        start_y: usize,
         visible_rows: usize,
     ) {
         if !self.scrollbar_visible(visible_rows) {
             return;
         }
-        let metrics =
-            ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, start_y as f64);
+        let from_top = self.viewport_start_y as f64 + self.view.sub / self.char_h.max(1.0);
+        let metrics = ScrollMetrics::new(self.view_rows() as f64, visible_rows as f64, from_top);
         self.scrollbar.draw(
             scene,
             transform,
@@ -4710,13 +4462,14 @@ impl TerminalWidget {
     /// leaves the terminal area.
     fn pos_from_logical(&self, p: Point) -> GridPos {
         let local_x = (p.x - self.grid_rect.x0).max(0.0);
-        let local_y = (p.y - self.grid_rect.y0).max(0.0);
+        // The view stands `view.sub` past its first row's top.
+        let local_y = (p.y - self.grid_rect.y0).max(0.0) + self.view.sub;
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
         let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
         // `width` is logical grid width; `viewport` height is computed
         // from `grid_rect.height() / char_h` rather than `self.height` because
         // resize-clamp may have a stale `self.height` between frames.
-        let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
+        let (_, visible_rows) = self.viewport_window();
         let vrow = vrow.min(visible_rows.saturating_sub(1));
         let abs_row = (self.viewport_start_y + vrow).min(self.grid.len().saturating_sub(1));
         GridPos {
@@ -4904,13 +4657,17 @@ impl TerminalWidget {
             col: pos % w,
         }
     }
-    /// Number of on-screen rows and the absolute row of the top visible row —
-    /// the viewport window used to map buffer-absolute rows to screen rows.
+    /// The absolute row of the top row in view and the number of rows in
+    /// view — the viewport window used to map buffer-absolute rows to screen
+    /// rows. Between two rows' tops the view shows a part of one more.
     fn viewport_window(&self) -> (usize, usize) {
         let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0))
             .floor()
             .max(1.0) as usize;
-        (self.viewport_start_y, visible_rows)
+        (
+            self.viewport_start_y,
+            visible_rows + usize::from(self.view.sub > 0.0),
+        )
     }
 
     /// A remote peer's caret rect (a thin vertical bar at the cell's left
@@ -6485,6 +6242,22 @@ pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, u
         spans.push((end.row, 0, end.col));
     }
     spans
+}
+
+/// The columns `sel` covers on `row`, as [`selection_row_spans`] lists
+/// them; `None` when it covers none of it.
+pub(crate) fn selection_span_on(
+    sel: &Selection,
+    row: usize,
+    cols: usize,
+) -> Option<(usize, usize)> {
+    let (start, end) = sel.ordered();
+    if start == end || row < start.row || row > end.row {
+        return None;
+    }
+    let from = if row == start.row { start.col } else { 0 };
+    let to = if row == end.row { end.col } else { cols };
+    Some((from, to))
 }
 
 /// Byte offset in `line` where cell column `col` begins, honouring wide

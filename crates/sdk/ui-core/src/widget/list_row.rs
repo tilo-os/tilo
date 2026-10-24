@@ -1884,8 +1884,14 @@ enum StatusKind {
 
 impl ListRow {
     pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self::new_owned(id.into(), title.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(id: String, title: String) -> Self {
         Self {
-            title: title.into(),
+            title,
             laid_out: false,
             title_elided: false,
             two_line_title: false,

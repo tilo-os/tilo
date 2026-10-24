@@ -27,6 +27,16 @@ globalThis.__tiloTabIds = async (words = []) => {
   return ids;
 };
 
+// The frames of a tab's page as Chromium lists them: each frame's id, its
+// parent's, its address and its document's id, which the engine gives an
+// extension for a frame it has no script in to tell it (extension_tabs.h,
+// Navigated).
+globalThis.__tiloFrames = async (tabId) => {
+  if (!chrome.webNavigation) return null;
+  const frames = await chrome.webNavigation.getAllFrames({tabId}).catch(() => null);
+  return (frames || []).map(({frameId, parentFrameId, url, documentId}) => ({frameId, parentFrameId, url, documentId}));
+};
+
 // Requests extensions' network rules blocked, or redirected to an extension's
 // own file, in the Browser's tabs. Chromium counts them for no tab here, so it
 // shows no count on an ad blocker's button; the engine counts them for the

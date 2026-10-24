@@ -2714,8 +2714,7 @@ impl FrameBuilder {
             self.retained_layer_width = capacity;
             return frame;
         }
-        let revision = self.next_scene_revision;
-        self.next_scene_revision = self.next_scene_revision.saturating_add(1);
+        let revision = self.reserve_scene_revision();
         let previous_revision = self
             .last_produced_sections
             .as_ref()
@@ -2735,17 +2734,18 @@ impl FrameBuilder {
         // a strip is unbaked. They cannot authorize sparse screen damage.
         let screen_space_damage = strips.as_ref().is_none_or(Vec::is_empty);
         let mut section_copies = Vec::new();
-        let damage_regions = (!pointer_filter && strips_kept && screen_space_damage)
-            .then(|| {
-                self.damage_from_sections_with_images(
-                    &sections,
-                    &parts,
-                    (pointer_filter, tint),
-                    &foreign_images,
-                    copying.then_some(&mut section_copies),
-                )
-            })
-            .flatten();
+        let damage_regions =
+            (revision != 0 && !pointer_filter && strips_kept && screen_space_damage)
+                .then(|| {
+                    self.damage_from_sections_with_images(
+                        &sections,
+                        &parts,
+                        (pointer_filter, tint),
+                        &foreign_images,
+                        copying.then_some(&mut section_copies),
+                    )
+                })
+                .flatten();
         // What a floating surface blurs, an HDR layer and a fullscreen
         // client over the desktop are not moved by a copy.
         let copies_shown =
@@ -3852,7 +3852,7 @@ impl FrameBuilder {
 
     /// `rect`, in scene pixels, rounded out to whole clip tiles inside the
     /// scene.
-    fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
+    pub(crate) fn scene_tile_rect(&self, rect: Rect) -> Option<FineDamageRect> {
         // Vello evaluates clip layers in 16px tiles. Even outside a layer's
         // exact shape, compositing that tile can round an existing channel by
         // one unit. Retain complete clip tiles so a changed shadow cannot
@@ -4339,8 +4339,18 @@ impl FrameBuilder {
     /// fold found anything — someone who joined but hasn't moved their
     /// pointer publishes nothing, but is in the room all the same.
     pub fn pump_peer_presence(&mut self) -> bool {
+        // Arriving where people are pulses their faces in the bar, as a
+        // wave does the waver's.
+        let arrived = self.host.take_arrival_pulses();
+        for person in &arrived {
+            self.presence.bounce(
+                ui::permissions::UserId(person.clone()),
+                self.theme.motion(),
+                Instant::now(),
+            );
+        }
         let Some(relay) = self.peer_presence.as_ref() else {
-            return false;
+            return !arrived.is_empty();
         };
         let tiles = self.host.tab_tiles();
         relay.set_shown_strip(self.host.shown_strip());
@@ -7657,6 +7667,99 @@ mod tests {
         );
     }
 
+    /// A window maximized by key is drawn whole in the key's own frame: the
+    /// bar steps aside and the window takes the display in that frame, so
+    /// the next one repaints nothing. Restored by key, the same.
+    #[test]
+    fn a_maximize_by_key_is_drawn_whole_in_its_own_frame() {
+        use crate::shell::state::{
+            AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+            WorkspaceId, WorkspaceTree,
+        };
+        use tilo_desktop::chrome::TopBarPresence;
+        use winit::keyboard::{Key, ModifiersState, NamedKey};
+        fn frame(fb: &mut FrameBuilder, doc: &mut AutoCommit) -> FramePaint {
+            fb.pump_apps(doc, &automerge::ROOT);
+            fb.relayout();
+            fb.paint_with_damage()
+        }
+        let ws_id = WorkspaceId(91);
+        let strip = StripId(92);
+        let mut ws = Workspace::new(ws_id, "Typing");
+        ws.strips = vec![Strip {
+            id: strip,
+            name: "Main".into(),
+            window_groups: vec![WindowGroup {
+                id: 93,
+                tabs: vec![Tab {
+                    id: 94,
+                    title: "Notes".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Notes".into()),
+                        label: "Notes".into(),
+                    },
+                    app_title: None,
+                }],
+                active_tab: 94,
+                width: WindowWidth::Fraction(667),
+                maximized: false,
+                focus_history: Vec::new(),
+            }],
+        }];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces = vec![ws];
+        tree.desktop.active = ws_id;
+        tree.desktop.active_strip.insert(ws_id, strip);
+        tree.desktop.active_group.insert(strip, 93);
+        let mut fb = FrameBuilder::with_tree(tree, (1600, 900));
+        let mut doc = AutoCommit::new();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            let _ = frame(&mut fb, &mut doc);
+            if !fb.needs_animation_frame() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the desktop settles: {:?}",
+                fb.animation_owners()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        let _ = frame(&mut fb, &mut doc);
+        let super_held = winit::event::Modifiers::from(ModifiersState::SUPER);
+        for (key, presence) in [
+            (NamedKey::ArrowUp, TopBarPresence::Hidden),
+            (NamedKey::ArrowDown, TopBarPresence::Docked),
+        ] {
+            let press = ui::synthetic_input::key_press(Key::Named(key), None);
+            let mut focus = None;
+            assert!(
+                fb.dispatch_event(
+                    &press,
+                    &super_held,
+                    &mut ui::widget::Edits::lend(&mut doc),
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "Super+{key:?} is the desktop's"
+            );
+            let _ = frame(&mut fb, &mut doc);
+            assert_eq!(
+                fb.chrome().top_bar_presence(),
+                presence,
+                "after Super+{key:?}; maximized {:?}",
+                fb.chrome().maximized_group()
+            );
+            let next = frame(&mut fb, &mut doc);
+            assert!(
+                matches!(next.damage_regions.as_deref(), Some([])),
+                "Super+{key:?} was drawn whole in its own frame; the next repaints {:?}",
+                next.damage_regions
+            );
+        }
+    }
+
     /// A window that was a tile before it went fullscreen keeps drawing over
     /// the whole output: the tile's last configure must not leave it a
     /// centred, tile-sized box floating above the desktop.
@@ -10601,6 +10704,9 @@ mod tests {
         );
     }
 }
+
+#[path = "frame_scene_revision.rs"]
+mod scene_revision;
 
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]

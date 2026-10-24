@@ -107,7 +107,7 @@ fn an_opened_client_routes_sets_dns_and_closes_back_to_nothing() {
     assert!(!service.is_idle());
     let (status, _) = service.handle(PERSON, Request::Status);
     assert!(
-        matches!(status, Response::Status { client: Some(ref client), exit: None } if client.interface_up)
+        matches!(status, Response::Status { client: Some(ref client), exit: None, profile_block: None } if client.interface_up)
     );
 
     assert_eq!(
@@ -315,5 +315,160 @@ fn reset_undoes_what_an_earlier_helper_left() {
             .last()
             .unwrap()
             .ends_with("GlobalDnsConfiguration a{sv} 0")
+    );
+}
+
+fn hold(service: &mut Service<Fake>, caller: Caller, allow_local: bool) -> Response {
+    let block = crate::protocol::ProfileBlock {
+        allow_local,
+        ..crate::protocol::tests::block()
+    };
+    let (response, fd) = service.handle(caller, Request::HoldProfileBlock { block });
+    assert!(fd.is_none(), "a block hands out no descriptor");
+    response
+}
+
+fn profile_table_lines(service: &Service<Fake>) -> Vec<String> {
+    service
+        .backend()
+        .lines()
+        .into_iter()
+        .filter(|line| line.contains("tilo_device_vpn_profile") || line == "-f -")
+        .collect()
+}
+
+#[test]
+fn a_profile_block_is_held_replaced_and_lifted() {
+    let mut service = service();
+    assert_eq!(hold(&mut service, PERSON, false), Response::Done);
+    assert!(service.is_idle(), "a block needs no running helper");
+    let script = service
+        .backend()
+        .commands
+        .iter()
+        .find_map(|command| command.input.clone())
+        .unwrap();
+    assert!(script.contains("table inet tilo_device_vpn_profile {"));
+    let (status, _) = service.handle(PERSON, Request::Status);
+    assert!(matches!(
+        status,
+        Response::Status { profile_block: Some(ref block), .. } if !block.allow_local
+    ));
+
+    // Allowing the local network replaces the block in one transaction:
+    // nothing lifts it in between.
+    let before = service.backend().commands.len();
+    assert_eq!(hold(&mut service, PERSON, true), Response::Done);
+    assert!(
+        !service.backend().lines()[before..]
+            .iter()
+            .any(|line| line == "delete table inet tilo_device_vpn_profile")
+    );
+    assert!(
+        service
+            .record()
+            .profile_block
+            .as_ref()
+            .unwrap()
+            .block
+            .allow_local
+    );
+
+    assert_eq!(
+        service.handle(PERSON, Request::ReleaseProfileBlock).0,
+        Response::Done
+    );
+    assert!(service.is_idle());
+    assert_eq!(
+        service.backend().lines().last().map(String::as_str),
+        Some("delete table inet tilo_device_vpn_profile")
+    );
+    assert_eq!(service.backend().saved.last(), Some(&Record::default()));
+}
+
+#[test]
+fn another_person_cannot_lift_or_replace_a_profile_block_while_its_owner_is_logged_in() {
+    let mut service = service();
+    hold(&mut service, PERSON, false);
+    let before = profile_table_lines(&service).len();
+    assert!(matches!(
+        hold(&mut service, OTHER, true),
+        Response::Refused { .. }
+    ));
+    assert!(matches!(
+        service.handle(OTHER, Request::ReleaseProfileBlock).0,
+        Response::Refused { .. }
+    ));
+    assert_eq!(profile_table_lines(&service).len(), before, "nothing ran");
+    assert_eq!(service.record().profile_block.as_ref().unwrap().owner, 1000);
+}
+
+#[test]
+fn a_profile_block_out_of_bounds_is_refused_before_anything_runs() {
+    let mut service = service();
+    let block = crate::protocol::ProfileBlock {
+        servers: vec!["127.0.0.1".parse().unwrap()],
+        allow_local: false,
+    };
+    let (response, _) = service.handle(PERSON, Request::HoldProfileBlock { block });
+    assert!(matches!(response, Response::Refused { .. }));
+    assert!(service.backend().commands.is_empty());
+    assert!(service.is_idle());
+}
+
+#[test]
+fn a_profile_block_nftables_refuses_is_not_left_recorded() {
+    let mut service = service();
+    service.backend.fail_on = Some("-f -");
+    assert!(matches!(
+        hold(&mut service, PERSON, false),
+        Response::Failed { .. }
+    ));
+    assert!(service.is_idle());
+    assert_eq!(
+        service.backend().lines().last().map(String::as_str),
+        Some("delete table inet tilo_device_vpn_profile")
+    );
+}
+
+#[test]
+fn a_profile_block_outlasts_its_owners_session_until_the_seat_lifts_it() {
+    let mut service = service();
+    hold(&mut service, PERSON, false);
+    let ran = service.backend().commands.len();
+    // The owner's shell crashed and took the session with it.
+    service.backend.sessions.remove(&1000);
+    service.housekeeping();
+    assert!(service.record().profile_block.is_some());
+    assert_eq!(service.backend().commands.len(), ran, "nothing ran");
+    assert!(service.is_idle(), "the block needs no running helper");
+    // Logged out, the owner no longer holds it against the person at the
+    // seat.
+    assert!(matches!(
+        service.handle(OTHER, Request::ReleaseProfileBlock).0,
+        Response::Done
+    ));
+    assert!(service.record().profile_block.is_none());
+    assert_eq!(
+        service.backend().lines().last().map(String::as_str),
+        Some("delete table inet tilo_device_vpn_profile")
+    );
+}
+
+#[test]
+fn reset_lifts_a_profile_block_an_earlier_helper_left() {
+    let mut fake = Fake::default();
+    fake.sessions.insert(1000);
+    let mut first = Service::new(fake, Record::default());
+    hold(&mut first, PERSON, false);
+    let left = first.record().clone();
+    let mut fake = Fake::default();
+    fake.sessions.insert(1000);
+    let mut next = Service::new(fake, left);
+    next.reset();
+    assert!(next.is_idle());
+    assert_eq!(
+        next.backend().lines(),
+        ["delete table inet tilo_device_vpn_profile"]
     );
 }

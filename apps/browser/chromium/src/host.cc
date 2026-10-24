@@ -1,5 +1,6 @@
 #include "host.h"
 #include "protocol.h"
+#include "frame_memory.h"
 #include "view_geometry.h"
 #include "key_mapping.h"
 #include "request_filter.h"
@@ -20,6 +21,7 @@
 #include "service_sessions.h"
 #include "devtools_bridge.h"
 #include "extension_tabs.h"
+#include "page_clipboard.h"
 #if defined(OS_MAC)
 #include "credentials_mac.h"
 #endif
@@ -70,10 +72,16 @@ void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double sca
   static std::atomic<unsigned> count{0};
   if(enabled && count.fetch_add(1)<128) std::fprintf(stderr,"[chromium-geometry] %s tab=%d %dx%d scale=%g\n",stage,tab,width,height,scale);
 }
+// The app applies a frame's changed rects to the frame before it
+// (`--tilo-frame-damage`), so a caret's blink is not the whole page again.
+bool frame_damage=false;
 // CEF callbacks only enqueue: a slow UI must never block Chromium's UI thread.
 class Output {
  public:
-  Output():thread_([this]{ Run(); }) {}
+  // With `memory`, a whole frame's pixels go into it and only a notice down
+  // the pipe (frame_memory.h); without it, the whole frame goes down the
+  // pipe. Changed rects (--tilo-frame-damage) go down the pipe either way.
+  explicit Output(std::unique_ptr<tilo::FrameMemory> memory):memory_(std::move(memory)),thread_([this]{ Run(); }) {}
   ~Output() { Stop(); }
   // Page audio is real time: its own lane, ordered with itself (start, packets,
   // stop) but never allowed to fail the host or hold up its events. Past
@@ -94,12 +102,24 @@ class Output {
     else failed_=true;
     cv_.notify_one();
   }
-  // A frame packet (tilo::FramePacket), shared with the tab that keeps it:
-  // only each tab's newest pending frame is kept, so one tab's paints never
-  // drop another's last frame.
-  void SendFrame(uint32_t tab,std::shared_ptr<const std::string> packet) {
+  // A frame packet (tilo::FramePacket), shared with the tab that keeps it,
+  // with what changed since the tab's frame before it (`damage`; null when
+  // not known): only each tab's newest pending frame is kept, so one tab's
+  // paints never drop another's last frame, and it keeps the rects of the
+  // frames it replaced. With --tilo-frame-damage the writer sends just those
+  // rects (tilo::DamagePacket) when the app has the frame they change.
+  void SendFrame(uint32_t tab,std::shared_ptr<const std::string> packet,uint32_t width,uint32_t height,const std::vector<tilo::DamageRect>* damage=nullptr) {
     std::lock_guard<std::mutex> lock(mutex_);
-    frames_[tab]=std::move(packet);
+    auto [entry,fresh]=frames_.try_emplace(tab);
+    auto& pending=entry->second;
+    bool whole=!damage || (!fresh && (pending.whole || pending.width!=width || pending.height!=height));
+    if(whole || fresh) pending.damage.clear();
+    if(!whole) {
+      pending.damage.insert(pending.damage.end(),damage->begin(),damage->end());
+      // A reader that falls behind gets the frame whole, not a growing list.
+      if(pending.damage.size()>4*tilo::kMaxDamageRects) {whole=true;pending.damage.clear();}
+    }
+    pending.whole=whole;pending.packet=std::move(packet);pending.width=width;pending.height=height;
     cv_.notify_one();
   }
   bool Failed() const { return failed_; }
@@ -111,17 +131,46 @@ class Output {
   void Run() {
     int flags=fcntl(STDOUT_FILENO,F_GETFL,0); fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK);
     for(;;) {
-      std::string owned;std::shared_ptr<const std::string> frame;
+      std::string owned;std::shared_ptr<const std::string> frame;PendingFrame damaged;uint32_t damaged_tab=0;int slot=-1;
       { std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !audio_.empty() || !frames_.empty(); });
-        if(!events_.empty()) { owned=std::move(events_.front()); events_.pop_front(); }
-        else if(!audio_.empty()) { owned=std::move(audio_.front().second); audio_.pop_front(); }
-        else if(!frames_.empty()) {
-          // Tabs take turns, so a tab painting every frame cannot starve another.
-          auto next=frames_.upper_bound(last_frame_tab_);if(next==frames_.end())next=frames_.begin();
-          last_frame_tab_=next->first;frame=std::move(next->second);frames_.erase(next);
+        bool next=false;
+        while(!next) {
+          if(!events_.empty()) { owned=std::move(events_.front()); events_.pop_front(); next=true; }
+          else if(!audio_.empty()) { owned=std::move(audio_.front().second); audio_.pop_front(); next=true; }
+          else if(!frames_.empty()) {
+            // Tabs take turns, so a tab painting every frame cannot starve another.
+            auto turn=frames_.upper_bound(last_frame_tab_);if(turn==frames_.end())turn=frames_.begin();
+            // Only rects of the frame the app was sent last apply to it.
+            auto& sent=sent_[turn->first];
+            const bool damage=frame_damage && !turn->second.whole && sent.first==turn->second.width && sent.second==turn->second.height;
+            if(!damage && memory_ && (slot=memory_->FreeSlot(last_slot_))<0) {
+              if(stopping_) break;
+              // A whole frame waits for the app to finish copying out a
+              // slot: that takes a copy's time, and no wakeup announces it,
+              // so look again shortly.
+              cv_.wait_for(lock,std::chrono::milliseconds(1));continue;
+            }
+            last_frame_tab_=turn->first;PendingFrame pending=std::move(turn->second);frames_.erase(turn);
+            if(damage) {damaged=pending;damaged_tab=last_frame_tab_;}
+            sent={pending.width,pending.height};frame=std::move(pending.packet);next=true;
+          }
+          else if(stopping_) break;
+          else cv_.wait(lock);
         }
-        else break;
+        if(!next) break;
+      }
+      if(frame && slot>=0) {
+        last_slot_=static_cast<uint32_t>(slot);
+        owned=memory_->Publish(last_slot_,last_frame_tab_,*frame);frame.reset();
+        if(owned.empty()) continue;
+      }
+      if(damaged_tab) {
+        const size_t offset=tilo::FramePixelOffset(damaged_tab);
+        auto rects=tilo::ClipDamage(damaged.damage,damaged.width,damaged.height);
+        if(!rects.empty() && frame->size()>offset) {
+          owned=tilo::DamagePacket(damaged_tab,damaged.width,damaged.height,frame->data()+offset,frame->size()-offset,rects);
+          if(!owned.empty()) frame.reset();
+        }
       }
       const std::string& packet=frame?*frame:owned;
       size_t offset=0;
@@ -139,8 +188,12 @@ class Output {
       }
     }
   }
+  struct PendingFrame { std::shared_ptr<const std::string> packet; uint32_t width=0,height=0; std::vector<tilo::DamageRect> damage; bool whole=true; };
   std::atomic<bool> stopping_{false},failed_{false};
-  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::map<uint32_t,std::shared_ptr<const std::string>> frames_; uint32_t last_frame_tab_=0; std::thread thread_;
+  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::map<uint32_t,PendingFrame> frames_;
+  // The dimensions of the frame last written for each tab.
+  std::map<uint32_t,std::pair<uint32_t,uint32_t>> sent_; uint32_t last_frame_tab_=0;
+  std::unique_ptr<tilo::FrameMemory> memory_; uint32_t last_slot_=tilo::kFrameSlots-1; std::thread thread_;
 };
 Output* output=nullptr;
 // Page audio goes to the app (`--tilo-audio-bridge`) because its sandbox has no audio device; without it Chromium plays on its own.
@@ -247,6 +300,11 @@ CefRefPtr<tilo::RequestFilter> request_filter;
 // person used last: an extension's "current window" when it has none.
 std::unique_ptr<tilo::ExtensionTabs> extension_tabs;
 int last_focused_tab=0;
+// The engine has no clipboard of its own (page_clipboard.h): set where
+// Chromium runs with no display server.
+bool page_clipboard=false;
+tilo::ClipboardReads clipboard_reads;
+void ClipboardAnswer(int request,std::optional<std::string> text);
 // Host-originated calls on the DevTools pipe, answered on the UI thread.
 std::map<int,tilo::ExtensionTabs::PipeDone> pipe_calls;
 int next_pipe_call=0;
@@ -570,7 +628,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -591,6 +649,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     page_automation_=nullptr;
     if(agent_log_)agent_log_->Detach();
     agent_log_=nullptr;
+    if(extension_tabs && !side_panel_.empty())extension_tabs->SidePanelClosed(id_);
     if(extension_tabs)extension_tabs->Removed(id_);
     if(inspector_)inspector_->Detach();
     inspector_=nullptr;
@@ -649,7 +708,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false);favicon_.clear();
-      if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("url",url);extension_tabs->Updated(id_,change);extension_tabs->Opened(id_,url.ToString());} } }
+      if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("url",url);extension_tabs->Updated(id_,change);extension_tabs->Opened(id_,url.ToString());}
+      if(extension_tabs && !side_panel_.empty())extension_tabs->SidePanelShows(id_,panel_opener_,side_panel_,url.ToString()); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override {
     StringEvent("title","title",title);title_=title.ToString();
     if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("title",title);extension_tabs->Updated(id_,change);}
@@ -707,8 +767,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       ScheduleNavigation();
     }
   }
-  void OnLoadStart(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,TransitionType) override {
+  void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
+    tilo::ForgetBootstrap(browser);
     // A new document: extensions' worlds and ports in the old one are gone.
     if(extension_tabs)extension_tabs->Navigated(id_);
     main_navigation_finished_=false;
@@ -731,7 +792,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnPopupShow(CefRefPtr<CefBrowser>,bool show) override { popup_visible_=show;if(!show) { popup_.clear(); EmitFrame(); } }
   void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
-  void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList&,const void* buffer,int width,int height) override {
+  void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList& dirty,const void* buffer,int width,int height) override {
     if(!visible_) return;
     auto size=tilo::FrameSize(width,height);if(!size) return;
     if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
@@ -756,14 +817,26 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       // the tab keeps to composite a popup over and to send again.
       auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
       frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
+      // What Chromium repainted, in the frame's pixels.
+      std::vector<tilo::DamageRect> damage;
+      for(const auto& rect:dirty) {
+        const int64_t x0=std::max(0,rect.x),y0=std::max(0,rect.y),x1=int64_t(rect.x)+rect.width,y1=int64_t(rect.y)+rect.height;
+        if(x1>x0 && y1>y0) damage.push_back({uint32_t(x0),uint32_t(y0),uint32_t(x1-x0),uint32_t(y1-y0)});
+      }
+      EmitFrame(&damage);return;
     }
-    else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
+    popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height;
     EmitFrame();
   }
-  void EmitFrame() {
+  // Publishes the tab's frame; `damage` says what changed since the frame
+  // before it, null when that is not known.
+  void EmitFrame(const std::vector<tilo::DamageRect>* damage=nullptr) {
     if(!visible_ || !frame_) return;
     TraceGeometry("frame-published",id_,pixel_width_,pixel_height_,geometry_.scale());
-    if(!popup_visible_ || popup_.empty()) { output->SendFrame(static_cast<uint32_t>(id_),frame_); return; }
+    if(whole_next_) {damage=nullptr;whole_next_=false;}
+    if(!popup_visible_ || popup_.empty()) { output->SendFrame(static_cast<uint32_t>(id_),frame_,pixel_width_,pixel_height_,damage); return; }
+    // The popup's pixels are in this frame only: the next one goes whole.
+    whole_next_=true;
     std::string body=*frame_;const size_t offset=tilo::FramePixelOffset(static_cast<uint32_t>(id_));
     int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
     for(int row=0;row<popup_height_;++row) {
@@ -771,7 +844,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       int start=std::max(0,-x),end=std::min(popup_width_,pixel_width_-x);
       if(end>start) std::memcpy(body.data()+offset+(size_t(dest_y)*pixel_width_+x+start)*4,popup_.data()+(size_t(row)*popup_width_+start)*4,size_t(end-start)*4);
     }
-    output->SendFrame(static_cast<uint32_t>(id_),std::make_shared<const std::string>(std::move(body)));
+    output->SendFrame(static_cast<uint32_t>(id_),std::make_shared<const std::string>(std::move(body)),pixel_width_,pixel_height_);
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
@@ -782,6 +855,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(message->GetName()=="tilo.credential_result") {
       ReceiveCredentialResult(browser,frame,message->GetArgumentList());return true;
+    }
+    if(message->GetName()=="tilo.clipboard_write" || message->GetName()=="tilo.clipboard_read" || message->GetName()=="tilo.clipboard_primed") {
+      if(page_clipboard && browser_ && browser && browser->IsSame(browser_) && frame && frame->IsValid()) PageClipboardMessage(frame,message);
+      return true;
     }
     if(message->GetName()=="tilo.credential_context" || message->GetName()=="tilo.credential_context_closed") {
       if(!browser_ || !browser || !browser->IsSame(browser_) || !frame ||
@@ -968,8 +1045,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         host->Invalidate(PET_VIEW);
         // A background load may have completed without an eligible handshake.
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
-      } else {frame_.reset();popup_.clear();}
+      } else {frame_.reset();popup_.clear();whole_next_=true;}
     }
+    // The app lost the frame its next rects would change: send it whole.
+    else if(op=="resend_frame") {whole_next_=true;if(frame_)EmitFrame();else host->Invalidate(PET_VIEW);}
     else if(op=="js_dialogs") {
       js_dialogs_=d->GetBool("enabled");
       // An embedder that stops answering lets the open question go.
@@ -977,6 +1056,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
     else if(op=="context_action") {
+      // Choosing an item is the person's own act, as a click is: a copy
+      // from the menu reaches the clipboard.
+      activated_=std::chrono::steady_clock::now();
       if(context_callback_ && d->GetInt("id")==context_id_) {
         int command=d->GetInt("command");auto callback=context_callback_;context_callback_=nullptr;
         if(command && context_commands_.count(command)) callback->Continue(command,EVENTFLAG_NONE);else callback->Cancel();
@@ -1014,6 +1096,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="paint_resource") paint_snapshot_->Resource(d);
     else if(op=="document_size") document_size_->Enable(d->GetBool("enabled"));
     else if(op=="popups") popups_=d->GetBool("enabled");
+    else if(op=="page_clipboard") shares_clipboard_=true;
     else if(op=="selection_text") {
       // The renderer reads the selection; the embedder puts it on the
       // system clipboard, which an offscreen engine cannot reach.
@@ -1057,6 +1140,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       extension_panel_=true;panel_opener_=last_focused_tab;
       // Opened by its toolbar button: like a click, it may script the page.
       if(d->HasKey("action") && extension_tabs)extension_tabs->Grant(d->GetString("action"),panel_opener_);
+      // An extension's side panel: it hears of the panel opening and
+      // closing (extension_tabs.h, SidePanelShows).
+      if(d->HasKey("side_panel"))side_panel_=d->GetString("side_panel").ToString();
     }
     // The page an extension asked the person to sign in on, shown in a
     // panel over the page used last or loaded out of sight: the host
@@ -1079,6 +1165,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     // The person opened an extension's side panel beside this page.
     else if(op=="extension_side_panel") {if(extension_tabs)extension_tabs->OpenSidePanel(d->GetString("id"),id_);}
+    // One of extensions' keyboard shortcuts, pressed while the Browser's own
+    // field had the keyboard: its command runs over this page, which sees
+    // nothing of the key.
+    else if(op=="extension_command_key") {
+      if(auto shortcut=tilo::KeyShortcut(d->GetString("key"),d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta")))
+        if(extension_tabs)extension_tabs->Key(extension_panel_?panel_opener_:id_,*shortcut);
+    }
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -1087,7 +1180,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
       if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
-      popup_.clear();frame_.reset();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+      popup_.clear();frame_.reset();whole_next_=true;host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
@@ -1117,7 +1210,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto frame=browser_->GetFocusedFrame();
       if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
     }
-    else if(op=="key") {if(d->GetBool("down"))activated_=std::chrono::steady_clock::now();Key(d);}
+    else if(op=="key") {if(d->GetBool("down"))activated_=std::chrono::steady_clock::now();KeyCommand(d);}
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
@@ -1134,6 +1227,103 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else { StringEvent("error","message","Unknown command: "+op);CloseHost(); }
   }
+  // The page's clipboard where the engine has none (page_clipboard.h).
+  // A copy reaches the Browser only within the person's activation of the
+  // page, as Chrome lets a page write the clipboard; an extension's page
+  // with `clipboardWrite` copies at any time.
+  void PageClipboardMessage(CefRefPtr<CefFrame> frame,CefRefPtr<CefProcessMessage> message) {
+    auto args=message->GetArgumentList();
+    if(message->GetName()=="tilo.clipboard_primed") {
+      if(args->GetSize()==1 && args->GetType(0)==VTYPE_INT && args->GetInt(0)==paste_prime_) ReleaseKeys();
+      return;
+    }
+    if(message->GetName()=="tilo.clipboard_read") {
+      if(args->GetSize()!=1 || args->GetType(0)!=VTYPE_INT) return;
+      const int renderer=args->GetInt(0);
+      // A read from a page the person can see, of a site the person allowed
+      // to read the clipboard (or an extension's page that may): what the
+      // page's script did cannot read it otherwise.
+      const auto url=frame->GetURL().ToString();const std::string prefix="chrome-extension://";
+      auto context=browser_->GetHost()->GetRequestContext();
+      const bool allowed=(context && context->GetContentSetting(url,url,CEF_CONTENT_SETTING_TYPE_CLIPBOARD_READ_WRITE)==CEF_CONTENT_SETTING_VALUE_ALLOW) ||
+        (url.rfind(prefix,0)==0 && extension_tabs && extension_tabs->MayReadClipboard(url.substr(prefix.size(),32)));
+      const int request=visible_ && allowed && SharesClipboard()?clipboard_reads.Add({tilo::ClipboardReads::Purpose::Read,id_,frame->GetIdentifier().ToString(),renderer}):0;
+      if(!request) {ClipboardText(frame,renderer,std::nullopt);return;}
+      AskClipboard(request);
+      return;
+    }
+    if(args->GetSize()!=3 || args->GetType(0)!=VTYPE_STRING || args->GetType(1)!=VTYPE_STRING || args->GetType(2)!=VTYPE_BOOL) return;
+    const auto text=args->GetString(0).ToString();auto html=args->GetString(1).ToString();
+    if(text.empty() || text.size()>tilo::kMaxClipboardText) return;
+    if(html.size()>tilo::kMaxClipboardHtml) html.clear();
+    const auto url=frame->GetURL().ToString();const std::string prefix="chrome-extension://";
+    const bool extension=url.rfind(prefix,0)==0 && extension_tabs && extension_tabs->MayWriteClipboard(url.substr(prefix.size(),32));
+    if((!activated() && !extension) || !SharesClipboard()) return;
+    auto fields=CefDictionaryValue::Create();fields->SetString("text",text);
+    if(!html.empty()) fields->SetString("html",html);
+    fields->SetBool("secret",args->GetBool(2));
+    ClipboardOwner()->Event("clipboard",fields);
+  }
+  // Who tells the Browser of a copy: the page itself, or for a page's
+  // popup or an extension's panel the page it was opened from, which the
+  // Browser shows.
+  Client* ClipboardOwner() {
+    const int owner=extension_panel_?panel_opener_:opener_;
+    auto found=clients.find(owner);
+    return owner && found!=clients.end() && found->second.get()!=this?found->second.get():this;
+  }
+  // The embedder takes this tab's copies and answers its reads
+  // (`page_clipboard`); a tab of one that does not keeps the engine's own.
+  bool SharesClipboard() {return page_clipboard && ClipboardOwner()->shares_clipboard_;}
+  // Ask the Browser for the system clipboard's text, for `request`.
+  void AskClipboard(int request) {
+    auto fields=CefDictionaryValue::Create();fields->SetInt("request_id",request);
+    ClipboardOwner()->Event("clipboard_read",fields);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](int request){ClipboardAnswer(request,std::nullopt);},request),tilo::kClipboardReadMs);
+  }
+  // The answer to a page's read, or nothing, which leaves it Chromium's.
+  void ClipboardText(CefRefPtr<CefFrame> frame,int renderer,std::optional<std::string> text) {
+    if(!frame || !frame->IsValid()) return;
+    auto message=CefProcessMessage::Create("tilo.clipboard_text");auto args=message->GetArgumentList();
+    args->SetInt(0,renderer);if(text)args->SetString(1,*text);else args->SetNull(1);
+    frame->SendProcessMessage(PID_RENDERER,message);
+  }
+  void ClipboardRead(const tilo::ClipboardReads::Read& read,std::optional<std::string> text) {
+    if(!browser_) return;
+    if(read.purpose==tilo::ClipboardReads::Purpose::Read) {ClipboardText(browser_->GetFrameByIdentifier(read.frame),read.renderer,std::move(text));return;}
+    if(read.renderer!=paste_prime_) return;
+    // The system clipboard's text, kept in the focused frame for the paste
+    // the key makes; without it the key pastes Chromium's own.
+    auto frame=browser_->GetFocusedFrame();if(!frame) frame=browser_->GetMainFrame();
+    if(!text || !frame) {ReleaseKeys();return;}
+    auto message=CefProcessMessage::Create("tilo.clipboard_prime");
+    message->GetArgumentList()->SetInt(0,paste_prime_);message->GetArgumentList()->SetString(1,*text);
+    frame->SendProcessMessage(PID_RENDERER,message);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](int tab,int prime){auto found=clients.find(tab);if(found!=clients.end())found->second->PrimeLate(prime);},id_,paste_prime_),tilo::kClipboardPrimeMs);
+  }
+  void PrimeLate(int prime) {if(prime==paste_prime_)ReleaseKeys();}
+  // A paste key waits for the system clipboard, and the keys after it with
+  // it, so the page gets them in the order they were pressed.
+  void KeyCommand(CefRefPtr<CefDictionaryValue> d) {
+    if(paste_prime_) {if(held_keys_.size()<256)held_keys_.push_back(d->Copy(false));return;}
+    if(SharesClipboard() && d->GetBool("down") && tilo::PasteKey(d->GetString("key"),d->GetBool("ctrl"),d->GetBool("shift"),d->GetBool("alt"),d->GetBool("meta"))) {
+      static int primes=0;primes=primes%2147483647+1;
+      const int request=clipboard_reads.Add({tilo::ClipboardReads::Purpose::Paste,id_,{},primes});
+      if(request) {paste_prime_=primes;held_keys_.push_back(d->Copy(false));AskClipboard(request);return;}
+    }
+    Key(d);
+  }
+  void ReleaseKeys() {
+    paste_prime_=0;
+    auto keys=std::move(held_keys_);held_keys_.clear();
+    bool paste=true;
+    for(auto& key:keys) {
+      // The paste key itself goes on to the page; another after it waits
+      // for the clipboard again.
+      if(paste) {paste=false;Key(key);continue;}
+      if(paste_prime_) held_keys_.push_back(key);else KeyCommand(key);
+    }
+  }
   void Key(CefRefPtr<CefDictionaryValue> d) {
     CefKeyEvent e;e.type=d->GetBool("down")?KEYEVENT_RAWKEYDOWN:KEYEVENT_KEYUP;
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
@@ -1144,7 +1334,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // is known by the key's name: it may read otherwise ("y" once Shift is up).
     if(auto shortcut=tilo::KeyShortcut(key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
       if(!d->GetBool("down")) { if(commanded_keys_.erase(shortcut->key)) return; }
-      else if(!extension_panel_ && extension_tabs && extension_tabs->Key(id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
+      // In an extension's popup or side panel it runs over the page the
+      // panel shows for, as in Chrome, whose shortcuts belong to the window.
+      else if(extension_tabs && extension_tabs->Key(extension_panel_?panel_opener_:id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
     }
 #if defined(OS_MAC)
     // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
@@ -1227,7 +1419,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
-    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();frame_.reset();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
   }
  private:
   struct CredentialPending {
@@ -1508,7 +1700,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
+  // The extension whose side panel this tab shows, if it shows one.
+  std::string side_panel_;
   std::optional<std::chrono::steady_clock::time_point> activated_;
+  // The paste a key is waiting on the system clipboard for, and the keys
+  // pressed since (KeyCommand).
+  int paste_prime_=0;std::deque<CefRefPtr<CefDictionaryValue>> held_keys_;bool shares_clipboard_=false;
   // The zoom level last told of (PublishZoom), none before the first page.
   std::optional<double> published_zoom_;
   CefRefPtr<tilo::TabInspector> inspector_;CefRefPtr<tilo::DocumentScripts> extension_scripts_;
@@ -1562,7 +1759,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
   std::vector<tilo::MenuOffer> menu_offers_;tilo::MenuContext menu_context_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;
+  // The next frame goes whole: the app may not have the one before it.
+  bool whole_next_=true;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
@@ -1597,6 +1796,8 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   if(op=="shutdown") {CloseHost();return;}
   if(op=="create_tab") {CreateTab(id);return;}
   if(op=="devtools_call") {DevToolsCall(d,id);return;}
+  // The system clipboard's text, for whichever tab asked (page_clipboard.h).
+  if(op=="clipboard_contents") {ClipboardAnswer(d->GetInt("request_id"),d->GetType("text")==VTYPE_STRING?std::optional<std::string>(d->GetString("text").ToString()):std::nullopt);return;}
   if(op=="extension_access") {
     std::set<std::string> permissions;std::vector<std::string> hosts,scriptable;
     auto list=d->GetList("permissions");for(size_t i=0;i<list->GetSize();++i)permissions.insert(list->GetString(i));
@@ -1711,6 +1912,9 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     // exits unless it reaches an X server, and a Tilo app sandbox has none.
     if(process_type.empty() && !std::getenv("DISPLAY") && !command_line->HasSwitch("ozone-platform"))
       command_line->AppendSwitchWithValue("ozone-platform","headless");
+    // There Chromium's clipboard is its own alone: the host bridges it to
+    // the Browser's (page_clipboard.h).
+    if(process_type.empty() && command_line->GetSwitchValue("ozone-platform")=="headless") page_clipboard=true;
     // Without a GPU (a hosting server running agents), in-process GPU work
     // fails EGL and takes the browser down: compose in software instead, and
     // trade caches for memory as Chromium does on low-end devices.
@@ -1720,8 +1924,25 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     }
 #endif
   }
+  // Each renderer runs the page clipboard where the engine has none.
+  void OnBeforeChildProcessLaunch(CefRefPtr<CefCommandLine> command_line) override {
+    if(page_clipboard && !sealed_documents && command_line->GetSwitchValue("type")=="renderer") command_line->AppendSwitch(tilo::kPageClipboardSwitch);
+  }
   void OnContextInitialized() override {
     request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); },sealed_documents);
+    // Where each extension's files are, as Chromium says, for an ad
+    // blocker's stand-ins at its address for the session.
+    request_filter->ServeStandIns(std::make_shared<tilo::StandIns>(std::make_shared<tilo::ExtensionDirectories>([](tilo::ExtensionDirectories::Answer answer) {
+      PipeCall("Extensions.getExtensions",nullptr,"",[answer](bool ok,CefRefPtr<CefDictionaryValue> result) {
+        std::map<std::string,std::string> directories;
+        auto list=ok && result && result->GetType("extensions")==VTYPE_LIST?result->GetList("extensions"):nullptr;
+        for(size_t i=0;list && i<list->GetSize();++i) {
+          auto extension=list->GetDictionary(i);
+          if(extension && extension->GetType("id")==VTYPE_STRING && extension->GetType("path")==VTYPE_STRING) directories[extension->GetString("id")]=extension->GetString("path");
+        }
+        answer(std::move(directories));
+      });
+    })));
     if(private_mode) {
       CefRequestContextSettings settings;
       // Empty cache_path is CEF's incognito request context. The separate
@@ -1746,6 +1967,12 @@ class App final : public CefApp,public CefBrowserProcessHandler {
  private: IMPLEMENT_REFCOUNTING(App);
 };
 CefRefPtr<Client> ClientOf(int tab) {auto found=clients.find(tab);return found==clients.end()?nullptr:found->second;}
+// The Browser's answer to a read of the system clipboard, or nothing when it
+// had none or did not answer in time.
+void ClipboardAnswer(int request,std::optional<std::string> text) {
+  auto read=clipboard_reads.Take(request);if(!read)return;
+  if(auto client=ClientOf(read->tab))client->ClipboardRead(*read,std::move(text));
+}
 void StartExtensionTabs() {
   tilo::ExtensionTabs::Hooks hooks;
   hooks.tabs=[] {
@@ -1786,9 +2013,25 @@ void StartExtensionTabs() {
     client->Event("extension_download_open",fields);
     return "";
   };
-  hooks.activated=[](int tab) {auto client=ClientOf(tab);return client && client->activated();};
+  // The person's click or key lands in the focused frame, and Chromium
+  // counts it for that frame and those it is in: one of them must be the
+  // extension's page.
+  hooks.activated=[](int tab,const std::string& extension) {
+    auto client=ClientOf(tab);if(!client || !client->activated() || !client->browser_)return false;
+    const auto page="chrome-extension://"+extension+"/";
+    for(auto frame=client->browser_->GetFocusedFrame();frame;frame=frame->GetParent())
+      if(frame->GetURL().ToString().rfind(page,0)==0)return true;
+    return false;
+  };
   hooks.pipe_listen=[](const std::string& session,tilo::ExtensionTabs::PipeListener listener) {
     if(listener)pipe_listeners[session]=std::move(listener);else pipe_listeners.erase(session);
+  };
+  // What an extension's offscreen document copied goes to the Browser by
+  // the page the person used last, as the Browser shows it.
+  if(page_clipboard) hooks.clipboard=[](CefRefPtr<CefDictionaryValue> copy) {
+    auto client=ClientOf(last_focused_tab);
+    for(const auto& [id,other]:clients)if(!client && !other->ExtensionState().panel)client=other;
+    if(client && client->SharesClipboard())client->ClipboardOwner()->Event("clipboard",copy);
   };
   hooks.private_mode=private_mode;
   if(!private_mode && !extension_menus_file.empty())
@@ -1823,6 +2066,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   auto no_payload=[&]{CefDictionaryValue::KeyList keys;d->GetKeys(keys);return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab";});};
   if(op=="create_tab" || op=="close_tab" || op=="try_close_tab") return d->HasKey("tab");
   if(op=="visibility") return type("visible",VTYPE_BOOL);
+  if(op=="resend_frame") return d->HasKey("tab") && no_payload();
   if(op=="audio_muted") return type("muted",VTYPE_BOOL);
   if(op=="navigation_history" || op=="history_entry") return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 && (op=="navigation_history" ? (!d->HasKey("direction") || (type("direction",VTYPE_STRING) && (d->GetString("direction")=="back" || d->GetString("direction")=="forward"))) : (type("id",VTYPE_INT) && d->GetInt("id")>0));
   if(op=="scoped_navigation" || op=="cancel_navigation") {
@@ -1959,10 +2203,27 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0;
   }
   if(op=="popups") return type("enabled",VTYPE_BOOL);
+  if(op=="page_clipboard") return no_payload();
+  if(op=="clipboard_contents") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="request_id" && key!="text")return false;
+    return type("request_id",VTYPE_INT) && d->GetInt("request_id")>0 &&
+      (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=tilo::kMaxClipboardText));
+  }
   if(op=="extension_panel") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
-    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action")return false;
-    return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action" && key!="side_panel")return false;
+    // Opened by its button, or a side panel; not both.
+    if(d->HasKey("action") && d->HasKey("side_panel"))return false;
+    return (!d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")))) &&
+           (!d->HasKey("side_panel") || (type("side_panel",VTYPE_STRING) && tilo::ExtensionId(d->GetString("side_panel"))));
+  }
+  if(op=="extension_command_key") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="key" && key!="ctrl" && key!="shift" && key!="alt" && key!="meta")return false;
+    if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
+    for(const char* flag:{"ctrl","shift","alt","meta"})if(!type(flag,VTYPE_BOOL))return false;
+    return true;
   }
   if(op=="extension_click" || op=="extension_side_panel" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
   if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
@@ -2165,14 +2426,18 @@ void CloseHost() {
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
   std::string profile;
-  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-sealed-documents") sealed_documents=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
+  // The frame memory is mapped and its descriptor closed before anything
+  // else opens one: Chromium's pipe handler below takes 3 and 4 only when free.
+  std::unique_ptr<tilo::FrameMemory> frame_memory;
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--frame-memory-fd=",0)==0 && !frame_memory) {char* end=nullptr;const long fd=std::strtol(arg.c_str()+18,&end,10);if(end && !*end && fd>2 && fd<=INT32_MAX)frame_memory=tilo::FrameMemory::Map(static_cast<int>(fd));if(!frame_memory)std::cerr<<"Frame memory unavailable; frames go down the pipe\n";} }
+  for(int i=1;i<argc;++i) { std::string arg=argv[i];if(arg.rfind("--profile=",0)==0) profile=arg.substr(10);if(arg.rfind("--downloads=",0)==0) downloads_directory=arg.substr(12);if(arg=="--private") private_mode=true;if(arg=="--tilo-sealed-documents") sealed_documents=true;if(arg=="--tilo-audio-bridge") audio_bridge=true;if(arg=="--tilo-frame-damage") frame_damage=true;if(arg.rfind("--service-session=",0)==0) {service_session_id=arg.substr(18);if(!tilo::ServiceSessionId(service_session_id))return 2;} }
   if(private_mode && !service_session_id.empty())return 2;
   if(profile.empty() || profile[0]!='/') {std::cerr<<"--profile requires an absolute directory\n";return 2;}
   std::filesystem::create_directories(profile);
   profile=std::filesystem::canonical(profile).string();
   if(downloads_directory.empty()) downloads_directory=profile+"/downloads";
   extension_menus_file=profile+"/Extension Menus.json";
-  Output writer;output=&writer;
+  Output writer(std::move(frame_memory));output=&writer;
 #if defined(OS_LINUX) || defined(OS_MAC)
   // Chromium's pipe handler reads commands on fd 3 and replies on fd 4. Use
   // them only when nothing else holds those descriptors. Extensions are

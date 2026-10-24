@@ -151,7 +151,9 @@ thread_local! {
 /// viewport of the nearest enclosing scroll view (intersected with any
 /// outer one), or `None` when nothing clips it. A collection reads it in
 /// [`Widget::apply_layout`] to keep only the rows near what is shown laid
-/// out; drawing culls against `PresenceCtx::should_cull` instead.
+/// out; drawing culls against `PresenceCtx::should_cull` instead. It is in
+/// effect too while a scroll view collects its content's damage and while
+/// the host plans its copies ([`Widget::for_each_child_in_clip`]).
 #[must_use]
 pub fn layout_clip() -> Option<vello::kurbo::Rect> {
     LAYOUT_CLIP.with(std::cell::Cell::get)

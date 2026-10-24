@@ -90,19 +90,6 @@ impl ShellOverlayHost {
             return true;
         }
 
-        // Anything the person does dismisses the arrival line, and still
-        // does what it does.
-        if self.arrival_line.is_open()
-            && matches!(
-                event,
-                WindowEvent::KeyboardInput { .. }
-                    | WindowEvent::MouseInput { .. }
-                    | WindowEvent::MouseWheel { .. }
-                    | WindowEvent::Touch(_)
-            )
-        {
-            self.arrival_line.dismiss();
-        }
         // Before every other overlay: a token prompt owns the keyboard
         // outright, since a token shares characters with chords.
         if self.peer_sync_overlay.visible() {

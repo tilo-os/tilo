@@ -1002,8 +1002,7 @@ mod tests {
     /// Wait until thread `tid` of this process is blocked in a system call.
     fn wait_until_blocked(tid: &str, what: &str) {
         tilo_test_env::wait_until(format!("the {what} to block"), || {
-            std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
-                .is_ok_and(|syscall| !syscall.starts_with("running"))
+            tilo_test_env::idle::blocked(tid)
         });
     }
 

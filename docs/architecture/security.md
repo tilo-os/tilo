@@ -48,6 +48,7 @@ What a sandboxed app is actually presented with. It names none of this; the laun
 - Read-write: exactly one directory, `<data home>/tilo-rooms/<room>/<pkg-id>` → `/run/tilo/app`, with `HOME` and every `XDG_*` pointed inside it. Two rooms are two directories, so an app opened in one room cannot read what it wrote in another. Plus the compositor's public Wayland socket → `/run/user/1000/wayland-0`.
 - `env`: `WAYLAND_DISPLAY=wayland-0`, `XDG_RUNTIME_DIR=/run/user/1000`, and `TILO_APP_DIR`, `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME` all under `/run/tilo/app`.
 - Private DBus session bus per workspace.
+- The AT-SPI bus, through its own filtered proxy (`launcher::dbus_proxy`): the app may embed its accessible tree in the registry and call nothing else. The proxy cannot filter calls into the app, so the launcher also sets `TILO_ATSPI_READ_ONLY=1`, and the app's bridge (the vendored `accesskit_unix`) serves its tree read-only to every other client: names, roles, states, text, values and events answer, while `Action.DoAction`, `EditableText`, setting `Value.CurrentValue`, selecting, `Component.GrabFocus` and moving the caret are refused with `AccessDenied`. A method call on the bus carries no proof that a person asked for it; acting on an app goes through its published actions, attributed to whoever invoked them, or the person's own input, which the compositor sees and which is how the built-in reader activates. The dev image (`/usr/lib/tilo/image-flavour` is `dev`) leaves the variable unset for its AT-SPI release gates.
 - Namespaces: `bwrap --unshare-all` (`launcher::sandbox`), so every app gets its own user, IPC, PID, network, UTS and cgroup namespace. The network namespace is shared back (`--share-net`) only when the app may reach any host (a `*` network grant, or host networking); an allowlist keeps the empty namespace and goes through the egress gate. Invited peers' apps run isolated; the owner's apps share the host network unless overridden.
 
 Anything outside that set is a capability the user grants at runtime, which becomes a bind on the app's next launch (`launcher::capabilities`).
@@ -298,6 +299,31 @@ room's verified agents when it subscribes and whenever they change
 (`ChannelContext.historyAgents`). A device whose delegation does not verify
 for exactly that device stays an unknown participant. These lists are
 presentation only; nothing is admitted by them.
+
+An agent that acts through its person's own session has no key of its own:
+it invokes an app's action, and the write lands through the mount, signed by
+this device for its person like any other. Before Files writes for an
+invocation, it names the paths it is about to write and which of its own
+live invocations they are for (`runtime_collab::write_attribution`); the
+envelope cannot name an actor. The broker resolves the invocation against its
+own custody of that Files process's pending invocations, exactly as the
+clipboard does, and takes the actor from there; only an agent acting for the
+person whose session Files runs in is ever named, and anything else is
+refused. The shell's own clipboard transfers name it the same way, from the
+custody behind their command. The session then leases that attribution to
+the filesystem for those paths, for at most a minute, over
+`SessionBlobs.attributeWrites` on the document media socket, which no sandbox
+reaches (`crates/system/fs/src/write_attribution.rs`). Each
+version the mount then makes of a leased path is followed by a signed
+`RecordOperationV1::AttributeVersion` (`record_replication.rs`). The
+attribution names the agent; the person it acted for is always the version's
+own signer. Peers accept it only from the device that signed that same
+version, never for another actor's version, never naming anything but an
+agent, and never changed once made. The operation travels alone at record
+envelope version 5, so every other operation keeps its bytes and older
+devices keep reading them. Files' history read returns these attributions
+beside the versions, and the history rows name the agent, for its person.
+None of it grants anything.
 
 ### Load hints beside local records
 
@@ -575,7 +601,10 @@ What it can read depends on the channel and on its certificate:
 
 Tilo's own components carry no telemetry, analytics or crash-upload client: no
 such crate is in the build (`tools/policy/check_no_telemetry.py`), panics and desktop freezes are written only to
-`~/.cache/tilo/crashes/` (`crash_log`), and the image removes `systemd-coredump`. A feedback report
+`~/.cache/tilo/crashes/` (`crash_log`), the kernel's records of the computer stopping (pstore) are copied
+there at the next start (`shell::crash_records`), and the image removes `systemd-coredump`. Settings → About
+lists those records and an agent reads them through the host's `tilo.crash-records` actions, under the same
+grants as Settings; neither sends one anywhere. A feedback report
 leaves only when the person has configured a destination room and approved the
 reviewed report; it travels to that room over the collaboration transport,
 never to a Tilo service (`docs/architecture/feedback.md`). What does leave,

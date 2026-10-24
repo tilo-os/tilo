@@ -64,7 +64,7 @@ impl<P: Resource> Shared<P> {
         let moved = match self.record.read(|doc| self.live.sync(doc)) {
             Some(Ok(moved)) => moved,
             Some(Err(error)) => {
-                tracing::warn!(kind = P::KIND, %error, "person record unreadable");
+                unreadable_person_record(P::KIND, &error);
                 false
             }
             None => false,
@@ -449,11 +449,11 @@ impl PersonState {
                 tilo_resource::evolution::migrate::<P>(doc).map_err(|error| error.to_string())
             })
         {
-            tracing::warn!(kind = P::KIND, %error, "person record not migrated");
+            person_record_not_migrated(P::KIND, &error);
         }
         let reader = record
             .read(tilo_resource::Reader::<P>::read)?
-            .map_err(|error| tracing::warn!(kind = P::KIND, %error, "person record unreadable"))
+            .map_err(|error| unreadable_person_record(P::KIND, &error))
             .ok()?;
         let live = Live::new(reader);
         self.owners.borrow_mut().push(record.history_owner());
@@ -701,4 +701,20 @@ impl Drop for PersonState {
             tracing::warn!(%error, "the person's records could not be stored");
         }
     }
+}
+
+/// Log that the person's record of `kind` does not read: one event site in
+/// the runtime rather than one in every app for each record type.
+#[cold]
+#[inline(never)]
+fn unreadable_person_record(kind: &'static str, error: &dyn std::fmt::Display) {
+    tracing::warn!(kind, %error, "person record unreadable");
+}
+
+/// Log that the person's record of `kind` was not migrated, as
+/// [`unreadable_person_record`].
+#[cold]
+#[inline(never)]
+fn person_record_not_migrated(kind: &'static str, error: &dyn std::fmt::Display) {
+    tracing::warn!(kind, %error, "person record not migrated");
 }

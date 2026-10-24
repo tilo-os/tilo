@@ -103,6 +103,17 @@ struct PermissionSet {
   bool empty() const { return permissions.empty() && origins.empty(); }
 };
 
+// What of `from` is not in `without`.
+inline PermissionSet Without(const PermissionSet& from, const PermissionSet& without) {
+  PermissionSet left;
+  const auto in = [](const std::vector<std::string>& list, const std::string& value) {
+    return std::find(list.begin(), list.end(), value) != list.end();
+  };
+  for (const auto& permission : from.permissions) if (!in(without.permissions, permission)) left.permissions.push_back(permission);
+  for (const auto& origin : from.origins) if (!in(without.origins, origin)) left.origins.push_back(origin);
+  return left;
+}
+
 inline constexpr char kOnlyDeclared[] = "Only permissions specified in the manifest may be requested.";
 inline constexpr char kRequired[] = "You cannot remove required permissions.";
 

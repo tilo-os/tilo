@@ -749,7 +749,7 @@ fn only_the_invite_button_opens_the_signed_composer() {
 
 /// The ribbon's own geometry is unit-tested in `ui`, but geometry that
 /// nothing routes is exactly the defect the ws-settings Copy button was
-/// — this drives a real click and asserts `active_strip` moved.
+/// — this drives real clicks and asserts `active_strip` moved.
 #[test]
 fn clicking_a_strip_ribbon_segment_moves_focus() {
     let mut tree = minimal_tree();
@@ -773,12 +773,21 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
 
     let target = ribbon.hit_rect(2).expect("third segment has a target");
     let c = target.center();
+    // A tap on the ribbon opens the strip switcher's labels, pinned (a
+    // finger cannot rest there to open them); the third strip's label row
+    // reaches under its mark, so a second tap there takes it.
+    click(&mut host, &taffy, host_node, c);
+    assert!(
+        chrome.borrow().strip_switcher_open(),
+        "a tap on the ribbon opens the strip switcher"
+    );
+    assert_eq!(chrome.borrow().strip_focus().1, 0, "nothing moved yet");
     click(&mut host, &taffy, host_node, c);
 
     let (_, focused) = chrome.borrow().strip_focus();
     assert_eq!(
         focused, 2,
-        "clicking the third ribbon segment must focus the third strip"
+        "the third strip's label, over its ribbon segment, focuses the third strip"
     );
 }
 

@@ -29,6 +29,10 @@ crate that matches every `WindowEvent` does not build against this fork. The
 workspace has none: Smithay's `backend_winit`, the one that did, is not
 enabled.
 
+On X11 and Wayland, a Ctrl, Alt or Super chord on a non-Latin letter takes as
+its logical key the Latin character another layout of the keymap puts on the
+key, as GTK does, so shortcuts work whichever source is typing.
+
 `WindowEvent::KeyboardLayoutChanged` carries an immutable, bounded snapshot of
 the actual focused Wayland seat keymap's effective symbols and received modifier
 masks/group. It contains configuration for physical positions, never composed

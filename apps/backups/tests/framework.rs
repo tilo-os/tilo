@@ -65,6 +65,11 @@ fn backups_run_as_jobs_against_this_devices_repository_and_follow_the_policy() {
     std::fs::create_dir_all(&source).unwrap();
     std::fs::create_dir_all(&destination).unwrap();
     std::fs::write(source.join("letter.txt"), b"dear backup").unwrap();
+    // Both backups below fall in one hour whenever the test runs: the
+    // retention policy buckets snapshots by the UTC hour they were taken
+    // in, and a running clock may cross into the next one between them.
+    let half_past = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_792_841_400);
+    ui::time::freeze_wall(half_past);
 
     let mut app = TestApp::<BackupsShell>::new().unwrap();
     // The location is this device's setting, not the document.

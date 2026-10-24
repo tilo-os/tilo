@@ -45,14 +45,16 @@ impl Firewall {
         self.enabled = true;
     }
 
-    /// Stop firewall.
-    #[action(destructive)]
+    /// Stop firewall. Undo starts it again but cannot take back what
+    /// reached the machine while it was open, so this is asked first.
+    #[action(destructive, irreversible)]
     pub fn stop(&mut self) {
         self.enabled = false;
     }
 
-    /// Enter panic mode: drop all traffic in and out.
-    #[action(destructive)]
+    /// Enter panic mode: drop all traffic in and out. Undo lifts it but
+    /// cannot restore the connections it cut, so this is asked first.
+    #[action(destructive, irreversible)]
     pub fn enter_panic_mode(&mut self) {
         self.panic_mode = true;
     }

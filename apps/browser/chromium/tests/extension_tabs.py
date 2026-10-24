@@ -73,6 +73,12 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A script reaches the frame of a page an extension names (Bitwarden injects
   its form filler into each frame that asks), one of another site too, or
   every frame, and a message reaches one frame's content script.
+- A message to a tab that names no frame reaches the content script in every
+  frame, of the page's site and of another's, and the first reply answers
+  it, a later one too; one no frame answers comes back with nothing. A
+  script injected into every frame the extension may script, where it has
+  no content script, gets a world in each frame of the page's site, hears
+  such a message, and names its frame and document as Chromium does.
 - A keyboard shortcut an extension's manifest suggests runs its command with
   the page it was pressed on, which it may then script (activeTab), and the
   page does not get the key; its toolbar button's command asks the Browser
@@ -101,7 +107,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   clicks in its popup: the Browser is asked, and what the person allows the
   extension holds at once, reaches the page with, and hears of in its
   worker; what it gives up it loses. What it was granted in an earlier run
-  it holds from the start.
+  it holds from the start. What the person revokes in the Library it loses
+  at once and hears of; a question whose window closed unanswered lets it
+  ask again; signing in (`identity`) granted later lets it sign in.
 - An extension's download is the Browser's: the person is asked, under the
   name the extension chose; the extension learns its id, finds it, pauses,
   resumes and cancels it and hears of each change; a refusal reaches it as
@@ -121,6 +129,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   (chrome.offscreen) parses for its worker, which answers it for the tabs it
   has no API for, and a script the extension injected into the page reaches
   it, as in Chrome.
+- What an extension that may write the clipboard copies in its offscreen
+  document, as MV3 extensions copy, reaches the Browser to put on the
+  system clipboard, where the engine has no clipboard of its own.
 - An extension's side panel opens beside the page on a click on its button
   when it asked for that (openPanelOnActionClick), and the extension hears of
   no click; from its keyboard shortcut's listener (sidePanel.open), never
@@ -373,16 +384,16 @@ SHIELDED = (b'<!doctype html><title>loading</title><script src="/tracker/t.js"><
             b"<script>addEventListener('load', () => {"
             b"document.title = 'page:' + (window.tracked ? 'tracked' : 'untracked'); });</script>")
 # A page with two trackers, two scripts an ad blocker puts its own in place
-# of, and a beacon, which says what loaded. The stand-in at an address of
-# its own for the session counts, though it does not run here (README).
+# of (one at its address for the session), and a beacon, which says what
+# loaded.
 COUNTED = (b'<!doctype html><title>loading</title><script src="/tracker/a.js"></script>'
            b'<script src="/surrogate/s.js"></script><script src="/standin/s.js"></script><img src="/tracker/b.png">'
            b"<script>addEventListener('load', async () => { let beacon = 'sent';"
            b"try { await fetch('/beacon/c'); } catch (error) { beacon = 'stopped'; }"
            b"document.title = 'counted:' + JSON.stringify({tracked: !!window.tracked,"
-           b"standin: window.standin || 'none', beacon}); });</script>")
+           b"surrogate: window.surrogate || 'none', standin: window.standin || 'none', beacon}); });</script>")
 # The counted page as it loads with the ad blocker fixture.
-TALLIED = {'tracked': False, 'standin': 'extension', 'beacon': 'sent'}
+TALLIED = {'tracked': False, 'surrogate': 'extension', 'standin': 'extension', 'beacon': 'sent'}
 # What the ad blocker fixtures may do, as the Browser grants it.
 TALLY = (['declarativeNetRequest', 'activeTab', 'scripting'], ['<all_urls>'])
 SPOTTER = (['declarativeNetRequest', 'declarativeNetRequestFeedback'], ['<all_urls>'])
@@ -454,6 +465,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 time.sleep(0.05)
             return
         kind = 'text/html'
+        if self.path == '/awaited':
+            # A page whose document is idle only after a while, as a page
+            # still loading its parts is: its declared content scripts run
+            # well after it showed its address.
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.end_headers()
+            self.wfile.write(b'<!doctype html><title>awaited</title><body>')
+            self.wfile.flush()
+            time.sleep(0.6)
+            self.wfile.write(b'awaited</body>')
+            return
         if self.path.startswith('/authorize'):
             self.authorize()
             return
@@ -471,6 +494,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = OPENER_FRAME
         elif self.path == '/openers':
             body = OPENERS_PAGE
+        elif self.path.startswith('/download-framed/'):
+            # A page that shows the extension named last in its address in
+            # a frame at its top left, with room of its own beside it.
+            extension = self.path.rsplit('/', 1)[-1]
+            body = (f'<!doctype html><title>framed</title><body style="margin:0;height:100vh">'
+                    f'<iframe src="chrome-extension://{extension}/frame.html" '
+                    f'style="position:absolute;left:0;top:0;width:300px;height:150px;border:0"></iframe>').encode()
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
@@ -867,9 +897,13 @@ class ExtensionTabs(unittest.TestCase):
         return event
 
     def click_panel(self, host, tab):
-        host.send(op='mouse_move', tab=tab, x=50, y=50)
-        host.send(op='mouse_button', tab=tab, button='left', down=True, x=50, y=50)
-        host.send(op='mouse_button', tab=tab, button='left', down=False, x=50, y=50)
+        self.click(host, tab, 50, 50)
+
+    def click(self, host, tab, x, y):
+        """The person's click at (`x`, `y`) of the tab."""
+        host.send(op='mouse_move', tab=tab, x=x, y=y)
+        host.send(op='mouse_button', tab=tab, button='left', down=True, x=x, y=y)
+        host.send(op='mouse_button', tab=tab, button='left', down=False, x=x, y=y)
 
     def test_an_extension_asks_for_more_access_and_the_person_decides(self):
         host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
@@ -956,6 +990,83 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(self.in_worker(host, permit, 'chrome.permissions.getAll()'),
                          {'permissions': ['scripting', 'storage', 'tabs'], 'origins': [f'http://127.0.0.1:{port}/*']})
         self.assertEqual(self.in_worker(host, permit, 'script()'), '/granted-before')
+
+    def test_access_the_person_revokes_goes_at_once_and_the_extension_hears_of_it(self):
+        host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
+        permit = ids['permit']
+        offered = (['tabs'], ['http://127.0.0.1/*'])
+        self.grants(host, permit, offered, offered)
+        page = self.url + '/revoked'
+        host.navigate(page)
+        self.worker_value(host, permit, 'typeof heard', lambda value: value == 'object')
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [page])
+        self.assertEqual(self.in_worker(host, permit, 'script()'), '/revoked')
+        # The person revokes it in the Library: the Browser tells the engine
+        # the extension holds none of it, which the extension hears of, and
+        # its next tab calls are refused.
+        self.grants(host, permit, offered)
+        removed = {'removed': {'permissions': ['tabs'], 'origins': ['http://127.0.0.1/*']}}
+        self.worker_value(host, permit, 'JSON.stringify(heard)', lambda value: json.loads(value) == [removed])
+        self.assertEqual(self.in_worker(host, permit, 'urls()'), [None])
+        self.assertTrue(self.in_worker(host, permit, 'script()').startswith('refused: '))
+        self.assertEqual(self.in_worker(host, permit, 'chrome.permissions.getAll()'),
+                         {'permissions': ['scripting', 'storage'], 'origins': []})
+        # Told again that it holds none, it hears nothing more.
+        self.grants(host, permit, offered)
+        host.settle(0.5)
+        self.assertEqual(json.loads(self.in_worker(host, permit, 'JSON.stringify(heard)')), [removed])
+
+    def test_a_question_left_unanswered_goes_with_its_window(self):
+        host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
+        permit = ids['permit']
+        self.grants(host, permit, (['tabs'], ['http://127.0.0.1/*']))
+        host.navigate(self.url + '/asked-again')
+        self.panel(host, 2, f'chrome-extension://{permit}/popup.html')
+        self.title(host, 2, 'ready:')
+        self.click_panel(host, 2)
+        first = self.told(host, lambda e: e['event'] == 'extension_permission_request')
+        # Its popup closes with the window, the question unanswered.
+        host.send(op='close_tab', tab=2)
+        host.until(lambda e: e['event'] == 'closed' and e.get('tab') == 2)
+        # Opened again, it may ask again, and the person's answer counts.
+        self.panel(host, 3, f'chrome-extension://{permit}/popup.html')
+        self.title(host, 3, 'ready:')
+        self.click_panel(host, 3)
+        second = self.told(host, lambda e: e['event'] == 'extension_permission_request')
+        self.assertNotEqual(second['request'], first['request'])
+        host.send(op='extension_permission_decision', request=first['request'], allow=True)
+        host.send(op='extension_permission_decision', request=second['request'], allow=True)
+        answered = json.loads(self.title(host, 3, 'asked:')[len('asked:'):])
+        self.assertEqual((answered['granted'], answered['error'], answered['tabs'], answered['site']),
+                         (True, None, True, True))
+
+    def test_an_extension_granted_signing_in_later_signs_in(self):
+        host, ids = self.start('latecomer', access={'latecomer': ([], [])})
+        late = ids['latecomer']
+        self.grants(host, late, (['identity'], []))
+        host.navigate(self.url + '/front')
+        host.settle(1.0)
+        read = lambda expression: self.in_worker(host, late, expression)
+        # Until the person grants it, it may not.
+        self.assertEqual(read("chrome.identity.launchWebAuthFlow({url: 'https://example.org/', interactive: true})"
+                              ".then(() => 'signed in', (e) => e.message)"),
+                         'The extension did not ask for the identity permission')
+        # Granted, as the Browser keeps it, it signs in as one whose manifest
+        # requires it.
+        self.grants(host, late, (['identity'], []), (['identity'], []))
+        back = f'https://{late}.chromiumapp.org/'
+        query = urllib.parse.urlencode({'redirect_uri': back + 'cb', 'code': 'later', 'auto': '1'})
+        url = f'{self.url}/authorize?{query}'
+        self.assertEqual(read(f'signIn({{url: {json.dumps(url)}, interactive: true}})'), 'started')
+        asked = self.told(host, lambda e: e['event'] == 'extension_sign_in')
+        self.assertEqual((asked['id'], asked['url'], asked['interactive']), (late, url, True))
+        host.send(op='create_tab', tab=2)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
+        host.send(op='extension_sign_in_panel', tab=2, id=late, flow=asked['flow'])
+        host.send(op='resize', tab=2, width=800, height=600, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=url)
+        signed = self.worker_value(host, late, 'JSON.stringify(signIns)', lambda value: json.loads(value))
+        self.assertEqual(json.loads(signed), [{'url': back + 'cb?code=later'}])
 
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
         # Its content script's site is no host permission (the Browser sends
@@ -1138,6 +1249,18 @@ class ExtensionTabs(unittest.TestCase):
             # Read while the worker is still awake.
             self.fail(f"the worker heard {self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)')}")
         self.assertRegex(title, r'^watched:\d+$')
+
+    def test_a_script_injected_before_the_declared_content_scripts_runs_in_their_world(self):
+        host, ids = self.start('awaiter', access={'awaiter': (['scripting'], ['http://127.0.0.1/*'], ['http://127.0.0.1/*'])})
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, ids['awaiter'], 'typeof listening') != 'boolean':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+        host.settle(1.0)
+        host.send(op='navigate', url=self.url + '/awaited')
+        # It waited for the world Chromium made for them, with Chromium's
+        # `chrome`, rather than run in one the host made.
+        self.assertEqual(self.report('awaiter'), {'connect': 'function', 'declared': True})
 
     def test_an_extension_follows_navigations_and_tab_events_by_the_tabs_ids(self):
         host, ids = self.start('navigator', access={'navigator': (['webNavigation', 'tabs'], [])})
@@ -1394,6 +1517,43 @@ class ExtensionTabs(unittest.TestCase):
             'malformed': 'error: Invalid document id nope',
             'gone': 'error: No document with id 0123456789ABCDEF0123456789ABCDEF in tab with id %d' % tab,
             'ids': True,
+        })
+
+    def test_a_message_to_the_tab_reaches_every_frame(self):
+        host, ids = self.start('broadcaster', access={'broadcaster': (
+            ['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'], ['http://127.0.0.1/*', 'http://localhost/*'])})
+        host.navigate(self.url + '/framed')
+        every = ['/framed', '/inner', '/outer']
+        self.assertEqual(self.report('broadcaster'), {
+            # A message that names no frame reaches the content script in
+            # every frame, the other site's too, and the first reply
+            # answers it.
+            'everyone': 'a frame',
+            'heardEveryone': every,
+            # Heard everywhere and answered nowhere: nothing comes back.
+            'quiet': 'nothing',
+            'heardQuiet': every,
+            # The one frame that answers, later, answers it.
+            'later': '/outer',
+            # Each result names its frame and document as Chromium does.
+            'results': [[path, True, True] for path in every],
+        })
+
+    def test_a_script_injected_into_every_frame_hears_the_tab(self):
+        host, ids = self.start('spreader', access={'spreader': (['scripting', 'webNavigation'], ['http://127.0.0.1/*'])})
+        host.navigate(self.url + '/framed')
+        self.title(host, 1, 'page /framed')
+        self.assertEqual(json.loads(self.in_worker(host, ids['spreader'], 'spread()')), {
+            # Into the page and its frame of the same site, which it may
+            # script, not the other site's: each by the frame and document
+            # Chromium names.
+            'injected': [['/framed', True, True], ['/inner', True, True]],
+            'inner': True,
+            # A message to the tab reaches the script in both frames, and
+            # each frame's message names it.
+            'everyone': 'a frame',
+            'heard': {'/framed': True, '/inner': True},
+            'byFrame': '/inner',
         })
 
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):
@@ -1952,6 +2112,20 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'name,count\nkept,1\n')
 
+        # Two requests for one address at once are two downloads, each with
+        # its own id and the name it asked for.
+        twice = f'{self.url}/download/twice'
+        pair = self.in_worker(host, ids['downloader'], 'outcome(Promise.all(['
+                              f"chrome.downloads.download({{url: '{twice}', filename: 'first.bin'}}),"
+                              f"chrome.downloads.download({{url: '{twice}', filename: 'second.bin'}})]))")
+        prompts = [first(lambda e: e['event'] == 'download_prompt') for _ in range(2)]
+        self.assertEqual(len(set(pair['value'])), 2, pair)
+        self.assertEqual(sorted(pair['value']), sorted(p['id'] for p in prompts))
+        named = {p['id']: p['name'] for p in prompts}
+        self.assertEqual([named[i] for i in pair['value']], ['first.bin', 'second.bin'])
+        for p in prompts:
+            host.send(op='download_decision', id=p['id'], allow=False)
+
         # A file one of its pages made, from the page's own address for it.
         self.panel(host, 2, f'chrome-extension://{ids["downloader"]}/export.html')
         exported = first(lambda e: e['event'] == 'download_prompt')
@@ -1961,6 +2135,22 @@ class ExtensionTabs(unittest.TestCase):
         saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'setting,on\n')
+
+        # Its page in a frame of a web page opens a download on the person's
+        # click in that frame, as in Chrome, not on one elsewhere on the page,
+        # which the host counts for the page's tab.
+        host.navigate(f'{self.url}/download-framed/{ids["downloader"]}')
+        self.worker_value(host, ids['downloader'], 'outcome(chrome.runtime.sendMessage({ping: true}))',
+                          lambda value: value == {'value': 'ready'})
+        in_frame = lambda: self.in_worker(host, ids['downloader'], f'outcome(chrome.runtime.sendMessage({{open: {download}}}))')
+        self.click(host, 1, 600, 400)
+        host.settle(0.5)
+        self.assertEqual(in_frame(), {'value': 'User gesture required'})
+        self.click(host, 1, 50, 50)
+        host.settle(0.5)
+        self.assertEqual(in_frame(), {'value': 'opened'})
+        opened = first(lambda e: e['event'] == 'extension_download_open' and not e['reveal'])
+        self.assertEqual((opened.get('tab', 1), opened['id']), (1, download))
 
     def test_an_extension_signs_in_on_a_page_shown_over_the_window(self):
         host, ids = self.start('signer', access={'signer': (['identity'], [])})
@@ -2058,6 +2248,22 @@ class ExtensionTabs(unittest.TestCase):
             'direct': {'title': 'from the page', 'apis': ['runtime'], 'front': front},
             'closed': False})
 
+    def test_an_offscreen_documents_copy_reaches_the_browser(self):
+        host, ids = self.start('copier', access={'copier': (['offscreen', 'clipboardWrite', 'activeTab', 'scripting'], [])})
+        ready = next(e for e in host.seen if e['event'] == 'ready')
+        self.assertIs(ready.get('page_clipboard'), True, 'the engine has no clipboard of its own here')
+        # The Browser takes the page's copies.
+        host.send(op='page_clipboard')
+        page = self.url + '/copied'
+        host.navigate(page)
+        host.settle(1.0)
+        mark = len(host.seen)
+        host.send(op='extension_click', id=ids['copier'])
+        self.assertEqual(json.loads(self.title(host, 1, 'copier:')[len('copier:'):]), {'copied': True})
+        copy = next((e for e in host.seen[mark:] if e['event'] == 'clipboard'), None)
+        copy = copy or host.until(lambda e: e['event'] == 'clipboard')
+        self.assertEqual((copy['tab'], copy['text'], copy['secret']), (1, 'copied: ' + page, False))
+
     def side_panel_event(self, host, mark, mode):
         """The first `extension_side_panel` event of `mode` after `mark`."""
         match = lambda e: e['event'] == 'extension_side_panel' and e['mode'] == mode
@@ -2146,6 +2352,93 @@ class ExtensionTabs(unittest.TestCase):
         host.send(op='extension_side_panel', id=paneler)
         opened = self.side_panel_event(host, mark, 'open')
         self.assertEqual((opened.get('tab'), opened['url']), (1, f'chrome-extension://{paneler}/tab.html'))
+
+    def worker_noted(self, host, extension, prefix):
+        """What the fixture's worker noted after `prefix` in its `seen`,
+        read as JSON, once it has: the first such note."""
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            seen = json.loads(self.in_worker(host, extension, 'JSON.stringify(globalThis.seen || [])') or '[]')
+            noted = [entry[len(prefix):] for entry in seen if entry.startswith(prefix)]
+            if noted:
+                return json.loads(noted[0]), seen
+            self.assertGreater(deadline - time.monotonic(), 0, f'the worker never noted {prefix}: {seen}')
+            host.settle(0.2)
+
+    def test_the_extension_hears_its_side_panel_open_and_close(self):
+        host, ids = self.start('paneler', access={'paneler': (['sidePanel', 'tabs'], [])})
+        host.navigate(self.url + '/notes')
+        host.settle(1.0)
+        paneler = ids['paneler']
+        own = lambda path: f'chrome-extension://{paneler}/{path}'
+        tab = self.in_worker(host, paneler, 'chrome.tabs.query({}).then((tabs) => tabs[0].id)')
+
+        # The Browser shows its panel beside the page, in a tab of its own:
+        # the extension hears it opened, with the page's window and tab and
+        # the page it shows, as in Chrome.
+        host.send(op='create_tab', tab=2)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
+        host.send(op='extension_panel', tab=2, side_panel=paneler)
+        host.send(op='resize', tab=2, width=360, height=600, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=own('panel.html'))
+        opened, _ = self.worker_noted(host, paneler, 'panel-opened:')
+        self.assertEqual(opened, {'windowId': tab, 'tabId': tab, 'path': 'panel.html'})
+
+        # Another of its pages in the open panel keeps it open; closed, the
+        # panel names the page it showed last.
+        host.send(op='navigate', tab=2, url=own('tab.html'))
+        self.title(host, 2, 'tab panel')
+        host.send(op='close_tab', tab=2)
+        closed, seen = self.worker_noted(host, paneler, 'panel-closed:')
+        self.assertEqual(closed, {'windowId': tab, 'tabId': tab, 'path': 'tab.html'})
+        self.assertEqual(len([entry for entry in seen if entry.startswith('panel-opened:')]), 1, seen)
+
+        # A popup is no side panel: its extension hears nothing of it.
+        self.panel(host, 3, own('panel.html'))
+        self.title(host, 3, 'panel:')
+        host.send(op='close_tab', tab=3)
+        host.settle(1.0)
+        seen = json.loads(self.in_worker(host, paneler, 'JSON.stringify(globalThis.seen)'))
+        self.assertEqual(len([entry for entry in seen if entry.startswith('panel-')]), 2, seen)
+
+    def test_a_shortcut_runs_while_the_address_or_a_popup_has_the_keyboard(self):
+        host, ids = self.start('commander', access={'commander': (['activeTab', 'scripting'], [])})
+        commander = ids['commander']
+        host.navigate(self.url + '/keys')
+        host.settle(1.0)
+        mac = sys.platform == 'darwin'
+
+        # The Browser is told which keys the commands hold, as Chrome names
+        # them, so it can run them while its address has the keyboard.
+        match = lambda e: e['event'] == 'extension_shortcuts' and e.get('tab', 1) == 1
+        told = [e for e in host.seen if match(e)] or [host.until(match)]
+        held = {(entry['key'], entry['ctrl'], entry['alt'], entry['shift'], entry['meta']) for entry in told[-1]['shortcuts']}
+        self.assertEqual(held, {('Y', not mac, False, True, mac), ('K', False, True, True, False)})
+
+        # Pressed while the address has the keyboard: the command runs on
+        # the page, which sees nothing of the key.
+        host.send(op='extension_command_key', key='K', ctrl=False, alt=True, shift=True, meta=False)
+        seen = json.loads(self.title(host, 1, 'command:')[len('command:'):])
+        self.assertEqual({key: seen[key] for key in ('command', 'url')}, {'command': 'mark', 'url': True})
+        # A key no command holds does nothing at all.
+        host.send(op='extension_command_key', key='U', ctrl=not mac, alt=False, shift=True, meta=mac)
+        host.send(op='key', key='a', down=True, ctrl=False, alt=False, shift=False, meta=False)
+        host.send(op='key', key='a', down=False, ctrl=False, alt=False, shift=False, meta=False)
+        self.title(host, 1, 'key:a')
+        self.assertEqual([e['title'] for e in host.seen if e['event'] == 'title' and e['title'].startswith('key:')], ['key:a'])
+
+        # In the extension's popup the button's own key acts on the page the
+        # popup is over: the Browser is asked to act as a click on the
+        # button, which closes the popup that shows, as in Chrome.
+        self.panel(host, 2, f'chrome-extension://{commander}/manifest.json')
+        host.settle(1.0)
+        mark = len(host.seen)
+        modifiers = {'ctrl': not mac, 'meta': mac, 'alt': False, 'shift': True}
+        host.send(op='key', tab=2, key='Y', down=True, **modifiers)
+        host.send(op='key', tab=2, key='Y', down=False, **modifiers)
+        asked = next((e for e in host.seen[mark:] if e['event'] == 'extension_execute_action'), None) \
+            or host.until(lambda e: e['event'] == 'extension_execute_action')
+        self.assertEqual((asked.get('tab', 1), asked['id']), (1, commander))
 
 
 def walk(items):

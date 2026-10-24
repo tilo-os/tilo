@@ -530,8 +530,14 @@ fn navigation_a_window_opened_beside_the_selection_is_shown_whole_with_it() {
     beside.tabs[0].title = "Notes".into();
     beside.active_tab = 20;
     test.tree.workspaces[0].strips[0].window_groups.push(beside);
-    test.reconcile();
-    test.finish_pan();
+    let mut clock = ui::time::now();
+    with_monotonic_time(clock, || test.reconcile());
+    // The window in use narrows and the new one grows on their slot
+    // springs; where they land is measured once those have come to rest.
+    for _ in 0..60 {
+        clock += FRAME;
+        with_monotonic_time(clock, || test.frame.poll_frame()).unwrap();
+    }
     test.finish_pan();
     test.assert_visible(StripId(2), 3);
     test.assert_visible(StripId(2), 4);

@@ -423,8 +423,9 @@ mod tests {
             .cloned()
             .unwrap();
         let delete = || Calculator::DELETE_HISTORY_ENTRY.with(e2.clone());
-        assert!(calculator.apply(delete()).is_err(), "deleting asks first");
-        calculator.apply_confirmed(delete()).unwrap();
+        calculator
+            .apply(delete())
+            .expect("Undo takes a deleted entry back, so deleting asks nothing");
         assert_eq!(
             history(&calculator)
                 .into_iter()
@@ -550,7 +551,9 @@ mod tests {
             .iter()
             .find(|action| action.id == "delete-history-entry")
             .unwrap();
-        assert_ne!(
+        // Undo takes a deleted entry back: it runs at once and asks nothing.
+        assert!(delete.contract.can_be_undone());
+        assert_eq!(
             delete.contract.confirmation,
             ui::tilo_actions::ConfirmationPolicy::None
         );

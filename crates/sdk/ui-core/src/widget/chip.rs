@@ -627,9 +627,14 @@ pub struct Chip {
 
 impl Chip {
     pub fn new(label: impl Into<String>) -> Self {
+        Self::new_owned(label.into())
+    }
+
+    /// [`Self::new`] once its text is owned: one copy in the toolkit
+    /// rather than one in every app that calls the generic constructor.
+    fn new_owned(label: String) -> Self {
         static STOCK: std::sync::LazyLock<PillMetrics> =
             std::sync::LazyLock::new(|| PillMetrics::of(&Theme::dark(), TextRole::Label));
-        let label = label.into();
         Self {
             activation: Activation::new(label.clone()),
             tooltip: None,

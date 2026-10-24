@@ -1111,8 +1111,32 @@ fn local_path(target: &str) -> Result<std::path::PathBuf, String> {
 /// Importing the events and tasks of the iCalendar `source`, or `None` when
 /// it holds neither.
 pub(crate) fn import(source: &str) -> Option<Invoke<Calendar>> {
-    let (events, tasks) = crate::actions::import_payload(source)?;
-    Some(Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }))
+    import_reporting(source).map(|(import, _)| import)
+}
+
+/// [`import`], with the TZIDs in `source` that name no zone the calendar
+/// knows: their events keep the times as written.
+pub(crate) fn import_reporting(source: &str) -> Option<(Invoke<Calendar>, Vec<String>)> {
+    let parsed = crate::ics::parse_calendar(source);
+    let (events, tasks) = crate::actions::import_parsed(&parsed)?;
+    Some((
+        Calendar::IMPORT_ITEMS.with(calendar::ImportItems { events, tasks }),
+        parsed.unknown_zones,
+    ))
+}
+
+/// What an import says once it is done: which file, and, when a time zone
+/// it names is unknown, that its times stay as written.
+pub(crate) fn imported_status(file: &str, unknown_zones: &[String]) -> String {
+    match unknown_zones {
+        [] => format!("Imported calendar items from {file}"),
+        [zone] => format!(
+            "Imported calendar items from {file}. Times in {zone} stay as written, as that time zone is unknown"
+        ),
+        _ => format!(
+            "Imported calendar items from {file}. Times in unknown time zones stay as written"
+        ),
+    }
 }
 
 /// The search scope holding every event.

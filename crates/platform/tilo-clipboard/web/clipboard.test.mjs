@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {writeClipboardRich,writeClipboardText} from './clipboard.mjs';
+import {COPY_REFUSED,COPY_UNAVAILABLE,writeClipboardRich,writeClipboardText} from './clipboard.mjs';
 
 // The external browser command/clipboard boundary is unavailable in Node.
 function browser({allowed=true,dispatch=true,throws=false,transferFails=false}={}) {
@@ -34,7 +34,9 @@ test('refused, missing, or failing transfers never authorize Cut deletion',()=>{
     assert.equal(writeClipboardText('text',(ok,error)=>reports.push(ok?{clipboard:'copied'}:{clipboard:'failed',clipboardError:error}),host.document),false);
     assert.equal(reports.length,1);
     assert.equal(reports[0].clipboard,'failed');
-    assert.ok(reports[0].clipboardError);
+    // The page says the reason as it is: the person's next step, never the
+    // browser's error text with its "Error:" in front.
+    assert.equal(reports[0].clipboardError,COPY_REFUSED,JSON.stringify(options));
     const event=new Event('copy',{cancelable:true});host.document.dispatchEvent(event);
     assert.equal(event.defaultPrevented,false,'failed commands also remove their handler');
   }
@@ -44,6 +46,7 @@ test('unavailable native copy reports failure',()=>{
   const reports=[];
   assert.equal(writeClipboardText('text',(ok,error)=>reports.push(ok?{clipboard:'copied'}:{clipboard:'failed',clipboardError:error}),null),false);
   assert.equal(reports[0].clipboard,'failed');
+  assert.equal(reports[0].clipboardError,COPY_UNAVAILABLE);
 });
 
 test('a rich copy publishes its HTML and its words in one transfer',()=>{

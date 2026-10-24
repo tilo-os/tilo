@@ -4355,6 +4355,22 @@ fn palette_enter(app: &mut App) {
     assert!(app.action_palette_handle_key(&event));
 }
 
+/// Go ahead with the typed confirmation through its own button, past
+/// Cancel: Return in the field for the name stays the safe answer.
+fn palette_confirm(app: &mut App) {
+    for key in [
+        winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Tab,
+        winit::keyboard::NamedKey::Enter,
+    ] {
+        let event = crate::synthetic_input::key_input(
+            &winit::keyboard::Key::Named(key),
+            winit::event::ElementState::Pressed,
+        );
+        assert!(app.action_palette_handle_key(&event));
+    }
+}
+
 fn palette_history_round_trip(app: &mut App) {
     let named_action_target = named(app, "History");
     app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
@@ -4421,7 +4437,7 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
             .as_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
-        palette_enter(&mut app);
+        palette_confirm(&mut app);
 
         let starts = state.starts.lock().unwrap().len();
         assert_eq!(starts, usize::from(should_start), "{action}:{mutation}");
@@ -4432,7 +4448,9 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
             );
         } else {
             let snapshot = editor_snapshot(&app);
-            assert_eq!(snapshot.0, PALETTE_CONFIRMATION);
+            // The name was typed in the confirmation's own plain field,
+            // never in the search field.
+            assert_eq!(snapshot.0, "");
             assert_eq!(snapshot.2, "ready");
             assert!(
                 app.actions
@@ -4511,7 +4529,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
             .as_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
-        palette_enter(&mut app);
+        palette_confirm(&mut app);
         assert_eq!(
             state.starts.lock().unwrap().len(),
             usize::from(should_start),
@@ -5647,7 +5665,7 @@ fn palette_two_round_trips_preserve_original_exact_witness() {
             .as_mut()
             .unwrap()
             .set_query(PALETTE_CONFIRMATION);
-        palette_enter(&mut app);
+        palette_confirm(&mut app);
         assert_eq!(state.starts.lock().unwrap().len(), 0, "{changed}");
         assert!(
             retained.history_witness == original.history_witness,
@@ -5673,7 +5691,7 @@ fn palette_named_text_parameter_survives_history_and_confirmation() {
         .as_mut()
         .unwrap()
         .set_query(PALETTE_CONFIRMATION);
-    palette_enter(&mut app);
+    palette_confirm(&mut app);
     let starts = state.starts.lock().unwrap();
     assert_eq!(starts.len(), 1);
     assert_eq!(
@@ -5814,7 +5832,7 @@ fn palette_reentry_cannot_replace_exact_component_owner() {
         .as_mut()
         .unwrap()
         .set_query(PALETTE_CONFIRMATION);
-    palette_enter(&mut app);
+    palette_confirm(&mut app);
     assert_eq!(old[0].starts.get(), 0);
     assert_eq!(new[0].starts.get(), 0);
     let retained =

@@ -260,6 +260,18 @@ impl KeyboardXkb {
 
     /// Translate one key event. `keycode` already carries the +8 offset (see [`smithay::backend::input::KeyboardKeyEvent::key_code`]).
     pub(super) fn process(&mut self, keycode: xkb::Keycode, pressed: bool) -> KeyOutcome {
+        self.process_latched(keycode, pressed, ModifiersState::empty())
+    }
+
+    /// [`Self::process`] with modifiers sticky keys holds for this press
+    /// although xkb has them released: Super tapped, then a Russian letter,
+    /// is still a chord, named by its Latin key and kept out of compose.
+    pub(super) fn process_latched(
+        &mut self,
+        keycode: xkb::Keycode,
+        pressed: bool,
+        latched: ModifiersState,
+    ) -> KeyOutcome {
         let direction = if pressed {
             xkb::KeyDirection::Down
         } else {
@@ -284,9 +296,10 @@ impl KeyboardXkb {
         };
 
         // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
-        let logical = self.chord_logical_key(keycode, sym, new_mods);
+        let chord_mods = new_mods | latched;
+        let logical = self.chord_logical_key(keycode, sym, chord_mods);
         let mut text = text_for(sym.key_char(), new_mods);
-        if pressed && !(new_mods.control_key() || new_mods.super_key()) {
+        if pressed && !(chord_mods.control_key() || chord_mods.super_key()) {
             text = self.composed_text(sym, text);
         }
         let input = Some(keyboard_input_event(
@@ -522,6 +535,39 @@ mod tests {
         let _ = keyboard.translate(29, true);
         let copy = pressed(keyboard.translate(46, true));
         assert_eq!(copy.logical_key, Key::Character("c".into()));
+    }
+
+    #[test]
+    fn sticky_super_then_a_letter_on_a_russian_source_is_the_lock_chord() {
+        let (mut state, _rx) = super::super::tests::dispatch_with_channel();
+        state.keyboard = Some(
+            KeyboardXkb::from_settings(&KeyboardSettings {
+                model: "pc105".into(),
+                source_ids: vec!["us".into(), "ru".into()],
+                layouts: "us,ru".into(),
+                variants: ",".into(),
+                options: None,
+                active_index: 1,
+            })
+            .expect("the us,ru keymap compiles"),
+        );
+        state.accessibility.sticky_keys = true;
+        // Super tapped and released, then the key a US keyboard labels L.
+        let super_key = xkb::Keycode::new(125 + 8);
+        state.handle_keyboard_key(super_key, true, None);
+        state.handle_keyboard_key(super_key, false, None);
+        state.events.clear();
+        state.handle_keyboard_key(xkb::Keycode::new(38 + 8), true, None);
+        let chord = pressed(std::mem::take(&mut state.events));
+        assert_eq!(chord.logical_key, Key::Character("l".into()));
+        assert_eq!(
+            tilo_desktop::shortcuts::configured_shortcut_action(
+                &settings_store::hardware::ShortcutConfig::default(),
+                &chord.logical_key,
+                Modifiers::from(ModifiersState::SUPER),
+            ),
+            Some(settings_store::hardware::ShortcutAction::Lock)
+        );
     }
 
     #[test]

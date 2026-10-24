@@ -39,6 +39,26 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
 })();
 </script>
 <script>
+(()=>{
+// The entry pages' way out while their modules load, inlined verbatim into
+// each after the link scrubber: before the arrival screen (arrival.mjs)
+// runs, nothing else on the page can say that loading stopped. A module
+// that fails to load (a dropped connection, a deploy replacing the files)
+// stops the page: it says so, and Try again reloads it. One still not
+// running after a while offers Try again while it keeps loading.
+var root=document.documentElement,wait=20000;
+addEventListener('error',function(event){
+ var target=event.target;
+ if(!target||target.tagName!=='SCRIPT'||root.dataset.arrivalProgress!==undefined)return;
+ root.dataset.arrival='stopped';root.dataset.entry='failed';
+ var status=document.getElementById('status');
+ if(status)status.textContent='Tilo could not load. Check your connection, then try again.';
+},true);
+setTimeout(function(){if(root.dataset.arrivalProgress===undefined)root.setAttribute('data-arrival-stalled','');},wait);
+addEventListener('click',function(event){if(event.target&&event.target.id==='arrival-retry')location.reload();});
+})();
+</script>
+<script>
 // The page's first graphics adapter request starts the browser's GPU
 // process, which takes seconds. It is asked for here, while the modules
 // load, and the renderer check (webgpu-safety.mjs) takes the answer.
@@ -106,6 +126,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #arrival-retry { display: none; position: fixed; z-index: 2; left: 50%; top: calc(50% + 80px); transform: translateX(-50%); font: inherit; padding: 8px 14px; border-radius: 8px; border: 0; background: #4a7dff; color: white; cursor: pointer; }
     #arrival-retry:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
     [data-arrival=stopped]:not([data-entry=refused]):not([data-entry=unsupported]) #arrival-retry { display: block; }
+    /* A step that does not move on: Try again beside the wait (arrival.mjs, stall.inline.js). */
+    [data-arrival-stalled]:not([data-arrival=done]):not([data-arrival=stopped]) body:not(:has(.tilo-entry-card)) #arrival-retry { display: block; }
     html:not([data-arrival=done]):not([data-arrival=stopped]):not([data-arrival-status]) #status { width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
     #bar { overflow: hidden; }
     [data-arrival=done] #status { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

@@ -13,21 +13,7 @@ use crate::time::SystemTime;
 use collab_types::ArtifactKind;
 use tilo_actions::{ActionContext, ActionFacet};
 
-/// Opaque: only ever compared for equality (revert/restore callbacks
-/// pass it back to the caller). The caller picks the byte layout —
-/// UUID-v4 today, a content hash later.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct HistoryEntryId(pub [u8; 16]);
-
-impl HistoryEntryId {
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-
-    pub fn as_bytes(&self) -> &[u8; 16] {
-        &self.0
-    }
-}
+pub use collab_types::history::HistoryEntryId;
 
 /// Not crypto material — just enough metadata to render a per-author
 /// colour dot, display name, and a short identity hash for

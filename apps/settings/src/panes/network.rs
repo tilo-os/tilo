@@ -1901,6 +1901,17 @@ impl NetworkModel {
                     model.adopt_vpn_settings(SAMPLE_VPN_HOME, settings);
                 }
             }
+            Some(NetworkSample::VpnKillSwitch | NetworkSample::VpnBlocking) => {
+                model.open_page(vpn::PAGE_VPN, t("net-vpn"));
+                model.open_page(&vpn::profile_page_key(SAMPLE_VPN_HOME), "Home".into());
+                if let Ok(settings) = SampleNetwork::vpn_settings(SAMPLE_VPN_HOME) {
+                    model.adopt_vpn_settings(SAMPLE_VPN_HOME, settings);
+                }
+                model.sample_kill_switch(
+                    SAMPLE_VPN_HOME,
+                    wanted == Some(NetworkSample::VpnBlocking),
+                );
+            }
             Some(NetworkSample::PluginVpnProfile) => {
                 model.open_page(vpn::PAGE_VPN, t("net-vpn"));
                 model.open_page(&vpn::profile_page_key(SAMPLE_VPN_WORK), "Work".into());

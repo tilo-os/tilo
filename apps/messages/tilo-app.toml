@@ -26,8 +26,8 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@8"
-shell-ui = "optional@14"
+collab = "optional@9"
+shell-ui = "optional@15"
 
 [entrypoint]
 bin = "bin/messages"

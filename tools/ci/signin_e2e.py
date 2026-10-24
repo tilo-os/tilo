@@ -325,7 +325,8 @@ class Run:
     def install(self) -> None:
         c = self.cycle
         c.vm("init-cycle")
-        c.vm("boot-installer", "--2d", "--tpm", timeout=600)
+        # The medium is unsigned: its installer admits the target only with the VM proof port.
+        c.vm("boot-installer", "--2d", "--tpm", "--install-proof", timeout=600)
         say("live installer booting")
         try:
             console.poll(c.console, lambda s: s.get("app") == "installer", 900, 5)

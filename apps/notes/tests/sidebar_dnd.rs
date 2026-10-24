@@ -148,8 +148,8 @@ fn sidebar_context_menu_deletes_and_deep_copies_pages() {
         // ArrowUp wraps to the last action row (Delete); Enter fires it.
         dispatch(&mut app, &named_key(NamedKey::ArrowUp));
         dispatch(&mut app, &named_key(NamedKey::Enter));
-        // Deleting a page asks first; the person confirms.
-        assert!(app.confirm_asked().is_some(), "the host asks first");
+        // Undo takes a deleted page back, so nobody is asked.
+        assert!(app.asking().is_none(), "nothing asks first");
 
         let pages = crate::framework_support::shown(&app).pages().to_vec();
         assert_eq!(pages.len(), before - 1, "Delete removed exactly one page");
