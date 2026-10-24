@@ -2,8 +2,9 @@
 //! operation may allocate.
 //!
 //! [`Meter`] forwards every allocation to [`System`] and records sizes only
-//! while [`largest`] runs on the current thread. A test crate opts in by
-//! installing it itself, so linking this crate never changes the allocator:
+//! while [`largest`] or [`peak`] runs on the current thread. A test crate opts
+//! in by installing it itself, so linking this crate never changes the
+//! allocator:
 //!
 //! ```ignore
 //! #[global_allocator]
@@ -17,6 +18,7 @@ use std::cell::Cell;
 #[derive(Clone, Copy, Default, Debug)]
 struct Trace {
     live: usize,
+    peak: usize,
     largest: usize,
     unmatched: bool,
 }
@@ -29,6 +31,7 @@ fn allocated(bytes: usize) {
     let _ = TRACE.try_with(|state| {
         if let Some(mut trace) = state.get() {
             trace.live = trace.live.saturating_add(bytes);
+            trace.peak = trace.peak.max(trace.live);
             trace.largest = trace.largest.max(bytes);
             state.set(Some(trace));
         }
@@ -107,4 +110,10 @@ fn measure<T>(operation: impl FnOnce() -> T) -> (T, Trace) {
 pub fn largest<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     let (value, trace) = measure(operation);
     (value, trace.largest)
+}
+/// Run `operation` and return its value with the most bytes it held allocated
+/// at once on this thread. Requires [`Meter`] as the global allocator.
+pub fn peak<T>(operation: impl FnOnce() -> T) -> (T, usize) {
+    let (value, trace) = measure(operation);
+    (value, trace.peak)
 }

@@ -208,6 +208,8 @@ impl PeerWorkspaceMut<'_> {
             }
             WorkspaceMembershipCommand::RemoveAgent { .. } => false,
             WorkspaceMembershipCommand::GrantAppAuthorship { .. }
+            | WorkspaceMembershipCommand::RetiredGrantForTask { .. }
+            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. }
             | WorkspaceMembershipCommand::Grant { .. }
             | WorkspaceMembershipCommand::Revoke { .. }
             | WorkspaceMembershipCommand::InstallBot(_)

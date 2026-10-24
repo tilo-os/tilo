@@ -137,7 +137,7 @@ test('muting stops publication; a grant that may not publish mutes and says so',
   assert.equal(call.state.muted, true, 'cannot unmute without the right to publish');
 });
 
-test('a roster change keeps the carrier; a renewed token or a dropped carrier reopens it', async () => {
+test('a roster change or a renewed token keeps the carrier; a dropped carrier reopens with the newest token', async () => {
   const {carriers, call, event, timers} = fixture();
   call.join(CALL);
   await drain();
@@ -149,14 +149,16 @@ test('a roster change keeps the carrier; a renewed token or a dropped carrier re
   assert.equal(call.state.participants.length, 3);
   event({kind: 'granted', grant: grantFor({token: '03'})});
   await drain();
-  assert.equal(carriers.length, 2, 'a renewed token opens a carrier with it');
-  carriers[1].close();
+  assert.equal(carriers.length, 1, 'the admitted carrier outlives the token that admitted it');
+  assert.equal(carriers[0].open, true);
+  carriers[0].close();
   await drain();
   assert.equal(call.state.phase, 'reconnecting');
   assert.equal(timers.at(-1).delay, 250);
   timers.at(-1).callback();
   await drain();
-  assert.equal(carriers.length, 3);
+  assert.equal(carriers.length, 2);
+  assert.equal(carriers[1].grant.token, '03', 'a new carrier presents the renewed token');
   assert.equal(call.state.phase, 'live');
 });
 

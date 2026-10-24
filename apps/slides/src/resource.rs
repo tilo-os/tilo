@@ -95,6 +95,8 @@ impl ResourceApp for SlidesShell {
 
     fn scenarios() -> &'static [&'static str] {
         &[
+            // The sample deck in the editor, as it opens.
+            "editor",
             "overview",
             "present",
             "present_notes",
@@ -102,10 +104,8 @@ impl ResourceApp for SlidesShell {
             "present_white",
             "empty",
             "help",
-            "rename",
             "notes_edit",
             "slide_props",
-            "toolbar_menu",
             "many",
             "many_rail",
             "overview_end",
@@ -131,8 +131,8 @@ impl ResourceApp for SlidesShell {
     fn shot_viewport(scenario: Option<&str>) -> (u32, u32) {
         match scenario {
             Some(
-                "narrow" | "narrow_closed" | "inspector" | "many_rail" | "toolbar_menu"
-                | "inspector_widgets" | "words_menu_edge",
+                "narrow" | "narrow_closed" | "inspector" | "many_rail" | "inspector_widgets"
+                | "words_menu_edge",
             ) => NARROW_VIEWPORT,
             _ => ui::launch::DEFAULT_VIEWPORT,
         }
@@ -328,6 +328,8 @@ mod tests {
             "present-largest-external",
             "present-primary-external",
             "end-presentation",
+            "show-slide-list",
+            "show-properties",
             "open-presentation",
             "save-as",
             "read-deck",

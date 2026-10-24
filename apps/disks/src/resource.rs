@@ -277,6 +277,7 @@ const SCENARIOS: &[&str] = &[
 impl ResourceApp for DisksShell {
     type Resource = Disks;
     const ID: &'static str = "so.tilo.disks";
+    const READS_HOST: &'static [ui::launch::HostSource] = &[ui::launch::HostSource::Disks];
     const TITLE: &'static str = "Disks";
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {

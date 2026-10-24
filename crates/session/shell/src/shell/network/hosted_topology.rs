@@ -428,6 +428,7 @@ mod tests {
             id,
             title: format!("tab {id:x}"),
             tile,
+            app_title: None,
         }
     }
 

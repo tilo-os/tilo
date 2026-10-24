@@ -1,7 +1,7 @@
 //! What a browser window does that changes no document: navigating its
 //! page, reading and operating the page for an agent, its library and
 //! settings presentations, history and site data on this device, Picture in
-//! Picture and downloads.
+//! Picture, zoom, downloads and extensions.
 //!
 //! Every effect reaches this device's engine, files or portals, so only the
 //! person at it may invoke them. Each rides the row of what it acts on —
@@ -116,6 +116,61 @@ pub enum BrowserEffect {
     /// Show extensions
     #[effect(view, row)]
     ShowExtensions,
+    /// Turn extension on
+    #[effect(row, returns)]
+    TurnOnExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Turn extension off
+    ///
+    /// It keeps what it stored, such as its settings and logins.
+    #[effect(row, returns)]
+    TurnOffExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Pin extension to the toolbar
+    #[effect(row, returns)]
+    PinExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Unpin extension from the toolbar
+    #[effect(row, returns)]
+    UnpinExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Use extension
+    ///
+    /// What its toolbar button does: opens its popup over this page, or lets
+    /// it act on this page.
+    #[effect(row, returns)]
+    UseExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Add extension from the Web Store
+    ///
+    /// On an extension's Chrome Web Store page: shows what it may do, and
+    /// the person adds it with Add extension.
+    #[effect(row, returns)]
+    AddExtension,
+    /// Open extension settings
+    #[effect(row, returns)]
+    OpenExtensionSettings {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Remove extension
+    ///
+    /// Removes it from this device with everything it stored.
+    #[effect(row, returns, destructive)]
+    RemoveExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
     /// Show browser settings
     #[effect(view, row)]
     ShowSettings,
@@ -129,11 +184,13 @@ pub enum BrowserEffect {
     #[effect(view, row)]
     ClearLibraryFilter,
     /// Clear browsing history
+    ///
+    /// Your saved browsing history will be removed. Bookmarks are kept.
     #[effect(row, returns, destructive)]
     ClearHistory,
-    /// Request local site-data clear
+    /// Clear site data
     ///
-    /// Asks this device's engine to clear cookies and site storage.
+    /// Cookies and site storage on this device will be cleared. You may be signed out of websites.
     #[effect(row, returns, destructive)]
     RequestSiteDataClear,
     /// Pause history in this window
@@ -186,6 +243,21 @@ pub enum BrowserEffect {
         #[param("The download's id")]
         id: String,
     },
+    /// Zoom in
+    ///
+    /// Makes the page larger on this device; answers the page's size.
+    #[effect(row, returns)]
+    ZoomIn,
+    /// Zoom out
+    ///
+    /// Makes the page smaller on this device; answers the page's size.
+    #[effect(row, returns)]
+    ZoomOut,
+    /// Show actual size
+    ///
+    /// Puts the page back at its own size.
+    #[effect(row, returns, idempotent)]
+    ResetZoom,
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs.
@@ -390,6 +462,29 @@ impl BrowserEffect {
             Self::ShowExtensions => BrowserOperation::ShowLibrary {
                 section: LibrarySection::Extensions,
             },
+            Self::TurnOnExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::TurnOn(id))
+            }
+            Self::TurnOffExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::TurnOff(id))
+            }
+            Self::PinExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Pin(id, true))
+            }
+            Self::UnpinExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Pin(id, false))
+            }
+            Self::UseExtension { id } => BrowserOperation::Extension(ExtensionRequest::Use(id)),
+            Self::AddExtension => BrowserOperation::AddExtension,
+            Self::ZoomIn => BrowserOperation::Zoom { step: 1 },
+            Self::ZoomOut => BrowserOperation::Zoom { step: -1 },
+            Self::ResetZoom => BrowserOperation::Zoom { step: 0 },
+            Self::OpenExtensionSettings { id } => {
+                BrowserOperation::Extension(ExtensionRequest::OpenSettings(id))
+            }
+            Self::RemoveExtension { id } => {
+                BrowserOperation::Extension(ExtensionRequest::Remove(id))
+            }
             Self::ShowSettings => BrowserOperation::ShowSettings,
             Self::SetLibraryFilter { query } => BrowserOperation::SetLibraryFilter { query },
             Self::ClearLibraryFilter => BrowserOperation::ClearLibraryFilter,
@@ -456,6 +551,20 @@ pub enum LibrarySection {
     Bookmarks,
     Downloads,
     Extensions,
+}
+
+/// What the person asks of an installed extension, by the id Chromium
+/// gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExtensionRequest {
+    TurnOn(String),
+    TurnOff(String),
+    /// Pin its button to the toolbar (`true`) or take it off.
+    Pin(String, bool),
+    OpenSettings(String),
+    /// What its toolbar button does: open its popup, or tell it of the click.
+    Use(String),
+    Remove(String),
 }
 
 /// What Browser does for an effect, once decoded.
@@ -531,4 +640,12 @@ pub enum BrowserOperation {
         id: String,
     },
     Page(PageRequest),
+    Extension(ExtensionRequest),
+    /// Offer the Web Store item on the page, as Add to Tilo Browser does.
+    AddExtension,
+    /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own
+    /// size (`0`).
+    Zoom {
+        step: i32,
+    },
 }

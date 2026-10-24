@@ -227,9 +227,15 @@ pub(crate) fn nested_children(
 /// (`#[model(resource)]` fields of `R`, not of its items).
 #[must_use]
 pub fn record_nested_children<R: Resource>() -> Vec<tilo_actions::Resource> {
-    let vocabulary = crate::vocabulary::<R>();
+    nested_children_of(crate::vocabulary::<R>())
+}
+
+/// [`record_nested_children`] of the record whose vocabulary is `vocabulary`.
+pub(crate) fn nested_children_of(
+    vocabulary: &'static crate::Vocabulary,
+) -> Vec<tilo_actions::Resource> {
     match (vocabulary.shape)() {
-        Some(shape) => nested_children(vocabulary, shape, R::KIND, &[]),
+        Some(shape) => nested_children(vocabulary, shape, vocabulary.kind, &[]),
         None => Vec::new(),
     }
 }

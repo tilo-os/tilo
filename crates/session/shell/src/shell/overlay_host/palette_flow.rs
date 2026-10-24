@@ -15,6 +15,10 @@ use crate::shell::search::{ResourceKind, SearchResult};
 /// Row id of the row that shows the rest of a group the budget cut short.
 pub(super) const MORE_PREFIX: &str = "more:";
 
+/// Row id of the launcher's "All apps" row: every app, as the Apps chip
+/// lists them.
+pub(super) const ALL_APPS_ID: &str = "all-apps";
+
 /// Row id of one value offered in an argument step.
 pub(super) const CHOICE_PREFIX: &str = "choice:";
 

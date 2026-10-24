@@ -535,6 +535,51 @@ pub enum Envelope {
 }
 
 impl Envelope {
+    /// The variant's name, for logs: what a connection was doing, without
+    /// printing what it carried.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Subscribe { .. } => "Subscribe",
+            Self::Unsubscribe { .. } => "Unsubscribe",
+            Self::Delta { .. } => "Delta",
+            Self::Presence { .. } => "Presence",
+            Self::Ready { .. } => "Ready",
+            Self::NotAuthorised { .. } => "NotAuthorised",
+            Self::Ping => "Ping",
+            Self::Pong => "Pong",
+            Self::PeerRelayHello { .. } => "PeerRelayHello",
+            Self::SyncRequest { .. } => "SyncRequest",
+            Self::SyncResponse { .. } => "SyncResponse",
+            Self::RemoteAction { .. } => "RemoteAction",
+            Self::RemoteActionUndeliverable { .. } => "RemoteActionUndeliverable",
+            Self::Commit { .. } => "Commit",
+            Self::Committed { .. } => "Committed",
+            Self::CommitRefused { .. } => "CommitRefused",
+            Self::LiveJoin { .. } => "LiveJoin",
+            Self::LiveLeave { .. } => "LiveLeave",
+            Self::Live { .. } => "Live",
+            Self::LiveMember { .. } => "LiveMember",
+            Self::SubscribeFrom { .. } => "SubscribeFrom",
+            Self::Position { .. } => "Position",
+            Self::CompactVolunteer { .. } => "CompactVolunteer",
+            Self::CompactRequest { .. } => "CompactRequest",
+            Self::Compacted { .. } => "Compacted",
+            Self::VoiceCall { .. } => "VoiceCall",
+            Self::VoiceCallResult { .. } => "VoiceCallResult",
+            Self::VoiceJoin { .. } => "VoiceJoin",
+            Self::VoiceGranted { .. } => "VoiceGranted",
+            Self::VoiceRefused { .. } => "VoiceRefused",
+            Self::VoiceLeave { .. } => "VoiceLeave",
+            Self::VoiceCalls { .. } => "VoiceCalls",
+            Self::VoiceCallList { .. } => "VoiceCallList",
+            Self::RecordContent { .. } => "RecordContent",
+            Self::OpenRecord { .. } => "OpenRecord",
+            Self::RecordOpened { .. } => "RecordOpened",
+            Self::VoiceShow { .. } => "VoiceShow",
+        }
+    }
+
     /// The workspace (relay room) this envelope belongs to, or `None` for
     /// the connection-level frames (`Ping`, `Pong`, `PeerRelayHello`).
     ///

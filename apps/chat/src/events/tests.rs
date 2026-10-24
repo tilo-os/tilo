@@ -86,7 +86,7 @@ fn activate_context_menu_action(
     clippy::too_many_lines,
     reason = "one labelled phase per original scenario, each with its own fresh fixture"
 )]
-fn channel_context_menu_and_swipe_delete_through_the_palette_action() {
+fn channel_context_menu_delete_through_the_palette_action() {
     // Phase: delete_channel_affordance_matches_palette_spec.
     {
         let (mut app, mut doc) = app_with_doc();
@@ -206,50 +206,6 @@ fn channel_context_menu_and_swipe_delete_through_the_palette_action() {
         assert!(
             app.channel_sheet.is_some(),
             "Enter activates the safely focused non-destructive action"
-        );
-    }
-
-    // Phase: swipe_left_action_matches_context_menu_primary.
-    {
-        // The parity invariant: a left-swipe resolves to the channel
-        // context menu's destructive action.
-        assert!(MenuAction::for_channel().contains(&MenuAction::channel_swipe_left()));
-        assert_eq!(MenuAction::channel_swipe_left(), MenuAction::Delete);
-    }
-
-    // Phase: swipe_left_on_a_channel_row_deletes_it.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        assert!(app.channels.iter().any(|c| c.id == "c_random"));
-        // Draw once so the channel rows are hit-tested (as the live loop does).
-        render_frame(&mut app, 1280.0, 720.0);
-        let row = app
-            .hits
-            .iter()
-            .find(|(_, h)| matches!(h, Hit::Channel(id) if id == "c_random"))
-            .map(|(r, _)| *r)
-            .expect("the #random row was hit-tested");
-        let cy = row.center().y;
-        // Press on the row (arms the swipe), drag left past the commit
-        // threshold, release (commits the primary action = Delete).
-        feed(&mut app, &mut doc, &cursor_moved(row.center().x, cy));
-        feed(
-            &mut app,
-            &mut doc,
-            &mouse(ElementState::Pressed, MouseButton::Left),
-        );
-        assert!(app.swipe.is_some(), "pressing a channel row arms a swipe");
-        let past_commit = row.center().x - (app.chrome.swipe_commit + 20.0);
-        feed(&mut app, &mut doc, &cursor_moved(past_commit, cy));
-        feed(
-            &mut app,
-            &mut doc,
-            &mouse(ElementState::Released, MouseButton::Left),
-        );
-        app.confirm_asked(&mut doc);
-        assert!(
-            !app.channels.iter().any(|c| c.id == "c_random"),
-            "the committed swipe deleted the channel"
         );
     }
 }
@@ -1009,46 +965,36 @@ fn add_channel_asks_then_creates_and_opens_it() {
 fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() {
     add_channel_asks_then_creates_and_opens_it();
 
-    // Phase: inline_rename_writes_through.
+    // Phase: a_menus_rename_names_the_row_in_the_sidebar.
     {
         let (mut app, mut doc) = app_with_doc();
-        app.begin_rename(MenuTarget::Channel("c_random".into()));
-        app.rename_input.select_all();
-        type_str(&mut app, &mut doc, "watercooler");
-        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
+        app.apply_menu_action(
+            MenuTarget::Channel("c_random".into()),
+            MenuAction::Rename,
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
+        assert_eq!(
+            app.sidebar_rename.as_deref(),
+            Some("channel:c_random"),
+            "the sidebar is asked to open the name in place"
+        );
+        app.rename_place(
+            &MenuTarget::Channel("c_random".into()),
+            " watercooler ",
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         let c = app.channels.iter().find(|c| c.id == "c_random").unwrap();
         assert_eq!(c.name, "watercooler");
-    }
-
-    // Phase: inline_rename_selection_and_ime_stay_local_until_enter.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        let original = app.channel("c_random").unwrap().name.clone();
-        app.begin_rename(MenuTarget::Channel("c_random".into()));
-
-        feed_mods(&mut app, &mut doc, &char_key("a"), mods(true, false));
+        app.rename_place(
+            &MenuTarget::Channel("c_random".into()),
+            "  ",
+            &mut ui::widget::Edits::lend(&mut doc),
+        );
         assert_eq!(
-            app.rename_input.selection_range_public(),
-            Some((0, original.len()))
+            app.channel("c_random").unwrap().name,
+            "watercooler",
+            "an empty name changes nothing"
         );
-        feed(
-            &mut app,
-            &mut doc,
-            &WindowEvent::Ime(winit::event::Ime::Commit("東京".into())),
-        );
-        assert_eq!(app.rename_input.value(), "東京");
-        assert_eq!(
-            crate::testing::channels(&doc)
-                .into_iter()
-                .find(|channel| channel.id == "c_random")
-                .unwrap()
-                .name,
-            original,
-            "partial rename text is not collaborative state"
-        );
-
-        feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
-        assert_eq!(app.channel("c_random").unwrap().name, "東京");
     }
 
     // Phase: category_create_and_collapse_via_the_hit_path.
@@ -1061,15 +1007,21 @@ fn channels_and_categories_are_created_renamed_and_reordered_from_the_sidebar() 
         feed(&mut app, &mut doc, &named_key(NamedKey::Enter));
         assert_eq!(acme_cats(&app), before + 1, "a category was created");
         assert!(app.categories.iter().any(|c| c.name == "Research"));
-        let collapsed_before = app.category("cat_acme_main").unwrap().collapsed;
-        app.on_hit(
-            Hit::CategoryToggle("cat_acme_main".into()),
+        let collapsed = |app: &ChatApp| {
+            app.categories
+                .iter()
+                .any(|category| category.id == "cat_acme_main" && category.collapsed)
+        };
+        let collapsed_before = collapsed(&app);
+        app.apply_menu_action(
+            MenuTarget::Category("cat_acme_main".into()),
+            MenuAction::ToggleCollapse,
             &mut ui::widget::Edits::lend(&mut doc),
         );
         assert_ne!(
-            app.category("cat_acme_main").unwrap().collapsed,
+            collapsed(&app),
             collapsed_before,
-            "the caret toggles the category collapsed state"
+            "the menu's Collapse toggles the category collapsed state"
         );
     }
 
@@ -1206,39 +1158,6 @@ fn the_message_menu_adds_a_first_reaction_and_starts_a_thread() {
     reason = "one labelled phase per original scenario, each with its own fresh fixture"
 )]
 fn flaps_and_detail_views_open_reflow_and_unwind() {
-    // Phase: toggle_left_flap_flips_state.
-    {
-        let (mut app, mut doc) = app_with_doc();
-        let open = app.left_flap_open();
-        app.on_hit(Hit::ToggleLeftFlap, &mut ui::widget::Edits::lend(&mut doc));
-        assert_ne!(
-            app.left_flap_open(),
-            open,
-            "toggling the left flap flips it"
-        );
-    }
-
-    // Phase: flaps_reflow_when_width_changes_on_the_same_instance.
-    {
-        // Guard against "responsive on first launch, frozen after resize": the
-        // flap mode is re-derived from the *current* width every layout pass,
-        // never cached from the first frame.
-        let (mut app, _doc) = app_with_doc();
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.reconcile_flaps();
-        assert!(!app.left_overlay(), "a wide window docks the sidebar");
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 540.0, 720.0);
-        app.reconcile_flaps();
-        assert!(
-            app.left_overlay(),
-            "narrowing reflows to one column at a time"
-        );
-        assert!(app.left_flap.is_push());
-        app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
-        app.reconcile_flaps();
-        assert!(!app.left_overlay(), "widening reflows back to docked");
-    }
-
     // Phase: members_pill_reveals_the_roster_not_a_blank_column.
     {
         let (mut app, mut doc) = app_with_doc();
@@ -1289,11 +1208,6 @@ fn flaps_and_detail_views_open_reflow_and_unwind() {
             count_hits(&app, |h| matches!(h, Hit::CloseThread)),
             1,
             "the detail header supplies one Back control"
-        );
-        assert_eq!(
-            count_hits(&app, |h| matches!(h, Hit::ToggleLeftFlap)),
-            0,
-            "the navigation drawer does not float over pushed thread content"
         );
     }
 
@@ -1949,18 +1863,18 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
         let (mut app, mut doc) = app_with_doc();
         app.call.join("c_huddle");
         render_frame(&mut app, 1200.0, 800.0);
-        let leave = app
+        let camera = app
             .hits
             .iter()
-            .find_map(|(rect, hit)| matches!(hit, Hit::CallLeave).then_some(*rect))
-            .expect("the live huddle exposes Leave");
+            .find_map(|(rect, hit)| matches!(hit, Hit::CallCamera).then_some(*rect))
+            .expect("the live huddle exposes its camera");
 
         feed(
             &mut app,
             &mut doc,
-            &cursor_moved(leave.center().x, leave.center().y),
+            &cursor_moved(camera.center().x, camera.center().y),
         );
-        assert!(matches!(app.call_hovered, Some(Hit::CallLeave)));
+        assert!(matches!(app.call_hovered, Some(Hit::CallCamera)));
 
         feed(&mut app, &mut doc, &cursor_moved(2.0, 2.0));
         assert!(app.call_hovered.is_none());
@@ -2036,9 +1950,15 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
         app.mark_drawn();
         damage
     };
+    // The room's avatars and attachments decode off the frame and repaint
+    // the timeline when they land: the frames measured come after every
+    // picture asked for has been drawn.
     for _ in 0..3 {
         frame(&mut app, w, h);
+        app.images
+            .block_until_idle(std::time::Duration::from_secs(30));
     }
+    assert!(app.images.is_idle(), "the room's pictures settled");
     let still = frame(&mut app, w, h);
     assert!(
         still.is_empty(),
@@ -2071,7 +1991,7 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
 }
 
 #[test]
-fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() {
+fn inspector_accessibility_focus_retires_the_previous_keyboard_owner() {
     use ui::Widget;
     use ui::a11y::Action;
     use ui::headless::FrameHarness;
@@ -2101,15 +2021,12 @@ fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() 
         .expect("the composer's Share a file control");
     driver.perform_a11y_action(attach, &Action::Focus).unwrap();
     assert!(driver.root::<ChatApp>().keyboard_target.is_some());
-    let sidebar = driver.a11y_node_named("Resize sidebar").unwrap();
-    driver.perform_a11y_action(sidebar, &Action::Focus).unwrap();
-    assert!(driver.root::<ChatApp>().keyboard_target.is_none());
     let inspector = driver.a11y_node_named("Resize inspector").unwrap();
     driver
         .perform_a11y_action(inspector, &Action::Focus)
         .unwrap();
+    assert!(driver.root::<ChatApp>().keyboard_target.is_none());
     let root = driver.root::<ChatApp>();
-    assert!(!root.left_flap.resize_accessibility().unwrap().state.focused);
     assert!(
         root.right_flap
             .resize_accessibility()
@@ -2119,18 +2036,18 @@ fn sidebar_accessibility_focus_retires_the_previous_keyboard_and_drawer_owner() 
     );
 
     let children = root.accessibility().unwrap().children;
-    let left = children
+    let attach = children
         .iter()
-        .position(|node| node.action_target.as_deref() == Some("sidebar-resize"))
+        .position(|node| node.name.as_deref() == Some("Share a file"))
         .unwrap();
     let right = children
         .iter()
         .position(|node| node.action_target.as_deref() == Some("inspector-resize"))
         .unwrap();
     let root = driver.root_mut::<ChatApp>();
-    assert!(root.focus_synthetic_accessibility(&[left]));
+    assert!(root.focus_synthetic_accessibility(&[attach]));
     assert!(root.focus_synthetic_accessibility(&[right]));
-    assert!(!root.left_flap.resize_accessibility().unwrap().state.focused);
+    assert!(root.keyboard_target.is_none());
     assert!(
         root.right_flap
             .resize_accessibility()
@@ -2165,91 +2082,15 @@ fn chat_without_the_keyboard_leaves_typed_text_to_the_focused_window() {
     assert_eq!(driver.root::<ChatApp>().composer_main.value(), "hi");
 }
 
+/// The shell keeps the channels docked while the conversation beside them
+/// keeps a reading column; at that narrowest, every composer control still
+/// fits.
 #[test]
-fn sidebar_resize_uses_the_live_host_pointer_and_semantic_routes() {
-    use ui::Widget;
-    use ui::headless::FrameHarness;
-    let (app, doc) = app_with_doc();
-    let mut state = ui::State::new();
-    assert!(state.adopt_doc(doc.chat));
-    let mut driver = FrameHarness::for_root(state, app, (960, 720), ui::Theme::dark());
-    assert!(!driver.root::<ChatApp>().left_overlay());
-    driver.resize((540, 720)).expect("normal narrow layout");
-    assert!(driver.root::<ChatApp>().left_overlay());
-    driver.resize((960, 720)).expect("normal wide layout");
-    assert!(!driver.root::<ChatApp>().left_overlay());
-    let before = driver.state_mut().doc.get_heads();
-    let edge = driver.root::<ChatApp>().left_flap.sidebar_rect().x1;
-    driver.drag_at((edge, 200.0), (edge - 40.0, 200.0));
-    assert_eq!(
-        driver.root::<ChatApp>().left_flap.list_rect().width(),
-        240.0
-    );
-    assert!(!driver.root::<ChatApp>().wants_pointer_capture());
-    let access = driver.root::<ChatApp>().accessibility().unwrap();
-    for child in &access.children {
-        if !matches!(
-            child.action_target.as_deref(),
-            Some("sidebar-resize" | "inspector-resize")
-        ) {
-            assert!(
-                child.semantic_key.is_none(),
-                "legacy Chat controls keep typed domain authority"
-            );
-        }
-    }
-    let resources = driver.resources();
-    let resize = resources
-        .iter()
-        .find(|resource| {
-            resource
-                .actions
-                .iter()
-                .any(|action| action.id == "set-value")
-                && resource.label == "Resize sidebar"
-        })
-        .expect("the live shared separator publishes exact resize alongside steps");
-    for id in ["increment", "decrement", "set-value"] {
-        assert!(resize.actions.iter().any(|action| action.id == id));
-    }
-    let address = ui::tilo_actions::door::survey(std::slice::from_ref(resize))
-        .into_iter()
-        .find(|offered| offered.address.action == "set-value")
-        .expect("the separator offers set-value")
-        .address;
-    let arguments = serde_json::Map::from_iter([(
-        ui::tilo_actions::PROMPTED_PARAM.to_owned(),
-        serde_json::Value::String("30%".into()),
-    )]);
-    assert!(
-        driver
-            .invoke_action(&address, &arguments, false, None)
-            .expect("the freshly published canonical resize door")
-            .completed()
-            .is_some()
-    );
-    let root = driver.root::<ChatApp>();
-    assert_eq!(root.left_flap.sidebar_rect().width(), 288.0);
-    assert_eq!(root.left_flap.list_rect().width(), 288.0);
-    assert_eq!(
-        driver.state_mut().doc.get_heads(),
-        before,
-        "resizing never changes the shared conversation"
-    );
-}
-
-#[test]
-fn navigation_remains_docked_while_the_shared_conversation_detail_minimum_fits() {
+fn the_composer_fits_the_narrowest_conversation_beside_the_channels() {
     let (mut app, _doc) = app_with_doc();
-    render_frame(&mut app, 760.0, 720.0);
-    assert!(
-        !app.left_overlay(),
-        "sidebar + conversation detail fit at this width"
-    );
-    assert!(
-        app.left_flap.content_rect().width()
-            >= f64::from(ui::tokens::Metrics::BASE.detail_min_width)
-    );
+    let narrowest =
+        f64::from(ui::widget::ContentKind::Reading.min_width(&ui::tokens::Metrics::BASE));
+    render_frame(&mut app, narrowest, 720.0);
     let content = app.content_rect();
     for control in [Hit::FocusMain, Hit::Send, Hit::Attach] {
         let rect = app
@@ -2262,11 +2103,6 @@ fn navigation_remains_docked_while_the_shared_conversation_detail_minimum_fits()
             "composer controls fit beside navigation"
         );
     }
-    render_frame(&mut app, 540.0, 720.0);
-    assert!(
-        app.left_overlay(),
-        "navigation becomes a drawer when conversation detail no longer fits"
-    );
 }
 
 #[test]
@@ -2556,7 +2392,7 @@ fn floating_pins_leave_the_composer_whole() {
     let (app, doc) = app_with_doc();
     let mut state = ui::State::new();
     assert!(state.adopt_doc(doc.chat));
-    let mut driver = FrameHarness::for_root(state, app, (900, 700), ui::Theme::dark());
+    let mut driver = FrameHarness::for_root(state, app, (640, 700), ui::Theme::dark());
     driver.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: "pins".into() });
     assert!(driver.wait_until(tilo_test_env::hang_bound(), |driver| {
         !driver.root::<ChatApp>().right_flap.is_animating()

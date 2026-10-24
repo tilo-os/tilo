@@ -22,7 +22,10 @@ const NAMED_COLUMNS_LISTED: usize = 30;
 pub(crate) struct Columns(Vec<(String, u32)>);
 
 fn fold(name: &str) -> String {
-    name.trim().to_lowercase()
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 /// Whether two cell texts name the same key: alike but for case and
@@ -333,6 +336,88 @@ pub(crate) fn set_records_writes(
         None => next_free_row(snap),
     };
     record_writes(&columns, first.., records).map_err(named)
+}
+
+/// The writes of an `upsert-item` on the sheet `snap`, whose cells show as
+/// `shown`: `value` (by header) into the one data row whose cells under the
+/// headers `matching` names hold its values, else into the next free row
+/// with `matching`'s values beside it. A sheet with a header row is a keyed
+/// collection of its rows, so the generic upsert reaches it as it reaches
+/// any collection's items. Returns the writes and, when the row is new, the
+/// row it goes to, which the caller inserts afresh.
+///
+/// # Errors
+/// `matching` is empty or names no header, more than one row matches, or a
+/// value is not a cell value.
+pub(crate) fn upsert_writes(
+    snap: &SheetSnapshot,
+    shown: &[SearchableCell],
+    matching: &serde_json::Map<String, serde_json::Value>,
+    value: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(Vec<CellWrite>, Option<u32>), Refusal> {
+    if matching.is_empty() {
+        return Err(Refusal::new(
+            "give `match`: the header values that identify the row, e.g. {\"Name\": \"Ana\"}",
+        ));
+    }
+    let mut inserted = value.clone();
+    for (key, wanted) in matching {
+        if !inserted.keys().any(|named| fold(named) == fold(key)) {
+            inserted.insert(key.clone(), wanted.clone());
+        }
+    }
+    let inserted = [serde_json::Value::Object(inserted)];
+    let Some(columns) = Columns::of_sheet(shown) else {
+        if !snap.raw.is_empty() {
+            return Err(Refusal::new(format!(
+                "`{}` has no headers in row 1 to match rows by: write them first",
+                snap.name
+            )));
+        }
+        return Ok((
+            new_sheet_writes(&keys_in_order(&inserted), &inserted)?,
+            None,
+        ));
+    };
+    let mut keys = Vec::new();
+    for (key, wanted) in matching {
+        let text = key_text(wanted)
+            .ok_or_else(|| Refusal::new(format!("`match` gives `{key}` no cell value")))?;
+        keys.push((key.as_str(), columns.column(key)?, text));
+    }
+    let mut rows: Vec<u32> = snap
+        .raw
+        .iter()
+        .filter(|((_, row), raw)| *row >= 1 && !raw.trim().is_empty())
+        .map(|((_, row), _)| *row)
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    let held = |col: u32, row: u32| snap.raw.get(&(col, row)).map_or("", String::as_str);
+    let found: Vec<u32> = rows
+        .into_iter()
+        .filter(|row| {
+            keys.iter()
+                .all(|(_, col, text)| same_key(held(*col, *row), text))
+        })
+        .collect();
+    // A matched row keeps its key cells as written there.
+    let (row, record, appended) = match found.as_slice() {
+        [] => {
+            let row = next_free_row(snap);
+            (row, inserted, Some(row))
+        }
+        [row] => (*row, [serde_json::Value::Object(value.clone())], None),
+        [first, second, ..] => {
+            return Err(Refusal::new(format!(
+                "`match` fits rows {} and {} of `{}`: name more headers so it fits one",
+                first + 1,
+                second + 1,
+                snap.name
+            )));
+        }
+    };
+    Ok((record_writes(&columns, [row], &record)?, appended))
 }
 
 /// The sheet row each record goes to when rows are identified by the header

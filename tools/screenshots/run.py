@@ -9,7 +9,9 @@ dates written relative to the day of the run (`${TODAY+1}`, `${MON+2}`: this
 week's Wednesday). No pointer or keyboard steps: a
 situation is reached through the app's resources and actions, the door every
 other caller uses. An app without a plan gets one situation, the window as it
-opens.
+opens. An app that shows the machine it runs on (its journal, processes,
+drives, files) is built from one of its own scenarios instead: each of its
+situations names one (`scenario`), and the app refuses a capture without.
 
 Services (`kind = "service"` in the manifest: the agent, the on-screen
 keyboard the shell draws, compute workers) have no window and are skipped.
@@ -93,6 +95,10 @@ class Situation:
     name: str
     title: str
     steps: list = field(default_factory=list)
+    # The app's own scenario the window is built from (`"scenario"` in the
+    # drive): an app that shows the machine it runs on refuses a capture
+    # without one, so its pictures show made-up data, never the machine's.
+    scenario: str | None = None
 
 
 @dataclass
@@ -146,7 +152,10 @@ def load_plan(entry: dict) -> Plan:
                     raise ValueError(
                         f"{path}: situation {name}: a step is one of {sorted(ALLOWED_STEPS)}, got {step}"
                     )
-            situations.append(Situation(name, raw.get("title", name), steps))
+            scenario = raw.get("scenario")
+            if scenario is not None and (not isinstance(scenario, str) or not scenario):
+                raise ValueError(f"{path}: situation {name}: a scenario is a name, got {scenario!r}")
+            situations.append(Situation(name, raw.get("title", name), steps, scenario))
         if not situations:
             raise ValueError(f"{path}: no situations")
         names = [s.name for s in situations]
@@ -277,6 +286,8 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
             # it: the app's slots, search and History are hosted there.
             "window_bar": True,
         }
+        if situation.scenario:
+            spec["scenario"] = situation.scenario
         if index == 0:
             spec["resources"] = str(app_dir / "resources.json")
         command = [str(args.bin_dir / plan.binary), "--headless-drive", json.dumps(spec)]

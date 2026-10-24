@@ -4837,14 +4837,17 @@ fn resolve_dbus_bind(
     let sockets = ProxySockets {
         session: dbus_proxy::proxy_socket_path(uid, pid),
         atspi: dbus_proxy::atspi_proxy_socket_path(uid, pid),
+        ready_within: dbus_proxy::PROXY_READY_TIMEOUT,
     };
     resolve_dbus_bind_at(portals, graphical, &sockets)
 }
 
-/// Where one launch's D-Bus proxies listen on the host.
+/// Where one launch's D-Bus proxies listen on the host, and how long each
+/// may take to report its listener ready.
 struct ProxySockets {
     session: PathBuf,
     atspi: PathBuf,
+    ready_within: std::time::Duration,
 }
 
 fn resolve_dbus_bind_at(
@@ -4882,20 +4885,21 @@ fn resolve_dbus_bind_at(
     let (session, atspi) = std::thread::scope(|scope| {
         let atspi = graphical.then(|| {
             spawn_beside(scope, "launch-atspi", || {
-                spawn_atspi_proxy(&binary, &bus_addr, uid, &sockets.atspi)
+                spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             })
         });
-        let session = dbus_proxy::spawn_filtered_proxy(
+        let session = dbus_proxy::spawn_filtered_proxy_within(
             &binary,
             &bus_addr,
             &sockets.session,
             &dbus_proxy::session_filter_args(wants_portals, graphical),
+            sockets.ready_within,
         );
         let atspi = match atspi {
             Some(Ok(handle)) => join_beside(handle),
             Some(Err(error)) => {
                 tracing::warn!(%error, "AT-SPI proxy could not start beside the session proxy");
-                spawn_atspi_proxy(&binary, &bus_addr, uid, &sockets.atspi)
+                spawn_atspi_proxy(&binary, &bus_addr, uid, sockets)
             }
             None => None,
         };
@@ -4937,17 +4941,18 @@ fn spawn_atspi_proxy(
     binary: &std::path::Path,
     session_bus: &str,
     uid: u32,
-    socket: &Path,
+    sockets: &ProxySockets,
 ) -> Option<(crate::sandbox::AtspiBindPlan, DBusProxyGuard)> {
     let Some(atspi_addr) = dbus_proxy::host_atspi_address(session_bus) else {
         tracing::info!("the session runs no accessibility bus");
         return None;
     };
-    match dbus_proxy::spawn_filtered_proxy(
+    match dbus_proxy::spawn_filtered_proxy_within(
         binary,
         &atspi_addr,
-        socket,
+        &sockets.atspi,
         dbus_proxy::ATSPI_FILTER_ARGS,
+        sockets.ready_within,
     ) {
         Ok(guard) => Some((
             crate::sandbox::AtspiBindPlan {
@@ -4992,6 +4997,9 @@ mod dbus_resolution_tests {
     /// The session and AT-SPI proxies come up side by side. Each mock proxy
     /// reports ready only once both have started, so one after the other the
     /// first would never be ready and the session bus would stay unbound.
+    /// The proxies get the shared hang bound to report ready, not the
+    /// product's two seconds: two forked shells polling on a loaded machine
+    /// have taken longer than that to see each other.
     #[test]
     fn the_session_and_accessibility_proxies_start_side_by_side() {
         use std::os::unix::fs::PermissionsExt;
@@ -5004,10 +5012,9 @@ notify=0
 if [ "$1" = --fd=0 ]; then notify=1; shift; fi
 dir=$(dirname "$2")
 : >"$2.started"
-tries=0
+deadline=$(($(date +%s) + TILO_MOCK_PROXY_WAIT_SECS))
 while [ "$(ls "$dir" | grep -c '\.started$')" -lt 2 ]; do
-    tries=$((tries + 1))
-    [ "$tries" -gt 400 ] && exit 1
+    [ "$(date +%s)" -gt "$deadline" ] && exit 1
     sleep 0.01
 done
 : >"$2"
@@ -5020,10 +5027,15 @@ exec sleep infinity
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set(crate::dbus_proxy::PROXY_BIN_ENV, &proxy)
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus")
-            .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus");
+            .set("AT_SPI_BUS_ADDRESS", "unix:path=/run/user/1234/at-spi/bus")
+            .set(
+                "TILO_MOCK_PROXY_WAIT_SECS",
+                tilo_test_env::hang_bound().as_secs().to_string(),
+            );
         let sockets = ProxySockets {
             session: tmp.path().join("sockets/1.sock"),
             atspi: tmp.path().join("sockets/1-atspi.sock"),
+            ready_within: tilo_test_env::hang_bound(),
         };
 
         let (plan, guards) =

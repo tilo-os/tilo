@@ -14,9 +14,10 @@ use ui::tokens::TextRole;
 use ui::vello::Scene;
 use ui::vello::kurbo::Affine;
 use ui::widget::{
-    Button, Column, Container, Element, EmptyState, ListRow, NavShell, PieChart, PieSlice,
-    PieStyle, Scrollable, Section, SectionHeader, Text, Widget,
+    Column, Container, Element, EmptyState, ListRow, NavShell, PieChart, PieSlice, PieStyle,
+    Scrollable, Section, Text, Widget,
 };
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
 
 use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
@@ -25,7 +26,7 @@ use ui::format::{count, size};
 const NAMED_SLICES: usize = 8;
 
 #[derive(Clone)]
-struct Place {
+pub(crate) struct Place {
     label: String,
     path: PathBuf,
 }
@@ -40,6 +41,9 @@ enum View {
 /// The navigation operations the resource publishes, which the view's
 /// buttons invoke.
 const CHOOSE: DiskUsageEffect = DiskUsageEffect::Choose;
+
+/// The window bar's action that chooses a folder to analyze.
+pub(crate) const CHOOSE_FOLDER: &str = "disk-usage.choose";
 
 /// What a control in the current view asks for. Controls run inside the
 /// widget tree; the app applies their requests on its next update.
@@ -260,9 +264,11 @@ impl ui::widget::Decorator for SliceChart {
 
 pub struct DiskUsageApp {
     view: View,
-    /// The window: the current view as its content, the folder as the
-    /// header's title, and the shell's Back while there is a way back.
+    /// The window: the current view as its content, and the shell's Back
+    /// while there is a way back.
     content: NavShell,
+    /// What the window's bar names: the folder on screen, or the home view.
+    title: String,
     /// Whether Back leads anywhere: any view but home.
     can_go_back: Rc<std::cell::Cell<bool>>,
     structure_dirty: bool,
@@ -270,12 +276,31 @@ pub struct DiskUsageApp {
     history: Vec<PathBuf>,
     pub(crate) recent: Vec<PathBuf>,
     pub(crate) recents: Option<Setting<RecentFolders>>,
-    places: Vec<Place>,
+    pub(crate) places: Vec<Place>,
     inbox: Inbox,
     scan_cancellation: Option<ScanCancellation>,
     pub(crate) immediate: bool,
     pub(crate) dispatcher: Option<Dispatcher<DiskUsage>>,
     pub(crate) actions: Option<Actions<DiskUsage>>,
+}
+
+/// The places a capture lists: the sample's home and workspace, and the
+/// file system.
+pub(crate) fn sample_places() -> Vec<Place> {
+    vec![
+        Place {
+            label: "Home".into(),
+            path: PathBuf::from("/home/you"),
+        },
+        Place {
+            label: "Workspace".into(),
+            path: PathBuf::from(tilo_paths::WORKSPACE_MOUNT),
+        },
+        Place {
+            label: "File system".into(),
+            path: PathBuf::from("/"),
+        },
+    ]
 }
 
 impl DiskUsageApp {
@@ -307,6 +332,7 @@ impl DiskUsageApp {
             NavShell::new()
                 .content_kind(ui::widget::ContentKind::List)
                 .with_id("disk-usage.shell")
+                .with_window_toolbar()
                 .on_back(
                     move || can.get(),
                     move || inbox.borrow_mut().push(Request::Back),
@@ -315,6 +341,7 @@ impl DiskUsageApp {
         let mut app = Self {
             view: View::Home,
             content,
+            title: String::new(),
             can_go_back,
             structure_dirty: false,
             inspected: None,
@@ -465,7 +492,7 @@ impl DiskUsageApp {
 
     fn rebuild(&mut self) {
         let (title, view) = match &self.view {
-            View::Home => (String::new(), self.home_view()),
+            View::Home => ("Analyze storage".to_owned(), self.home_view()),
             View::Loading(path) => (folder_title(&self.places, path), Self::loading_view()),
             View::Analysis(result) => (
                 folder_title(&self.places, &result.path),
@@ -480,19 +507,8 @@ impl DiskUsageApp {
         self.can_go_back.set(back);
         self.content.set_can_go_back(back);
         self.content.set_content(view);
-        self.content.set_content_title(title);
+        self.title = title;
         self.structure_dirty = true;
-    }
-
-    fn bind(&self, button: Button, effect: &DiskUsageEffect) -> Button {
-        match self
-            .actions
-            .as_ref()
-            .and_then(|actions| actions.effect(effect))
-        {
-            Some(binding) => button.on_action(binding),
-            None => button.with_enabled(false),
-        }
     }
 
     fn bind_folder(&self, row: ListRow, path: &std::path::Path) -> ListRow {
@@ -523,21 +539,12 @@ impl DiskUsageApp {
 
     fn home_view(&self) -> Element {
         let (places, recent) = self.locations();
-        let choose = self.bind(
-            Button::new("disk-usage.choose", "Choose folder").with_icon(Icon::FolderOpen),
-            &CHOOSE,
-        );
         let mut page = Column::new()
             .with_intrinsic_height()
-            .push(Box::new(
-                Text::new("Analyze storage")
-                    .with_role(TextRole::LargeTitle)
-                    .with_heading_level(1),
-            ))
-            .push(Box::new(
-                Section::new(places.iter().map(|p| self.place_row(p)).collect())
-                    .with_header(SectionHeader::heading("Places").action(choose)),
-            ));
+            .push(Box::new(Section::titled(
+                "Places",
+                places.iter().map(|p| self.place_row(p)).collect(),
+            )));
         if !recent.is_empty() {
             page = page.push(Box::new(Section::titled(
                 "Recent",
@@ -652,6 +659,7 @@ impl ui::widget::Decorator for DiskUsageApp {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.run_window_toolbar();
         let mut changed = self.content.update(state, path);
         let requests = std::mem::take(&mut *self.inbox.borrow_mut());
         for request in requests {
@@ -675,6 +683,41 @@ impl ui::widget::Decorator for DiskUsageApp {
 }
 
 impl DiskUsageApp {
+    /// Run what the person did in the window's bar, then declare its slots:
+    /// the shell's own (Back while there is a way back), the place on
+    /// screen as the location, and Choose folder.
+    fn run_window_toolbar(&mut self) {
+        let live = self
+            .actions
+            .as_ref()
+            .is_some_and(|actions| actions.effect(&CHOOSE).is_some());
+        for event in ui::window_toolbar::take_events() {
+            if self.content.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = &event
+                && id == CHOOSE_FOLDER
+                && live
+                && let Some(dispatcher) = &self.dispatcher
+            {
+                dispatcher.effect(&CHOOSE);
+            }
+        }
+        let mut toolbar = self.content.window_toolbar();
+        toolbar.location = Some(ToolbarLocation {
+            label: self.title.clone(),
+            ..ToolbarLocation::default()
+        });
+        NavShell::push_window_actions(
+            &mut toolbar,
+            [
+                ToolbarAction::new(CHOOSE_FOLDER, Icon::FolderOpen.name(), "Choose folder")
+                    .enabled(live),
+            ],
+        );
+        ui::window_toolbar::declare(Some(toolbar));
+    }
+
     pub(crate) fn inspect(&mut self, id: &str) {
         self.inspected = Some(id.into());
         if matches!(self.view, View::Analysis(_)) {
@@ -802,8 +845,15 @@ mod navigation_tests {
             ui::prelude::TestApp::<crate::resource::DiskUsageShell>::capture(Some("home-narrow"))
                 .unwrap();
         let frame = app.harness().inspection_json().unwrap();
-        for name in ["Home", "Workspace", "File system", "Choose folder"] {
+        for name in ["Home", "Workspace", "File system"] {
             assert!(frame.contains(name), "missing {name}: {frame}");
         }
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert!(
+            bar.actions
+                .iter()
+                .any(|action| action.name == "Choose folder"),
+            "{bar:?}"
+        );
     }
 }

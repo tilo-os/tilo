@@ -54,6 +54,7 @@ fn workspace_with_group() -> Workspace {
                     id,
                     title: "Notes".into(),
                     tile: notes(),
+                    app_title: None,
                 })
                 .collect(),
         }],
@@ -146,6 +147,7 @@ fn open_app_beside_an_actors_group_lands_right_after_it() {
                 id: 41,
                 title: "Notes".into(),
                 tile: notes(),
+                app_title: None,
             }],
         }],
     });

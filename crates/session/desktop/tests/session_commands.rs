@@ -36,6 +36,7 @@ fn source() -> (DesktopTree, CommandSource) {
                     kind: AppKind::Other("so.tilo.notes".into()),
                     label: "Not authority".into(),
                 },
+                app_title: None,
             })
             .collect(),
     }];

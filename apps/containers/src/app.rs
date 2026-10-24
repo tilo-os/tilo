@@ -362,6 +362,7 @@ impl ContainersApp {
             intents: intents.clone(),
             offsets: view::Offsets::default(),
             sort: ui::LocalState::new(None),
+            detail_title: ui::LocalState::new(String::new()),
         };
         let window = view::window(&parts);
         Self {
@@ -1395,6 +1396,15 @@ impl ContainersApp {
             return;
         }
         self.published = Some(published);
+        let title = view
+            .selected
+            .as_deref()
+            .and_then(|id| self.engine.find(id))
+            .map(|container| container.name.clone())
+            .unwrap_or_default();
+        if self.parts.detail_title.with(|shown| *shown != title) {
+            self.parts.detail_title.set(title);
+        }
         self.parts.model.set(
             view::Model {
                 engine: Rc::new(self.engine.clone()),
@@ -2131,6 +2141,86 @@ mod tests {
         assert!(
             !d.targets().contains_key("detail-close"),
             "with nothing chosen there is nothing to close"
+        );
+    }
+
+    #[test]
+    fn the_section_and_its_commands_are_in_the_window_bar() {
+        let mut d = driver(staged());
+        d.present_in_window_bar();
+        d.relayout();
+        let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
+        let app = app_of(&mut d);
+        let chosen = app
+            .selected()
+            .and_then(|id| app.engine.find(id))
+            .map(|container| container.name.clone())
+            .expect("the staged window shows a container");
+        assert_eq!(
+            bar.location
+                .as_ref()
+                .map(|location| location.label.as_str()),
+            Some(chosen.as_str()),
+            "the chosen container names the window"
+        );
+        let names: Vec<&str> = bar
+            .actions
+            .iter()
+            .map(|action| action.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"Remove"),
+            "the container's verbs are bar actions: {names:?}"
+        );
+        assert!(
+            !d.targets()
+                .keys()
+                .any(|id| id.starts_with("detail-remove-")),
+            "the detail draws no verbs of its own"
+        );
+        assert!(
+            !bar.actions
+                .iter()
+                .any(|action| action.name.contains("Search")),
+            "the bar's own search is the only one: {:?}",
+            bar.actions
+        );
+        let close = bar
+            .actions
+            .iter()
+            .find(|action| action.name == "Close details")
+            .expect("closing the detail is a bar action");
+        assert_eq!(
+            close.icon, "panel-right",
+            "closing the detail shows the pane it closes, not a cross beside the search"
+        );
+        let close = close.id.clone();
+        assert!(
+            !d.targets().contains_key("detail-close"),
+            "the window draws no header row of its own"
+        );
+        d.press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: close });
+        // The shell presses the header's button in the frame's settle pass;
+        // the window then dispatches what the button invoked.
+        d.idle();
+        d.relayout();
+        assert!(
+            app_of(&mut d).selected().is_none(),
+            "the bar closed the detail"
+        );
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Containers"),
+            "with nothing chosen the section names the window"
+        );
+
+        d.key("2");
+        d.relayout();
+        let bar = ui::window_toolbar::declared().expect("the window's slots");
+        assert_eq!(
+            bar.location.map(|location| location.label).as_deref(),
+            Some("Images")
         );
     }
 

@@ -48,7 +48,7 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
         qs.brightness_available = true;
         qs.brightness = 0.2;
         qs.volume_available = true;
-        qs.volume = 0.2;
+        qs.set_volume_level(0.2);
         qs.radios.wifi_available = true;
         qs.wifi = true;
         qs.bluetooth_available = true;
@@ -58,11 +58,11 @@ fn controls_harness(vw: f64, vh: f64) -> (AbsorbHarness, Recorder, Launches) {
             crate::shell::quick_settings::PowerProfile::Saver,
             crate::shell::quick_settings::PowerProfile::Balanced,
         ];
-        qs.battery = tilo_power_mgmt::BatterySnapshot {
+        qs.status.battery = Some(tilo_power_mgmt::BatterySnapshot {
             present: true,
             percent: 50,
             state: tilo_power_mgmt::BatteryState::Discharging,
-        };
+        });
         qs.vpns.push(os_actions::VpnConnectionInfo {
             name: "Office".into(),
             uuid: "office-vpn".into(),
@@ -352,7 +352,7 @@ fn a_finger_taps_and_drags_the_quick_settings_sliders() {
         &mut h,
         &touch_at(1, TouchPhase::Moved, volume.x1 - 1.0, y + 60.0)
     ));
-    let dragged = h.chrome.borrow().quick_settings.volume;
+    let dragged = h.chrome.borrow().quick_settings.volume_level();
     assert!(dragged > 0.9, "the drag follows the finger: {dragged}");
     assert!(pump(
         &mut h,

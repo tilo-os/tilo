@@ -23,6 +23,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
+#[path = "tabs_rename.rs"]
+mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
 use crate::tokens::{EffectiveMotion, MotionSource};
@@ -488,6 +490,10 @@ pub struct TabBar {
     toolbar_row: super::window_toolbar_row::ToolbarRow,
     /// The motion the person allows, from the last layout's theme.
     motion: EffectiveMotion,
+    /// A tab being named in place ([`TabBar::begin_rename`]).
+    rename: Option<rename::TabRename>,
+    /// A name committed in place, drained by [`TabBar::take_rename`].
+    pending_rename: Option<(u64, String)>,
 }
 
 /// Geometry shared by the tab handle and the window-content preview attached
@@ -636,6 +642,8 @@ impl TabBar {
             location_images: HashMap::new(),
             toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
             motion: EffectiveMotion::default(),
+            rename: None,
+            pending_rename: None,
         }
     }
 
@@ -759,6 +767,12 @@ impl TabBar {
             None => self.toolbars.remove(&id),
         };
         true
+    }
+
+    /// The row the active tab's toolbar stands in.
+    #[cfg(test)]
+    pub(crate) fn toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
+        &self.toolbar_row
     }
 
     /// The slots `id`'s app declared.
@@ -1386,6 +1400,10 @@ impl TabBar {
                 .get(i)
                 .copied()
                 .unwrap_or_else(|| Reveal::None.reserve());
+        // A tab being named shows its field there instead ([`Self::draw_rename`]).
+        if self.renaming() == Some(t.id) {
+            return;
+        }
         let clip_r = Rect::new(r.x0, r.y0, clip_x1.max(r.x0), r.y1);
         // Backstop only — `visible_titles` already carries the elided form.
         let label = self
@@ -4016,6 +4034,7 @@ impl Widget for TabBar {
         });
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
+        self.draw_rename(scene, transform, tr, theme, presence);
         // The tab list's focus ring comes and goes with keyboard focus: a
         // damage part around the active pill, not a repaint of the bar.
         let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
@@ -4064,6 +4083,11 @@ impl Widget for TabBar {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
+            return;
+        }
+        // A tab's name field, while one is edited, has the keyboard and the
+        // presses on it; a press anywhere else commits it and goes on.
+        if self.rename.is_some() && self.rename_event(event, ctx) {
             return;
         }
         // The location field, while edited, has the keyboard and its own
@@ -4163,6 +4187,15 @@ impl Widget for TabBar {
         {
             return Some(tip);
         }
+        // A window of one tab with slots shows that tab as its icon alone:
+        // the icon names the tab, as its accessible node does.
+        if self.active_toolbar().is_some()
+            && let [tab] = self.tabs.as_slice()
+            && let Some(&icon) = self.tab_rects.first()
+            && icon.contains(point)
+        {
+            return Some((icon, tab.title.clone()));
+        }
         if !self.window_controls {
             return None;
         }
@@ -4221,6 +4254,7 @@ impl Widget for TabBar {
             out.push(("window_forward".to_string(), slots.forward));
             out.push(("window_location".to_string(), slots.location));
             out.push(("window_more".to_string(), slots.overflow));
+            out.push(("window_views_menu".to_string(), slots.views_menu));
             out.push(("window_sidebar".to_string(), slots.sidebar));
             for (i, rect) in slots.actions.iter().enumerate() {
                 out.push((format!("window_action:{i}"), *rect));
@@ -4229,7 +4263,9 @@ impl Widget for TabBar {
                 out.push((format!("window_suggestion:{i}"), rect));
             }
             for (i, rect) in slots.leading.iter().enumerate() {
-                out.push((format!("window_leading:{i}"), *rect));
+                if rect.area() > 0.0 {
+                    out.push((format!("window_leading:{i}"), *rect));
+                }
             }
             for (i, rect) in slots.views.iter().enumerate() {
                 out.push((format!("window_view:{i}"), *rect));
@@ -8599,6 +8635,9 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
             }],
             ..WindowToolbar::default()
         }
@@ -8804,6 +8843,9 @@ mod tests {
                 on: false,
                 menu: false,
                 items: Vec::new(),
+                navigates: false,
+                toggles: false,
+                destructive: false,
             });
         }
         slots
@@ -8841,6 +8883,11 @@ mod tests {
             Some(lookup("host-window-close"))
         );
         assert_eq!(tip(&b, location), None, "the location is no button");
+        assert_eq!(
+            tip(&b, b.tab_rects[0]),
+            Some("DuckDuckGo".to_owned()),
+            "the tab shown as its icon alone is named"
+        );
 
         // The menu lists the actions the row has no room for and runs one.
         b.set_popup_area(Rect::new(0.0, 0.0, 900.0, 700.0));

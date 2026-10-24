@@ -21,6 +21,8 @@ pub use tilo_identity_host::device_fleet;
 pub mod diagnostics;
 pub mod firstboot;
 pub mod identity_broker;
+#[cfg(target_os = "linux")]
+pub mod identity_clock_wait;
 mod idle_wake;
 #[cfg(target_os = "linux")]
 mod retained_files;

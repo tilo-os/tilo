@@ -483,9 +483,10 @@ fn pages_lay_out_without_overlap_at_every_size() {
     // Case `back_goes_to_the_narrow_rail_through_a_real_click`.
     {
         // Too narrow for the rail beside the grid, the window shows one
-        // screen at a time and keeps the page it showed. Back must go to
-        // the rail, and choosing a destination there must
-        // show its page, via real clicks, not app.apply.
+        // screen at a time and keeps the page it showed, a top-level page
+        // with no Back. The bar's sidebar toggle must go to the rail, and
+        // choosing a destination there must show its page, via real clicks,
+        // not app.apply.
         let mut app = live_app();
         app.harness().resize((340, 800)).unwrap();
         app.harness().relayout();
@@ -498,10 +499,10 @@ fn pages_lay_out_without_overlap_at_every_size() {
             "narrowing keeps the page in front of the rail"
         );
 
-        app.harness().press_window_slot(ToolbarEvent::Back);
+        app.harness().press_window_slot(ToolbarEvent::ToggleSidebar);
         app.settle();
         app.harness().relayout();
-        assert!(open(&mut app), "Back goes to the rail");
+        assert!(open(&mut app), "the toggle goes to the rail");
 
         click(&mut app, "nav_home");
         assert_eq!(route(&mut app), Route::Home);
@@ -523,13 +524,13 @@ fn search_inputs_are_present_and_navigate() {
         if viewport.0 < 800 {
             // At its first text size the window docks the rail beside the
             // grid; the larger text leaves no room for both, so it shows one
-            // screen at a time and keeps the page it was on. Back goes to
-            // the rail.
+            // screen at a time and keeps the page it was on. The bar's
+            // sidebar toggle goes to the rail.
             let on_rail = app
                 .with_surface::<TubeApp, _>(|tube| tube.sidebar_open_for_test())
                 .expect("the window shows Tube");
             if !on_rail {
-                app.harness().press_window_slot(ToolbarEvent::Back);
+                app.harness().press_window_slot(ToolbarEvent::ToggleSidebar);
                 app.settle();
                 app.harness().relayout();
             }

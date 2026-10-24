@@ -51,11 +51,14 @@ impl Bar {
         let selected = self.selection.get();
         let mut actions = Vec::new();
         let location = if let Some((title, refresh)) = self.groups.shown() {
-            toolbar.leading.push(ToolbarAction::new(
-                CLOSE_GROUPS,
-                "arrow-left",
-                CATALOG.t("messages-close-groups"),
-            ));
+            toolbar.leading.push(
+                ToolbarAction::new(
+                    CLOSE_GROUPS,
+                    "arrow-left",
+                    CATALOG.t("messages-close-groups"),
+                )
+                .navigating(),
+            );
             if refresh.is_some() {
                 actions.push(ToolbarAction::new(
                     REFRESH_GROUP,

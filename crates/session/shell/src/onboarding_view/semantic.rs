@@ -1,10 +1,10 @@
 //! First-use operations on the same registry and reducer as the rendered ceremony.
 use super::{
     AcknowledgementKind, KEY_BACK, KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN,
-    KEY_CHOOSE_NEARBY, KEY_CHOOSE_RESTORE, KEY_CODECS_CONTINUE, KEY_CODECS_INSTALL,
-    KEY_CODECS_SKIP, KEY_CONNECT_CANCEL, KEY_CREATE, KEY_EXISTING, KEY_FINISH, KEY_TOUR_BACK,
-    KEY_TOUR_NEXT, KEY_TOUR_SKIP, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView, PressedActions,
-    TourPage,
+    KEY_CHOOSE_NEARBY, KEY_CHOOSE_RECOVERY_KEY, KEY_CHOOSE_RESTORE, KEY_CODECS_CONTINUE,
+    KEY_CODECS_INSTALL, KEY_CODECS_SKIP, KEY_CONNECT_CANCEL, KEY_CREATE, KEY_EXISTING, KEY_FINISH,
+    KEY_TOUR_BACK, KEY_TOUR_NEXT, KEY_TOUR_SKIP, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView,
+    PressedActions, TourPage,
 };
 use crate::onboarding::{Screen, intro_title};
 use crate::shell::i18n::t;
@@ -225,6 +225,7 @@ fn ceremony_operations(view: &OnboardingView) -> (&'static str, Vec<(&'static st
             "existing",
             vec![
                 (KEY_CHOOSE_NEARBY, "onboarding-choice-nearby"),
+                (KEY_CHOOSE_RECOVERY_KEY, "onboarding-choice-recovery-key"),
                 (KEY_CHOOSE_RESTORE, "onboarding-choice-restore"),
             ],
         ),
@@ -236,6 +237,7 @@ fn ceremony_operations(view: &OnboardingView) -> (&'static str, Vec<(&'static st
             ("nearby", ops)
         }
         Screen::Restore => ("restore", vec![(KEY_BACK, "onboarding-back")]),
+        Screen::RecoveryKey => ("recovery-key", vec![(KEY_BACK, "onboarding-back")]),
     }
 }
 
@@ -797,6 +799,7 @@ fn effect_observed(
         KEY_BEGIN => state.phase == "protection",
         KEY_EXISTING => state.phase == "existing",
         KEY_CHOOSE_RESTORE => state.phase == "restore",
+        KEY_CHOOSE_RECOVERY_KEY => state.phase == "recovery-key",
         KEY_CHOOSE_NEARBY => state.phase == "nearby" && state.nearby_active,
         KEY_CONNECT_CANCEL => state.phase == "nearby" && !state.nearby_active,
         KEY_CREATE => state.phase == "backup",
