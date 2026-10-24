@@ -22,7 +22,7 @@ use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 
 use iroh_base::{EndpointId, SecretKey};
@@ -116,27 +116,31 @@ struct TiloSession {
     /// Tilo collaboration events arrive on the UI thread. Keep their H.264
     /// payloads bounded and hand decoding to this private worker so a hostile
     /// or merely busy peer cannot make event dispatch stutter.
-    /// Encoded units in arrival order with their sequence numbers, plus a
-    /// capacity-one wake channel. Every unit is kept, since a delta
-    /// references the ones before it; past [`TILO_UNIT_BACKLOG`] the backlog
-    /// is dropped and the worker waits for a keyframe.
+    /// Encoded units in arrival order, plus a capacity-one wake channel.
+    /// Every admitted unit is kept, since a delta references the ones before
+    /// it; past [`TILO_UNIT_BACKLOG`] the backlog is dropped and the chain
+    /// waits for a keyframe.
     encoded: Arc<Mutex<UnitBacklog>>,
     encoded_wake: SyncSender<()>,
     decoder_available: Arc<AtomicBool>,
     decoded: Arc<Mutex<Option<tilo_callstream::DecodedFrame>>>,
-    /// The unit the worker could not decode, plus one, when it wants the
-    /// target to send a keyframe; `0` when it does not.
-    keyframe_wanted: Arc<AtomicU64>,
+    /// The stream's reference chain, judged as each unit arrives rather than
+    /// when the worker reaches it: a decoder still starting up, or busy with
+    /// a slow unit, must not delay noticing a gap and asking for a keyframe.
+    chain: tilo_callstream::unit_chain::UnitChain,
+    /// When a keyframe was last asked for, while one is awaited.
+    asked: Option<std::time::Instant>,
 }
 
-/// Encoded units waiting for the decode worker, each with its sequence number.
-type UnitBacklog = std::collections::VecDeque<(u64, Vec<u8>)>;
+/// Encoded units waiting for the decode worker, in the order they continue
+/// the chain.
+type UnitBacklog = std::collections::VecDeque<Vec<u8>>;
 
 /// Encoded units waiting for the decode worker before the backlog is
 /// dropped: two seconds of a 30 fps stream.
 const TILO_UNIT_BACKLOG: usize = 60;
 
-/// How long the decode worker waits for an asked-for keyframe before asking
+/// How long the session waits for an asked-for keyframe before asking
 /// again, in case the request or the keyframe was lost too.
 const TILO_KEYFRAME_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
 
@@ -147,8 +151,6 @@ impl TiloSession {
         let encoded_worker = Arc::clone(&encoded);
         let decoder_available = Arc::new(AtomicBool::new(true));
         let decoder_available_worker = Arc::clone(&decoder_available);
-        let keyframe_wanted = Arc::new(AtomicU64::new(0));
-        let keyframe_wanted_worker = Arc::clone(&keyframe_wanted);
         // A replace-only latest slot bounds GPU-upload backlog and guarantees
         // the UI never paints an older decoded frame after a newer one exists.
         let decoded = Arc::new(Mutex::new(None));
@@ -157,35 +159,11 @@ impl TiloSession {
             .name("remote-tilo-decode".into())
             .spawn(move || {
                 let mut h264_decoder = tilo_callstream::VideoDecoder::default();
-                let mut chain = tilo_callstream::unit_chain::UnitChain::default();
-                let mut asked: Option<std::time::Instant> = None;
                 while encoded_rx.recv().is_ok() {
                     let units = std::mem::take(&mut *encoded_worker.lock_recover());
-                    for (seq, encoded) in units {
-                        let keyframe = tilo_callstream::is_keyframe(
-                            tilo_callstream::StreamCodec::H264,
-                            &encoded,
-                        );
-                        match chain.admit(seq, keyframe) {
-                            tilo_callstream::unit_chain::Admission::Decode => {
-                                if keyframe {
-                                    asked = None;
-                                    keyframe_wanted_worker.store(0, Ordering::Release);
-                                }
-                                if let Some(frame) = h264_decoder.decode(&encoded) {
-                                    *decoded_worker.lock_recover() = Some(frame);
-                                }
-                            }
-                            tilo_callstream::unit_chain::Admission::Stale => {}
-                            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
-                                if broke
-                                    || asked.is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY)
-                                {
-                                    asked = Some(std::time::Instant::now());
-                                    keyframe_wanted_worker
-                                        .store(seq.saturating_add(1), Ordering::Release);
-                                }
-                            }
+                    for encoded in units {
+                        if let Some(frame) = h264_decoder.decode(&encoded) {
+                            *decoded_worker.lock_recover() = Some(frame);
                         }
                     }
                 }
@@ -200,38 +178,61 @@ impl TiloSession {
             encoded_wake,
             decoder_available,
             decoded,
-            keyframe_wanted,
+            chain: tilo_callstream::unit_chain::UnitChain::default(),
+            asked: None,
         })
     }
 
-    fn queue_frame(&self, seq: u64, encoded: Vec<u8>) -> Result<(), String> {
+    /// Hand unit `seq` to the decode worker if it continues the chain.
+    /// `Ok(Some(seq))` names the unit after which the target is asked for a
+    /// keyframe: a unit went missing, the worker fell behind, or an earlier
+    /// request went unanswered.
+    fn queue_frame(&mut self, seq: u64, encoded: Vec<u8>) -> Result<Option<u64>, String> {
         if !self.decoder_available.load(Ordering::Acquire) {
             return Err("Tilo frame decoder is unavailable".into());
         }
-        {
+        let keyframe = tilo_callstream::is_keyframe(tilo_callstream::StreamCodec::H264, &encoded);
+        let fell_behind = {
             let mut queued = self.encoded.lock_recover();
-            if queued.len() >= TILO_UNIT_BACKLOG {
-                // The worker cannot keep up: the units it skips leave a gap
-                // it answers by asking for a keyframe.
+            let full = queued.len() >= TILO_UNIT_BACKLOG;
+            if full {
+                // The worker cannot keep up: the units it skips break the
+                // chain, which waits for a keyframe.
                 queued.clear();
             }
-            queued.push_back((seq, encoded));
+            drop(queued);
+            full
+        };
+        if fell_behind {
+            self.chain.lose();
+        }
+        match self.chain.admit(seq, keyframe) {
+            tilo_callstream::unit_chain::Admission::Decode => {
+                if keyframe {
+                    self.asked = None;
+                }
+                self.encoded.lock_recover().push_back(encoded);
+            }
+            tilo_callstream::unit_chain::Admission::Stale => return Ok(None),
+            tilo_callstream::unit_chain::Admission::AwaitingKeyframe { broke } => {
+                let ask = broke
+                    || fell_behind
+                    || self
+                        .asked
+                        .is_none_or(|at| at.elapsed() >= TILO_KEYFRAME_RETRY);
+                if ask {
+                    self.asked = Some(std::time::Instant::now());
+                }
+                return Ok(ask.then_some(seq));
+            }
         }
         match self.encoded_wake.try_send(()) {
-            Ok(()) | Err(TrySendError::Full(())) => Ok(()),
+            Ok(()) | Err(TrySendError::Full(())) => Ok(None),
             Err(TrySendError::Disconnected(())) => {
                 self.decoder_available.store(false, Ordering::Release);
                 Err("Tilo frame decoder stopped".into())
             }
         }
-    }
-
-    /// The unit the decode worker could not use, once, when it wants the
-    /// target to send a keyframe.
-    fn take_keyframe_request(&self) -> Option<u64> {
-        self.keyframe_wanted
-            .swap(0, Ordering::AcqRel)
-            .checked_sub(1)
     }
 
     fn take_latest_frame(&self) -> Option<tilo_callstream::DecodedFrame> {
@@ -1974,12 +1975,10 @@ impl Collaborative for RemoteApp {
             }
             runtime_collab::WorkspaceControlEvent::Frame {
                 encoded_h264, seq, ..
-            } => {
-                if let Err(error) = session.queue_frame(*seq, encoded_h264.clone()) {
-                    session.status = SessionStatus::Failed(error);
-                }
-                keyframe_request = session.take_keyframe_request();
-            }
+            } => match session.queue_frame(*seq, encoded_h264.clone()) {
+                Ok(request) => keyframe_request = request,
+                Err(error) => session.status = SessionStatus::Failed(error),
+            },
             runtime_collab::WorkspaceControlEvent::Closed(reason) => {
                 session.status = SessionStatus::Failed(match reason {
                     runtime_collab::WorkspaceControlCloseReason::Denied(message) => message.clone(),
