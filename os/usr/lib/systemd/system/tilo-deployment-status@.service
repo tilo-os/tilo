@@ -9,7 +9,7 @@ ExecStart=/usr/libexec/tilo-deployment serve-status
 StandardInput=socket
 StandardOutput=socket
 StandardError=journal
-RuntimeMaxSec=60
+TimeoutStartSec=60
 # An ESP this has to mount for itself (tilo-deployment's esp_mount_on_demand)
 # stays in this service's namespace and goes away with it.
 PrivateMounts=yes
