@@ -50,6 +50,7 @@ fn six_notes(
                 label: "Notes".into(),
                 note: String::new(),
             },
+            app_title: None,
         })
         .collect();
     let ids: Vec<TabId> = tabs.iter().map(|tab| tab.id).collect();

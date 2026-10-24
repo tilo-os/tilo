@@ -69,6 +69,7 @@ fn strip(salt: u16, counter: u64, label: &str) -> Strip {
                     kind: AppKind::Other("so.tilo.notes".into()),
                     label: label.into(),
                 },
+                app_title: None,
             }],
         }],
     }

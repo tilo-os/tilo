@@ -88,6 +88,7 @@ impl ShellOverlayHost {
             let st = chrome.borrow();
             facts.full_screen = st.fullscreen_group() == Some(target.group);
             let tree = st.tree();
+            facts.renamable = crate::shell::tab_binding::may_rename_tab(&tree, target.tab);
             let home = tree
                 .desktop
                 .workspaces
@@ -382,6 +383,7 @@ impl ShellOverlayHost {
                 self.move_to_workspace_from_menu(target, workspace)
             }
             WindowMenuAction::NewTab => self.new_tab_from_menu(target),
+            WindowMenuAction::RenameTab => self.begin_tab_rename(target),
             WindowMenuAction::StopDesktopControl => self.stop_desktop_control(target.tab),
             WindowMenuAction::SplitRight | WindowMenuAction::MoveToNewGroup => {
                 let Some(chrome) = self.chrome.clone() else {

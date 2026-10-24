@@ -270,6 +270,7 @@ mod shortcut_config;
 mod shortcut_help;
 mod strip_rail;
 mod tab_menu_host;
+mod tab_rename;
 mod thing_menu;
 mod top_bar;
 mod tree_harvest;
@@ -1619,6 +1620,7 @@ fn build_state_group_from_widget(
                     kind,
                     label: desc.title.clone(),
                 },
+                app_title: None,
             }
         })
         .collect();
@@ -1743,6 +1745,14 @@ fn palette_surface_theme(theme: &Theme) -> Theme {
 )]
 #[path = "tab_context_menu_tests.rs"]
 mod tab_context_menu_tests;
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "test fixtures transitively own long-lived permits and lock guards by design"
+)]
+#[path = "tab_rename_tests.rs"]
+mod tab_rename_tests;
 
 #[cfg(test)]
 #[path = "empty_workspace_tests.rs"]

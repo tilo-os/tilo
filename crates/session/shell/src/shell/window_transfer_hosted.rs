@@ -147,6 +147,7 @@ pub(super) fn propose(
                 label: plan.title.clone(),
                 note: t_args("window-transfer-awaiting-owner", &[("to", to.into())]),
             },
+            app_title: None,
         },
     );
     let wait = Wait::Sending(hosted.propose(

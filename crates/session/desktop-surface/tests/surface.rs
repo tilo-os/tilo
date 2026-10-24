@@ -41,6 +41,7 @@ impl TileSource for Notices {
                 label: title,
                 note: String::new(),
             },
+            app_title: None,
         })
     }
 
@@ -80,6 +81,7 @@ fn tab(minter: &mut IdMinter, title: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 

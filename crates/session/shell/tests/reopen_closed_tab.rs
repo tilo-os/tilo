@@ -16,6 +16,7 @@ fn notes(id: u64, title: &str) -> Tab {
             kind: AppKind::Terminal,
             label: title.into(),
         },
+        app_title: None,
     }
 }
 

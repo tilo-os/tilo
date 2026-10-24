@@ -4450,6 +4450,7 @@ impl WorkspaceTree {
                                 kind: AppKind::Other("Notes".into()),
                                 label: "Notes".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: tab_files,
@@ -4458,6 +4459,7 @@ impl WorkspaceTree {
                                 kind: AppKind::FileExplorer,
                                 label: "Files".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: tab_terminal,
@@ -4466,6 +4468,7 @@ impl WorkspaceTree {
                                 kind: AppKind::Terminal,
                                 label: "Terminal".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: tab_word,
@@ -4474,6 +4477,7 @@ impl WorkspaceTree {
                                 kind: AppKind::Other("Word".into()),
                                 label: "Document".into(),
                             },
+                            app_title: None,
                         },
                     ],
                     active_tab: tab_notes,
@@ -5159,6 +5163,7 @@ impl WorkspaceTree {
                     id: app.id.0,
                     title,
                     tile: tile_content,
+                    app_title: None,
                 };
                 if !existing_continuation_tabs.contains(&app.id.0) {
                     inserted_continuation_tabs.push(app.id.0);
@@ -6539,6 +6544,7 @@ mod automerge_foundation_tests {
                                 kind: AppKind::Other("Notes".into()),
                                 label: title.into(),
                             },
+                            app_title: None,
                         }],
                         active_tab: tab_id,
                         width: WindowWidth::Normal,
@@ -6720,6 +6726,7 @@ mod automerge_foundation_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "Notes".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tab_id,
                     width: WindowWidth::Normal,
@@ -7055,6 +7062,7 @@ mod automerge_foundation_tests {
                     kind: AppKind::Terminal,
                     label: "Follow-up".into(),
                 },
+                app_title: None,
             });
             host.sync_room_doc(room);
             ship(&mut host, &mut guest, room, 1);
@@ -7113,6 +7121,7 @@ mod automerge_foundation_tests {
                             kind: AppKind::Terminal,
                             label: "Plan".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tab,
                     width: WindowWidth::Normal,
@@ -7273,6 +7282,7 @@ mod automerge_foundation_tests {
                     app_id: "so.tilo.notes".into(),
                     surface_id: 42,
                 },
+                app_title: None,
             });
         }
         host.window_hosting = Some(WindowHosting {
@@ -7415,6 +7425,7 @@ mod automerge_foundation_tests {
                     kind: AppKind::Other("so.tilo.canvas".into()),
                     label: "ssh prod-db".into(),
                 },
+                app_title: None,
             });
         }
         host.sync_room_doc(room);
@@ -7467,6 +7478,7 @@ mod automerge_foundation_tests {
                         kind: AppKind::Terminal,
                         label: "Plan".into(),
                     },
+                    app_title: None,
                 }],
                 active_tab: tab,
                 width: WindowWidth::Normal,
@@ -7512,6 +7524,7 @@ mod automerge_foundation_tests {
                             kind: AppKind::Terminal,
                             label: "One".into(),
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: tab_b,
@@ -7520,6 +7533,7 @@ mod automerge_foundation_tests {
                             kind: AppKind::Terminal,
                             label: "Two".into(),
                         },
+                        app_title: None,
                     },
                 ],
                 active_tab: tab_b,
@@ -8905,6 +8919,7 @@ mod active_group_tests {
                     kind: AppKind::Terminal,
                     label: title.into(),
                 },
+                app_title: None,
             };
             tree.desktop.workspaces[0].strips[0].window_groups[0].tabs = vec![
                 make_tab(10, "Notes"),
@@ -8986,6 +9001,7 @@ mod active_group_tests {
                     kind: AppKind::Terminal,
                     label: "Notes".into(),
                 },
+                app_title: None,
             });
             group.active_tab = before;
             let invalid = [ui::widget::GroupTopology {
@@ -9025,6 +9041,7 @@ mod active_group_tests {
                     kind: AppKind::Terminal,
                     label: name.into(),
                 },
+                app_title: None,
             };
             {
                 let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
@@ -9140,6 +9157,7 @@ mod active_group_tests {
                         kind: AppKind::Terminal,
                         label: format!("Group {}", group.id),
                     },
+                    app_title: None,
                 });
                 group.active_tab = tab_id;
             }
@@ -9192,6 +9210,7 @@ mod active_group_tests {
                         kind: AppKind::Terminal,
                         label: format!("Group {}", group.id),
                     },
+                    app_title: None,
                 });
                 group.active_tab = tab_id;
             }

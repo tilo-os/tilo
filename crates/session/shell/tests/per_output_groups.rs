@@ -95,6 +95,7 @@ fn group(id: GroupId) -> WindowGroup {
                 kind: AppKind::Other("Test".into()),
                 label: format!("W{id}"),
             },
+            app_title: None,
         }],
         active_tab: tab,
         // Wide enough that three overflow every fixture display, so there

@@ -3186,6 +3186,7 @@ mod two_sessions {
                             kind: AppKind::Other("Test".into()),
                             label: format!("W{id}"),
                         },
+                        app_title: None,
                     }],
                     active_tab: desk_tab(id),
                     width: WindowWidth::Fraction(250),

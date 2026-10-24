@@ -128,6 +128,7 @@ mod tests {
                 label: app.into(),
                 note: String::new(),
             },
+            app_title: None,
         }
     }
 

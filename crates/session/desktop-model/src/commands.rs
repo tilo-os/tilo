@@ -663,6 +663,7 @@ fn duplicate_tab(
         id,
         title,
         tile: content,
+        app_title: None,
     };
     group_at_mut(workspace, strip, group)?
         .tabs
@@ -822,6 +823,7 @@ pub fn apply_command(
                 id,
                 title,
                 tile: content,
+                app_title: None,
             };
             place(workspace, tab, placement, group, strip)?;
         }

@@ -33,6 +33,7 @@ fn tab(id: u64, title: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn strip_of(salt: u16, base: u64) -> Strip {
                 id: id(5),
                 title: "Activity".into(),
                 tile: TileContent::WorkspaceActivity,
+                app_title: None,
             }],
         ),
     ];

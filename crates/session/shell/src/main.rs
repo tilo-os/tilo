@@ -362,6 +362,7 @@ mod macos_tests {
                     kind: shell::shell::state::AppKind::FileExplorer,
                     label: "Files".into(),
                 },
+                app_title: None,
             };
             let request = tilo_desktop::resolver::TileRequest {
                 room: shell::shell::state::RoomId::new(),

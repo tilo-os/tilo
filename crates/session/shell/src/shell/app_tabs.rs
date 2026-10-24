@@ -410,6 +410,7 @@ mod tests {
                         app_id: app.into(),
                         surface_id: 9_001,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: other,
@@ -418,6 +419,7 @@ mod tests {
                         app_id: "org.example.other".into(),
                         surface_id: 9_002,
                     },
+                    app_title: None,
                 },
             ],
             active_tab: other,

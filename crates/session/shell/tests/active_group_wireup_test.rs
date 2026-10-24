@@ -43,6 +43,7 @@ fn two_strip_two_group_tree() -> (WorkspaceTree, StripGroups, StripGroups) {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         }],
         active_tab: id ^ 0xff,
         width: WindowWidth::Normal,

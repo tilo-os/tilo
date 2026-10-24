@@ -3686,6 +3686,7 @@ mod tests {
                     app_id: "Alacritty".into(),
                     surface_id: id,
                 },
+                app_title: None,
             }],
             active_tab: id,
             width: WindowWidth::Normal,

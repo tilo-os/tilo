@@ -1125,6 +1125,8 @@ pub struct ChromeState {
     /// Someone asked to rename the focused strip without saying the name:
     /// the overlay host opens the switcher's name field for it.
     strip_rename_requested: bool,
+    /// A tab whose name field in its pill was asked for, for the overlay host.
+    pub(crate) tab_rename_request: Option<crate::shell::state::TabId>,
     strip_switcher_requested: bool,
     /// Last layout pass, so placement can ask "which border can the
     /// user actually see" without reaching into the widget tree.
@@ -1310,6 +1312,7 @@ impl ChromeState {
             screenshot_sends: Vec::new(),
             strip_switcher_open: false,
             strip_rename_requested: false,
+            tab_rename_request: None,
             strip_switcher_requested: false,
             tracked_record_requests: Vec::new(),
             record_request_results: BTreeMap::new(),
@@ -4906,6 +4909,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "first".into(),
                         },
+                        app_title: None,
                     },
                     Tab {
                         id: 200,
@@ -4914,6 +4918,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "second".into(),
                         },
+                        app_title: None,
                     },
                 ],
                 active_tab: active_tab_id,
@@ -5076,6 +5081,7 @@ mod active_tab_tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "third".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 300,
                     width: StateWidth::Normal,
@@ -5195,6 +5201,7 @@ mod active_tab_tests {
                     id: tab_id,
                     title: "Dropped".into(),
                     tile,
+                    app_title: None,
                 }],
                 active_tab: tab_id,
                 width: StateWidth::Normal,
@@ -5460,30 +5467,5 @@ mod provisioned_identity_tests {
 }
 
 #[cfg(test)]
-mod new_workspace_tests {
-    use super::*;
-
-    /// A workspace the person makes holds nothing but its first empty strip,
-    /// so it shows the empty-workspace launchpad.
-    #[test]
-    fn a_new_workspace_is_empty_and_shows_its_launchpad() {
-        let chrome = ChromeState::new(WorkspaceTree::bootstrap_default());
-        let id = chrome.borrow_mut().add_workspace("Fresh");
-        let state = chrome.borrow();
-        let tree = state.tree();
-        assert_eq!(tree.desktop.active, id);
-        let workspace = tree
-            .desktop
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.id == id)
-            .expect("the workspace was added");
-        assert_eq!(workspace.strips.len(), 1, "only its first strip");
-        assert!(
-            workspace.strips[0].window_groups.is_empty(),
-            "and nothing in it"
-        );
-        assert!(!workspace.has_windows(), "so the launchpad shows");
-        drop(tree);
-    }
-}
+#[path = "chrome_state_new_workspace_tests.rs"]
+mod new_workspace_tests;
