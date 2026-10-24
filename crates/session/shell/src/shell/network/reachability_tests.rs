@@ -51,7 +51,7 @@ fn lone_tree() -> (WorkspaceTree, RoomId) {
 #[test]
 fn a_desktop_with_nobody_to_dial_it_needs_no_relays() {
     let (tree, _) = lone_tree();
-    assert_eq!(needs_reachability(&tree, ME, false, false), None);
+    assert_eq!(needs_reachability(&tree, ME, &[0; 32], false, false), None);
 }
 
 #[test]
@@ -62,7 +62,7 @@ fn naming_itself_in_its_own_room_is_not_sharing_it() {
         .or_default()
         .insert(ME.into(), "Me".into());
     tree.room_authority.insert(room, RoomAuthority::Local);
-    assert_eq!(needs_reachability(&tree, ME, false, false), None);
+    assert_eq!(needs_reachability(&tree, ME, &[0; 32], false, false), None);
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn a_room_shared_with_a_peer_needs_relays() {
         .entry(room)
         .or_default()
         .insert("another-endpoint".into(), "Ada".into());
-    assert!(needs_reachability(&tree, ME, false, false).is_some());
+    assert!(needs_reachability(&tree, ME, &[0; 32], false, false).is_some());
 }
 
 #[test]
@@ -83,21 +83,21 @@ fn a_peer_no_longer_named_in_the_room_needs_no_relays() {
         .or_default()
         .insert("another-endpoint".into(), "Ada".into());
     tree.room_peer_names.remove(&room);
-    assert_eq!(needs_reachability(&tree, ME, false, false), None);
+    assert_eq!(needs_reachability(&tree, ME, &[0; 32], false, false), None);
 }
 
 #[test]
 fn a_joined_room_needs_relays() {
     let (mut tree, room) = lone_tree();
     tree.room_authority.insert(room, RoomAuthority::Unpinned);
-    assert!(needs_reachability(&tree, ME, false, false).is_some());
+    assert!(needs_reachability(&tree, ME, &[0; 32], false, false).is_some());
 }
 
 #[test]
 fn an_open_invitation_or_another_device_needs_relays() {
     let (tree, _) = lone_tree();
-    assert!(needs_reachability(&tree, ME, true, false).is_some());
-    assert!(needs_reachability(&tree, ME, false, true).is_some());
+    assert!(needs_reachability(&tree, ME, &[0; 32], true, false).is_some());
+    assert!(needs_reachability(&tree, ME, &[0; 32], false, true).is_some());
 }
 
 fn until<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
@@ -120,9 +120,10 @@ fn workspace_name(tree: &WorkspaceTreeHandle, room: RoomId) -> Option<String> {
         .map(|workspace| workspace.name.clone())
 }
 
-/// The first device has only a room of its own, so its relays wait; the
-/// second dials it, which is a remote party for both. The workspace still
-/// arrives, and from then on both devices are reachable.
+/// The first device hosts a room only it holds, so its relays wait; the
+/// second dials it, which is a remote party for both. The person's list
+/// names the first device as the room's host, the second enters the room
+/// there by its device key, and from then on both devices are reachable.
 #[test]
 #[serial_test::serial]
 fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
@@ -141,6 +142,9 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
     let home_workspace = first_tree.append_empty_workspace("Home");
     first_tree.adopt_ownerless_workspaces(&person);
     let room = first_tree.room_of(home_workspace).unwrap();
+    // A new workspace waits to be placed on this device's host.
+    first_tree.persist_path = Some(dir.path().join("first/workspaces.json"));
+    first_tree.pending_placements.insert(room);
     let first = device_reaching(
         first_tree.shared(),
         &dir.path().join("first"),
@@ -149,9 +153,13 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
         Reach::LoopbackHoldingRelays,
     );
     assert!(first.join_default_workspace());
+    until("the first device to host its workspace", || {
+        first.tick();
+        first.administered_room(room)
+    });
 
     let mut second_tree = WorkspaceTree::default();
-    assert!(second_tree.join_enrolled_room(room));
+    second_tree.persist_path = Some(dir.path().join("second/workspaces.json"));
     let second_tree = second_tree.shared();
     let second = device_reaching(
         second_tree.clone(),
@@ -175,7 +183,9 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
     until("the first device's workspace to reach the second", || {
         first.tick();
         second.tick();
-        (workspace_name(&second_tree, room).as_deref() == Some("Home")).then_some(())
+        (workspace_name(&second_tree, room).as_deref() == Some("Home")
+            && second_tree.read().native_authority.holds(room))
+        .then_some(())
     });
     until("both devices to start their relays", || {
         first.tick();
@@ -239,7 +249,8 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
     });
     assert!(
         net.reachability.is_dormant(),
-        "a desktop hosting a room only it holds started its relays"
+        "a desktop hosting a room only it holds started its relays; held up by (transport, session) {:?}",
+        net.reachability.holders()
     );
 
     let token = net.issue_invite(workspace, 3600).unwrap();

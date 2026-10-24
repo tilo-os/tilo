@@ -31,6 +31,21 @@ impl NativeAuthorityStorage {
             .get(&room)
             .is_some_and(|stored| stored.enrollment.is_none())
     }
+    /// Whether `room`'s host runs on the device `device`: this device entered
+    /// it at a host there, or an enrollment into it there is in flight. A
+    /// room this device governs itself has no host.
+    #[must_use]
+    pub fn hosted_on(&self, room: RoomId, device: &[u8; 32]) -> bool {
+        if let Some(stored) = self.rooms.get(&room) {
+            return stored.enrollment.as_ref().is_some_and(|enrollment| {
+                crate::session::hosted_by(&enrollment.transport_hint, device)
+            });
+        }
+        self.pending.get(&room).is_some_and(|pending| {
+            crate::VerifiedNativeEnrollmentIntent::restore(&pending.intent)
+                .is_ok_and(|intent| crate::session::hosted_by(intent.transport_hint(), device))
+        })
+    }
     /// Whether this device holds `room`: its replica is installed, not
     /// merely an enrollment into it in flight.
     #[must_use]
