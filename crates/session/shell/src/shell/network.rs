@@ -72,6 +72,7 @@ pub(crate) mod device_approvals;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
+mod embedded_host;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
@@ -589,6 +590,10 @@ enum Reach {
     /// deferral).
     #[cfg(test)]
     LoopbackHoldingRelays,
+    /// Only this machine's, holding back these relays (a test's own, which
+    /// it runs) the way [`Self::Internet`] holds back the public ones.
+    #[cfg(test)]
+    LoopbackHolding(&'static iroh::RelayMap),
 }
 
 /// Why someone could need to dial this device, from what its session has
@@ -602,6 +607,7 @@ enum Reach {
 fn needs_reachability(
     tree: &WorkspaceTree,
     local_endpoint: &str,
+    local_device: &[u8; 32],
     open_invitations: bool,
     other_devices: bool,
 ) -> Option<&'static str> {
@@ -614,6 +620,14 @@ fn needs_reachability(
     });
     if shared {
         Some("a room shared with a peer")
+    } else if tree
+        .native_authority
+        .rooms()
+        .any(|room| !tree.native_authority.hosted_on(room, local_device))
+    {
+        // A room hosted on this device keeps it reachable only while
+        // another device is a member (`ShellNetwork::hosts_other_members`).
+        Some("a room hosted elsewhere")
     } else if !tree.continuation_rooms.is_empty() {
         Some("a room continued from another device")
     } else if open_invitations {
@@ -934,6 +948,10 @@ const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2
 /// room, an open invitation, another device) still needs its relays up.
 /// Local work over a few maps; a parked compositor does not tick at all.
 const SESSION_REACH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest an invitation issued by this device's host waits for a home
+/// relay to name in it, when the relays were not already running: about
+/// what a net report and a relay handshake take.
+const INVITE_RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// The longest a shell goes without that pull while nothing changes: the
 /// safety net under the repair pull, not a heartbeat. An idle, converged
 /// desktop asks once per this long.
@@ -1355,6 +1373,8 @@ pub struct ShellNetwork {
     /// room's relay ([`room_window_carriers`]).
     room_window_carriers: room_window_carriers::State,
     relay_rooms: relay_rooms::State,
+    /// This device's own room host and the workspaces placed on it.
+    embedded_host: embedded_host::State,
     /// The rooms held through a site, reached over their host's HTTPS routes.
     hosted_sites: hosted_sites::State,
     /// Pairing links this computer made, and the new devices asking.
@@ -1980,6 +2000,15 @@ impl ShellNetwork {
                 reachability_tests::unused_relays(),
                 reachability_tests::REST_AFTER,
             ),
+            #[cfg(test)]
+            Reach::LoopbackHolding(relays) => (
+                iroh::Endpoint::builder(presets::Minimal)
+                    .relay_mode(held_back)
+                    .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
+                    .map_err(|e| std::io::Error::other(format!("iroh bind: {e}")))?,
+                relays.clone(),
+                reachability_tests::REST_AFTER,
+            ),
         };
         let endpoint = runtime
             .block_on(
@@ -2037,12 +2066,19 @@ impl ShellNetwork {
         });
         let private_chat_endpoint = Some(endpoint.clone());
         let discovery_endpoint = endpoint.clone();
-        let (cmd_tx, _join) = Actor::spawn_deferring_relays(
+        // This device's room host answers on the endpoint once it hosts a
+        // room; until then its handlers refuse.
+        let (local_host, host_protocols) = crate::network::local_host::LocalHost::deferred();
+        let (cmd_tx, _join) = Actor::spawn_hosting(
             endpoint,
             lookup,
             host_identity.clone(),
             Arc::clone(&listen_addrs),
             reachability.clone(),
+            Some(crate::network::actor::Hosting {
+                host: local_host.clone(),
+                protocols: host_protocols,
+            }),
         );
         let lan_discovery = host_identity
             .as_ref()
@@ -2158,6 +2194,7 @@ impl ShellNetwork {
             needs_reachability(
                 &tree_for_reachability.read(),
                 &local_peer_id.to_string(),
+                local_peer_id.as_bytes(),
                 !pending_identity_admissions.is_empty(),
                 other_devices,
             ),
@@ -2235,6 +2272,7 @@ impl ShellNetwork {
             room_window_views: room_window_views::State::default(),
             room_window_carriers: room_window_carriers::State::default(),
             relay_rooms: relay_rooms::State::default(),
+            embedded_host: embedded_host::State::new(local_host),
             hosted_sites: hosted_sites::State::open(state_dir),
             device_approvals: device_approvals::State::default(),
             record_content: record_content::State::default(),
@@ -4651,9 +4689,14 @@ impl ShellNetwork {
         needs_reachability(
             &tree,
             &self.local_peer_id.to_string(),
+            self.local_peer_id.as_bytes(),
             open_invitations,
             other_devices,
         )
+        .or_else(|| {
+            self.hosts_other_members()
+                .then_some("a room hosted here with other members")
+        })
     }
 
     /// Tell the relays what the session has recorded, so they stay up while
@@ -4872,10 +4915,8 @@ impl ShellNetwork {
         )
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "invite issuance keeps membership authorization, recipient binding, expiry, and signing in one validated operation"
-    )]
+    /// Have the room's host issue an invitation into `local`'s room, when the
+    /// one invitation policy lets this device ask for one.
     fn issue_invite_for(
         &self,
         local: crate::shell::state::WorkspaceId,
@@ -4886,8 +4927,8 @@ impl ShellNetwork {
     ) -> Result<String, String> {
         use crate::shell::invite_policy::InviteRoute;
         // Attach the native owner, when this device has one, so the policy
-        // below reads the admitted governor of a relay-governed room. A
-        // device without one only holds self-governed rooms.
+        // below reads the admitted governor of the room. A device without
+        // one holds no room yet.
         if let Err(error) = self.native_owner() {
             tracing::debug!(%error, "inviting without a native owner");
         }
@@ -4922,10 +4963,20 @@ impl ShellNetwork {
             lifetime: expiry_seconds_from_now,
         };
         match route {
-            InviteRoute::Relay => {
+            InviteRoute::Host => {
                 let held = self
                     .administered_room(ws.room())
-                    .ok_or("this workspace's relay is not reachable yet; try again in a moment")?;
+                    .ok_or("this workspace's host is not reachable yet; try again in a moment")?;
+                if held.hosted_here() {
+                    // The invitee dials this device's host, so the
+                    // invitation names its home relay: from behind a NAT a
+                    // direct address alone may not reach it. The composer
+                    // started the relays when it opened; an invitation
+                    // issued straight away waits a moment for one, and
+                    // names direct addresses if none comes.
+                    self.reachability.wake("an invitation was issued");
+                    let _ = self.reachability.relay_addr_within(INVITE_RELAY_WAIT);
+                }
                 self.issue_relay_invitation(&held, &terms)
             }
             InviteRoute::ViaGovernor | InviteRoute::Refused(_) => {
@@ -6373,50 +6424,54 @@ impl ShellNetwork {
         }
     }
 
-    /// The person this device acts as in the owner field of their own
-    /// workspaces; `None` on a device certified for no person.
-    fn personal_person(&self) -> Option<crate::shell::state::UserId> {
-        let user = self.personal_continuity_user?;
-        match collab_types::caps::Principal::person_from_key(
-            collab_types::crypto::Ed25519PublicKey::from_bytes(user),
-        ) {
-            collab_types::caps::Principal::Person(person) => Some(person),
-            _ => None,
-        }
-    }
-
     /// List this device's own workspaces for the person's other devices, and
     /// send them the list when it changed (or, rarely, when it did not, to
     /// repair a lost snapshot). Called every frame tick; when nothing
     /// changed it is one walk over the tree's workspaces.
     fn reconcile_personal_workspaces(&self) {
-        let (Some(workspaces), Some(person)) =
-            (self.personal_workspaces.as_ref(), self.personal_person())
-        else {
+        let (Some(workspaces), Some(here)) = (
+            self.personal_workspaces.as_ref(),
+            self.host_identity
+                .as_ref()
+                .map(|identity| identity.device_cert.device_public_key),
+        ) else {
             return;
         };
         let tree = self.tree.clone();
+        // Read from the owner before the tree is held: the owner's lock
+        // comes first.
+        let held = self.held_personal_rooms();
         let (mut changed, settle) = {
             let tree = tree.read();
             let changed = workspaces
                 .lock()
-                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &person));
+                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &held));
             let settle = !tree.personal_device_requests.is_empty()
                 || (tree.personal_device_choices.is_empty() && !tree.desktop.workspaces.is_empty());
             drop(tree);
             (changed, settle)
         };
         if changed || settle {
-            let mut tree = tree.write();
-            if let Ok(mut workspaces) = workspaces.lock() {
-                for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests) {
-                    changed |= workspaces.set_shown(room, device, shown);
+            let mut adoption = None;
+            {
+                let mut tree = tree.write();
+                if let Ok(mut workspaces) = workspaces.lock() {
+                    for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests)
+                    {
+                        changed |= workspaces.set_shown(room, device, shown);
+                    }
+                    // Keeping a workspace off this device takes it off at once.
+                    adoption = Some(workspaces.adopt_into(&mut tree, &here));
+                    refresh_device_choices(&mut tree, &workspaces);
                 }
-                // Keeping a workspace off this device takes it off at once.
-                workspaces.adopt_into(&mut tree);
-                refresh_device_choices(&mut tree, &workspaces);
+                drop(tree);
             }
-            drop(tree);
+            if let Some(adoption) = adoption {
+                self.follow_list_off_loop(adoption);
+            }
+            if changed {
+                self.enter_configured_host_rooms_off_loop(None);
+            }
         }
         let due = self
             .last_personal_workspaces_snapshot
@@ -6469,10 +6524,12 @@ impl ShellNetwork {
         else {
             return false;
         };
-        let (Some(local_user), Some(workspaces), Some(person)) = (
+        let (Some(local_user), Some(workspaces), Some(here)) = (
             self.personal_continuity_user,
             self.personal_workspaces.as_ref(),
-            self.personal_person(),
+            self.host_identity
+                .as_ref()
+                .map(|identity| identity.device_cert.device_public_key),
         ) else {
             return true;
         };
@@ -6506,30 +6563,30 @@ impl ShellNetwork {
         ) {
             return true;
         }
-        let (adopted, answer) = {
+        let held = self.held_personal_rooms();
+        let (adoption, answer) = {
             let mut tree = self.tree.write();
             let Ok(mut workspaces) = workspaces.lock() else {
                 return true;
             };
             // What changed here since the last agreement goes into the
             // directory first, so the merge sees both sides.
-            let local = workspaces.publish_local(&tree, &person);
+            let local = workspaces.publish_local(&tree, &held);
             if let Err(error) = workspaces.merge(update, &author, now) {
                 tracing::warn!(%error, peer = %origin, "refusing a workspace list");
                 return true;
             }
-            let adopted = workspaces.adopt_into(&mut tree);
+            let adoption = workspaces.adopt_into(&mut tree, &here);
             refresh_device_choices(&mut tree, &workspaces);
             drop(tree);
             let answer = local || !workspaces.covered_by(update);
             drop(workspaces);
-            (adopted, answer)
+            (adoption, answer)
         };
-        if adopted {
-            // Join each new workspace's room now rather than at the next
-            // periodic round.
-            self.publish_sync_requests();
-        }
+        // The rooms the list brings are entered at their hosts, and those it
+        // let go released, as the list arrives.
+        self.follow_list_off_loop(adoption);
+        self.enter_configured_host_rooms_off_loop(None);
         if answer {
             self.publish_personal_workspaces();
         }
@@ -6610,6 +6667,10 @@ impl ShellNetwork {
         steps.time("network/shared-rooms", || match admission {
             Admission::InPlace => self.finish_shared_rooms(),
             Admission::OffLoop => self.finish_shared_rooms_off_loop(),
+        });
+        steps.time("network/placements", || match admission {
+            Admission::InPlace => self.place_pending_workspaces(),
+            Admission::OffLoop => self.place_pending_workspaces_off_loop(),
         });
         steps.time("network/keepalive", || self.live_keepalive());
         steps.time("network/governance", || {
@@ -6720,6 +6781,14 @@ impl ShellNetwork {
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws);
                 self.room_relay_ready();
+                // A configured host's session of the person's own topic is
+                // up: the rooms it holds for them are entered now.
+                if self
+                    .personal_continuity_user
+                    .is_some_and(|user| personal_continuity_topic_id(&user) == ws)
+                {
+                    self.enter_configured_host_rooms_off_loop(Some(peer));
+                }
             }
             NetEvent::PeerJoined { ws, peer, .. } => {
                 self.note_peer_joined();
@@ -8157,6 +8226,7 @@ pub(crate) fn shell_network_for_test(
         room_window_views: room_window_views::State::default(),
         room_window_carriers: room_window_carriers::State::default(),
         relay_rooms: relay_rooms::State::default(),
+        embedded_host: embedded_host::State::default(),
         hosted_sites: hosted_sites::State::default(),
         device_approvals: device_approvals::State::default(),
         record_content: record_content::State::default(),

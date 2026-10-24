@@ -1025,12 +1025,11 @@ impl ShellDriver {
         let Some((mut laptop, mut list)) = self.own_device.take() else {
             return;
         };
-        let person = self.chrome().local_user_id.clone();
         let handle = self.chrome_handle();
         let arrived = {
             let st = handle.borrow();
             let mut tree = st.tree_mut();
-            let arrived = laptop.deliver(&person, &mut tree, &mut list);
+            let arrived = laptop.deliver(&mut tree, &mut list);
             let shown = tree
                 .desktop
                 .workspaces

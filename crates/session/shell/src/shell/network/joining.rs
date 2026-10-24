@@ -86,7 +86,11 @@ impl ShellNetwork {
                 .map(|()| PeerSyncResponse::Message(room.to_string()));
         }
         if let Some((local, invitation)) = self.retained_join(room)? {
-            let via = self.route_to(room)?;
+            // A room placed on this device goes to its own host, in process.
+            let via = match self.local_route(&invitation) {
+                Some(via) => via,
+                None => self.route_to(room)?,
+            };
             self.hosted_sites.set_join(SiteJoinState {
                 room,
                 site: self

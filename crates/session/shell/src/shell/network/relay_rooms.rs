@@ -1,13 +1,14 @@
-//! Rooms a relay of this device's person governs. Sharing a workspace
-//! creates its room on the person's home relay, which then issues every
-//! invitation, admits whoever redeems one and publishes the room's
-//! governance; this device holds the room like any member does.
+//! Rooms a host of this device's person governs: this device's own host
+//! for the workspaces placed here, a relay of theirs for those moved to it.
+//! The room's host issues every invitation, admits whoever redeems one and
+//! publishes the room's governance; this device holds the room like any
+//! member does, its own host's rooms included.
 //!
-//! Everything here is asked as the relay's own actions, over a relay
-//! session, addressed to the relay's own device: the surface an agent, a
-//! script or a screen reader uses, decided by the relay as it decides every
-//! other door. None of these providers is listed in a session's catalogue,
-//! so every invocation names its own.
+//! Everything here is asked as the host's own actions, over a session with
+//! it, addressed to the host's own device: the surface an agent, a script
+//! or a screen reader uses, decided by the host as it decides every other
+//! door. None of these providers is listed in a session's catalogue, so
+//! every invocation names its own.
 //!
 //! - A room this device holds is administered through the room's own
 //!   governance (provider `tilo.workspace`), on the room's session.
@@ -24,8 +25,9 @@
 //!   its own effect receipt, and having the host create the empty record of
 //!   an app this device opens there first, on the room's session.
 use super::{
-    NetCmd, PendingInvitation, ShellNetwork, persist_pending_invitations,
-    personal_continuity_topic_id, room_topic_id,
+    NetCmd, PendingInvitation, RegisteredHomePeer, ShellNetwork, persist_pending_invitations,
+    personal_continuity_topic_id, registered_home_peer_addrs, relay_topics_for_home_peers,
+    room_topic_id,
 };
 use crate::network::actor::room_governance::{Addressee, Request};
 use crate::network::invite::InviteRole;
@@ -58,13 +60,8 @@ const CANCEL_INVITATION: &str = "invitation.cancel";
 /// How long the invitation this device redeems into a room it just shared
 /// or entered stays redeemable.
 const OWN_INVITATION_SECONDS: u64 = 600;
-
-/// Set where the session holds every workspace that a configured host of
-/// its person governs (a company node's own session, which nobody sits at):
-/// it joins each one, as one of the person's devices, once it appears.
-pub const FOLLOW_HOST_ROOMS_ENV: &str = "TILO_SHELL_FOLLOW_HOST_ROOMS";
-/// How often the session asks its hosts for rooms it does not hold yet.
-const FOLLOW_INTERVAL: Duration = Duration::from_secs(3);
+/// The longest room name a relay accepts.
+const ROOM_NAME_CHARS: usize = 80;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -75,19 +72,65 @@ pub(super) struct State {
     joining: Mutex<std::collections::HashMap<RoomId, u64>>,
 }
 
-/// A relay-governed room this device holds and its person administers: its
-/// governance answers on the room's relay session, from the relay's own
-/// device.
+/// A hosted room this device holds and its person administers: its
+/// governance answers on the room's session, from the host's own device.
 pub(super) struct HeldRoom {
     room: RoomId,
-    /// The relay's own device, the room's governor.
+    /// The host's own device, the room's governor.
     host: iroh::EndpointId,
+    /// Whether that host is this device's own.
+    here: bool,
 }
 
 impl HeldRoom {
     pub(super) const fn room(&self) -> RoomId {
         self.room
     }
+
+    /// Whether this device's own host governs the room: a workspace placed
+    /// here, private until its person makes it public.
+    pub(super) const fn hosted_here(&self) -> bool {
+        self.here
+    }
+}
+
+/// A host of this device's person, where its own operations are asked.
+pub(super) enum PersonsHost {
+    /// This device's own host, in process.
+    Here,
+    /// Another of the person's devices hosting rooms, on a session opened
+    /// for each request.
+    Device {
+        addr: iroh::EndpointAddr,
+        device: [u8; 32],
+    },
+    /// A home relay the person paired, on its session of their continuity
+    /// workspace.
+    Relay(RegisteredHomePeer),
+    /// A workspace host this session is configured with (a company node),
+    /// on the session it keeps with it.
+    Configured(iroh::EndpointId),
+}
+
+/// The device of `room`'s governor, when it is also the host `view`'s
+/// transport hint names: a relay, or a person's device hosting the rooms
+/// placed on it. `None` when the room is governed elsewhere than where it
+/// is served.
+fn hosting_governor(
+    view: &tilo_joined_room::NativeCommittedView,
+    room: RoomId,
+) -> Result<Option<iroh::EndpointId>, String> {
+    let (hint, _) = IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
+        .map_err(|error| error.to_string())?;
+    if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
+        return Err("the room's host differs from its current admitted governor".into());
+    }
+    if &hint.host_device_certificate != view.governor() {
+        return Ok(None);
+    }
+    iroh::EndpointId::from_bytes(&view.governor().device_public_key)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// What an invitation a relay issues is for.
@@ -130,6 +173,33 @@ fn invite_arguments(terms: &RelayInvitation<'_>) -> serde_json::Map<String, serd
     arguments
 }
 
+/// The arguments of creating `room` on a host, named after the workspace
+/// called `name`: the workspace keeps its room wherever it is hosted.
+pub(super) fn create_arguments(
+    name: &str,
+    room: RoomId,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("name".into(), room_name(name).into());
+    arguments.insert("room".into(), room.to_string().into());
+    arguments
+}
+
+/// The name a room shared from a workspace called `name` gets.
+fn room_name(name: &str) -> String {
+    let name: String = name
+        .trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(ROOM_NAME_CHARS)
+        .collect();
+    if name.is_empty() {
+        "Shared workspace".to_owned()
+    } else {
+        name
+    }
+}
+
 /// The id and the signed invitation the governance invitation answered.
 fn issued_invitation(output: &serde_json::Value) -> Result<IssuedInvitation, String> {
     let field = |name: &str| {
@@ -146,13 +216,15 @@ fn issued_invitation(output: &serde_json::Value) -> Result<IssuedInvitation, Str
 }
 
 /// What a relay action answered, read as `T`.
-fn answer_of<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
+pub(super) fn answer_of<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, String> {
     serde_json::from_value(value)
         .map_err(|error| format!("the relay answered unexpectedly: {error}"))
 }
 
 /// What an invocation's receipt comes to.
-fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
+pub(super) fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
     match status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or_default()),
         ReceiptStatus::Rejected { error } => Err(format!("the relay refused: {error}")),
@@ -164,7 +236,7 @@ fn receipt_value(status: ReceiptStatus) -> Result<serde_json::Value, String> {
 }
 
 /// An invocation of `action` on `resource` of `provider`, with `arguments`.
-fn invocation(
+pub(super) fn invocation(
     provider: &str,
     resource: String,
     action: &str,
@@ -188,8 +260,9 @@ fn invocation(
 }
 
 impl ShellNetwork {
-    /// The relay governing `room`, when that relay is one of this person's:
-    /// the room was shared by this person and this device holds it.
+    /// The host governing `room`, when that host is one of this person's
+    /// (this device's own, or a relay of theirs) and this device holds the
+    /// room.
     pub(super) fn administered_room(&self, room: RoomId) -> Option<HeldRoom> {
         let owner = self.native_owner().ok()?;
         let identity = self.host_identity.as_ref()?;
@@ -199,17 +272,12 @@ impl ShellNetwork {
                 if view.governor().user_public_key != certificate.user_public_key {
                     return Err("another person governs the room".into());
                 }
-                let (hint, _) =
-                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
-                        .map_err(|error| error.to_string())?;
-                if !view.governor().capabilities.can_act_as_host
-                    || &hint.host_device_certificate != view.governor()
-                {
-                    return Err("no relay governs the room".into());
-                }
-                let host = iroh::EndpointId::from_bytes(&view.governor().device_public_key)
-                    .map_err(|error| error.to_string())?;
-                Ok(HeldRoom { room, host })
+                let host = hosting_governor(view, room)?.ok_or("no host governs the room")?;
+                Ok(HeldRoom {
+                    room,
+                    host,
+                    here: host == self.local_peer_id,
+                })
             })
             .ok()
     }
@@ -283,6 +351,11 @@ impl ShellNetwork {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Value, String> {
         let ws = personal_continuity_topic_id(&user);
+        // This device's own host answers in process: an endpoint cannot
+        // dial itself.
+        if relay == self.local_peer_id {
+            return self.local_host_action(ws, action, arguments);
+        }
         // Every host is dialled with each topic this device joined.
         if !self.join_topic(ws) {
             return Err("the network queue is unavailable".into());
@@ -296,9 +369,77 @@ impl ShellNetwork {
         self.invoke_relay(ws, Addressee::Host(relay), invoke, HOST_TIMEOUT)
     }
 
+    /// Invoke the host operation `action` with `arguments` at `host`, as
+    /// this device of `user`, on the person's continuity workspace.
+    pub(super) fn ask_host(
+        &self,
+        host: &PersonsHost,
+        user: [u8; 32],
+        action: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let ws = personal_continuity_topic_id(&user);
+        match host {
+            PersonsHost::Here => self.local_host_action(ws, action, arguments),
+            PersonsHost::Relay(home) => {
+                self.connect_home(home);
+                self.host_action(home.addr.id, user, action, arguments)
+            }
+            PersonsHost::Configured(host) => self.host_action(*host, user, action, arguments),
+            PersonsHost::Device { addr, device } => {
+                let (reply, answer) = std::sync::mpsc::sync_channel(1);
+                let invoke = invocation(
+                    HOST_ACTIONS_PROVIDER,
+                    HOST_ROOMS_RESOURCE.to_owned(),
+                    action,
+                    arguments,
+                );
+                self.cmd_tx
+                    .try_send(NetCmd::OwnDeviceHost(Box::new(
+                        crate::network::actor::own_device_host::Request {
+                            addr: addr.clone(),
+                            device: *device,
+                            governance: Request {
+                                ws,
+                                to: Addressee::Host(addr.id),
+                                invoke,
+                                reply,
+                            },
+                        },
+                    )))
+                    .map_err(|_| "the network queue is unavailable")?;
+                let status = answer
+                    .recv_timeout(HOST_TIMEOUT)
+                    .map_err(|_| "your other device did not answer in time")??;
+                receipt_value(status)
+            }
+        }
+    }
+
+    /// Dial `home` as a workspace host if this session does not already.
+    fn connect_home(&self, home: &RegisteredHomePeer) {
+        let Ok(mut hosts) = self.host_addrs.lock() else {
+            return;
+        };
+        if hosts.iter().any(|known| known.id == home.addr.id) {
+            return;
+        }
+        if self
+            .cmd_tx
+            .try_send(NetCmd::ConnectHost {
+                addr: home.addr.clone(),
+                expectation: Some(home.expectation.clone()),
+            })
+            .is_ok()
+        {
+            hosts.push(home.addr.clone());
+        }
+    }
+
     /// The device of the room's admitted governor when a host governs
     /// `room`, as this device's current admitted custody of it names it.
-    /// `Ok(None)` when another device governs it.
+    /// `Ok(None)` when the room is governed elsewhere than where it is
+    /// served.
     fn host_governor(&self, room: RoomId) -> Result<Option<iroh::EndpointId>, String> {
         let owner = self.native_owner()?;
         let identity = self
@@ -310,20 +451,7 @@ impl ShellNetwork {
             if view.device() != &certificate {
                 return Err("the caller differs from admitted native custody".into());
             }
-            let (hint, _) =
-                IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
-                    .map_err(|error| error.to_string())?;
-            if hint.room != room.to_string() || &hint.governing_authority != view.governor() {
-                return Err("the room's host differs from its current admitted governor".into());
-            }
-            if !view.governor().capabilities.can_act_as_host
-                || &hint.host_device_certificate != view.governor()
-            {
-                return Ok(None);
-            }
-            iroh::EndpointId::from_bytes(&view.governor().device_public_key)
-                .map(Some)
-                .map_err(|error| error.to_string())
+            hosting_governor(view, room)
         })
     }
 
@@ -354,14 +482,8 @@ impl ShellNetwork {
         room: RoomId,
         salt: u16,
     ) -> Option<tilo_actions::remote::Pending<Result<serde_json::Value, String>>> {
-        // A room a device governs keeps its own semantic action path, and
-        // without native custody this device holds no room a host governs.
-        let hosted = self.native_owner().ok()?.with_current(room, |view| {
-            Ok(view.governor().capabilities.can_act_as_host)
-        });
-        if matches!(hosted, Ok(false)) {
-            return None;
-        }
+        // Without native custody this device holds no room a host governs.
+        self.native_owner().ok()?;
         let (completer, answer) = tilo_actions::remote::pending();
         let host = match self.host_governor(room) {
             Ok(None) => return None,
@@ -525,9 +647,6 @@ impl ShellNetwork {
     ) -> Result<Option<iroh::EndpointId>, String> {
         self.native_owner().and_then(|owner| {
             owner.with_current(room, |view| {
-                if !view.governor().capabilities.can_act_as_host {
-                    return Ok(None);
-                }
                 let identity = self
                     .host_identity
                     .as_ref()
@@ -536,18 +655,7 @@ impl ShellNetwork {
                 if view.device() != &certificate || caller != &certificate {
                     return Err("host operation caller differs from admitted native custody".into());
                 }
-                let (hint, _) =
-                    IrohWorkspaceHostHintV1::authenticate_transport_hint(view.transport_hint()?)
-                        .map_err(|error| error.to_string())?;
-                if hint.room != room.to_string()
-                    || &hint.governing_authority != view.governor()
-                    || &hint.host_device_certificate != view.governor()
-                {
-                    return Err("host differs from current admitted governor".into());
-                }
-                iroh::EndpointId::from_bytes(&view.governor().device_public_key)
-                    .map(Some)
-                    .map_err(|error| error.to_string())
+                hosting_governor(view, room)
             })
         })
     }
@@ -613,86 +721,34 @@ impl ShellNetwork {
         Ok(true)
     }
 
-    /// Enter `room` at the host at `relay` as this device of `user`, and
-    /// answer the text of the invitation this device redeems to hold it.
+    /// Enter `room` at `host` as this device of `user`, and answer the text
+    /// of the invitation this device redeems to hold it.
     fn enter_host_room(
         &self,
-        relay: iroh::EndpointId,
+        host: &PersonsHost,
         user: [u8; 32],
         room: &str,
     ) -> Result<String, String> {
         let mut arguments = serde_json::Map::new();
         arguments.insert("room".into(), room.into());
         arguments.insert("expires_in_seconds".into(), OWN_INVITATION_SECONDS.into());
-        let entered: EnteredRoom =
-            answer_of(self.host_action(relay, user, ENTER_ROOM, arguments)?)?;
+        let entered: EnteredRoom = answer_of(self.ask_host(host, user, ENTER_ROOM, arguments)?)?;
         let own = entered.invitation.decode()?;
         Ok(join::encode_invitation_text(&own.signed_invitation))
     }
 
-    /// With [`FOLLOW_HOST_ROOMS_ENV`] set, keep joining the rooms the
-    /// configured hosts of this person govern, as they appear.
-    pub(crate) fn follow_host_rooms(self: &std::sync::Arc<Self>) {
-        if std::env::var_os(FOLLOW_HOST_ROOMS_ENV).is_none() {
-            return;
-        }
-        let net = std::sync::Arc::downgrade(self);
-        let spawned = std::thread::Builder::new()
-            .name("tilo-host-rooms".into())
-            .spawn(move || {
-                while let Some(net) = net.upgrade() {
-                    net.join_host_rooms();
-                    drop(net);
-                    std::thread::sleep(FOLLOW_INTERVAL);
-                }
-            });
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "host rooms are not followed");
-        }
-    }
-
-    /// Join every room a configured host of this person governs that no
-    /// workspace here holds yet.
-    pub(super) fn join_host_rooms(&self) {
-        let Some(identity) = self.host_identity.as_ref() else {
-            return;
-        };
-        let user = match identity.current_native_material(0) {
-            Ok((certificate, _)) => certificate.user_public_key,
-            Err(error) => {
-                tracing::debug!(%error, "host rooms: no device certificate");
-                return;
-            }
-        };
-        for relay in super::configured_host_addrs() {
-            let listed = self
-                .host_action(relay.id, user, LIST_ROOMS, serde_json::Map::new())
-                .and_then(answer_of::<Vec<RoomListing>>);
-            let rooms = match listed {
-                Ok(rooms) => rooms,
-                Err(error) => {
-                    tracing::debug!(%error, "host rooms unavailable");
-                    continue;
-                }
-            };
-            for listing in rooms {
-                if let Err(error) = self.join_host_room(relay.id, user, &listing) {
-                    tracing::warn!(room = %listing.room, %error, "host room not joined");
-                }
-            }
-        }
-    }
-
-    /// Enter `listing`'s room at the host at `relay` as this device of
+    /// Enter `room`, called `name`, at the host at `host` as this device of
     /// `user` and join it as a workspace of its own, the room, shown at once
-    /// when it is the first room this session holds that way.
-    fn join_host_room(
+    /// when it is the first room this session holds that way: what one of
+    /// the person's devices does when their workspace list names a room it
+    /// does not hold yet. Nothing when the room is held or being joined.
+    pub(super) fn enter_listed_room(
         &self,
-        relay: iroh::EndpointId,
+        host: &PersonsHost,
         user: [u8; 32],
-        listing: &RoomListing,
+        room: RoomId,
+        name: &str,
     ) -> Result<(), String> {
-        let room = RoomId::parse(&listing.room).ok_or("the host named an invalid room")?;
         let tree = self.tree.clone();
         let (held, first) = {
             let tree = tree.read();
@@ -722,11 +778,11 @@ impl ShellNetwork {
         let (local, own) = if let Some(retained) = self.retained_join(room)? {
             retained
         } else {
-            let own = self.enter_host_room(relay, user, &listing.room)?;
+            let own = self.enter_host_room(host, user, &room.to_string())?;
             let local = tree
                 .write()
-                .join_native_room(&listing.name, room)
-                .ok_or("the host named a room that is not joined")?;
+                .join_native_room(name, room)
+                .ok_or("the listed room is not joined")?;
             if first {
                 tree.write().desktop.active = local;
             }
@@ -748,7 +804,7 @@ impl ShellNetwork {
                 .map_err(|_| "shared room enrollments are unavailable")?
                 .push(id);
         }
-        tracing::info!(room = %listing.room, name = %listing.name, "joining a host room");
+        tracing::info!(%room, %name, "joining a room of this person's list at its host");
         Ok(())
     }
 
@@ -828,6 +884,130 @@ impl ShellNetwork {
             .get(&id)?
             .local();
         Some((room, local))
+    }
+}
+
+impl ShellNetwork {
+    /// The person's own rooms the native owner holds, with the devices
+    /// hosting them, for the person's workspace list. Never waits for the
+    /// owner to open: the frame loop asks.
+    pub(super) fn held_personal_rooms(&self) -> crate::shell::personal_workspaces::HeldRooms {
+        let (Some(owner), Some(user)) = (self.opened_native_owner(), self.personal_continuity_user)
+        else {
+            return crate::shell::personal_workspaces::HeldRooms::new();
+        };
+        owner
+            .rooms()
+            .into_iter()
+            .filter_map(|room| {
+                let host = owner
+                    .with_current(room, |view| {
+                        if view.governor().user_public_key != user {
+                            return Ok(None);
+                        }
+                        Ok(Some(view.transport_hint()?.host.device_public_key))
+                    })
+                    .ok()
+                    .flatten()?;
+                Some((room, host))
+            })
+            .collect()
+    }
+
+    /// Release the rooms the person's list let go, and enter at their
+    /// hosts those it brought: what one of the person's devices does when
+    /// their list changes. Blocks on the hosts and the disk: runs on the
+    /// peer-sync worker.
+    pub(super) fn follow_list(&self, adoption: crate::shell::personal_workspaces::Adoption) {
+        for room in adoption.release {
+            if let Err(error) =
+                crate::shell::native_workspace_owner::release_workspace_room(&self.tree, room)
+            {
+                tracing::warn!(%room, %error, "a workspace let go on another device stays");
+            }
+        }
+        let Some(user) = self.personal_continuity_user else {
+            return;
+        };
+        for entry in adoption.enter {
+            let Some(host) = self.persons_host(user, entry.host) else {
+                tracing::debug!(room = %entry.room, "the list names a host this device cannot reach");
+                continue;
+            };
+            if let Err(error) = self.enter_listed_room(&host, user, entry.room, &entry.name) {
+                tracing::warn!(room = %entry.room, %error, "a room of this person's list was not entered");
+            }
+        }
+    }
+
+    /// Enter every room the configured workspace host `only` (each of them
+    /// when `None`) lists for this person and this device does not hold:
+    /// what a company node's session does when its host session comes up
+    /// and when the person's list changes, rather than looking again on a
+    /// timer. Blocks on the hosts: runs on the peer-sync worker.
+    pub(super) fn enter_configured_host_rooms(&self, only: Option<iroh::EndpointId>) {
+        let Some(identity) = self.host_identity.as_ref() else {
+            return;
+        };
+        let user = match identity.current_native_material(0) {
+            Ok((certificate, _)) => certificate.user_public_key,
+            Err(error) => {
+                tracing::debug!(%error, "host rooms: no device certificate");
+                return;
+            }
+        };
+        for host in super::configured_host_addrs()
+            .into_iter()
+            .map(|addr| addr.id)
+            .filter(|host| only.is_none_or(|only| only == *host))
+        {
+            let listed = self
+                .host_action(host, user, LIST_ROOMS, serde_json::Map::new())
+                .and_then(answer_of::<Vec<RoomListing>>);
+            let rooms = match listed {
+                Ok(rooms) => rooms,
+                Err(error) => {
+                    tracing::debug!(%error, "host rooms unavailable");
+                    continue;
+                }
+            };
+            for listing in rooms {
+                let Some(room) = RoomId::parse(&listing.room) else {
+                    continue;
+                };
+                if let Err(error) = self.enter_listed_room(
+                    &PersonsHost::Configured(host),
+                    user,
+                    room,
+                    &listing.name,
+                ) {
+                    tracing::warn!(%room, %error, "a room of this person's host was not entered");
+                }
+            }
+        }
+    }
+
+    /// Where the host on `device`, which `user`'s list names, is asked for
+    /// its own operations: this device, a home relay the person paired (at
+    /// its service endpoint), or another of their devices (whose endpoint is
+    /// its device key, and whose session pins that device of `user`).
+    pub(super) fn persons_host(&self, user: [u8; 32], device: [u8; 32]) -> Option<PersonsHost> {
+        if &device == self.local_peer_id.as_bytes() {
+            return Some(PersonsHost::Here);
+        }
+        let topics = relay_topics_for_home_peers(std::iter::empty(), Some(user));
+        if let Some(home) = registered_home_peer_addrs(Some(user), &topics)
+            .ok()?
+            .into_iter()
+            .find(|home| home.expectation.device_public_key == device)
+        {
+            return Some(PersonsHost::Relay(home));
+        }
+        let endpoint = iroh::EndpointId::from_bytes(&device).ok()?;
+        Some(PersonsHost::Device {
+            addr: iroh::EndpointAddr::new(endpoint),
+            device,
+        })
     }
 }
 
@@ -941,30 +1121,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_invitation_asks_the_rooms_action_for_exactly_what_was_chosen() {
-        let grace = RelayInvitation {
-            role: InviteRole::Commenter,
-            recipient: Some([7; 32]),
-            invitee: Some(" Grace "),
-            lifetime: 600,
-        };
+    fn a_room_is_created_on_its_host_as_the_room_the_workspace_is() {
+        let room = RoomId::parse("3291bed4-ee10-492a-877c-dbe6b8027a94").expect("room");
         assert_eq!(
-            serde_json::Value::Object(invite_arguments(&grace)),
+            serde_json::Value::Object(create_arguments(" Plans\u{7} ", room)),
             serde_json::json!({
-                "role": "commenter",
-                "recipient": hex::encode([7; 32]),
-                "invitee_name": "Grace",
-                "expires_in_seconds": 600,
+                "name": "Plans",
+                "room": "3291bed4-ee10-492a-877c-dbe6b8027a94",
             })
         );
-        let open = invite_arguments(&RelayInvitation {
-            role: InviteRole::Viewer,
-            recipient: None,
-            invitee: Some("  "),
-            lifetime: 3_601,
-        });
-        assert!(!open.contains_key("recipient") && !open.contains_key("invitee_name"));
-        assert_eq!(open["expires_in_seconds"], 3_601);
+        assert_eq!(room_name(" \n "), "Shared workspace");
+        assert_eq!(room_name(&"x".repeat(200)).chars().count(), ROOM_NAME_CHARS);
     }
 
     #[test]

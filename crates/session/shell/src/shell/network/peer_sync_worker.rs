@@ -39,6 +39,10 @@ pub(crate) type Job = Box<dyn FnOnce() + Send>;
 enum Work {
     Job(Job),
     FinishSharedRooms,
+    PlaceWorkspaces,
+    FollowList(crate::shell::personal_workspaces::Adoption),
+    /// Enter the rooms a configured host lists (each, when `None`).
+    HostRooms(Option<iroh::EndpointId>),
     SyncRound,
     Governance(Vec<(RoomId, crate::shell::state::GovernanceRequest)>),
 }
@@ -81,6 +85,12 @@ impl ShellNetwork {
                             Work::FinishSharedRooms => {
                                 queued.store(false, Ordering::Release);
                                 network.finish_shared_rooms();
+                            }
+                            Work::FollowList(adoption) => network.follow_list(adoption),
+                            Work::HostRooms(host) => network.enter_configured_host_rooms(host),
+                            Work::PlaceWorkspaces => {
+                                network.placement_pass_started();
+                                network.place_pending_workspaces();
                             }
                             Work::SyncRound => {
                                 sync_queued.store(false, Ordering::Release);
@@ -277,7 +287,12 @@ impl ShellNetwork {
             Err(mpsc::SendError(Work::Job(job))) => Err(job),
             Ok(())
             | Err(mpsc::SendError(
-                Work::FinishSharedRooms | Work::SyncRound | Work::Governance(_),
+                Work::FinishSharedRooms
+                | Work::PlaceWorkspaces
+                | Work::FollowList(_)
+                | Work::HostRooms(_)
+                | Work::SyncRound
+                | Work::Governance(_),
             )) => Ok(()),
         }
     }
@@ -334,6 +349,59 @@ impl ShellNetwork {
                 .shared_rooms_queued
                 .store(false, Ordering::Release);
         }
+    }
+
+    /// Enter the rooms the person's list brought and release those it let
+    /// go, on the worker, as they wait on hosts and the disk. A network the
+    /// session started no worker for does it in place.
+    pub(super) fn follow_list_off_loop(
+        &self,
+        adoption: crate::shell::personal_workspaces::Adoption,
+    ) {
+        if adoption.enter.is_empty() && adoption.release.is_empty() {
+            return;
+        }
+        let unsent = match self.peer_sync_worker.worker.get() {
+            Some(worker) => match worker.send(Work::FollowList(adoption)) {
+                Ok(()) => return,
+                Err(mpsc::SendError(work)) => work,
+            },
+            None => Work::FollowList(adoption),
+        };
+        if let Work::FollowList(adoption) = unsent {
+            self.follow_list(adoption);
+        }
+    }
+
+    /// Enter, on the peer-sync worker, the rooms the configured workspace
+    /// host `host` (each, when `None`) lists: nothing for a session
+    /// configured with none.
+    pub(super) fn enter_configured_host_rooms_off_loop(&self, host: Option<iroh::EndpointId>) {
+        let configured = super::configured_host_addrs();
+        if configured.is_empty()
+            || host.is_some_and(|host| !configured.iter().any(|addr| addr.id == host))
+        {
+            return;
+        }
+        let unsent = match self.peer_sync_worker.worker.get() {
+            Some(worker) => match worker.send(Work::HostRooms(host)) {
+                Ok(()) => return,
+                Err(mpsc::SendError(work)) => work,
+            },
+            None => Work::HostRooms(host),
+        };
+        if let Work::HostRooms(host) = unsent {
+            self.enter_configured_host_rooms(host);
+        }
+    }
+
+    /// Queue a pass placing the workspaces that wait for their rooms on this
+    /// device's host: whether there is a worker to run it.
+    pub(super) fn queue_placements(&self) -> bool {
+        self.peer_sync_worker
+            .worker
+            .get()
+            .is_some_and(|worker| worker.send(Work::PlaceWorkspaces).is_ok())
     }
 
     /// Ask every room this machine is in for whatever it is missing, and

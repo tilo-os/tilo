@@ -14907,6 +14907,7 @@ dependencies = [
  "tilo-render-protocol",
  "tilo-render-service",
  "tilo-resource",
+ "tilo-room-host",
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
