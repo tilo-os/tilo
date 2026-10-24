@@ -251,17 +251,24 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         .unwrap();
     let invitation = first.issue_invite(home_workspace, 3600).unwrap();
     second.accept_peer_invitation(&invitation).unwrap();
+    until("the collaborator to hold the room", || {
+        first.tick();
+        second.tick();
+        (workspace_name(&second_tree, room).as_deref() == Some("Home")
+            && second_tree.read().native_authority.holds(room))
+        .then_some(())
+    });
+    // The room's state can reach the collaborator before its host sees them
+    // as a member. Keep the collaborator until it does.
+    until("the host to count the collaborator as a member", || {
+        first.tick();
+        second.tick();
+        first.hosts_other_members().then_some(())
+    });
     until("the two desktops to converge with their relays up", || {
         first.tick();
         second.tick();
-        // The room's state can reach the collaborator before its host's
-        // owner sees them as a member. Keep the collaborator until it does.
-        (workspace_name(&second_tree, room).as_deref() == Some("Home")
-            && second_tree.read().native_authority.holds(room)
-            && first.hosts_other_members()
-            && !first.reachability.is_dormant()
-            && !second.reachability.is_dormant())
-        .then_some(())
+        (!first.reachability.is_dormant() && !second.reachability.is_dormant()).then_some(())
     });
 
     // The collaborator leaves: its session ends, and the owner takes them
@@ -394,6 +401,78 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
     assert!(
         !net.reachability.is_dormant(),
         "an open invitation holds the relays up"
+    );
+    drop(net);
+}
+
+/// A desktop whose relays are down governs the room it hosts in process:
+/// admitting a person and then removing them are its own host's room
+/// governance actions, asked through the host's in-process caller, and both
+/// reach the room's admitted document without a relay or a peer.
+#[test]
+#[serial_test::serial]
+fn a_room_hosted_here_is_governed_in_process_with_the_relays_down() {
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let root = SigningKey::from_bytes(&[48; 32]);
+    home.env().set("TILO_USER_ID", person_of(&root));
+
+    let mut tree = WorkspaceTree::default();
+    // A new workspace waits to be placed on this device's host.
+    let (_, room) = tree.create_hosted_workspace("Home");
+    tree.persist_path = Some(dir.path().join("workspaces.json"));
+    let tree = tree.shared();
+    let net = device_reaching(
+        tree.clone(),
+        dir.path(),
+        &root,
+        DeviceCapabilities::primary(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(net.join_default_workspace());
+    until("the workspace to be hosted here", || {
+        net.tick();
+        net.administered_room(room)
+    });
+
+    let guest = person_of(&SigningKey::from_bytes(&[49; 32]));
+    let role_of = |tree: &WorkspaceTreeHandle| {
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)
+            .and_then(|workspace| workspace.policy.members.get(&guest).copied())
+    };
+    tree.write().request_governance(
+        room,
+        GovernanceRequest::Policy(tilo_action_policy::Change::AddMember {
+            person: guest.clone(),
+            role: tilo_action_policy::Role::Viewer,
+        }),
+    );
+    until("the host to admit the person", || {
+        net.tick();
+        (role_of(&tree) == Some(tilo_action_policy::Role::Viewer)).then_some(())
+    });
+    tree.write().request_governance(
+        room,
+        GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
+            person: guest.clone(),
+        }),
+    );
+    until("the host to remove the person", || {
+        net.tick();
+        role_of(&tree).is_none().then_some(())
+    });
+    assert!(
+        tree.read().governance_requests.is_empty(),
+        "every change was taken by this device's own host"
+    );
+    assert!(
+        net.reachability.is_dormant(),
+        "governing a room hosted here started the relays; held up by (transport, session) {:?}",
+        net.reachability.holders()
     );
     drop(net);
 }

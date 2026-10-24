@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::network::local_host::room_host::{self, HostConfig, HostMode, RoomHost};
-use tilo_actions::remote::{Caller, RemoteActionMessage};
+use tilo_actions::remote::RemoteActionMessage;
 use tilo_relay_session::rooms::{
     CREATE_ROOM, CreatedRoom, ENTER_ROOM, EnteredRoom, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
 };
@@ -217,6 +217,9 @@ impl ShellNetwork {
             .map_err(|error| format!("this device's room host did not open: {error}"))?;
         let host = handle.install(Arc::new(host));
         tracing::info!("this device's room host is open");
+        if let Err(error) = self.install_own_governor(&host) {
+            tracing::warn!(%error, "the rooms hosted on this device are governed over the network only");
+        }
         // The rooms hosted here that the native owner holds join now.
         let _ = self.cmd_tx.try_send(NetCmd::LocalHostReady);
         Ok(host)
@@ -236,32 +239,31 @@ impl ShellNetwork {
             .host_identity
             .as_ref()
             .ok_or("native identity unavailable")?;
-        let (certificate, _) = identity.current_native_material(ws)?;
         let invoke = relay_rooms::invocation(
             HOST_ACTIONS_PROVIDER,
             HOST_ROOMS_RESOURCE.to_owned(),
             action,
             arguments,
         );
-        let caller =
-            Caller::authenticated(certificate.user_public_key, certificate.device_public_key);
-        let pending = host
-            .actions()
-            .serve_certified(
-                ws,
-                &caller,
-                &certificate,
-                RemoteActionMessage::Invoke(invoke),
-            )
-            .ok_or("this device's host does not answer its own operations")?;
-        drop(host);
-        match self.runtime_handle()?.block_on(pending) {
-            Some(RemoteActionMessage::Receipt(receipt)) => {
-                relay_rooms::receipt_value(receipt.status)
-            }
-            Some(_) => Err("this device's host answered with something else".into()),
-            None => Err("this device's host dropped the request".into()),
-        }
+        serve_in_process(&host, identity, &self.runtime_handle()?, ws, invoke)
+    }
+
+    /// Make this device's open `host` the governor of the rooms placed on
+    /// it, so a change to one of them is asked there in process, with or
+    /// without a running network.
+    fn install_own_governor(&self, host: &Arc<RoomHost>) -> Result<(), String> {
+        let identity = self
+            .host_identity
+            .clone()
+            .ok_or("native identity unavailable")?;
+        self.install_local_governor(Arc::new(OwnHostGovernor {
+            host: Arc::clone(host),
+            identity,
+            runtime: self.runtime_handle()?,
+            tree: self.tree.clone(),
+            device: *self.local_peer_id.as_bytes(),
+        }));
+        Ok(())
     }
 
     /// Whether a workspace waits to be placed and no pass is queued for it,
@@ -419,3 +421,79 @@ impl ShellNetwork {
 #[cfg(test)]
 #[path = "embedded_host_tests.rs"]
 mod tests;
+
+/// Run `invoke` at this device's own `host` as this device on workspace
+/// `ws`, through the host's in-process caller, and answer its result.
+fn serve_in_process(
+    host: &RoomHost,
+    identity: &crate::network::actor::HostIdentity,
+    runtime: &tokio::runtime::Handle,
+    ws: u64,
+    invoke: tilo_actions::remote::InvokeRequest,
+) -> Result<serde_json::Value, String> {
+    let (certificate, _) = identity.current_native_material(ws)?;
+    let caller = room_host::local_caller(&certificate);
+    let pending = host
+        .actions()
+        .serve_certified(
+            ws,
+            &caller,
+            &certificate,
+            RemoteActionMessage::Invoke(invoke),
+        )
+        .ok_or("this device's host does not answer its own operations")?;
+    match runtime.block_on(pending) {
+        Some(RemoteActionMessage::Receipt(receipt)) => relay_rooms::receipt_value(receipt.status),
+        Some(_) => Err("this device's host answered with something else".into()),
+        None => Err("this device's host dropped the request".into()),
+    }
+}
+
+/// This device's room host as the governor of the rooms placed on it: a
+/// governance change to one of them is the host's own room governance
+/// action, asked through its in-process caller.
+struct OwnHostGovernor {
+    host: Arc<RoomHost>,
+    identity: crate::network::actor::HostIdentity,
+    runtime: tokio::runtime::Handle,
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    device: [u8; 32],
+}
+
+impl super::governance_requests::LocalGovernor for OwnHostGovernor {
+    fn governs(&self, room: RoomId) -> bool {
+        self.tree
+            .read()
+            .native_authority
+            .hosted_on(room, &self.device)
+    }
+
+    fn ask(
+        &self,
+        room: RoomId,
+        route: super::governance_requests::GovernanceRoute,
+    ) -> Result<(), String> {
+        use super::governance_requests::GovernanceRoute;
+        match route {
+            GovernanceRoute::Rooms { action, arguments } => {
+                let invoke = relay_rooms::invocation(
+                    tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER,
+                    tilo_actions::remote::room_governance_resource(&room.to_string()),
+                    action,
+                    arguments,
+                );
+                serve_in_process(
+                    &self.host,
+                    &self.identity,
+                    &self.runtime,
+                    room_topic_id(room),
+                    invoke,
+                )
+                .map(drop)
+            }
+            GovernanceRoute::Membership { .. } | GovernanceRoute::Command(_) => {
+                Err("this device's room host has no action for this change yet".into())
+            }
+        }
+    }
+}
