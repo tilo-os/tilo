@@ -201,6 +201,11 @@ pub struct Scrollable {
     /// again, pass after pass. A retained tree is laid out again without
     /// being rebuilt, so applying the layout is what ends it.
     lanes_needed: (bool, bool),
+    /// The scroll view's own size when `lanes_needed` was seen. A pass that
+    /// sizes the view differently (a parent measuring its content on the
+    /// way to its own size) says nothing about the box the view gets, so
+    /// what it needed is forgotten.
+    lanes_needed_in: Option<(f32, f32)>,
     /// Keep the themed trailing lane even when vertical content fits.
     stable_vertical_gutter: bool,
     reserve_horizontal: bool,
@@ -322,6 +327,7 @@ impl Scrollable {
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             reserve_vertical: false,
             lanes_needed: (false, false),
+            lanes_needed_in: None,
             stable_vertical_gutter: false,
             reserve_horizontal: false,
             edge_fade: false,
@@ -849,6 +855,13 @@ impl Scrollable {
             && content_w > viewport_w + FIT_EPS;
         // A lane the content overflowed without stays: content that fits
         // only because the lane narrowed it would overflow again without it.
+        // Only in a box of the same size: one the view was measured at on
+        // the way to its own size needed nothing of the box it gets.
+        let size = (layout.size.width, layout.size.height);
+        if self.lanes_needed_in != Some(size) {
+            self.lanes_needed = (false, false);
+            self.lanes_needed_in = Some(size);
+        }
         if vertical && !self.reserve_vertical {
             self.lanes_needed.0 = true;
         }
@@ -4469,3 +4482,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "scrollable_lane_tests.rs"]
+mod lane_tests;
