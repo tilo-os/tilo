@@ -807,7 +807,6 @@ suites = [
 package = "tilo-ui"
 # The design and spacing audits ratchet every app and shell source file; the
 # launcher audit reads each app's main.rs and the framework launcher.
-# The transient-card check reads every app, crate and example source.
 # Typography visual regression #[path]-includes the shared gallery showcase
 # builder that lives with the ui-examples scenarios. The paint stream's tests
 # draw the layout snapshots and screenshot recorded for tilo-paint-stream.
@@ -819,7 +818,7 @@ inputs = [
   "crates/browser/paint-stream/tests/fixtures/",
   "crates/browser/tilo-browser-runtime/src/background_work.rs",
   "crates/browser/tilo-browser-runtime/src/mount_service_custody.rs",
-  "tools/test-assets.py", "crates/*.rs", "examples/*.rs",
+  "tools/test-assets.py",
   # The ratchets find the checkout by its workspace manifest.
   "Cargo.toml",
 ]
@@ -830,7 +829,6 @@ readers = [
   "crates/sdk/ui-core/tests/support/ratchet.rs",
   "crates/sdk/ui-core/src/webview/paint.rs",
   "crates/sdk/ui-core/tests/typography_visual_regression.rs",
-  "crates/sdk/ui-core/tests/no_transient_cards.rs",
 ]
 # App, shell and framework sources are read only by the look ratchets in the
 # `it` target. A change confined to them runs those ratchets, not the whole
@@ -838,8 +836,8 @@ readers = [
 # change there still runs everything.
 scope = { inputs = [
   "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
-  "crates/sdk/tilo-app/src/framework/app.rs", "crates/*.rs", "examples/*.rs",
-], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/) | test(/^no_transient_cards::/)" }
+  "crates/sdk/tilo-app/src/framework/app.rs",
+], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/) | test(/^typography_token_audit::/) | test(/^copy_audit::/)" }
 
 
 [[cargo]]

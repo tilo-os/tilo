@@ -2582,10 +2582,11 @@ impl Widget for NotesApp {
         // A scheduled sync only runs when update reports a change: the save's
         // notice leaving the window's bar, or its next stage, is one. The
         // sync takes up the deadline, leaving an idle window asleep after.
-        let feedback_expired = self
-            .save_surface
-            .next_wake_deadline()
-            .is_some_and(|deadline| deadline <= ui::time::now());
+        let feedback_expired = self.save_surface.needs_publish()
+            || self
+                .save_surface
+                .next_wake_deadline()
+                .is_some_and(|deadline| deadline <= ui::time::now());
         // A dragged block's pointer at the page's edge scrolls the page.
         let dragged = self.main.autoscroll_block_drag();
         // A lifted touchpad gesture glides the page on; only the view moves.
@@ -4318,6 +4319,7 @@ mod tests {
             app.save_surface.set(ui::SaveState::Saving, began);
             app.save_surface.advance(landed);
             app.save_surface.set(ui::SaveState::Saved, landed);
+            app.save_surface.publish();
         });
         app.mark_drawn();
         assert!(!app.self_dirty);
