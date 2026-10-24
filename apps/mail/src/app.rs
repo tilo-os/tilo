@@ -1588,9 +1588,19 @@ impl MailApp {
     /// moment after the typing stops, as the body is kept while it is
     /// written: a draft survives the window closing or the app quitting.
     fn keep_compose_headers(&mut self, doc: &mut ui::widget::Edits<'_>) {
-        let Some([to, cc, bcc, subject]) = self.compose.take_due_headers() else {
+        let Some(headers) = self.compose.take_due_headers() else {
             return;
         };
+        self.store_compose_headers(doc, headers);
+    }
+
+    /// Keep `to`, `cc`, `bcc` and `subject` in the draft where they differ
+    /// from what it holds.
+    fn store_compose_headers(
+        &self,
+        doc: &mut ui::widget::Edits<'_>,
+        [to, cc, bcc, subject]: [String; 4],
+    ) {
         let kept = read_mail(doc.doc()).unwrap_or_default().draft;
         let draft = Mail::paths().draft;
         let st = self.shared.borrow();
@@ -1759,6 +1769,17 @@ impl MailApp {
             self.dirty = true;
             return;
         }
+        // The draft holds what is sent, even what was typed a moment ago,
+        // so sending it empties the draft.
+        self.store_compose_headers(
+            doc,
+            [
+                draft.to.clone(),
+                draft.cc.clone(),
+                draft.bcc.clone(),
+                draft.subject.clone(),
+            ],
+        );
         {
             let st = self.shared.borrow();
             if let Some(refused) = self.resending.take() {
@@ -6152,6 +6173,55 @@ Message-ID: <{uid}.{validity}@x.example>\r\n\r\nBody {uid}.\r\n"
         assert!(
             matches!(requests.try_recv(), Ok(EngineRequest::Send { .. })),
             "after the undo time it goes"
+        );
+    }
+
+    /// A saved draft, opened again and sent, is done with: it leaves
+    /// Drafts, and the mailbox's draft is empty for the next message.
+    #[test]
+    fn a_sent_draft_leaves_drafts() {
+        let (mut app, mut doc) = app();
+        TestMail::store_draft(
+            &mut doc,
+            &crate::model::Draft {
+                to: "dest@there.example".into(),
+                subject: "Ready to go".into(),
+                body: "See you at noon".into(),
+                ..Default::default()
+            },
+        );
+        app.hydrate_domain_state_now(&mut ui::widget::Edits::lend(&mut doc));
+        let in_drafts = |app: &MailApp| -> Vec<MessageId> {
+            app.shared
+                .borrow()
+                .mailbox
+                .messages_in(Folder::Drafts)
+                .iter()
+                .filter(|message| message.subject == "Ready to go")
+                .map(|message| message.id)
+                .collect()
+        };
+        let [id] = in_drafts(&app)[..] else {
+            panic!("the saved draft shows in Drafts, once");
+        };
+
+        app.open_draft(id);
+        app.compose.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        app.send_compose(&mut ui::widget::Edits::lend(&mut doc));
+        let outbox = TestMail::outbox(&doc);
+        assert!(
+            matches!(outbox.as_slice(), [(sent, None)] if sent.draft.subject == "Ready to go"),
+            "the draft went to the outbox: {outbox:?}"
+        );
+        assert!(
+            TestMail::load_draft(&doc).is_empty(),
+            "sending the draft empties it: {:?}",
+            TestMail::load_draft(&doc)
+        );
+        app.hydrate_domain_state_now(&mut ui::widget::Edits::lend(&mut doc));
+        assert!(
+            in_drafts(&app).is_empty(),
+            "the sent message no longer shows in Drafts"
         );
     }
 
