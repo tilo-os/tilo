@@ -37,6 +37,21 @@ pub const PROVIDER_ID: &str = "app-actions";
 const LOCAL_ADMISSION_TIMEOUT: Duration = Duration::from_secs(40);
 const ID_SEPARATOR: char = '\u{1f}';
 
+/// An action row's secondary line: the record it acts on unless its label
+/// already names it, then the app.
+fn row_facts(action_label: &str, resource_label: &str, app: &str) -> Vec<String> {
+    let named = resource_label.trim().is_empty()
+        || action_label
+            .to_lowercase()
+            .contains(&resource_label.trim().to_lowercase());
+    let app = app_name(app);
+    if named {
+        vec![app]
+    } else {
+        vec![resource_label.to_owned(), app]
+    }
+}
+
 /// The app's name as a person knows it, never its package id.
 fn app_name(app: &str) -> String {
     crate::shell::launcher::display_name_for_app_id_without_waiting(app)
@@ -970,7 +985,7 @@ impl LiveAppActionsProvider {
                 Some(std::thread::current().id());
         }
         let source_generation = broker.surfaces_generation();
-        let entries = broker
+        let mut entries = broker
             .surfaces()
             .into_iter()
             .filter(|surface| match scope.scope {
@@ -999,6 +1014,21 @@ impl LiveAppActionsProvider {
                     .map(move |action| (surface.clone(), action))
             })
             .collect::<Vec<_>>();
+        // The broker lists surfaces in no particular order, and the index
+        // answers equal matches by position: give positions a fixed order,
+        // by title and then by address, so equal rows never reshuffle. How
+        // recently each was chosen is weighed where providers' rows merge.
+        entries.sort_by_cached_key(|(surface, action)| {
+            (
+                action.action_label.to_lowercase(),
+                action.action_label.clone(),
+                surface.app_id.clone(),
+                surface.route.cluster_id.clone(),
+                surface.route.record_id.clone(),
+                action.resource.clone(),
+                action.action.clone(),
+            )
+        });
         let index = Some(index_actions(&entries, false));
         let machine_index = Some(index_actions(&entries, true));
         SurfaceSnapshot::new(
@@ -2475,7 +2505,11 @@ impl LiveAppActionsProvider {
             ),
             title: descriptor.action_label.clone(),
             facts: if descriptor.description.is_none() {
-                vec![descriptor.resource_label.clone(), app_name(&root.app_id)]
+                row_facts(
+                    &descriptor.action_label,
+                    &descriptor.resource_label,
+                    &root.app_id,
+                )
             } else {
                 Vec::new()
             },
@@ -2916,7 +2950,7 @@ impl SearchProvider for LiveAppActionsProvider {
                         .clone()
                         .or_else(|| action.description.clone()),
                     facts: if unavailable_reason.is_none() && action.description.is_none() {
-                        vec![action.resource_label.clone(), app_name(&surface.app_id)]
+                        row_facts(&action.action_label, &action.resource_label, &surface.app_id)
                     } else {
                         Vec::new()
                     },
@@ -6288,3 +6322,7 @@ mod job_progress_tests;
 #[cfg(test)]
 #[path = "live_app_actions/window_records_tests.rs"]
 mod window_records_tests;
+
+#[cfg(test)]
+#[path = "live_app_actions/row_order_tests.rs"]
+mod row_order_tests;

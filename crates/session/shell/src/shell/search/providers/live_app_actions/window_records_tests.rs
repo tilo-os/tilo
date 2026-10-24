@@ -228,14 +228,15 @@ struct Shown {
     icon: bool,
 }
 
-/// A record's row as a person reads it: the record, then the app's name,
-/// under the app's icon. No package id, no mechanism.
-fn record_row(action: &str, record: &str) -> (String, Shown) {
+/// A record's row as a person reads it: its action, which names the
+/// record, over the app's name, under the app's icon. No package id, no
+/// mechanism, and the record not named twice.
+fn record_row(action: &str) -> (String, Shown) {
     (
         action.to_owned(),
         Shown {
             subtitle: None,
-            facts: vec![record.to_owned(), "Notes".to_owned()],
+            facts: vec!["Notes".to_owned()],
             icon: true,
         },
     )
@@ -256,8 +257,8 @@ fn a_window_holding_two_records_shows_each_once_and_withdraws_the_one_it_closes(
         let trip = broker.open(&window, "trip", "Trip plan").await;
 
         let both = vec![
-            record_row("Rename Groceries", "Groceries"),
-            record_row("Rename Trip plan", "Trip plan"),
+            record_row("Rename Groceries"),
+            record_row("Rename Trip plan"),
         ];
         assert_eq!(
             shown(&broker, &provider),
@@ -288,6 +289,7 @@ fn a_window_holding_two_records_shows_each_once_and_withdraws_the_one_it_closes(
                 .any(|surface| surface.live && surface.route.record_id == "groceries"),
             "the record the window keeps stays open in it"
         );
+        drop(app);
         // The closed record still exists, so it stays findable, and reads
         // the same as an open one: opening it reopens the app on it.
         assert_eq!(after, both, "a closed record's row reads as an open one's");

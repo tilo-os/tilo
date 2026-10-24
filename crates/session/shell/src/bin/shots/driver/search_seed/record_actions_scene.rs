@@ -42,13 +42,15 @@ impl ShellDriver {
             }],
             live,
         };
-        let broker =
-            shell::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
-        broker.replace_published_surfaces_for_test(vec![
+        let pages = vec![
             page(41, "groceries", "Groceries", true),
             page(42, "trip", "Trip plan", false),
-        ]);
-        self.fb.host_mut().attach_app_action_broker(broker);
+        ];
+        self.fb.host_mut().attach_app_action_broker({
+            let broker = shell::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_idle_directory_queue();
+            broker.replace_published_surfaces_for_test(pages);
+            broker
+        });
         // The provider snapshots published surfaces off the frame; let the
         // first query's snapshot land, as it has by any later keystroke.
         self.fb.host_mut().set_palette_visible(true);
