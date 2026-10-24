@@ -789,6 +789,54 @@ fn canonical_host_permission_refusal_does_not_open_or_retry_the_session() {
     );
 }
 
+/// A refused device shell is not the tab's record: restored at the next
+/// login, the tab opens where a new one would and asks nothing. A Terminal
+/// left on the refused shell put the same prompt up at every login.
+#[test]
+fn a_refused_device_shell_is_not_where_the_next_session_opens() {
+    let refuse_host = |target: &SessionTarget| {
+        if target.is_host() {
+            Err(OpenError::NeedsAllow("not allowed".into()))
+        } else {
+            Ok(())
+        }
+    };
+    let mut app = App::new().unwrap();
+    host_tab(&mut app, RecentTarget::none(), refuse_host);
+    on_tab(&mut app, |widget| {
+        widget.switch_target(&SessionTarget::Host, Requester::Person)
+    })
+    .unwrap();
+    assert_eq!(recorded(&app), Some(SessionTarget::Host));
+    let Some(ui::widget::AppHostIntent::AllowHostShell { reply }) =
+        app.harness().take_host_intent()
+    else {
+        panic!("expected the person to be asked");
+    };
+    reply.upgrade().unwrap().borrow_mut().answer = Some(false);
+    app.settle();
+    assert!(matches!(
+        on_tab(&mut app, |widget| widget.session_state().clone()),
+        OpenState::Failed(_)
+    ));
+    assert_eq!(
+        recorded(&app),
+        Some(SessionTarget::default_environment()),
+        "the refusal hands the record back to where a new tab opens"
+    );
+
+    let mut app = app.reopen().unwrap();
+    let opened = host_tab(&mut app, RecentTarget::none(), refuse_host);
+    assert_eq!(
+        opened.borrow().as_slice(),
+        &[(SessionTarget::default_environment(), Requester::Person)]
+    );
+    assert!(
+        app.harness().take_host_intent().is_none(),
+        "the next login asks nothing"
+    );
+}
+
 #[test]
 fn trusted_shell_selection_enters_normal_permission_without_agent_identity_relabeling() {
     let mut app = App::new().unwrap();
