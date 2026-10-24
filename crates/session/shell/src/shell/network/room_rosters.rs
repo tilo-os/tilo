@@ -1,14 +1,16 @@
 //! Telling the actor each room's admitted roster: the devices the room's
-//! governor admitted are the ones that send and receive its window streams.
+//! governor admitted are the ones that send and receive its window streams,
+//! each until its certificate expires.
 use std::collections::HashMap;
 
 use super::{NetCmd, ShellNetwork, room_topic_id};
+use crate::network::actor::RosterDevice;
 
 /// The rosters last told to the actor, and the room epoch they were read at.
 #[derive(Default)]
 pub(super) struct Sent {
     epoch: Option<u64>,
-    rosters: HashMap<u64, Vec<iroh::EndpointId>>,
+    rosters: HashMap<u64, Vec<RosterDevice>>,
 }
 
 impl ShellNetwork {
@@ -25,17 +27,20 @@ impl ShellNetwork {
             if sent.epoch == Some(epoch) {
                 return;
             }
-            let rosters: HashMap<u64, Vec<iroh::EndpointId>> = tree
+            let rosters: HashMap<u64, Vec<RosterDevice>> = tree
                 .room_rosters
                 .keys()
                 .map(|room| {
-                    let mut devices: Vec<iroh::EndpointId> = tree
+                    let mut devices: Vec<RosterDevice> = tree
                         .room_peer_identities(*room)
-                        .keys()
-                        .filter_map(|peer| peer.parse().ok())
-                        .filter(|device| tree.room_admits_device(*room, device))
+                        .iter()
+                        .filter_map(|(peer, identity)| {
+                            let device: iroh::EndpointId = peer.parse().ok()?;
+                            tree.room_admits_device(*room, &device)
+                                .then_some((device, identity.device_cert.expires_at_ns))
+                        })
                         .collect();
-                    devices.sort_by_key(|device| *device.as_bytes());
+                    devices.sort_by_key(|(device, _)| *device.as_bytes());
                     (room_topic_id(*room), devices)
                 })
                 .collect();

@@ -7733,6 +7733,7 @@ mod tests {
                 .expect("name is a declared text parameter");
                 (action.apply)(&mut c.borrow_mut(), &args).expect("owner may admit");
             }
+            governed(&c, FIXTURE_USER);
             let members = c
                 .borrow()
                 .tree()

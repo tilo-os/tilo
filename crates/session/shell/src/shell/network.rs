@@ -1399,6 +1399,13 @@ pub struct ShellNetwork {
     joined_topics: Mutex<std::collections::HashSet<u64>>,
     /// The room rosters last told to the actor ([`Self::send_room_rosters`]).
     room_rosters_sent: Mutex<room_rosters::Sent>,
+    /// This device's own room host, governing the rooms placed on it
+    /// ([`governance_requests::LocalGovernor`]).
+    local_governor: std::sync::OnceLock<Arc<dyn governance_requests::LocalGovernor>>,
+    /// The room epoch and queue length at which every waiting governance
+    /// request found its governor out of reach: asked again only once
+    /// either moved.
+    governance_waiting: Mutex<Option<(u64, usize)>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -2208,6 +2215,8 @@ impl ShellNetwork {
             event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
             room_rosters_sent: Mutex::default(),
+            local_governor: std::sync::OnceLock::new(),
+            governance_waiting: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -7720,10 +7729,8 @@ impl ShellNetwork {
                 .iter()
                 .flat_map(|(_, workspace)| workspace.apps.iter().map(|app| app.id.0))
                 .collect::<std::collections::BTreeSet<_>>();
-            #[allow(
-                clippy::significant_drop_tightening,
-                reason = "all continuation room and tab mutations share one workspace write lock to preserve their common reconciliation snapshot"
-            )]
+            // All continuation room and tab changes share one write of the
+            // tree, so they reconcile against one snapshot.
             let adopted = self.enforce_app_continuations_policy() && {
                 let mut tree = self.tree.write();
                 let desired_rooms = rooms
@@ -7747,6 +7754,7 @@ impl ShellNetwork {
                         });
                 let reconciled_tabs = tree.reconcile_continuation_tabs(&desired_tabs);
                 let reconciled_rooms = tree.reconcile_continuation_rooms(&desired_rooms);
+                drop(tree);
                 reconciled_tabs || reconciled_rooms || adopted_rooms || materialized
             };
             if adopted {
@@ -8149,6 +8157,8 @@ pub(crate) fn shell_network_for_test(
         event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
         room_rosters_sent: Mutex::default(),
+        local_governor: std::sync::OnceLock::new(),
+        governance_waiting: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,
