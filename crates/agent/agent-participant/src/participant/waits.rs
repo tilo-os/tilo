@@ -377,7 +377,7 @@ impl Waiting {
     pub(super) fn arrived_brief(&self, arrivals: &[Arrival]) -> String {
         let mut text = String::new();
         for (index, arrival) in arrivals.iter().enumerate() {
-            let mut what = arrival.lines.join("\n");
+            let mut what = crate::values::annotate_text(&arrival.lines.join("\n"));
             if what.chars().count() > MOST_ARRIVED_CHARS {
                 what = what.chars().take(MOST_ARRIVED_CHARS).collect::<String>() + "…";
             }

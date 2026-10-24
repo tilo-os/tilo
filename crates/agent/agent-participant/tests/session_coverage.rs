@@ -1346,6 +1346,72 @@ async fn a_step_takes_the_value_a_formula_computed() {
     host.relay.shutdown().await;
 }
 
+/// A step writes a number its parameter types as arithmetic in words
+/// (`289 - 50` rows down), and a date as business days counted in words
+/// inside an expression (`{{= 10 business days after 2026-10-14 }}`): the
+/// host computes both before the workbook takes them, so the model neither
+/// subtracts nor counts business days.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_step_takes_arithmetic_written_in_words() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let _steward = steward::Steward::start(&host.relay, &root).await;
+    let (mut agent, control) = planning_agent(
+        &root,
+        (&host, &host_device),
+        &[SHEETS],
+        Box::new(tilo_agent_participant::DirectPlanner),
+        tilo_content::ContentStore::memory(),
+    )
+    .await;
+    let sheets = agent.open(SHEETS, None).unwrap();
+    let step = |action: &str, arguments: serde_json::Value| {
+        serde_json::json!({"app": SHEETS, "record": sheets.record, "resource": "sheets.workbook",
+            "action": action, "arguments": arguments})
+    };
+    let task = run_task(
+        &mut agent,
+        &control,
+        &serde_json::json!([
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A1",
+                    "rows": [["Pay by", "{{= 10 business days after 2026-10-14 }}"]]})
+            ),
+            step(
+                "set-cells",
+                serde_json::json!({"sheet": FIRST_SHEET, "start": "A239", "rows": [["here"]]})
+            ),
+            step(
+                "insert-rows",
+                serde_json::json!({"sheet": FIRST_SHEET, "at": "289 - 50"})
+            ),
+        ])
+        .to_string(),
+    );
+    assert_eq!(task.state, TaskState::Completed, "{task:?}");
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "B1:B1"),
+        serde_json::json!([["2026-10-28"]])
+    );
+    assert_eq!(
+        sheet_rows(&mut agent, &sheets, "A239:A240"),
+        serde_json::json!([[null], ["here"]]),
+        "a row went in above row 239"
+    );
+
+    agent.close();
+    host.relay.shutdown().await;
+}
+
 const MESSAGES: &str = "so.tilo.messages";
 
 /// A step quotes one message among several alike by a rule (the newest from
