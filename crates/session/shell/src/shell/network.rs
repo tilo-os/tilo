@@ -71,12 +71,17 @@ mod community_tests;
 #[cfg(test)]
 mod device_approval_tests;
 pub(crate) mod device_approvals;
+#[cfg(test)]
+mod device_steward_tests;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
 mod embedded_host;
 #[cfg(test)]
 mod enrollment_resume_tests;
+mod grant_in_force;
+#[cfg(test)]
+mod grant_in_force_tests;
 pub(crate) mod join_field;
 mod joining;
 #[cfg(test)]
@@ -465,14 +470,20 @@ impl PeerDepartureHistory {
 }
 
 /// The rooms whose topics this device joins: every room in the tree but one
-/// it is still joining through a host. That room's traffic comes over its
-/// native session once the replica installs, which joins the topic itself;
-/// joined earlier, its host would replay the room's retained traffic to a
-/// device that cannot yet tell a member from anyone.
+/// it is still joining through a host or still placing on one, and one on
+/// this device only. A joining room's traffic comes over its native session
+/// once the replica installs, which joins the topic itself; joined earlier,
+/// its host would replay the room's retained traffic to a device that cannot
+/// yet tell a member from anyone. A room on this device only, kept from
+/// before rooms had hosts, is carried by no transport.
 fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
     tree.rooms()
         .into_iter()
-        .filter(|room| !tree.is_joining(*room))
+        .filter(|room| {
+            !tree.is_joining(*room)
+                && !tree.pending_placements.contains(room)
+                && !tree.on_this_device_only(*room)
+        })
         .collect()
 }
 
@@ -617,12 +628,19 @@ fn needs_reachability(
     other_devices: bool,
 ) -> Option<&'static str> {
     // A room names this device too, so only an endpoint other than this one
-    // is a peer.
-    let shared = tree.rooms().into_iter().any(|room| {
-        tree.room_peer_endpoints(room)
-            .iter()
-            .any(|peer| peer.to_string() != local_endpoint)
-    });
+    // is a peer. A native room's names are no reason: its document keeps a
+    // removed member's devices as signed history, so who may still dial is
+    // its membership, read below and in `ShellNetwork::hosts_other_members`.
+    let native: std::collections::BTreeSet<_> = tree.native_authority.rooms().collect();
+    let shared = tree
+        .rooms()
+        .into_iter()
+        .filter(|room| !native.contains(room))
+        .any(|room| {
+            tree.room_peer_endpoints(room)
+                .iter()
+                .any(|peer| peer.to_string() != local_endpoint)
+        });
     if shared {
         Some("a room shared with a peer")
     } else if tree
@@ -1411,6 +1429,9 @@ pub struct ShellNetwork {
     /// request found its governor out of reach: asked again only once
     /// either moved.
     governance_waiting: Mutex<Option<(u64, usize)>>,
+    /// The room state and count of unrecorded receipts last asked for
+    /// ([`Self::record_unrecorded_receipts_off_loop`]).
+    receipts_asked: Mutex<Option<(u64, usize)>>,
     /// Transport-authenticated direct neighbours, scoped by workspace.
     /// Populated only after `IdentityHello` admission succeeds.
     workspace_control_direct: Mutex<std::collections::HashSet<(u64, iroh::EndpointId)>>,
@@ -2222,6 +2243,7 @@ impl ShellNetwork {
             room_rosters_sent: Mutex::default(),
             local_governor: std::sync::OnceLock::new(),
             governance_waiting: Mutex::default(),
+            receipts_asked: Mutex::default(),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
             runtime: Some(runtime),
@@ -4687,6 +4709,7 @@ impl ShellNetwork {
     /// Why what this session has recorded needs this device reachable, if
     /// it does ([`needs_reachability`]).
     fn session_reachability_need(&self) -> Option<&'static str> {
+        self.retire_redeemed_invitations();
         let tree = self.tree.clone();
         let now = tilo_clock::unix_now();
         let open_invitations = self
@@ -4754,6 +4777,7 @@ impl ShellNetwork {
     /// inventory before rows are returned to the UI.
     #[must_use]
     pub fn pending_invitations(&self, room: RoomId) -> Vec<PendingInvitation> {
+        self.retire_redeemed_invitations();
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
             return Vec::new();
         };
@@ -4772,6 +4796,42 @@ impl ShellNetwork {
             .collect();
         rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
         rows
+    }
+
+    /// Forget the invitations their room's admitted document says were
+    /// redeemed: each is redeemed once, so nobody is still to come with it.
+    fn retire_redeemed_invitations(&self) {
+        let invitations: Vec<([u8; 32], RoomId)> = match self.pending_identity_admissions.lock() {
+            Ok(pending) if !pending.is_empty() => pending
+                .values()
+                .map(|invite| (invite.id, invite.room))
+                .collect(),
+            _ => return,
+        };
+        let redeemed: Vec<[u8; 32]> = {
+            let tree = self.tree.read();
+            invitations
+                .into_iter()
+                .filter(|(id, room)| {
+                    tree.room_docs
+                        .get(room)
+                        .is_some_and(|doc| tilo_peer_state::room::invitation_redeemed(doc, id))
+                })
+                .map(|(id, _)| id)
+                .collect()
+        };
+        if redeemed.is_empty() {
+            return;
+        }
+        let Ok(mut pending) = self.pending_identity_admissions.lock() else {
+            return;
+        };
+        for id in &redeemed {
+            pending.remove(id);
+        }
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
     }
 
     /// Return the original signed token without extending its lifetime or
@@ -6692,7 +6752,11 @@ impl ShellNetwork {
             self.apply_published_home_peers();
         });
         steps.time("network/shared-rooms", || match admission {
-            Admission::InPlace => self.finish_shared_rooms(),
+            Admission::InPlace => {
+                if self.take_shared_rooms_due() {
+                    self.finish_shared_rooms();
+                }
+            }
             Admission::OffLoop => self.finish_shared_rooms_off_loop(),
         });
         steps.time("network/placements", || match admission {
@@ -6702,6 +6766,7 @@ impl ShellNetwork {
         steps.time("network/keepalive", || self.live_keepalive());
         steps.time("network/governance", || {
             self.send_governance_requests_off_loop();
+            self.record_unrecorded_receipts_off_loop();
         });
         steps.time("network/room-rosters", || self.send_room_rosters());
         // Hold the lock for the whole drain so a concurrent frame-tick
@@ -6804,6 +6869,11 @@ impl ShellNetwork {
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
+                }
+                // A host's session is up: governance changes waiting for a
+                // host out of reach may reach it now.
+                if let Ok(mut waiting) = self.governance_waiting.lock() {
+                    *waiting = None;
                 }
                 self.record_content_sources_changed();
                 self.handle_host_ready(ws);
@@ -8177,6 +8247,7 @@ pub(crate) fn shell_network_for_test(
         room_rosters_sent: Mutex::default(),
         local_governor: std::sync::OnceLock::new(),
         governance_waiting: Mutex::default(),
+        receipts_asked: Mutex::default(),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
         runtime: None,

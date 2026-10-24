@@ -404,7 +404,20 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
     expect_output(&mut second, b"ls\n").await;
 
     // Bob is a member of the workspace but not the session's owner; Carol
-    // is not a member at all.
+    // is not a member of it. She belongs to another room this relay hosts,
+    // which is what lets her through the handshake to be refused here.
+    relay
+        .replace_governed_workspace_access(
+            WORKSPACE + 1,
+            true,
+            tilo_peer_state::GovernedAccess {
+                member_devices: vec![carol_laptop.device_pubkey()],
+                member_user_roots: vec![carol_laptop.cert.user_public_key],
+            },
+            state.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
     let bobs =
         attach_remote_environment(&remote(&relay, &bob_laptop).await, WORKSPACE, session, SIZE)
             .await;
@@ -423,13 +436,17 @@ async fn members_run_reattach_and_launch_legacy_apps_through_a_relay_worker() {
         None,
     )
     .await;
-    assert!(matches!(
-        carols,
-        Err(EnvironmentClientError::Refused {
-            reason: Refusal::NotAMember,
-            ..
-        })
-    ));
+    assert!(
+        matches!(
+            carols,
+            Err(EnvironmentClientError::Refused {
+                reason: Refusal::NotAMember,
+                ..
+            })
+        ),
+        "{:?}",
+        carols.as_ref().err()
+    );
 
     // A legacy launch from Alice's session reaches her window stream, and
     // her input reaches the app.

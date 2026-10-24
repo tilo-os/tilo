@@ -31,6 +31,16 @@ pub enum HostOperation {
     AuthorApplications,
     /// Drive the host's personal compute over its control stream.
     ComputeControl,
+    /// Serve a room a device of the host's person governs, as its governor
+    /// asks ([`crate::hosted`]).
+    HostRoom,
+    /// Stop serving a room for its governor.
+    UnhostRoom,
+    /// Have a host of the person serve a room governed here as well. Which
+    /// hosts serve a room is its owner's decision.
+    AttachHost,
+    /// Stop having a host of the person serve a room governed here.
+    DetachHost,
 }
 
 impl HostOperation {
@@ -47,6 +57,10 @@ impl HostOperation {
             Self::GovernBot => "bot.govern",
             Self::AuthorApplications => "application.author",
             Self::ComputeControl => "compute.control",
+            Self::HostRoom => "room.host",
+            Self::UnhostRoom => "room.unhost",
+            Self::AttachHost => "room.attach-host",
+            Self::DetachHost => "room.detach-host",
         }
     }
 
@@ -65,7 +79,11 @@ impl HostOperation {
             | Self::GrantAppAuthorship
             | Self::GovernBot
             | Self::AuthorApplications
-            | Self::ComputeControl => host == caller,
+            | Self::ComputeControl
+            | Self::HostRoom
+            | Self::UnhostRoom
+            | Self::AttachHost
+            | Self::DetachHost => host == caller,
         }
     }
 }
@@ -74,7 +92,7 @@ impl HostOperation {
 mod tests {
     use super::HostOperation;
 
-    const ALL: [HostOperation; 10] = [
+    const ALL: [HostOperation; 14] = [
         HostOperation::CreateRoom,
         HostOperation::ListRooms,
         HostOperation::EnterRoom,
@@ -85,6 +103,10 @@ mod tests {
         HostOperation::GovernBot,
         HostOperation::AuthorApplications,
         HostOperation::ComputeControl,
+        HostOperation::HostRoom,
+        HostOperation::UnhostRoom,
+        HostOperation::AttachHost,
+        HostOperation::DetachHost,
     ];
 
     #[test]

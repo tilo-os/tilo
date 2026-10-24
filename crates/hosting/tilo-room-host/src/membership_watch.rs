@@ -164,6 +164,26 @@ impl Drop for Registration {
     }
 }
 
+/// A host's watch over its state root's membership files, stopped when the
+/// last holder drops it or the host shuts down.
+pub(crate) struct WatchTask(JoinHandle<()>);
+
+impl WatchTask {
+    pub(crate) fn spawn(state_root: &Path) -> Self {
+        Self(spawn_membership_watch(state_root))
+    }
+
+    pub(crate) fn stop(&self) {
+        self.0.abort();
+    }
+}
+
+impl Drop for WatchTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Watches `<state_root>/workspaces` and bumps a room's generation when its
 /// membership or governed-access file changes. Abort the handle to stop it.
 pub fn spawn_membership_watch(state_root: &Path) -> JoinHandle<()> {

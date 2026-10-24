@@ -307,8 +307,14 @@ impl ShellNetwork {
         if attempts.len() >= 8 || attempts.values().any(|attempt| attempt.local() == local) {
             return Err("native enrollment already pending or quota reached".into());
         }
-        let (command, attempt) =
-            enrollment_driver::command(owner, local, topic, token.to_owned(), via)?;
+        let (command, attempt) = enrollment_driver::command(
+            owner,
+            local,
+            topic,
+            token.to_owned(),
+            via,
+            self.enrollment_landed(),
+        )?;
         let id = attempt.id();
         self.cmd_tx
             .try_send(NetCmd::NativeEnrollment(command))
@@ -371,6 +377,7 @@ impl ShellNetwork {
             .remove(&id);
         match target {
             Some((room, local)) => {
+                self.placement_enrollment_ended(room, result.is_ok());
                 self.enrollment_ended(
                     room,
                     local,

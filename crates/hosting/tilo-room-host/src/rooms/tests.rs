@@ -2141,6 +2141,59 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
     relay.shutdown().await;
 }
 
+/// A session that presents the relay's own certificate writes as a member:
+/// the windows it relays into a public room are refused at the door as
+/// anyone's are, and the governor commits nothing of them. Only what the
+/// relay commits itself bypasses the door.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
+)]
+#[tokio::test]
+async fn windows_relayed_under_the_hosts_own_key_are_a_members_in_a_public_room() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = governor();
+    let relay = test_host(dir.path(), &key, &cert).await;
+    let rooms = relay.rooms().clone();
+    let room = rooms.create("Lounge").await.unwrap().room;
+    rooms
+        .set_layout(&room, tilo_desktop_model::projection::RoomLayout::Personal)
+        .await
+        .unwrap();
+    let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
+    let generation = rooms
+        .room(&room)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .record
+        .generation;
+
+    let body = terminals_opened(&rooms, &room, &a, a_salt).await;
+    let refused = rooms
+        .decide_layout_write(&room, cert.device_public_key, &body)
+        .await
+        .unwrap_err();
+    assert_eq!(refused, LAYOUT_REFUSAL);
+
+    rooms
+        .absorb(&room, cert.device_public_key, &body)
+        .await
+        .unwrap();
+    {
+        let state = rooms.room(&room).await.unwrap();
+        let governed = state.lock().await;
+        assert_eq!(
+            governed.record.generation, generation,
+            "the governor committed nothing of the relayed windows"
+        );
+    }
+    assert!(titles_shared(&rooms, &room).await.is_empty());
+    drop(rooms);
+    relay.shutdown().await;
+}
+
 /// In a private room the same change is let through and committed, as
 /// before.
 #[allow(
