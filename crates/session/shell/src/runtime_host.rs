@@ -378,7 +378,7 @@ impl PeerSync {
             match &placement {
                 Placement::Held => break,
                 Placement::Placing | Placement::Enrolling => {}
-                Placement::NotInstalled(error) => {
+                Placement::NotPlaced(error) | Placement::NotInstalled(error) => {
                     return Err(io::Error::other(format!(
                         "the session's workspace is not hosted: stopped at {}: {error}",
                         placement.step()

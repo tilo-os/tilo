@@ -227,19 +227,26 @@ fn ask<L>(
 }
 
 /// The session network as a [`RecordSource`]: the room's other devices, by
-/// the endpoints its document names, on the room's topic.
-pub struct NetworkSource(pub Arc<crate::shell::network::ShellNetwork>);
+/// the endpoints its document names, on the room's topic. It holds the
+/// network weakly: the source is the process's, and a session that ends
+/// (a headless runtime session dropped and started again) takes its network,
+/// and the state file that network holds, with it.
+pub struct NetworkSource(pub std::sync::Weak<crate::shell::network::ShellNetwork>);
 
 impl RecordSource for NetworkSource {
     fn fetch(&self, address: &RecordAddress) -> Pending<Result<Vec<u8>, String>> {
+        let Some(network) = self.0.upgrade() else {
+            let (completer, answer) = tilo_actions::remote::pending();
+            completer.complete(Err("this session's network has ended".into()));
+            return answer;
+        };
         let topic = crate::shell::network::room_topic_id(address.room);
-        let holders = self
-            .0
+        let holders = network
             .room_devices(address.room)
             .into_iter()
             .map(|device| (topic, device))
             .collect();
-        fetch_from(Arc::clone(&self.0), holders, address)
+        fetch_from(network, holders, address)
     }
 }
 
