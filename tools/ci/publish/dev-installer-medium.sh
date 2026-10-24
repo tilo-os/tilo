@@ -60,10 +60,12 @@ actual_digest=$(podman image inspect --format '{{.Digest}}' "$id")
 [[ $(podman image inspect --format '{{.Architecture}}' "$id") == "$oci_arch" ]] \
   || die "$in/oci is not an $arch image"
 
-# Refuse a base that cannot become this medium before spending the disk build on it.
+# Refuse a base that cannot become this medium before spending the disk build on it. The
+# installer's session plumbing (tilo-session-select, the greetd configuration) is not the base's:
+# os/dev/installer_overlay.py stages it from os/usr and os/Containerfile.installer checks it there.
 podman run --rm --pull=never --network=none --entrypoint /bin/sh "$id" -c '
   status=0
-  for tool in /usr/libexec/tilo/tilo-installer /usr/libexec/tilo-session-select /usr/libexec/tilo-uki-cmdline; do
+  for tool in /usr/libexec/tilo/tilo-installer /usr/libexec/tilo-uki-cmdline; do
     test -x "$tool" || { echo "missing: $tool ($(ls -ld "$tool" 2>&1))" >&2; status=1; }
   done
   set -- /boot/EFI/Linux/*.efi
