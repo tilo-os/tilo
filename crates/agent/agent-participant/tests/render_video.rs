@@ -154,6 +154,20 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
     assert_eq!(answer["frames"], 24);
     let address = answer["content"].as_str().unwrap();
     assert_eq!(first.resources, vec![address.to_owned()]);
+    assert_eq!(answer["facts"]["titles"][0]["text"], "Agent", "{answer}");
+    let facts = offered(&agent, "facts").unwrap().address;
+    let then = agent
+        .invoke(
+            &facts,
+            &arguments(serde_json::json!({ "version": answer["version"] })),
+            true,
+        )
+        .unwrap();
+    assert_eq!(
+        then.value.as_ref(),
+        Some(&answer["facts"]),
+        "the export states the facts of the version it rendered"
+    );
     let hash = tilo_actions::content_hash(address).unwrap();
     let video = room.read(hash).expect("the room keeps the video");
     assert_eq!(video.get(4..8), Some(&b"ftyp"[..]));
@@ -162,6 +176,52 @@ fn an_export_is_rendered_on_the_host_kept_as_content_and_answered_again_unchange
         again.value.unwrap()["content"],
         address,
         "one cut, one render"
+    );
+}
+
+#[test]
+fn an_agents_record_states_its_facts_now_and_at_an_earlier_version() {
+    let agent = agents_record(&timeline(None), &ContentStore::memory());
+    let facts = offered(&agent, "facts").expect("a project states its facts");
+    let before = agent
+        .read(|doc| {
+            doc.clone()
+                .get_heads()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("+")
+        })
+        .unwrap();
+    let resize = offered(&agent, "set-frame-size").unwrap().address;
+    agent
+        .invoke(
+            &resize,
+            &arguments(serde_json::json!({ "width": 1280, "height": 720 })),
+            true,
+        )
+        .unwrap();
+    let now = agent
+        .invoke(&facts.address, &serde_json::Map::new(), true)
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(now["frame"]["width"], 1280);
+    assert_eq!(now["titles"][0]["text"], "Agent");
+    assert_eq!(now["duration"], 1.0);
+    let then = agent
+        .invoke(
+            &facts.address,
+            &arguments(serde_json::json!({ "version": before })),
+            true,
+        )
+        .unwrap()
+        .value
+        .unwrap();
+    assert_eq!(then["frame"]["width"], 320);
+    assert_eq!(
+        tilo_agent_participant::facts::changes(&then, &now),
+        vec!["frame.width: 320 -> 1280", "frame.height: 180 -> 720"]
     );
 }
 

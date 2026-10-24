@@ -43,6 +43,7 @@ pub mod actions;
 mod authors;
 mod bound;
 mod context;
+mod facts;
 mod introduce;
 mod logs;
 mod obligations;
@@ -255,6 +256,9 @@ pub struct AgentParticipant {
     /// The records this agent's own steps changed, in any task: a document
     /// it wrote in is its own, whoever else wrote there too.
     own_wrote: BTreeSet<DocumentRoute>,
+    /// The exports whose answers stated the facts of what they exported,
+    /// oldest first: what a later task's check compares the record with.
+    exported: Vec<facts::Exported>,
     /// The host admitted the room; everything it replayed has arrived.
     ready: bool,
     /// When the room last delivered a record the agent had not seen, since
@@ -405,6 +409,7 @@ impl AgentParticipant {
             task_made: Vec::new(),
             others_wrote: BTreeSet::new(),
             own_wrote: BTreeSet::new(),
+            exported: Vec::new(),
             ready: false,
             settling: None,
             finishing: None,
@@ -842,6 +847,9 @@ impl AgentParticipant {
         self.control.record_step(id, record);
         match outcome {
             Ok(output) => {
+                if let Some(output) = &output {
+                    self.note_export(id, step, output);
+                }
                 let Some(running) = self.running.as_mut() else {
                     return false;
                 };

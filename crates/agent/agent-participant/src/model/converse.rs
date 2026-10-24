@@ -750,6 +750,11 @@ pub(crate) const OBLIGATIONS_NOTE: &str = " When a request asks for more than on
     in `set_aside` with a short reason (\"already done by …\", \"not possible: …\"). One set \
     aside before then stays open, so never set aside what a wait or a later step will do.";
 
+/// How a record is checked, told once in the `plan` tool's description.
+pub(crate) const FACTS_NOTE: &str = " To check a record against a request, read its `facts` \
+    (with `read_view`, where the record offers it): what it holds as plain values (times, names, \
+    text, counts) to compare with the request item by item, rather than judging from a picture.";
+
 /// The `plan` schema's checklist: `obligations`, each step's `for` and
 /// `set_aside` ([`OBLIGATIONS_NOTE`]).
 fn add_obligations(properties: &mut serde_json::Map<String, serde_json::Value>) {
@@ -798,10 +803,13 @@ fn read_view_definition() -> ToolDefinition {
     ToolDefinition {
         name: READ_VIEW.into(),
         description: "Run a view or read of a document that is open now (inspect, read-text, \
-             read-cells, read, look…: an operation listed for an open document that changes \
-             nothing) and get its answer here, before you plan. Use it when the plan needs \
-             what the document holds and the request does not show it; then plan with the \
-             answer. Operations that change or export something are refused here: plan them."
+             read-cells, read, facts, look…: an operation listed for an open document that \
+             changes nothing) and get its answer here, before you plan. Use it when the plan \
+             needs what the document holds and the request does not show it; then plan with \
+             the answer. With `compare`, the read runs again with those arguments and the answer \
+             lists what differs from that one to this (facts now against {\"version\": the \
+             version an export answered}: what changed since that export). Operations that \
+             change or export something are refused here: plan them."
             .into(),
         input_schema: serde_json::json!({
             "type": "object",
@@ -813,6 +821,11 @@ fn read_view_definition() -> ToolDefinition {
                 "arguments": {
                     "type": "object",
                     "description": "Its argument object; {} for its defaults."
+                },
+                "compare": {
+                    "type": "object",
+                    "description": "Another argument object for the same read, to list what \
+                        differs from its answer to this one."
                 }
             },
             "required": ["operation"],
@@ -875,6 +888,7 @@ pub(crate) fn planning_tools(
         }
         tool.description.push_str(VALUES_NOTE);
         tool.description.push_str(OBLIGATIONS_NOTE);
+        tool.description.push_str(FACTS_NOTE);
         let schema = &mut tool.input_schema;
         if let Some(properties) = schema
             .get_mut("properties")
@@ -938,7 +952,12 @@ pub(crate) fn read_view_answer(
         Some(serde_json::Value::Object(arguments)) => arguments.clone(),
         Some(_) => return Seen::from("Not read: `arguments` is an object.".to_owned()),
     };
-    match read.read(&id, &arguments) {
+    let found = match input.get("compare") {
+        None | Some(serde_json::Value::Null) => read.read(&id, &arguments),
+        Some(serde_json::Value::Object(against)) => read.compare(&id, &arguments, against),
+        Some(_) => return Seen::from("Not read: `compare` is an object.".to_owned()),
+    };
+    match found {
         Ok(found) => found,
         Err(why) => format!("Not read: {why}").into(),
     }

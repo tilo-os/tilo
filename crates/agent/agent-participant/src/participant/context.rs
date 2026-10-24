@@ -330,7 +330,8 @@ impl AgentParticipant {
 
     /// What the records at `about` (of `open`, each with what it publishes)
     /// hold now: [`Self::snapshot`]s of the first [`MOST_SNAPSHOTS`], within
-    /// [`MOST_SNAPSHOTS_CHARS`] together.
+    /// [`MOST_SNAPSHOTS_CHARS`] together; on a check, the facts of what the
+    /// task changed too ([`Self::check_facts`]).
     pub(super) fn snapshots(
         &mut self,
         about: &[DocumentRoute],
@@ -349,6 +350,7 @@ impl AgentParticipant {
                 snapshots.push(seen);
             }
         }
+        snapshots.extend(self.check_facts(open));
         snapshots
     }
 
@@ -482,7 +484,8 @@ impl AgentParticipant {
 }
 
 /// What the task's `tilo.content:` addresses hold, as far as a plan needs
-/// it without reading them: a picture's format and size.
+/// it without reading them: a picture's format and size, a video's length,
+/// frame, rate, sound and weight.
 pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) -> Vec<String> {
     const PREFIX: &str = "tilo.content:";
     let mut facts = Vec::new();
@@ -493,12 +496,13 @@ pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) ->
             .chars()
             .take_while(char::is_ascii_hexdigit)
             .collect();
-        let fact = content
-            .read(&hash)
-            .and_then(|bytes| crate::vision::picture_size(&bytes))
-            .map(|(format, width, height)| {
-                format!("{PREFIX}{hash} is a {format} picture {width}×{height} pixels.")
-            });
+        let fact = content.read(&hash).and_then(|bytes| {
+            crate::vision::picture_size(&bytes)
+                .map(|(format, width, height)| {
+                    format!("{PREFIX}{hash} is a {format} picture {width}×{height} pixels.")
+                })
+                .or_else(|| video_facts(&bytes).map(|video| format!("{PREFIX}{hash} {video}")))
+        });
         if let Some(fact) = fact
             && !facts.contains(&fact)
         {
@@ -506,6 +510,33 @@ pub(super) fn content_facts(task: &str, content: &tilo_content::ContentStore) ->
         }
     }
     facts
+}
+
+/// What an MP4 or MOV file `bytes` holds, as a sentence (`is a video
+/// of 8.50 s, 1280×720 at 30 fps, with sound, 412 kB.`): `None` for
+/// anything else.
+pub(super) fn video_facts(bytes: &[u8]) -> Option<String> {
+    if bytes.get(4..8) != Some(b"ftyp".as_slice()) {
+        return None;
+    }
+    let probed =
+        video_editor::probe::probe_bytes(bytes, std::path::Path::new("content.mp4")).ok()?;
+    if probed.kind != video_editor::model::MediaKind::Video {
+        return None;
+    }
+    let sound = if probed.has_audio {
+        "with sound"
+    } else {
+        "without sound"
+    };
+    Some(format!(
+        "is a video of {:.2} s, {}×{} at {} fps, {sound}, {}.",
+        probed.duration,
+        probed.width,
+        probed.height,
+        (probed.fps * 100.0).round() / 100.0,
+        ui::format::size(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+    ))
 }
 
 /// The content `reader` reads, to show a planning model: at most one byte

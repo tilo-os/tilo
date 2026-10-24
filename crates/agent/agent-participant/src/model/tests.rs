@@ -2718,10 +2718,11 @@ fn the_plan_tool_waits_and_says_little() {
         schema["properties"]["set_aside"]["items"]["required"],
         serde_json::json!(["item", "reason"])
     );
-    assert!(
-        plan.description
-            .ends_with(super::converse::OBLIGATIONS_NOTE)
-    );
+    assert!(plan.description.ends_with(&format!(
+        "{}{}",
+        super::converse::OBLIGATIONS_NOTE,
+        super::converse::FACTS_NOTE
+    )));
     let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_str()).collect();
     assert_eq!(names, [READ_VIEW, tilo_agent::tools::PLAN]);
     let all = planning_tools(MOST_STEPS, true, true, true);
@@ -2914,5 +2915,76 @@ fn a_task_spends_its_own_retries_across_its_plans() {
     assert_eq!(
         context.retries.left(),
         crate::planner::MOST_TURN_RETRIES - 1
+    );
+}
+
+/// Answers an artwork 640 wide now and 320 wide at any earlier version.
+struct Versions;
+
+impl Reads for Versions {
+    fn read(
+        &mut self,
+        _: &DocumentRoute,
+        _: &ActionAddress,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let width = if arguments.contains_key("version") {
+            320
+        } else {
+            640
+        };
+        Ok(tilo_actions::ActionOutput {
+            value: Some(serde_json::json!({"artwork": {"width": width, "height": 480}})),
+            resources: Vec::new(),
+        })
+    }
+}
+
+/// `read_view` with `compare` runs the read again with those arguments
+/// and lists, beside what the read found, what differs from that answer
+/// to this one; the plan tool says to check a record by its facts.
+#[test]
+fn read_view_compares_two_answers_of_one_read() {
+    let context = canvas_context();
+    let (mut planner, sent) = scripted(
+        vec![
+            called(
+                "r1",
+                READ_VIEW,
+                &serde_json::json!({"operation": "canvas.artwork#inspect", "arguments": {},
+                    "compare": {"version": "v1"}}),
+            ),
+            called(
+                "p1",
+                tilo_agent::tools::PLAN,
+                &serde_json::json!({"steps": [{"operation": "canvas.artwork#draw",
+                    "arguments": {"marks": [{"shape": {"kind": "rect", "x": 0, "y": 0,
+                        "width": 640, "height": 480}}]}}], "then": ""}),
+            ),
+        ],
+        false,
+    );
+    planner
+        .plan_reading("cover the artwork as it is now", &context, &mut Versions)
+        .unwrap();
+    let requests = sent.lock().unwrap().clone();
+    let compared = &results(&requests[1])[0];
+    assert!(
+        compared.contains("canvas.artwork#inspect answered")
+            && compared.ends_with(
+                r#"Changed from its answer to {"version":"v1"} to this one: artwork.width: 320 -> 640"#
+            ),
+        "{compared}"
+    );
+    let plan = requests[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == tilo_agent::tools::PLAN)
+        .unwrap();
+    assert!(
+        plan.description
+            .contains("To check a record against a request, read its `facts`"),
+        "{}",
+        plan.description
     );
 }
