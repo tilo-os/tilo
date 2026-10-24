@@ -81,10 +81,12 @@ mod affordances;
 mod editing;
 #[cfg(test)]
 mod editing_tests;
+mod erased;
 mod nav;
 
 pub use affordances::{TreeHeadingAction, TreeRowAction};
 pub use editing::TreeMove;
+pub use erased::{AnyTreeModel, DynTreeModel, TreeView};
 pub(crate) use nav::{NavItemSpec, NavPresentation, NavRowSpec, NavStatus};
 
 pub type NodeId = u64;
@@ -830,11 +832,15 @@ impl SparseTreeIndex {
     }
 }
 
+/// The tree itself, generic over its model: what [`TreeView`] runs once in
+/// the toolkit for every app's model, and what a toolkit widget with a
+/// concrete model holds directly.
+#[doc(hidden)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent focus, selection, and retained-delegate invalidation states"
 )]
-pub struct TreeView<T, M = TreeNode<T>> {
+pub struct TreeImpl<T, M = TreeNode<T>> {
     test_id: Option<String>,
     model: M,
     data: PhantomData<fn() -> T>,
@@ -1072,7 +1078,7 @@ struct TreeTransitionPayload {
     tone: TransitionTextTone,
 }
 
-impl<T> TreeView<T, TreeNode<T>> {
+impl<T> TreeImpl<T, TreeNode<T>> {
     pub fn new(root: TreeNode<T>) -> Self {
         Self::from_source(root)
     }
@@ -1081,9 +1087,7 @@ impl<T> TreeView<T, TreeNode<T>> {
     pub fn update_model<R>(&mut self, update: impl FnOnce(&mut TreeNode<T>) -> R) -> R {
         let anchor = self.capture_view_anchor();
         let result = update(&mut self.model);
-        self.changed_nav_presentation();
-        self.invalidate_all_delegates();
-        self.reconcile_model_state(anchor.as_ref());
+        self.end_model_update(anchor.as_ref());
         result
     }
 
@@ -1101,7 +1105,7 @@ impl<T> TreeView<T, TreeNode<T>> {
     }
 }
 
-impl<M: TreeModel> TreeView<(), M> {
+impl<M: TreeModel> TreeImpl<(), M> {
     /// Build a view over an app-owned, database-backed, or asynchronous model.
     /// Call [`Self::notify_model_changes`] after the source applies a batch.
     pub fn from_model(model: M) -> Self {
@@ -1109,7 +1113,7 @@ impl<M: TreeModel> TreeView<(), M> {
     }
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     fn from_source(model: M) -> Self {
         let expanded = HashSet::new();
         let index = SparseTreeIndex::build(&model, &expanded, false);
@@ -1526,6 +1530,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
         }
     }
 
+    /// What follows any edit of the model in place: everything shown is
+    /// read again, keeping `anchor` in view.
+    fn end_model_update(&mut self, anchor: Option<&SparseAnchor<TreeRowKey>>) {
+        self.changed_nav_presentation();
+        self.invalidate_all_delegates();
+        self.reconcile_model_state(anchor);
+    }
+
     fn invalidate_all_delegates(&mut self) {
         if !self.mounted_rows.is_empty() {
             self.mounted_rows.clear();
@@ -1734,10 +1746,34 @@ impl<T, M: TreeModel> TreeView<T, M> {
         changes: &[TreeModelChange],
         update: impl FnOnce(&mut M) -> R,
     ) -> R {
+        let staged = self.begin_source_update(changes);
+        let result = update(&mut self.model);
+        self.end_source_update(changes, staged);
+        result
+    }
+
+    /// [`Self::update_source`] before the update: whether `changes` move
+    /// rows, and the row to keep in view if they do.
+    fn begin_source_update(
+        &mut self,
+        changes: &[TreeModelChange],
+    ) -> (bool, Option<SparseAnchor<TreeRowKey>>) {
         self.invalidate_changed_slots(changes);
         let reconcile = Self::changes_require_reconcile(changes);
-        let anchor = reconcile.then(|| self.capture_view_anchor()).flatten();
-        let result = update(&mut self.model);
+        let anchor = if reconcile {
+            self.capture_view_anchor()
+        } else {
+            None
+        };
+        (reconcile, anchor)
+    }
+
+    /// [`Self::update_source`] after the update.
+    fn end_source_update(
+        &mut self,
+        changes: &[TreeModelChange],
+        (reconcile, anchor): (bool, Option<SparseAnchor<TreeRowKey>>),
+    ) {
         self.changed_nav_presentation();
         self.affordance_focus_valid = false;
         self.paint_dirty = true;
@@ -1746,7 +1782,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         if reconcile {
             self.reconcile_model_state(anchor.as_ref());
         }
-        result
     }
 
     /// Reconcile a batch already applied to the model. Label-only changes keep
@@ -2908,7 +2943,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 }
 
-impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
+impl<T: 'static, M: TreeModel + 'static> Widget for TreeImpl<T, M> {
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,
@@ -4180,7 +4215,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     }
 }
 
-impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
+impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
     #[allow(
         clippy::too_many_lines,
         reason = "keeps delegate, reorder, disclosure, selection, scroll, and keyboard precedence explicit"
@@ -5879,7 +5914,8 @@ mod tests {
             let mut view = TreeView::new(TreeNode::branch(1, "root", (), children));
             view.toggle_expand(1);
             view.set_viewport(110.0, f32_of_f64(ROW_HEIGHT));
-            view.set_scroll_y(view.max_scroll_y() / 2.0);
+            let middle = view.max_scroll_y() / 2.0;
+            view.set_scroll_y(middle);
 
             let visible = view.visible_row_range();
             assert!(visible.len() <= 12, "bounded geometry window: {visible:?}");
@@ -6167,8 +6203,8 @@ mod tests {
             let now = crate::time::now();
             let started = now.checked_sub(Duration::from_millis(20)).unwrap_or(now);
             let moved = now.checked_sub(Duration::from_millis(5)).unwrap_or(now);
-            view.drag_scroll
-                .begin(50.0, f64::from(view.scroll_y()), started);
+            let offset = f64::from(view.scroll_y());
+            view.drag_scroll.begin(50.0, offset, started);
             assert!(view.drag_scroll.update(10.0, moved).is_some());
             dispatch(&mut view, &mouse_release());
             assert!(!view.momentum.is_active());
