@@ -52,6 +52,7 @@
 #include <iterator>
 #include <mutex>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <poll.h>
@@ -86,12 +87,19 @@ class Output {
     }
     cv_.notify_one();
   }
-  void Send(uint8_t kind,std::string data) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  void Send(uint8_t kind,const std::string& data) {
     auto packet=tilo::EncodePacket(kind,data);
-    if(kind==2 || kind==3) frame_=std::move(packet);
-    else if(events_.size()<256) events_.push_back(std::move(packet));
+    std::lock_guard<std::mutex> lock(mutex_);
+    if(events_.size()<256) events_.push_back(std::move(packet));
     else failed_=true;
+    cv_.notify_one();
+  }
+  // A frame packet (tilo::FramePacket), shared with the tab that keeps it:
+  // only each tab's newest pending frame is kept, so one tab's paints never
+  // drop another's last frame.
+  void SendFrame(uint32_t tab,std::shared_ptr<const std::string> packet) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    frames_[tab]=std::move(packet);
     cv_.notify_one();
   }
   bool Failed() const { return failed_; }
@@ -103,14 +111,19 @@ class Output {
   void Run() {
     int flags=fcntl(STDOUT_FILENO,F_GETFL,0); fcntl(STDOUT_FILENO,F_SETFL,flags|O_NONBLOCK);
     for(;;) {
-      std::string packet;
+      std::string owned;std::shared_ptr<const std::string> frame;
       { std::unique_lock<std::mutex> lock(mutex_);
-        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !audio_.empty() || !frame_.empty(); });
-        if(!events_.empty()) { packet=std::move(events_.front()); events_.pop_front(); }
-        else if(!audio_.empty()) { packet=std::move(audio_.front().second); audio_.pop_front(); }
-        else if(!frame_.empty()) packet.swap(frame_);
+        cv_.wait(lock,[&]{ return stopping_ || !events_.empty() || !audio_.empty() || !frames_.empty(); });
+        if(!events_.empty()) { owned=std::move(events_.front()); events_.pop_front(); }
+        else if(!audio_.empty()) { owned=std::move(audio_.front().second); audio_.pop_front(); }
+        else if(!frames_.empty()) {
+          // Tabs take turns, so a tab painting every frame cannot starve another.
+          auto next=frames_.upper_bound(last_frame_tab_);if(next==frames_.end())next=frames_.begin();
+          last_frame_tab_=next->first;frame=std::move(next->second);frames_.erase(next);
+        }
         else break;
       }
+      const std::string& packet=frame?*frame:owned;
       size_t offset=0;
       auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(2);
       while(offset<packet.size()) {
@@ -127,7 +140,7 @@ class Output {
     }
   }
   std::atomic<bool> stopping_{false},failed_{false};
-  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::string frame_; std::thread thread_;
+  std::mutex mutex_; std::condition_variable cv_; std::deque<std::string> events_; std::deque<std::pair<bool,std::string>> audio_; std::map<uint32_t,std::shared_ptr<const std::string>> frames_; uint32_t last_frame_tab_=0; std::thread thread_;
 };
 Output* output=nullptr;
 // Page audio goes to the app (`--tilo-audio-bridge`) because its sandbox has no audio device; without it Chromium plays on its own.
@@ -617,24 +630,28 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
       return;
     }
-    if(type==PET_VIEW) { stale_paint_recovery_pending_=false;pixels_.assign(static_cast<const char*>(buffer),size);pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted(); }
+    if(type==PET_VIEW) {
+      stale_paint_recovery_pending_=false;
+      // The paint's one copy: straight into the packet the output sends, which
+      // the tab keeps to composite a popup over and to send again.
+      auto packet=tilo::FramePacket(static_cast<uint32_t>(id_),width,height,static_cast<const char*>(buffer),size);if(packet.empty()) return;
+      frame_=std::make_shared<const std::string>(std::move(packet));pixel_width_=width;pixel_height_=height;if(document_size_)document_size_->Painted();
+    }
     else { popup_.assign(static_cast<const char*>(buffer),size);popup_width_=width;popup_height_=height; }
     EmitFrame();
   }
   void EmitFrame() {
-    if(!visible_ || pixels_.empty()) return;
+    if(!visible_ || !frame_) return;
     TraceGeometry("frame-published",id_,pixel_width_,pixel_height_,geometry_.scale());
-    std::string body; tilo::AppendU32(body,pixel_width_);tilo::AppendU32(body,pixel_height_);body+=pixels_;
-    if(popup_visible_ && !popup_.empty()) {
-      int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
-      for(int row=0;row<popup_height_;++row) {
-        int dest_y=y+row;if(dest_y<0 || dest_y>=pixel_height_) continue;
-        int start=std::max(0,-x),end=std::min(popup_width_,pixel_width_-x);
-        if(end>start) std::memcpy(body.data()+8+(size_t(dest_y)*pixel_width_+x+start)*4,popup_.data()+(size_t(row)*popup_width_+start)*4,size_t(end-start)*4);
-      }
+    if(!popup_visible_ || popup_.empty()) { output->SendFrame(static_cast<uint32_t>(id_),frame_); return; }
+    std::string body=*frame_;const size_t offset=tilo::FramePixelOffset(static_cast<uint32_t>(id_));
+    int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
+    for(int row=0;row<popup_height_;++row) {
+      int dest_y=y+row;if(dest_y<0 || dest_y>=pixel_height_) continue;
+      int start=std::max(0,-x),end=std::min(popup_width_,pixel_width_-x);
+      if(end>start) std::memcpy(body.data()+offset+(size_t(dest_y)*pixel_width_+x+start)*4,popup_.data()+(size_t(row)*popup_width_+start)*4,size_t(end-start)*4);
     }
-    if(id_==1) output->Send(2,std::move(body));
-    else {std::string routed;tilo::AppendU32(routed,id_);routed+=body;output->Send(3,std::move(routed));}
+    output->SendFrame(static_cast<uint32_t>(id_),std::make_shared<const std::string>(std::move(body)));
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
@@ -826,7 +843,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         host->Invalidate(PET_VIEW);
         // A background load may have completed without an eligible handshake.
         if(!was_visible && !credential_identity_) OfferCredentialContext(browser_->GetMainFrame());
-      } else {pixels_.clear();popup_.clear();}
+      } else {frame_.reset();popup_.clear();}
     }
     else if(op=="context_action") {
       if(context_callback_ && d->GetInt("id")==context_id_) {
@@ -920,7 +937,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
       if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
-      popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
+      popup_.clear();frame_.reset();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
       if(op=="mouse_move") host->SendMouseMoveEvent(event,false);
@@ -1044,7 +1061,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
-    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();pixels_.clear();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
+    if(context_callback_){context_callback_->Cancel();context_callback_=nullptr;}capabilities_->Close();frame_.reset();popup_.clear();Event("tab_detached");PublishDownloadRuntime();
   }
  private:
   struct CredentialPending {
@@ -1371,7 +1388,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=24;
   std::vector<tilo::MenuOffer> menu_offers_;tilo::MenuContext menu_context_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
