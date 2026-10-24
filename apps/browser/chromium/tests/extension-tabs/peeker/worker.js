@@ -1,11 +1,14 @@
-// Access to one site and every tab's address is not enough to capture one.
-chrome.tabs.onUpdated.addListener(async (tabId, change, tab) => {
-  if (change.status !== 'complete' || !tab.url || !tab.url.endsWith('/shot')) return;
+// Access to one site and a click, without activeTab, are not enough to capture it.
+chrome.action.onClicked.addListener(async (tab) => {
   let report;
   try {
-    report = {ok: true, value: await chrome.tabs.captureVisibleTab()};
+    report = {ok: true, value: await chrome.tabs.captureVisibleTab(tab.windowId, {format: 'png'})};
   } catch (error) {
     report = {ok: false, value: error.message};
   }
-  await fetch(new URL('/report/peeker', tab.url), {method: 'POST', mode: 'no-cors', body: JSON.stringify(report)});
+  await chrome.scripting.executeScript({
+    target: {tabId: tab.id},
+    func: (body) => fetch('/report/peeker', {method: 'POST', body}),
+    args: [JSON.stringify(report)],
+  });
 });
