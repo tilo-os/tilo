@@ -371,7 +371,10 @@ fn leave_a_join_pending(left: Left) -> Shape {
         .collect();
     assert_eq!(
         archived_rooms,
-        vec![enrolled.to_string().into(), prior.to_string().into()]
+        vec![
+            serde_json::Value::from(enrolled.to_string()),
+            prior.to_string().into()
+        ]
     );
     state["room_authority"] = serde_json::json!({ room.clone(): "Unpinned" });
     std::fs::write(&path, serde_json::to_vec_pretty(&state).unwrap()).unwrap();
