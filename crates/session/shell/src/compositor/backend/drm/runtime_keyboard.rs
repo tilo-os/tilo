@@ -24,6 +24,10 @@ pub struct KeyboardXkb {
     /// a settings reload that only moves the active source switches groups
     /// instead of recompiling and dropping held modifiers.
     compiled: (String, String, String, Option<String>),
+    /// Dead keys and the Compose key, from the session locale's compose
+    /// table, so `´` then `e` types `é` in the shell's own fields as it does
+    /// in apps. `None` when no table loads: keys then type as they are.
+    compose: Option<xkb::compose::State>,
 }
 
 /// What translating one key event yields: an optional `KeyboardInput` (absent for keys with no logical mapping, e.g. bare modifiers) and an optional `ModifiersChanged` (present only when the mask flips).
@@ -61,13 +65,51 @@ impl KeyboardXkb {
         let mut state = xkb::State::new(&keymap);
         let active = u32::try_from(settings.active_index).ok()?;
         let _ = state.update_mask(0, 0, 0, 0, 0, active);
+        let compose = locale_compose_table(&context)
+            .map(|table| xkb::compose::State::new(&table, xkb::compose::STATE_NO_FLAGS));
         Some(Self {
             _context: context,
             keymap,
             state,
             mods: ModifiersState::empty(),
             compiled: Self::keymap_names(settings),
+            compose,
         })
+    }
+
+    /// What a press types once dead keys and the Compose key have had their
+    /// say: nothing while a sequence is open or when it is abandoned, the
+    /// composed text when it completes, and the key's own text otherwise.
+    fn composed_text(&mut self, sym: Keysym, typed: Option<SmolStr>) -> Option<SmolStr> {
+        use xkb::compose::{FeedResult, Status};
+        let Some(compose) = self.compose.as_mut() else {
+            return typed;
+        };
+        if compose.feed(sym) == FeedResult::Ignored {
+            return typed;
+        }
+        match compose.status() {
+            Status::Nothing => typed,
+            Status::Composing => None,
+            Status::Composed => {
+                let text = compose
+                    .utf8()
+                    .filter(|text| !text.is_empty())
+                    .map(SmolStr::from)
+                    .or_else(|| {
+                        compose
+                            .keysym()
+                            .and_then(Keysym::key_char)
+                            .map(|ch| SmolStr::new(ch.encode_utf8(&mut [0; 4])))
+                    });
+                compose.reset();
+                text
+            }
+            Status::Cancelled => {
+                compose.reset();
+                None
+            }
+        }
     }
 
     fn keymap_names(settings: &KeyboardSettings) -> (String, String, String, Option<String>) {
@@ -163,6 +205,9 @@ impl KeyboardXkb {
         self.state = xkb::State::new(&self.keymap);
         let _ = self.state.update_mask(0, 0, 0, 0, 0, active_layout);
         self.mods = ModifiersState::empty();
+        if let Some(compose) = self.compose.as_mut() {
+            compose.reset();
+        }
     }
 
     /// Produce the same repeated `KeyboardInput` winit emits without
@@ -240,7 +285,10 @@ impl KeyboardXkb {
 
         // Derive the logical key from the *keysym* (not UTF-8 output) so chords like Ctrl+K resolve to `Character("k")`, not the control character.
         let logical = self.chord_logical_key(keycode, sym, new_mods);
-        let text = text_for(sym.key_char(), new_mods);
+        let mut text = text_for(sym.key_char(), new_mods);
+        if pressed && !(new_mods.control_key() || new_mods.super_key()) {
+            text = self.composed_text(sym, text);
+        }
         let input = Some(keyboard_input_event(
             logical,
             text,
@@ -363,6 +411,24 @@ pub(super) fn keysym_to_winit_key(raw: u32) -> Key {
     Key::Unidentified(NativeKey::Xkb(raw))
 }
 
+/// The session locale's compose table: the first of `LC_ALL`, `LC_CTYPE`
+/// and `LANG` that is set, as libc resolves it. libxkbcommon reads the C
+/// locale as en_US.UTF-8.
+fn locale_compose_table(context: &xkb::Context) -> Option<xkb::compose::Table> {
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|name| std::env::var_os(name).filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "C".into());
+    xkb::compose::Table::new_from_locale(context, &locale, xkb::compose::COMPILE_NO_FLAGS)
+        .inspect_err(|()| {
+            tracing::warn!(
+                ?locale,
+                "DRM input: no compose table for the locale; dead keys type nothing in the shell"
+            );
+        })
+        .ok()
+}
+
 /// The typed text for a key event, or `None`. Suppressed under Ctrl/Super (chords, not text) and for control characters — matching winit, keeping control bytes out of text inputs.
 pub(super) fn text_for(ch: Option<char>, mods: ModifiersState) -> Option<SmolStr> {
     if mods.control_key() || mods.super_key() {
@@ -456,6 +522,51 @@ mod tests {
         let _ = keyboard.translate(29, true);
         let copy = pressed(keyboard.translate(46, true));
         assert_eq!(copy.logical_key, Key::Character("c".into()));
+    }
+
+    #[test]
+    fn a_dead_key_then_a_letter_types_the_accented_letter() {
+        let settings = KeyboardSettings {
+            model: "pc105".into(),
+            source_ids: vec!["de".into()],
+            layouts: "de".into(),
+            variants: String::new(),
+            options: None,
+            active_index: 0,
+        };
+        let mut keyboard = KeyboardXkb::from_settings(&settings).expect("the de keymap compiles");
+        // The table this test types with, so it does not depend on the
+        // build machine's locale files.
+        let table = xkb::compose::Table::new_from_buffer(
+            &xkb::Context::new(xkb::CONTEXT_NO_FLAGS),
+            "<dead_acute> <e> : \"é\" eacute\n<Multi_key> <a> <e> : \"æ\" ae\n",
+            "C",
+            xkb::compose::FORMAT_TEXT_V1,
+            xkb::compose::COMPILE_NO_FLAGS,
+        )
+        .expect("the compose table parses");
+        keyboard.compose = Some(xkb::compose::State::new(
+            &table,
+            xkb::compose::STATE_NO_FLAGS,
+        ));
+        let mut tap = |code: u32| {
+            let text = keyboard
+                .translate(code, true)
+                .into_iter()
+                .find_map(|event| match event {
+                    BackendEvent::Input(WindowEvent::KeyboardInput { event, .. }) => Some(event),
+                    _ => None,
+                })
+                .expect("a key event")
+                .text
+                .map(|text| text.to_string());
+            let _ = keyboard.translate(code, false);
+            text
+        };
+        // The German key right of ß is the acute dead key (evdev 13).
+        assert_eq!(tap(13), None, "the dead key alone types nothing yet");
+        assert_eq!(tap(18).as_deref(), Some("é"));
+        assert_eq!(tap(18).as_deref(), Some("e"), "the next e is plain again");
     }
 
     #[test]
