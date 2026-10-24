@@ -102,15 +102,12 @@ fn playlists_and_likes_change_through_verbs_and_field_edits() {
         "catalogue content only arrives by importing"
     );
 
-    assert!(
-        library
-            .apply(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
-            .is_err(),
-        "deleting asks for confirmation"
-    );
+    // The playlist, its name, cover and songs live in the document, so Undo
+    // takes a delete back whole: deleting asks nothing (the one undo step is
+    // proved in the resource's tests).
     library
-        .apply_confirmed(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
-        .unwrap();
+        .apply(Library::DELETE_PLAYLIST.with(Id::from_raw(mix.as_str())))
+        .expect("an undoable delete asks nothing");
     assert!(library.state().unwrap().playlist(&mix).is_none());
     assert_eq!(
         state.playlists.len(),
