@@ -3667,6 +3667,27 @@ cache = false
 default = false
 on = ["stable", "dispatch"]
 
+# One-password sign-in end to end (docs/security/sign-in.md §3, §4; tools/ci/signin-e2e.sh): this
+# commit's development installer medium installs an encrypted system in a KVM guest with a
+# software TPM, which then boots through first boot, migration at the greeter, the boot sign-in
+# screen, wrong entries, lock screen/sudo/polkit and the recovery key; a second install uses the
+# installer's separate disk secret. `t outputs signin-e2e-x86_64` gives report.md and the boot
+# sign-in and greeter screenshots. Two installs and about a dozen cold boots: an hour or more on
+# top of the image and medium builds.
+[[check]]
+name = "signin-e2e-x86_64"
+run = "bash tools/ci/signin-e2e.sh /target/publish/dev-installer-medium/x86_64/disk.qcow2 /target/signin-e2e"
+inputs = ["tools/ci/signin-e2e.sh", "tools/ci/signin_e2e.py", "os/dev/vm.sh", "os/dev/_common.sh", "os/dev/installer-console.py", "os/dev/probe-kvm.py"]
+needs = ["dev-installer-medium-x86_64"]
+outputs = ["/target/signin-e2e/**"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+cost = "heavy"
+requirement = { cores = 8, memory = "16GiB" }
+timeout_secs = 14400
+default = false
+on = ["stable", "dispatch"]
+
 # The imager's staging helper and reclaim proofs over loop devices. Needs a privileged node with loop
 # devices.
 [[check]]
