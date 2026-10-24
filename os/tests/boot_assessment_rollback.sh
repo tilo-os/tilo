@@ -47,8 +47,8 @@
 #                 power-cycled there (RESET): the shape of an update whose
 #                 keyboard is dead at the unlock prompt. On a kernel/initrd
 #                 entry (a dev disk) the prompt is added to that entry's
-#                 command line, a plain dm-crypt mapping of the ESP's
-#                 filesystem that is never opened; on a sealed UKI entry the
+#                 command line, a plain dm-crypt mapping of the root
+#                 filesystem's device that is never opened; on a sealed UKI entry the
 #                 fault is UNLOCK not being run for the staged deployment's
 #                 boots, so its real encrypted root waits.
 #      Each of its boots spends a try: tilo-boot-health.service fails (or, at
@@ -329,10 +329,14 @@ if [ "$FAULT" = unlock ]; then
   # with the ESP's superblock writable only for the edit.
   fault_script='set -eu
 esp="$1" file="$2"
-src="$(findmnt -n -o SOURCE --mountpoint "$esp" | head -1)"; src="${src%%[*}"
-uuid="$(blkid -s UUID -o value "$src")"
-[ -n "$uuid" ] || { echo "no filesystem UUID for the ESP ($src)" >&2; exit 1; }
 if grep -q "^uki[[:space:]]" "$file" || ! grep -q "^options[[:space:]]" "$file"; then echo sealed; exit 0; fi
+# The prompt is keyed to the UUID of the root filesystem, as the entry names it:
+# systemd-cryptsetup takes per-device options only for a full 128-bit UUID,
+# which a FAT serial is not, and without them it reads the device as LUKS,
+# fails at once and lets the boot go on.
+uuid="$(grep "^options[[:space:]]" "$file" | tr " \t" "\n\n" | sed -n "s/^root=UUID=//p" | head -1)"
+printf "%s" "$uuid" | grep -Eqx "[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}" \
+  || { echo "the staged entry names no root=UUID= to key the prompt to" >&2; exit 1; }
 unshare -m sh -c "mount -o remount,rw \"\$1\" && sed -i \"/^options[[:space:]]/s/\\\$/ rd.luks.name=\$3=tilo-unlock-fault rd.luks.options=\$3=plain/\" \"\$2\"; rc=\$?; mount -o remount,ro \"\$1\"; exit \$rc" fault "$esp" "$file" "$uuid"
 grep "^options" "$file"'
   shape="$(as_root "printf '%s' $(printf '%q' "$(printf '%s' "$fault_script" | base64 -w0)") | base64 -d > /run/tilo-unlock-fault.sh && bash /run/tilo-unlock-fault.sh $(printf '%q' "$ESP_PATH") $(printf '%q' "$ESP_PATH/loader/$NEXT/$B_FILE")" 2>"$OUT/03-fault.txt" | tr -d '\r')"
