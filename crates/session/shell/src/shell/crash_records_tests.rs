@@ -214,8 +214,22 @@ fn the_computer_stopping_is_kept_once_and_is_news_at_the_next_start() {
         .iter()
         .filter(|record| record.kind == CrashKind::ComputerStopped)
         .collect();
-    assert_eq!(stopped.len(), 4);
-    assert!(stopped.iter().all(|record| record.reason.is_some()));
+    assert_eq!(stopped.len(), 2, "a panic in each source: {listed:#?}");
+    assert!(
+        stopped
+            .iter()
+            .all(|record| record.reason == Some(StopReason::Panic))
+    );
+    let faults: Vec<&CrashRecord> = listed
+        .iter()
+        .filter(|record| record.kind == CrashKind::SystemFault)
+        .collect();
+    assert_eq!(faults.len(), 2, "an oops in each source: {listed:#?}");
+    assert!(
+        faults
+            .iter()
+            .all(|record| record.reason == Some(StopReason::Oops))
+    );
     let panic = stopped
         .iter()
         .find(|record| record.reason == Some(StopReason::Panic) && record.at == found_at)
@@ -233,6 +247,55 @@ fn the_computer_stopping_is_kept_once_and_is_news_at_the_next_start() {
     assert_eq!(
         notice.title,
         crate::shell::i18n::t("crash-notice-stopped-title")
+    );
+}
+
+/// The kernel keeps an oops as it keeps a panic, but it ends only the
+/// faulting task and runs on: in the fixture the oops at 904 s is followed
+/// by the session starting at 1840 s and the panic at 1843 s. Its record is
+/// a fault of the system's core, said in its own words, and no start notice
+/// claims the computer restarted for it.
+#[test]
+fn an_oops_the_system_ran_on_from_is_a_fault_and_not_the_computer_stopping() {
+    let dir = crash_dir();
+    assert_eq!(
+        take_news(dir.path()),
+        None,
+        "the first look marks the start"
+    );
+    // Timed by the start that found them, not by the fixture files' times.
+    let (oops, panic): (Vec<Stop>, Vec<Stop>) = stops(&read_pstore_dir(&fixtures().join("pstore")))
+        .into_iter()
+        .map(|stop| Stop {
+            written: None,
+            ..stop
+        })
+        .partition(|stop| stop.reason == StopReason::Oops);
+    let found_at = local("2026-10-25 08:14:00");
+
+    let kept = keep_stops(dir.path(), &oops, found_at).unwrap();
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let fault = read(dir.path(), &kept[0]).unwrap();
+    assert_eq!(fault.record.kind, CrashKind::SystemFault);
+    assert_eq!(fault.record.reason, Some(StopReason::Oops));
+    assert!(
+        fault.text.starts_with(FAULT_TITLE)
+            && fault.text.contains("went on running")
+            && !fault.text.contains("computer stopped"),
+        "{}",
+        fault.text
+    );
+    assert_eq!(
+        take_news(dir.path()),
+        None,
+        "a fault the system ran on from is no restart to tell of"
+    );
+
+    keep_stops(dir.path(), &panic, found_at + 60).unwrap();
+    assert_eq!(
+        take_news(dir.path()).map(|news| news.ended),
+        Some(Ended::Stopped),
+        "the panic that followed stopped the computer"
     );
 }
 

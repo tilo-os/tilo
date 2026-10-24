@@ -11,7 +11,9 @@
 //! boot's journal, where `systemd-pstore` moves them before any session
 //! starts, and keeps each as a `…-stopped.log` record beside the others.
 //! A record already kept is known by its text, so reading the same ones at
-//! every start keeps each once.
+//! every start keeps each once. The kernel keeps an oops too, a fault it
+//! ends the faulting task for and runs on from: its record is a fault of the
+//! system's core ([`CrashKind::SystemFault`]), never the computer stopping.
 //!
 //! The records are served under the host's provider
 //! ([`tilo_actions::remote::crash_records`]): `list` says what each is
@@ -38,6 +40,9 @@ pub const STOPPED_SUFFIX: &str = "-stopped.log";
 
 /// The heading of a record of the computer stopping.
 pub const STOPPED_TITLE: &str = "tilo computer stopped";
+
+/// The heading of a record of a fault the system's core went on from.
+pub const FAULT_TITLE: &str = "tilo system fault";
 
 /// How much of a record `list` reads: its facts, never its stacks.
 const HEAD_BYTES: u64 = 4 * 1024;
@@ -78,18 +83,24 @@ pub fn summarize(name: &str, head: &str) -> Option<CrashRecord> {
         .from_local_datetime(&written_at(name)?)
         .earliest()?
         .timestamp();
+    let reason = name
+        .ends_with(STOPPED_SUFFIX)
+        .then(|| field(head, "reason").and_then(reason_named))
+        .flatten();
     let kind = if name.ends_with(FREEZE_SUFFIX) {
         CrashKind::Froze
     } else if name.ends_with(STOPPED_SUFFIX) {
-        CrashKind::ComputerStopped
+        // An oops ended a task and the system ran on: nothing stopped.
+        if reason == Some(StopReason::Oops) {
+            CrashKind::SystemFault
+        } else {
+            CrashKind::ComputerStopped
+        }
     } else if field(head, "contained").is_some_and(|contained| contained.starts_with("yes")) {
         CrashKind::PartRestarted
     } else {
         CrashKind::Crashed
     };
-    let reason = (kind == CrashKind::ComputerStopped)
-        .then(|| field(head, "reason").and_then(reason_named))
-        .flatten();
     Some(CrashRecord {
         id: name.to_owned(),
         at,
@@ -364,18 +375,26 @@ fn read_journal() -> Vec<PstoreEntry> {
 /// log's file-name form).
 #[must_use]
 pub fn render_stop(stop: &Stop, stamp: &str) -> String {
-    let rule = "=".repeat(STOPPED_TITLE.len());
+    let (title, outcome) = if stop.reason == StopReason::Oops {
+        (
+            FAULT_TITLE,
+            "the system ended the faulting task and went on running",
+        )
+    } else {
+        (STOPPED_TITLE, "the computer stopped and started again")
+    };
+    let rule = "=".repeat(title.len());
     let when = if stop.written.is_some() {
         "when the system recorded it"
     } else {
         "the start that found it"
     };
     format!(
-        "{STOPPED_TITLE}\n{rule}\n\
+        "{title}\n{rule}\n\
          timestamp: {stamp}\n\
          time-of:   {when}\n\
          reason:    {}\n\
-         outcome:   the computer stopped and started again\n\n\
+         outcome:   {outcome}\n\n\
          {}\n",
         reason_word(stop.reason),
         stop.log,

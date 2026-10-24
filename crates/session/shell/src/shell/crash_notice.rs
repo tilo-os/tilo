@@ -67,7 +67,14 @@ pub fn ended_by(name: &str, body: impl FnOnce() -> Option<String>) -> Option<End
         return Some(Ended::Froze);
     }
     if name.ends_with(crate::shell::crash_records::STOPPED_SUFFIX) {
-        return Some(Ended::Stopped);
+        // An oops the system ran on from stopped nothing; a record that
+        // cannot be read is still the computer stopping.
+        let fault = body()
+            .and_then(|body| crate::shell::crash_records::summarize(name, &body))
+            .is_some_and(|record| {
+                record.kind == tilo_actions::remote::crash_records::CrashKind::SystemFault
+            });
+        return (!fault).then_some(Ended::Stopped);
     }
     let body = body()?;
     let contained = body

@@ -790,6 +790,7 @@ settings-about-problem-froze = Der Desktop reagierte nicht mehr
 settings-about-problem-crashed = Der Desktop wurde unerwartet beendet
 settings-about-problem-part-restarted = Ein Teil des Desktops wurde neu gestartet
 settings-about-problem-computer-stopped = Der Computer hat angehalten
+settings-about-problem-system-fault = Das System stieß auf einen Fehler und lief weiter
 settings-about-problem-card = Was passiert ist
 settings-about-problem-what = Problem
 settings-about-problem-when = Wann
