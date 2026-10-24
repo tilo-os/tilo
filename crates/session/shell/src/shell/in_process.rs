@@ -391,7 +391,7 @@ impl InProcessApps {
     /// records of its scratch tabs.
     ///
     /// # Errors
-    /// As [`Self::at`].
+    /// As `Self::at`.
     pub fn native(author: &str) -> Result<Self, LaunchError> {
         let person = crate::shell::settings_records::person_dir()
             .ok_or_else(|| LaunchError::Operation("no data home".into()))?;

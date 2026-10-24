@@ -3084,7 +3084,11 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionActionReset
                 | WebViewEvent::ExtensionMenu { .. }
                 | WebViewEvent::ExtensionOpenPopup { .. }
-                | WebViewEvent::ExtensionExecuteAction { .. }) => {
+                | WebViewEvent::ExtensionExecuteAction { .. }
+                | WebViewEvent::ExtensionNotification { .. }
+                | WebViewEvent::ExtensionPermissionRequest { .. }
+                | WebViewEvent::ExtensionPermissions { .. }
+                | WebViewEvent::ExtensionSignIn { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 WebViewEvent::CredentialResult(reply) => {
@@ -3155,7 +3159,8 @@ impl BrowserWidget {
                 | WebViewEvent::PermissionClosed { .. }
                 | WebViewEvent::NativeDownloadRequested { .. }
                 | WebViewEvent::DownloadUpdated { .. }
-                | WebViewEvent::DownloadRuntime { .. }) => {
+                | WebViewEvent::DownloadRuntime { .. }
+                | WebViewEvent::ExtensionDownloadOpen { .. }) => {
                     self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
@@ -3848,7 +3853,9 @@ impl BrowserWidget {
                 anchor_ids(&["browser.site.info", toolbar::OVERFLOW_ID, URL_INPUT_ID]),
             ));
         }
-        if let Some((content, mut anchors)) = self.extensions.panel(width, max_height) {
+        if !self.capabilities.asks_for_extension()
+            && let Some((content, mut anchors)) = self.extensions.panel(width, max_height)
+        {
             anchors.push(toolbar::OVERFLOW_ID.to_owned());
             anchors.push(URL_INPUT_ID.to_owned());
             return Some((PanelKind::Extension, content, anchors));
@@ -5942,6 +5949,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
+        self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;
         // The download that kept the tab from closing finished or was

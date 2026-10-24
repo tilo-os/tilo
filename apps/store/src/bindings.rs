@@ -65,7 +65,7 @@ pub fn package(item: &StoreItem, action: ActionKind) -> Option<ActionBinding<()>
 
 /// A control asking the system's one Uninstall to remove `item`: the same
 /// action Files and search offer, which asks the person first ("Uninstall
-/// <name>?", with "Remove its data" for a Flatpak).
+/// `<name>`?", with "Remove its data" for a Flatpak).
 pub fn uninstall(item: &StoreItem) -> ActionBinding<()> {
     ui::search::open_search_binding(&ui::search::SearchRequest::offering(
         UNINSTALL_ACTION,

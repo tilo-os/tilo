@@ -39,9 +39,6 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 DEV_CONTAINERFILE = "os/Containerfile.dev"
-# The CI workflows that build a dev image: the OS lane that gates on it and the
-# disk workflow for images that already exist.
-DEV_IMAGE_WORKFLOWS = (".forgejo/workflows/build-image.yml", ".forgejo/workflows/dev-disk.yml")
 DEV_REPOSITORY = "registry.tilo.so/tilo/tilo-vm"
 # Unsigned OS images from main integration builds; dev disks build on them.
 INTEGRATION_REPOSITORY = "registry.tilo.so/tilo/tilo-ci"
@@ -177,21 +174,6 @@ def check_dev_containerfile(repo: Path) -> list[Finding]:
             findings.append(Finding(builder, "builds os/Containerfile.dev without fingerprint-resolved RPMS_REF",
                                     "without it the dev image has no frozen snapshot to install its toolchain from",
                                     'resolve `rpms_ref` via resolve-rpm-snapshot.sh and pass `--build-arg "RPMS_REF=$rpms_ref"`.'))
-    # CI builds dev images with the same script developers run, so a CI dev
-    # image cannot drift from a local one.
-    for workflow in DEV_IMAGE_WORKFLOWS:
-        path = repo / workflow
-        if not path.is_file():
-            continue
-        body = path.read_text(encoding="utf-8")
-        if re.search(r"(?:--file[ =]|\bbuild\s+-f\s+)\S*Containerfile\.dev", body):
-            findings.append(Finding(workflow, "builds os/Containerfile.dev itself",
-                                    "a second recipe for the dev image drifts from the one developers build locally",
-                                    "build it with ./os/dev/build-dev-image.sh (TILO_DEV_BASE, TILO_DEV_IMAGE, TILO_BUILD_ARGS)."))
-        elif "build-dev-image.sh" not in body:
-            findings.append(Finding(workflow, "no longer builds the dev image with os/dev/build-dev-image.sh",
-                                    "the dev disk CI publishes must come from the recipe developers build locally",
-                                    "build it with ./os/dev/build-dev-image.sh."))
     return findings
 
 

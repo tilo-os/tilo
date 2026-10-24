@@ -243,7 +243,7 @@
 //!   the latest request takes over, and finish like an effect's.
 //! * **Projections** — an outside consequence an action recorded in the
 //!   document (an outbox, a filesystem operation, a device's configuration)
-//!   — are drained with [`ViewCx::drain`]: the framework runs the drain in
+//!   — are drained with [`RecordEnv::outbox`]: the framework runs the drain in
 //!   the live app after every change, on every participant's device, and
 //!   the drain acknowledges each entry with an action.
 //! * **Files of the mounted filesystem** an app shows (a file manager's

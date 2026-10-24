@@ -965,7 +965,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// Answer once what this effect submitted through its
     /// [`dispatcher`](Self::dispatcher) landed: each submission goes through
     /// the door like any other, checked again for the effect's invoker, and
-    /// `then` runs with the last one's [`Landed`] — what the door answered
+    /// `then` runs with the last one's [`Landed`](super::Landed) — what the door answered
     /// (what an edit changed, as the resource's surface reports it) and the
     /// items it created — to reply to the effect's caller. A refused
     /// submission fails the effect with why. The effect must be declared
@@ -1157,7 +1157,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     }
 
     /// Ask the host to show what a launch naming `arguments` opens in this
-    /// window, in place of the record it shows ([`OpenHere::open`]), then
+    /// window, in place of the record it shows ([`OpenHere::open`](super::OpenHere::open)), then
     /// run `then` on the UI thread with its answer: shown, or why not. The
     /// answer arrives even when the window shows the new record before this
     /// surface draws another frame. Cancelling the effect withdraws a
@@ -1948,7 +1948,7 @@ impl<R: Resource, E: Effect> ViewHandler for Handler<R, E> {
     }
 }
 
-/// A registered projection drain ([`ViewCx::drain`](super::ViewCx::drain)),
+/// A registered projection drain ([`RecordEnv::outbox`](super::RecordEnv::outbox)),
 /// as the view or surface that registered it holds it.
 ///
 /// A drain looks at the document after every change. When what it compares

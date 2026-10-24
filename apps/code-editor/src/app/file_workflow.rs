@@ -114,7 +114,7 @@ impl CodeApp {
 
     /// Write one buffer to its file. Whether it landed by the time this
     /// returns: on the frame loop the write runs on a background thread and
-    /// its outcome is folded in later ([`Self::save_buffer_then`]).
+    /// its outcome is folded in later (`Self::save_buffer_then`).
     ///
     /// `force` is the user having answered "overwrite anyway" to a conflict; it
     /// is the only way to skip the freshness check, and it is never set by the

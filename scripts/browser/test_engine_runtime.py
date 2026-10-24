@@ -2,9 +2,6 @@
 import json
 from pathlib import Path
 import re
-import os
-import subprocess
-import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,28 +20,9 @@ class EngineRuntimeNameTests(unittest.TestCase):
         built = re.findall(r"^ARG CHROMIUM_RUNTIME_VERSION=(\S+)$", containerfile, re.MULTILINE)
         self.assertEqual(built, [rust_const("RUNTIME_VERSION")])
 
-    def test_release_and_default_images_cannot_omit_the_offline_engine(self):
+    def test_default_images_cannot_omit_the_offline_engine(self):
         containerfile = (ROOT / "os/Containerfile").read_text()
         self.assertEqual(re.findall(r"^ARG TILO_WITH_BROWSER=(\S+)$", containerfile, re.MULTILINE), ["1"])
-        workflow = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
-        step = workflow.split("- name: Select the OS validation profile\n", 1)[1]
-        script = step.split("        run: |\n", 1)[1].split("\n      #", 1)[0]
-        script = "\n".join(line[10:] for line in script.splitlines() if line.strip())
-        for ref, event, requested, expected in (
-            ("refs/tags/v1.0.0", "push", "0", "1"),
-            ("refs/tags/v1.0.0", "workflow_dispatch", "0", "1"),
-            ("refs/heads/main", "push", "0", "1"),
-            ("refs/heads/main", "workflow_dispatch", "", "1"),
-            ("refs/heads/test", "workflow_dispatch", "0", "0"),
-        ):
-            with self.subTest(ref=ref, event=event, requested=requested), tempfile.TemporaryDirectory() as tmp:
-                output = Path(tmp) / "env"
-                result = subprocess.run(["bash", "-euc", script], env={
-                    **os.environ, "GITHUB_REF": ref, "GITHUB_EVENT_NAME": event,
-                    "REQUESTED_BROWSER": requested, "GITHUB_ENV": str(output),
-                }, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(output.read_text(), f"TILO_WITH_BROWSER={expected}\n")
 
     def test_the_final_image_verifies_the_baseline_engine_not_just_when_present(self):
         rootfs = (ROOT / "os/Containerfile").read_text().split("FROM binaries AS rootfs\n", 1)[1]

@@ -9,7 +9,7 @@ impl App {
 
     /// The screen-reader flag tracks [`Self::screen_reader_enabled`].
     /// Apply a preference change a control asked for (see
-    /// [`Widget::take_accessibility_request`](crate::widget::Widget::take_accessibility_request)).
+    /// [`Widget::take_accessibility_request`]).
     /// Returns whether one was pending.
     pub fn apply_accessibility_request(&mut self) -> bool {
         let Some(request) = self.root_widget.take_accessibility_request() else {
@@ -1438,7 +1438,7 @@ impl App {
     ///
     /// A refresh after nothing the tree is read from changed (no input, no
     /// document or widget change, no layout, no focus move since the last
-    /// refresh: [`Self::mark_semantic_tree_stale`]) is that empty diff
+    /// refresh: `Self::mark_semantic_tree_stale`) is that empty diff
     /// without walking the widgets, so a frame that changed nothing costs
     /// the host's accessibility walk nothing. Any such change publishes on
     /// the refresh that follows it.

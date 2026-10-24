@@ -30,7 +30,7 @@ pub(crate) mod resume;
 pub(crate) mod retained;
 /// The seam this store drives native shell replay selection through. The
 /// selection itself, and the retention authority behind a
-/// [`ShellBinding`](shell_selection::ShellBinding), belong to the embedder's
+/// [`shell_selection::ShellBinding`], belong to the embedder's
 /// adapter (`tilo-relay-shell` for the desktop).
 pub use tilo_relay_store::shell as shell_selection;
 #[cfg(test)]

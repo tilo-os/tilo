@@ -23,7 +23,7 @@ provenance="$(cosign verify-attestation --key "$key" --type slsaprovenance1 "$se
 printf '%s' "$provenance" | jq -e --arg digest "$digest" '
   [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
   | any(.buildDefinition.buildType == "https://tilo.sh/buildtypes/bootc-os/v1"
-        and .runDetails.builder.id == "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"
+        and .runDetails.builder.id == "https://code.tilo.so/tilo/t/os-release-v1"
         and any(.runDetails.byproducts[]?;
           .name == "independent-rebuild" and .uri == "urn:tilo:verification:manifest-digest-equal")
         and .buildDefinition.internalParameters.expectedReleaseDigest == $digest

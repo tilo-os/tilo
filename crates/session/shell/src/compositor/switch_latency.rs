@@ -1,11 +1,12 @@
 //! Workspace-switch latency: from the chord to its first frame, and from the
-//! chord to the resting frame after the switch's frame run.
+//! chord to the resting frame.
 //!
 //! A switch starts when the shell acts on it
-//! (`ShellOverlayHost::start_workspace_switch_frames`, on the keyboard chord,
-//! the touchpad gesture or the action). Every frame the compositor queues while
-//! the switch is held belongs to it; the first frame queued after the hold ends
-//! is the resting frame and closes the run. Frames are dated twice: when they
+//! (`ShellOverlayHost::start_workspace_switch`, on the keyboard chord, the
+//! touchpad gesture or the action). Every frame the compositor queues while
+//! the switch still owes its frame belongs to it; the first frame queued once
+//! nothing is owed is the resting frame and closes the run. The switch draws
+//! in one frame, so that is normally the first frame itself. Frames are dated twice: when they
 //! were queued (handed to the presenter, or drawn on a synchronous backend) and
 //! when they were shown (the page flip's vblank on direct scanout, the
 //! presenter's retirement otherwise). Each switch is one `WORKSPACE-SWITCH`

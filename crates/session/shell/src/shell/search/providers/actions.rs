@@ -39,7 +39,10 @@ use strips::{
     move_strip, remove_strip, rename_strip,
 };
 pub(crate) use strips::{STRIP_NAME_MAX_CHARS, valid_strip_name};
-use tabs::{TAB_RENAME_PARAMS, rename_focused_tab};
+use tabs::{
+    TAB_MOVE_TO_WORKSPACE_PARAMS, TAB_RENAME_PARAMS, move_focused_tab_to_workspace,
+    rename_focused_tab,
+};
 
 use crate::shell::shared_display_actions;
 
@@ -84,6 +87,36 @@ fn create_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), Ac
     }
     state.add_workspace(name);
     Ok(())
+}
+
+/// What `workspace.rename` must be told.
+const WORKSPACE_RENAME_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "name",
+    ParamType::Text,
+    "The workspace's new name: 1 to 120 characters without control characters.",
+)];
+
+/// Rename the workspace on screen, as its name field in the workspace menu
+/// and its settings does.
+fn rename_workspace(state: &mut ChromeState, args: &ActionArgs) -> Result<(), ActionError> {
+    let supplied = args.text("name").unwrap_or_default();
+    let name = supplied.trim();
+    if name.is_empty() || name.chars().count() > 120 || supplied.chars().any(char::is_control) {
+        return Err(ActionError::Explained(t(
+            "search-action-workspace-create-invalid-name",
+        )));
+    }
+    let refused = || ActionError::Refused(t("search-action-workspace-rename-refused"));
+    if !state.may_rename_active_workspace() {
+        return Err(refused());
+    }
+    state.rename_active_workspace(name);
+    let renamed = state
+        .tree()
+        .desktop
+        .active_workspace()
+        .is_some_and(|workspace| workspace.name == name);
+    if renamed { Ok(()) } else { Err(refused()) }
 }
 
 /// What `record.bring` must be told.
@@ -378,8 +411,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.reversible = true;
         }
         id if VIEW_ACTION_IDS.contains(&id) => contract = ActionContract::view(),
-        "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove"
-        | "tab.rename" => {
+        "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
+        | "strip.move" | "strip.remove" | "tab.rename" => {
             contract = workspace_create_contract();
         }
         "identity.connect" | "identity.select" | "identity.device.revoke" => {
@@ -426,6 +459,7 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "tab.open-beside"
         | "tab.split-right"
         | "tab.move-to-new-group"
+        | "tab.move-to-workspace"
         | "tab.close"
         | "tab.reopen" => {
             contract.kind = ActionKind::Undoable;
@@ -484,8 +518,8 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
         | "peer.pair-device" => tilo_actions::OperationKind::View,
         id if VIEW_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         "record.bring" | "peer.invite.named" | "agent.invite" | "agent.remove"
-        | "workspace.create" | "strip.create" | "strip.rename" | "strip.move" | "strip.remove"
-        | "tab.rename" => tilo_actions::OperationKind::Document,
+        | "workspace.create" | "workspace.rename" | "strip.create" | "strip.rename"
+        | "strip.move" | "strip.remove" | "tab.rename" => tilo_actions::OperationKind::Document,
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
         _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) || id.starts_with("navigation.axis.") => {
             tilo_actions::OperationKind::View
@@ -2776,6 +2810,13 @@ impl Action {
             params: WORKSPACE_CREATE_PARAMS,
             apply: create_workspace,
         },
+        Action {
+            id: "workspace.rename",
+            label: "search-action-workspace-rename",
+            subtitle: "search-action-workspace-rename-subtitle",
+            params: WORKSPACE_RENAME_PARAMS,
+            apply: rename_workspace,
+        },
         chrome(
             "workspace.previous",
             "search-action-workspace-previous",
@@ -2931,6 +2972,13 @@ impl Action {
                 })
             },
         ),
+        Action {
+            id: "tab.move-to-workspace",
+            label: "search-action-tab-move-to-workspace",
+            subtitle: "search-action-tab-move-to-workspace-subtitle",
+            params: TAB_MOVE_TO_WORKSPACE_PARAMS,
+            apply: move_focused_tab_to_workspace,
+        },
         chrome(
             "notifications.dnd.toggle",
             "search-action-notifications-dnd-toggle",
@@ -9897,5 +9945,46 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn workspace_rename_names_the_workspace_on_screen_and_refuses_a_bad_name() {
+        let chrome = chrome_with_room();
+        let name = || {
+            chrome
+                .borrow()
+                .tree()
+                .desktop
+                .active_workspace()
+                .map(|workspace| workspace.name.clone())
+        };
+        invoke_shell_action(
+            &chrome,
+            "workspace.rename",
+            &serde_json::json!({ "name": "  Thesis  " }),
+        )
+        .expect("the person here may rename their workspace");
+        assert_eq!(name().as_deref(), Some("Thesis"));
+        for bad in ["", "   ", "Line\nbreak"] {
+            assert!(
+                invoke_shell_action(
+                    &chrome,
+                    "workspace.rename",
+                    &serde_json::json!({ "name": bad }),
+                )
+                .is_err(),
+                "{bad:?} is no name"
+            );
+        }
+        assert!(
+            invoke_shell_action(
+                &chrome,
+                "workspace.rename",
+                &serde_json::json!({ "name": "x".repeat(121) }),
+            )
+            .is_err(),
+            "a name is at most 120 characters"
+        );
+        assert_eq!(name().as_deref(), Some("Thesis"));
     }
 }

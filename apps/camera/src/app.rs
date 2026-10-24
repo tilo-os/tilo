@@ -8,7 +8,7 @@
 //! A shutter press writes verified media bytes and retains one contextual
 //! recent-capture handoff. Photos and Video Player own collection browsing,
 //! favorites, deletion, and metadata. The Automerge document (see
-//! [`crate::doc`]) holds the recent handoff, scan history, and granular capture
+//! [`crate::resource`]) holds the recent handoff, scan history, and granular capture
 //! preferences. A
 //! live viewfinder needs a camera; when none is
 //! present the camera/scanner screens say so honestly rather than faking a

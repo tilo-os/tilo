@@ -36,7 +36,7 @@
 //!   by default, so it stays recoverable). Because the window cannot be
 //!   closed, [`Capabilities::conditional_writes`] is `false`.
 //! - **Native documents.** Docs, Sheets, Slides, Drawings (and Forms, Sites,
-//!   shortcuts) are [`ItemKind::Native`] with their `webViewLink`; Docs,
+//!   shortcuts) are [`ItemKind::Native`](cloud_source::ItemKind::Native) with their `webViewLink`; Docs,
 //!   Sheets, Slides and Drawings export to office formats and PDF.
 //! - **Rate limits.** `403 userRateLimitExceeded`/`rateLimitExceeded` and
 //!   `429` are [`Error::RateLimited`] with the `Retry-After` delay when the

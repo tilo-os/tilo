@@ -560,6 +560,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(closing && clients.empty())CefQuitMessageLoop();
   }
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request,bool user_gesture,bool redirect) override {
+    // A sign-in panel going to its extension's own address ends the sign-in
+    // there: the page goes no further, and the panel closes.
+    if(extension_panel_ && frame->IsMain() && extension_tabs && extension_tabs->SignInNavigating(id_,request->GetURL().ToString())) return true;
     if(sealed_documents && !SealedDocumentUrl(request->GetURL().ToString())) {
       // A link the person followed opens with the embedder; a refresh, a
       // redirect or a frame goes nowhere.
@@ -632,6 +635,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
     CompleteMainNavigation(browser->GetMainFrame()->GetURL().ToString(),0);
+    // A sign-in out of sight ends once its page loaded.
+    if(extension_panel_ && extension_tabs)extension_tabs->SignInLoaded(id_,browser->GetMainFrame()->GetURL().ToString());
     // Not at OnLoadEnd: the browser still counts as loading there, and an
     // action's reply waiting on the load would say it is still loading.
     if(page_automation_)page_automation_->NavigationFinished();
@@ -982,6 +987,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       // Opened by its toolbar button: like a click, it may script the page.
       if(d->HasKey("action") && extension_tabs)extension_tabs->Grant(d->GetString("action"),panel_opener_);
     }
+    // The page an extension asked the person to sign in on, shown in a
+    // panel over the page used last or loaded out of sight: the host
+    // watches where it goes. One for no sign-in going on closes.
+    else if(op=="extension_sign_in_panel") {
+      extension_panel_=true;panel_opener_=last_focused_tab;
+      if(!extension_tabs || !extension_tabs->SignInPanel(d->GetString("id"),d->GetInt("flow"),id_))
+        CefPostTask(TID_UI,base::BindOnce([](int tab){auto found=clients.find(tab);if(found!=clients.end())found->second->CloseNative();},id_));
+    }
     // A click on an extension's toolbar button over this page.
     else if(op=="extension_click") {if(extension_tabs)extension_tabs->Clicked(d->GetString("id"),id_);}
     // An item of an extension's toolbar button menu, chosen over this page.
@@ -1016,7 +1029,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
           const bool again=click_count_>0 && type==click_button_ && now-click_time_<=std::chrono::milliseconds(500)
             && std::abs(event.x-click_x_)<=4 && std::abs(event.y-click_y_)<=4;
           click_count_=again?std::min(click_count_+1,3):1;
-          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;
+          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;activated_=now;
         }
         host->SendMouseClickEvent(event,type,!down,std::max(click_count_,1)); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
@@ -1024,7 +1037,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto frame=browser_->GetFocusedFrame();
       if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
     }
-    else if(op=="key") Key(d);
+    else if(op=="key") {if(d->GetBool("down"))activated_=std::chrono::steady_clock::now();Key(d);}
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
@@ -1122,6 +1135,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void LoadUrl(const std::string& url) {if(browser_)browser_->GetMainFrame()->LoadURL(url);}
   void ReloadPage(bool bypass) {if(!browser_)return;if(bypass)browser_->ReloadIgnoreCache();else browser_->Reload();}
   bool detached() const {return transfer_owner_;}
+  // The person clicked here or pressed a key within the last few seconds,
+  // as long as Chromium counts it as their activation of the page.
+  bool activated() const {return activated_ && std::chrono::steady_clock::now()-*activated_<=std::chrono::seconds(5);}
   bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
   void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
   void DetachVisible() {
@@ -1412,6 +1428,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
+  std::optional<std::chrono::steady_clock::time_point> activated_;
   CefRefPtr<tilo::TabInspector> inspector_;CefRefPtr<tilo::DocumentScripts> extension_scripts_;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
@@ -1505,7 +1522,28 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
       d->GetType("commands")==VTYPE_DICTIONARY?d->GetDictionary("commands"):nullptr);
     return;
   }
+  // What an extension may ask for later, and what of it the person granted,
+  // as the Browser keeps it (extension_permissions.h).
+  if(op=="extension_grants") {
+    auto set=[&](const char* key) {
+      tilo::PermissionSet read;auto inner=d->GetDictionary(key);
+      for(const char* name:{"permissions","hosts"}) {
+        auto list=inner->GetList(name);auto& into=std::string(name)=="permissions"?read.permissions:read.origins;
+        for(size_t i=0;list && i<list->GetSize();++i)into.push_back(list->GetString(i));
+      }
+      return read;
+    };
+    if(extension_tabs)extension_tabs->SetOptional(d->GetString("id"),set("optional"),set("granted"));
+    return;
+  }
+  // The person answered an extension's request for more access.
+  if(op=="extension_permission_decision") {if(extension_tabs)extension_tabs->PermissionDecision(d->GetInt("request"),d->GetBool("allow"));return;}
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
+  // The person chose an extension's notification, or one of its buttons.
+  if(op=="extension_notification_chosen") {
+    if(extension_tabs)extension_tabs->NotificationChosen(d->GetString("id"),d->GetString("notification"),d->HasKey("button")?std::optional<int>(d->GetInt("button")):std::nullopt);
+    return;
+  }
   // The Browser's own extension, which tells which tab a page is.
   if(op=="extension_identity") {if(extension_tabs)extension_tabs->SetIdentity(d->GetString("id"));return;}
   if(op=="download_start") {
@@ -1644,6 +1682,26 @@ void StartExtensionTabs() {
   hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
   hooks.event=[](int tab,const std::string& name,CefRefPtr<CefDictionaryValue> fields) {if(auto client=ClientOf(tab))client->Event(name,fields);};
+  // An extension's download belongs to a page, as every download here
+  // does: the one it was asked on, else any the person can see.
+  hooks.download=[](int tab,const std::string& url,const std::string& name,tilo::Downloads::Started done) {
+    auto client=ClientOf(tab);
+    if(client && !client->accepts_downloads()) {client=nullptr;tab=0;}
+    for(const auto& [id,other]:clients)if(!client && other->accepts_downloads() && !other->ExtensionState().panel) {client=other;tab=id;}
+    if(!downloads || !client) {done(0,"No page to download from");return;}
+    downloads->Expect(tab,url,name,std::move(done));
+    client->browser_->GetHost()->StartDownload(url);
+  };
+  hooks.open_download=[](int tab,int id,bool reveal)->std::string {
+    if(!downloads || !downloads->Known(id))return "Invalid downloadId";
+    if(downloads->CompletedPath(id).empty())return "Download must be complete";
+    auto client=ClientOf(tab);
+    if(!client)return "No window to open it in";
+    auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("reveal",reveal);
+    client->Event("extension_download_open",fields);
+    return "";
+  };
+  hooks.activated=[](int tab) {auto client=ClientOf(tab);return client && client->activated();};
   hooks.pipe_listen=[](const std::string& session,tilo::ExtensionTabs::PipeListener listener) {
     if(listener)pipe_listeners[session]=std::move(listener);else pipe_listeners.erase(session);
   };
@@ -1821,6 +1879,32 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
   if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
+  if(op=="extension_notification_chosen") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="notification" && key!="button")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("notification",VTYPE_STRING) &&
+           d->GetString("notification").length()<=tilo::ExtensionNotifications::kMaxId &&
+           (!d->HasKey("button") || (type("button",VTYPE_INT) && d->GetInt("button")>=0 && d->GetInt("button")<(int)tilo::ExtensionNotifications::kMaxButtons));
+  }
+  if(op=="extension_grants") {
+    // Two sets, each of permissions and site patterns, as extension_access names them.
+    auto set=[&](const char* key) {
+      if(!type(key,VTYPE_DICTIONARY))return false;auto inner=d->GetDictionary(key);
+      for(const char* name:{"permissions","hosts"}) {
+        if(!inner->HasKey(name))continue;
+        if(inner->GetType(name)!=VTYPE_LIST)return false;auto list=inner->GetList(name);if(list->GetSize()>512)return false;
+        for(size_t i=0;i<list->GetSize();++i)if(list->GetType(i)!=VTYPE_STRING || list->GetString(i).length()>2048)return false;
+      }
+      return true;
+    };
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && set("optional") && set("granted");
+  }
+  if(op=="extension_permission_decision") return type("request",VTYPE_INT) && d->GetInt("request")>0 && type("allow",VTYPE_BOOL);
+  if(op=="extension_sign_in_panel") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="id" && key!="flow")return false;
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("flow",VTYPE_INT) && d->GetInt("flow")>0;
+  }
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;

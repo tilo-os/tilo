@@ -2748,7 +2748,7 @@ impl ShortcutConfig {
     /// default instead of leaving ambiguous client ownership.
     ///
     /// A stored chord that was once the default for its action
-    /// ([`RETIRED_DEFAULTS`]) was saved because [`Self::save`] writes the
+    /// (`RETIRED_DEFAULTS`) was saved because [`Self::save`] writes the
     /// whole table, not because the person chose it; it yields to the
     /// current default.
     #[must_use]

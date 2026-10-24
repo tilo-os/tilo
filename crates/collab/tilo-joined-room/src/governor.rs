@@ -46,7 +46,7 @@ fn now_ns(now: SystemTime) -> Result<u64, JoinError> {
 }
 
 /// The signed governance a member admits to join: the room's governance
-/// alone, as one message ([`crate::enrollment`] admits nothing else from a
+/// alone, as one message (`crate::enrollment` admits nothing else from a
 /// bootstrap). Its records follow through the room's sync.
 impl tilo_peer_state::join_ledger::GovernanceMessages for NativeCommittedView {
     fn governance_messages(&self) -> Vec<Vec<u8>> {

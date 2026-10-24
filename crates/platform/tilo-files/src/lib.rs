@@ -13,7 +13,7 @@
 //! |---|---|
 //! | `Location::Native` on Linux and macOS | `std::fs`, with [`native::atomic`] for crash-safe replacement and [`native::lock`] (`flock`) for locks |
 //! | `VirtualRoot::Memory` on every target | a map in this process, shared by every `Dir` on the same location; [`Dir::memory`] makes a private one |
-//! | `VirtualRoot::Opfs` on the web | the browser's origin-private file system, one directory per profile, and Web Locks; app `data`, `config` and `state` through the page's mirror once the host loaded it ([`web`]) |
+//! | `VirtualRoot::Opfs` on the web | the browser's origin-private file system, one directory per profile, and Web Locks; app `data`, `config` and `state` through the page's mirror once the host loaded it (`web`) |
 //!
 //! A location a target has no backend for (`Native` on the web, `Opfs`
 //! natively) is an [`FsError::Unsupported`] from [`Dir::open`].

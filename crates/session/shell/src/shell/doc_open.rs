@@ -1,6 +1,6 @@
 //! Opening a document in the application that owns it.
 //!
-//! Two registries answer half of "who owns this file" each: [`qdoc`] knows
+//! Two registries answer half of "who owns this file" each: `qdoc` knows
 //! which extensions are editable documents, while app manifests declare
 //! normalized MIME and extension claims. [`resolve`] reports
 //! both, since they fail differently — no app at all vs. no editor.

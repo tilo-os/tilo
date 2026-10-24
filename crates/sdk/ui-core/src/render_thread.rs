@@ -19,7 +19,7 @@
 //! worker, which drops its `RenderSurface<'static>` before the `Window` is
 //! dropped — required or wgpu panics on a surface outliving its window.
 //! On `suspended` the worker drops only the surface and hands its context
-//! and renderer back ([`RenderThreadHandle::shutdown_keeping_renderer`]), so
+//! and renderer back (`RenderThreadHandle::shutdown_keeping_renderer`), so
 //! the next surface does not open a device and compile pipelines again.
 #![allow(
     clippy::disallowed_methods,

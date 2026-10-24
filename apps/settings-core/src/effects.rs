@@ -2,13 +2,13 @@
 //!
 //! Settings edits no document of its own: a preference lives in the
 //! session's settings records (read and written through the app's settings
-//! document, [`crate::store`]), a device's state lives in the device. Every
+//! document, `crate::store`), a device's state lives in the device. Every
 //! change a control, the palette, an agent or a script makes is therefore a
 //! [`SettingsEffect`], answered by [`crate::SettingsApp`]'s
 //! [`ResourceSurface::effect`](ui::framework::ResourceSurface::effect).
 //!
 //! The vocabulary is composed of one `#[derive(Effect)]` enum per area of
-//! Settings ([`settings_effects!`]): each area declares its own effects and
+//! Settings (`settings_effects!`): each area declares its own effects and
 //! answers them in its own module, and every effect id is unique across the
 //! whole vocabulary. A control binds one of an area's effects with
 //! [`effect`], which names it as part of [`SettingsEffect`].

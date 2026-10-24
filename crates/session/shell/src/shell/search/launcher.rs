@@ -16,7 +16,7 @@
 //!
 //! A section with nothing real to show is left out. Each section is filled
 //! by the providers that answer the empty query for it
-//! ([`SearchProvider::launcher_section`]); this module only orders and
+//! ([`super::SearchProvider::launcher_section`]); this module only orders and
 //! groups their rows. The scope is the query's: the current workspace
 //! ([`SearchScope::Workspace`]) or every workspace ([`SearchScope::All`]).
 //! Typing turns the same surface into results; clearing the query brings

@@ -16,7 +16,6 @@ sys.path.insert(0, str(ROOT / "tools" / "ci"))
 import t_matrix  # noqa: E402
 SCRIPT = "os/tests/ci_fast_images.sh"
 FAST = "/archives/ci fast.oci.tar"
-CONTROL = "/archives/ci control.oci.tar"
 
 
 class CiFastImagesTests(unittest.TestCase):
@@ -52,16 +51,15 @@ sys.exit(37 if sys.argv[1] == os.environ.get('FAIL_ARCHIVE') else 0)
         calls = [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
         return result, calls
 
-    def test_both_archives_receive_the_full_strict_smoke_commands(self):
-        result, calls = self.run_script(FAST, CONTROL)
+    def test_the_archive_receives_the_full_strict_smoke_commands(self):
+        result, calls = self.run_script(FAST)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 2)
-        for call, archive in zip(calls, (FAST, CONTROL), strict=True):
-            self.assertEqual(call[:5], [archive, "bash", "-euo", "pipefail", "-c"])
-            self.assertEqual(len(call), 6)
-            syntax = subprocess.run(["bash", "-n", "-c", call[5]], capture_output=True, text=True)
-            self.assertEqual(syntax.returncode, 0, syntax.stderr)
-        fast, control = calls[0][5], calls[1][5]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:5], [FAST, "bash", "-euo", "pipefail", "-c"])
+        self.assertEqual(len(calls[0]), 6)
+        syntax = subprocess.run(["bash", "-n", "-c", calls[0][5]], capture_output=True, text=True)
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        fast = calls[0][5]
         for probe in (
             ". /etc/os-release", "cargo --version", "rustc --version",
             "cargo fmt --version", "cargo deny --version", "cargo machete --version",
@@ -82,42 +80,28 @@ sys.exit(37 if sys.argv[1] == os.environ.get('FAIL_ARCHIVE') else 0)
              "mkfs.vfat", "udevadm", "sfdisk", "partx", "blkid", "blockdev", "findmnt", "flock", "lsblk", "losetup"},
             set(native.group(1).split()))
         self.assertEqual(fast.count('command -v "$tool"'), 2)
-        for probe in ("docker --version", "docker buildx version", "cargo --version"):
-            self.assertIn(probe, control)
 
-    def test_failed_fast_image_stops_before_control(self):
-        result, calls = self.run_script(FAST, CONTROL, fail_archive=FAST)
+    def test_a_failed_image_fails_the_smoke(self):
+        result, calls = self.run_script(FAST, fail_archive=FAST)
         self.assertEqual(result.returncode, 37, result.stderr)
         self.assertEqual([call[0] for call in calls], [FAST])
 
-    def test_failed_control_image_fails_the_smoke(self):
-        result, calls = self.run_script(FAST, CONTROL, fail_archive=CONTROL)
-        self.assertEqual(result.returncode, 37, result.stderr)
-        self.assertEqual([call[0] for call in calls], [FAST, CONTROL])
-
     def test_missing_archive_is_rejected_before_any_image_runs(self):
-        for args in ((), (FAST,)):
-            with self.subTest(args=args):
-                result, calls = self.run_script(*args)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("usage:", result.stderr)
-                self.assertEqual(calls, [])
+        result, calls = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("usage:", result.stderr)
+        self.assertEqual(calls, [])
 
-    def test_publication_requires_smoking_both_built_archives(self):
+    def test_publication_requires_smoking_the_built_archive(self):
         checks = {check["name"]: check for check in t_matrix.load(ROOT)["check"]}
         smoke = checks["image-ci-fast-smoke"]
-        self.assertEqual(smoke["needs"], ["image-ci-fast", "image-ci-control"])
+        self.assertEqual(smoke["needs"], ["image-ci-fast"])
         self.assertEqual(shlex.split(smoke["run"]), [
             "bash", SCRIPT, "/target/publish/ci-fast/image.oci.tar",
-            "/target/publish/ci-control/image.oci.tar",
         ])
         self.assertIn(SCRIPT, smoke["inputs"])
-        for name in ("publish-ci-fast", "publish-ci-control"):
-            self.assertIn("image-ci-fast-smoke", checks[name]["needs"])
-            self.assertEqual(checks[name]["on"], ["main", "dispatch"])
-        control = checks["image-ci-control"]
-        self.assertIn("image-ci-fast", control["needs"])
-        self.assertIn("CI_FAST_IMAGE=oci-archive:/target/publish/ci-fast/image.oci.tar", control["run"])
+        self.assertIn("image-ci-fast-smoke", checks["publish-ci-fast"]["needs"])
+        self.assertEqual(checks["publish-ci-fast"]["on"], ["main", "dispatch"])
 
 
 if __name__ == "__main__":

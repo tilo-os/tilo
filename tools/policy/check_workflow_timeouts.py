@@ -19,8 +19,6 @@ WORKFLOWS = ROOT / ".forgejo" / "workflows"
 JOB = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 TIMEOUT = re.compile(r"^    timeout-minutes:\s*([0-9]+)\s*$")
 MAX_MINUTES = 180
-# The OS release build still exceeds the limit.
-LONGER = {"build-image.yml"}
 LOCAL_CALL = re.compile(r"^    uses:\s*\./\.forgejo/workflows/([A-Za-z0-9_.-]+\.ya?ml)\s*$")
 
 
@@ -58,7 +56,7 @@ def jobs_without_timeouts(path: Path) -> list[str]:
         timeout_match = TIMEOUT.match(line)
         if current_job is not None and timeout_match:
             minutes = int(timeout_match.group(1))
-            jobs[current_job] = 0 < minutes and (minutes <= MAX_MINUTES or path.name in LONGER)
+            jobs[current_job] = 0 < minutes <= MAX_MINUTES
         call_match = LOCAL_CALL.match(line)
         if current_job is not None and call_match:
             jobs[current_job] = (path.parent / call_match.group(1)).is_file()

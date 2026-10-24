@@ -721,8 +721,8 @@ impl ProjectionOverlay {
     }
 
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
+        // Its painted switches ask the motion clock for their own frames.
         self.transition.is_moving(now)
-            || self.faces.is_moving(now)
             || matches!(
                 self.controller.status,
                 ProjectionStatus::Scanning | ProjectionStatus::Connecting { .. }

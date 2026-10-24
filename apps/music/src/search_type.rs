@@ -364,7 +364,7 @@ fn kind_icon(type_id: &str) -> Icon {
 
 /// The user's **own library** — synced across their devices — as typed
 /// Song/Album/Artist/Playlist search entries, the library resource's own
-/// ([`crate::resource::Music`]): found from the one Ctrl+K palette and OS
+/// ([`crate::model::Library`]): found from the one Ctrl+K palette and OS
 /// search, each invoking the canonical action that plays the song or opens
 /// the page. An empty library contributes nothing — nothing is fabricated.
 ///

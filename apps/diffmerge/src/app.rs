@@ -3,8 +3,8 @@
 //!
 //! Data flow:
 //! * The document holds what is open — the comparison, the merge and its
-//!   merged result — and the app is [presented](DiffMergeApp::present_state)
-//!   it; the two views ([`DiffView`], [`MergeView`]) draw from that.
+//!   merged result — and the app is presented it (`DiffMergeApp::present_state`);
+//!   the two views ([`DiffView`], [`MergeView`]) draw from that.
 //! * The toolbar's buttons are drawn directly and hit-tested in `handle_event`.
 //! * Opening files is the [`DiffmergeEffect::OpenFiles`] effect, whatever
 //!   asks for it: it goes through the **host** file chooser (the XDG Desktop

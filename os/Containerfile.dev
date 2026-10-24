@@ -46,9 +46,8 @@
 #         -t localhost/tilo-vm:latest .
 #
 # os/dev/build-dev-image.sh (./os/build.sh --dev) does that for the local
-# production image and then writes a disk. CI runs the same script: the OS
-# integration lane (.forgejo/workflows/build-image.yml) FROM the image it just
-# built, and .forgejo/workflows/dev-disk.yml FROM a published one.
+# production image and then writes a disk. CI builds the same image in t's
+# os-dev-image-{arch} check FROM the os-image-{arch} of the same tree.
 # ============================================================================
 
 # The production image to derive from: `localhost/tilo:latest` (./os/build.sh),
@@ -56,9 +55,9 @@
 # `rootfs` target of os/Containerfile.
 ARG BASE_IMAGE=localhost/tilo:latest
 # The frozen RPM snapshot the production image was built from. Like
-# os/Containerfile, this has no default: os/dev/build-dev-image.sh and
-# .forgejo/workflows/dev-disk.yml pass a fingerprint-resolved RPMS_REF, so a
-# build of any commit installs what that commit's production builder installed.
+# os/Containerfile, this has no default: os/dev/build-dev-image.sh passes a
+# fingerprint-resolved RPMS_REF, so a build of any commit installs what that
+# commit's production builder installed.
 ARG RPMS_REF
 # Where the Rust toolchain comes from: a registry.tilo.so/tilo/tilo-builder index,
 # pinned by digest. .forgejo/workflows/build-builder-image.yml installs the

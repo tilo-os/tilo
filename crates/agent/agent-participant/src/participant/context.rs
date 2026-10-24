@@ -160,6 +160,7 @@ impl AgentParticipant {
                 .as_ref()
                 .map(|running| running.new_documents.clone())
                 .unwrap_or_default(),
+            retries: self.task_retries.clone(),
         }
     }
 

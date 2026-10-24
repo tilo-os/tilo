@@ -10,8 +10,9 @@
 //! drew four windows and closed them kept every page their textures had
 //! touched until it exited.
 //!
-//! [`release_freed_memory`] takes those pages back without knowing where the
-//! driver's free ranges are, and without touching memory that is not its
+//! [`release_freed_memory`](crate::shell::render::software_gpu_memory::release_freed_memory)
+//! takes those pages back without knowing where the driver's free ranges
+//! are, and without touching memory that is not its
 //! own. It allocates device memory through the same `VkDevice` until the
 //! driver has to grow the file, which it does only once no free range below
 //! the end is large enough: every range it was handed was free, and is its

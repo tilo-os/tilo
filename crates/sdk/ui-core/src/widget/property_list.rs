@@ -14,7 +14,7 @@
 //!
 //! **One content edge.** Labels start on the column's content edge, like a
 //! section's title and a list row's text; a stripe bleeds
-//! [`row_bleed`](crate::chrome::row_bleed) past it on both sides. A face
+//! [`row_bleed`] past it on both sides. A face
 //! paints into the list's outer rect (the content edge grown by the bleed);
 //! the retained list grows its own layout box by it. Lists in one
 //! [`Section`](crate::widget::Section), and the groups of
@@ -363,7 +363,7 @@ fn lay_out(
 }
 
 /// Immediate-mode property list. `paint` takes the list's outer rect: the
-/// content edge grown by [`row_bleed`](crate::chrome::row_bleed).
+/// content edge grown by [`row_bleed`].
 #[derive(Clone, Debug)]
 pub struct PropertyListFace<'a> {
     rows: &'a [PropertyRow<'a>],

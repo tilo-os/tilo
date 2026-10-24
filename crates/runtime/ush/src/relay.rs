@@ -46,7 +46,7 @@ pub struct RelayPeer {
     #[serde(skip)]
     pub address: Option<String>,
     /// Whether the relay last said a worker runs environment sessions:
-    /// its newest answer ([`relay_offers`]), else its registration.
+    /// its newest answer ([`load_offers`]), else its registration.
     #[serde(skip)]
     pub runs_environments: bool,
     /// When this device last asked the relay, Unix milliseconds; 0 when it

@@ -204,6 +204,7 @@ members = [
 
     # Dev
     "crates/dev/collab-link",
+    "crates/dev/workspace-unify",
     "crates/dev/collab-probe",
     "crates/dev/copy-lint",
     "crates/dev/room-load",

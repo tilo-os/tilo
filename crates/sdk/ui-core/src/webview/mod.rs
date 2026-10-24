@@ -213,6 +213,20 @@ pub struct Popup {
     pub height: u32,
 }
 
+/// API permissions and site patterns, as `chrome.permissions` names a set
+/// of them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionPermissionSet {
+    pub permissions: Vec<String>,
+    pub origins: Vec<String>,
+}
+
+impl ExtensionPermissionSet {
+    pub fn is_empty(&self) -> bool {
+        self.permissions.is_empty() && self.origins.is_empty()
+    }
+}
+
 /// What an extension changed of its toolbar button (`chrome.action`). Each
 /// field is `None` when it did not change; `Some(None)` takes back what it
 /// set for one tab, so that tab shows what every tab shows.
@@ -278,6 +292,21 @@ pub enum ExtensionMenuItem {
         items: Vec<ExtensionMenuItem>,
     },
     Separator,
+}
+
+/// What an extension's notification (`chrome.notifications`) shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionNotice {
+    pub title: String,
+    pub message: String,
+    /// A line under the message (`contextMessage`), empty for none.
+    pub context: String,
+    /// A list notification's items: each a title and a message.
+    pub items: Vec<(String, String)>,
+    /// Its buttons' names, at most two.
+    pub buttons: Vec<String>,
+    /// How far along a progress notification is, from 0 to 100.
+    pub progress: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -482,6 +511,21 @@ pub enum WebViewCommand {
         /// suggested keys the engine gives and runs.
         commands: Option<serde_json::Value>,
     },
+    /// What an extension may ask for later (its manifest's
+    /// `optional_permissions` and `optional_host_permissions`), and what of
+    /// it the person granted: the engine answers `chrome.permissions` within
+    /// them, and its tab APIs within what was granted too.
+    ExtensionGrants {
+        id: String,
+        optional: ExtensionPermissionSet,
+        granted: ExtensionPermissionSet,
+    },
+    /// The person answered an extension's request for more access
+    /// ([`WebViewEvent::ExtensionPermissionRequest`]).
+    ExtensionPermissionDecision {
+        request: u32,
+        allow: bool,
+    },
     /// An extension that left the profile: it is told nothing more.
     ExtensionForget {
         id: String,
@@ -498,6 +542,14 @@ pub enum WebViewCommand {
     ExtensionPanel {
         action: Option<String>,
     },
+    /// This tab shows the page of sign-in `flow` of extension `id`
+    /// ([`WebViewEvent::ExtensionSignIn`]), over the page used last or out
+    /// of sight: to extensions it is no tab, and its closing turns the
+    /// sign-in down.
+    ExtensionSignInPanel {
+        id: String,
+        flow: u32,
+    },
     /// The person clicked an extension's toolbar button over this page: the
     /// extension hears of it (`action.onClicked`) and may script the page.
     ExtensionClick {
@@ -509,6 +561,14 @@ pub enum WebViewCommand {
     ExtensionMenuChoice {
         id: String,
         key: String,
+    },
+    /// The person chose the notification `notification` of the extension
+    /// `id`: its body, or the button at `button`. The extension hears of it
+    /// and of the notification closing.
+    ExtensionNotificationChosen {
+        id: String,
+        notification: String,
+        button: Option<u8>,
     },
     DownloadDecision {
         id: u32,
@@ -579,6 +639,49 @@ pub enum WebViewEvent {
     ExtensionMenu {
         id: String,
         items: Vec<ExtensionMenuItem>,
+    },
+    /// An extension showed or changed its notification `notification`
+    /// (`notice`), or took it away (`None`). A notification is no tab's:
+    /// it comes through the page the person used last.
+    ExtensionNotification {
+        id: String,
+        notification: String,
+        notice: Option<ExtensionNotice>,
+    },
+    /// An extension asks for more access (`chrome.permissions.request`),
+    /// all of it among what its manifest offers for later: ask the person,
+    /// and answer with [`WebViewCommand::ExtensionPermissionDecision`].
+    ExtensionPermissionRequest {
+        request: u32,
+        id: String,
+        asked: ExtensionPermissionSet,
+    },
+    /// What an extension holds of what it may ask for changed: it was
+    /// granted more, or gave some up. `granted` is all it holds now, which
+    /// the Browser keeps with the extension.
+    ExtensionPermissions {
+        id: String,
+        granted: ExtensionPermissionSet,
+    },
+    /// An extension asked to open one of the engine's complete downloads
+    /// (`chrome.downloads.open`), or show it in its folder (`reveal`,
+    /// `chrome.downloads.show`), from this tab's window.
+    ExtensionDownloadOpen {
+        id: u32,
+        reveal: bool,
+    },
+    /// An extension asks the person to sign in on the web page `url`
+    /// (`identity.launchWebAuthFlow`), over this tab's page: show it where
+    /// its popup shows, or when it may not ask the person (`interactive`
+    /// false) load it out of sight, in a tab marked with
+    /// [`WebViewCommand::ExtensionSignInPanel`] for sign-in `flow`. The
+    /// engine ends the sign-in, and closes that tab, once the page goes to
+    /// the extension's own address.
+    ExtensionSignIn {
+        id: String,
+        url: String,
+        interactive: bool,
+        flow: u32,
     },
     SiteStatus(SiteStatus),
     SiteResult {

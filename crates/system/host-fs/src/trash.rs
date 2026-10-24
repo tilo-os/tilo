@@ -3,7 +3,7 @@
 //! On Unix hosts, macOS included, the home Trash (the XDG trash spec's
 //! `Trash` in the data directory: `$XDG_DATA_HOME/Trash`, or
 //! `~/Library/Application Support/Trash` on macOS) is managed here directly
-//! ([`freedesktop`]): moving an item in, restoring it and purging it need
+//! (`freedesktop`): moving an item in, restoring it and purging it need
 //! nothing but the item, the Trash directories and a rename. In particular
 //! they need no mount table, which a sandboxed app cannot read (`/proc` is
 //! closed to it), and every item moved in can be listed, restored and purged
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 mod freedesktop;
 
-/// Move files to the host Trash ([`trash`] each).
+/// Move files to the host Trash ([`trash()`] each).
 ///
 /// # Errors
 ///
@@ -209,7 +209,7 @@ pub fn empty() -> Result<usize, String> {
 }
 
 /// Restore the trashed items backing `entries` (paths inside a Trash's
-/// `files` directory, such as [`trash`] returns) to their original
+/// `files` directory, such as [`trash()`] returns) to their original
 /// locations. Returns how many were restored; an entry no longer in Trash is
 /// not counted.
 pub fn restore(entries: &[PathBuf]) -> Result<usize, String> {

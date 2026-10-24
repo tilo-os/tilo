@@ -168,9 +168,7 @@ pub fn provenance(output: &str, digest: &str) -> Result<(String, u64)> {
             || get(definition, "buildType")?
                 != Some(&json!("https://tilo.sh/buildtypes/bootc-os/v1"))
             || get(details, "builder")?
-                != Some(
-                    &json!({"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"}),
-                )
+                != Some(&json!({"id": "https://code.tilo.so/tilo/t/os-release-v1"}))
         {
             return Ok(false);
         }

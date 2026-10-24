@@ -2,7 +2,7 @@
 //!
 //! The relay that serves a state holds an exclusive lock on it for as long as
 //! it runs, and what must work on a state no relay is changing (the re-seal's
-//! verbatim copy, [`crate::reseal`]) takes the same lock first.
+//! verbatim copy, `crate::reseal`) takes the same lock first.
 
 use std::fs::OpenOptions;
 
