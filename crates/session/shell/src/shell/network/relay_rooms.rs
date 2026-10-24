@@ -31,9 +31,13 @@ use super::{
 };
 use crate::network::actor::room_governance::{Addressee, Request};
 use crate::network::invite::InviteRole;
+use crate::network::invite::enrollment_driver;
 use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{RoomId, WorkspaceId};
-use std::sync::Mutex;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
@@ -67,7 +71,12 @@ const ROOM_NAME_CHARS: usize = 80;
 pub(super) struct State {
     /// Enrollments of this device into the rooms it shared, installed as
     /// they complete.
-    shared: Mutex<Vec<u64>>,
+    shared: Arc<Mutex<Vec<u64>>>,
+    /// One of `shared` has landed since the last pass installing them.
+    shared_due: Arc<AtomicBool>,
+    /// The passes over `shared` run so far.
+    #[cfg(test)]
+    shared_passes: std::sync::atomic::AtomicU64,
     /// Host rooms this device is enrolling into, by enrollment.
     joining: Mutex<std::collections::HashMap<RoomId, u64>>,
 }
@@ -898,16 +907,7 @@ impl ShellNetwork {
             &own,
             crate::network::invite::enrollment_driver::Via::Iroh,
         )? {
-            self.relay_rooms
-                .joining
-                .lock()
-                .map_err(|_| "host room enrollments are unavailable")?
-                .insert(room, id);
-            self.relay_rooms
-                .shared
-                .lock()
-                .map_err(|_| "shared room enrollments are unavailable")?
-                .push(id);
+            self.finish_when_enrolled(room, id, true)?;
         }
         tracing::info!(%room, %name, "joining a room of this person's list at its host");
         Ok(())
@@ -935,7 +935,48 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "shared room enrollments are unavailable")?
             .push(id);
+        // One that landed before it was listed here was not told to the loop.
+        let landed = self
+            .native_enrollment
+            .attempts
+            .lock()
+            .ok()
+            .and_then(|attempts| {
+                attempts
+                    .get(&id)
+                    .map(enrollment_driver::Attempt::has_landed)
+            });
+        if landed == Some(true) {
+            self.shared_room_landed();
+        }
         Ok(())
+    }
+
+    /// What an enrollment calls once its result is stored: a shared room's
+    /// is due to be installed, and the frame loop is woken to install it.
+    pub(super) fn enrollment_landed(&self) -> enrollment_driver::Landed {
+        let shared = Arc::clone(&self.relay_rooms.shared);
+        let due = Arc::clone(&self.relay_rooms.shared_due);
+        let wake = self.loop_waker();
+        Arc::new(move |id| {
+            if shared.lock().is_ok_and(|shared| shared.contains(&id)) {
+                due.store(true, Ordering::Release);
+                wake();
+            }
+        })
+    }
+
+    /// A listed shared room's enrollment landed: wake the loop to install it.
+    fn shared_room_landed(&self) {
+        self.relay_rooms.shared_due.store(true, Ordering::Release);
+        (self.loop_waker())();
+    }
+
+    /// Whether a pass installing shared rooms is due, taking the ask: one
+    /// landed since the last pass. A pass in progress holds the list, and
+    /// the ask stays for the next.
+    pub(super) fn take_shared_rooms_due(&self) -> bool {
+        self.shared_rooms_pending() && self.relay_rooms.shared_due.swap(false, Ordering::AcqRel)
     }
 
     /// The enrollment into `room` still running, if any.
@@ -960,16 +1001,32 @@ impl ShellNetwork {
 
     /// Install every shared room whose enrollment completed. How each that
     /// ended went is said where it is polled ([`Self::poll_enrollment`]).
-    pub(super) fn finish_shared_rooms(&self) {
+    ///
+    /// Answers whether any finished: finishing one changes more than the
+    /// tree (a site join's progress, the room's enrollment), which the
+    /// frame loop shows.
+    pub(super) fn finish_shared_rooms(&self) -> bool {
         let Ok(mut shared) = self.relay_rooms.shared.lock() else {
-            return;
+            return false;
         };
+        #[cfg(test)]
+        self.relay_rooms
+            .shared_passes
+            .fetch_add(1, Ordering::Relaxed);
+        let before = shared.len();
         shared.retain(|id| {
             matches!(
                 self.poll_enrollment(*id),
                 Ok(PeerSyncResponse::EnrollmentPending { .. })
             )
         });
+        shared.len() != before
+    }
+
+    /// The passes installing shared rooms run so far.
+    #[cfg(test)]
+    pub(super) fn shared_room_passes(&self) -> u64 {
+        self.relay_rooms.shared_passes.load(Ordering::Relaxed)
     }
 
     /// The room and slot the running enrollment `id` is for.

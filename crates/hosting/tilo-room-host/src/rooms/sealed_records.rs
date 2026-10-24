@@ -445,31 +445,6 @@ impl Rooms {
         }))
     }
 
-    /// Open `channel` of `room` as its steward, creating its group when it
-    /// has none, with the devices that may read its record admitted, and
-    /// publish that change before anything is written there.
-    #[cfg(feature = "agents")]
-    pub(super) async fn open_record_channel(
-        &self,
-        room: &GovernedRoom,
-        steward: &super::stewardship::Steward,
-        stewardship: &mut super::stewardship::Stewardship,
-        channel: collab_types::ChannelId,
-    ) -> Result<(), String> {
-        let now = SystemTime::now();
-        let allowed = super::readers(
-            room.peer(),
-            &room.peer().governance().governed_access(now)?,
-            Some(steward),
-            now,
-        )?;
-        let messages = stewardship.open_channel(channel, &allowed)?;
-        // After the channel changes a settle handed over.
-        room.publisher.flushed().await;
-        self.publish_channel_governance(room.workspace_id(), messages)
-            .await
-    }
-
     /// Compact every sealed record history of `room` that has used most of
     /// its bound into one sealed checkpoint, and commit and publish the
     /// compactions. A record whose history does not merge yet (a write it
