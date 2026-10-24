@@ -143,8 +143,6 @@ pub struct ExistingMarkup {
     pub adopted: Vec<crate::adopt::AdoptedEntry>,
 }
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
-
 /// Bring a PDF's markup of version 1 up to this one: a comment's and a
 /// reply's formatted paragraphs were one JSON string, and are a list of
 /// paragraphs now.
@@ -839,7 +837,7 @@ impl ResourceApp for PdfViewerShell {
     }
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
-        Some(&CATALOG)
+        Some(&crate::CATALOG)
     }
 
     fn label(state: &PdfMarkup) -> String {
