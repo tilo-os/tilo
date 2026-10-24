@@ -22,6 +22,7 @@ use tilo_auth::luks::{self, Authority, SigninToken};
 use tilo_auth::record::Record;
 use tilo_auth::recovery::RecoveryKey;
 use tilo_auth::secret::Secret;
+use tilo_auth::tpm::{self, Unseal};
 use tilo_auth::userkey::UserKey;
 use tilo_auth::wrapper::{Outcome, Tpm, Wrapper};
 use tilo_rollback::exec::Real;
@@ -29,7 +30,7 @@ use tilo_rollback::lockout;
 use tilo_rollback::policy::Workspace;
 use tilo_seal::envelope::PasswordParams;
 use tilo_test_env::require_capability;
-use tilo_test_env::swtpm::Swtpm;
+use tilo_test_env::swtpm::{Swtpm, contains};
 
 const DISK_PASSPHRASE: &[u8] = b"the installer's disk passphrase";
 const UID: u32 = 1000;
@@ -137,7 +138,11 @@ impl Fixture {
 }
 
 fn fixture() -> Option<Fixture> {
-    let tpm = match Swtpm::start() {
+    fixture_on(Swtpm::start())
+}
+
+fn fixture_on(tpm: Result<Swtpm, String>) -> Option<Fixture> {
+    let tpm = match tpm {
         Ok(tpm) => tpm,
         Err(why) => {
             tilo_test_env::capability_unavailable(
@@ -276,6 +281,34 @@ fn the_tpm_wrapper_opens_with_the_secret_and_its_auth_value_is_the_contract_dige
         String::from_utf8_lossy(&unsealed.stderr)
     );
     assert_eq!(unsealed.stdout, key.expose());
+}
+
+#[test]
+fn neither_the_user_key_nor_its_authorisation_crosses_the_bus_in_the_clear() {
+    let Some(f) = fixture_on(Swtpm::start_recording()) else {
+        return;
+    };
+    let key = UserKey::generate().unwrap();
+    let auth: [u8; 32] = std::array::from_fn(|i| 0xa0 ^ u8::try_from(i).unwrap());
+    let sealed = tpm::seal(&f.runner, &f.ws, &key, &auth).unwrap();
+    let Unseal::Key(opened) = tpm::unseal(&f.runner, &f.ws, &sealed, &auth).unwrap() else {
+        panic!("the right authorisation value unseals");
+    };
+    assert_eq!(opened.expose(), key.expose());
+
+    let wire = f.tpm.wire();
+    assert!(
+        contains(&wire, &[0x00, 0x00, 0x01, 0x5e]),
+        "the log holds the exchange, TPM2_Unseal included"
+    );
+    assert!(
+        !contains(&wire, key.expose()),
+        "the user key crossed in the clear"
+    );
+    assert!(
+        !contains(&wire, &auth),
+        "the authorisation value crossed in the clear"
+    );
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
