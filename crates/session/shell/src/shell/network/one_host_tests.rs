@@ -327,6 +327,9 @@ impl Device {
         let wakes = Arc::clone(&self.wakes);
         net.set_wake(Arc::new(move || wakes.wake()));
         assert!(net.join_default_workspace());
+        // As a session starts: the rooms this device hosted before are
+        // served again.
+        net.open_hosted_rooms();
         let net = Arc::new(net);
         let mut vault = [0x5A; 32];
         vault[..2].copy_from_slice(&self.salt.to_le_bytes());
