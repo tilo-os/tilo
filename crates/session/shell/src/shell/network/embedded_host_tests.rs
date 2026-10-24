@@ -304,8 +304,12 @@ fn a_new_workspace_keeps_its_windows_and_never_joins_while_it_is_placed() {
     drop(network);
 }
 
+/// Placing a workspace on this device's own host waits on nothing but this
+/// device: the pass that places it returns with its room held, with no
+/// enrollment left running and nothing left to install.
 #[test]
-fn a_placed_workspace_is_installed_by_one_pass_once_its_enrollment_lands() {
+#[serial_test::serial]
+fn a_placed_workspace_is_held_when_its_placement_pass_returns() {
     let mut home = tilo_test_env::TestHome::new().expect("home");
     let dir = tempfile::tempdir().expect("temp");
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x53; 32]);
@@ -324,37 +328,56 @@ fn a_placed_workspace_is_installed_by_one_pass_once_its_enrollment_lands() {
         tilo_user_identity::DeviceCapabilities::primary(),
         crate::shell::network::Reach::Loopback,
     );
-    let landed = |network: &ShellNetwork| {
-        tree.read().native_authority.holds(room)
-            || network.enrolling_into(room).is_some_and(|id| {
-                network
-                    .native_enrollment
-                    .attempts
-                    .lock()
-                    .expect("attempts")
-                    .get(&id)
-                    .is_some_and(crate::network::invite::enrollment_driver::Attempt::has_landed)
-            })
-    };
-    let deadline = tilo_test_env::hang_deadline();
-    while !tree.read().native_authority.holds(room) {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the workspace was never placed"
-        );
-        network.tick();
-        if !landed(&network) {
-            assert_eq!(
-                network.shared_room_passes(),
-                0,
-                "a pass ran while the enrollment was pending"
-            );
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
+    network.place_pending_workspaces();
+    assert!(tree.read().native_authority.holds(room), "it is not held");
+    assert!(!tree.read().pending_placements.contains(&room));
+    assert!(network.enrolling_into(room).is_none());
+    assert!(network.placement_failure(room).is_none());
     network.tick();
-    network.tick();
-    assert_eq!(network.shared_room_passes(), 1);
+    assert_eq!(
+        network.shared_room_passes(),
+        0,
+        "something was left to install"
+    );
+    drop(network);
+}
+
+/// A first boot with no network: no relay answers and the endpoint is bound
+/// to this machine only. Home, waiting for this device's host, is placed
+/// before apps start, without waking the relays, so an app restored into it
+/// opens in it at once.
+#[test]
+#[serial_test::serial]
+fn on_a_first_boot_with_no_network_home_is_placed_before_apps_start() {
+    let mut home = tilo_test_env::TestHome::new().expect("home");
+    let dir = tempfile::tempdir().expect("temp");
+    let person = ed25519_dalek::SigningKey::from_bytes(&[0x54; 32]);
+    home.env().set(
+        "TILO_USER_ID",
+        hex::encode(person.verifying_key().to_bytes()),
+    );
+    let mut tree = WorkspaceTree::default();
+    let (_, room) = tree.create_hosted_workspace("Home");
+    tree.persist_path = Some(dir.path().join("workspaces.json"));
+    let tree = tree.shared();
+    let network = crate::shell::network::idle_quiet_tests::device_reaching(
+        tree.clone(),
+        dir.path(),
+        &person,
+        tilo_user_identity::DeviceCapabilities::primary(),
+        crate::shell::network::Reach::LoopbackHoldingRelays,
+    );
+    network.place_before_launches();
+    assert!(tree.read().native_authority.holds(room), "Home is not held");
+    assert_eq!(
+        tree.read().documents_unavailable(room),
+        None,
+        "an app opening in Home would wait"
+    );
+    assert!(
+        network.reachability.is_dormant(),
+        "placing Home started the relays"
+    );
     drop(network);
 }
 

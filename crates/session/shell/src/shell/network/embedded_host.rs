@@ -35,9 +35,7 @@ use tilo_relay_session::rooms::{
 use super::{
     NetCmd, RoomId, ShellNetwork, personal_continuity_topic_id, relay_rooms, room_topic_id,
 };
-use crate::network::invite::enrollment_driver::Via;
 use crate::network::local_host::LocalHost;
-use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::WorkspaceId;
 
 /// The directory, beside the native owner's state file, that this device's
@@ -397,6 +395,18 @@ impl ShellNetwork {
         }
     }
 
+    /// Place every workspace waiting for this device's host, once, before
+    /// the session lets apps start: blocks on the host and the disk, never
+    /// on the network.
+    pub(crate) fn place_before_launches(&self) {
+        let started = std::time::Instant::now();
+        self.place_pending_workspaces();
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "workspaces waiting for this device's host are placed before apps start"
+        );
+    }
+
     /// The queued pass runs: a workspace made from now on queues another.
     pub(super) fn placement_pass_started(&self) {
         self.embedded_host.queued.store(false, Ordering::Release);
@@ -459,10 +469,10 @@ impl ShellNetwork {
                 failed = true;
             }
             self.note_placement(room, placed.as_ref().err());
-            // Placed, the room waits until this device's native owner holds
-            // it ([`WorkspaceTree::project_native_room`]), its enrollment
-            // still being placed: it is neither placed again nor a join
-            // meanwhile. A failed placement is left to a later pass.
+            // Placed, the room is held by this device's native owner
+            // already ([`WorkspaceTree::project_native_room`]): its
+            // enrollment ran in process. A failed placement is left to a
+            // later pass.
             if placed.is_err() {
                 self.embedded_host
                     .placing
@@ -556,7 +566,7 @@ impl ShellNetwork {
 
     /// Create `room`, the workspace `local` called `name`, on this device's
     /// host, and enroll this device into it with the invitation the host
-    /// issues it: the workspace says Joining… until its replica installs.
+    /// issues it, in process: the room is held when this returns.
     fn place(&self, room: RoomId, local: WorkspaceId, name: &str) -> Result<(), String> {
         let host = self.local_host()?;
         let identity = self
@@ -596,11 +606,9 @@ impl ShellNetwork {
             .as_ref()
             .and_then(|handle| handle.join_client(certificate.device_public_key))
             .ok_or("this device's host is not open")?;
-        if let PeerSyncResponse::EnrollmentPending { id } =
-            self.accept_invitation_via(local, &own, Via::Local(client))?
-        {
-            self.finish_when_enrolled(room, id, true)?;
-        }
+        // In process, and installed before this returns: placing a room on
+        // this device's own host waits on nothing but this device.
+        self.enroll_in_process(local, &own, client)?;
         tracing::info!(%room, "a workspace is placed on this device's host");
         Ok(())
     }
