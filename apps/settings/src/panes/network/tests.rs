@@ -14,6 +14,7 @@ use super::vpn::VpnEffect;
 use super::*;
 
 mod device_vpn;
+mod vpn_kill_switch;
 
 #[test]
 fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
@@ -450,6 +451,9 @@ impl FakeNetwork {
                     }
                     if let Some(mtu) = patch.mtu {
                         held.mtu = mtu;
+                    }
+                    if let Some(addresses) = &patch.allowed_ips {
+                        held.allowed_ips.clone_from(addresses);
                     }
                 }
             }

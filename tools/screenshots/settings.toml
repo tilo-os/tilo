@@ -66,6 +66,16 @@ title = "Network: a WireGuard tunnel"
 scenario = "network-vpn-profile"
 
 [[situation]]
+name = "network-vpn-kill-switch"
+title = "Network: a WireGuard tunnel with its kill switch on"
+scenario = "network-vpn-kill-switch"
+
+[[situation]]
+name = "network-vpn-blocking"
+title = "Network: a dropped WireGuard tunnel blocking traffic"
+scenario = "network-vpn-blocking"
+
+[[situation]]
 name = "network-vpn-openvpn"
 title = "Network: an OpenVPN profile with its own MTU and name servers"
 scenario = "network-vpn-openvpn"
