@@ -420,7 +420,8 @@ open the volume, and the recovery key keeps working throughout.
   measured before step 3 switches anyone.
 - A boot-time login screen with the greeter's accessibility (screen reader, touch).
   Plymouth can draw the layout but has no screen reader, so the initrd either carries
-  the greeter itself or this is a known gap until it does.
+  the greeter itself or this is a known gap until it does. Today it is the gap,
+  recorded with what closing it takes in [defects.md](defects.md) P1-13.
 - Whether the Windows-managed lockout parameters on a shared TPM still meet §1.3 for a
   six-digit PIN. `tilo-rollback tpm-status` decides per machine, and a machine that
   fails gets a longer PIN, not a weaker check.
