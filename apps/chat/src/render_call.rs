@@ -614,11 +614,20 @@ impl ChatApp {
 
     /// What the call panel tells the person besides its count: what is
     /// wrong (a blocked microphone, a call that ended, a browser that
-    /// cannot join), else how it is connected.
+    /// cannot join), else how it is connected, and where everyone's voice
+    /// goes besides when a bridge carries the call to another service.
     pub(crate) fn call_status_label(&self) -> String {
-        self.media_error
-            .clone()
-            .unwrap_or_else(|| self.call_connection_label())
+        if let Some(error) = self.media_error.clone() {
+            return error;
+        }
+        let connection = self.call_connection_label();
+        match self.call_bridged_note(&self.call.channel) {
+            Some(note) => crate::i18n::t_args(
+                "chat-call-status-bridged",
+                &[("connection", connection.into()), ("note", note.into())],
+            ),
+            None => connection,
+        }
     }
 
     pub(crate) fn draw_huddle_bg(
