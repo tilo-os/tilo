@@ -2,12 +2,12 @@
 // an offscreen embedding: its tab registry holds only the tabs of its own
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
-// click, keyboard shortcuts, a tab's capture, context menu items,
-// notifications, signing in, scripts on a tab, what network rules did in a
-// tab and downloads from the host's tabs instead, over a request the host
-// answers itself. A page of the extension is known by its address; its
-// worker, which has none, by a token the Browser wrote with this script into
-// the worker it runs first (extensions.rs).
+// click, keyboard shortcuts, the address's keyword, a tab's capture, context
+// menu items, notifications, signing in, scripts on a tab, what network
+// rules did in a tab and downloads from the host's tabs instead, over a
+// request the host answers itself. A page of the extension is known by its
+// address; its worker, which has none, by a token the Browser wrote with
+// this script into the worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -96,6 +96,9 @@
   // fires only those an extension listens to, so it is told of each.
   const listeners = new Map();
   const listened = new Set();
+  // What a listener is given where the host's arguments are not all it
+  // gets: a callback (omnibox.onInputChanged's `suggest`).
+  const adapters = new Map();
   const event = (namespace, key, name) => {
     const target = namespace && namespace[key];
     if (!target) return;
@@ -251,9 +254,11 @@
       // The host tells the extension of a tab event: every listener runs.
       dispatch(name, args) {
         const run = () => {
+          const adapt = adapters.get(name);
+          const given = adapt ? adapt(args) : args;
           for (const listener of listeners.get(name) || []) {
             try {
-              listener(...args);
+              listener(...given);
             } catch (error) {
               console.error(error);
             }
@@ -618,6 +623,31 @@
     replace(permissions, 'remove', (given) => call('permissions.remove', setOf(given)));
     event(permissions, 'onAdded', 'permissions.onAdded');
     event(permissions, 'onRemoved', 'permissions.onRemoved');
+  }
+
+  // The address's keyword (the manifest's `omnibox`): the Browser tells the
+  // host what the person types after it, and the host tells the extension,
+  // as Chrome does. What it suggests for a change, and its default
+  // suggestion, show under the address; Enter, or a suggestion chosen,
+  // reaches onInputEntered with the page in the current tab.
+  if (!chrome.omnibox && manifest.omnibox) chrome.omnibox = {};
+  const omnibox = chrome.omnibox;
+  if (omnibox) {
+    const events = ['onInputStarted', 'onInputChanged', 'onInputEntered', 'onInputCancelled'];
+    for (const key of events) {
+      if (!omnibox[key]) omnibox[key] = {};
+      event(omnibox, key, 'omnibox.' + key);
+    }
+    const text = (value) => (value === undefined || value === null ? '' : String(value));
+    // Only what the Browser shows of a suggestion crosses to the host.
+    const plain = (suggestion) => ({content: text(suggestion && suggestion.content),
+      description: text(suggestion && suggestion.description)});
+    adapters.set('omnibox.onInputChanged', ([input, request]) => [input, (suggestions) => {
+      call('omnibox.suggest', {request, suggestions: [].concat(suggestions || []).map(plain)})
+        .catch((error) => console.error(error));
+    }]);
+    replace(omnibox, 'setDefaultSuggestion', (suggestion) =>
+      call('omnibox.setDefaultSuggestion', {description: plain(suggestion).description}).then(() => undefined));
   }
 
   // Signing in (`identity`). Chrome shows the page an extension names in a

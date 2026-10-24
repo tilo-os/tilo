@@ -200,6 +200,9 @@ pub struct Installed {
     /// `options_page`): where an ad blocker keeps its lists and allowed sites.
     pub options: Option<String>,
     pub access: Access,
+    /// Its keyword in the address (`omnibox.keyword`): typed with a space,
+    /// what follows is the extension's ([`crate::extension_omnibox`]).
+    pub keyword: Option<String>,
 }
 
 impl Installed {
@@ -233,6 +236,7 @@ impl Installed {
             action,
             options,
             access,
+            keyword: crate::extension_omnibox::manifest_keyword(&manifest),
         })
     }
 
@@ -557,6 +561,9 @@ mod tests {
             action: action_manifest(&serde_json::from_str(manifest).unwrap()),
             options: options_page(&serde_json::from_str(manifest).unwrap()),
             access: access(&serde_json::from_str(manifest).unwrap()),
+            keyword: crate::extension_omnibox::manifest_keyword(
+                &serde_json::from_str(manifest).unwrap(),
+            ),
         }
     }
 

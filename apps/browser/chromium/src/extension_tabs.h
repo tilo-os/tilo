@@ -20,7 +20,10 @@
 // the host last painted of it, runs extensions' keyboard shortcuts
 // (extension_commands.h) on the keys the Browser forwards into a page, and
 // counts what extensions' network rules did in each tab's page
-// (action_counts.h). Events (a click, a command, a tab loading)
+// (action_counts.h). What the person types after an extension's keyword in
+// the Browser's address reaches the extension (`omnibox`), and its
+// suggestions go back. Events (a click, a command, a tab loading, the
+// address's keyword)
 // reach a service worker through the DevTools pipe, which wakes it if it
 // sleeps; the host attaches only for as long as that takes, so an extension's
 // worker still sleeps when idle.
@@ -65,6 +68,10 @@ inline constexpr char kExtensionBridge[] = "https://extension-bridge.tilo.invali
 inline constexpr size_t kMaxBridgeRequest = 8 * 1024 * 1024;
 // The most frames of one page an injection reaches.
 inline constexpr size_t kMaxFrames = 256;
+// The most suggestions an extension shows under the address at once, and
+// the longest text of one.
+inline constexpr size_t kMaxOmniboxSuggestions = 16;
+inline constexpr size_t kMaxOmniboxText = 2048;
 // What Chrome answers a message or a port nothing receives.
 inline constexpr char kNoReceiver[] = "Could not establish connection. Receiving end does not exist.";
 // What the extension's world in a frame evaluates to learn which frame it
@@ -365,6 +372,8 @@ class ExtensionTabs {
     counts_.Forget(id);
     for (auto it = shown_.begin(); it != shown_.end();) it = it->first.first == id ? shown_.erase(it) : std::next(it);
     sign_in_.Forget(id);
+    omnibox_tabs_.erase(id);
+    omnibox_defaults_.erase(id);
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
@@ -566,6 +575,42 @@ class ExtensionTabs {
                          : hooks_.open_download(tab->tab, *id, !open);
       if (!error.empty()) { Fail(reply, error); return; }
       Succeed(reply, nullptr);
+    } else if (method == "omnibox.suggest") {
+      // What the extension suggests for what the person typed after its
+      // keyword: for the address of the page it was typed over, by the
+      // request it answers, which the Browser holds against what it asked.
+      const auto at = omnibox_tabs_.find(extension);
+      const auto request = IntOf(args, "request");
+      auto suggestions = args->GetList("suggestions");
+      if (!request || !suggestions) { Fail(reply, "Invalid suggestions"); return; }
+      if (at == omnibox_tabs_.end() || !hooks_.event) { Succeed(reply, nullptr); return; }
+      auto list = CefListValue::Create();
+      for (size_t i = 0; i < suggestions->GetSize() && list->GetSize() < kMaxOmniboxSuggestions; ++i) {
+        auto suggestion = suggestions->GetDictionary(i);
+        const auto content = StringOf(suggestion, "content");
+        const auto description = StringOf(suggestion, "description");
+        // Chrome refuses a suggestion without content or description.
+        if (content.empty() || description.empty() || content.size() > kMaxOmniboxText || description.size() > kMaxOmniboxText) continue;
+        auto entry = CefDictionaryValue::Create();
+        entry->SetString("content", content);
+        entry->SetString("description", description);
+        list->SetDictionary(list->GetSize(), entry);
+      }
+      auto fields = CefDictionaryValue::Create();
+      fields->SetString("id", extension);
+      fields->SetInt("request", *request);
+      fields->SetList("suggestions", list);
+      hooks_.event(at->second, "extension_omnibox_suggestions", fields);
+      Succeed(reply, nullptr);
+    } else if (method == "omnibox.setDefaultSuggestion") {
+      // The first row under the address while the person types after the
+      // keyword; `%s` stands for what they typed. Kept for the next time,
+      // and shown now if they are typing.
+      const auto description = StringOf(args, "description");
+      if (description.size() > kMaxOmniboxText) { Fail(reply, "Invalid suggestion"); return; }
+      if (description.empty()) omnibox_defaults_.erase(extension); else omnibox_defaults_[extension] = description;
+      if (const auto at = omnibox_tabs_.find(extension); at != omnibox_tabs_.end()) TellOmniboxDefault(extension, at->second);
+      Succeed(reply, nullptr);
     } else if (method == "commands.getAll") {
       auto list = CefListValue::Create();
       for (const auto& command : commands_.All(extension)) {
@@ -727,6 +772,43 @@ class ExtensionTabs {
     Push(extension, "commands.onCommand", args, true);
   }
 
+  // The person typed the extension's keyword (its manifest's `omnibox`)
+  // in the address of `tab`'s window, and then: began (`started`), typed
+  // `text` (`changed`, a `request` its suggestions answer), pressed Enter
+  // or chose a suggestion (`entered`), or left (`cancelled`). The extension
+  // hears of each as in Chrome, woken if it sleeps; Enter lets one that
+  // asked for activeTab read and script the page until it navigates, and
+  // it goes where the extension sends it (`tabs.update`).
+  void Omnibox(const std::string& extension, int tab, const std::string& input, const std::string& text, int request) {
+    if (!access_.count(extension)) return;
+    Ensure([this, extension, tab, input, text, request] { OmniboxNow(extension, tab, input, text, request); });
+  }
+  void OmniboxNow(const std::string& extension, int tab, const std::string& input, const std::string& text, int request) {
+    const auto tabs = Tabs();
+    const auto* found = Find(tabs, tab);
+    if (!found || found->panel || !access_.count(extension)) return;
+    auto args = CefListValue::Create();
+    if (input == "started") {
+      omnibox_tabs_[extension] = tab;
+      TellOmniboxDefault(extension, tab);
+      Push(extension, "omnibox.onInputStarted", args, true);
+    } else if (input == "changed") {
+      omnibox_tabs_[extension] = tab;
+      args->SetString(0, text);
+      args->SetInt(1, request);
+      Push(extension, "omnibox.onInputChanged", args, true);
+    } else if (input == "entered") {
+      omnibox_tabs_.erase(extension);
+      if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
+      args->SetString(0, text);
+      args->SetString(1, "currentTab");
+      Push(extension, "omnibox.onInputEntered", args, true);
+    } else if (input == "cancelled") {
+      omnibox_tabs_.erase(extension);
+      Push(extension, "omnibox.onInputCancelled", args, false);
+    }
+  }
+
   // The tab can be told of things: what extensions set for their buttons on
   // every tab before it opened.
   void Introduce(int tab) {
@@ -882,6 +964,7 @@ class ExtensionTabs {
     buttons_on_.erase(tab);
     counts_.Removed(tab);
     for (auto it = shown_.begin(); it != shown_.end();) it = it->first.second == tab ? shown_.erase(it) : std::next(it);
+    for (auto it = omnibox_tabs_.begin(); it != omnibox_tabs_.end();) it = it->second == tab ? omnibox_tabs_.erase(it) : std::next(it);
     if (!found || found->panel) return;
     for (auto it = granted_.begin(); it != granted_.end();) it = it->second == found->id ? granted_.erase(it) : std::next(it);
     for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == found->id ? action_states_.erase(it) : std::next(it);
@@ -1227,7 +1310,8 @@ class ExtensionTabs {
     static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated",
                                              "tabs.onHighlighted", "tabs.onZoomChange", "tabs.onRemoved", "windows.onFocusChanged", "webNavigation.onCreatedNavigationTarget",
                                              "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed",
-                                             "permissions.onAdded", "permissions.onRemoved"};
+                                             "permissions.onAdded", "permissions.onRemoved",
+                                             "omnibox.onInputStarted", "omnibox.onInputChanged", "omnibox.onInputEntered", "omnibox.onInputCancelled"};
     return names.count(name) > 0;
   }
   static bool Populate(CefRefPtr<CefDictionaryValue> args) {
@@ -2768,7 +2852,7 @@ class ExtensionTabs {
     name->SetString(event);
     InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.dispatch(" + ToJson(name) + ", " + ToJson(Wrap(args)) + ") : -1",
              event == "action.onClicked" || event == "commands.onCommand" || event == "contextMenus.onClicked" ||
-                 event == "notifications.onClicked" || event == "notifications.onButtonClicked",
+                 event == "notifications.onClicked" || event == "notifications.onButtonClicked" || event == "omnibox.onInputEntered",
              [](std::optional<std::string>, CefRefPtr<CefValue>) {});
   }
   // Evaluate `expression` in the extension's service worker, waking it if
@@ -3163,7 +3247,21 @@ class ExtensionTabs {
   // The most requests one report of the Browser's own extension carries.
   static constexpr size_t kMaxActedBatch = 512;
 
+  // The extension's default suggestion, or none, for the address of `tab`.
+  void TellOmniboxDefault(const std::string& extension, int tab) {
+    if (!hooks_.event) return;
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    if (const auto at = omnibox_defaults_.find(extension); at != omnibox_defaults_.end()) fields->SetString("description", at->second);
+    else fields->SetNull("description");
+    hooks_.event(tab, "extension_omnibox_default", fields);
+  }
+
   Hooks hooks_;
+  // The tab whose address each extension's keyword is being typed in, and
+  // the default suggestion each set (`omnibox.setDefaultSuggestion`).
+  std::map<std::string, int> omnibox_tabs_;
+  std::map<std::string, std::string> omnibox_defaults_;
   // What each extension set for its button on every tab, and the tabs on
   // which one set something for that tab alone.
   std::map<std::string, CefRefPtr<CefDictionaryValue>> buttons_;

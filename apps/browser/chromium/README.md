@@ -428,7 +428,8 @@ content scripts (with `sender.tab`) work without help.
   moving the worker: extensions read their worker's address and load their
   helpers against it) and in its own pages (a document script). It answers
   `tabs`, `windows`, `action.onClicked`, `contextMenus`, `notifications`,
-  the button's look for one tab and `scripting` by asking the host at
+  `omnibox`, the button's look for one tab and `scripting` by asking the
+  host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
   written into it; a page cannot show either. An extension whose security
@@ -625,6 +626,20 @@ content scripts (with `sender.tab`) work without help.
   needs `downloads.open` and, as in Chrome, the person's click or key in
   the extension's page, or on its button, menu item or shortcut, in the
   last five seconds.
+- The address's keyword (`omnibox`): the Browser reads each extension's
+  manifest `omnibox.keyword`, and what the person types after it and a
+  space, in the window's bar or the window's own address field, is the
+  extension's (`extension_omnibox`): the host fires `onInputStarted`, then
+  `onInputChanged` for each change with the request its suggestions answer,
+  and `onInputCancelled` when the person leaves, waking the worker. What the
+  extension suggests for the latest change (`extension_omnibox_suggestions`)
+  and its default suggestion (`extension_omnibox_default`, `%s` standing
+  for what is typed) go to the page's tab, and the Browser lists them, plain,
+  under the address, the default first. Enter, or a suggestion chosen, fires
+  `onInputEntered` with its text and `currentTab`, makes that window the
+  extension's current one and grants `activeTab`, as Chrome does; the
+  extension sends the page where it says (`tabs.update`). The extension's
+  resource offers the same as `send-to-extension`, for scripts and agents.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -687,7 +702,9 @@ content scripts (with `sender.tab`) work without help.
 - Extensions' side panels are not offered. Their keyboard shortcuts run while
   a page has the keyboard, not while the address bar or a popup has it; the
   suggested keys are the ones given (there is no page to change them), and
-  `global` shortcuts work only in the Browser. Their context menu items show
+  `global` shortcuts work only in the Browser. A keyword's Enter always
+  goes to the current tab (no Alt+Enter for a new one), and its suggestions
+  cannot be deleted (`onDeleteSuggestion`). Their context menu items show
   no checkmark and no submenu, and appear only in a page's menu, not the
   toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.

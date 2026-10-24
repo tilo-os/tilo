@@ -596,3 +596,106 @@ fn an_extension_asks_the_person_to_sign_in_on_a_web_page() {
         assert!(!command_within_limits(&bad), "{bad:?}");
     }
 }
+
+#[test]
+fn what_follows_an_extensions_keyword_goes_to_it_and_its_suggestions_come_back() {
+    use crate::webview::{OmniboxInput, OmniboxSuggestion};
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let omnibox = |input: OmniboxInput| WebViewCommand::ExtensionOmnibox {
+        id: id.into(),
+        input,
+    };
+    for (input, wire) in [
+        (
+            OmniboxInput::Started,
+            json!({"op":"extension_omnibox","id":id,"input":"started"}),
+        ),
+        (
+            OmniboxInput::Changed {
+                text: "cat".into(),
+                request: 3,
+            },
+            json!({"op":"extension_omnibox","id":id,"input":"changed","text":"cat","request":3}),
+        ),
+        (
+            OmniboxInput::Entered {
+                text: "cat one".into(),
+            },
+            json!({"op":"extension_omnibox","id":id,"input":"entered","text":"cat one"}),
+        ),
+        (
+            OmniboxInput::Cancelled,
+            json!({"op":"extension_omnibox","id":id,"input":"cancelled"}),
+        ),
+    ] {
+        let command = omnibox(input);
+        assert!(command_within_limits(&command), "{command:?}");
+        assert_eq!(encode_command(command), Some(wire));
+    }
+    // Not an extension, more than the host reads, a request past its range.
+    for bad in [
+        WebViewCommand::ExtensionOmnibox {
+            id: "short".into(),
+            input: OmniboxInput::Started,
+        },
+        omnibox(OmniboxInput::Entered {
+            text: "x".repeat(2049),
+        }),
+        omnibox(OmniboxInput::Changed {
+            text: String::new(),
+            request: u32::MAX,
+        }),
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(
+            json!({"event":"extension_omnibox_suggestions","tab":1,"id":id,"request":3,
+            "suggestions":[{"content":"cat one","description":"First <match>cat</match>"}]})
+        ),
+        Some(WebViewEvent::ExtensionOmniboxSuggestions {
+            id: id.into(),
+            request: 3,
+            suggestions: vec![OmniboxSuggestion {
+                content: "cat one".into(),
+                description: "First <match>cat</match>".into(),
+            }],
+        })
+    );
+    assert_eq!(
+        event(
+            json!({"event":"extension_omnibox_default","tab":1,"id":id,"description":"Look up %s"})
+        ),
+        Some(WebViewEvent::ExtensionOmniboxDefault {
+            id: id.into(),
+            description: Some("Look up %s".into()),
+        })
+    );
+    assert_eq!(
+        event(json!({"event":"extension_omnibox_default","tab":1,"id":id,"description":null})),
+        Some(WebViewEvent::ExtensionOmniboxDefault {
+            id: id.into(),
+            description: None,
+        })
+    );
+    let many: Vec<Value> = (0..17)
+        .map(|n| json!({"content":n.to_string(),"description":"d"}))
+        .collect();
+    for bad in [
+        json!({"event":"extension_omnibox_suggestions","id":"short","request":1,"suggestions":[]}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":-1,"suggestions":[]}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":1,"suggestions":many}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":1,
+            "suggestions":[{"content":"x".repeat(2049),"description":"d"}]}),
+        json!({"event":"extension_omnibox_suggestions","id":id,"request":1,"suggestions":[{"content":"c"}]}),
+        json!({"event":"extension_omnibox_default","id":id,"description":7}),
+        json!({"event":"extension_omnibox_default","id":id}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+}
