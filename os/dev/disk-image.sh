@@ -562,25 +562,16 @@ start_registry() {
   return 1
 }
 
-if [ -n "$SEALED_SOURCE_IMGREF" ]; then
-  RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
-  SRC_REF="docker://$RUNREF"
-  REG="${RUNREF%%/*}"
-  TLS_ARGS=(--tls-verify=false)
-  REGCONF="$OUTDIR/.registries.conf"
-  if [ "$DIRECT_SEALED_SOURCE" = 1 ]; then
-    TLS_ARGS=()
-    printf '[[registry]]\nlocation = "%s"\ninsecure = false\n' "$REG" > "$REGCONF"
-  else
-  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
-  # The image's runtime policy correctly trusts its signed authoritative
-  # repository, not an unsigned transport mirror. bootc evaluates the running
-  # mirror reference against that policy before install, so give this one
-  # invocation a policy that rejects everything except the digest-verified
-  # mirror repository. This file is bind-mounted over the running container's
-  # policy only; the installed system retains the policy shipped in the image.
+# bootc evaluates the reference it runs from and installs against the policy
+# inside the image, which rejects every repository it does not name. The
+# sources here are a digest-verified mirror or a scratch registry holding the
+# image this step itself pushed, so give this one invocation a policy that
+# rejects everything except that repository. It is bind-mounted over the
+# running container's policy only; the installed system keeps the policy
+# shipped in the image.
+source_policy() {
   SOURCE_POLICY="$OUTDIR/.source-policy.json"
-  python3 - "$SOURCE_POLICY" "$source_repository" <<'PY'
+  python3 - "$SOURCE_POLICY" "$1" <<'PY'
 import json
 import sys
 
@@ -597,6 +588,22 @@ with open(path, "w", encoding="utf-8") as output:
     json.dump(policy, output, separators=(",", ":"))
     output.write("\n")
 PY
+}
+
+if [ -n "$SEALED_SOURCE_IMGREF" ]; then
+  RUNREF="${SEALED_SOURCE_IMGREF#docker://}"
+  SRC_REF="docker://$RUNREF"
+  REG="${RUNREF%%/*}"
+  TLS_ARGS=(--tls-verify=false)
+  REGCONF="$OUTDIR/.registries.conf"
+  if [ "$DIRECT_SEALED_SOURCE" = 1 ]; then
+    TLS_ARGS=()
+    printf '[[registry]]\nlocation = "%s"\ninsecure = false\n' "$REG" > "$REGCONF"
+  else
+  printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  # The image's runtime policy correctly trusts its signed authoritative
+  # repository, not an unsigned transport mirror; see source_policy.
+  source_policy "$source_repository"
   fi
   msg "using verified sealed registry source $SRC_REF (no local import or republish)"
 elif [ "$COMPOSEFS" = yes ]; then
@@ -626,6 +633,7 @@ elif [ "$COMPOSEFS" = yes ]; then
   TLS_ARGS=(--tls-verify=false)
   REGCONF="$OUTDIR/.registries.conf"
   printf '[[registry]]\nlocation = "%s"\ninsecure = true\n' "$REG" > "$REGCONF"
+  source_policy "$REG/$repo"
 elif ! root_podman image exists "$IMAGE" 2>/dev/null; then
   msg "transfer $IMAGE into root container storage"
   podman save "$IMAGE" | root_podman load
