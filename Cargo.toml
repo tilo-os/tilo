@@ -450,6 +450,7 @@ members = [
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-nm",
+    "crates/system/tilo-auth",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-sibling-unlock",

@@ -282,6 +282,28 @@ pub fn tighten(
     read(runner)
 }
 
+/// Reset the failure counter and leave lockout, with `lockoutAuth` passed by file.
+///
+/// # Errors
+///
+/// Returns an error if the scratch file cannot be written or `tpm2_dictionarylockout` fails.
+pub fn clear(runner: &dyn Runner, lockout_auth: &[u8], scratch: &Path) -> Result<()> {
+    let auth_file = AuthFile::write(scratch, "lockout.clear", lockout_auth)?;
+    let auth_spec = auth_file.spec();
+    let out = runner.run(
+        "tpm2_dictionarylockout",
+        &argv!["--clear-lockout", "--auth", &auth_spec],
+        None,
+    )?;
+    if !out.ok() {
+        bail!(
+            "resetting the TPM's failure counter failed: {}",
+            out.last_error_line()
+        );
+    }
+    Ok(())
+}
+
 /// Set `lockoutAuth`.
 ///
 /// SAFETY-CRITICAL: only call this when the value is already durably recorded somewhere the
