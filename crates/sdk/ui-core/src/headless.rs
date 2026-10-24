@@ -392,6 +392,9 @@ pub struct FrameHarness {
     replayed_window_draws: u64,
     /// Frames whose layout failed, skipped ([`Self::skip_frame`]).
     skipped_frames: crate::widget::SkippedFrames,
+    /// The report of a frame this harness skipped on its own, until a host
+    /// takes it ([`Self::take_skip_report`]).
+    skip_report: Option<String>,
     /// The frame being run draws every window ([`Self::settle_replayed_draws`]).
     suppress_pan_replay: bool,
     /// The host lets pan frames replay windows ([`Self::set_pan_replay`]).
@@ -1644,6 +1647,7 @@ impl FrameHarness {
             replayed_draws: false,
             replayed_window_draws: 0,
             skipped_frames: crate::widget::SkippedFrames::default(),
+            skip_report: None,
             suppress_pan_replay: false,
             pan_replay_allowed: true,
             pan_frames: 0,
@@ -2271,11 +2275,26 @@ impl FrameHarness {
         self.suppress_pan_replay = true;
         let settled = self.try_relayout();
         self.suppress_pan_replay = false;
-        if let Err(error) = settled
-            && let Some(line) = self.skip_frame(&error)
-        {
-            tracing::error!("headless: replayed windows not drawn again: {line}");
+        if let Err(error) = settled {
+            self.skip_own_frame(&error);
         }
+    }
+
+    /// [`Self::skip_frame`] for a frame the harness runs itself (input's,
+    /// an idle pass's): its report goes to the log and waits for a host
+    /// that logs elsewhere ([`Self::take_skip_report`]).
+    fn skip_own_frame(&mut self, error: &crate::widget::WidgetLayoutError) {
+        if let Some(line) = self.skip_frame(error) {
+            tracing::error!("headless: {line}");
+            self.skip_report = Some(line);
+        }
+    }
+
+    /// The report of the last frame the harness skipped on its own since
+    /// this was last asked, when one was due: a host whose log is not
+    /// `tracing`'s (the browser's console) prints it.
+    pub fn take_skip_report(&mut self) -> Option<String> {
+        self.skip_report.take()
     }
 
     /// Skip a frame whose layout failed with `error`, as every host does:
@@ -3229,10 +3248,8 @@ impl FrameHarness {
     /// [`Self::relayout`], which a caller asks for after changing anything.
     fn run_frame(&mut self) {
         self.poll_touch_hold(crate::time::now());
-        if let Err(error) = self.try_relayout_following_search()
-            && let Some(line) = self.skip_frame(&error)
-        {
-            tracing::error!("headless: {line}");
+        if let Err(error) = self.try_relayout_following_search() {
+            self.skip_own_frame(&error);
         }
     }
 
