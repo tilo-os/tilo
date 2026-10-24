@@ -710,16 +710,18 @@ fn export_md(
             }
             _ => {
                 if b.flag("code") {
-                    // Fenced code block: emit content verbatim (no inline escaping).
+                    // Fenced code block: emit content verbatim (no inline escaping),
+                    // fenced longer than any fence the code itself shows.
                     let lang = b.str_attr("lang").unwrap_or("");
-                    out.push_str("```");
+                    let fence = "`".repeat(fence_length(&b.text));
+                    out.push_str(&fence);
                     out.push_str(lang);
                     out.push('\n');
                     out.push_str(&b.text);
                     if !b.text.ends_with('\n') {
                         out.push('\n');
                     }
-                    out.push_str("```");
+                    out.push_str(&fence);
                 } else {
                     out.push_str(&render_inline_notes(
                         &b.text,
@@ -747,6 +749,18 @@ fn export_md(
         out.push_str(&defs);
     }
     out
+}
+
+/// The backticks a code block's fence takes: three, or one more than the
+/// longest line of `code` that is only backticks (trailing whitespace aside),
+/// since such a line would close a shorter fence and end the block early.
+fn fence_length(code: &str) -> usize {
+    code.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty() && line.bytes().all(|byte| byte == b'`'))
+        .map(str::len)
+        .max()
+        .map_or(3, |longest| longest.saturating_add(1).max(3))
 }
 
 /// Escapes a cell so it survives one table row; re-import unescapes `\|` back to `|`.
@@ -1252,6 +1266,26 @@ mod tests {
                 .unwrap(),
         )
         .unwrap()
+    }
+
+    /// Code that shows a fence (Markdown about Markdown) exports inside a
+    /// longer fence, so it reads back as the one code block it was.
+    #[test]
+    fn a_code_block_showing_a_fence_exports_as_one_block() {
+        let src = "````md\n```rust\nlet a = 1;\n```\n````\n\nafter\n";
+        let shape = |snapshot: &DocSnapshot| {
+            snapshot
+                .blocks
+                .iter()
+                .map(|block| (block.kind.clone(), block.text.clone(), block.flag("code")))
+                .collect::<Vec<_>>()
+        };
+        let imported = import(src);
+        assert!(imported.blocks[0].text.contains("```rust"), "{src:?}");
+        let out = export(src);
+        assert_eq!(shape(&import(&out)), shape(&imported), "exported {out:?}");
+        assert_eq!(export(&out), out);
+        assert!(export("```sh\nls\n```\n").contains("```sh\nls\n```"));
     }
 
     #[test]
