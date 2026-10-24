@@ -511,6 +511,81 @@ fn escape_cancels_the_file_chooser_of_a_lone_window() {
     );
 }
 
+/// With the window that asked focused, its sheet types, but the pointer
+/// over another window is that window's, as with no chooser up: the
+/// press that moves focus there reaches its app. The waiting window and
+/// the sheet still take the pointer.
+#[test]
+fn a_click_on_another_window_reaches_it_while_the_asking_window_has_the_keys() {
+    use crate::shell::file_picker_overlay::PickerPlace;
+    use crate::shell::input_policy::{
+        chrome_captures_input, chrome_captures_pointer, chrome_captures_touch_at,
+    };
+
+    // A second window on the asking window's display, so the pointer
+    // reaching it does not move the display in use.
+    const BESIDE: GroupId = id(1005);
+    let folder = tempfile::tempdir().expect("tempdir");
+    let mut tree = app_tree();
+    let mut beside = group(BESIDE);
+    beside.tabs[0].tile = TileContent::Foreign {
+        app_id: "org.tilo.other".into(),
+        surface_id: tab_of(BESIDE),
+    };
+    tree.desktop.workspaces[0].strips[0]
+        .window_groups
+        .push(beside);
+    tree.desktop.outputs.home.insert(BESIDE, MONITOR_KEY.into());
+    let (mut desk, pickers) = Desk::with_queue(tree);
+    let _ = desk
+        .fb
+        .host_mut()
+        .focus_window_on_strip(STRIP, ON_MONITOR, tab_of(ON_MONITOR));
+    desk.settle();
+    let _answer = ask(&pickers, folder.path(), None);
+    assert!(desk.fb.host_mut().pump_file_picker());
+    desk.settle();
+    let PickerPlace::Window {
+        window,
+        display,
+        focused: true,
+        ..
+    } = desk.fb.host().file_picker_place()
+    else {
+        panic!("the sheet is on the focused window that asked");
+    };
+    let other = desk
+        .fb
+        .host()
+        .active_tile_rect(BESIDE)
+        .expect("the other window is laid out")
+        .intersect(display);
+    assert!(other.area() > 0.0, "the other window shows on that display");
+    let other = other.center();
+    assert!(!window.contains(other), "the other window is elsewhere");
+    desk.dispatch(&ui::synthetic_input::cursor_moved(other.x, other.y));
+    assert!(
+        chrome_captures_input(&desk.fb),
+        "the keys stay with the sheet"
+    );
+    assert!(
+        !chrome_captures_pointer(&desk.fb),
+        "the pointer over another window is that window's"
+    );
+    assert!(
+        !chrome_captures_touch_at(&desk.fb, other),
+        "and so is a finger landing there"
+    );
+
+    let centre = window.center();
+    desk.dispatch(&ui::synthetic_input::cursor_moved(centre.x, centre.y));
+    assert!(
+        chrome_captures_pointer(&desk.fb),
+        "the waiting window stays closed to the pointer"
+    );
+    assert!(chrome_captures_touch_at(&desk.fb, desk.sheet().center()));
+}
+
 /// While another window has the keyboard, the compositor lets its keys
 /// and its pointer through to that window; the chooser holds the keyboard
 /// only while the window that asked is focused, and the pointer only over
