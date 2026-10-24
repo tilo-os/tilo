@@ -459,6 +459,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
     auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("selection_text",true);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
     if(closing) browser_->GetHost()->CloseBrowser(true);
@@ -1574,6 +1575,7 @@ void StartExtensionTabs() {
   hooks.close=[](int tab) {if(auto client=ClientOf(tab))client->CloseNative();};
   hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
+  hooks.event=[](int tab,const std::string& name,CefRefPtr<CefDictionaryValue> fields) {if(auto client=ClientOf(tab))client->Event(name,fields);};
   hooks.private_mode=private_mode;
   if(!private_mode && !extension_menus_file.empty())
     hooks.save_menus=[](std::string json) {

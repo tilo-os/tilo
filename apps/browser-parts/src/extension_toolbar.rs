@@ -217,11 +217,87 @@ impl Installed {
     }
 }
 
-/// Live action state read from the service worker.
+/// An action's state as Chromium holds it for every tab: read from the
+/// service worker, or told by the extension's script as it changed it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ActionState {
     pub badge: String,
     pub title: Option<String>,
+    /// The popup's address; empty when a click goes to the extension, `None`
+    /// until known, when the manifest's stands.
+    pub popup: Option<String>,
+    pub disabled: bool,
+}
+
+impl ActionState {
+    /// Take in what the extension changed for every tab.
+    pub fn apply(&mut self, change: &ui::webview::ExtensionActionChange) {
+        if let Some(badge) = &change.badge {
+            self.badge = badge_text(badge.as_deref().unwrap_or_default());
+        }
+        if let Some(title) = &change.title {
+            self.title = title.as_deref().and_then(bounded_title);
+        }
+        if let Some(popup) = &change.popup {
+            self.popup.clone_from(popup);
+        }
+        if let Some(enabled) = change.enabled {
+            self.disabled = enabled == Some(false);
+        }
+    }
+
+    /// This state with what the extension set for one page over it.
+    #[must_use]
+    pub fn under(mut self, page: &PageValues) -> Self {
+        if let Some(badge) = &page.badge {
+            self.badge.clone_from(badge);
+        }
+        if let Some(title) = &page.title {
+            self.title = Some(title.clone()).filter(|title| !title.is_empty());
+        }
+        if let Some(popup) = &page.popup {
+            self.popup = Some(popup.clone());
+        }
+        if let Some(enabled) = page.enabled {
+            self.disabled = !enabled;
+        }
+        self
+    }
+}
+
+/// What an extension set for its button on one page alone (an ad
+/// blocker's count of what it blocked there): each `None` is what every
+/// page shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PageValues {
+    pub badge: Option<String>,
+    pub title: Option<String>,
+    pub popup: Option<String>,
+    pub enabled: Option<bool>,
+}
+
+impl PageValues {
+    /// Take in a change for this page; `Some(None)` takes a value back.
+    pub fn apply(&mut self, change: &ui::webview::ExtensionActionChange) {
+        if let Some(badge) = &change.badge {
+            self.badge = badge.as_deref().map(badge_text);
+        }
+        if let Some(title) = &change.title {
+            self.title = title
+                .as_deref()
+                .map(|title| bounded_title(title).unwrap_or_default());
+        }
+        if let Some(popup) = &change.popup {
+            self.popup.clone_from(popup);
+        }
+        if let Some(enabled) = change.enabled {
+            self.enabled = enabled;
+        }
+    }
+}
+
+fn bounded_title(title: &str) -> Option<String> {
+    (!title.is_empty() && title.len() <= MAX_TITLE_BYTES).then(|| title.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -231,7 +307,16 @@ pub struct Button {
     pub tooltip: String,
     pub badge: String,
     pub icon: Option<PathBuf>,
-    pub has_popup: bool,
+    /// The popup a click opens; `None` when a click goes to the extension.
+    pub popup: Option<String>,
+    /// A button the extension turned off does nothing when clicked.
+    pub enabled: bool,
+}
+
+impl Button {
+    pub fn has_popup(&self) -> bool {
+        self.popup.is_some()
+    }
 }
 
 /// The toolbar's content: pinned buttons in the row, and every enabled
@@ -257,6 +342,12 @@ pub fn model(installed: &[Installed], state_of: impl Fn(&str) -> Option<ActionSt
             continue;
         };
         let state = state_of(&extension.id).unwrap_or_default();
+        // Only among its own pages: the panel shows nothing else.
+        let own = format!("chrome-extension://{}/", extension.id);
+        let popup = match state.popup {
+            Some(popup) => Some(popup).filter(|popup| popup.starts_with(&own)),
+            None => extension.popup_url(),
+        };
         let title = state
             .title
             .or_else(|| action.title.clone())
@@ -271,7 +362,8 @@ pub fn model(installed: &[Installed], state_of: impl Fn(&str) -> Option<ActionSt
             },
             badge: state.badge,
             icon: extension.icon_path(),
-            has_popup: action.popup.is_some(),
+            popup,
+            enabled: !state.disabled,
         };
         if extension.pinned {
             model.pinned.push(button.clone());
@@ -329,14 +421,12 @@ pub fn detach_request(session: &str) -> (&'static str, Value) {
     ("Target.detachFromTarget", json!({"sessionId": session}))
 }
 
-/// Reads the badge and title from `chrome.action`: those the extension set
-/// for the page the person is on, else its own. The engine's tab script in
-/// the worker knows the page (`extension_tabs.js`).
+/// Reads the badge, title, popup and whether the button is on from
+/// `chrome.action`, as it is for every tab.
 const READ_ACTION: &str = "(async()=>{const a=chrome.action||chrome.browserAction;\
-let d={};try{const[t]=await chrome.tabs.query({active:true,lastFocusedWindow:true});\
-if(t&&Number.isInteger(t.id))d={tabId:t.id}}catch(e){}\
-const [text,title]=await Promise.all([a.getBadgeText(d),a.getTitle(d)]);\
-return JSON.stringify({text,title})})()";
+const [text,title,popup,enabled]=await Promise.all([a.getBadgeText({}),a.getTitle({}),\
+a.getPopup?a.getPopup({}):null,a.isEnabled?a.isEnabled():true]);\
+return JSON.stringify({text,title,popup,enabled})})()";
 
 pub fn evaluate_request() -> (&'static str, Value) {
     (
@@ -358,8 +448,13 @@ pub fn action_state(body: &str) -> Option<ActionState> {
         title: state
             .get("title")
             .and_then(Value::as_str)
-            .filter(|title| !title.is_empty() && title.len() <= MAX_TITLE_BYTES)
+            .and_then(bounded_title),
+        popup: state
+            .get("popup")
+            .and_then(Value::as_str)
+            .filter(|popup| popup.len() <= 2048)
             .map(str::to_owned),
+        disabled: state.get("enabled").and_then(Value::as_bool) == Some(false),
     })
 }
 
@@ -368,6 +463,21 @@ pub fn loaded_id(body: &str) -> Option<String> {
     let reply: Value = serde_json::from_str(body).ok()?;
     let id = reply.get("id")?.as_str()?;
     crate::crx::is_extension_id(id).then(|| id.to_owned())
+}
+
+/// The file at `path` (`/icons/on.png`, from the extension's root) when it
+/// is inside `root`: an icon an extension set for its button.
+pub fn icon_within(root: &Path, path: &str) -> Option<PathBuf> {
+    let relative = path.strip_prefix('/')?;
+    if relative.is_empty()
+        || relative.contains(['\\', ':', '?', '#'])
+        || relative.split('/').any(|part| part == "..")
+    {
+        return None;
+    }
+    let root = root.canonicalize().ok()?;
+    let file = root.join(relative).canonicalize().ok()?;
+    file.starts_with(&root).then_some(file)
 }
 
 /// Read a PNG action icon inside `root` (see [`Installed::icon_path`]).
@@ -508,21 +618,106 @@ mod tests {
             (id == "b".repeat(32)).then(|| ActionState {
                 badge: "12".into(),
                 title: Some("12 blocked".into()),
+                ..ActionState::default()
             })
         });
         assert_eq!(model.pinned.len(), 1);
         assert_eq!(model.pinned[0].label, "Vault");
         assert_eq!(model.pinned[0].tooltip, "Vault \u{2014} Open");
-        assert!(model.pinned[0].has_popup);
+        assert!(model.pinned[0].has_popup());
         assert_eq!(model.menu.len(), 2, "disabled and action-less stay out");
         assert!(model.menu[0].pinned && !model.menu[1].pinned);
         assert_eq!(model.menu[1].button.badge, "12");
         assert_eq!(model.menu[1].button.tooltip, "Blocker \u{2014} 12 blocked");
-        assert!(!model.menu[1].button.has_popup);
+        assert!(!model.menu[1].button.has_popup());
         assert_eq!(
             list[0].popup_url().unwrap(),
             format!("chrome-extension://{}/p.html", "a".repeat(32))
         );
+    }
+
+    #[test]
+    fn a_page_shows_what_the_extension_set_for_it_over_what_every_page_shows() {
+        use ui::webview::ExtensionActionChange as Change;
+        let id = "a".repeat(32);
+        let own = |page: &str| format!("chrome-extension://{id}/{page}");
+        let list = [installed(
+            &id,
+            "Blocker",
+            true,
+            true,
+            r#"{"action":{"default_popup":"p.html","default_title":"Blocker"}}"#,
+        )];
+        let mut every = ActionState::default();
+        every.apply(&Change {
+            badge: Some(Some("on".into())),
+            title: Some(Some("Blocking".into())),
+            ..Change::default()
+        });
+        let mut page = PageValues::default();
+        page.apply(&Change {
+            badge: Some(Some("123456".into())),
+            popup: Some(Some(String::new())),
+            enabled: Some(Some(false)),
+            ..Change::default()
+        });
+        let button = |state: ActionState| model(&list, |_| Some(state.clone())).pinned.remove(0);
+        let shown = button(every.clone().under(&page));
+        assert_eq!(shown.badge, "1234", "Chrome's four characters");
+        assert_eq!(shown.tooltip, "Blocker \u{2014} Blocking");
+        assert_eq!(shown.popup, None, "a click goes to the extension");
+        assert!(!shown.enabled);
+
+        // Taken back for the page: what every page shows.
+        page.apply(&Change {
+            badge: Some(None),
+            popup: Some(None),
+            enabled: Some(None),
+            ..Change::default()
+        });
+        let shown = button(every.clone().under(&page));
+        assert_eq!(shown.badge, "on");
+        assert_eq!(shown.popup, Some(own("p.html")), "the manifest's popup");
+        assert!(shown.enabled);
+
+        // A popup Chromium resolved stands, but only among its own pages.
+        every.apply(&Change {
+            popup: Some(Some(own("other.html"))),
+            ..Change::default()
+        });
+        assert_eq!(button(every.clone()).popup, Some(own("other.html")));
+        every.popup = Some("https://example.test/".into());
+        assert_eq!(button(every.clone()).popup, None);
+        // An empty title for the page is no title.
+        page.apply(&Change {
+            title: Some(Some(String::new())),
+            ..Change::default()
+        });
+        assert_eq!(
+            button(ActionState::default().under(&page)).tooltip,
+            "Blocker"
+        );
+    }
+
+    #[test]
+    fn an_icon_an_extension_sets_is_one_of_its_own_files() {
+        let root = std::env::temp_dir().join(format!("tilo-action-icon-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("icons")).unwrap();
+        std::fs::write(root.join("icons/on.png"), b"png").unwrap();
+        assert_eq!(
+            icon_within(&root, "/icons/on.png"),
+            Some(root.canonicalize().unwrap().join("icons/on.png"))
+        );
+        for outside in [
+            "icons/on.png",
+            "/../on.png",
+            "/icons/../../on.png",
+            "/",
+            "/missing.png",
+        ] {
+            assert_eq!(icon_within(&root, outside), None, "{outside}");
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
@@ -551,7 +746,19 @@ mod tests {
             action_state(&evaluated),
             Some(ActionState {
                 badge: "1234".into(),
-                title: Some("6 blocked".into())
+                title: Some("6 blocked".into()),
+                ..ActionState::default()
+            })
+        );
+        let off = json!({"result":{"type":"string","value":
+            json!({"text":"","title":"","popup":format!("chrome-extension://{id}/p.html"),"enabled":false}).to_string()}})
+        .to_string();
+        assert_eq!(
+            action_state(&off),
+            Some(ActionState {
+                popup: Some(format!("chrome-extension://{id}/p.html")),
+                disabled: true,
+                ..ActionState::default()
             })
         );
         assert_eq!(action_state(r#"{"exceptionDetails":{}}"#), None);

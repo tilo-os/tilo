@@ -37,9 +37,13 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   it, as uBlock Origin Lite's element zapper does.
 - A click lets an extension read the page's language and zoom, and give its
   button a badge, title, popup and state for that tab alone, which the
-  toolbar shows and the next page does not keep.
+  Browser is told of for that tab and the next page does not keep.
 - A worker that runs the tab script keeps its address, which extensions read
   and load their helpers against, and its strictness.
+- What an extension sets for its toolbar button on one page (a count, a
+  title, an icon, off) reaches the Browser for that page's tab alone and
+  goes with the page; what it sets for every tab reaches every tab, also one
+  opened later; and its popup opens over the page when it asks.
 """
 import base64
 import hashlib
@@ -51,6 +55,7 @@ import re
 import secrets
 import shutil
 import sys
+import struct
 import tempfile
 import threading
 import time
@@ -302,11 +307,12 @@ class ExtensionTabs(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def start(self, *names, access, installed=None, profile=None):
+    def start(self, *names, access, installed=None, profile=None, files=None):
         """A host with the fixtures `names` loaded, each granted what the
         Browser grants an installed extension (`access`: name -> (permissions,
-        hosts)). A host started again with the `installed` directory and the
-        `profile` of an earlier one finds the same extensions there."""
+        hosts)), with `files` (name -> {file: bytes}) written into its copy. A
+        host started again with the `installed` directory and the `profile` of
+        an earlier one finds the same extensions there."""
         if installed is None:
             directory = tempfile.TemporaryDirectory(prefix='tilo-extension-tabs-')
             self.addCleanup(directory.cleanup)
@@ -314,6 +320,9 @@ class ExtensionTabs(unittest.TestCase):
         # One prepared before keeps its token in the worker it wrote.
         prepared = [((installed / name).resolve(), _token(installed / name)) if (installed / name).exists()
                     else prepare(FIXTURES / name, installed) for name in names]
+        for name, (path, _) in zip(names, prepared):
+            for file, data in (files or {}).get(name, {}).items():
+                (path / file).write_bytes(data)
         paths = [path for path, _ in prepared]
         host = Host(args=['--use-mock-keychain', '--load-extension=' + ','.join(map(str, [MANAGER, *paths]))], profile=profile)
         self.addCleanup(host.close)
@@ -413,17 +422,22 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(report, {
             'clicks': 1, 'language': 'de', 'zoom': 1, 'missing': 'No tab with id: 987654.',
             'badge': '7', 'global': '', 'title': 'Clipped', 'popup': popup, 'enabled': False, 'callback': '7'})
-        # The toolbar shows the badge and title set for the page the person
-        # is on.
-        self.assertEqual(self.toolbar_reads(host, ids['badger']), {'text': '7', 'title': 'Clipped'})
+        # The Browser is told of the page's own, for its tab; its toolbar
+        # reads the extension's own for every tab.
+        told = {key: value for e in host.seen if e['event'] == 'extension_action' and e.get('tab') == 1
+                and e['id'] == ids['badger'] and not e['global'] for key, value in e['change'].items()}
+        self.assertEqual(told, {'badge': '7', 'title': 'Clipped', 'popup': popup, 'enabled': False})
+        self.assertEqual(self.toolbar_reads(host, ids['badger']),
+                         {'text': '', 'title': 'Clip this page', 'popup': '', 'enabled': True})
         # A new page has the button as the extension set it for every tab.
+        mark = len(host.seen)
         host.navigate(self.url + '/next')
         host.settle(1.0)
         host.send(op='extension_click', id=ids['badger'])
         report = json.loads(self.title(host, 1, 'marked:{"clicks":2')[len('marked:'):])
         self.assertEqual(report, {'clicks': 2, 'badge': '', 'global': '', 'title': 'Clip this page',
                                   'popup': '', 'enabled': True, 'callback': ''})
-        self.assertEqual(self.toolbar_reads(host, ids['badger']), {'text': '', 'title': 'Clip this page'})
+        self.assertIn('extension_action_reset', [e['event'] for e in host.seen[mark:] if e.get('tab') == 1])
 
     def test_a_popup_finds_the_page_it_was_opened_over(self):
         host, ids = self.start('asker', 'plain', access={'asker': (['tabs'], [])})
@@ -686,6 +700,76 @@ class ExtensionTabs(unittest.TestCase):
         menu, items = self.page_menu(host, 400, 400, 'Remember the page')
         chosen = self.choose(host, menu, items, 'Remember the page')
         self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (True, False))
+
+    def test_a_button_shows_what_its_extension_set_for_each_page(self):
+        host, ids = self.start('counter', access={'counter': (['scripting'], ['http://127.0.0.1/*'])},
+                               files={'counter': {'on.png': png(16, 16)}})
+        counter = ids['counter']
+
+        def seek(since, predicate):
+            """The first event since `since` (an index of host.seen) that
+            matches, and its index."""
+            for index in range(since, len(host.seen)):
+                if predicate(host.seen[index]):
+                    return host.seen[index], index
+            event = host.until(predicate)
+            return event, len(host.seen) - 1
+
+        def action(tab, every, key, value):
+            return lambda e: (e['event'] == 'extension_action' and e.get('tab') == tab and e['id'] == counter
+                              and e['global'] == every and e['change'].get(key) == value)
+
+        mark = len(host.seen)
+        host.navigate(self.url + '/count')
+        # For this page: its count, a title and an icon among its files.
+        seek(mark, action(1, False, 'badge', '6'))
+        seek(mark, action(1, False, 'title', '6 blocked'))
+        seek(mark, action(1, False, 'icon', {'path': '/on.png'}))
+        # For every page: a badge, and pixels it drew.
+        seek(mark, action(1, True, 'badge', 'all'))
+        seek(mark, action(1, True, 'icon', {'width': 2, 'height': 1, 'data': 'AQIDBAUGBwg='}))
+        read = json.loads(self.title(host, 1, 'badged:')[len('badged:'):])
+        self.assertEqual(read, {'text': '6', 'every': 'all', 'title': '6 blocked', 'enabled': True})
+
+        # The next page starts with what every page shows, then its own.
+        mark = len(host.seen)
+        host.navigate(self.url + '/off')
+        _, reset = seek(mark, lambda e: e['event'] == 'extension_action_reset' and e.get('tab') == 1)
+        _, own = seek(mark, action(1, False, 'badge', '4'))
+        self.assertLess(reset, own, 'what the last page showed goes first')
+        seek(mark, action(1, False, 'enabled', False))
+        read = json.loads(self.title(host, 1, 'badged:{"text":"4"')[len('badged:'):])
+        self.assertEqual((read['text'], read['enabled']), ('4', False))
+
+        # A tab opened later is told what every tab shows; its page's count
+        # is its own.
+        mark = len(host.seen)
+        host.send(op='create_tab', tab=2)
+        replayed, _ = seek(mark, lambda e: e['event'] == 'extension_action' and e.get('tab') == 2)
+        self.assertEqual((replayed['global'], replayed['change']['badge']), (True, 'all'))
+        self.assertEqual(replayed['change']['icon']['width'], 2)
+        host.send(op='resize', tab=2, width=800, height=600, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=self.url + '/second')
+        seek(mark, action(2, False, 'badge', '7'))
+        host.settle(1.0)
+        self.assertFalse([e for e in host.seen[mark:] if e['event'] == 'extension_action' and e.get('tab') == 1
+                          and not e['global']], 'another tab is not told of this page')
+
+        # It asks to open its popup over the page in front.
+        mark = len(host.seen)
+        host.navigate(self.url + '/open')
+        opened, _ = seek(mark, lambda e: e['event'] == 'extension_open_popup')
+        self.assertEqual((opened.get('tab'), opened['id'], opened['url']),
+                         (1, counter, f'chrome-extension://{counter}/popup.html'))
+
+
+def png(width, height):
+    """An opaque PNG of `width` by `height` pixels."""
+    def chunk(kind, data):
+        return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
+    rows = b''.join(b'\0' + b'\x20\x80\x40\xff' * width for _ in range(height))
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+            + chunk(b'IDAT', zlib.compress(rows)) + chunk(b'IEND', b''))
 
 
 if __name__ == '__main__':
