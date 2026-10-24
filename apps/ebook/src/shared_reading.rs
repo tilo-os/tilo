@@ -133,7 +133,7 @@ mod tests {
         };
         let garamond = Settings {
             font_id: "reading-eb-garamond".into(),
-            ..books.clone()
+            ..books
         };
         assert_eq!(
             adopted(&garamond, &publisher, false).font_id,

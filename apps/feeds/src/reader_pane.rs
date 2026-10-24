@@ -585,9 +585,7 @@ impl Widget for ReaderPane {
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let core = self.core.borrow();
-        if core.open_article().is_none() {
-            return None;
-        }
+        core.open_article()?;
         core.reader.cursor_at(point)
     }
 

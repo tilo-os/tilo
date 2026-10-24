@@ -184,14 +184,14 @@ fn startup_is_empty_live_and_populated_only_in_demo() {
     let mut demo = app();
     assert!(demo.empty_onboarding_prompt().is_none());
     let selected = demo.selected_article().expect("the demo opens an article");
+    let document = demo
+        .core_mut()
+        .article_document(&selected)
+        .expect("the open article reads");
     assert!(
-        !demo
-            .core()
-            .store
-            .article(&selected)
-            .expect("the open article")
-            .blocks
-            .is_empty()
+        document.blocks.len() > 3,
+        "a rich article: {} blocks",
+        document.blocks.len()
     );
     let doc = synced(&mut demo);
     assert_eq!(loaded(&doc).feeds.len(), demo.core().store.feeds.len());

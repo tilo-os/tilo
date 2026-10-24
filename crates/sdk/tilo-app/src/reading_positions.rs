@@ -122,7 +122,7 @@ mod tests {
         assert!(state.place("article-3").is_none());
         assert!(
             phone
-                .apply(ReadingPositions::KEEP_PLACE.with(("".to_owned(), 0, 0.0, 0.0)))
+                .apply(ReadingPositions::KEEP_PLACE.with((String::new(), 0, 0.0, 0.0)))
                 .is_err()
         );
     }

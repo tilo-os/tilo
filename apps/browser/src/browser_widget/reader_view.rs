@@ -175,7 +175,7 @@ mod tests {
     fn reader_view_sets_the_pages_article_in_the_shared_reader() {
         let paragraph = "Prose the page carries, long enough to read as an article, with \
                          commas, clauses, and sentences that people write.";
-        let body: String = (0..6).map(|_| format!("<p>{paragraph}</p>")).collect();
+        let body = format!("<p>{paragraph}</p>").repeat(6);
         let html = format!(
             "<article><h1>Story</h1>{body}<ol><li>One</li><li>Two</li></ol>\
              <img src=\"https://news.test/a.jpg\" width=\"800\" height=\"500\" alt=\"A view\"></article>"

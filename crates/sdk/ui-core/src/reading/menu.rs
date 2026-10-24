@@ -155,7 +155,7 @@ pub fn reading_menu(prefs: ReadingPreferences, id: &str, changed: &OnReadingChan
     Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_id(&format!("{id}-menu"))
+        .with_id(format!("{id}-menu"))
         .push(label("Text size"))
         .push(Box::new(size))
         .push(label("Font"))

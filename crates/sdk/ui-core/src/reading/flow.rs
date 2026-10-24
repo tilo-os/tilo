@@ -1688,19 +1688,15 @@ fn laid_code_block(
 const UNKNOWN_ASPECT: f32 = 2.0 / 3.0;
 
 /// The box a picture takes in a measure `measure` wide that may bleed to
-/// `bleed`: its own size where it fits, the measure where it is wider, the
-/// whole bleed where it is much wider. The height follows from its aspect.
+/// `bleed`: its own size where it fits in the bleed, the whole bleed where
+/// it is wider, the measure where its size is not known. The height follows
+/// from its aspect.
 #[must_use]
 pub fn figure_box(image: &Image, measure: f32, bleed: f32) -> (f32, f32) {
     let bleed = bleed.max(measure);
     let aspect = image.aspect().unwrap_or(UNKNOWN_ASPECT);
     let natural = image.width.map_or(measure, crate::num::f32_of_u32);
-    let width = if natural > measure * 1.2 {
-        natural.min(bleed)
-    } else {
-        natural.min(measure)
-    }
-    .max(1.0);
+    let width = natural.min(bleed).max(1.0);
     (width, width * aspect)
 }
 

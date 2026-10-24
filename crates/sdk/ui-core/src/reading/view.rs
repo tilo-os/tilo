@@ -182,16 +182,17 @@ impl Speed {
             self.sample = Some((now, word));
             return;
         };
-        let elapsed = now.saturating_duration_since(since);
-        if elapsed < Self::MIN_SAMPLE {
+        // How long the person read for since the last sample.
+        let reading_time = now.saturating_duration_since(since);
+        if reading_time < Self::MIN_SAMPLE {
             return;
         }
         self.sample = Some((now, word));
-        if elapsed > Self::MAX_SAMPLE || word <= from {
+        if reading_time > Self::MAX_SAMPLE || word <= from {
             return;
         }
         let words = crate::num::f32_of_f64(crate::num::f64_of_usize(word - from));
-        let minutes = crate::num::f32_of_f64(elapsed.as_secs_f64() / 60.0);
+        let minutes = crate::num::f32_of_f64(reading_time.as_secs_f64()) / 60.0;
         let rate = words / minutes.max(1e-3);
         if words >= 50.0 && ReadingPreferences::WPM_RANGE.contains(&rate) {
             self.words_per_minute = self.words_per_minute * 0.8 + rate * 0.2;
@@ -497,7 +498,7 @@ impl ReaderView {
             .enumerate()
             .skip(self.header_len)
             .find(|(_, block)| block.bottom > top)
-            .or_else(|| layout.blocks.iter().enumerate().last())?;
+            .or_else(|| layout.blocks.iter().enumerate().next_back())?;
         let (index, block) = at;
         let height = (block.bottom - block.top).max(1.0);
         let fraction = ((top - block.top) / height).clamp(0.0, 1.0);
@@ -954,7 +955,7 @@ impl ReaderView {
         scene.fill(
             Fill::NonZero,
             t,
-            Color::from_rgba8(0, 0, 0, 0xE0),
+            theme.tokens.colors.media.scrim,
             None,
             &area,
         );
@@ -984,7 +985,7 @@ impl ReaderView {
         };
         let swatches: Vec<crate::reader_hud::HudSwatch> = HIGHLIGHT_COLORS
             .iter()
-            .map(|(name, rgb)| crate::reader_hud::HudSwatch::new(*rgb, false).named(*name))
+            .map(|(name, rgb)| crate::reader_hud::HudSwatch::new(*rgb, false).named(name))
             .collect();
         self.hud = crate::reader_hud::SelectionHud::draw(
             scene,
@@ -1373,7 +1374,6 @@ impl ReaderView {
 
     /// The document as assistive technology reads it: its headings,
     /// paragraphs, links and pictures in order.
-    #[must_use]
     pub fn accessibility(&self, empty: &str) -> AccessNode {
         let Some(document) = &self.document else {
             return AccessNode::new(Role::Document)

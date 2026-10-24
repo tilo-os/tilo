@@ -2883,7 +2883,7 @@ impl MailApp {
     }
 
     /// The reading preferences another reader, window or device changed.
-    fn adopt_reading(&mut self) {
+    fn adopt_reading(&self) {
         let Some(reading) = &self.reading else {
             return;
         };

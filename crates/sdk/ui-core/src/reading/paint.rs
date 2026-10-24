@@ -214,18 +214,28 @@ fn paint_block(
         if line_top > paint.clip.y1 || line_top + f64::from(block.line_height) < paint.clip.y0 {
             continue;
         }
+        // Where the run before ended, when it was part of a link: a link's
+        // underline runs on under the spaces between its words.
+        let mut link_end: Option<(&Arc<str>, f64)> = None;
         for run in &line.runs {
+            let x = origin + f64::from(run.x);
+            let underline_from = match (link_end, &run.link) {
+                (Some((before, end)), Some(link)) if before == link && end < x => Some(end),
+                _ => None,
+            };
             let painted = PaintedRun {
                 block,
                 index,
                 run,
-                x: origin + f64::from(run.x),
+                x,
                 line_top,
                 glyph_scale: line.glyph_scale,
                 family,
                 ink,
+                underline_from,
             };
-            paint_run(ctx, paint, &painted, hits);
+            let end = paint_run(ctx, paint, &painted, hits);
+            link_end = run.link.as_ref().map(|link| (link, end));
         }
     }
     if scrolls {
@@ -273,6 +283,9 @@ struct PaintedRun<'a> {
     glyph_scale: f32,
     family: &'a FontChoice,
     ink: Color,
+    /// Where the run's link underline starts when it runs on from the run
+    /// before (the same link's previous word); the run's own start otherwise.
+    underline_from: Option<f64>,
 }
 
 impl PaintedRun<'_> {
@@ -329,12 +342,13 @@ impl PaintedRun<'_> {
     }
 }
 
+/// Paint one run; returns where it ends on screen.
 fn paint_run(
     ctx: &mut PaintCtx<'_>,
     paint: &FlowPaint<'_>,
     painted: &PaintedRun<'_>,
     hits: &mut FlowHits,
-) {
+) -> f64 {
     let run = painted.run;
     let theme = paint.page_theme;
     let run_y = painted.line_top + f64::from(run.y);
@@ -402,7 +416,7 @@ fn paint_run(
         let thickness = (f64::from(run.size) / 16.0).max(1.0) * if hovered { 1.6 } else { 1.0 };
         let alpha = if hovered { 1.0 } else { 0.55 };
         let underline = Rect::new(
-            painted.x,
+            painted.underline_from.unwrap_or(painted.x),
             run_y + baseline + 2.0,
             painted.x + width,
             run_y + baseline + 2.0 + thickness,
@@ -414,6 +428,7 @@ fn paint_run(
         // A raised number is small; its target is the whole line box.
         hits.notes.push((line_rect.inflate(4.0, 0.0), note));
     }
+    painted.x + width
 }
 
 /// The character of `block` under screen x `x` on `line`, given the same

@@ -358,6 +358,10 @@ pub(crate) enum Awaited {
 }
 
 /// The state of the window.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag records one independent fact about the window"
+)]
 pub(crate) struct Core {
     /// The library as it was presented last; the window changes it only
     /// through the library's door.
@@ -2770,9 +2774,9 @@ impl FeedsApp {
     pub(crate) fn follow_reading(
         &self,
         setting: ui::framework::Setting<ReadingPreferences>,
-        earlier: ui::framework::Setting<EarlierReadSettings>,
+        earlier: &ui::framework::Setting<EarlierReadSettings>,
     ) {
-        self.core.borrow_mut().follow_reading(setting, &earlier);
+        self.core.borrow_mut().follow_reading(setting, earlier);
     }
     pub(crate) fn change_reading(
         &self,

@@ -162,7 +162,9 @@ fn split_trailing_quote(body: &str) -> (&str, bool) {
 }
 
 /// A plain-text body as runs at `body_px`, quoted lines quieter, and where
-/// the addresses it names go, in byte ranges of the runs' text.
+/// the addresses it names go, in byte ranges of the runs' text. A paragraph
+/// its sender's program wrapped at a fixed width reads as one paragraph,
+/// wrapped to the reader's measure ([`unwrapped_lines`]).
 fn plain_runs(
     body: &str,
     quiet: [u8; 3],
@@ -170,13 +172,12 @@ fn plain_runs(
 ) -> (Vec<ui::RichSpan>, Vec<(std::ops::Range<usize>, String)>) {
     let mut runs: Vec<ui::RichSpan> = Vec::new();
     let mut text_so_far = String::with_capacity(body.len());
-    for (index, line) in body.split('\n').enumerate() {
+    for (index, (line, quoted)) in unwrapped_lines(body).into_iter().enumerate() {
         let mut text = String::with_capacity(line.len() + 1);
         if index > 0 {
             text.push('\n');
         }
-        text.push_str(line.trim_end_matches('\r'));
-        let quoted = line.trim_start().starts_with('>');
+        text.push_str(&line);
         text_so_far.push_str(&text);
         let mut span = ui::RichSpan::new(text).color(quoted.then_some(quiet));
         span.size = Some(body_px);
@@ -184,6 +185,54 @@ fn plain_runs(
     }
     let links = crate::html_mail::text_links(&text_so_far);
     (runs, links)
+}
+
+/// The width at which mail programs wrap plain text, less a margin: a line
+/// this long that a paragraph goes on after was wrapped, not ended.
+const WRAPPED_LINE_CHARS: usize = 60;
+
+/// `body`'s lines with the breaks a sender's program put inside paragraphs
+/// taken out, each with whether it is quoted. A line joins the next when it
+/// ends in a space (format=flowed) or runs close to the wrap width, and the
+/// next goes on with prose: not blank, quoted, indented or a list item. A
+/// signature separator and short lines (an address, a sign-off) keep their
+/// breaks.
+fn unwrapped_lines(body: &str) -> Vec<(String, bool)> {
+    let quoted = |line: &str| line.trim_start().starts_with('>');
+    let continues_prose = |line: &str| {
+        let trimmed = line.trim_start();
+        !trimmed.is_empty()
+            && trimmed.len() == line.len()
+            && !quoted(line)
+            && !trimmed.starts_with(['-', '*', '+', '•'])
+            && !trimmed.split_once(['.', ')']).is_some_and(|(number, _)| {
+                !number.is_empty() && number.chars().all(|c| c.is_ascii_digit())
+            })
+    };
+    let mut lines: Vec<(String, bool)> = Vec::new();
+    let mut joins_next = false;
+    for raw in body.split('\n') {
+        let line = raw.trim_end_matches('\r');
+        if joins_next
+            && continues_prose(line)
+            && let Some((previous, _)) = lines.last_mut()
+        {
+            let kept = previous.trim_end().len();
+            previous.truncate(kept);
+            previous.push(' ');
+            previous.push_str(line);
+        } else {
+            lines.push((line.to_owned(), quoted(line)));
+        }
+        let Some((current, is_quoted)) = lines.last() else {
+            continue;
+        };
+        joins_next = !is_quoted
+            && current != "-- "
+            && !current.trim().is_empty()
+            && (line.ends_with(' ') || line.chars().count() >= WRAPPED_LINE_CHARS);
+    }
+    lines
 }
 
 /// An HTML body as runs, and where its links go, in byte ranges of the
@@ -258,8 +307,13 @@ fn recipients_line(message: &Message) -> String {
 struct Flow<'a, 'b> {
     ctx: PaintCtx<'b>,
     state: &'a MailState,
+    /// The text column: the reading measure, centred.
     x: f64,
     width: f64,
+    /// The whole width inside the gutters, which an HTML message's own page
+    /// takes: it was laid out by its sender, not set to the measure.
+    page_x: f64,
+    page_width: f64,
     y: f64,
     pointer: Point,
     attachments: Vec<(Rect, MessageId, usize)>,
@@ -913,6 +967,8 @@ impl MessageReader {
             state: &state,
             x: r.x0 + geometry.left,
             width: f64::from(geometry.measure).max(1.0),
+            page_x: r.x0 + gutter,
+            page_width: (r.width() - 2.0 * gutter).max(1.0),
             y: r.y0 + gutter - scroll,
             pointer: self.pointer,
             attachments: Vec::new(),
@@ -975,14 +1031,24 @@ impl MessageReader {
                 if measured {
                     // As tall as its document: the reader scrolls the
                     // conversation and the mail as one page.
-                    let width = flow.width;
+                    let width = flow.page_width;
                     let (laid, kept) = self.html.layout(width, f64::from(spacing.s1));
-                    webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + width, flow.y + laid));
+                    webview_rect = Some(Rect::new(
+                        flow.page_x,
+                        flow.y,
+                        flow.page_x + width,
+                        flow.y + laid,
+                    ));
                     flow.y += kept;
                 } else {
                     let bottom = r.y1 - gutter;
                     if bottom > flow.y + f64::from(spacing.s12) {
-                        webview_rect = Some(Rect::new(flow.x, flow.y, flow.x + flow.width, bottom));
+                        webview_rect = Some(Rect::new(
+                            flow.page_x,
+                            flow.y,
+                            flow.page_x + flow.page_width,
+                            bottom,
+                        ));
                     }
                     flow.y = bottom;
                     html_fills = true;
@@ -1759,6 +1825,47 @@ mod tests {
         assert_eq!(
             reader.bodies[&id].input.font_family(),
             Some(&ui::reading::ReadingFont::Sans.family(None))
+        );
+    }
+
+    /// A paragraph wrapped at a fixed width by its sender's program reads as
+    /// one paragraph; blank lines, quotes, lists, short lines and the
+    /// signature keep their breaks.
+    #[test]
+    fn plain_text_paragraphs_wrapped_by_the_sender_read_whole() {
+        let body = "Saturday works. The market opens at 8, and the bakery stand sells out\n\
+                    by 10, so let's meet at the fountain at 8:30.\n\
+                    \n\
+                    Bring:\n\
+                    - a bag for the apples we will surely buy far too many of again\n\
+                    - cash\n\
+                    > On Friday, Sam wrote a long line that is quoted from the earlier\n\
+                    > message and stays as it was sent\n\
+                    Flowed text ends its soft lines with a space \n\
+                    and joins.\n\
+                    -- \n\
+                    Lena\n\
+                    Market Street 4";
+        let lines: Vec<String> = unwrapped_lines(body)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "Saturday works. The market opens at 8, and the bakery stand sells out by 10, so \
+                 let's meet at the fountain at 8:30.",
+                "",
+                "Bring:",
+                "- a bag for the apples we will surely buy far too many of again",
+                "- cash",
+                "> On Friday, Sam wrote a long line that is quoted from the earlier",
+                "> message and stays as it was sent",
+                "Flowed text ends its soft lines with a space and joins.",
+                "-- ",
+                "Lena",
+                "Market Street 4",
+            ]
         );
     }
 

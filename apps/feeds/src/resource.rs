@@ -436,7 +436,7 @@ impl ResourceSurface<Library, FeedsEffect> for FeedsApp {
         self.attach_dispatcher(cx.dispatcher());
         self.follow_reading(
             cx.settings::<ReadingPreferences>(),
-            cx.settings::<EarlierReadSettings>(),
+            &cx.settings::<EarlierReadSettings>(),
         );
         // Where the person is in each article is theirs alone: kept in their
         // own room, never in a capture.

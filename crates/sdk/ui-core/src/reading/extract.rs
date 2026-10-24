@@ -703,7 +703,7 @@ impl<'d> Lowerer<'d> {
             "br" => self.pending_break = !self.spans.is_empty(),
             "wbr" => {}
             "p" | "div" | "section" | "article" | "main" | "header" | "center" | "address"
-            | "details" | "summary" | "hgroup" | "body" | "html" | "dd" | "caption" => {
+            | "details" | "summary" | "hgroup" | "body" | "html" | "dd" | "caption" | "dl" => {
                 self.block_boundary();
                 self.children(node);
                 self.block_boundary();
@@ -735,11 +735,6 @@ impl<'d> Lowerer<'d> {
                 self.containers.pop();
             }
             "ul" | "ol" | "menu" => self.list(node, name == "ol"),
-            "dl" => {
-                self.block_boundary();
-                self.children(node);
-                self.block_boundary();
-            }
             "li" => self.item(node),
             "pre" => self.code_block(node),
             "figure" => self.figure(node),

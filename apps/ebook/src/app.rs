@@ -8454,8 +8454,7 @@ impl BooksApp {
                     Some(g) => Action::DeleteHighlight(g),
                     None => Action::Swallow,
                 },
-                ui::HudAction::SelectAll => Action::Swallow,
-                ui::HudAction::Share => Action::Swallow,
+                ui::HudAction::SelectAll | ui::HudAction::Share => Action::Swallow,
             };
             self.push_hit(rect, mapped);
         }
