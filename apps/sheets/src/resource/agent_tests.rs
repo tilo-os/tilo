@@ -95,6 +95,44 @@ fn new_sheet_rows_take_iso_dates_and_text_marked_with_an_apostrophe() {
     assert_eq!(read["formats"]["B2"], "text");
 }
 
+/// `write-cells` reads a value as `set-cells` does: an ISO date is a real
+/// date whether or not the write names a format, so a form's date check
+/// counts it; a format naming text keeps it as typed.
+#[test]
+fn written_cells_take_iso_dates_as_real_dates() {
+    let mut app = app();
+    call(
+        &mut app,
+        "new-sheet",
+        json!({"name": "Form", "rows": [["Born", "=COUNT(A2)"]]}),
+    );
+    call(
+        &mut app,
+        "write-cells",
+        json!({"sheet": "Form", "cells": [
+            {"cell": "A2", "input": "1988-04-03"},
+            {"cell": "B2", "input": "=COUNT(A2)+COUNT(A3)"},
+            {"cell": "A3", "input": "2026-09-25", "format": "date"},
+            {"cell": "A4", "input": "2026-09-25", "format": "text"},
+            {"cell": "A5", "input": "'007"},
+        ]}),
+    );
+    let read = read(&mut app, "Form", "A2:B5");
+    assert_eq!(
+        read["rows"],
+        json!([
+            ["1988-04-03", 2.0],
+            ["2026-09-25", null],
+            ["2026-09-25", null],
+            ["007", null]
+        ])
+    );
+    assert_eq!(read["formats"]["A2"], "date");
+    assert_eq!(read["formats"]["A3"], "date");
+    assert_eq!(read["formats"]["A4"], "text");
+    assert_eq!(read["formats"]["A5"], "text");
+}
+
 #[test]
 fn a_renamed_blank_sheet_is_kept_when_a_sheet_with_content_is_added() {
     let mut app = app();
