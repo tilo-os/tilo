@@ -251,6 +251,51 @@ mod tests {
         assert_eq!(bar.arrival_shown(later), None, "it goes on its own");
     }
 
+    /// The status going changes the bar only where it stood: the bar's
+    /// parts bound it there, so a frame it fades or leaves in (a strip pan
+    /// just after arriving) repaints that much of the bar, not all of it.
+    #[test]
+    fn the_status_going_damages_only_where_it_stood() {
+        ui::i18n::I18nManager::init("en-US");
+        let tree = room();
+        let chrome = FixtureChrome::new(tree.clone());
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+        bar.sync_from_tree(&tree);
+        chrome.borrow_mut().arrived = Some(ArrivalNotice {
+            people: vec!["ada".into(), "bo".into()],
+            names: vec!["Ada Lovelace".into(), "Bo Brave".into()],
+            seen: None,
+            at: ui::time::now(),
+        });
+        let _settled = ui::motion::testing::settled();
+        // One text renderer for both draws: its fonts are what the glyphs
+        // refer to.
+        let (theme, mut text) = (Theme::default(), TextRenderer::new());
+        super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
+        let status = bar.arrival_rect;
+        assert!(!status.is_zero_area(), "the status is up");
+        let shown = bar.cached.clone();
+        let shown_parts = bar.cached_parts.clone().expect("the bar is drawn in parts");
+        chrome.borrow_mut().arrived = None;
+        super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
+        let gone_parts = bar.cached_parts.clone().expect("the bar is drawn in parts");
+        let damage = ui::scene_parts::damage(&shown, &shown_parts, &bar.cached, &gone_parts)
+            .expect("the bar's parts bound the status going");
+        assert!(
+            damage.iter().any(|rect| rect.contains(status.center())),
+            "where it stood is repainted: {damage:?}"
+        );
+        // The part ends at the faces, a gap past the status.
+        let faces = status.x1 + f64::from(theme.tokens.spacing.s2);
+        for rect in &damage {
+            assert!(
+                rect.x0 >= status.x0 - 4.0 && rect.x1 <= faces + 4.0,
+                "nothing else of the bar is: {rect:?} beside the status {status:?} in a bar {:?}",
+                bar.rect
+            );
+        }
+    }
+
     /// The first time in a public workspace it says what its people see,
     /// and a press opens the person's own menu to choose otherwise.
     #[test]
