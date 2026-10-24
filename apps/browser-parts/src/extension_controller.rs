@@ -1062,15 +1062,25 @@ impl ExtensionController {
             }
             self.identity_told = Some(id);
         }
+        // A turned-off extension does not run, so its keyboard shortcuts are
+        // no one's: the page keeps those keys, and another extension may
+        // have them. Turned on again, it gets them back in its place.
+        let effective = |extension: &Installed| {
+            let mut access = extension.access.clone();
+            if !extension.enabled {
+                access.commands = None;
+            }
+            access
+        };
         let current: HashMap<String, toolbar::Access> = self
             .installed
             .iter()
-            .map(|extension| (extension.id.clone(), extension.access.clone()))
+            .map(|extension| (extension.id.clone(), effective(extension)))
             .collect();
         // In the order they were installed: of two extensions suggesting
         // one keyboard shortcut, the engine gives it to the one told first.
         for extension in &self.installed {
-            let (id, access) = (&extension.id, &extension.access);
+            let (id, access) = (&extension.id, &effective(extension));
             let told = self.access_told.get(id);
             if told != Some(access) {
                 engine.send(WebViewCommand::ExtensionAccess {
@@ -2627,12 +2637,31 @@ mod tests {
                     hosts: vec!["https://*/*".into()],
                     scriptable: vec!["<all_urls>".into()],
                     token: Some("a".repeat(48)),
-                    commands: Some(shortcuts),
+                    commands: Some(shortcuts.clone()),
                 }
             ]
         );
         controller.tell_access(&shared);
         assert_eq!(told(&window).len(), 2, "told once while it stays the same");
+        // Turned off, it does not run: its keyboard shortcuts go back to the
+        // page, and come back when it is turned on.
+        let shortcuts_told =
+            |window: &ui::webview::test_engine::TestEngine| match told(window).last() {
+                Some(WebViewCommand::ExtensionAccess { id, commands, .. }) if id == "reader" => {
+                    commands.clone()
+                }
+                other => panic!("expected the reader's access, got {other:?}"),
+            };
+        controller.installed[0].enabled = false;
+        controller.tell_access(&shared);
+        assert_eq!(told(&window).len(), 3);
+        assert_eq!(shortcuts_told(&window), None);
+        controller.tell_access(&shared);
+        assert_eq!(told(&window).len(), 3, "told once while it stays off");
+        controller.installed[0].enabled = true;
+        controller.tell_access(&shared);
+        assert_eq!(told(&window).len(), 4);
+        assert_eq!(shortcuts_told(&window), Some(shortcuts));
         controller.installed.clear();
         controller.tell_access(&shared);
         assert_eq!(
