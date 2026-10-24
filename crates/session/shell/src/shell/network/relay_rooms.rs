@@ -1043,6 +1043,9 @@ impl ShellNetwork {
                 tracing::warn!(room = %entry.room, %error, "a room of this person's list was not entered");
             }
         }
+        // The rooms entered have their workspaces: what the person's other
+        // devices continue in them shows now.
+        self.materialize_kept_continuations();
     }
 
     /// Enter every room the configured workspace host `only` (each of them

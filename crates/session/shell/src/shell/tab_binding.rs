@@ -2708,7 +2708,7 @@ mod tests {
             crate::shell::launcher::clear_pending_placements();
             let mut tree = WorkspaceTree::bootstrap_default();
             let room = crate::shell::state::RoomId::new();
-            tree.adopt_continuation_room(room, "Laptop");
+            tree.join_room("Plans", room);
             let source = DeviceId::new("laptop").unwrap();
             tree.materialize_continuation_workspace(
                 "Laptop",

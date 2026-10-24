@@ -205,7 +205,6 @@ impl WorkspaceTree {
     /// any more: what the tree kept about it beside its workspace.
     fn drop_placeholder_room(&mut self, room: RoomId) {
         self.room_docs.remove(&room);
-        self.continuation_rooms.remove(&room);
         self.desktop.room_records_held.remove(&room);
     }
 
