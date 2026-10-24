@@ -372,7 +372,7 @@ mod tests {
             .expect("the demo has a workspace in front")
             .room()
             .to_string();
-        let back = tree.append_empty_workspace("Design review");
+        let (back, _) = tree.create_hosted_workspace("Design review");
         tree.desktop.active = front;
         let back_room = tree.room_of(back).expect("a fresh workspace has a room");
         tree.desktop
