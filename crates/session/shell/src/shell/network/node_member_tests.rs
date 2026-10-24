@@ -246,7 +246,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         "the first host room is the session's active workspace"
     );
     assert!(
-        !tree.read().commits_native_documents(room),
+        tree.read().seals_records(room),
         "its records are sealed channels the apps open, not committed documents"
     );
     net.enter_configured_host_rooms(None);

@@ -44,12 +44,11 @@ mod invite_join;
 mod live_frames;
 mod old_rooms;
 mod own_devices;
+mod sealed_records;
 
 /// The app whose document the tests edit, and its record.
 pub(crate) const NOTES: &str = "so.tilo.notes";
 const NOTE_RECORD: &str = "plan";
-/// The resource kind the notes app declares for its records.
-const NOTE_KIND: &str = "so.tilo.notes.note";
 /// The note's text, a field of the record's document.
 const NOTE_TEXT: &str = "text";
 
@@ -175,6 +174,9 @@ pub(crate) struct Device {
     /// The note's document in each room as the notes app here holds it:
     /// what it wrote and every sealed write it opened.
     notes: Mutex<HashMap<RoomId, automerge::AutoCommit>>,
+    /// Every sealed write to the note in each room this device made or
+    /// opened, in order, as it travelled.
+    note_writes: Mutex<HashMap<RoomId, Vec<collab_types::SignedOp>>>,
 }
 
 /// The session broker's drain, as far as channels go: parked until the
@@ -274,6 +276,7 @@ impl Device {
             joins: Mutex::default(),
             channels: None,
             notes: Mutex::default(),
+            note_writes: Mutex::default(),
         };
         device.go_online();
         device
@@ -625,49 +628,37 @@ impl Device {
     }
 
     /// Let the notes app keep records in `room`, as opening the app there
-    /// first does: the room's host lets it author, and the note's record
-    /// is made where the session makes it. In a room whose records are
-    /// sealed channels the record is its channel, which this device asks
-    /// the room's steward for; otherwise a host governing the room from
-    /// elsewhere makes the empty record, and a room this device governs has
-    /// its own owner make it. Whoever opens the app later finds the record.
+    /// first does: the room's host lets it author, and the note's record is
+    /// its sealed channel, which this device asks the room's steward for.
+    /// Every hosted room is sealed, wherever it is hosted. Whoever opens
+    /// the app later finds the record.
     pub(crate) fn open_notes_first(&self, room: RoomId) {
+        self.let_notes_author(room)
+            .unwrap_or_else(|error| panic!("the host lets the notes app author: {error}"));
+        self.assert_sealed(room);
+        let _ = self.note_keys(room);
+    }
+
+    /// Ask `room`'s host to let the notes app author the room's records, as
+    /// this device: the host's answer.
+    pub(crate) fn let_notes_author(&self, room: RoomId) -> Result<(), String> {
         let net = Arc::clone(self.net());
         let cert = self.cert();
         let runtime = net.runtime_handle().unwrap();
         runtime
             .block_on(net.grant_app_authorship_at_host(room, &cert, NOTES))
-            .expect("the room's host answers for the app's authorship")
-            .unwrap_or_else(|error| panic!("the host lets the notes app author: {error}"));
-        if self.seals_records(room) {
-            let _ = self.note_keys(room);
-            return;
-        }
-        let owner = net.native_owner().unwrap();
-        if net.host_creates_records(&owner, room) {
-            runtime
-                .block_on(net.prepare_application_record_at_host(room, &cert, NOTES, NOTE_RECORD))
-                .expect("the room's host answers for the app's record")
-                .unwrap_or_else(|error| panic!("the host makes the note's record: {error}"));
-            return;
-        }
-        let declared = tilo_joined_room::ApplicationRecord::declared(
-            NOTES,
-            NOTE_RECORD,
-            NOTE_KIND,
-            &[NOTE_KIND.to_owned()],
-        )
-        .unwrap();
-        net.prepare_native_application(&owner, room, &cert, &declared)
-            .unwrap_or_else(|error| {
-                panic!("{}'s owner makes the note's record: {error}", self.label)
-            });
+            .unwrap_or_else(|| Err(format!("{} reaches no host governing the room", self.label)))
+            .map(|_| ())
     }
 
-    /// Whether `room`'s records are sealed channels each app opens itself,
-    /// rather than documents this device's owner commits.
-    fn seals_records(&self, room: RoomId) -> bool {
-        !self.tree.read().commits_native_documents(room)
+    /// `room`'s records are sealed channels each app opens itself, never
+    /// documents this device's owner commits.
+    fn assert_sealed(&self, room: RoomId) {
+        assert!(
+            self.tree.read().seals_records(room),
+            "{} holds {room} as a sealed room",
+            self.label
+        );
     }
 
     /// The note's channel keys in `room`, once the room's steward admitted
@@ -682,21 +673,32 @@ impl Device {
         }
     }
 
+    /// Where this device stands on the note's channel in `room`, as the
+    /// identity service answers the notes app, refusals included.
+    pub(crate) fn note_access(&self, room: RoomId) -> ChannelAccess {
+        let Some((channels, _)) = self.channels.as_ref() else {
+            return ChannelAccess::Unavailable;
+        };
+        let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
+        channels.access_record(room, &route).0
+    }
+
+    /// Every sealed write to the note in `room` this device made or opened
+    /// so far, in order.
+    pub(crate) fn note_writes(&self, room: RoomId) -> Vec<collab_types::SignedOp> {
+        self.note_writes
+            .lock()
+            .unwrap()
+            .get(&room)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     /// Whether this device holds the note's channel in `room`, so the notes
     /// app here reads and writes it.
     pub(crate) fn holds_note(&self, room: RoomId) -> bool {
-        if self.seals_records(room) {
-            return self.note_keys(room).is_some();
-        }
-        self.net.as_ref().is_some_and(|net| {
-            net.native_owner().is_ok_and(|owner| {
-                owner
-                    .with_current(room, |view| {
-                        Ok(view.peer().document(NOTES, NOTE_RECORD).is_some())
-                    })
-                    .unwrap_or(false)
-            })
-        })
+        self.assert_sealed(room);
+        self.note_keys(room).is_some()
     }
 
     /// Write `text` into the note in `room`, as the notes app does: a
@@ -707,10 +709,7 @@ impl Device {
         reason = "the note's document is edited and its change taken in one hold"
     )]
     pub(crate) fn write_note(&self, room: RoomId, text: &str) {
-        if !self.seals_records(room) {
-            self.commit_note(room, text);
-            return;
-        }
+        self.assert_sealed(room);
         let keys = self
             .note_keys(room)
             .unwrap_or_else(|| panic!("{} holds the note's channel", self.label));
@@ -733,11 +732,14 @@ impl Device {
             .encode_frames()
             .unwrap();
         assert_eq!(frames.len(), 1, "a note's edit is one frame");
+        let frame = frames.remove(0);
+        // Sealed under the storage class its frame is, as every app's
+        // collaboration seals it: an edit is a delta, never a checkpoint.
         let (metadata, sealed) = keys
             .seal_content(
                 artifact,
-                collab_types::ContentRetention::Checkpoint,
-                &frames.remove(0),
+                collab_types::ContentRetention::of_frame(&frame),
+                &frame,
             )
             .unwrap();
         let now = SystemTime::now();
@@ -752,43 +754,14 @@ impl Device {
             metadata,
         );
         collab_types::sign_op(&mut op, &key).unwrap();
+        self.note_writes
+            .lock()
+            .unwrap()
+            .entry(room)
+            .or_default()
+            .push(op.clone());
         self.net()
             .publish_document(NOTES.into(), room_id, NOTE_RECORD, op);
-    }
-
-    /// Write `text` into the note in `room` as the notes app does where the
-    /// room's records are committed documents: a change to its record signed
-    /// by this device and committed by its owner, which publishes it to the
-    /// room's host.
-    fn commit_note(&self, room: RoomId, text: &str) {
-        let net = self.net();
-        let owner = net.native_owner().unwrap();
-        let key = self.key();
-        let now = SystemTime::now();
-        let changes = owner
-            .with_current(room, |view| {
-                let bytes = view
-                    .peer()
-                    .document(NOTES, NOTE_RECORD)
-                    .ok_or("the note's record is not here yet")?;
-                let mut document =
-                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-                document.set_actor(automerge::ActorId::from(
-                    key.verifying_key().to_bytes().to_vec(),
-                ));
-                let heads = document.get_heads();
-                document
-                    .put(automerge::ROOT, NOTE_TEXT, text)
-                    .map_err(|error| error.to_string())?;
-                document.commit_with(typed());
-                Ok(document.save_after(&heads))
-            })
-            .unwrap_or_else(|error| panic!("{} edits the note: {error}", self.label));
-        let message = note_message(room, changes, &key, now);
-        owner
-            .commit_document(tilo_joined_room::testing::request(&message).unwrap(), now)
-            .unwrap_or_else(|error| panic!("{}'s owner commits the edit: {error}", self.label));
-        net.schedule_native_owner_publication(room);
     }
 
     /// Open every sealed write to the note in `room` that reached this
@@ -816,6 +789,12 @@ impl Device {
         let document = notes.entry(room).or_default();
         for entry in arrived {
             let envelope = entry.envelope;
+            self.note_writes
+                .lock()
+                .unwrap()
+                .entry(room)
+                .or_default()
+                .push((*envelope).clone());
             let opened = keys
                 .open_content(
                     envelope.artifact,
@@ -842,21 +821,9 @@ impl Device {
     }
 
     /// The note's text in `room` as the notes app here shows it.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the note is read from this device's network as it holds the room"
-    )]
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
-        let net = self.net.as_ref()?;
-        if !self.seals_records(room) {
-            let owner = net.native_owner().ok()?;
-            let bytes = owner
-                .with_current(room, |view| Ok(view.peer().document(NOTES, NOTE_RECORD)))
-                .ok()??;
-            let document = automerge::AutoCommit::load(&bytes).ok()?;
-            let (value, _) = document.get(automerge::ROOT, NOTE_TEXT).ok()??;
-            return value.as_str().map(str::to_owned);
-        }
+        self.net.as_ref()?;
+        self.assert_sealed(room);
         let keys = self.note_keys(room)?;
         self.read_notes(room, &keys);
         let notes = self.notes.lock().unwrap();
@@ -1002,6 +969,22 @@ impl Device {
         .unwrap_or_else(|error| panic!("the room's host changes the role: {error}"));
     }
 
+    /// Remove `person` from `room`, as its owner on this device.
+    pub(crate) fn remove_member(&self, room: RoomId, person: &Person) {
+        let net = self.net();
+        let target = net
+            .administered_room(room)
+            .unwrap_or_else(|| panic!("{} administers the room it owns", self.label));
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("person".into(), hex::encode(person.user()).into());
+        net.govern(
+            &target,
+            tilo_action_policy::roles::governance::REMOVE_MEMBER,
+            arguments,
+        )
+        .unwrap_or_else(|error| panic!("the room's host removes the member: {error}"));
+    }
+
     /// The rooms this device's own host serves; empty while it runs none.
     pub(crate) fn hosted_rooms(&self) -> Vec<RoomId> {
         let Some(host) = self.net.as_ref().and_then(|net| net.room_host()) else {
@@ -1039,36 +1022,6 @@ impl Device {
 fn typed() -> automerge::transaction::CommitOptions {
     automerge::transaction::CommitOptions::default()
         .with_message(tilo_actions::FrameworkChange::Native.change_message())
-}
-
-/// The signed change `changes` to the note in `room` by `key`, as the notes
-/// app sends it.
-fn note_message(
-    room: RoomId,
-    changes: Vec<u8>,
-    key: &SigningKey,
-    now: SystemTime,
-) -> neighbour_wire::NeighbourMsg {
-    let room = room.to_string();
-    let author = collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-    let mutation = collab_types::DocumentMutation::Incremental(changes);
-    let mut envelope = collab_types::SignedOp::new_unsigned(
-        mutation.encode().unwrap(),
-        collab_types::document_artifact_id(NOTES, &room, NOTE_RECORD),
-        author,
-        collab_types::document_attestation_id(NOTES, &room, NOTE_RECORD),
-        collab_types::OpKind::Change,
-        now,
-        collab_types::next_unordered_document_sequence(now),
-    );
-    collab_types::sign_op(&mut envelope, key).unwrap();
-    neighbour_wire::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(author.as_bytes()),
-        app_id: NOTES.into(),
-        cluster_id: room,
-        record_id: NOTE_RECORD.into(),
-        envelope: Box::new(envelope),
-    }
 }
 
 /// Run `devices`' loops until `probe` answers, waking only when one of
