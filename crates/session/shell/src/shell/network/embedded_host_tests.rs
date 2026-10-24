@@ -357,3 +357,120 @@ fn a_placed_workspace_is_installed_by_one_pass_once_its_enrollment_lands() {
     assert_eq!(network.shared_room_passes(), 1);
     drop(network);
 }
+
+#[test]
+fn a_room_waiting_with_no_workspace_is_placed_no_more_and_asks_for_no_pass() {
+    let plans = RoomId::new();
+    let gone = RoomId::new();
+    let mut tree = tree_with(&[("Plans", plans)]);
+    // Its workspace is gone; the room still waits to be placed.
+    tree.pending_placements.insert(gone);
+    let (mut network, _commands) = personal_workspaces_network_for_test(
+        &ed25519_dalek::SigningKey::from_bytes(&[0x63; 32]),
+        &iroh::SecretKey::from_bytes(&[0x64; 32]),
+        tree,
+    );
+    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
+    let passes = || network.embedded_host.passes.load(Ordering::Acquire);
+    assert!(network.placements_pending());
+    network.place_pending_workspaces();
+    assert!(
+        network.tree.read().pending_placements.is_empty(),
+        "the entry is dropped"
+    );
+    for _ in 0..10 {
+        assert!(
+            !network.placements_pending(),
+            "the frame loop queues no pass"
+        );
+        network.place_pending_workspaces_off_loop();
+    }
+    assert_eq!(passes(), 1, "no pass ran after the one that dropped it");
+}
+
+#[test]
+fn a_room_waiting_with_no_workspace_is_placed_no_more_after_a_restart() {
+    let dir = tempfile::tempdir().expect("temp");
+    let path = dir.path().join("state.json");
+    let mut tree = WorkspaceTree::bootstrap_default();
+    tree.persist_path = Some(path.clone());
+    let gone = RoomId::new();
+    tree.pending_placements.insert(gone);
+    let (_, notes) = tree.create_hosted_workspace("Notes");
+    let (old, archived) = tree.create_hosted_workspace("Old");
+    assert!(tree.archive_workspace(old));
+    crate::shell::persist::save_tree_to(&tree, &path).expect("save");
+    let loaded = crate::shell::persist::load_tree_from(&path).expect("load");
+    assert!(
+        loaded
+            .pending_placements
+            .is_superset(&BTreeSet::from([notes, archived])),
+        "a room whose workspace is shown or archived still waits"
+    );
+    assert!(
+        !loaded.pending_placements.contains(&gone),
+        "the one with no workspace does not"
+    );
+}
+
+#[test]
+fn a_room_waiting_with_its_workspace_still_waits_after_a_pass() {
+    let plans = RoomId::new();
+    let archived = RoomId::new();
+    let gone = RoomId::new();
+    let mut tree = tree_with(&[("Plans", plans)]);
+    tree.archived_workspaces
+        .push(Workspace::in_room(WorkspaceId(200), archived, "Old"));
+    tree.pending_placements.extend([plans, archived, gone]);
+    let (mut network, _commands) = personal_workspaces_network_for_test(
+        &ed25519_dalek::SigningKey::from_bytes(&[0x65; 32]),
+        &iroh::SecretKey::from_bytes(&[0x66; 32]),
+        tree,
+    );
+    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
+    network.place_pending_workspaces();
+    assert_eq!(
+        network.tree.read().pending_placements,
+        BTreeSet::from([plans, archived]),
+        "only the room with no workspace stops waiting"
+    );
+}
+
+#[test]
+fn a_workspace_let_go_before_it_was_placed_is_placed_no_more() {
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let (_, notes) = tree.create_hosted_workspace("Notes");
+    assert!(tree.pending_placements.contains(&notes));
+    tree.forget_personal_room(notes);
+    assert!(!tree.pending_placements.contains(&notes));
+}
+
+#[test]
+fn a_request_that_changed_nothing_does_not_wake_the_frame_loop() {
+    use std::sync::atomic::AtomicUsize;
+    let (network, _commands) = shell_network_for_test(WorkspaceTree::default().shared(), 1);
+    let network = Arc::new(network);
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&wakes);
+    network.set_wake(Arc::new(move || {
+        counted.fetch_add(1, Ordering::AcqRel);
+    }));
+    network.start_peer_sync_worker();
+    // A placement pass with nothing to place, on a network that places none.
+    assert!(network.queue_placements());
+    // Requests run in order: this one runs after that pass and its wake.
+    let (seen, wakes_seen) = std::sync::mpsc::channel();
+    let at_job = Arc::clone(&wakes);
+    network
+        .run_off_loop(Box::new(move || {
+            let _ = seen.send(at_job.load(Ordering::Acquire));
+        }))
+        .unwrap_or_else(|_| panic!("the worker runs"));
+    assert_eq!(
+        wakes_seen.recv().expect("the request ran"),
+        0,
+        "the pass that changed nothing woke the loop"
+    );
+    assert!(!network.placements_pending(), "nor asks for another pass");
+    drop(network);
+}
