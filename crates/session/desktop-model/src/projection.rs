@@ -1058,6 +1058,9 @@ pub fn merge_strip(
         }
     }
     for (gid, rep) in by_group {
+        if is_local(gid) {
+            continue;
+        }
         out.push((rep.order, gid, hydrate_group(rep)));
         *changed = true;
     }
@@ -1118,6 +1121,9 @@ pub fn merge_group(
         }
     }
     for (tid, rep) in by_tab {
+        if is_local(tid) {
+            continue;
+        }
         out.push((rep.order, tid, hydrate_tab(rep)));
         *changed = true;
     }
@@ -1343,10 +1349,11 @@ pub enum Reader {
 
 /// Fold the room document's `contents` into the cached workspace
 /// addressing `room`, reporting whether anything changed. Entries
-/// this machine owns are never overwritten or dropped — the document
-/// is downstream of the cache, so reading one back could only revert
-/// an unprojected local change; a peer's entries are taken from the
-/// document and dropped when absent.
+/// this machine owns are never overwritten, dropped or brought back —
+/// the document is downstream of the cache, so reading one back could
+/// only revert an unprojected local change (a window closed here would
+/// reopen); a peer's entries are taken from the document and dropped
+/// when absent.
 ///
 /// `active_tab` is never read from the document: it stays put unless
 /// gone, and a group arriving from a peer opens on its
@@ -1396,10 +1403,17 @@ pub fn merge_room_contents(
             // Ours and simply not published: the document has no say over
             // it.
             None if is_local(sid) => kept.push((i, strip)),
-            // A foreign strip no longer being merged in — drop it.
+            // A foreign strip no longer being merged in goes, but for the
+            // windows of ours in it: they are ours to publish, and the
+            // document lost them only with the strip.
             None => {
-                changed = true;
-                vanished.push(StripId::from(sid));
+                if let Some((strip, dropped)) = keep_own_windows(strip, &is_local) {
+                    changed |= dropped;
+                    kept.push((i, strip));
+                } else {
+                    changed = true;
+                    vanished.push(StripId::from(sid));
+                }
             }
             Some(rep) => {
                 let order = rep.order;
@@ -1409,6 +1423,10 @@ pub fn merge_room_contents(
         }
     }
     for (sid, rep) in by_strip {
+        // Ours and gone from the cache: closed here and not projected yet.
+        if is_local(sid) {
+            continue;
+        }
         let order = rep.order;
         published.push((order, sid, hydrate_strip(rep)));
         changed = true;
@@ -1445,6 +1463,34 @@ pub fn merge_room_contents(
         desktop.active_group.remove(&strip);
     }
     changed
+}
+
+/// `strip`, a peer's, cut down to the windows of ours it holds: the groups
+/// we own and our tabs in the others. `None` when it holds none; otherwise
+/// whether anything was cut.
+fn keep_own_windows(mut strip: Strip, is_local: &dyn Fn(u64) -> bool) -> Option<(Strip, bool)> {
+    let before: usize = strip
+        .window_groups
+        .iter()
+        .map(|group| group.tabs.len())
+        .sum();
+    strip.window_groups.retain_mut(|group| {
+        if !is_local(group.id) {
+            group.tabs.retain(|tab| is_local(tab.id));
+            if let Some(first) = group.tabs.first()
+                && !group.tabs.iter().any(|tab| tab.id == group.active_tab)
+            {
+                group.active_tab = first.id;
+            }
+        }
+        !group.tabs.is_empty()
+    });
+    let after: usize = strip
+        .window_groups
+        .iter()
+        .map(|group| group.tabs.len())
+        .sum();
+    (after > 0).then_some((strip, after != before))
 }
 
 /// The room a candidate document says it describes, when it names a valid
@@ -1990,6 +2036,83 @@ mod tests {
         assert!(
             strips.iter().any(|s| s.id == StripId(compose_id(B, 1))),
             "B's own strip stays"
+        );
+    }
+
+    #[test]
+    fn a_window_closed_here_stays_closed_while_the_room_still_shows_it() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        strip.window_groups.push(canvas_group(A, 10, "Notes"));
+        strip.window_groups.push(canvas_group(B, 20, "Notes, B"));
+        let mut own = Strip::new(StripId(compose_id(A, 2)), "Own");
+        own.window_groups.push(canvas_group(A, 30, "Terminal"));
+        let mut a = room_desktop(room, 1, vec![strip, own]);
+        let mut doc = AutoCommit::new();
+        project_owned_contents(
+            &mut doc,
+            &a.workspaces[0].strips,
+            A,
+            None,
+            EmptyStrips::Skip,
+        )
+        .expect("projected");
+        project_owned_contents(
+            &mut doc,
+            &a.workspaces[0].strips,
+            B,
+            None,
+            EmptyStrips::Skip,
+        )
+        .expect("projected");
+
+        // A closes its window and its own strip before projecting again.
+        a.workspaces[0].strips[0]
+            .window_groups
+            .retain(|group| group.id != compose_id(A, 10));
+        a.workspaces[0].strips.truncate(1);
+        let windows = |tree: &crate::tree::DesktopTree| -> Vec<u64> {
+            tree.workspaces[0]
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .map(|group| group.id)
+                .collect()
+        };
+        merge_room_contents(&mut a, room, contents_of(&doc), Reader::Owner(A));
+        assert_eq!(
+            windows(&a),
+            vec![compose_id(B, 20)],
+            "nothing of A's comes back"
+        );
+        assert_eq!(a.workspaces[0].strips.len(), 1, "nor its strip");
+    }
+
+    #[test]
+    fn a_window_of_ours_in_a_peers_strip_stays_when_the_peer_takes_the_strip_away() {
+        const A: u16 = 0x1111;
+        const B: u16 = 0x2222;
+        let room = RoomId::new();
+        let mut strip = Strip::new(StripId(compose_id(A, 1)), "Main");
+        strip.window_groups.push(canvas_group(A, 10, "Notes"));
+        strip.window_groups.push(canvas_group(B, 20, "Notes, B"));
+        let mut b = room_desktop(room, 2, vec![strip]);
+
+        // A's document no longer has the strip at all.
+        let doc = AutoCommit::new();
+        merge_room_contents(&mut b, room, contents_of(&doc), Reader::Owner(B));
+        let strips = &b.workspaces[0].strips;
+        assert_eq!(strips.len(), 1, "the strip stays while it holds B's window");
+        assert_eq!(
+            strips[0]
+                .window_groups
+                .iter()
+                .map(|group| group.id)
+                .collect::<Vec<_>>(),
+            vec![compose_id(B, 20)],
+            "only B's own window stays in it"
         );
     }
 

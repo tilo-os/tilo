@@ -37,6 +37,7 @@ use crate::shell::state::{
 
 mod channels;
 mod failover;
+mod history_across_admission;
 mod home_relay;
 #[cfg(target_os = "linux")]
 mod idle_host;

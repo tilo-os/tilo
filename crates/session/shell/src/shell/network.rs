@@ -3438,7 +3438,7 @@ impl ShellNetwork {
         let Some(room) = RoomId::parse(&cluster_id) else {
             return;
         };
-        let person = crate::shell::state::local_user_id_for_room(&room);
+        let person = self.person_in_room(room);
         let author = if self.is_local_person_room(&cluster_id) {
             tilo_action_policy::Standing::person(
                 tilo_action_policy::RoomPolicy::new(cluster_id.clone(), person.clone()),
