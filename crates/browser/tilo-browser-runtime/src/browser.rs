@@ -2437,6 +2437,10 @@ impl Mount {
             crate::replication::publish(peer);
             self.metric_end("replicate", stage);
         }
+        // A frame input or an idle pass ran and skipped reports here.
+        if let Some(line) = self.frame.take_skip_report() {
+            web_sys::console::error_1(&JsValue::from_str(&line));
+        }
         if let Some(error) = unsettled {
             if let Some(line) = self.frame.skip_frame(&error) {
                 web_sys::console::error_1(&JsValue::from_str(&line));
