@@ -88,32 +88,37 @@ root="${roots[0]}"
 
 install -d -m 0700 "$runtime/tilo-root" "$runtime/cryptsetup-keys.d"
 if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
-  # A root that people sign in to (tilo-signin tokens) asks for a person's own
-  # PIN or password first, and that sign-in carries on into their session. It
-  # leaves the volume's key file when it succeeds; otherwise (nobody to sign
-  # in, or "Can't sign in") everything below runs as on any other root.
-  signed_in=0
-  if [ -x "$signin_bin" ] && "$signin_bin" --device "$root" --volume root; then
-    signed_in=1
-  else
-    "$unlock_bin" "$root" root || true
-  fi
+  # The key file opens the volume, and /run is carried into the booted
+  # system: it goes once the volume is open or an attempt is over.
+  forget_key() { rm -f -- "$runtime/cryptsetup-keys.d/root.key"; }
   # A root enrolled for unlocking with another of the owner's devices asks
-  # them while the prompt below is up; the person can still type the
+  # them while the prompts below are up; the person can still type the
   # passphrase meanwhile, and whichever answers first opens the volume. The
   # attempt is stopped, and everything it held wiped, once the volume is open.
   sibling_unit=""
-  if [ "$signed_in" -eq 0 ] && "$sibling_bin" probe "$root" >/dev/null 2>&1; then
-    sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$root").service"
-    "$systemctl_bin" start --no-block "$sibling_unit" || sibling_unit=""
-  fi
   stop_sibling() {
     [ -z "$sibling_unit" ] || "$systemctl_bin" stop "$sibling_unit" 2>/dev/null || true
+    sibling_unit=""
   }
-  # The key file opens the volume, and /run is carried into the booted
-  # system: it goes once the volume is open or the attempt is over.
-  forget_key() { rm -f -- "$runtime/cryptsetup-keys.d/root.key"; }
-  trap 'stop_sibling; forget_key' EXIT
+  attach_pid=""
+  stop_attach() {
+    if [ -n "$attach_pid" ]; then
+      kill "$attach_pid" 2>/dev/null || true
+      wait "$attach_pid" 2>/dev/null || true
+    fi
+    attach_pid=""
+  }
+  # While tilo-boot-signin asks systemd-cryptsetup's questions in its place
+  # (below), Plymouth's own password agent is stopped; it is started again
+  # whenever that ends.
+  agent_stopped=0
+  resume_agent() {
+    if [ "$agent_stopped" -eq 1 ]; then
+      "$systemctl_bin" start systemd-ask-password-plymouth.path 2>/dev/null || true
+    fi
+    agent_stopped=0
+  }
+  trap 'stop_attach; stop_sibling; resume_agent; forget_key' EXIT
   # Until someone has a sign-in on this root, the booted system needs the
   # volume key once, to add the first person's keyslot when they sign in;
   # tilo-authd takes it from uid 0's user keyring and unlinks it.
@@ -125,13 +130,10 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
       END { exit !found }'; then
     attach_options="$attach_options,link-volume-key=@u::%user:tilo-auth:volume-key"
   fi
-  # Keep the graphical prompt available after a typo. Do not recycle a failed
-  # passphrase from the agent cache into the remaining attempts. TPM/FIDO
-  # enrollments and recovery keys remain available on functioning platforms.
   # systemd-cryptsetup sends rejection details to its log, not to the
   # graphical password agent. Preserve those logs and forward only an opaque
   # retry event to Plymouth; no password is read or retained by this wrapper.
-  LC_ALL=C SYSTEMD_LOG_TARGET=console "$cryptsetup_bin" attach root "$root" - "$attach_options" 2>&1 | \
+  report_rejections() {
     while IFS= read -r message; do
       printf '%s\n' "$message" >&2
       case "$message" in
@@ -139,7 +141,71 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
           "$plymouth_bin" display-message --text=tilo-unlock-retry 2>/dev/null || true
           ;;
       esac
-    done || die "encrypted Tilo root did not unlock"
+    done
+  }
+
+  while :; do
+    # A root that people sign in to (tilo-signin tokens) asks for a person's
+    # own PIN or password first, and that sign-in carries on into their
+    # session. It leaves the volume's key file when it succeeds; otherwise
+    # (nobody to sign in, or "Can't sign in") the volume opens as any other
+    # root does. After "Can't sign in" an empty answer to any of those
+    # questions comes back here, to the sign-in screen.
+    signed_in=0
+    offer_back=0
+    if [ -x "$signin_bin" ]; then
+      if "$signin_bin" --device "$root" --volume root; then
+        signed_in=1
+      elif [ $? -eq 3 ]; then
+        offer_back=1
+      fi
+    fi
+    if [ "$signed_in" -eq 0 ]; then
+      "$unlock_bin" "$root" root || true
+      if "$sibling_bin" probe "$root" >/dev/null 2>&1; then
+        sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$root").service"
+        "$systemctl_bin" start --no-block "$sibling_unit" || sibling_unit=""
+      fi
+    fi
+    if [ "$offer_back" -eq 1 ] && "$systemctl_bin" stop \
+         systemd-ask-password-plymouth.path systemd-ask-password-plymouth.service 2>/dev/null; then
+      agent_stopped=1
+    fi
+    # Keep the graphical prompt available after a typo. Do not recycle a
+    # failed passphrase from the agent cache into the remaining attempts.
+    # TPM/FIDO enrollments and recovery keys remain available on functioning
+    # platforms.
+    # The log is read in its own process, so the attach itself has a process
+    # id to tell its questions apart by, and is read to the end before the
+    # outcome is reported.
+    exec {log_fd}> >(report_rejections)
+    log_pid=$!
+    LC_ALL=C SYSTEMD_LOG_TARGET=console "$cryptsetup_bin" attach root "$root" - "$attach_options" \
+      >&"$log_fd" 2>&1 &
+    attach_pid=$!
+    exec {log_fd}>&-
+    if [ "$agent_stopped" -eq 1 ]; then
+      relayed=0
+      "$signin_bin" other-ways --device "$root" --pid "$attach_pid" || relayed=$?
+      if [ "$relayed" -eq 3 ]; then
+        stop_attach
+        wait "$log_pid" 2>/dev/null || true
+        stop_sibling
+        resume_agent
+        forget_key
+        continue
+      fi
+      # Done, or Plymouth could not ask: its own agent takes over any
+      # question still waiting.
+      resume_agent
+    fi
+    attached=0
+    wait "$attach_pid" || attached=$?
+    attach_pid=""
+    wait "$log_pid" 2>/dev/null || true
+    [ "$attached" -eq 0 ] || die "encrypted Tilo root did not unlock"
+    break
+  done
   stop_sibling
   forget_key
   "$plymouth_bin" display-message --text=tilo-unlock-success 2>/dev/null || true

@@ -313,6 +313,9 @@ def sign_in_assets(directory):
     hint_png(out("hint-someone-else.png"),
              [("text", "Someone else, or can't sign in? Press "), ("key", "Enter"),
               ("text", " with the field empty.")], 16, MUTED)
+    hint_png(out("hint-go-back.png"),
+             [("text", "To go back to signing in, press "), ("key", "Enter"),
+              ("text", " with the field empty.")], 16, MUTED)
     text_png(out("list-heading.png"), "Who's signing in?", 26, TEXT, "SemiBold")
     hint_png(out("list-keys.png"),
              [("text", "Press "), ("key", "Tab"), ("text", " to move and "),

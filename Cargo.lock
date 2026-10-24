@@ -16837,6 +16837,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-ask-password"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "tempfile",
+ "workspace-hack",
+ "zeroize",
+]
+
+[[package]]
 name = "tilo-auth"
 version = "0.1.0"
 dependencies = [
@@ -16973,6 +16984,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-ask-password",
  "workspace-hack",
  "zeroize",
 ]
@@ -19875,6 +19887,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tilo-ask-password",
  "tilo-seal",
  "tilo-unlock-protocol",
  "tokio",

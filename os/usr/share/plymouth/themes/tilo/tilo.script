@@ -76,6 +76,10 @@ fun set_dialog_opacity(opacity)
     dialog.help.SetOpacity(opacity);
     dialog.lock.SetOpacity(opacity);
     dialog.entry.SetOpacity(opacity);
+    if (global.other_ways)
+      dialog.back.SetOpacity(opacity);
+    else
+      dialog.back.SetOpacity(0);
     for (index = 0; dialog.bullet[index]; index++)
       dialog.bullet[index].SetOpacity(opacity);
   }
@@ -94,6 +98,9 @@ fun setup_dialog()
     global.dialog.lock_image = Image("lock.png");
     global.dialog.lock = Sprite(dialog.lock_image);
     global.dialog.bullet_image = Image("bullet.png");
+    global.dialog.back_image = Image("hint-go-back.png");
+    global.dialog.back = Sprite(dialog.back_image);
+    dialog.back.SetOpacity(0);
     global.dialog.ready = 1;
   }
 
@@ -106,6 +113,8 @@ fun place_dialog()
                             Window.GetY() + Window.GetHeight() * 0.535, 100);
     dialog.retry.SetPosition(center_x - dialog.retry_image.GetWidth() / 2,
                              Window.GetY() + Window.GetHeight() * 0.67, 100);
+    dialog.back.SetPosition(center_x - dialog.back_image.GetWidth() / 2,
+                            Window.GetY() + Window.GetHeight() * 0.84, 100);
     global.dialog.entry_x = center_x - dialog.entry_image.GetWidth() / 2;
     global.dialog.entry_y = Window.GetY() + Window.GetHeight() * 0.59;
     dialog.entry.SetPosition(dialog.entry_x, dialog.entry_y, 100);
@@ -607,6 +616,15 @@ fun boot_progress(duration, percent)
 
 fun display_message(text)
   {
+    # After "Can't sign in", tilo-boot-signin asks the volume's questions
+    # here, and an empty answer goes back to signing in: say so under them.
+    if (text.SubString(0, 15) == "tilo-otherways:")
+      {
+        global.other_ways = (text.SubString(15, 16) == "1");
+        if (dialog.ready && global.mode == "password")
+          set_dialog_opacity(1);
+        return;
+      }
     if (text.SubString(0, 12) == "tilo-signin-")
       {
         signin_message(text.SubString(12, text.Length()));
@@ -629,6 +647,7 @@ fun display_message(text)
   }
 
 mode = "normal";
+other_ways = 0;
 place_brand(0);
 show_normal_status();
 Plymouth.SetRefreshFunction(refresh);

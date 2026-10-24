@@ -395,6 +395,7 @@ members = [
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",
+    "crates/system/ask-password",
     "crates/system/block-devices",
     "crates/system/board-successor",
     "crates/system/boot-order",

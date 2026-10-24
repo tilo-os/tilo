@@ -180,7 +180,7 @@ impl Plymouth {
         pinged.then_some(Self { program })
     }
 
-    fn message(&self, text: &str) {
+    pub(crate) fn message(&self, text: &str) {
         self.command(&["display-message", &format!("--text={text}")]);
     }
 
