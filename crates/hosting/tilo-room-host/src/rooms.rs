@@ -1544,17 +1544,21 @@ impl Rooms {
         // actions it runs for members (a visitor linking their Discord
         // account) are committed as that device, and the governor's copy,
         // which the room's bots read, must take them in like any member's.
-        // Its notices it made itself, so it has them already.
-        let message = if author == host.cert.device_public_key {
-            if !matches!(message, neighbour_wire::NeighbourMsg::AppDocument { .. }) {
-                return Ok(());
-            }
-            message
-        } else {
-            let Some(message) = self.absorb_notice(room, author, message).await? else {
-                return Ok(());
-            };
-            message
+        // Its notices it made itself, so it has them already. A device
+        // hosting its own rooms is also their member under the same key, and
+        // that member's windows (its topology) are its own to send: those
+        // are taken in like any member's.
+        if author == host.cert.device_public_key
+            && !matches!(
+                message,
+                neighbour_wire::NeighbourMsg::AppDocument { .. }
+                    | neighbour_wire::NeighbourMsg::SyncResp { .. }
+            )
+        {
+            return Ok(());
+        }
+        let Some(message) = self.absorb_notice(room, author, message).await? else {
+            return Ok(());
         };
         let neighbour_wire::NeighbourMsg::AppDocument {
             app_id,
