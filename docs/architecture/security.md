@@ -574,8 +574,8 @@ What it can read depends on the channel and on its certificate:
 ## What leaves the device by default
 
 Tilo's own components carry no telemetry, analytics or crash-upload client: no
-such crate is in the build (`tools/policy/check_no_telemetry.py`), panics are written only to `~/.cache/tilo/crashes/`
-(`crash_log`), and the image removes `systemd-coredump`. A feedback report
+such crate is in the build (`tools/policy/check_no_telemetry.py`), panics and desktop freezes are written only to
+`~/.cache/tilo/crashes/` (`crash_log`), and the image removes `systemd-coredump`. A feedback report
 leaves only when the person has configured a destination room and approved the
 reviewed report; it travels to that room over the collaboration transport,
 never to a Tilo service (`docs/architecture/feedback.md`). What does leave,
