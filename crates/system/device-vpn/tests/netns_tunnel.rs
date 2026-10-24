@@ -191,7 +191,7 @@ fn accept_fd(listener: &UnixListener, role: &str) -> (UnixStream, OwnedFd) {
     let (said, fd) = read_line_with_fd(&stream, 64).unwrap();
     assert_eq!(
         said,
-        format!("{role}\n").as_bytes(),
+        role.as_bytes(),
         "the {role} namespace failed to open its side"
     );
     (
