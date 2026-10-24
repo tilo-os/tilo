@@ -686,15 +686,6 @@ impl CheckpointDiscard {
     }
 }
 impl CheckpointStage {
-    pub(crate) fn with_continuity(mut self, receipt: Option<super::continuity::Receipt>) -> Self {
-        self.build.continuity = receipt;
-        self
-    }
-
-    #[cfg(test)]
-    pub(super) fn stats(&self) -> &super::bounded::WorkStats {
-        &self.build.sorter.stats
-    }
     /// The generation this stage projects for its lineage.
     pub fn projected_generation(&self) -> &Path {
         self.build.staged.as_deref().unwrap_or(&self.build.active)
@@ -705,15 +696,6 @@ impl CheckpointStage {
             .lineage
             .file_name()
             .ok_or_else(|| invalid("retained lineage has no name"))
-    }
-    pub(crate) fn written(&self) -> u64 {
-        self.build.written
-    }
-    pub(crate) fn cleanup_paths(&self) -> Option<(PathBuf, PathBuf)> {
-        self.build
-            .staged
-            .as_ref()
-            .map(|staged| (self.build.lineage.clone(), staged.clone()))
     }
     /// One quantum of staging; done with whether the projected generation
     /// may be promoted with its batch.
@@ -1338,24 +1320,6 @@ impl RetainBuild {
     }
 }
 impl WorkspaceStore {
-    pub(crate) fn checkpoint_lineage_exists(
-        &self,
-        channel: &[u8; 32],
-        bytes: &[u8],
-    ) -> Result<bool, StoreError> {
-        let (author, actual_channel, checkpoint) = identity(bytes, self.workspace_id)
-            .ok_or_else(|| invalid("invalid retained envelope"))?;
-        if actual_channel != *channel || !checkpoint {
-            return Err(invalid("retained envelope channel or kind mismatch"));
-        }
-        let lineage = self.root.join(RETAINED_DIR).join("v2").join(format!(
-            "{}-{}",
-            hex::encode(author),
-            hex::encode(channel)
-        ));
-        Ok(current(&lineage)?.is_some())
-    }
-
     /// Begin retaining `bytes` on `channel`: a delta at `seq`, or a
     /// checkpoint.
     ///
@@ -1370,15 +1334,6 @@ impl WorkspaceStore {
         bytes: Vec<u8>,
     ) -> Result<RetainBuild, StoreError> {
         self.start_retain_at(channel, seq, bytes, None)
-    }
-    pub(crate) fn start_retain_in(
-        &self,
-        channel: &[u8; 32],
-        seq: Option<u64>,
-        bytes: Vec<u8>,
-        scratch: PathBuf,
-    ) -> Result<RetainBuild, StoreError> {
-        self.start_retain_at(channel, seq, bytes, Some(scratch))
     }
     /// Stage the checkpoint `bytes` on `channel` as a projected generation
     /// under `scratch`, without switching `CURRENT`.

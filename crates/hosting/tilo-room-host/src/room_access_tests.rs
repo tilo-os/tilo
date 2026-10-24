@@ -232,14 +232,6 @@ fn decide_matrix() {
             expected: ["NNNNNNNNsdNNO", "NNNNNNNNsdNNO", "NNNNNNNNsdNNO"],
         },
         Case {
-            name: "cross-user device under an admitted root",
-            peer: peer(bob, [20; 32], false, None),
-            setup: Box::new(move |runtime, _| {
-                runtime.admitted_users.insert(bob);
-            }),
-            expected: ["AAAAANAAsdAAO", "AAAAANAAsdAAO", "AAAAANAAsdAAO"],
-        },
-        Case {
             // Failure scenario 1: trusted relay-wide because another room's
             // governance admits the root, never enrolled here.
             name: "cross-user device whose root only another room governs",
@@ -460,7 +452,6 @@ fn decide_matrix() {
         for (mode, expected) in MODES.iter().zip(case.expected) {
             runtime.membership = Membership::default();
             runtime.membership_ceiling = None;
-            runtime.admitted_users.clear();
             runtime.governed_user_roots.clear();
             runtime.known_peer_relays.clear();
             runtime.room_authority = None;

@@ -386,17 +386,6 @@ impl WorkspaceStore {
         self.shell_binding.as_ref()
     }
 
-    /// The bound shell retention authority, for a selection that must have
-    /// one.
-    pub(crate) fn bound_shell(&self) -> Result<&Arc<dyn ShellBinding>, StoreError> {
-        self.shell_binding.as_ref().ok_or_else(|| {
-            StoreError::Io(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "unbound shell selector",
-            ))
-        })
-    }
-
     /// A reader of the committed selected shell basis; `None` while no
     /// authority is bound, whatever the disk holds.
     pub(crate) fn selected_read(

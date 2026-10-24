@@ -115,18 +115,15 @@ pub struct WorkspaceRuntime {
     /// the relay owner's devices on a same-owner home host, or under native
     /// governance. Read only through [`crate::room_access::decide`].
     pub(crate) admission: crate::room_access::AdmissionMode,
-    /// Cross-user roots admitted by the signed authority for this exact room.
-    pub admitted_users: HashSet<[u8; 32]>,
     /// User roots needed only to pass the relay-wide handshake for devices in
     /// this native-governed room. Exact room admission still uses
-    /// `membership`; keeping this separate from `admitted_users` prevents an
-    /// ungoverned sibling device under the same root from joining.
+    /// `membership`, so an ungoverned sibling device under the same root
+    /// does not join.
     pub governed_user_roots: HashSet<[u8; 32]>,
     /// Who may watch this room read-only without being one of its members,
     /// when its host lets visitors watch it. Read only through
     /// [`crate::room_access::decide`].
     pub spectators: Option<crate::room_access::Spectators>,
-    pub(crate) checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery,
     /// Current live subscribers keyed by device pubkey.
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     pub outbound_federation: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
@@ -392,10 +389,8 @@ impl WorkspaceRuntime {
             disk_generation: None,
             loaded_generation: None,
             admission,
-            admitted_users: HashSet::new(),
             governed_user_roots,
             spectators: None,
-            checkpoint_prefix_recovery: crate::config::CheckpointPrefixRecovery::Disabled,
             subscribers: HashMap::new(),
             known_peer_relays: HashSet::new(),
             extensions: Extensions::default(),

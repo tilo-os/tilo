@@ -418,7 +418,7 @@ mod tests {
     static HEAP: tilo_automerge::heap::ThreadCounting = tilo_automerge::heap::ThreadCounting;
 
     struct Fixture {
-        tmp: tempfile::TempDir,
+        _tmp: tempfile::TempDir,
         store: WorkspaceStore,
         peer: AuthenticatedPeer,
     }
@@ -452,7 +452,11 @@ mod tests {
             crate::auth::verify_hello_ack2(&proof, &peer.device_public_key, &[1; 32]).unwrap();
             let tmp = tempfile::tempdir().unwrap();
             let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
-            Self { tmp, store, peer }
+            Self {
+                _tmp: tmp,
+                store,
+                peer,
+            }
         }
         fn frame(&self, snapshot: Vec<u8>, time: u64) -> ([u8; 32], Envelope, Vec<u8>, Receipt) {
             let message = neighbour_wire::NeighbourMsg::PersonalContinuityCheckpoint {
@@ -479,25 +483,6 @@ mod tests {
                     .accept(time);
             let bytes = crate::transport::encode(&envelope).unwrap();
             (channel, envelope, bytes, receipt)
-        }
-        fn append(&self, channel: [u8; 32], bytes: Vec<u8>, receipt: Receipt) {
-            let mut build = self
-                .store
-                .start_retain(&channel, None, bytes)
-                .unwrap()
-                .with_continuity(Some(receipt));
-            loop {
-                if matches!(build.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
-                    break;
-                }
-            }
-        }
-        fn lineage(&self, channel: [u8; 32]) -> PathBuf {
-            self.store.root().join("retained/v2").join(format!(
-                "{}-{}",
-                hex::encode(self.peer.device_public_key),
-                hex::encode(channel)
-            ))
         }
     }
     fn capture(store: &WorkspaceStore, pending_only: bool) -> super::super::replay::ReplaySnapshot {
@@ -823,107 +808,6 @@ mod tests {
                 .is_none()
         );
         assert!(!marker(&equal_copy).exists());
-    }
-
-    #[test]
-    fn durable_orphan_marker_reserves_slot_even_when_unreadable() {
-        let fixture = Fixture::new();
-        let (channel, _, bytes, receipt) = fixture.frame(vec![1], 1);
-        let fault =
-            super::super::test_barrier::fail(fixture.store.root(), "continuity-marker-durable");
-        let mut build = fixture
-            .store
-            .start_retain(&channel, None, bytes.clone())
-            .unwrap()
-            .with_continuity(Some(receipt));
-        loop {
-            match build.step(WorkLimit::default()) {
-                Ok(Step::More) => {}
-                Err(_) => break,
-                Ok(Step::Done(_)) => panic!("marker failure did not interrupt raw publication"),
-            }
-        }
-        drop(fault);
-        let active = super::super::retained::current(&fixture.lineage(channel))
-            .unwrap()
-            .unwrap();
-        let orphan = active.join("0000000000000001.delta");
-        assert!(!orphan.exists());
-        assert!(marker(&orphan).exists());
-        fs::write(marker(&orphan), b"interrupted marker").unwrap();
-        // Generic append must also respect the reservation, without trusting it.
-        fixture.store.retain_checkpoint(&channel, &bytes).unwrap();
-        assert!(!orphan.exists());
-        let appended = active.join("0000000000000002.delta");
-        assert_eq!(fs::read(&appended).unwrap(), bytes);
-        assert!(load(&fixture.store, &appended).unwrap().is_none());
-        assert_eq!(fs::read(marker(&orphan)).unwrap(), b"interrupted marker");
-    }
-
-    #[test]
-    fn staged_receipt_only_supersedes_after_current_publication() {
-        let fixture = Fixture::new();
-        let (channel, old_envelope, old, receipt) = fixture.frame(vec![1], 1);
-        fixture.append(channel, old.clone(), receipt);
-        let (_, closed_envelope, closed, receipt) = fixture.frame(Vec::new(), 2);
-        let scratch = fixture
-            .store
-            .root()
-            .join("store-work-v1")
-            .join(format!("retain-{}", hex::encode([3; 16])));
-        let mut stage = fixture
-            .store
-            .start_staged_checkpoint(&channel, closed.clone(), scratch)
-            .unwrap()
-            .with_continuity(Some(receipt));
-        loop {
-            if matches!(stage.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
-                break;
-            }
-        }
-        let reopened = WorkspaceStore::open(fixture.tmp.path(), 7, false).unwrap();
-        assert_eq!(replay(&reopened, false), vec![old_envelope.clone()]);
-        let failed = tilo_files::native::atomic::test_support::with_failure(
-            tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
-            || stage.promote(),
-        );
-        assert!(failed.is_err());
-        let reopened = WorkspaceStore::open(fixture.tmp.path(), 7, false).unwrap();
-        assert_eq!(replay(&reopened, false), vec![old_envelope]);
-        stage.promote().unwrap();
-        let reopened = WorkspaceStore::open(fixture.tmp.path(), 7, false).unwrap();
-        assert_eq!(replay(&reopened, false), vec![closed_envelope]);
-        assert_eq!(reopened.load_retained().unwrap(), vec![old, closed]);
-    }
-
-    #[test]
-    fn staged_receipt_copy_accounts_still_held_incoming_frame() {
-        let fixture = Fixture::new();
-        let (channel, _, old, receipt) = fixture.frame(vec![1; 64 * 1024], 1);
-        fixture.append(channel, old.clone(), receipt);
-        let (_, _, next, receipt) = fixture.frame(vec![2; 16 * 1024], 2);
-        let scratch = fixture
-            .store
-            .root()
-            .join("store-work-v1")
-            .join(format!("retain-{}", hex::encode([4; 16])));
-        let mut stage = fixture
-            .store
-            .start_staged_checkpoint(&channel, next.clone(), scratch)
-            .unwrap()
-            .with_continuity(Some(receipt));
-        loop {
-            if matches!(stage.step(WorkLimit::default()).unwrap(), Step::Done(_)) {
-                break;
-            }
-        }
-        assert!(
-            stage.stats().peak_frame_bytes >= 5 * old.len() + next.len(),
-            "copy validation omitted the concurrently held incoming frame"
-        );
-        assert!(stage.stats().peak_frame_bytes <= 6 * (old.len() + next.len()));
-        stage.promote().unwrap();
-        assert_eq!(fixture.store.load_retained().unwrap(), vec![old, next]);
     }
 
     #[test]
