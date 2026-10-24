@@ -501,6 +501,7 @@ decorator_trait! {
         fn animation_detail() -> Option<String>;
         fn needs_animation_frame() -> bool;
         fn next_wake_deadline() -> Option<Instant>;
+        fn holds_frame_until(now: Instant) -> Option<Instant>;
         fn modal_capture() -> Option<vello::kurbo::Rect>;
         fn has_pending_visual_work() -> bool;
         fn has_transient_feedback() -> bool;
