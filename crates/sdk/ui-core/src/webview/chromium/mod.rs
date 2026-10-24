@@ -17,6 +17,7 @@ mod protocol;
 pub mod runtime;
 mod service_session_probe;
 mod shared;
+mod text_field;
 pub use service_session_probe::service_session_capability;
 pub use shared::serve_shared_until_idle;
 
@@ -90,6 +91,9 @@ struct Shared {
     native_edit_history: AtomicBool,
     guarded_edit_history: AtomicBool,
     native_caret_text_input: AtomicBool,
+    /// The host takes compositions and reports the focused field.
+    composition: AtomicBool,
+    text_field: Mutex<Option<super::TextField>>,
     open_tabs: Mutex<VecDeque<(String, bool)>>,
     /// The pointer shape the page last asked for.
     cursor: Mutex<Option<winit::window::CursorIcon>>,
@@ -618,6 +622,8 @@ impl UnavailableEngine {
                 native_edit_history: AtomicBool::new(false),
                 guarded_edit_history: AtomicBool::new(false),
                 native_caret_text_input: AtomicBool::new(false),
+                composition: AtomicBool::new(false),
+                text_field: Mutex::default(),
                 document_size: DocumentSizeReports::default(),
                 selection_text: AtomicBool::new(false),
                 open_tabs: Mutex::default(),
@@ -1474,6 +1480,14 @@ impl WebViewEngine for ChromiumEngine {
         *self.shared.cursor.lock_recover()
     }
 
+    fn supports_composition(&self) -> bool {
+        self.supports_text_input() && self.shared.composition.load(Ordering::Acquire)
+    }
+
+    fn text_field(&self) -> Option<super::TextField> {
+        *self.shared.text_field.lock_recover()
+    }
+
     fn handle_undo_request(&self, request: crate::undo::UndoRequest) -> bool {
         if !self.supports_text_input() || !self.shared.native_edit_history.load(Ordering::Acquire) {
             return false;
@@ -1876,6 +1890,10 @@ fn route_native_event(
                 value["native_caret_text_input"].as_bool() == Some(true),
                 Ordering::Release,
             );
+            shared.composition.store(
+                value["ime_composition"].as_bool() == Some(true),
+                Ordering::Release,
+            );
             shared.guarded_edit_history.store(
                 value["guarded_edit_history"].as_bool() == Some(true),
                 Ordering::Release,
@@ -1943,6 +1961,11 @@ fn route_native_event(
         }
         if matches!(event_name, "audio_start" | "audio" | "audio_stop") {
             shared.audio.event(event_name, value);
+            return Ok(());
+        }
+        if matches!(event_name, "text_field" | "ime_composition_bounds") {
+            text_field::update(&shared.text_field, event_name, value);
+            shared.wake();
             return Ok(());
         }
         if event_name == "cursor" {
@@ -2247,6 +2270,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                 })
         }
         "history" => value["back"].is_boolean() && value["forward"].is_boolean(),
+        "text_field" | "ime_composition_bounds" => text_field::valid_event(event, value),
         "page_result" | "text_input_result" => super::page::decode_result(value).is_some(),
         "paint_snapshot" | "paint_resource" => {
             value["request_id"]
@@ -2419,10 +2443,9 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     matches!(url.scheme(), "http" | "https") && url.host().is_some()
                 })
         }
-        WebViewCommand::Key {
-            key: KeyInput::Character(text),
-            ..
-        } => text.len() <= 65536,
+        WebViewCommand::Key { .. }
+        | WebViewCommand::ImeComposition { .. }
+        | WebViewCommand::ImeCommit(_) => text_field::within_limits(command),
         // A shortcut's key is one character, or a named key.
         WebViewCommand::ExtensionCommandKey {
             key: KeyInput::Character(text),
@@ -2818,17 +2841,11 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::Scroll { dx, dy, x, y } => {
             json!({"op":"scroll","dx":dx,"dy":dy,"x":x,"y":y})
         }
-        WebViewCommand::Key {
-            key,
-            down,
-            modifiers,
-        } => {
-            let key = match key {
-                KeyInput::Character(value) => value,
-                KeyInput::Named(named) => format!("{named:?}"),
-            };
-            json!({"op":"key","key":key,"down":down,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta})
-        }
+        command @ (WebViewCommand::Key { .. }
+        | WebViewCommand::ImeComposition { .. }
+        | WebViewCommand::ImeCommit(_)
+        | WebViewCommand::ImeCancel
+        | WebViewCommand::ImeFinish) => text_field::input_command(command),
         WebViewCommand::SetBlockingScripts(scripts) => {
             json!({"op":"blocking_scripts","scripts": &*scripts})
         }
