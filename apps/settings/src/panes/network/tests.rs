@@ -13,6 +13,8 @@ use zeroize::Zeroizing;
 use super::vpn::VpnEffect;
 use super::*;
 
+mod device_vpn;
+
 #[test]
 fn network_pane_relabels_retained_controls_when_locale_changes() -> Result<(), String> {
     use crate::panes::model::ModelPane;
@@ -272,6 +274,8 @@ struct FakeNetwork {
     /// Scans, each recorded with the snapshot reads made before it.
     scans: Mutex<Vec<usize>>,
     scan_refusal: Mutex<Option<String>>,
+    /// What the session publishes of the person's devices as VPNs.
+    device_vpn: Mutex<Option<settings_store::device_vpn::DeviceVpnStatus>>,
 }
 
 impl FakeNetwork {
@@ -431,6 +435,7 @@ impl NetworkService for FakeNetwork {
                 vpns: Some(failed(&reason)),
                 link: None,
                 plugins: None,
+                device_vpn: DeviceVpnPart::NotRead,
             };
         }
         let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
@@ -441,7 +446,12 @@ impl NetworkService for FakeNetwork {
             service: "org.freedesktop.NetworkManager.openvpn".into(),
             name: "OpenVPN".into(),
         }]);
+        snapshot.device_vpn = DeviceVpnPart::Read(self.device_vpn());
         snapshot
+    }
+
+    fn device_vpn(&self) -> Option<settings_store::device_vpn::DeviceVpnStatus> {
+        self.device_vpn.lock().unwrap().clone()
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {

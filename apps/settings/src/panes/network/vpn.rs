@@ -2,9 +2,9 @@
 //! the list, opened on a page of its own to change, export or delete it, and
 //! added from a `WireGuard` form, an installed plugin's type or a file.
 //!
-//! The list takes further ways out from a [`VpnEntries`] source (the
-//! person's own devices as exits) beside the profiles; Settings has none of
-//! its own.
+//! The list also offers the person's other devices as exits, and this
+//! device as one for them ([`devices`], docs/device-vpn.md). It takes
+//! further ways out from a [`VpnEntries`] source beside those.
 //!
 //! Keys and configuration files live in process-local buffers that are
 //! zeroed once used, and reach `NetworkManager` through a private file or
@@ -38,6 +38,8 @@ use crate::widgets::{
     El, Item, SettingsSection, block, card, error_caption, field_row, note, row, rows, setting_row,
     setting_row_described, value_row,
 };
+
+mod devices;
 
 crate::effects::effect_family!(VpnEffect => answer);
 
@@ -231,6 +233,23 @@ pub enum VpnEffect {
         #[param("The VPN's id or name")]
         connection: String,
     },
+    /// Send this device's traffic through another of the person's devices,
+    /// or stop.
+    #[effect(row, idempotent, label = "Through your device")]
+    SetDeviceVpn {
+        #[param("The other device's id")]
+        device: String,
+        on: bool,
+    },
+    /// Let the person's other devices use this one as a VPN, or not.
+    #[effect(idempotent, label = "Let my other devices use this device as a VPN")]
+    SetDeviceExit { on: bool },
+    /// Stop another of the person's devices using this one as a VPN.
+    #[effect(row, label = "Stop")]
+    StopDeviceExit {
+        #[param("The other device's id")]
+        device: String,
+    },
 }
 
 /// Answer `effect`.
@@ -254,13 +273,13 @@ pub(crate) struct VpnEntry {
     /// Stable, unique among the source's entries.
     pub id: String,
     pub name: String,
-    /// What it is ("Through Desk PC").
+    /// What it is.
     pub detail: String,
     pub active: bool,
 }
 
-/// What else the VPN list offers: the person's own devices as exits. The
-/// source binds each entry's switch to its own effect.
+/// What else the VPN list offers, from another provider. The source binds
+/// each entry's switch to its own effect.
 pub(crate) trait VpnEntries {
     fn entries(&self) -> Vec<VpnEntry>;
     /// `toggle`, bound to switching `entry`.
@@ -348,6 +367,8 @@ pub(crate) struct VpnState {
     entries: Option<Box<dyn VpnEntries>>,
     /// The VPN whose page was asked for before the VPNs were read.
     wanted: Option<String>,
+    /// The person's devices as exits, and this one as theirs.
+    pub(super) devices: devices::DeviceVpnState,
 }
 
 /// A configuration file's text, read whole up to the size a VPN profile can
@@ -882,6 +903,9 @@ impl NetworkModel {
                 }
                 Ok(Begun::Done)
             }
+            VpnEffect::SetDeviceVpn { device, on } => self.route_through_device(&device, on),
+            VpnEffect::SetDeviceExit { on } => self.share_device(on),
+            VpnEffect::StopDeviceExit { device } => self.stop_exit_user(&device),
         }
     }
 
@@ -1067,15 +1091,20 @@ impl NetworkModel {
         row
     }
 
-    /// One row per VPN.
+    /// One row per VPN, per device to route through and per device using
+    /// this one.
     pub(super) fn vpn_rows(&self) -> Vec<LiveRow> {
-        self.vpns.iter().map(|vpn| self.vpn_live(vpn)).collect()
+        let mut rows: Vec<LiveRow> = self.vpns.iter().map(|vpn| self.vpn_live(vpn)).collect();
+        rows.extend(self.device_vpn_rows());
+        rows
     }
 
     /// The VPN pages, by key; `None` for a key that is not one.
     pub(super) fn vpn_pages(&self, key: &str) -> Option<Vec<SettingsSection>> {
         Some(match key {
-            PAGE_VPN => vec![self.vpn_list()],
+            PAGE_VPN => std::iter::once(self.vpn_list())
+                .chain(self.device_exit_section())
+                .collect(),
             PAGE_ADD => vec![self.add_vpn()],
             PAGE_ADD_WIREGUARD => self.add_wireguard(),
             _ => {
@@ -1175,6 +1204,7 @@ impl NetworkModel {
                 }) as El
             })
             .collect();
+        lines.extend(self.through_lines());
         if let Some(source) = &self.vpn.entries {
             lines.extend(source.entries().into_iter().map(|entry| {
                 let toggle = source.bind(

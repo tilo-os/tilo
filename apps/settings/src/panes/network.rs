@@ -35,6 +35,9 @@ use os_actions::{
     ConnectivityState, Dispatcher, EnterpriseWifiConfiguration, HotspotBand, HotspotConfiguration,
     IpConfiguration, SavedNetworkProfile, WifiNetworkInfo, WiredInfo,
 };
+use settings_store::device_vpn::{
+    ClientState, ClientStatus, DeviceVpnStatus, ExitUser, OfferedExit,
+};
 use tracing::warn;
 use ui::LocalState;
 use ui::collaboration::{NetworkWakeStatus, WifiContinuityCommand, WifiContinuityReply};
@@ -676,6 +679,14 @@ fn portable_security(
 /// it has), otherwise the value or why it could not be read.
 type Part<T> = Option<Result<T, String>>;
 
+/// The person's devices as VPNs in a snapshot: not read (the model keeps
+/// what it has), or what the session publishes, `None` while it publishes
+/// nothing.
+enum DeviceVpnPart {
+    NotRead,
+    Read(Option<DeviceVpnStatus>),
+}
+
 /// Everything Network shows from `NetworkManager`, read in one pass off the
 /// UI thread. Each part keeps its own failure, so one unreadable value is
 /// shown as unreadable instead of as a device state.
@@ -694,6 +705,9 @@ pub(crate) struct NetworkSnapshot {
     link: Option<WifiLinkDetails>,
     /// The VPN plugins installed; read only for the first snapshot.
     plugins: Option<Vec<VpnPlugin>>,
+    /// What the session publishes of the person's devices as VPNs; `None`
+    /// when not read.
+    device_vpn: DeviceVpnPart,
 }
 
 impl NetworkSnapshot {
@@ -741,6 +755,7 @@ impl NetworkSnapshot {
                     .collect()
             })),
             plugins: initial.then(os_actions::network_settings::installed_vpn_plugins),
+            device_vpn: DeviceVpnPart::Read(DeviceVpnStatus::load()),
         }
     }
 
@@ -760,6 +775,7 @@ impl NetworkSnapshot {
             vpns: None,
             link: None,
             plugins: None,
+            device_vpn: DeviceVpnPart::NotRead,
         }
     }
 
@@ -782,6 +798,7 @@ impl NetworkSnapshot {
             vpns: Some(Ok(Vec::new())),
             link: None,
             plugins: Some(Vec::new()),
+            device_vpn: DeviceVpnPart::Read(None),
         }
     }
 }
@@ -970,6 +987,11 @@ pub(crate) trait NetworkService: Send + Sync {
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
     fn recheck_connectivity(&self) {}
+    /// What the session publishes of the person's devices as VPNs; `None`
+    /// while no session publishes it.
+    fn device_vpn(&self) -> Option<DeviceVpnStatus> {
+        None
+    }
     /// Carry out `change`.
     ///
     /// # Errors
@@ -1026,6 +1048,10 @@ impl NetworkService for DeviceNetwork {
 
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
         NetworkSnapshot::read(initial)
+    }
+
+    fn device_vpn(&self) -> Option<DeviceVpnStatus> {
+        DeviceVpnStatus::load()
     }
 
     fn recheck_connectivity(&self) {
@@ -1130,6 +1156,10 @@ const SAMPLE_HOTEL: &str = "3c8f9b21-7d44-4e0a-b5c6-1a2b3c4d5e6f";
 const SAMPLE_WIRED: &str = "0f1e2d3c-4b5a-4968-8776-655443322110";
 const SAMPLE_VPN_HOME: &str = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d";
 const SAMPLE_VPN_WORK: &str = "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e";
+/// The person's other devices, by their endpoint ids.
+const SAMPLE_DESK_PC: &str = "6f1d2c3b4a5968778695a4b3c2d1e0f1a2b3c4d5e6f708192a3b4c5d6e7f8091";
+const SAMPLE_STUDIO: &str = "0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9";
+const SAMPLE_PHONE: &str = "9f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a0";
 
 impl SampleNetwork {
     fn networks() -> Vec<WifiNetworkInfo> {
@@ -1281,7 +1311,25 @@ impl NetworkService for SampleNetwork {
             service: "org.freedesktop.NetworkManager.openvpn".into(),
             name: "OpenVPN".into(),
         }]);
+        snapshot.device_vpn = DeviceVpnPart::Read(self.device_vpn());
         snapshot
+    }
+
+    fn device_vpn(&self) -> Option<DeviceVpnStatus> {
+        Some(DeviceVpnStatus {
+            exit_available: true,
+            offered: vec![
+                OfferedExit {
+                    device: SAMPLE_DESK_PC.into(),
+                    label: "Desk PC".into(),
+                },
+                OfferedExit {
+                    device: SAMPLE_STUDIO.into(),
+                    label: "Studio Mac mini".into(),
+                },
+            ],
+            ..DeviceVpnStatus::default()
+        })
     }
 
     fn change(&self, _change: &NetworkChange) -> Result<(), String> {
@@ -1841,6 +1889,27 @@ impl NetworkModel {
                     model.adopt_vpn_settings(SAMPLE_VPN_HOME, settings);
                 }
             }
+            Some(NetworkSample::VpnDevices) => {
+                // Out through the desk PC, and the phone out through this
+                // laptop.
+                if let Some(status) = &mut model.vpn.devices.status {
+                    status.client = Some(ClientStatus {
+                        device: SAMPLE_DESK_PC.into(),
+                        label: "Desk PC".into(),
+                        state: ClientState::Connected {
+                            since_unix_ms: 1_792_000_000_000,
+                        },
+                        ..ClientStatus::default()
+                    });
+                    status.exit_on = true;
+                    status.exit_users = vec![ExitUser {
+                        device: SAMPLE_PHONE.into(),
+                        label: "Pixel".into(),
+                        since_unix_ms: 1_792_000_000_000,
+                    }];
+                }
+                model.open_page(vpn::PAGE_VPN, t("net-vpn"));
+            }
             Some(NetworkSample::AddVpn) => {
                 model.open_page(vpn::PAGE_VPN, t("net-vpn"));
                 model.open_page(vpn::PAGE_ADD, t("net-vpn-add"));
@@ -2061,6 +2130,9 @@ impl NetworkModel {
         }
         if let Some(plugins) = snapshot.plugins {
             self.plugins = plugins;
+        }
+        if let DeviceVpnPart::Read(status) = snapshot.device_vpn {
+            self.vpn.devices.status = status;
         }
         self.loaded = true;
         outcome
@@ -3429,6 +3501,7 @@ impl PaneModel for NetworkModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background();
+        self.poll_device_vpn();
         self.scan_when_due(ui::time::now());
         self.follow_rows();
         let selection = self.wired_profile.get();
@@ -3461,6 +3534,10 @@ impl PaneModel for NetworkModel {
         self.scans_networks()
             .then(|| self.scanned_at?.checked_add(SCAN_EVERY))
             .flatten()
+    }
+
+    fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
+        self.follow_device_vpn()
     }
 }
 
