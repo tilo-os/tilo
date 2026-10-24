@@ -614,16 +614,49 @@ fn parse_vpn_plugin(text: &str) -> Option<VpnPlugin> {
     let service = service.filter(|s| !s.is_empty())?;
     let name = name.filter(|n| !n.is_empty()).map_or_else(
         || service.clone(),
-        |name| match name.as_str() {
-            "openvpn" => "OpenVPN".to_string(),
-            "vpnc" => "Cisco Compatible VPN (vpnc)".to_string(),
-            "openconnect" => "OpenConnect".to_string(),
-            "l2tp" => "L2TP".to_string(),
-            "pptp" => "PPTP".to_string(),
-            _ => name,
-        },
+        |name| known_plugin_name(&name).map_or(name, str::to_owned),
     );
     Some(VpnPlugin { service, name })
+}
+
+/// What the plugins `NetworkManager` ships are called, by their short name
+/// (`openvpn`).
+fn known_plugin_name(short: &str) -> Option<&'static str> {
+    Some(match short {
+        "openvpn" => "OpenVPN",
+        "vpnc" => "Cisco Compatible VPN (vpnc)",
+        "openconnect" => "OpenConnect",
+        "l2tp" => "L2TP",
+        "pptp" => "PPTP",
+        "strongswan" => "IPsec (strongSwan)",
+        "libreswan" => "IPsec (Libreswan)",
+        "fortisslvpn" => "Fortinet SSL VPN",
+        "sstp" => "SSTP",
+        "iodine" => "Iodine",
+        _ => return None,
+    })
+}
+
+/// What the VPN protocol of service type `service`
+/// (`org.freedesktop.NetworkManager.openvpn`) is called, whether or not its
+/// plugin is installed here.
+#[must_use]
+pub fn vpn_service_name(service: &str) -> String {
+    let short = service.rsplit('.').next().unwrap_or(service);
+    known_plugin_name(short).map_or_else(|| short.to_owned(), str::to_owned)
+}
+
+/// A plugin VPN profile's service type, which says its protocol.
+///
+/// # Errors
+/// An invalid id, or `NetworkManager` cannot be asked.
+pub fn vpn_service_type(uuid: &str) -> Result<Option<String>, String> {
+    validate_uuid(uuid)?;
+    let out = run_capture(
+        "nmcli",
+        &["-g", "vpn.service-type", "connection", "show", "uuid", uuid],
+    )?;
+    Ok(Some(out.trim().to_owned()).filter(|service| !service.is_empty()))
 }
 
 /// What a VPN profile's page shows and edits.
@@ -1647,5 +1680,18 @@ AllowedIPs = 0.0.0.0/0, ::/0
         assert_eq!(plugin.name, "OpenVPN");
         assert_eq!(plugin.service, "org.freedesktop.NetworkManager.openvpn");
         assert_eq!(parse_vpn_plugin("[VPN Connection]\nname=x\n"), None);
+    }
+
+    #[test]
+    fn a_service_type_names_its_protocol_without_its_plugin() {
+        assert_eq!(
+            vpn_service_name("org.freedesktop.NetworkManager.openvpn"),
+            "OpenVPN"
+        );
+        assert_eq!(
+            vpn_service_name("org.freedesktop.NetworkManager.strongswan"),
+            "IPsec (strongSwan)"
+        );
+        assert_eq!(vpn_service_name("com.example.tunnel"), "tunnel");
     }
 }

@@ -516,6 +516,7 @@ impl NetworkService for FakeNetwork {
             name: "New".into(),
             uuid: uuid.clone(),
             kind: "wireguard".into(),
+            service: None,
             active: false,
         });
         Ok(uuid)
@@ -1365,7 +1366,13 @@ fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
     app.call_on(&row, "show-vpn-profile", serde_json::json!({}))
         .unwrap();
     settle_until(&mut app, |model| model.vpn.settings.contains_key(&vpn.uuid));
-    for id in ["autoconnect", "all-traffic", "mtu", "name", "dns"] {
+    for id in [
+        "autoconnect",
+        "all-traffic",
+        "mtu-choice",
+        "name",
+        "dns.add",
+    ] {
         let id = format!("network.vpn.{id}.{}", vpn.uuid);
         assert_eq!(
             rendered_enabled(app.harness().root_widget(), &id),
@@ -1383,6 +1390,81 @@ fn the_settings_on_a_network_and_a_vpn_page_change_the_device() {
         !before,
         "the switch reached the device"
     );
+}
+
+/// A VPN's MTU is chosen automatically or set by the person, its size
+/// field shown only then; its name servers are a list, each added and
+/// removed on its own, and what is no address is refused.
+#[test]
+fn a_vpns_mtu_and_name_servers_are_set_on_its_page() {
+    let fake = Arc::new(FakeNetwork::default());
+    let vpn = work_vpn();
+    *fake.vpns.lock().unwrap() = vec![vpn.clone()];
+    fake.vpn_settings.lock().unwrap().insert(
+        vpn.uuid.clone(),
+        SampleNetwork::vpn_settings(SAMPLE_VPN_HOME).unwrap(),
+    );
+    let mut app = ui::framework::testing::TestApp::<crate::SettingsShell>::new().unwrap();
+    let observed = hosted_model(&mut app, Arc::clone(&fake) as Arc<dyn NetworkService>);
+    mount_network(&mut app, observed).unwrap();
+    app.harness().resize((1600, 6000)).unwrap();
+    app.call("open-pane", serde_json::json!({"pane": "network"}))
+        .unwrap();
+    let row = format!("vpn.connection:{}", vpn.uuid);
+    app.call_on(&row, "show-vpn-profile", serde_json::json!({}))
+        .unwrap();
+    settle_until(&mut app, |model| model.vpn.settings.contains_key(&vpn.uuid));
+    let held = |fake: &FakeNetwork| fake.vpn_settings.lock().unwrap()[&vpn.uuid].clone();
+    let size = format!("network.vpn.mtu.{}", vpn.uuid);
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &size),
+        None,
+        "an automatic MTU has no size to set"
+    );
+
+    app.call_on(&row, "set-vpn-mtu", serde_json::json!({"mtu": 1420}))
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(held(&fake).mtu, Some(1420));
+    app.settle();
+    assert_eq!(
+        rendered_enabled(app.harness().root_widget(), &size),
+        Some(true),
+        "a custom MTU shows its size"
+    );
+    assert!(
+        app.call_on(&row, "set-vpn-mtu", serde_json::json!({"mtu": 100}))
+            .is_err()
+    );
+    app.call_on(&row, "set-vpn-mtu", serde_json::json!({}))
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(held(&fake).mtu, None, "back to automatic");
+
+    for server in ["9.9.9.9", "2620:fe::fe"] {
+        app.call_on(
+            &row,
+            "add-vpn-dns-server",
+            serde_json::json!({"server": server}),
+        )
+        .unwrap();
+        settle_until(&mut app, |model| model.in_flight == 0);
+    }
+    assert_eq!(held(&fake).dns, ["10.7.0.1", "9.9.9.9", "2620:fe::fe"]);
+    assert!(
+        app.call_on(
+            &row,
+            "add-vpn-dns-server",
+            serde_json::json!({"server": "dns.example"}),
+        )
+        .is_err()
+    );
+    app.settle();
+    app.harness()
+        .click_named("settings.network.vpn.dns.remove.10.7.0.1")
+        .unwrap();
+    settle_until(&mut app, |model| model.in_flight == 0);
+    assert_eq!(held(&fake).dns, ["9.9.9.9", "2620:fe::fe"]);
 }
 
 /// The known networks list every saved Wi-Fi network, the last joined first,
@@ -1716,6 +1798,7 @@ fn work_vpn() -> VpnInfo {
         name: "Work".into(),
         uuid: "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e".into(),
         kind: "wireguard".into(),
+        service: None,
         active: false,
     }
 }
@@ -2082,7 +2165,8 @@ fn a_vpn_is_switched_edited_and_deleted() {
     let row = model.vpn_rows().remove(0).into_resource();
     for id in [
         "set-vpn-name",
-        "set-vpn-dns",
+        "add-vpn-dns-server",
+        "remove-vpn-dns-server",
         "set-vpn-keepalive",
         "set-vpn-server",
         "export-vpn",
@@ -2116,6 +2200,23 @@ fn a_vpn_is_switched_edited_and_deleted() {
     let changes = fake.changes.lock().unwrap().clone();
     assert_eq!(changes[0], "vpn Work true");
     assert_eq!(changes.last().map(String::as_str), Some("vpn-delete Work"));
+}
+
+/// A plugin's tunnel is called by the protocol its service type names,
+/// before its page is opened and without its plugin installed here.
+#[test]
+fn a_plugin_vpn_is_called_by_its_protocol() {
+    let fake = Arc::new(FakeNetwork::default());
+    *fake.vpns.lock().unwrap() = vec![VpnInfo {
+        kind: "vpn".into(),
+        service: Some("org.freedesktop.NetworkManager.openvpn".into()),
+        ..work_vpn()
+    }];
+    let mut model = model(&fake);
+    run_vpn(&mut model, VpnEffect::ShowVpns).unwrap();
+    let text = shown(&model).join("\n");
+    assert!(text.contains("OpenVPN"), "{text}");
+    assert!(model.vpn.settings.is_empty(), "no profile was read for it");
 }
 
 /// What asked the VPN app to import, connect, disconnect or delete finds
