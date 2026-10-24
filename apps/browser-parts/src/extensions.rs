@@ -191,9 +191,16 @@ fn list_in(root: &Path) -> Vec<ExtensionInfo> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
+    // The profile's own files (approvals, pins, update claims) are no
+    // extensions and count for none of the bound.
     let mut found: Vec<ExtensionInfo> = entries
-        .take(MAX_INSTALLED_EXTENSIONS)
         .flatten()
+        .filter(|entry| {
+            entry
+                .file_type()
+                .is_ok_and(|kind| kind.is_dir() || kind.is_symlink())
+        })
+        .take(MAX_INSTALLED_EXTENSIONS)
         .filter_map(|entry| {
             let manifest = entry.path().join("manifest.json");
             let text = read_manifest(&manifest).ok()?;
@@ -748,6 +755,48 @@ mod tests {
 #[cfg(test)]
 mod approval_tests {
     use super::*;
+
+    #[test]
+    fn one_browser_a_day_checks_for_updates() {
+        let root = tempfile::tempdir().unwrap();
+        let day = 24 * 60 * 60;
+        let monday = 20_000 * day + 60;
+        assert!(claim_update_check(root.path(), monday), "the first to ask");
+        assert!(
+            !claim_update_check(root.path(), monday + 3_600),
+            "another Browser, later that day"
+        );
+        assert!(
+            claim_update_check(root.path(), monday + day),
+            "the next day"
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path()).unwrap().count(),
+            1,
+            "only the day's claim is kept"
+        );
+    }
+
+    #[test]
+    fn the_profiles_own_files_count_for_no_extension() {
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_INSTALLED_EXTENSIONS {
+            std::fs::write(
+                root.path().join(format!(".tilo-approval-{index}.json")),
+                "x",
+            )
+            .unwrap();
+        }
+        let path = root.path().join("addon");
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(
+            path.join("manifest.json"),
+            r#"{"name":"fixture","version":"1","manifest_version":3}"#,
+        )
+        .unwrap();
+        assert_eq!(list_in(root.path()).len(), 1);
+    }
+
     #[test]
     fn approval_is_explicit_and_invalidated_by_manifest_changes() {
         let root = tempfile::tempdir().unwrap();
@@ -858,6 +907,37 @@ pub fn update_from_store(
         set_approved(&info, true)?;
     }
     Ok(Some(Updated::Installed(info)))
+}
+
+/// The name of the file by which a Browser claims a day's update check.
+const UPDATE_CLAIM: &str = ".tilo-update-day-";
+
+/// Claim the update check of day `unix_seconds` falls in for the
+/// extensions in `root`. Every Browser on the profile asks as it starts; the
+/// first each day is given it, so the store is asked once a day and no two
+/// Browsers unpack the same update over each other.
+pub fn claim_update_check(root: &Path, unix_seconds: u64) -> bool {
+    let claim = format!("{UPDATE_CLAIM}{}", unix_seconds / (24 * 60 * 60));
+    if std::fs::create_dir_all(root).is_err()
+        || std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join(&claim))
+            .is_err()
+    {
+        return false;
+    }
+    // Earlier days' claims are done with.
+    for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(UPDATE_CLAIM) && name != claim)
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    true
 }
 
 /// Whether an update's access, `now`, goes beyond what was `allowed`: any
