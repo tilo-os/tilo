@@ -919,8 +919,9 @@ pub(super) fn take_news(running: &mut Running, news: &mut Vec<DocumentRoute>, ar
     let news = std::mem::take(news);
     // The re-plan is of the rest of the request, as a repair's is, shown
     // the steps it replaces.
-    let pending: Vec<String> = running.steps.iter().map(pending_brief).collect();
-    running.steps.clear();
+    let replaced: Vec<Step> = running.steps.drain(..).collect();
+    let pending: Vec<String> = replaced.iter().map(pending_brief).collect();
+    running.news_resume = (!replaced.is_empty()).then_some(replaced);
     running.steps.push_back(Step {
         app: news
             .first()

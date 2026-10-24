@@ -2041,3 +2041,82 @@ async fn an_agent_introducing_itself_in_chat_neither_replans_nor_wakes_a_waiting
     assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
     Box::pin(room.close()).await;
 }
+
+/// A re-plan for news that finds nothing to do ("nothing offered fits")
+/// does not end a task that was about to wait: it waits as planned, and
+/// wakes on the post it waited for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
+    let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
+    let (gate, held) = std::sync::mpsc::channel();
+    let (url, sent) = gated_model_endpoint(vec![
+        (
+            plan(
+                "p1",
+                serde_json::json!({"steps": [], "then": "", "wait_for": {"app": "chat",
+                "contains": "Rae LR-2041 code entered", "seconds": 60}}),
+            ),
+            Some(held),
+        ),
+        (
+            plan(
+                "p2",
+                serde_json::json!({"steps": [{"operation": "none", "arguments": {}}],
+                "why": "", "then": ""}),
+            ),
+            None,
+        ),
+        (
+            plan(
+                "p3",
+                serde_json::json!({"steps": [], "reply": "Rae entered the code."}),
+            ),
+            None,
+        ),
+    ]);
+    let mut room = Box::pin(RelayRoom::start(&url)).await;
+    let task = room
+        .ana
+        .1
+        .message("Wait in Chat until Rae posts \"LR-2041 code entered\", then say so")
+        .unwrap();
+    room.next_request(&sent, "the plan to be asked for").await;
+    // While the wait is planned, Ben joins and says something unrelated.
+    room.ben_joins().await;
+    post_in_chat(&mut room.ben.0, &room.ben.1, "Standing by for LR-2042");
+    let ours = room.ana.0.open(CHAT, None).unwrap();
+    wait_for("Ana to hold Ben's post", || {
+        room.ana.0.pump();
+        room.ben.0.pump();
+        let held = chat_parts_text(&room.ana.0, &ours).contains("Standing by");
+        async move { held.then_some(()) }
+    })
+    .await;
+    gate.send(()).unwrap();
+    let told = last_turn(
+        &room
+            .next_request(&sent, "the plan again for the news")
+            .await,
+    );
+    assert!(
+        told.contains(
+            "new messages arrived (chat).\n- chat, changed by Ben: Standing by for LR-2042\n"
+        ),
+        "the news is Ben's post alone, by name: {told}"
+    );
+    assert!(told.contains("1. wait for a message"), "{told}");
+
+    // The model finds nothing to do: the task waits as it had planned.
+    room.ana_waits(&task).await;
+    room.pump_for(Duration::from_millis(300)).await;
+    assert!(room.ana.1.is_running(&task));
+    post_in_chat(&mut room.rae.0, &room.rae.1, "LR-2041 code entered");
+    let told = last_turn(&room.next_request(&sent, "Ana to wake").await);
+    assert!(
+        told.contains("What you waited for arrived in chat")
+            && told.contains("LR-2041 code entered"),
+        "{told}"
+    );
+    assert_eq!(room.ana_ends(&task).await, TaskState::Completed);
+    Box::pin(room.close()).await;
+}
