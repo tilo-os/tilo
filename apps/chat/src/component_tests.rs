@@ -187,7 +187,6 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     let mut app = projection(&doc, identity.clone());
     app.scroll = 125.;
     app.call.participants_expanded = true;
-    app.left_flap.snap(false);
     let saved = app
         .capture_application_view()
         .unwrap()

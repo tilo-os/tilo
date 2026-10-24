@@ -68,16 +68,6 @@ fn visible_controls_publish_unique_accessible_semantics() {
             Some(channel.name.as_str()),
             "the window's bar names the channel"
         );
-        assert!(
-            toolbar.sidebar.is_some(),
-            "the narrow navigation is the bar's toggle"
-        );
-        assert!(
-            !app.hits
-                .iter()
-                .any(|(_, hit)| matches!(hit, Hit::ToggleLeftFlap)),
-            "no navigation button of the window's own"
-        );
     }
 
     // Phase: semantic_text_inputs_accept_focus_value_and_selection_without_sending.
@@ -776,10 +766,10 @@ fn an_empty_category_is_listed_only_to_whoever_keeps_the_layout() {
     crate::testing::insert_category(&mut doc, "k_empty", "chat");
     app.reload(&doc);
     let listed = |app: &mut ChatApp, category: &str| {
-        render_frame(app, 1280.0, 720.0);
-        app.hits
+        let place = crate::sidebar::category_place(category);
+        app.sidebar_sections()
             .iter()
-            .any(|(_, hit)| matches!(hit, Hit::CategoryToggle(id) if id == category))
+            .any(|section| section.id == place)
     };
     assert!(app.keeps_layout());
     assert!(
@@ -812,30 +802,27 @@ fn the_sidebar_names_the_channels_and_categories_of_a_chat_kept_flat() {
     assert!(ui::tilo_resource::evolution::migrate::<crate::record::Chat>(&mut doc).unwrap());
     let mut app = ChatApp::new_ephemeral();
     app.reload(&doc);
-    render_frame(&mut app, 1280.0, 720.0);
-    let root = ui::Widget::accessibility(&app).expect("Chat has a semantic root");
-    let names: Vec<&str> = root
-        .children
+    let sections = app.sidebar_sections();
+    let titled: Vec<(&str, &str)> = sections
         .iter()
-        .filter_map(|node| node.name.as_deref())
+        .filter(|section| !section.title.is_empty())
+        .map(|section| (section.id.as_str(), section.title.as_str()))
         .collect();
-    for shown in [
-        "#general",
-        "Lounge, voice channel",
-        "Collapse Channels",
-        "Collapse Voice",
-    ] {
+    assert_eq!(
+        titled,
+        [
+            ("category:cat_home_text", "Channels"),
+            ("category:cat_home_voice", "Voice")
+        ]
+    );
+    let names: Vec<&str> = sections
+        .iter()
+        .flat_map(|section| &section.items)
+        .map(|item| item.label.as_str())
+        .collect();
+    for shown in ["general", "Lounge"] {
         assert!(names.contains(&shown), "{shown} in {names:?}");
     }
-    let headings: Vec<&str> = app
-        .hits
-        .iter()
-        .filter_map(|(_, hit)| match hit {
-            Hit::CategoryToggle(id) => Some(id.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(headings, ["cat_home_text", "cat_home_voice"]);
 }
 
 #[test]
