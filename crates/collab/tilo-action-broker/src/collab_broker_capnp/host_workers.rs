@@ -1,7 +1,8 @@
 //! The broker's workers: the connections whose edits it admits as the
 //! actions of one app on one route, attributed to that app.
 //!
-//! A worker is a connection's admitted join on a route of its own. A
+//! A worker is a connection's admitted join on a route of its own, keyed
+//! by the route hold it joined through ([`super::route_holds`]). A
 //! host-mounted worker gets its registration when the broker allocates its
 //! private descriptor (`connect_local_worker*`), bound to that descriptor's
 //! one route. A packaged app gets its registration when its connection is
@@ -42,6 +43,14 @@ impl HostWorkers {
                 .is_some_and(|worker| worker.worker_registration.as_ref() == Some(registration))
                 .then_some(*peer)
         })
+    }
+
+    /// The peer that is the worker on `route`, if one is.
+    #[cfg(test)]
+    pub(super) fn holder_of(&self, route: &CrdtRoute) -> Option<u64> {
+        self.0
+            .iter()
+            .find_map(|(peer, routes)| routes.contains_key(route).then_some(*peer))
     }
 
     /// Whether `peer` is a worker on any route.

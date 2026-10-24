@@ -534,9 +534,18 @@ async fn private_draft_belongs_to_the_record_its_adoption_targets() {
                 .await
                 .unwrap();
             let stream = second.subscribe_stable_invocations().await.unwrap();
+            // The window holds each conversation as its own route hold.
+            let second_hold = rig
+                .state
+                .host_workers
+                .lock()
+                .unwrap()
+                .holder_of(&record("conversation-b"))
+                .unwrap();
+            assert_eq!(rig.state.connection_of(second_hold), CHAT_WINDOW);
             let (_, binding) = second
                 .resolve_published_action_for_invocation(
-                    CHAT_WINDOW,
+                    second_hold,
                     "draft-r1",
                     "workspace:atlas",
                     "adopt-private-draft",

@@ -991,7 +991,8 @@ mod external_moderation_rpc_tests {
                     .join_channel(&foreign_route.channel_key(), &presentation)
                     .await
                     .unwrap();
-                refused(&foreign, &request, id, "mismatch").await;
+                // The foreign record is its own route hold, never handed this invocation.
+                refused(&foreign, &request, id, "no retained target invocation").await;
                 let mut replacement = descriptor;
                 replacement.resource = "replacement-store-resource".into();
                 target
