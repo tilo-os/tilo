@@ -31,7 +31,7 @@
 "apps/maps/src/app/tests.rs" = 3500
 "apps/music/src/app.rs" = 6000
 "apps/music/src/app/render.rs" = 5000
-"apps/music/src/app/tests.rs" = 5000
+"apps/music/src/app/tests.rs" = 4800
 "apps/music/src/audio.rs" = 3500
 "apps/notes/src/app.rs" = 5000
 "apps/osk/src/widget.rs" = 5500
