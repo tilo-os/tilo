@@ -1146,24 +1146,28 @@ fn open_channel_encryption(
     // An endpoint opening a channel queues governance the parked drain
     // must send now (a genesis, an access request): it pokes the drain.
     let drain_wake = net.as_ref().map(|net| Arc::clone(&net.drain_wake));
-    let (authenticated, authenticated_changes, stewards): (
+    let (authenticated, authenticated_changes, stewards, hosted): (
         crate::shell::channel_policy::AuthenticatedDevices,
         crate::shell::channel_policy::AuthenticatedChanges,
         crate::shell::channel_policy::Stewards,
+        Option<crate::shell::channel_policy::HostedChannelKeys>,
     ) = match net {
         Some(net) => {
             let changes = Arc::clone(&net);
             let stewards = stewards_of(Arc::clone(&net));
+            let hosted = hosted_channel_keys_of(Arc::clone(&net));
             (
                 Box::new(move |user| net.authenticated_devices_of(user)),
                 Box::new(move |after| changes.authenticated_devices_next_change(after)),
                 stewards,
+                Some(hosted),
             )
         }
         None => (
             Box::new(|_| Vec::new()),
             Box::new(|_| None),
             Box::new(|_| None),
+            None,
         ),
     };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
@@ -1172,6 +1176,10 @@ fn open_channel_encryption(
     )
     .with_authenticated_changes(authenticated_changes)
     .with_stewards(stewards);
+    let directory = match hosted {
+        Some(hosted) => directory.with_hosted_channel_keys(hosted),
+        None => directory,
+    };
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {
             root: vault.channel_state_root(),
@@ -1847,5 +1855,15 @@ pub(crate) fn stewards_of(
                 ))
             })
             .ok()
+    })
+}
+
+/// The keys of the channels of rooms `net`'s own room host governs, from
+/// that host's steward.
+pub(crate) fn hosted_channel_keys_of(
+    net: Arc<crate::shell::network::ShellNetwork>,
+) -> crate::shell::channel_policy::HostedChannelKeys {
+    Box::new(move |room, channel, route, create| {
+        net.hosted_channel_keys(room, channel, route, create)
     })
 }

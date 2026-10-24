@@ -420,73 +420,112 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
     drop(net);
 }
 
-/// A desktop whose relays are down governs the room it hosts in process:
-/// admitting a person and then removing them are its own host's room
-/// governance actions, asked through the host's in-process caller (an
-/// endpoint cannot dial itself), and both reach the room's admitted
-/// document without a relay or a peer.
+/// A desktop governs the room it hosts through its own host's in-process
+/// caller, as an endpoint cannot dial itself: changing a collaborator's
+/// role and then removing them are the host's room governance actions, and
+/// both reach the room's admitted document here.
 #[test]
 #[serial_test::serial]
-fn a_room_hosted_here_is_governed_in_process_with_the_relays_down() {
+fn a_room_hosted_here_is_governed_through_the_hosts_in_process_caller() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[48; 32]);
     home.env().set("TILO_USER_ID", person_of(&root));
 
-    let mut tree = WorkspaceTree::default();
+    let mut first_tree = WorkspaceTree::default();
     // A new workspace waits to be placed on this device's host.
-    let (_, room) = tree.create_hosted_workspace("Home");
-    tree.persist_path = Some(dir.path().join("workspaces.json"));
-    let tree = tree.shared();
-    let net = device_reaching(
-        tree.clone(),
-        dir.path(),
+    let (workspace, room) = first_tree.create_hosted_workspace("Home");
+    first_tree.persist_path = Some(dir.path().join("first/workspaces.json"));
+    let first_tree = first_tree.shared();
+    let first = device_reaching(
+        first_tree.clone(),
+        &dir.path().join("first"),
         &root,
         DeviceCapabilities::primary(),
         Reach::LoopbackHoldingRelays,
     );
-    assert!(net.join_default_workspace());
+    assert!(first.join_default_workspace());
     until("the workspace to be hosted here", || {
-        net.tick();
-        net.administered_room(room)
+        first.tick();
+        first.administered_room(room)
     });
-
-    let guest = person_of(&SigningKey::from_bytes(&[49; 32]));
+    let second_tree = WorkspaceTree {
+        persist_path: Some(dir.path().join("second/workspaces.json")),
+        ..WorkspaceTree::default()
+    }
+    .shared();
+    let collaborator_root = SigningKey::from_bytes(&[49; 32]);
+    let collaborator = person_of(&collaborator_root);
+    let second = device_reaching(
+        second_tree.clone(),
+        &dir.path().join("second"),
+        &collaborator_root,
+        DeviceCapabilities::member(),
+        Reach::LoopbackHoldingRelays,
+    );
+    assert!(second.join_default_workspace());
+    let first_addr = until("the first device to listen", || first.dial_addr());
+    second
+        .cmd_tx
+        .try_send(NetCmd::Connect { addr: first_addr })
+        .unwrap();
+    let invitation = first.issue_invite(workspace, 3600).unwrap();
+    let PeerSyncResponse::EnrollmentPending { id } =
+        second.accept_peer_invitation(&invitation).unwrap()
+    else {
+        panic!("redeeming the invitation enrolls with the room's host");
+    };
+    until("the collaborator to enroll at the room's host", || {
+        first.tick();
+        second.tick();
+        match second.poll_enrollment(id).unwrap() {
+            PeerSyncResponse::EnrollmentPending { .. } => None,
+            joined => Some(joined),
+        }
+    });
     let role_of = |tree: &WorkspaceTreeHandle| {
         tree.read()
             .desktop
             .workspaces
             .iter()
             .find(|workspace| workspace.room() == room)
-            .and_then(|workspace| workspace.policy.members.get(&guest).copied())
+            .and_then(|workspace| workspace.policy.members.get(&collaborator).copied())
     };
-    net.ask_governor(
-        room,
-        GovernanceRequest::Policy(tilo_action_policy::Change::AddMember {
-            person: guest.clone(),
-            role: tilo_action_policy::Role::Viewer,
-        }),
-    )
-    .expect("this device's host admits the person");
-    until("the admission to reach the room's document here", || {
-        net.tick();
-        (role_of(&tree) == Some(tilo_action_policy::Role::Viewer)).then_some(())
+    until("the host to count the collaborator as a member", || {
+        first.tick();
+        second.tick();
+        (first.hosts_other_members() && role_of(&first_tree).is_some()).then_some(())
     });
-    net.ask_governor(
-        room,
-        GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
-            person: guest.clone(),
-        }),
-    )
-    .expect("this device's host removes the person");
+
+    first
+        .ask_governor(
+            room,
+            GovernanceRequest::Policy(tilo_action_policy::Change::SetRole {
+                person: collaborator.clone(),
+                role: tilo_action_policy::Role::Commenter,
+            }),
+        )
+        .expect("this device's host changes the collaborator's role");
+    until("the role change to reach the room's document here", || {
+        first.tick();
+        (role_of(&first_tree) == Some(tilo_action_policy::Role::Commenter)).then_some(())
+    });
+    drop(second);
+    first
+        .ask_governor(
+            room,
+            GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
+                person: collaborator.clone(),
+            }),
+        )
+        .expect("this device's host removes the collaborator");
     until("the removal to reach the room's document here", || {
-        net.tick();
-        role_of(&tree).is_none().then_some(())
+        first.tick();
+        role_of(&first_tree).is_none().then_some(())
     });
     assert!(
-        net.reachability.is_dormant(),
-        "governing a room hosted here started the relays; held up by (transport, session) {:?}",
-        net.reachability.holders()
+        !first.hosts_other_members(),
+        "the removed collaborator is still a member of the room hosted here"
     );
-    drop(net);
+    drop(first);
 }
