@@ -233,30 +233,32 @@ fn a_new_workspace_keeps_its_windows_and_never_joins_while_it_is_placed() {
     let (workspace, room) = tree.create_hosted_workspace("Plans");
     tree.persist_path = Some(dir.path().join("workspaces.json"));
     let tab = compose_id(7, 1);
-    tree.desktop
+    // Its strip is this device's own, as every id it mints here is.
+    let strip = &mut tree
+        .desktop
         .workspaces
         .iter_mut()
         .find(|candidate| candidate.id == workspace)
         .expect("the workspace")
-        .strips[0]
-        .window_groups
-        .push(WindowGroup {
-            id: compose_id(7, 2),
-            tabs: vec![Tab {
-                id: tab,
-                title: "Terminal".into(),
-                tile: TileContent::LocalApp {
-                    app_id: "so.tilo.terminal".into(),
-                    label: "Terminal".into(),
-                    note: String::new(),
-                },
-                app_title: None,
-            }],
-            active_tab: tab,
-            width: WindowWidth::Normal,
-            maximized: false,
-            focus_history: Vec::new(),
-        });
+        .strips[0];
+    strip.id = crate::shell::state::StripId::from(compose_id(7, 3));
+    strip.window_groups.push(WindowGroup {
+        id: compose_id(7, 2),
+        tabs: vec![Tab {
+            id: tab,
+            title: "Terminal".into(),
+            tile: TileContent::LocalApp {
+                app_id: "so.tilo.terminal".into(),
+                label: "Terminal".into(),
+                note: String::new(),
+            },
+            app_title: None,
+        }],
+        active_tab: tab,
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
     let tree = tree.shared();
     let tabs = |tree: &crate::shell::state::WorkspaceTreeHandle| {
         tree.read()

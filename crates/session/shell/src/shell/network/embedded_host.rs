@@ -425,6 +425,8 @@ impl ShellNetwork {
                 .placing
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            // A room placed and since held waits no more.
+            placing.retain(|room| tree.pending_placements.contains(room));
             let waiting = waiting(&tree, &placing);
             drop(tree);
             placing.extend(waiting.iter().map(|(room, _, _)| *room));
@@ -438,17 +440,17 @@ impl ShellNetwork {
                 tracing::warn!(%room, %error, "a workspace was not placed on this device");
                 failed = true;
             }
-            if placed.is_ok() {
-                let mut tree = self.tree.write();
-                if tree.pending_placements.remove(&room) {
-                    tree.queue_save();
-                }
+            // Placed, the room waits until this device's native owner holds
+            // it ([`WorkspaceTree::project_native_room`]), its enrollment
+            // still being placed: it is neither placed again nor a join
+            // meanwhile. A failed placement is left to a later pass.
+            if placed.is_err() {
+                self.embedded_host
+                    .placing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .remove(&room);
             }
-            self.embedded_host
-                .placing
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(&room);
         }
         // A failed placement is tried again once something it depends on
         // changes, never on every pass: as it was when this pass began, so
@@ -458,6 +460,33 @@ impl ShellNetwork {
             .failed
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = failed.then_some(before);
+    }
+
+    /// The enrollment of this device's native owner into `room` ended: a
+    /// room placed here waits for its replica when it succeeded, and is
+    /// placed again once something placement depends on changed when it
+    /// failed.
+    pub(super) fn placement_enrollment_ended(&self, room: RoomId, enrolled: bool) {
+        if enrolled {
+            return;
+        }
+        let mut placing = self
+            .embedded_host
+            .placing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !placing.remove(&room) {
+            return;
+        }
+        drop(placing);
+        let tree = self.tree.read();
+        let now = self.placing_now(&tree);
+        drop(tree);
+        *self
+            .embedded_host
+            .failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(now);
     }
 
     /// Create `room`, the workspace `local` called `name`, on this device's

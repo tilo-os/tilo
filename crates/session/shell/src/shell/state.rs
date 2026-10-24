@@ -1207,10 +1207,13 @@ impl WorkspaceTree {
         } else {
             self.stewarded_rooms.remove(&room);
         }
-        // The room's replica is here: its join is over, and the room has its
-        // workspace, the one made for the join or, for a room held without
-        // one, a new one.
+        // The room's replica is here: its join, or its placement on its
+        // host, is over, and the room has its workspace, the one made for
+        // the join or, for a room held without one, a new one.
         self.joining_rooms.remove(&room);
+        if self.pending_placements.remove(&room) {
+            self.queue_save();
+        }
         if !self.has_workspace(room) {
             let name = crate::shell::i18n::t("workspace-joined-name");
             self.append_workspace_for_room(&name, room);
@@ -5633,8 +5636,8 @@ mod hosted_workspace_tests {
             "exactly one placement waits"
         );
         assert!(
-            tree.is_joining(room),
-            "the workspace is joining until placed"
+            !tree.is_joining(room),
+            "the person's own new workspace is never a join"
         );
         assert!(!tree.holds_room(room));
 
@@ -5646,8 +5649,8 @@ mod hosted_workspace_tests {
         );
         assert!(tree.take_pending_placements().is_empty(), "taken once");
         assert!(
-            tree.is_joining(room),
-            "still joining until its replica installs"
+            !tree.is_joining(room),
+            "nor a join once its placement is taken"
         );
     }
 
