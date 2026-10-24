@@ -487,12 +487,15 @@ fn parse_opt_id(s: &str) -> Option<Id> {
 /// identities so a repeated import also recognises locally edited items.
 /// `None` when it holds neither.
 pub fn import_payload(source: &str) -> Option<(Vec<EventData>, Vec<TaskData>)> {
-    let (events, tasks) = crate::ics::parse(source);
-    let events: Vec<_> = events
-        .into_iter()
-        .map(|event| EventData::from_event(&event))
-        .collect();
-    let tasks: Vec<_> = tasks.iter().map(TaskData::from_task).collect();
+    import_parsed(&crate::ics::parse_calendar(source))
+}
+
+/// [`import_payload`] of a file already parsed.
+pub(crate) fn import_parsed(
+    parsed: &crate::ics::Parsed,
+) -> Option<(Vec<EventData>, Vec<TaskData>)> {
+    let events: Vec<_> = parsed.events.iter().map(EventData::from_event).collect();
+    let tasks: Vec<_> = parsed.tasks.iter().map(TaskData::from_task).collect();
     (!events.is_empty() || !tasks.is_empty()).then_some((events, tasks))
 }
 
