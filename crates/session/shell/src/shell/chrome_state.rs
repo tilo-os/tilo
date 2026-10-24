@@ -3534,6 +3534,16 @@ impl ChromeState {
         changed
     }
 
+    /// Add a strip named `name` at the bottom of the active workspace and
+    /// move to it, once the desktop's policy allows it. `false` when it
+    /// does not, or the model refuses the name.
+    pub fn add_named_strip(&mut self, name: &str) -> bool {
+        let command = tilo_desktop_model::commands::DesktopCommand::CreateStrip {
+            name: name.to_owned(),
+        };
+        self.may_command_on_active(&command) && self.create_strip(name).is_ok()
+    }
+
     /// Whether the person may add a strip to the active workspace here: the
     /// desktop's policy leaves desks to whoever governs the workspace.
     pub fn can_add_strip(&self) -> bool {
