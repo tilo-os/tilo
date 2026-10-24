@@ -152,9 +152,12 @@ fn authority(chrome: &Chrome) -> (Option<tilo_action_policy::RoomPolicy>, Vec<Ca
 fn asked_of_governor(chrome: &Chrome) -> Vec<GovernanceRequest> {
     let st = chrome.borrow();
     let tree = st.tree();
-    tree.governance_requests
+    tree.room_outbox
         .iter()
-        .map(|(_, request)| request.clone())
+        .filter_map(|entry| match &entry.change {
+            shell::shell::state::RoomChange::Governance(request) => Some(request.clone()),
+            shell::shell::state::RoomChange::Receipt(_) => None,
+        })
         .collect()
 }
 
@@ -613,11 +616,19 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
             .cloned()
             .expect("ada is in the roster");
 
-        let held_by_ada: Vec<String> = capabilities(&chrome)
-            .into_iter()
-            .filter(|cap| cap.subject == Subject::person("ada"))
-            .map(|cap| cap.id)
-            .collect();
+        // What confirming asks of the room's governor: the member removed,
+        // with each capability they hold now.
+        let mut expected = vec![GovernanceRequest::Policy(
+            tilo_action_policy::Change::RemoveMember {
+                person: "ada".into(),
+            },
+        )];
+        expected.extend(
+            capabilities(&chrome)
+                .into_iter()
+                .filter(|cap| cap.subject == Subject::person("ada"))
+                .map(|cap| GovernanceRequest::RevokeSandbox(cap.id)),
+        );
         click(&mut host, ada.2);
         assert!(host.member_sheet_is_open_for_tests());
         assert!(
@@ -631,16 +642,6 @@ fn members_tab_role_and_removal_controls_are_explicit_and_owner_only() {
         let confirm = host.member_sheet_option_rects_for_tests()[2];
         click(&mut host, confirm);
 
-        let mut expected = vec![GovernanceRequest::Policy(
-            tilo_action_policy::Change::RemoveMember {
-                person: "ada".into(),
-            },
-        )];
-        expected.extend(
-            held_by_ada
-                .into_iter()
-                .map(GovernanceRequest::RevokeSandbox),
-        );
         assert_eq!(
             asked_of_governor(&chrome),
             expected,

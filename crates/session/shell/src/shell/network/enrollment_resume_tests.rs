@@ -529,9 +529,21 @@ fn a_pending_join_resumes_on_start(left: Left, cert: Cert) {
     drop(net);
     drop(tree);
     crate::shell::persist::wait_for_saves();
+    assert_only_the_enrollment_completed(&shape, &before, &files, &proof);
+    shape.site.shutdown();
+}
 
+/// What the state file under `shape` holds once its pending join went on,
+/// against what it held `before`: the enrollment completed with the `proof`
+/// it kept, and nothing else changed, nor any of the `files` went.
+fn assert_only_the_enrollment_completed(
+    shape: &Shape,
+    before: &serde_json::Value,
+    files: &[PathBuf],
+    proof: &[u8],
+) {
     let after = read_json(&state_path(&shape.root));
-    let room = lounge.to_string();
+    let room = shape.lounge.to_string();
     assert!(
         after["native_authority"]["pending"].get(&room).is_none(),
         "the enrollment completed"
@@ -568,7 +580,6 @@ fn a_pending_join_resumes_on_start(left: Left, cert: Cert) {
         .filter(|file| !shape.root.join(file).exists())
         .collect();
     assert!(gone.is_empty(), "files under the state root went: {gone:?}");
-    shape.site.shutdown();
 }
 
 /// The host had admitted the proof and answered; the session ended before

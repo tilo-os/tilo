@@ -20,9 +20,9 @@ pub(super) struct HomeRelay {
     /// The host's last answer; `None` before it answered.
     pub(super) hosting: Option<HomeRelayHosting>,
     /// The host's answer to the list, while it is asked.
-    listing: Option<ui::LocalState<ui::InvocationCall>>,
+    listing: Option<ui::InvocationCall>,
     /// A choice the host carries out, and its room.
-    choosing: Option<(ui::LocalState<ui::InvocationCall>, String)>,
+    choosing: Option<(ui::InvocationCall, String)>,
     /// Why the last ask failed.
     error: Option<String>,
 }

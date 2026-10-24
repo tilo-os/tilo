@@ -128,6 +128,7 @@ impl State {
     }
 
     /// Nothing kept, waking `readiness` as joins change.
+    #[cfg(test)]
     pub(super) fn with_readiness(readiness: RoomReadiness) -> Self {
         Self {
             readiness,
@@ -717,7 +718,7 @@ mod tests {
     fn hosted_rooms_are_kept_across_reopening() {
         let dir = tempfile::tempdir().unwrap();
         let room = RoomId::new();
-        let state = State::open(dir.path());
+        let state = State::open(dir.path(), RoomReadiness::default());
         assert_eq!(state.origin(room), None);
         let site = site_entry("example.org").unwrap();
         state
@@ -731,7 +732,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let reopened = State::open(dir.path());
+        let reopened = State::open(dir.path(), RoomReadiness::default());
         assert_eq!(
             reopened.origin(room).as_deref(),
             Some("https://eu1.example")
@@ -746,10 +747,13 @@ mod tests {
             "the app the site's workspace opens in is kept"
         );
         state.set_left(&site, true).unwrap();
-        assert!(State::open(dir.path()).left(&site));
+        assert!(State::open(dir.path(), RoomReadiness::default()).left(&site));
         state.forget(room).unwrap();
-        assert_eq!(State::open(dir.path()).origin(room), None);
+        assert_eq!(
+            State::open(dir.path(), RoomReadiness::default()).origin(room),
+            None
+        );
         state.set_left(&site, false).unwrap();
-        assert!(!State::open(dir.path()).left(&site));
+        assert!(!State::open(dir.path(), RoomReadiness::default()).left(&site));
     }
 }

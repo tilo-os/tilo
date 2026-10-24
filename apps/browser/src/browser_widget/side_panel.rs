@@ -8,14 +8,20 @@ use ui::widget::{WebView, Widget};
 
 use super::BrowserWidget;
 
+/// How wide an extension's side panel beside the page is: a utility
+/// panel's width, about as narrow as Chrome lets a side panel go, which
+/// extensions lay their panels out for.
+fn side_panel_width(theme: &Theme) -> f32 {
+    theme.tokens.metrics.panel_width_utility
+}
+
 impl BrowserWidget {
     /// Whether the window has room for an extension's side panel beside a
     /// readable page: below it the panel shows in the page's place, one at a
     /// time, until the person closes it.
     fn side_panel_docks(&self, theme: &Theme) -> bool {
         let room = ui::num::f32_of_f64(self.rect.width());
-        room >= crate::extension_controller::SIDE_PANEL_WIDTH
-            + theme.tokens.metrics.reading_min_width
+        room >= side_panel_width(theme) + theme.tokens.metrics.reading_min_width
     }
 
     /// The extension whose side panel shows, and whether it docks: when
@@ -41,7 +47,7 @@ impl BrowserWidget {
         );
         let docks = self.side_panel_docks(theme);
         let width = if docks {
-            crate::extension_controller::SIDE_PANEL_WIDTH
+            side_panel_width(theme)
         } else {
             ui::num::f32_of_f64(self.rect.width())
         };
