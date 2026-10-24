@@ -427,3 +427,29 @@ test('a refused unmute keeps the person in the call, muted, until they allow it'
   assert.equal(f.call.stats().captureActive, true);
   f.call.dispose();
 });
+
+test('a participant plays at the volume set for them, a guest by their id', async () => {
+  const {audio, carriers, call, event} = fixture();
+  const DANA = 'd'.repeat(64);
+  call.join(CALL);
+  await drain();
+  const grant = grantFor({others: [BOB, DANA]});
+  grant.participants[2].bridged = {service: 'discord', account: '7', name: 'Dana', avatar: null, linked: null};
+  event({kind: 'granted', grant});
+  await drain();
+  assert.deepEqual(call.state.participants[2].bridged, grant.participants[2].bridged, 'who a bridge carries reaches the app');
+  call.setVolume('discord:7', 0);
+  call.setVolume(BOB, 1.5);
+  carriers[0].onFrame({publisher: DANA, sequence: 0n, ...frame(1)});
+  carriers[0].onFrame({publisher: BOB, sequence: 0n, ...frame(1)});
+  call.setVolume(BOB, 1);
+  carriers[0].onFrame({publisher: BOB, sequence: 1n, ...frame(2)});
+  assert.deepEqual(audio.played.map(played => [played.publisherId, played.gain]), [[DANA, 0], [BOB, 1.5], [BOB, 1]]);
+  call.leave();
+  call.join(CALL);
+  await drain();
+  event({kind: 'granted', grant});
+  await drain();
+  carriers.at(-1).onFrame({publisher: DANA, sequence: 2n, ...frame(3)});
+  assert.equal(audio.played.at(-1).gain, 1, 'a volume lasts as long as the call');
+});
