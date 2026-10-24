@@ -13,8 +13,9 @@ use super::{NavList, NavSection};
 /// what the person chose with [`Self::take_chosen`] and the section
 /// actions they ran ("New playlist") with [`Self::take_section_actions`],
 /// the rows they checked with [`Self::take_checks`] and what they folded
-/// with [`Self::take_expands`]. The list reads the feed at every sync and
-/// update ([`NavList::fed_by`]).
+/// with [`Self::take_expands`], the menus they asked for with
+/// [`Self::take_menus`] and the names they gave with [`Self::take_renames`].
+/// The list reads the feed at every sync and update ([`NavList::fed_by`]).
 #[derive(Clone, Default)]
 pub struct NavFeed(Rc<RefCell<Feed>>);
 
@@ -27,6 +28,10 @@ struct Feed {
     revision: u64,
     /// What the person chose since the app last looked, oldest first.
     chosen: Vec<String>,
+    /// The person chose since the app last showed: the next show is the
+    /// app's answer, read even where nothing changed, so a choice the app
+    /// does not take (a call it joins, a row that is no place) is undone.
+    answer_due: bool,
     /// The section actions the person ran, as (section id, action id).
     section_actions: Vec<(String, String)>,
     /// The rows the person checked or cleared, as (place id, checked).
@@ -35,8 +40,21 @@ struct Feed {
     expands: Vec<(String, bool)>,
     /// The item actions the person ran, as (place id, action id).
     item_actions: Vec<(String, String)>,
+    /// The menus the person asked for, as (place or section id, the row's
+    /// lift, where the menu opens).
+    menus: Vec<(String, Rect, Point)>,
+    /// The names the person gave in place, as (place or section id, name).
+    renames: Vec<(String, String)>,
+    /// The row the app asked to rename, until the list opens its field.
+    rename: Option<String>,
+    /// What the app asked to open or fold, until the list does.
+    openings: Vec<(String, bool)>,
+    /// The list's own layout node: where the keyboard goes to rename.
+    node: Option<crate::taffy::NodeId>,
     /// Where the list's rows stood when it last painted, by place id.
     rows: Vec<(String, Rect)>,
+    /// Where the list stood when it last painted.
+    rect: Option<Rect>,
 }
 
 impl NavFeed {
@@ -51,7 +69,8 @@ impl NavFeed {
     pub fn show(&self, sections: Vec<NavSection>, selected: Option<String>) {
         let next = Some((sections, selected));
         let mut feed = self.0.borrow_mut();
-        if feed.shown != next {
+        let answer = std::mem::take(&mut feed.answer_due);
+        if feed.shown != next || answer {
             feed.shown = next;
             feed.revision = feed.revision.wrapping_add(1);
         }
@@ -97,6 +116,48 @@ impl NavFeed {
         std::mem::take(&mut self.0.borrow_mut().item_actions)
     }
 
+    /// The menus the person asked for since the last call, as (place or
+    /// section id, the row's lift, where the menu opens), oldest first
+    /// ([`NavList::fed_menus`]). Hand the lift to `ContextMenu::anchor_row`
+    /// so the row stays marked while its menu is open.
+    #[must_use]
+    pub fn take_menus(&self) -> Vec<(String, Rect, Point)> {
+        std::mem::take(&mut self.0.borrow_mut().menus)
+    }
+
+    /// The names the person gave rows or sections in place since the last
+    /// call, as (id, name), oldest first ([`NavList::fed_renames`]).
+    #[must_use]
+    pub fn take_renames(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.0.borrow_mut().renames)
+    }
+
+    /// Open the rename field on the row or section `id` (its menu's
+    /// Rename), handing the list the keyboard through `focus_target`, the
+    /// one of the event that asked for it ([`crate::widget::EventCtx`]). The
+    /// name comes back through [`Self::take_renames`].
+    pub fn begin_rename(&self, id: &str, focus_target: &mut Option<crate::taffy::NodeId>) {
+        let mut feed = self.0.borrow_mut();
+        feed.rename = Some(id.to_owned());
+        if let Some(node) = feed.node {
+            *focus_target = Some(node);
+        }
+    }
+
+    /// Open or fold the section or row `id` as the person would (its
+    /// menu's Collapse): the list keeps what the person folds, so the app
+    /// asks it rather than showing it folded.
+    pub fn set_open(&self, id: &str, open: bool) {
+        self.0.borrow_mut().openings.push((id.to_owned(), open));
+    }
+
+    /// Where the list stood when it last painted (window coordinates): with
+    /// the app's own area, where a menu over the list may open.
+    #[must_use]
+    pub fn list_rect(&self) -> Option<Rect> {
+        self.0.borrow().rect
+    }
+
     /// The place whose row is at `point` (window coordinates) and its row,
     /// as the list last painted them: where a drag the app runs from its
     /// own content would be let go ("onto this playlist").
@@ -110,8 +171,22 @@ impl NavFeed {
             .cloned()
     }
 
-    pub(super) fn publish_rows(&self, rows: Vec<(String, Rect)>) {
-        self.0.borrow_mut().rows = rows;
+    pub(super) fn publish_rows(&self, rect: Rect, rows: Vec<(String, Rect)>) {
+        let mut feed = self.0.borrow_mut();
+        feed.rect = Some(rect);
+        feed.rows = rows;
+    }
+
+    pub(super) fn publish_node(&self, node: crate::taffy::NodeId) {
+        self.0.borrow_mut().node = Some(node);
+    }
+
+    pub(super) fn take_rename_request(&self) -> Option<String> {
+        self.0.borrow_mut().rename.take()
+    }
+
+    pub(super) fn take_openings(&self) -> Vec<(String, bool)> {
+        std::mem::take(&mut self.0.borrow_mut().openings)
     }
 
     /// What a list that last read revision `seen` has not read yet.
@@ -136,7 +211,11 @@ impl NavList {
                 let mut seen = None;
                 move || reads.pull(&mut seen)
             })
-            .on_select(move |id| chooses.0.borrow_mut().chosen.push(id))
+            .on_select(move |id| {
+                let mut feed = chooses.0.borrow_mut();
+                feed.chosen.push(id);
+                feed.answer_due = true;
+            })
             .on_section_action(move |section, action| {
                 acts.0
                     .borrow_mut()
@@ -149,6 +228,26 @@ impl NavList {
             .on_expand(move |id, open| folds.0.borrow_mut().expands.push((id.to_owned(), open)));
         list.feed = Some(feed.clone());
         list
+    }
+
+    /// Hand the menus the person asks for to `feed`
+    /// ([`NavFeed::take_menus`]).
+    #[must_use]
+    pub fn fed_menus(self, feed: &NavFeed) -> Self {
+        let asks = feed.clone();
+        self.on_context_menu(move |id, lift, at| {
+            asks.0.borrow_mut().menus.push((id.to_owned(), lift, at));
+        })
+    }
+
+    /// Hand the names the person gives in place to `feed`
+    /// ([`NavFeed::take_renames`]).
+    #[must_use]
+    pub fn fed_renames(self, feed: &NavFeed) -> Self {
+        let names = feed.clone();
+        self.on_rename(move |id, name| {
+            names.0.borrow_mut().renames.push((id.to_owned(), name));
+        })
     }
 
     /// Offer `actions` at the trailing edge of the rows that do not opt out

@@ -7,6 +7,7 @@ pub mod capability;
 mod caret_tag;
 mod chat;
 mod faces;
+pub mod frame;
 mod geom;
 mod interaction;
 mod key;

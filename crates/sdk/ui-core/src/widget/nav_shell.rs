@@ -2868,37 +2868,6 @@ impl NavShell {
         }
     }
 
-    fn take_requests(&mut self) -> bool {
-        let mut acted = self.requests.toggle.replace(false);
-        if acted {
-            self.toggle_sidebar();
-        }
-        if self.requests.back.replace(false) {
-            acted |= self.back();
-        }
-        if self.requests.inspector.replace(false) {
-            self.toggle_inspector();
-            acted = true;
-        }
-        if self.built
-            && let Some(open) = self.requests.staged_sidebar.take()
-        {
-            if self.is_sidebar_open() != open {
-                self.toggle_sidebar();
-            }
-            self.snap();
-            acted = true;
-        }
-        if self.requests.put_drawer_away.take()
-            && self.geometry.sidebar == SidebarPlacement::Drawer
-            && self.is_sidebar_open()
-        {
-            self.toggle_sidebar();
-            acted = true;
-        }
-        acted
-    }
-
     /// Open a More menu whose button was pressed, with the actions that did
     /// not fit.
     fn open_more_menus(&mut self) {
@@ -3956,8 +3925,9 @@ fn place_header(
 }
 
 impl Widget for NavShell {
-    // The shell frames the app; what continues on another device, and what
-    // a diagnostic input reads, is the content it frames.
+    // The shell frames the app; what the window is (its view, presence,
+    // what continues on another device, what a diagnostic input reads) is
+    // the content it frames.
     fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
         if request.wants::<dyn crate::widget::controls::ActionControls>() {
             request.provide::<dyn crate::widget::controls::ActionControls>(self);
@@ -3967,7 +3937,7 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
-        } else if request.wants::<dyn crate::widget::Continuable>() {
+        } else {
             self.content.provide(request);
         }
     }
@@ -3981,7 +3951,7 @@ impl Widget for NavShell {
             request.provide::<dyn crate::resources::PublishesResources>(self);
         } else if request.wants::<dyn crate::widget::ResourceOperations>() {
             request.provide::<dyn crate::widget::ResourceOperations>(self);
-        } else if request.wants::<dyn crate::widget::Continuable>() {
+        } else {
             self.content.provide_mut(request);
         }
     }
@@ -4026,7 +3996,11 @@ impl Widget for NavShell {
 
     fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
         self.run_shell_bar_events(edits, path);
-        super::defaults::settle(self.children_mut(), edits, path);
+        // Settling is the data pass: a column a narrow window put away
+        // still takes its writes and feeds the column on screen.
+        self.for_each_owned_mut(|child| child.settle(edits, path));
+        self.sync_status.settle(edits, path);
+        self.toasts.settle(edits, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {

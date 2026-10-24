@@ -1417,3 +1417,41 @@ fn a_pending_section_holds_its_rows_place_until_the_items_arrive() {
     let row = h.root::<NavList>().row_rect("disk").expect("the item");
     assert_eq!(row, stand_in, "the item takes the pending row's place");
 }
+
+/// An unread conversation's row stands out, and a person's row carries
+/// their avatar in their colour, ringed while they speak.
+#[test]
+fn an_unread_row_stands_out_and_a_persons_row_shows_them() {
+    let colour = Color::from_rgb8(0x40, 0x80, 0xc0);
+    let list = NavList::new(vec![NavSection::untitled(
+        "rows",
+        vec![
+            NavItem::new("talk", "talk").unread(true),
+            NavItem::new("dana", "Dana").person("u_dana", colour, true),
+        ],
+    )]);
+    let h = harness(list, Theme::dark());
+    let list = h.root::<NavList>();
+    let face_of = |id: &str| {
+        let node = list.tree().model().item_id(id).expect("item");
+        let Some(NavRowSpec::Item(item)) = list.tree().nav_spec(node) else {
+            panic!("{id} is an item");
+        };
+        item
+    };
+    let theme = Theme::dark();
+    let talk = face_of("talk");
+    let face = talk.face(Rect::new(0.0, 0.0, 200.0, 32.0), "talk", &theme);
+    assert!(face.unread);
+    assert!(face.avatar.is_none());
+    let dana = face_of("dana");
+    let face = dana.face(Rect::new(0.0, 0.0, 200.0, 32.0), "Dana", &theme);
+    assert!(!face.unread);
+    assert!(face.avatar.is_some(), "a person's row shows them");
+    assert_eq!(
+        dana.person
+            .as_ref()
+            .map(|person| (person.colour, person.speaking)),
+        Some((colour, true))
+    );
+}

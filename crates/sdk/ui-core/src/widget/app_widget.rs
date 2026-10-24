@@ -960,14 +960,24 @@ mod component_adapter {
         ) -> bool {
             let (state, _) = crate::doc::document_ref(state, path);
             let binding = self.component.callback_binding();
-            binding
-                .read_document(state, |document, record_root| {
-                    self.component
-                        .root
-                        .as_deref_mut()
-                        .is_some_and(|root| root.update(document, record_root))
-                })
-                .unwrap_or(false)
+            // The frame's presence, under the component's own authority, as
+            // its draw sees it.
+            let permissions = binding.permissions.borrow().clone();
+            let update = |component: &mut AppComponent| {
+                binding
+                    .read_document(state, |document, record_root| {
+                        component
+                            .root
+                            .as_deref_mut()
+                            .is_some_and(|root| root.update(document, record_root))
+                    })
+                    .unwrap_or(false)
+            };
+            let component = &mut self.component;
+            crate::presence::frame::frame(|presence| {
+                presence.with_permissions(permissions.clone(), || update(component))
+            })
+            .unwrap_or_else(|| update(component))
         }
         fn build_layout(
             &mut self,

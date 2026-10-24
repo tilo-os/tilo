@@ -74,6 +74,8 @@ pub(crate) struct NavItemSpec {
     pub checked: Option<bool>,
     pub level: Option<f32>,
     pub presence: Vec<String>,
+    pub person: Option<crate::widget::nav_list::NavPerson>,
+    pub unread: bool,
 }
 
 impl NavItemSpec {
@@ -105,9 +107,19 @@ impl NavItemSpec {
                 .neutral()
                 .image(art.image.as_ref())
         });
+        if let Some(person) = &self.person {
+            let mut avatar = crate::widget::AvatarFace::new(label, &person.identity)
+                .presence(person.colour)
+                .presence_ring();
+            if person.speaking {
+                avatar = avatar.speaking(1.0);
+            }
+            face.avatar = Some(avatar);
+        }
         face.checked = self.checked;
         face.level = self.level;
         face.presence = &self.presence;
+        face.unread = self.unread;
         face
     }
 }
@@ -124,6 +136,8 @@ pub(crate) enum NavRowSpec {
         /// What the trailing action is announced as.
         action_label: Option<String>,
         first: bool,
+        /// The header asks for its menu as a row does.
+        menu: bool,
     },
     /// A destination.
     Item(Box<NavItemSpec>),
@@ -352,6 +366,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return None;
         };
         let key = TreeRowKey::Node(id);
+        // The rename field stands where the title was.
+        let title = if self.renaming() == Some(id) {
+            ""
+        } else {
+            title
+        };
         let mut face = NavSectionFace::new(row, title)
             .hovered(self.hovered == Some(key))
             .focused(self.is_focused && self.focused == Some(key));
@@ -393,7 +413,11 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 }
             }
             NavRowSpec::Item(item) => {
-                let label = self.model.label(id).unwrap_or_default();
+                let label = if self.renaming() == Some(id) {
+                    ""
+                } else {
+                    self.model.label(id).unwrap_or_default()
+                };
                 let actions: Vec<Icon> =
                     self.row_actions.iter().map(|action| action.icon).collect();
                 if let Some(face) = self.nav_item_face(id, row, item, label, &actions) {
@@ -426,8 +450,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     pub(crate) fn nav_lift_rect(&self, id: NodeId) -> Option<Rect> {
         let nav = self.nav.as_ref()?;
         let row = self.row_rect(id)?;
-        let NavRowSpec::Item(item) = self.nav_spec(id)? else {
-            return None;
+        let item = match self.nav_spec(id)? {
+            NavRowSpec::Item(item) => item,
+            NavRowSpec::Section { menu: true, .. } => {
+                return Some(nav_section_layout(&nav.theme, &NavSectionFace::new(row, "")).band);
+            }
+            _ => return None,
         };
         let label = self.model.label(id).unwrap_or_default();
         let mut face = item.face(row, label, &nav.theme);
@@ -486,9 +514,16 @@ impl<T, M: TreeModel> TreeView<T, M> {
         let Some(id) = self.rename.as_ref().map(|field| field.id) else {
             return;
         };
-        let (Some(row), Some(NavRowSpec::Item(item))) = (self.row_rect(id), self.nav_spec(id))
-        else {
+        let Some(row) = self.row_rect(id) else {
             return;
+        };
+        let item = match self.nav_spec(id) {
+            Some(NavRowSpec::Item(item)) => item,
+            Some(spec @ NavRowSpec::Section { .. }) => {
+                self.place_nav_section_rename_field(id, row, &spec);
+                return;
+            }
+            _ => return,
         };
         let label = self.model.label(id).unwrap_or_default().to_owned();
         let Some(face) = self.nav_item_face(id, row, &item, &label, &[]) else {
@@ -505,6 +540,31 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 layout.selection.y0,
                 layout.label_x1.max(layout.label_x0),
                 layout.selection.y1,
+            ));
+        }
+    }
+
+    /// Lay the open rename field over section `id`'s title, in the title's
+    /// role, from its leading edge to its trailing action.
+    fn place_nav_section_rename_field(&mut self, id: NodeId, row: Rect, spec: &NavRowSpec) {
+        let Some(theme) = self.nav.as_ref().map(|nav| nav.theme.clone()) else {
+            return;
+        };
+        let Some(face) = self.nav_section_face(id, row, spec) else {
+            return;
+        };
+        let layout = nav_section_layout(&theme, &face);
+        let x1 = layout
+            .action
+            .map_or(layout.band.x1, |action| action.x0)
+            .max(layout.title_x0);
+        if let Some(field) = self.rename.as_mut() {
+            field.input.set_text_role(TextRole::Subheading);
+            field.input.apply_layout_external(Rect::new(
+                layout.title_x0,
+                layout.band.y0,
+                x1,
+                layout.band.y1,
             ));
         }
     }
@@ -657,7 +717,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
     /// Ask the host for item `id`'s menu at `at`, the row marked by its
     /// lift. Returns whether the list reports menus for the row.
     pub(super) fn open_nav_menu(&mut self, id: NodeId, at: Point) -> bool {
-        if !self.nav_offers_menu() || !matches!(self.nav_spec(id), Some(NavRowSpec::Item(_))) {
+        if !self.nav_offers_menu()
+            || !matches!(
+                self.nav_spec(id),
+                Some(NavRowSpec::Item(_) | NavRowSpec::Section { menu: true, .. })
+            )
+        {
             return false;
         }
         let Some(lift) = self.nav_lift_rect(id) else {
