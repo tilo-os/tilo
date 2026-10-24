@@ -66,6 +66,18 @@ pub(crate) fn route(request: GovernanceRequest, now_ms: u64) -> Result<Governanc
                 arguments: person(who)?,
             })
         }
+        // Removing or banning a member takes the person out of the room at
+        // its host: their grants, role and devices go with them.
+        GovernanceRequest::Policy(Change::RemoveMember { person: who }) => {
+            Ok(GovernanceRoute::Rooms {
+                action: governance::REMOVE_MEMBER,
+                arguments: person(who)?,
+            })
+        }
+        GovernanceRequest::Policy(Change::Ban { person: who }) => Ok(GovernanceRoute::Rooms {
+            action: governance::BAN,
+            arguments: person(who)?,
+        }),
         GovernanceRequest::Policy(Change::Unban { person: who }) => Ok(GovernanceRoute::Rooms {
             action: governance::UNBAN,
             arguments: person(who)?,
@@ -79,9 +91,9 @@ pub(crate) fn route(request: GovernanceRequest, now_ms: u64) -> Result<Governanc
             argument: serde_json::json!({ "grant": grant }),
         }),
         GovernanceRequest::Command(command) => Ok(GovernanceRoute::Command(command)),
-        GovernanceRequest::Policy(Change::RemoveMember { .. } | Change::Ban { .. })
-        | GovernanceRequest::GrantSandbox(_)
-        | GovernanceRequest::RevokeSandbox(_) => Err(NO_GOVERNOR_ACTION.into()),
+        GovernanceRequest::GrantSandbox(_) | GovernanceRequest::RevokeSandbox(_) => {
+            Err(NO_GOVERNOR_ACTION.into())
+        }
     }
 }
 
@@ -304,13 +316,27 @@ mod tests {
     }
 
     #[test]
-    fn a_change_the_host_has_no_action_for_is_said_so_not_applied_here() {
-        for request in [
-            GovernanceRequest::Policy(Change::RemoveMember { person: person() }),
-            GovernanceRequest::RevokeSandbox("cap-1".into()),
+    fn removing_or_banning_a_member_is_the_hosts_room_governance() {
+        for (change, expected) in [
+            (
+                Change::RemoveMember { person: person() },
+                governance::REMOVE_MEMBER,
+            ),
+            (Change::Ban { person: person() }, governance::BAN),
         ] {
-            assert!(route(request, 0).is_err());
+            let Ok(GovernanceRoute::Rooms { action, arguments }) =
+                route(GovernanceRequest::Policy(change), 0)
+            else {
+                panic!("a removal goes to the host's room governance");
+            };
+            assert_eq!(action, expected);
+            assert_eq!(arguments["person"], person());
         }
+    }
+
+    #[test]
+    fn a_change_the_host_has_no_action_for_is_said_so_not_applied_here() {
+        assert!(route(GovernanceRequest::RevokeSandbox("cap-1".into()), 0).is_err());
     }
 
     #[test]

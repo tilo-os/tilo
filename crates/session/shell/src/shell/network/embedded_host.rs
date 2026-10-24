@@ -112,7 +112,9 @@ impl ShellNetwork {
 
     /// Whether a room hosted here has a member device other than this one:
     /// then others dial this device, and it stays reachable. A host whose
-    /// rooms only this device holds stays dark.
+    /// rooms only this device holds stays dark. Membership is the room's
+    /// governed access: a removed person's devices stay in the document as
+    /// signed history, and count for nothing here.
     pub(super) fn hosts_other_members(&self) -> bool {
         if self.room_host().is_none() {
             return false;
@@ -127,12 +129,14 @@ impl ShellNetwork {
                     let hosted_here = view
                         .transport_hint()
                         .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own));
-                    Ok(hosted_here
-                        && view
-                            .peer()
-                            .certificates()
-                            .iter()
-                            .any(|cert| cert.device_public_key != own))
+                    if !hosted_here {
+                        return Ok(false);
+                    }
+                    let access = view
+                        .peer()
+                        .governance()
+                        .governed_access(std::time::SystemTime::now())?;
+                    Ok(access.member_devices.iter().any(|device| *device != own))
                 })
                 .unwrap_or(false)
         })
