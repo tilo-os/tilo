@@ -4,7 +4,9 @@
 // t's perf-stream check has.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {CODE_BITS, analyse, codeCheck, codeGeometry, judgeGoals, parseArgs, readCode} from './native_stream_qualification.mjs';
+import {CODE_BITS, MAX_DESKTOP_FPS, analyse, codeCheck, codeGeometry, desktopFailures, desktopFramesPerSecond, judgeGoals, parseArgs,
+  readCode}
+  from './native_stream_qualification.mjs';
 import {stats} from './browser_qualification.mjs';
 import {focusDiscipline, inputsOf, judgeIme, judgePaste, judgeStream, pointFor} from './native_stream_acceptance.mjs';
 
@@ -55,6 +57,8 @@ test('arguments: required pieces, carrier, codec, window and defaults', () => {
   assert.equal(parseArgs([...base, '--codec', 'vp9']).codec, 'vp9');
   assert.throws(() => parseArgs([...base, '--codec', 'hevc-main10']), /--codec/);
   assert.throws(() => parseArgs([...base, '--window', '641x360']), /even/);
+  assert.equal(options.reopen, false, 'the measured window is the page\'s first by default');
+  assert.equal(parseArgs([...base, '--reopen']).reopen, true);
 });
 
 /** A run: `n` frames 33 ms apart from t0, each drawn `lag` µs after capture. */
@@ -106,6 +110,22 @@ test('startup counts the first picture shown on the desktop, not one drawn while
   const result = analyse(run(30, {mutate: draws => draws.map((draw, i) => ({...draw, visible: i >= 4}))}));
   assert.deepEqual(result.samples.startup_ms, [(4 * 33_333 + 40_000 + 300_000) / 1000]);
   assert.equal(result.counts.firstPictureMs, 340);
+});
+
+test('a desktop that presents a frame for every picture of the window under it fails the run', () => {
+  // 10 s of stream: the window's opening is a frame or two; one frame per picture is 30 a second.
+  assert.equal(desktopFramesPerSecond({before: 100, after: 108, seconds: 10}), 0.8);
+  assert.deepEqual(analyse({...run(300), desktop: {before: 100, after: 108, seconds: 10}}).correctness.failures, []);
+  assert.deepEqual(analyse({...run(300), desktop: {before: 100, after: 100 + MAX_DESKTOP_FPS * 10, seconds: 10}}).correctness.failures, []);
+  assert.match(analyse({...run(300), desktop: {before: 100, after: 400, seconds: 10}}).correctness.failures.join(),
+    /desktop under the window presented 30 frames\/s while it streamed \(at most 2\)/);
+  // A page that does not say what its desktop presented cannot pass this.
+  assert.match(analyse({...run(300), desktop: {before: null, after: 400, seconds: 10}}).correctness.failures.join(),
+    /did not say how many frames/);
+  // A reopened run judges the window before the measured one the same way.
+  assert.deepEqual(desktopFailures({before: 50, after: 52, seconds: 3}, 'the window before it'), []);
+  assert.deepEqual(desktopFailures({before: 50, after: 140, seconds: 3}, 'the window before it'),
+    ['the desktop under the window before it presented 30 frames/s while it streamed (at most 2)']);
 });
 
 test('the warm-up is judged but not timed', () => {

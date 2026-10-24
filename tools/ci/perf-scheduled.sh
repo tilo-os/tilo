@@ -216,7 +216,9 @@ case $group in
     # whatever the other's verdict.
     status=0
     for codec in h264 vp9; do
-      name=stream codec_args=()
+      # The H.264 window opens after another closed (--reopen): the desktop
+      # must rest under a window that is not the page's first.
+      name=stream codec_args=(--reopen)
       [[ $codec == vp9 ]] && name=stream-vp9 codec_args=(--codec vp9)
       if node scripts/perf/native_stream_qualification.mjs "$out/bundle" --out "$out/$name.json" \
         --relay "$target/release/tilo-relay" --source "$target/release/examples/legacy_stream_source" \
