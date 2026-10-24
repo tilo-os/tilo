@@ -353,18 +353,20 @@ family = "os-base"
 name = "kernel"
 about = """
 The kernel (tools/ci/publish/kernel.sh): Fedora's kernel with Tilo's config fragment, built
-natively FROM the pinned signed buildroot, then booted under emulation with its module signatures
-checked and the firmware's Secure Boot enforcement probed, as root in a micro-VM step
-(kernel-acceptance-<arch>). Stable
+FROM the pinned signed buildroot of the machine it builds on (natively, or the aarch64 kernel
+cross-compiled on x86_64, where `hosts` says so) through the compiler cache
+image-kernel-cache-<arch> compiled, then booted under emulation on its own architecture with its
+module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
+micro-VM step (kernel-acceptance-<arch>). Stable
 signs each architecture's image and attests its SLSA provenance (kernel-rpm/v1: the source
-commit and the buildroot it was built FROM, which os/dev/verify-kernel-provenance.sh checks),
+commit, the buildroot it was built FROM and the architecture it was built on, which
+os/dev/verify-kernel-provenance.sh checks),
 both with a transparency log entry, publishes them as `sha-<commit>-<arch>` and sets the
 `kernel` pointer, which pin-kernel commits to os/kernel-snapshot.env on main. That tag is
 pushed once: a stable run again on the same commit whose rebuild differs leaves it, and the
 digest pinned from it, where they are, rather than moving the tag and leaving the earlier digest
 untagged. Main publishes
-nothing, since the OS build verifies the kernel's signature. No compiler cache reaches checks yet, so every build compiles the
-whole kernel."""
+nothing, since the OS build verifies the kernel's signature."""
 repository = "registry.tilo.so/tilo/tilo-kernel"
 arches = ["x86_64", "aarch64"]
 release = ["once:sha-{commit}-{arch}"]
@@ -382,10 +384,10 @@ outputs = ["{dir}/pins.env"]
 pointers = { kernel = "{dir}/pins.env" }
 
 [product.build]
-run = "bash tools/ci/publish/kernel.sh build {arch} {out}"
-needs = ["os-assets"]
+run = "bash tools/ci/publish/kernel.sh build {arch} {out} /target/publish/kernel-cache/{arch}/compiler-cache.tar"
+needs = ["os-assets", "image-kernel-cache-{arch}"]
 inputs = ["os/kernel/**", "os/kernel-buildroot-snapshot.env", "Cargo.toml", "Cargo.lock", "crates/system/tilo-crypto/Cargo.toml", "crates/system/tilo-crypto/src/lib.rs", "crates/system/tilo-crypto/src/main.rs", "os/tests/secureboot_vm_app.c", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
-outputs = ["{out}/secureboot/**"]
+outputs = ["{out}/secureboot/**", "{out}/buildroot", "{out}/build-architecture"]
 requires = ["disk-100g"]
 requirement = { cores = 16, memory = "24GiB" }
 timeout_secs = 14400
@@ -1025,15 +1027,45 @@ on = ["stable"]
 [[matrix]]
 family = "os-base"
 about = """
+The compiler cache image-kernel-<arch> compiles through (kernel.sh compile-cache): every object
+of the kernel and its modules, compiled on the machine the kernel builds on (`host`, as the
+kernel product's `hosts` says) into an empty sccache directory. Its inputs are the buildroot
+(the Fedora source and the toolchain) and the scripts that run it. The patches, the
+configuration and the rest of the build are deliberately not among them: it compiles the tree
+of the commit that first needs it and stays until the buildroot moves, so a patch or a config
+change recompiles just the objects it changes. Whatever it holds, the kernel is the one an
+uncached build makes: an object is found only for the same compiler, flags and preprocessed
+source, and the cache wrapper compiles every source naming .incbin without it. A trusted run
+takes only a trusted run's."""
+each = [{ arch = "x86_64", host = "x86_64" }, { arch = "aarch64", host = "aarch64" }]
+
+[[matrix.check]]
+name = "image-kernel-cache-{arch}"
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+run = "bash tools/ci/publish/kernel.sh compile-cache {arch} /target/publish/kernel-cache/{arch}"
+inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel.sh", "os/kernel/cc-wrapper.sh", "os/kernel-buildroot-snapshot.env", "os/external-assets/github-assets.tsv", "os/dev/cache-github-assets.sh", "os/dev/install-cached-cosign.sh", "keys/cosign.pub"]
+needs = ["os-assets"]
+outputs = ["/target/publish/kernel-cache/{arch}/compiler-cache.tar"]
+requires = ["arch={host}", "disk-100g"]
+isolation = "vm"
+requirement = { cores = 16, memory = "24GiB" }
+timeout_secs = 14400
+default = false
+
+[[matrix]]
+family = "os-base"
+about = """
 The kernel image-kernel-<arch> built (tools/ci/products.toml), booted under emulation with
 its module signatures checked and the firmware's Secure Boot enforcement probed, as root in a
-micro-VM step."""
+micro-VM step on the kernel's own architecture. The probe's signer and initramfs maker of a
+cross-compiled kernel are built here (tilo-crypto, gen_init_cpio from the kernel's source)."""
 each = [{ arch = "x86_64" }, { arch = "aarch64" }]
 
 [[matrix.check]]
 name = "kernel-acceptance-{arch}"
 run = "bash tools/ci/publish/kernel-acceptance.sh {arch} /target/publish/kernel/{arch}"
 inputs = ["tools/ci/publish/lib.sh", "tools/ci/publish/kernel-acceptance.sh", "os/kernel/tests/**", "os/tests/kernel_module_signing_test.sh", "os/tests/kernel_runtime_probe.*", "os/tests/secureboot_vm_*"]
+cargo_packages = ["tilo-crypto"]
 needs = ["image-kernel-{arch}"]
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"

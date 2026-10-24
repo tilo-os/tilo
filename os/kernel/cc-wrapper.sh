@@ -1,7 +1,11 @@
 #!/bin/sh
-# Kbuild's system_certificates.S, x86 piggy.S and x86 sbat.S use .incbin for
-# generated inputs. Compiler caches do not necessarily track those assembler
-# inputs. Stale objects can embed an old signer or SBAT data in the boot image.
+# A compiler cache keys an object by its preprocessed source and flags, so it
+# does not see a file that source includes with the assembler's `.incbin`: the
+# signer certificate in system_certificates.S, the compressed kernel in x86's
+# piggy.S, the vDSO in arm64's vdso-wrap.S, the config and headers archives in
+# kernel/configs.c and kernel/kheaders.c, built-in firmware. A cached object
+# would embed an old copy (an old signer, a stale vDSO). Every source that names
+# .incbin, and the generated ones listed, compiles without the cache.
 set -eu
 compiler=${1:?expected compiler}
 shift
@@ -14,6 +18,11 @@ for argument do
     case "$argument" in
         certs/system_certificates.S|*/certs/system_certificates.S|arch/x86/boot/compressed/piggy.S|*/arch/x86/boot/compressed/piggy.S|arch/x86/boot/compressed/sbat.S|*/arch/x86/boot/compressed/sbat.S)
             exec "$compiler" "$@"
+            ;;
+        *.c|*.S|*.s)
+            if [ -f "$argument" ] && grep -q 'incbin' "$argument"; then
+                exec "$compiler" "$@"
+            fi
             ;;
     esac
 done

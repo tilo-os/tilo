@@ -87,14 +87,21 @@ RUN python3 /work/project-crate.py --workspace /work/workspace/Cargo.toml \
     && install -m 0755 target/release/tilo-crypto /usr/local/bin/tilo-crypto \
     && rm -rf target
 
-# Build the architecture-neutral UEFI console probe with the frozen native
-# LLVM toolchain. Exporting the PE image avoids relying on each VM runner to
-# happen to ship a PE-capable linker (GNU ld commonly does not on ARM64).
+# The kernel's architecture: the buildroot's own unless set, or aarch64 on the
+# x86_64 buildroot, which cross-compiles it with the aarch64 toolchain it
+# carries (tools/ci/publish/kernel.sh; os/kernel/build-support.sh sets Kbuild's
+# ARCH and CROSS_COMPILE). The module signer above runs on the builder either way.
+ARG KERNEL_ARCH
+
+# Build the UEFI console probe for the kernel's architecture with the frozen
+# LLVM toolchain, which targets either. Exporting the PE image avoids relying on
+# each VM runner to happen to ship a PE-capable linker (GNU ld commonly does not
+# on ARM64).
 COPY os/tests/secureboot_vm_app.c /work/secureboot_vm_app.c
-RUN case "$(uname -m)" in \
+RUN case "${KERNEL_ARCH:-$(uname -m)}" in \
       x86_64) efi_target=x86_64-pc-win32-coff ;; \
       aarch64) efi_target=aarch64-pc-win32-coff ;; \
-      *) echo "unsupported EFI probe architecture: $(uname -m)" >&2; exit 1 ;; \
+      *) echo "unsupported EFI probe architecture: ${KERNEL_ARCH:-$(uname -m)}" >&2; exit 1 ;; \
     esac; \
     clang -target "$efi_target" -ffreestanding -fno-stack-protector \
       -fshort-wchar -c /work/secureboot_vm_app.c -o /work/secureboot_vm_app.obj; \
@@ -133,11 +140,12 @@ RUN set -eu; \
 # ---- Build on the prepared tree ---------------------------------------------
 # Everything from here on is os/kernel/build-support.sh, which the dev build
 # (os/kernel/dev-build.sh) runs on its persistent copy of the same tree.
-FROM build-toolchain AS build
+FROM build-toolchain AS build-source
+ARG KERNEL_ARCH
 
-# The same pinned, S3-capable compiler cache client as the OS image build.
-# A build whose asset context lacks the archive compiles directly; CI supplies
-# it and requires the cache in the compile step below.
+# The same pinned compiler cache client as the OS image build, for builds
+# given a compiler cache (TILO_COMPILER_CACHE below). A build whose asset
+# context lacks the archive compiles directly.
 ARG SCCACHE_VERSION=0.17.0
 ARG SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006
 ARG SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77
@@ -175,7 +183,7 @@ COPY os/kernel/check-patches.py /work/check-patches.py
 RUN set -eux; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     test -n "$KSRC" || { echo "no prepared kernel source tree found"; exit 1; }; \
-    ARCH="$(uname -m)"; \
+    ARCH="${KERNEL_ARCH:-$(uname -m)}"; \
     sh /work/kernel-build-support.sh validate-arch "$ARCH"; \
     sh /work/kernel-build-support.sh prepare-source "$ARCH" "$KSRC"
 
@@ -191,25 +199,48 @@ RUN set -eux; \
 # KBUILD_BUILD_TIMESTAMP honours it. os/kernel/dev-build.sh passes the same
 # environment; tools/policy/check_kernel_dev_build.py keeps the two equal.
 ARG SOURCE_DATE_EPOCH=0
-# Override on memory-constrained native builders; an empty value uses all CPUs.
-ARG KERNEL_BUILD_JOBS
 ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
     KBUILD_BUILD_USER=tilo \
     KBUILD_BUILD_HOST=tilo-build \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Compiler cache for the kernel's C and assembly objects: the runner's Actions
-# cache, whose URL and job token BuildKit exposes only to the compile RUN as
-# secrets, never to a layer or build argument. KBUILD_BUILD_TIMESTAMP reaches
-# only the version objects, so a new source epoch still reuses everything else.
-ARG TILO_REQUIRE_COMPILER_CACHE=0
-# A published kernel never reads the cache: pull requests can write their own
-# scope, and main's scope is what a publication would read. `populate` is for
-# publications: every object is compiled here (SCCACHE_RECACHE) and then
-# written, so pull requests start from main's objects. `off` compiles without
-# a launcher and refuses to receive compiler-cache settings at all.
-ARG TILO_COMPILER_CACHE=shared
+# ---- Compiler cache ----------------------------------------------------------
+# Every object of the kernel and its modules, compiled into the directory
+# mounted at /work/compiler-cache, which tools/ci/publish/kernel.sh
+# (`compile-cache`, the image-kernel-cache-<arch> check) packs. Its key is the
+# buildroot (the Fedora source and the toolchain), not the patches or the
+# configuration: after either changes, the kernel build below finds every
+# object the change leaves alone, and compiles only the rest.
+FROM build-source AS compile-cache
+ARG KERNEL_ARCH
+# Override on memory-constrained builders; an empty value uses all CPUs.
+ARG KERNEL_BUILD_JOBS
+RUN set -eu; \
+    test -d /work/compiler-cache \
+      || { echo "no compiler cache directory mounted at /work/compiler-cache" >&2; exit 1; }; \
+    KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
+    JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
+    TILO_KERNEL_COMPILER_CACHE=/work/compiler-cache \
+      sh /work/kernel-build-support.sh compile "${KERNEL_ARCH:-$(uname -m)}" "$KSRC" "$JOBS" \
+        /work/v4l2loopback-0.15.3; \
+    case "$KSRC" in /work/rpmbuild/BUILD/*) ;; \
+        *) echo "refusing to remove kernel source outside the build root" >&2; exit 1;; esac; \
+    rm -rf -- "$KSRC"
+
+FROM build-source AS build
+ARG KERNEL_ARCH
+# Override on memory-constrained builders; an empty value uses all CPUs.
+ARG KERNEL_BUILD_JOBS
+
+# `local` compiles through sccache over the directory mounted at
+# /work/compiler-cache: image-kernel-cache-<arch>'s objects, which
+# tools/ci/publish/kernel.sh unpacks there. Nothing remote reaches a kernel
+# build, no cache server, credentials or other builds' writes, and in a trusted
+# run t serves image-kernel-cache only from trusted runs. A hit is an object the
+# same compiler made from the same preprocessed source and flags, so the kernel
+# is the one an uncached build makes. `off` compiles without a launcher.
+ARG TILO_COMPILER_CACHE=off
 
 # Build vmlinuz + modules directly and stage into a rootfs image tree.
 # We do NOT use `make binrpm-pkg`: that macro path drags in the full
@@ -218,48 +249,36 @@ ARG TILO_COMPILER_CACHE=shared
 # phase on this kernel size. Rolling our own spec below skips the
 # entire brp-* chain and produces the exact three files we need
 # (vmlinuz, modules tree, System.map) as a single tight RPM.
-RUN --mount=type=secret,id=actions_cache_url \
-    --mount=type=secret,id=actions_runtime_token \
-    set -eu; \
-    ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)"; \
-    ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)"; \
-    export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_DIRECT=false \
-      SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-kernel-v1 SCCACHE_IDLE_TIMEOUT=0; \
-    case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
-      shared:0|off:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 ;; \
-      populate:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_RECACHE=1 ;; \
-      shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-      *) echo "TILO_COMPILER_CACHE must be shared, populate or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 unless shared)" >&2; exit 1 ;; \
+RUN set -eu; \
+    case "$TILO_COMPILER_CACHE" in \
+      off) echo "compiling the kernel without a compiler cache" >&2 ;; \
+      local) export TILO_KERNEL_COMPILER_CACHE=/work/compiler-cache ;; \
+      *) echo "TILO_COMPILER_CACHE must be off or local" >&2; exit 1 ;; \
     esac; \
-    TILO_KERNEL_CC_LAUNCHER=; \
-    if [ "$TILO_COMPILER_CACHE" = off ]; then \
-      if [ -n "${ACTIONS_CACHE_URL}${ACTIONS_RUNTIME_TOKEN}" ]; then \
-        echo "A kernel build without the compiler cache received compiler-cache settings" >&2; exit 1; \
-      fi; \
-      echo "compiling the kernel without a compiler cache" >&2; \
-    elif [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ] && command -v sccache >/dev/null && sccache --start-server; then \
-      TILO_KERNEL_CC_LAUNCHER=sccache; \
-    elif [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
-      echo "Required compiler cache is unavailable; refusing an uncached kernel build" >&2; exit 1; \
-    fi; \
-    export TILO_KERNEL_CC_LAUNCHER; \
     set -x; \
+    TARGET_ARCH="${KERNEL_ARCH:-$(uname -m)}"; \
     KSRC="$(find /work/rpmbuild/BUILD -maxdepth 4 -type d -name 'linux-*' | head -1)"; \
     cd "$KSRC"; \
     JOBS="${KERNEL_BUILD_JOBS:-$(nproc)}"; \
     case "$JOBS" in ''|*[!0-9]*|0) echo "KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 1;; esac; \
-    sh /work/kernel-build-support.sh compile "$(uname -m)" "$KSRC" "$JOBS" /work/v4l2loopback-0.15.3; \
-    if [ -n "$TILO_KERNEL_CC_LAUNCHER" ]; then sccache --show-stats; sccache --stop-server >/dev/null || true; fi; \
+    sh /work/kernel-build-support.sh compile "$TARGET_ARCH" "$KSRC" "$JOBS" /work/v4l2loopback-0.15.3; \
     KVER="$(make -s kernelrelease)"; \
-    printf 'KVER=%s\n' "$KVER" > /work/kver.env; \
+    printf 'KVER=%s\nTARGET_ARCH=%s\n' "$KVER" "$TARGET_ARCH" > /work/kver.env; \
     STAGE=/work/stage; \
-    sh /work/kernel-build-support.sh stage-modules "$(uname -m)" "$KSRC" "$STAGE" "$KVER" \
+    sh /work/kernel-build-support.sh stage-modules "$TARGET_ARCH" "$KSRC" "$STAGE" "$KVER" \
       /work/v4l2loopback-0.15.3 /work/module-signing "$JOBS"; \
     mkdir -p /work/secureboot-probe-inputs; \
     cp "$STAGE/lib/modules/$KVER/vmlinuz" /work/secureboot-probe-inputs/vmlinuz; \
-    cp usr/gen_init_cpio /work/secureboot-probe-inputs/gen_init_cpio; \
-    cp /usr/local/bin/tilo-crypto /work/secureboot-probe-inputs/tilo-crypto; \
     cp /work/secureboot_vm_app.efi /work/secureboot-probe-inputs/secureboot_vm_app.efi; \
+    # The probe runs these on the kernel's architecture. A cross-compiled \
+    # kernel's are the builder's, so the acceptance builds its own there: \
+    # gen_init_cpio from this tree's source, the signer from the commit's. \
+    if [ "$TARGET_ARCH" = "$(uname -m)" ]; then \
+      cp usr/gen_init_cpio /work/secureboot-probe-inputs/gen_init_cpio; \
+      cp /usr/local/bin/tilo-crypto /work/secureboot-probe-inputs/tilo-crypto; \
+    else \
+      cp usr/gen_init_cpio.c /work/secureboot-probe-inputs/gen_init_cpio.c; \
+    fi; \
     # The signing key existed for this build and no longer exists after it.
     # Nothing needs to sign as this identity again: the certificate that
     # verifies it is already compiled into the vmlinuz above, and an
@@ -276,11 +295,12 @@ RUN --mount=type=secret,id=actions_cache_url \
 
 # Hand-written spec — no Fedora scriptlets, no debuginfo, no brp-*
 # chain. `dnf swap kernel-core tilo-kernel-core` in os/Containerfile
-# resolves against the `Provides: kernel-core` line.
+# resolves against the `Provides: kernel-core` line. The package's
+# architecture is the kernel's, also when it was cross-compiled.
 COPY os/kernel/tilo-kernel-payload.spec /work/tilo-kernel-payload.spec
 RUN set -eux; \
     . /work/kver.env; \
-    rpmbuild -bb \
+    rpmbuild -bb --target "$TARGET_ARCH" \
         --define "_topdir /work/rpmbuild" \
         --define "_binary_payload w0.gzdio" \
         --define "kver $KVER" \
@@ -309,6 +329,14 @@ RUN mkdir -p /repo \
 # from the published RPM repository image.
 FROM scratch AS secureboot-probe-inputs
 COPY --from=build /work/secureboot-probe-inputs /
+
+# A cross-compiled kernel's repository image, for the kernel's architecture:
+# tools/ci/publish/kernel.sh builds the stages above on the builder's platform,
+# exports the build stage's /repo and builds this stage for the kernel's
+# platform with that directory as its `kernel-repo` context. It holds what
+# `publish` holds.
+FROM scratch AS publish-cross
+COPY --from=kernel-repo / /repo
 
 # ---- Stage 2: publish ------------------------------------------------------
 # Same shape as the frozen-repo image (os/Containerfile.rpms): FROM scratch +

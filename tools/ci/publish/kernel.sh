@@ -1,18 +1,29 @@
 #!/usr/bin/env bash
 # The Tilo kernel (os/kernel/Containerfile): Fedora's kernel rebuilt with Tilo's config fragment
-# FROM the signed native kernel buildroot that os/kernel-buildroot-snapshot.env pins, packaged as
-# an RPM repository image, booted under emulation and checked against the firmware's Secure Boot.
+# FROM a signed kernel buildroot that os/kernel-buildroot-snapshot.env pins, packaged as an RPM
+# repository image, booted under emulation and checked against the firmware's Secure Boot. The
+# build runs FROM the buildroot of the machine it runs on: the x86_64 kernel on x86_64, the
+# aarch64 kernel natively or cross-compiled on x86_64 with the aarch64 toolchain the x86_64
+# buildroot carries.
 #
-#   kernel.sh build ARCH OUT    verify the pinned buildroot, build OUT/image.oci.tar and the
-#                               Secure Boot probe's inputs into OUT/secureboot (buildah image,
-#                               as root in a micro-VM step)
+#   kernel.sh compile-cache ARCH OUT
+#                               compile the kernel and its modules into an empty compiler cache
+#                               and pack it as OUT/compiler-cache.tar (buildah, as root in a
+#                               micro-VM step)
+#   kernel.sh build ARCH OUT [CACHE]
+#                               verify the pinned buildroot, build OUT/image.oci.tar and the
+#                               Secure Boot probe's inputs into OUT/secureboot, through the
+#                               compiler cache CACHE (compile-cache's archive) if given; record
+#                               the buildroot and the machine's architecture for provenance
 #
-# kernel-acceptance.sh, beside this script, boots and checks what this builds.
+# kernel-acceptance.sh, beside this script, boots and checks what this builds, on the kernel's
+# architecture.
 #
 #   kernel.sh provenance DIR    write each DIR/<arch>/provenance.json: the kernel-rpm/v1 SLSA
 #                               predicate os/dev/verify-kernel-provenance.sh checks, binding the
-#                               signed buildroot it was built FROM (no secrets; the commit is
-#                               left as {commit} for oci-attest.sh)
+#                               signed buildroot it was built FROM and the architecture it was
+#                               built on (no secrets; the commit is left as {commit} for
+#                               oci-attest.sh)
 #   kernel.sh pins DIR          after publish-kernel published both, write DIR/pins.env: the
 #                               published references (each receipt's digest, which is an earlier
 #                               run's where the tag was published already) and the inputs they
@@ -39,23 +50,32 @@ case ${1:-} in
     dir=${2:?usage: kernel.sh provenance DIR}
     . os/kernel-buildroot-snapshot.env
     for arch in x86_64 aarch64; do
-      key=KERNEL_BUILDROOT_$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')_REF
       digest=$(cat "$dir/$arch/digest")
       [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "not a digest: $digest"
-      buildroot=${!key}
+      # The buildroot and machine kernel.sh build recorded: the one pinned for the architecture
+      # it ran on, which is the kernel's own or, for a cross-compiled aarch64 kernel, x86_64.
+      built_on=$(cat "$dir/$arch/build-architecture")
+      case $built_on:$arch in
+        x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;
+        *) die "the $arch kernel says it was built on $built_on" ;;
+      esac
+      key=KERNEL_BUILDROOT_$(printf '%s' "$built_on" | tr '[:lower:]' '[:upper:]')_REF
+      buildroot=$(cat "$dir/$arch/buildroot")
+      [[ $buildroot == "${!key}" ]] \
+        || die "the $arch kernel was built FROM $buildroot, not the $built_on buildroot pinned here"
       [[ $buildroot =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] \
-        || die "no digest-pinned native kernel buildroot for $arch"
+        || die "no digest-pinned kernel buildroot for $built_on"
       # kernel.sh build leaves SOURCE_DATE_EPOCH at the Containerfile's default of 0.
       printf '%s\n' '{' \
         '  "buildDefinition": {' \
         '    "buildType": "https://tilo.sh/buildtypes/kernel-rpm/v1",' \
         "    \"externalParameters\": {\"architecture\": \"$arch\"}," \
-        "    \"internalParameters\": {\"sourceDateEpoch\": 0, \"expectedReleaseDigest\": \"$digest\"}," \
+        "    \"internalParameters\": {\"sourceDateEpoch\": 0, \"expectedReleaseDigest\": \"$digest\", \"buildArchitecture\": \"$built_on\"}," \
         "    \"resolvedDependencies\": [{\"uri\": \"git+ssh://code.tilo.so/tilo/tilo@{commit}\"}, {\"uri\": \"$buildroot\"}]" \
         '  },' \
         '  "runDetails": {"builder": {"id": "https://code.tilo.so/t/checks/publish-kernel"}, "metadata": {}}' \
         '}' > "$dir/$arch/provenance.json"
-      printf '%s %s FROM %s\n' "$arch" "$digest" "$buildroot"
+      printf '%s %s built on %s FROM %s\n' "$arch" "$digest" "$built_on" "$buildroot"
     done
     exit 0
     ;;
@@ -106,42 +126,96 @@ esac
 arch=${2:-}
 out=${3:-}
 case $arch in
+  x86_64) kernel_platform=linux/amd64 ;;
+  aarch64) kernel_platform=linux/arm64 ;;
+  *) die 'usage: kernel.sh build ARCH OUT [CACHE], compile-cache ARCH OUT, provenance|pins DIR, or pin' ;;
+esac
+[[ -n $out ]] || die 'usage: kernel.sh build ARCH OUT [CACHE], or compile-cache ARCH OUT'
+# Natively, or the aarch64 kernel cross-compiled on x86_64 with the cross toolchain the x86_64
+# buildroot carries: the build runs FROM the buildroot of the machine it runs on.
+host=$(uname -m)
+case $host:$arch in
+  x86_64:x86_64 | aarch64:aarch64 | x86_64:aarch64) ;;
+  *) die "the $arch kernel is built natively or on x86_64, not on $host" ;;
+esac
+case $host in
   x86_64) platform=linux/amd64 key=KERNEL_BUILDROOT_X86_64_REF ;;
   aarch64) platform=linux/arm64 key=KERNEL_BUILDROOT_AARCH64_REF ;;
-  *) die 'usage: kernel.sh build ARCH OUT, or provenance|pins DIR, or pin' ;;
 esac
-[[ -n $out ]] || die 'usage: kernel.sh build ARCH OUT'
-[[ $(uname -m) == "$arch" ]] || die "the $arch kernel is built natively, not on $(uname -m)"
 
 case ${1:-} in
-  build)
+  build | compile-cache)
     . os/kernel-buildroot-snapshot.env
     buildroot=${!key}
     [[ $buildroot =~ ^registry\.tilo\.so/tilo/tilo-kernel-buildroot@sha256:[0-9a-f]{64}$ ]] \
-      || die "no digest-pinned native kernel buildroot for $arch"
+      || die "no digest-pinned kernel buildroot for $host"
     use_cosign
     cosign verify --key keys/cosign.pub "$buildroot" >/dev/null
-    assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz "sccache-v0.17.0-$arch-unknown-linux-musl.tar.gz")
-    # No compiler cache reaches checks yet; the kernel's SOURCE_DATE_EPOCH keeps its default of
-    # 0 beside the fixed layer timestamps, so the build is the same from the same inputs.
+    assets=$(pinned_assets v4l2loopback-0.15.3-a7e4a4d.tar.gz "sccache-v0.17.0-$host-unknown-linux-musl.tar.gz")
+    # The kernel's SOURCE_DATE_EPOCH keeps its default of 0 beside the fixed layer timestamps.
     args=(--platform "$platform" --build-context "github-assets=$assets"
-      --build-arg "KERNEL_BUILDROOT_REF=$buildroot" --build-arg "KERNEL_BUILD_JOBS=$(nproc)"
-      --build-arg TILO_COMPILER_CACHE=off --build-arg TILO_REQUIRE_COMPILER_CACHE=0)
-    # Both targets share the build stage: one layered store compiles the kernel once.
+      --build-arg "KERNEL_BUILDROOT_REF=$buildroot" --build-arg "KERNEL_ARCH=$arch"
+      --build-arg "KERNEL_BUILD_JOBS=$(nproc)")
     use_buildah kernel
     # The micro-VM step's scratch disk is ext4 under a kernel of its own, where overlay works;
     # vfs would copy the multi-gigabyte buildroot for every step and fill the disk.
     export STORAGE_DRIVER=overlay
     printf '[storage]\ndriver = "overlay"\n' > "$CONTAINERS_STORAGE_CONF"
-    b build --layers --timestamp 0 --format oci --file os/kernel/Containerfile "${args[@]}" \
-      -t localhost/tilo-kernel:build .
+    mkdir -p "$out"
+    ;;
+  *) die 'usage: kernel.sh build ARCH OUT [CACHE], or compile-cache ARCH OUT' ;;
+esac
+started=$SECONDS
+
+case $1 in
+  compile-cache)
+    # Every object of the kernel and its modules, compiled into an empty directory and packed
+    # as OUT/compiler-cache.tar (sccache stores each entry compressed already).
+    cache=$scratch/compiler-cache
+    rm -rf "$cache" && mkdir -p "$cache"
+    b build --layers --timestamp 0 --file os/kernel/Containerfile --target compile-cache \
+      "${args[@]}" --volume "$cache:/work/compiler-cache" .
+    tar -cf "$out/compiler-cache.tar" -C "$cache" .
+    printf 'compiler cache of the %s kernel: %s in %ss\n' "$arch" \
+      "$(du -sh "$out/compiler-cache.tar" | cut -f1)" "$((SECONDS - started))"
+    ;;
+  build)
+    # With CACHE (compile-cache's compiler-cache.tar), the compile reads and writes a copy of
+    # it; without, it compiles every object.
+    cache_archive=${4:-}
+    if [[ -n $cache_archive ]]; then
+      [[ -s $cache_archive ]] || die "no compiler cache at $cache_archive"
+      cache=$scratch/compiler-cache
+      rm -rf "$cache" && mkdir -p "$cache"
+      tar -xf "$cache_archive" -C "$cache"
+      args+=(--build-arg TILO_COMPILER_CACHE=local --volume "$cache:/work/compiler-cache")
+    else
+      args+=(--build-arg TILO_COMPILER_CACHE=off)
+    fi
+    # Both targets share the build stage: one layered store compiles the kernel once.
     b build --layers --timestamp 0 --file os/kernel/Containerfile --target secureboot-probe-inputs \
       "${args[@]}" --output "type=local,dest=$out/secureboot" .
+    if [[ $host == "$arch" ]]; then
+      b build --layers --timestamp 0 --format oci --file os/kernel/Containerfile "${args[@]}" \
+        -t localhost/tilo-kernel:build .
+    else
+      # The repository the build stage made on this machine, in an image for the kernel's
+      # platform: what the OS build pulls and verify-kernel-provenance.sh checks.
+      rm -rf "$scratch/kernel-repo"
+      b build --layers --timestamp 0 --file os/kernel/Containerfile "${args[@]}" \
+        --output "type=local,dest=$scratch/kernel-repo" .
+      b build --layers --timestamp 0 --format oci --file os/kernel/Containerfile --target publish-cross \
+        --platform "$kernel_platform" --build-arg "KERNEL_BUILDROOT_REF=$buildroot" \
+        --build-context "github-assets=$assets" --build-context "kernel-repo=$scratch/kernel-repo/repo" \
+        -t localhost/tilo-kernel:build .
+    fi
     rm -f "$out/image.oci.tar"
     b push --compression-format gzip --force-compression localhost/tilo-kernel:build \
       "oci-archive:$out/image.oci.tar"
     archive_digest "$out/image.oci.tar" > "$out/digest"
-    printf 'built %s\n' "$(cat "$out/digest")"
+    # What provenance names: the buildroot this ran FROM, and the machine's architecture.
+    printf '%s\n' "$buildroot" > "$out/buildroot"
+    printf '%s\n' "$host" > "$out/build-architecture"
+    printf 'built %s (%s kernel on %s) in %ss\n' "$(cat "$out/digest")" "$arch" "$host" "$((SECONDS - started))"
     ;;
-  *) die 'usage: kernel.sh build ARCH OUT' ;;
 esac
