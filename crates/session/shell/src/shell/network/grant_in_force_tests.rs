@@ -231,7 +231,7 @@ fn a_grant_given_where_its_room_is_hosted_is_in_force_before_the_call() {
 
     until("both grants' receipts to reach the room here", || {
         device.tick();
-        (receipts_by(&tree, room, &person) >= 2).then_some(())
+        (tree.read().room_outbox.is_empty() && receipts_by(&tree, room, &person) >= 2).then_some(())
     });
     let mut held = tree.write();
     let document = held

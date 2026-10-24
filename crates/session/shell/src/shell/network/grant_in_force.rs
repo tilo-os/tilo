@@ -7,19 +7,20 @@
 //! host's refusal, the grant arriving, or the last session closing.
 //!
 //! The receipt that notes the grant in the room's history is the room's
-//! too, written by the host once the grant is in force here, so it can
-//! never land ahead of the grant it records.
+//! too, put in this device's outbox once the grant is in force here and
+//! written by the host from there, so it can never land ahead of the grant
+//! it records.
 use std::sync::Arc;
 
 use super::relay_rooms::HostAskError;
 use super::{NetCmd, ShellNetwork, room_topic_id};
-use crate::shell::state::{GovernanceRequest, RoomId};
+use crate::shell::state::{GovernanceRequest, HostAnswer, RoomId};
 use tilo_action_policy::{Change, Grant, GrantId};
 
-/// Receipts of grants in force that their room's host refused, since the
-/// process started, counted on each warning: the host and this device
-/// disagree about the room, which is a fault to find.
-static REFUSED_GRANT_RECEIPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Receipts made here that their room's host refused, since the process
+/// started, counted on each warning: the host and this device disagree
+/// about the room, which is a fault to find.
+static REFUSED_RECEIPTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Why a wait on the room's host ended without its answer.
 const SESSIONS_CLOSED: &str = "the connection to the room's host was lost";
@@ -75,81 +76,34 @@ impl ShellNetwork {
         drop(announcements);
 
         // The grant is the call's authority, so the call goes on whatever
-        // becomes of its receipt.
-        let recording = Arc::clone(&self);
-        let noted =
-            tokio::task::spawn_blocking(move || recording.note_receipt(room, receipt)).await;
-        if noted.is_err() {
-            tracing::warn!(%room, "the request for a grant's receipt stopped");
-        }
+        // becomes of its receipt, which the room's host is asked to record
+        // from this device's outbox, after the grant.
+        self.tree.write().record_in_room(room, receipt);
         Ok(id)
     }
 
-    /// Have `room`'s host record `receipt`: kept and asked again once a
-    /// room's state changed when the host could not be reached, said when
-    /// it refused. For a worker.
-    fn note_receipt(&self, room: RoomId, receipt: tilo_desktop_model::WorkspaceEffectReceipt) {
-        match self.record_receipt_at_host(room, &receipt) {
-            Ok(()) => {}
+    /// Have `room`'s host record `receipt`, and say how it answered: for
+    /// the outbox ([`ShellNetwork::send_outbox`]), on a worker. A refusal
+    /// means the host and this device disagree about the room, which is a
+    /// fault to find, so it is counted as well as said.
+    pub(super) fn record_receipt(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> HostAnswer {
+        match self.record_receipt_at_host(room, receipt) {
+            Ok(()) => HostAnswer::Accepted,
             Err(HostAskError::Unreachable(error)) => {
-                tracing::warn!(%room, %error, "a grant's receipt waits for the room's host");
-                self.tree.write().hold_unrecorded_receipt(room, receipt);
+                tracing::info!(%room, %error, "a receipt waits for the room's host");
+                HostAnswer::Unreachable
             }
             Err(HostAskError::Refused(error)) => {
-                let refused = REFUSED_GRANT_RECEIPTS
+                let refused = REFUSED_RECEIPTS
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                     .saturating_add(1);
-                tracing::warn!(
-                    %room,
-                    %error,
-                    refused,
-                    "the room's host refused the receipt of a grant in force"
-                );
+                tracing::warn!(%room, %error, refused, "the room's host refused a receipt");
+                HostAnswer::Refused(error)
             }
-        }
-    }
-
-    /// Ask again for the receipts the rooms' hosts could not be reached to
-    /// record: on the peer-sync worker, once a room's state changed (a
-    /// session to a host came up) or another receipt waits since the last
-    /// ask. Costs one read of the tree when none waits.
-    pub(super) fn record_unrecorded_receipts_off_loop(&self) {
-        let queued = {
-            let tree = self.tree.read();
-            if tree.unrecorded_receipts.is_empty() {
-                return;
-            }
-            (tree.desktop.room_epoch, tree.unrecorded_receipts.len())
-        };
-        {
-            let Ok(mut asked) = self.receipts_asked.lock() else {
-                return;
-            };
-            if *asked == Some(queued) {
-                return;
-            }
-            *asked = Some(queued);
-        }
-        let receipts = self.tree.write().take_unrecorded_receipts();
-        if let Err(receipts) = self.receipts_off_loop(receipts) {
-            self.record_unrecorded_receipts(receipts);
-        }
-    }
-
-    /// Ask each receipt's host to record it, in order.
-    pub(super) fn record_unrecorded_receipts(
-        &self,
-        receipts: Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>,
-    ) {
-        for (room, receipt) in receipts {
-            self.note_receipt(room, receipt);
-        }
-        // What waits again waits for the next change, not this one.
-        let tree = self.tree.read();
-        let queued = (tree.desktop.room_epoch, tree.unrecorded_receipts.len());
-        drop(tree);
-        if let Ok(mut asked) = self.receipts_asked.lock() {
-            *asked = Some(queued);
         }
     }
 
