@@ -20006,7 +20006,6 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
- "libc",
  "postcard",
  "serde",
  "serde_json",
