@@ -8548,7 +8548,11 @@ impl collab_service::Server for CapnpCollabService {
         params: collab_service::RoomStatusParams,
         mut results: collab_service::RoomStatusResults,
     ) -> Promise<(), capnp::Error> {
-        let room = match channel_room(params.get().and_then(|reader| reader.get_channel_id())) {
+        let room = match channel_room(
+            params
+                .get()
+                .and_then(collab_service::room_status_params::Reader::get_channel_id),
+        ) {
             Ok(room) => room,
             Err(error) => return Promise::err(error),
         };
