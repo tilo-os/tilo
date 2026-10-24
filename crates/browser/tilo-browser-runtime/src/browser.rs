@@ -293,6 +293,11 @@ struct SharedGpu {
     mounts: Arc<Mutex<Vec<u64>>>,
     /// Videos' pictures, copied from the page's media elements.
     video_pictures: crate::video_pictures::VideoPictures,
+    /// The device `renderer` renders on.
+    device: usize,
+    /// The overflows of `renderer`'s bump buffers collected so far: every
+    /// mount repaints whole once after each.
+    overflows: ui::render_bump_recovery::Overflows,
 }
 
 impl SharedGpu {
@@ -320,6 +325,29 @@ impl Gpu {
     fn failure(&self) -> Option<String> {
         self.shared.try_borrow().ok().and_then(|s| s.failure())
     }
+
+    /// Whether the target shows a frame drawn before an overflow of the
+    /// shared renderer's bump buffers was collected.
+    fn shows_lost_frame(&self) -> bool {
+        self.shared.try_borrow().is_ok_and(|shared| {
+            self.retained
+                .frames
+                .shows_lost_geometry(shared.overflows.collected())
+        })
+    }
+}
+
+/// Collect the shared renderer's finished bump counters without waiting
+/// for the GPU ([`ui::render_bump_recovery`]). A frame that overflowed them
+/// was presented with geometry missing, and the retained targets repaint
+/// only what changes after it: every mount repaints whole instead. While a
+/// readback is out, how soon to look again.
+fn poll_bump_counters() -> Option<ui::time::Duration> {
+    let shared = SHARED_GPU.with_borrow(Clone::clone)?;
+    let mut guard = shared.try_borrow_mut().ok()?;
+    let shared = &mut *guard;
+    let handle = shared.cx.devices.get(shared.device)?;
+    shared.overflows.poll(&mut shared.renderer, &handle.device)
 }
 
 /// Stop rendering `id` with the shared device, and release the device once
@@ -1119,6 +1147,9 @@ impl ApplicationHandler<u64> for Runner {
         let mut deadline: Option<ui::time::Instant> = None;
         let mut wake =
             |at: ui::time::Instant| deadline = Some(deadline.map_or(at, |old| old.min(at)));
+        if let Some(at) = poll_bump_counters().and_then(|again| now.checked_add(again)) {
+            wake(at);
+        }
         let ids = MOUNTS.with_borrow(|mounts| mounts.keys().copied().collect::<Vec<_>>());
         for id in ids {
             let _ = with_mount_quietly(id, |m| {
@@ -1172,6 +1203,7 @@ impl ApplicationHandler<u64> for Runner {
                 if m.hidden || m.error.is_some() || m.gpu.is_none() || m.viewport.suspended() {
                     return Ok(());
                 }
+                m.pending |= m.gpu.as_ref().is_some_and(Gpu::shows_lost_frame);
                 let output = m.frame.frame_schedule();
                 let desktop_woken = m
                     .desktop
@@ -2046,6 +2078,8 @@ async fn shared_gpu(
         failure,
         mounts,
         video_pictures: crate::video_pictures::VideoPictures::default(),
+        device: surface.dev_id,
+        overflows: ui::render_bump_recovery::Overflows::default(),
     }));
     SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
     Ok((shared, surface))
@@ -2251,10 +2285,15 @@ impl Mount {
                 );
             }
         }
+        let lost = gpu.shows_lost_frame();
+        if lost && let Some(reasons) = &mut reasons {
+            reasons.push("a frame that lost geometry".into());
+        }
         self.pending |= self.viewport.needs_present()
             || frame.queued_work
             || frame.needs_animation_frame
-            || due;
+            || due
+            || lost;
         // Pixels an app asked for move on every frame until they are there,
         // whether or not this frame draws.
         if pixels_waiting()
@@ -2283,6 +2322,12 @@ impl Mount {
                 "WebGPU device lost: {reason}; call recover to recreate the renderer"
             ));
         }
+        // The target may show a frame the renderer drew with geometry
+        // missing: this one repaints it whole. It still shows that frame
+        // until then, which a skipped frame presents again.
+        gpu.retained
+            .frames
+            .note_overflows(shared.overflows.collected());
         // Configuration changes canvas.width/height on WebGPU, clearing its
         // displayed image. Keep configure -> acquire -> submit -> present in
         // this synchronous redraw callback, with no equal-size resize.
@@ -2529,6 +2574,7 @@ impl Mount {
                     Unknown::NoFrame => "render:full:no-frame",
                     Unknown::NoParts => "render:full:no-parts",
                     Unknown::Target => "render:full:target",
+                    Unknown::LostGeometry => "render:full:lost-geometry",
                     Unknown::Unproven(Unproven::Structure) => "render:full:structure",
                     Unknown::Unproven(Unproven::Section) => "render:full:outside-parts",
                     Unknown::Unproven(Unproven::Unbounded | Unproven::Corrupt) => {
