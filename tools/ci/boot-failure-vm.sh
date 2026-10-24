@@ -74,6 +74,18 @@ export TILO_DISK=$overlay
 fails=0
 ok()  { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*"; fails=$((fails + 1)); }
+# A failed run publishes nothing, so what it saw goes to the log: the ESP and
+# notice of every start, and what the screen said on the console.
+evidence() {
+  local rc=$?
+  ((fails || rc)) || return 0
+  local f
+  for f in "$out"/*-esp.txt; do [[ -f $f ]] && { echo "== $(basename "$f")"; cat "$f"; }; done
+  for f in "$out"/*-serial.log; do
+    [[ -f $f ]] && { echo "== $(basename "$f")"; grep -a -E 'tilo-boot-failure|systemd-boot|bless|Command line' "$f" | tail -20; }
+  done
+}
+trap evidence EXIT
 check() { local what=$1; shift; if "$@"; then ok "$what"; else bad "$what"; fi; }
 vm() { bash os/dev/vm.sh "$@"; }
 
@@ -220,7 +232,7 @@ check "with its tries used up the entry is passed over: the boot loader starts R
   grep -q 'tilo.mode=repair' "$out/3-fallback-cmdline.txt"
 # Back to a start a person would choose from the boot menu after the repair.
 attach; mount_esp
-f=$(ls "$mnt/esp/loader/entries"/bootc*+0-2.conf); mv "$f" "${f%+0-2.conf}+2.conf"
+for f in "$mnt/esp/loader/entries"/bootc*+*.conf; do mv "$f" "${f%%+*}+2.conf"; done
 mount_root; sed -i 's/^LANG=.*/LANG=de_DE.UTF-8/' "$(deploy_etc)/locale.conf"
 detach
 
