@@ -86,6 +86,61 @@ async fn refresh_asks_the_restarted_host_for_the_room_again() {
     host.relay.shutdown().await;
 }
 
+/// Back online after a long outage, a session waiting out its backoff
+/// reconnects when told the network is back, not up to half a minute
+/// later; a connected session is left as it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_backoff() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let listen = host.web.addr;
+    let peer = start_peer(
+        Host::Https(host.https()),
+        browser.cert.clone(),
+        host_device.cert.clone(),
+        browser.key.clone(),
+    );
+    peer.join(workspace()).unwrap();
+    ready(&[&peer]).await;
+    let connected = peer.status().generation;
+    peer.retry_now().unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        peer.status().generation,
+        connected,
+        "a connected session is left as it is"
+    );
+
+    drop(host.web);
+    host.relay.shutdown().await;
+    // Gone long enough that the next attempt is many seconds away.
+    let due = wait_for("a long backoff", || async {
+        let status = peer.status();
+        (status.attempt >= 5)
+            .then_some(status.next_attempt_at_ms)
+            .flatten()
+    })
+    .await;
+    let host = start_host(&root, &host_device, state.path(), listen).await;
+    peer.retry_now().unwrap();
+    ready(&[&peer]).await;
+    assert!(
+        tilo_clock::unix_now_ms() < due,
+        "back before the backoff ran out"
+    );
+    peer.close();
+    host.relay.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn page_failures_are_scoped_offer_their_recovery_and_clear() {
     let (root, _) = UserIdentity::generate("Ada", 1);
