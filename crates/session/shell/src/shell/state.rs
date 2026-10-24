@@ -727,6 +727,16 @@ pub enum GovernanceRequest {
     Command(tilo_desktop_model::commands::DesktopCommand),
 }
 
+/// A governance change its room's governor refused
+/// ([`WorkspaceTree::refuse_governance`]), for the chrome to say.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GovernanceRefusal {
+    pub room: RoomId,
+    pub request: GovernanceRequest,
+    /// The governor's reason, worded for the person.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceTree {
     /// Native authority is never re-derived from desktop caches.
@@ -789,6 +799,10 @@ pub struct WorkspaceTree {
     /// restart, is still asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub governance_requests: Vec<(RoomId, GovernanceRequest)>,
+    /// Changes made here whose governor refused them, until the chrome
+    /// says so ([`Self::take_governance_refusals`]).
+    #[serde(skip)]
+    pub governance_refusals: Vec<GovernanceRefusal>,
     /// Strips a person made here, waiting for their room's next projection
     /// to publish them kept while empty: a made strip reaches the others at
     /// once, not with its first window. Persisted, so a strip made just
@@ -917,6 +931,7 @@ impl Default for WorkspaceTree {
             room_docs: HashMap::new(),
             pending_placements: BTreeSet::new(),
             governance_requests: Vec::new(),
+            governance_refusals: Vec::new(),
             strips_to_retain: BTreeSet::new(),
             continuation_tabs: BTreeSet::new(),
             local_person: None,
@@ -2979,6 +2994,48 @@ impl WorkspaceTree {
             self.queue_save();
         }
         taken
+    }
+
+    /// `room`'s governor refused `request` for `reason`. What this device
+    /// showed ahead of the governor's answer (a rename, a sandbox
+    /// capability taken back) returns to what the room's admitted document
+    /// says, and the refusal waits for the chrome to say it. Other changes
+    /// to the room still waiting show as the room has them until they are
+    /// answered.
+    pub fn refuse_governance(&mut self, room: RoomId, request: GovernanceRequest, reason: String) {
+        if let Some(document) = self.room_docs.get(&room)
+            && let Some(workspace) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.room() == room)
+        {
+            // This device's own sandbox capabilities (a files-home consent)
+            // are not the room's, and stay.
+            let held = workspace.sandbox.clone();
+            tilo_peer_state::room::adopt_room(workspace, document, &[]);
+            let own: Vec<_> = held
+                .into_iter()
+                .filter(|cap| {
+                    !workspace
+                        .sandbox
+                        .iter()
+                        .any(|room_cap| room_cap.id == cap.id)
+                })
+                .collect();
+            workspace.sandbox.extend(own);
+            self.queue_save();
+        }
+        self.governance_refusals.push(GovernanceRefusal {
+            room,
+            request,
+            reason,
+        });
+    }
+
+    /// The refusals of governance changes made here, taken.
+    pub fn take_governance_refusals(&mut self) -> Vec<GovernanceRefusal> {
+        std::mem::take(&mut self.governance_refusals)
     }
 
     /// The rooms of workspaces made here that wait to be created on a host,
