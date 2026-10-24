@@ -41,7 +41,9 @@ use crate::widget::Widget;
 
 #[path = "scroll_copy_shown.rs"]
 mod shown;
-pub use shown::{Piece, Showing, Shown, ShownFrames, Since};
+pub use shown::{
+    Around, Painted, PaintedFrames, Piece, Showing, Shown, ShownFrames, Since, piece_key,
+};
 
 /// How far outside its layout box a widget may paint: anti-aliasing, a
 /// shadow, a hover lift. The native window grows every widget's damage by
@@ -228,26 +230,10 @@ pub fn offer<T: ?Sized>(
     })
 }
 
-/// A widget of one tree walk by identity (its address and depth: a widget
-/// held at the start of its parent shares the parent's address), with its
-/// layout box.
+/// A widget of one tree walk by identity, with its layout box
+/// ([`crate::damage::widget_boxes`]).
 #[cfg(feature = "native")]
-pub(crate) type Placed = ((*const (), usize), Rect);
-
-/// Every widget in tree order, by identity, with its layout box.
-#[cfg(feature = "native")]
-pub(crate) fn placed(root: &dyn Widget) -> Vec<Placed> {
-    fn walk(widget: &dyn Widget, depth: usize, out: &mut Vec<Placed>) {
-        out.push((
-            (std::ptr::from_ref(widget).cast::<()>(), depth),
-            widget.get_rect(),
-        ));
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), out));
-    }
-    let mut out = Vec::new();
-    walk(root, 0, &mut out);
-    out
-}
+pub(crate) type Placed = (crate::damage::WidgetIdentity, Rect);
 
 #[cfg(feature = "native")]
 fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
@@ -327,7 +313,16 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
     for (&(widget, new), &standing) in after.iter().zip(&new_standings) {
         let Some(&(was, was_standing)) = old.get(&widget) else {
             match standing.content_of {
-                Some(_) if !standing.scroller => moves.carried.push(new),
+                // One the walk of the content near its view reached only now
+                // stood out of the view before (`for_each_child_in_clip`):
+                // where it is, the copy brought nothing, and what it exposed
+                // is repainted. One that stood in view is damage.
+                Some(offer) if !standing.scroller => {
+                    let stood = (new - offer.delta).intersect(offer.viewport);
+                    if !empty(stood) {
+                        moves.carried.push(new);
+                    }
+                }
                 _ => moves.besides.push(new),
             }
             continue;
@@ -382,7 +377,14 @@ pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[Scrol
             continue;
         }
         match standing.content_of {
-            Some(_) if !standing.scroller => moves.carried.push(was),
+            // One the walk no longer reaches the copy took out of the view
+            // with the rest; one it left in view went from there.
+            Some(offer) if !standing.scroller => {
+                let landed = (was + offer.delta).intersect(offer.viewport);
+                if !empty(landed) {
+                    moves.carried.push(landed);
+                }
+            }
             _ => moves.besides.push(was),
         }
     }
@@ -575,7 +577,11 @@ fn nodes(roots: &[&dyn Widget], owners: &[*const ()]) -> Vec<Node> {
             clip: widget.child_clip_rect(),
             encloses: false,
         });
-        widget.for_each_child(&mut |child| walk(child, depth.saturating_add(1), owners, out));
+        // What a scroll view keeps out of sight paints nothing a copy
+        // could take or reach: a long column visits only what is near.
+        widget.for_each_child_in_clip(&mut |child| {
+            walk(child, depth.saturating_add(1), owners, out);
+        });
     }
     let mut out = Vec::new();
     for (index, root) in roots.iter().enumerate() {

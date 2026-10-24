@@ -2795,7 +2795,7 @@ impl AppHandler {
                 .is_none_or(|history| history.live_interactive())
             && app.history_layout.is_none()
             && app.close_admission.dialog.is_none())
-        .then(|| crate::scroll_copy::placed(app.root_widget.as_ref()));
+        .then(|| crate::damage::widget_boxes(app.root_widget.as_ref()));
         let layout_before = (app.layout.rebuilds, app.layout.last_layout_logical);
         let layout_phase = slow_event::phase("layout");
         let Some((geometry_changed, t_compute_us, t_apply_us)) = run_layout_pass(
@@ -2996,7 +2996,7 @@ impl AppHandler {
                 let moves = (!offers.is_empty()).then(|| {
                     crate::scroll_copy::moves_besides(
                         before,
-                        &crate::scroll_copy::placed(root),
+                        &crate::damage::widget_boxes(root),
                         &offers,
                     )
                 });

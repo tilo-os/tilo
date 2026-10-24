@@ -2705,10 +2705,18 @@ impl App {
         self.bindings.clear();
         self.layout.node_map.clear();
         self.layout.adopted.clear();
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.build");
         self.build_history_presentation();
+        #[cfg(test)]
+        drop(probe);
         self.layout.structure_dirty = false;
         self.layout.layout_dirty = true;
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.focus");
         self.update_focusable_order();
+        #[cfg(test)]
+        drop(probe);
 
         // A focus trap already placed focus inside its subtree in
         // `update_focusable_order`; don't let it escape the modal.
@@ -2759,7 +2767,11 @@ impl App {
 
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
+        #[cfg(test)]
+        let probe = crate::profiling::frame_probe::span("rebuild.sync");
         self.root_widget.sync(&self.state.doc, &self.state.root);
+        #[cfg(test)]
+        drop(probe);
         self.needs_sync = false;
         // This rebuild's frame presents a durability the sync just took up;
         // it is not another structure change.

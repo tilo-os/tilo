@@ -310,9 +310,7 @@ impl Widget for Column {
             regions.push(rect);
             return;
         }
-        for child in &self.flow.children {
-            child.collect_damage(regions);
-        }
+        self.for_each_child_in_clip(&mut |child| child.collect_damage(regions));
     }
 
     fn name(&self) -> &'static str {

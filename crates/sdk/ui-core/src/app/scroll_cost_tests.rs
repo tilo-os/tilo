@@ -613,3 +613,156 @@ fn scroll_cost_of_every_scroller() {
     eprintln!("{}\n\n{}", report.join("\n"), glides.join("\n"));
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+/// A glide moves the content in frames no input asked for: each frame that
+/// copies the rows on screen has placed them where the copy moves them.
+#[test]
+fn a_glide_places_the_rows_it_copies() {
+    fn first_row(widget: &dyn Widget, out: &mut Option<f64>) {
+        if widget.name() == "Scrollable" {
+            widget.for_each_child(&mut |column| {
+                column.for_each_child(&mut |row| {
+                    out.get_or_insert(row.get_rect().y0);
+                });
+            });
+            return;
+        }
+        widget.for_each_child(&mut |child| first_row(child, out));
+    }
+    let row_top = |app: &App| {
+        let mut out = None;
+        first_row(app.root_widget.as_ref(), &mut out);
+        out.expect("the column has rows")
+    };
+    let (mut app, mut scene, mut damage) = shown(column(2000));
+    let start = crate::time::now();
+    let at = |frame: u64| start + std::time::Duration::from_nanos(frame * FRAME_NS);
+    let mut tick = 0;
+    for _ in 0..8 {
+        with_monotonic_time(at(tick), || {
+            app.surface_input(&Window, wheel(-24.0, TouchPhase::Moved), false);
+            scene.reset();
+            app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        });
+        damage.take_copying();
+        tick += 1;
+    }
+    with_monotonic_time(at(tick), || {
+        app.surface_input(&Window, wheel(0.0, TouchPhase::Ended), false);
+    });
+    let lifted = row_top(&app);
+    let mut top = lifted;
+    for _ in 0..30 {
+        tick += 1;
+        with_monotonic_time(at(tick), || {
+            scene.reset();
+            app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        });
+        let copied: i32 = damage
+            .take_copying()
+            .map(|(copies, _)| copies.iter().map(|copy| copy.dy).sum())
+            .unwrap_or_default();
+        let now = row_top(&app);
+        assert_eq!(
+            f64::from(copied),
+            now - top,
+            "the rows moved as far as the copy moved their pixels"
+        );
+        top = now;
+    }
+    assert!(top < lifted, "the flick glided on: {lifted} to {top}");
+}
+
+/// Rows a scroll brings into a `VirtualList` are laid out where they enter,
+/// without rebuilding the window's layout: every frame the list's tree
+/// stays the one it was, and each row it shows stands where its index puts
+/// it, the rows a copy moved as far as the copy moved their pixels.
+#[test]
+fn rows_entering_a_virtual_list_are_laid_out_in_place() {
+    /// The top of each row the list shows, by index.
+    fn rows(widget: &dyn Widget, out: &mut Vec<(usize, f64)>) {
+        if widget.name() == "Text" {
+            let name = widget.accessibility().and_then(|node| node.name);
+            let index = name
+                .as_deref()
+                .and_then(|name| name.strip_prefix("Row "))
+                .and_then(|rest| rest.split(':').next())
+                .and_then(|index| index.parse().ok());
+            if let Some(index) = index {
+                out.push((index, widget.get_rect().y0));
+            }
+        }
+        widget.for_each_child(&mut |child| rows(child, out));
+    }
+    fn list_rect(widget: &dyn Widget) -> Option<Rect> {
+        if widget.name() == "VirtualList" {
+            return Some(widget.get_rect());
+        }
+        let mut found = None;
+        widget.for_each_child(&mut |child| {
+            found = found.or_else(|| list_rect(child));
+        });
+        found
+    }
+    let shown_rows = |app: &App| {
+        let mut out = Vec::new();
+        rows(app.root_widget.as_ref(), &mut out);
+        out.sort_by_key(|(index, _)| *index);
+        out
+    };
+    let (mut app, mut scene, mut damage) = shown(virtual_list(2000));
+    let rebuilds = app.layout.rebuilds;
+    let mut before = shown_rows(&app);
+    for _ in 0..FRAMES {
+        app.surface_input(&Window, wheel(-STEP, TouchPhase::Moved), false);
+        scene.reset();
+        app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        let copied: i32 = damage
+            .take_copying()
+            .map(|(copies, _)| copies.iter().map(|copy| copy.dy).sum())
+            .unwrap_or_default();
+        let now = shown_rows(&app);
+        assert!(!now.is_empty(), "the list shows rows");
+        // Every row is one line: measured, they stand one pitch apart.
+        let pitch = now[1].1 - now[0].1;
+        assert!(pitch > 0.0, "the rows stand down the list: {now:?}");
+        let origin = now[0].1 - now[0].0 as f64 * pitch;
+        for (index, top) in &now {
+            assert!(
+                (top - (origin + *index as f64 * pitch)).abs() < 0.01,
+                "row {index} stands where its index puts it: {now:?}"
+            );
+        }
+        let list = list_rect(app.root_widget.as_ref()).expect("the list is shown");
+        assert!(now[0].1 <= list.y0, "the rows reach the top: {now:?}");
+        let (last, bottom) = now[now.len() - 1];
+        assert!(
+            bottom + pitch >= list.y1,
+            "the rows reach the bottom: {now:?}"
+        );
+        assert_eq!(last + 1 - now[0].0, now.len(), "the rows are contiguous");
+        if copied != 0 {
+            let kept = before.iter().find_map(|(index, then)| {
+                now.iter()
+                    .find(|(at, _)| at == index)
+                    .map(|(_, top)| top - then)
+            });
+            assert_eq!(
+                kept,
+                Some(f64::from(copied)),
+                "the rows moved as far as the copy moved their pixels"
+            );
+        }
+        before = now;
+    }
+    assert!(
+        before[0].0 > 40,
+        "the scroll brought rows in: first row {}",
+        before[0].0
+    );
+    assert_eq!(
+        app.layout.rebuilds, rebuilds,
+        "the rows entered without rebuilding the layout"
+    );
+    assert!(app.layout.remounts > 0, "they were mounted in place");
+}

@@ -1318,3 +1318,43 @@ fn selection_rects_match_a_scan_of_every_row() {
         }
     }
 }
+
+#[test]
+fn the_rows_within_a_view_of_a_long_text_are_found_without_walking_those_above() {
+    // Wrapped and unwrapped lines, so lines hold one row or several.
+    let text = (0..600)
+        .map(|line| {
+            if line % 7 == 0 {
+                format!("line {line}: a longer line that wraps onto a second row and maybe a third")
+            } else {
+                format!("line {line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let shaped = layout(&text, 220.0);
+    let walked = |top: f32, bottom: f32| -> Vec<(usize, u32)> {
+        shaped
+            .buffer
+            .layout_runs()
+            .skip_while(|run| run.line_top + run.line_height * 3.0 < top)
+            .take_while(|run| run.line_top - run.line_height * 2.0 <= bottom)
+            .map(|run| (run.line_i, run.line_top.to_bits()))
+            .collect()
+    };
+    let height = shaped.height();
+    for (top, bottom) in [
+        (0.0, 300.0),
+        (-50.0, 10.0),
+        (1234.5, 1800.0),
+        (height * 0.5, height * 0.5 + 400.0),
+        (height - 100.0, height + 100.0),
+        (height + 500.0, height + 900.0),
+    ] {
+        let found: Vec<(usize, u32)> = shaped
+            .rows_within(top, bottom)
+            .map(|run| (run.line_i, run.line_top.to_bits()))
+            .collect();
+        assert_eq!(found, walked(top, bottom), "rows within {top}..{bottom}");
+    }
+}

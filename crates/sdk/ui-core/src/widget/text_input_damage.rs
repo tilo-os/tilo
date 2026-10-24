@@ -76,7 +76,7 @@ impl TextInput {
         let current_line = (self.is_focused && !self.shows_placeholder())
             .then(|| layout.logical_line_index(caret_byte));
         // Pieces are where they paint with the field unscrolled.
-        let unscrolled = origin_y + self.scroll_y;
+        let unscrolled = origin_y + self.shown_scroll_y();
         let band = |top: f32, bottom: f32| {
             Rect::new(
                 self.rect.x0,
@@ -121,7 +121,7 @@ impl TextInput {
         let mut marks: Vec<Rect> = self
             .ml_caret
             .iter()
-            .map(|(caret, _)| *caret + Vec2::new(0.0, self.scroll_y))
+            .map(|(caret, _)| *caret + Vec2::new(0.0, self.shown_scroll_y()))
             .collect();
         if current_line.is_some() && self.highlight_current_line {
             marks.extend(
@@ -135,7 +135,7 @@ impl TextInput {
             marks.extend(
                 self.selection_rects(theme, start, end)
                     .into_iter()
-                    .map(|rect| rect + Vec2::new(0.0, self.scroll_y)),
+                    .map(|rect| rect + Vec2::new(0.0, self.shown_scroll_y())),
             );
         }
         pieces.extend(
@@ -149,7 +149,7 @@ impl TextInput {
         let reach = f64::from(theme.tokens.radii.control).max(2.0) + 1.0;
         let rect = self.rect;
         self.shown.note(Showing {
-            scroll: Vec2::new(0.0, self.scroll_y),
+            scroll: Vec2::new(0.0, self.shown_scroll_y()),
             clip: rect,
             transform: crate::scroll_copy::on_screen(transform),
             look: FieldLook {

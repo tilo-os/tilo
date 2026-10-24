@@ -1230,6 +1230,23 @@ pub(crate) fn take_view_only_pan() -> bool {
     VIEW_ONLY_PAN.with(|pan| pan.replace(false))
 }
 
+thread_local! {
+    static PLACEMENT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// From a widget's `update`: it moved what it lays out with no input asking
+/// (a glide, a jump in progress, a give springing back), so its children
+/// stand where the last layout put them. The host places its widgets again
+/// in the frame; it is no change of the model, and nothing syncs.
+pub fn note_placement_moved() {
+    PLACEMENT_MOVED.with(|moved| moved.set(true));
+}
+
+/// Whether [`note_placement_moved`] ran since the last call, clearing it.
+pub(crate) fn take_placement_moved() -> bool {
+    PLACEMENT_MOVED.with(|moved| moved.replace(false))
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,
@@ -1532,6 +1549,7 @@ pub trait Widget {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId;
+
     fn measure(
         &mut self,
         _known: taffy::Size<Option<f32>>,
@@ -1604,6 +1622,14 @@ pub trait Widget {
     /// containers override this to walk their retained storage directly.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         defaults::for_each_child(self.children(), visitor);
+    }
+    /// The children of [`Self::for_each_child`] that may paint inside the
+    /// [`layout_clip`] in effect: what a scroll view's damage and its copy
+    /// plan need to look at. Every child by default; a long column visits
+    /// only those near the clip, so a frame of a scroll costs what is shown,
+    /// not what the column holds.
+    fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.for_each_child(visitor);
     }
     /// Every child this widget's [`Self::build_layout`] gives a layout node,
     /// also those [`Self::for_each_child`] keeps from routing (a hidden
