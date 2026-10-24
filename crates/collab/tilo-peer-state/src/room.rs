@@ -8,12 +8,14 @@ pub mod media;
 pub(crate) mod policy;
 pub(crate) mod private_policy;
 pub(crate) mod read;
+pub mod saved_shortcut;
 pub use admit::{
     AdmittedRoom, AuthorityPin, ContentOwnership, RoomAdmission, RoomRefusal, Standing, Writer,
     admit_room_changes, check_candidate,
 };
 pub use adopt::adopt_room;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
+pub use saved_shortcut::{proven_saver, room_revocations, sign_saved_shortcut};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
 /// Every governed value a room document records, exactly as stored.

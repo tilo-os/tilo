@@ -128,8 +128,10 @@ impl Store for TreeStore {
             // this export is published, the policy observers hold is the
             // previous record's, and they must know its replacement is on
             // the way rather than judge it withdrawn.
-            let export = matches!(change, Change::Room { .. } | Change::Released { .. })
-                .then(|| crate::shell::launcher::action_authority::Export::of(&candidate));
+            let export =
+                matches!(change, Change::Room { .. } | Change::Released { .. }).then(|| {
+                    crate::shell::launcher::action_authority::Export::at(&candidate, sequence)
+                });
             turn.write(&path, base, &candidate.native_authority, &encoded, sequence)
                 .map_err(|e| e.to_string())?;
             Ok(export)
