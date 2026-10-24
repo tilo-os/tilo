@@ -178,8 +178,9 @@ The TPM is the only limit on guessing, and the only one that matters against an
 attacker who can run their own code against it. Its two parameters do different
 jobs. `recoveryTime` caps sustained guessing: at two hours, twelve guesses a day, so
 about a century on average for a six-digit PIN. `maxTries` only sizes the burst
-before that cap, so Tilo asks for 32: the extra guesses are noise against a million
-PINs, and someone who mistypes a dozen times never meets a lockout. On a TPM that
+before that cap, so it is set for the owner rather than the attacker: Tilo asks for
+10, about where phones start making people wait, and a few extra guesses are noise
+against a million PINs. On a TPM that
 Windows manages, its parameters apply, and `tilo-rollback tpm-status` reports
 whether they meet §1.3.
 
@@ -296,7 +297,7 @@ Each person has their own user key, home, vault and factors. A person the admin
 allows to unlock the machine gets a system-volume keyslot; others can sign in only
 after the system is up. The TPM's dictionary-attack counter is shared by everyone
 on the machine, and with Windows on a shared TPM ([rollback.md](rollback.md)). With
-32 tries that rarely matters; when it does, the screen says that the wait comes from
+10 tries that rarely matters; when it does, the screen says that the wait comes from
 this computer's shared limit, not from the person's own attempts.
 
 ### 6.3 Locking and sleep
