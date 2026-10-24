@@ -41,13 +41,30 @@ pub struct Blocking {
     pub allow_local: bool,
 }
 
-/// Which profiles are set to connect, remembered between readings.
+/// Which profiles are set to connect, remembered between readings, and
+/// kept across a restart of whoever decides: a shell that crashed must not
+/// let traffic out while its successor starts.
 #[derive(Clone, Debug, Default)]
 pub struct Intent {
     wanted: BTreeSet<String>,
 }
 
 impl Intent {
+    /// The intent kept from before: `wanted` are still set to connect until
+    /// they are turned off on purpose or lose their kill switch.
+    #[must_use]
+    pub fn adopt(wanted: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            wanted: wanted.into_iter().collect(),
+        }
+    }
+
+    /// The profiles set to connect, in order: what to keep for
+    /// [`Intent::adopt`].
+    pub fn wanted(&self) -> impl Iterator<Item = &String> {
+        self.wanted.iter()
+    }
+
     /// Take in the person's `switches`, the profiles `NetworkManager` has
     /// now (`active`), and the profiles turned off on purpose since the last
     /// call (`released`), and say what must block.
@@ -179,6 +196,41 @@ mod tests {
         );
         assert!(!intent.wants("work"));
         assert_eq!(intent.decide(&switches, &now(None), &[]), None);
+    }
+
+    #[test]
+    fn an_adopted_intent_blocks_at_once_and_lifts_only_what_was_turned_off() {
+        let switches = on(false);
+        let mut before = Intent::default();
+        before.decide(&switches, &now(Some(Activity::Activated)), &[]);
+        let kept: Vec<String> = before.wanted().cloned().collect();
+        assert_eq!(kept, ["work"]);
+        // The decider restarted while the tunnel was down.
+        let mut after = Intent::adopt(kept.clone());
+        assert_eq!(
+            after.decide(&switches, &now(None), &[]),
+            Some(blocking(false))
+        );
+        let mut after = Intent::adopt(kept.clone());
+        assert_eq!(
+            after.decide(&switches, &now(Some(Activity::Activated)), &[]),
+            None,
+            "up again"
+        );
+        assert!(after.wants("work"));
+        let mut after = Intent::adopt(kept.clone());
+        assert_eq!(
+            after.decide(&switches, &now(None), &["work".into()]),
+            None,
+            "turned off while it was away"
+        );
+        let mut after = Intent::adopt(kept);
+        assert_eq!(
+            after.decide(&BTreeMap::new(), &now(None), &[]),
+            None,
+            "its kill switch turned off while it was away"
+        );
+        assert_eq!(after.wanted().count(), 0);
     }
 
     #[test]

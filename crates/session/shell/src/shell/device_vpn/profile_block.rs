@@ -10,6 +10,12 @@
 //! `NetworkManager` says it went down on purpose, or Settings asks
 //! ([`settings::PROFILE_RELEASE`]) for one that is not up.
 //!
+//! Which profiles are set to connect is kept in the settings
+//! ([`settings::PROFILE_INTENT`]) before the helper is asked, and adopted
+//! when the session starts: after a crash the block holds while the next
+//! shell starts and is taken over, with the servers looked up before, and
+//! only what the person turned off meanwhile is lifted.
+//!
 //! Nothing runs, and `NetworkManager` is not followed, until some profile
 //! has its kill switch on. What blocks is published with the device VPN's
 //! status ([`super::set_profile_block`]) for Settings.
@@ -22,7 +28,7 @@ use std::time::Duration;
 use device_vpn::profile::{Activity, Blocking, Intent, Switch, block_for};
 use device_vpn::protocol::{self, MAX_PROFILE_SERVERS, ProfileBlock, Request, Response};
 use settings_store::device_vpn::{
-    self as settings, ProfileBlockStatus, ProfileKillSwitch, ProfileRelease,
+    self as settings, ProfileBlockStatus, ProfileIntent, ProfileKillSwitch, ProfileRelease,
 };
 use settings_store::live::LiveSettings;
 use tilo_nm::{ActiveState, VpnReading, VpnWatch};
@@ -53,7 +59,9 @@ impl Choices {
 
 /// Follow the person's VPN profiles and their kill switches from now on.
 pub fn start(live: &LiveSettings) {
-    let (sender, choices) = watch::channel(Choices::read(&live.section(settings::SECTION)));
+    let section = live.section(settings::SECTION);
+    let kept = settings::PROFILE_INTENT.from_section(&section);
+    let (sender, choices) = watch::channel(Choices::read(&section));
     let settings = live.clone();
     let following = std::thread::Builder::new()
         .name("tilo-vpn-kill-switch-settings".into())
@@ -69,7 +77,7 @@ pub fn start(live: &LiveSettings) {
                 .enable_all()
                 .build()
             {
-                Ok(runtime) => runtime.block_on(run(choices)),
+                Ok(runtime) => runtime.block_on(run(choices, kept)),
                 Err(error) => {
                     tracing::warn!(%error, "could not start the VPN kill switch");
                 }
@@ -124,8 +132,28 @@ async fn vpns_change(vpns: &mut Option<VpnWatch>) {
     }
 }
 
-async fn run(mut choices: watch::Receiver<Choices>) {
-    let mut follow = Follow::new(choices.borrow().release.as_ref().map(|r| r.id));
+/// Keep `intent` in the settings; whether it was written.
+fn keep(intent: &ProfileIntent) -> bool {
+    let value = match serde_json::to_value(intent) {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::warn!(%error, "could not keep the VPN profiles' intent");
+            return false;
+        }
+    };
+    let mut values = serde_json::Map::new();
+    values.insert(settings::PROFILE_INTENT.name().to_owned(), value);
+    match settings_store::update_section(settings::SECTION, values) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "could not keep the VPN profiles' intent");
+            false
+        }
+    }
+}
+
+async fn run(mut choices: watch::Receiver<Choices>, kept: ProfileIntent) {
+    let mut follow = Follow::new(kept);
     let mut vpns: Option<VpnWatch> = None;
     let mut retry: Option<Duration> = None;
     loop {
@@ -134,7 +162,7 @@ async fn run(mut choices: watch::Receiver<Choices>) {
             vpns = watch_vpns().await;
         }
         let reading = vpns.as_ref().map(VpnWatch::current).unwrap_or_default();
-        let held = follow.step(&current, &reading).await;
+        let held = follow.step(&current, &reading, keep).await;
         retry = if held {
             None
         } else {
@@ -174,9 +202,10 @@ enum Applied {
 /// What the follower keeps between steps.
 struct Follow {
     intent: Intent,
-    /// The last release request acted on (or there at start, which is not
-    /// one to act on).
+    /// The last release request acted on.
     release_seen: Option<u64>,
+    /// The intent as last kept in the settings.
+    kept: ProfileIntent,
     /// Per profile, how often `NetworkManager` said it went down on purpose.
     ended_seen: BTreeMap<String, u64>,
     /// Each profile's servers, from the last lookup that found any.
@@ -189,12 +218,19 @@ struct Follow {
 }
 
 impl Follow {
-    fn new(release_seen: Option<u64>) -> Self {
+    /// Take over the intent `kept` from before this session.
+    fn new(kept: ProfileIntent) -> Self {
         Self {
-            intent: Intent::default(),
-            release_seen,
+            intent: Intent::adopt(kept.connecting.keys().cloned()),
+            release_seen: kept.release_seen,
             ended_seen: BTreeMap::new(),
-            servers: BTreeMap::new(),
+            servers: kept
+                .connecting
+                .iter()
+                .filter(|(_, servers)| !servers.is_empty())
+                .map(|(profile, servers)| (profile.clone(), servers.clone()))
+                .collect(),
+            kept,
             activities: BTreeMap::new(),
             applied: Applied::Unknown,
             status: ProfileBlockStatus::default(),
@@ -220,8 +256,30 @@ impl Follow {
         released
     }
 
-    /// Follow one change; whether the helper holds what is wanted.
-    async fn step(&mut self, choices: &Choices, reading: &VpnReading) -> bool {
+    /// The intent to keep: the profiles set to connect with their servers,
+    /// and the last release acted on.
+    fn intent(&self) -> ProfileIntent {
+        ProfileIntent {
+            connecting: self
+                .intent
+                .wanted()
+                .map(|profile| {
+                    let servers = self.servers.get(profile).cloned().unwrap_or_default();
+                    (profile.clone(), servers)
+                })
+                .collect(),
+            release_seen: self.release_seen,
+        }
+    }
+
+    /// Follow one change, keeping the intent with `keep` before the helper
+    /// is asked; whether the helper holds what is wanted.
+    async fn step(
+        &mut self,
+        choices: &Choices,
+        reading: &VpnReading,
+        keep: impl FnOnce(&ProfileIntent) -> bool,
+    ) -> bool {
         let released = self.released(choices, reading);
         let switches: BTreeMap<String, Switch> = choices
             .switches
@@ -244,6 +302,10 @@ impl Follow {
         self.look_up_servers(&switches, &active, blocking.as_ref())
             .await;
         self.activities = active;
+        let intent = self.intent();
+        if intent != self.kept && keep(&intent) {
+            self.kept = intent;
+        }
         let block = blocking
             .as_ref()
             .map(|blocking| block_for(blocking, &self.servers));
@@ -406,9 +468,23 @@ mod tests {
         }
     }
 
+    fn kept(release_seen: Option<u64>) -> ProfileIntent {
+        ProfileIntent {
+            connecting: BTreeMap::from([(
+                "work".to_owned(),
+                vec!["198.51.100.7".parse().unwrap()],
+            )]),
+            release_seen,
+        }
+    }
+
+    fn switches() -> BTreeMap<String, Switch> {
+        BTreeMap::from([("work".to_owned(), Switch::default())])
+    }
+
     #[test]
-    fn a_release_request_there_at_start_is_not_acted_on() {
-        let mut follow = Follow::new(Some(4));
+    fn a_release_already_acted_on_is_not_acted_on_again() {
+        let mut follow = Follow::new(kept(Some(4)));
         assert!(
             follow
                 .released(&choices(Some(4)), &reading(None, 0))
@@ -427,7 +503,7 @@ mod tests {
 
     #[test]
     fn each_time_networkmanager_says_a_profile_went_down_on_purpose_releases_it_once() {
-        let mut follow = Follow::new(None);
+        let mut follow = Follow::new(ProfileIntent::default());
         assert!(
             follow
                 .released(&choices(None), &reading(None, 0))
@@ -440,6 +516,50 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(follow.released(&choices(None), &reading(None, 2)), ["work"]);
+    }
+
+    /// A shell starting after one crashed blocks at once for a profile still
+    /// set to connect, with the servers looked up before, and keeps that.
+    #[test]
+    fn a_new_shell_takes_over_the_block_of_a_profile_still_set_to_connect() {
+        let mut follow = Follow::new(kept(Some(4)));
+        let released = follow.released(&choices(Some(4)), &reading(None, 0));
+        let blocking = follow
+            .intent
+            .decide(&switches(), &BTreeMap::new(), &released)
+            .expect("still set to connect and down: it blocks");
+        assert_eq!(
+            block_for(&blocking, &follow.servers),
+            ProfileBlock {
+                servers: vec!["198.51.100.7".parse().unwrap()],
+                allow_local: false,
+            },
+            "its server stays reachable, so the tunnel can come back"
+        );
+        assert_eq!(follow.intent(), kept(Some(4)));
+        assert_eq!(follow.intent(), follow.kept, "nothing new to keep");
+    }
+
+    /// A profile the person turned off while no shell ran is lifted, and
+    /// that is kept.
+    #[test]
+    fn a_new_shell_lifts_what_was_turned_off_while_it_was_away() {
+        let mut follow = Follow::new(kept(Some(4)));
+        let released = follow.released(&choices(Some(5)), &reading(None, 0));
+        assert_eq!(released, ["work"]);
+        assert_eq!(
+            follow
+                .intent
+                .decide(&switches(), &BTreeMap::new(), &released),
+            None
+        );
+        assert_eq!(
+            follow.intent(),
+            ProfileIntent {
+                connecting: BTreeMap::new(),
+                release_seen: Some(5),
+            }
+        );
     }
 
     #[test]

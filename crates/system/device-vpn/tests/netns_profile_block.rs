@@ -1,7 +1,8 @@
 //! The kill switch of the person's VPN profiles in a network namespace: the
 //! helper's own Linux backend puts the nftables block up and takes it down
 //! as the profile's state changes, refuses a caller that is not the seat's
-//! shell, and a helper started after one died lifts what it left.
+//! shell, keeps the block when the session deciding it or the helper dies,
+//! and lifts it only on reset at boot or when the person turns it off.
 //!
 //! Each test runs itself again under `unshare --user --map-root-user --net`,
 //! where it may change the namespace's firewall, and checks from inside what
@@ -309,52 +310,158 @@ fn a_foreign_caller_is_refused(state: &Path) {
     assert_open();
 }
 
-/// A helper holds the block and dies; the next one lifts it, once nobody
-/// is left to want it, or when reset at boot.
-fn a_crashed_helpers_block_is_lifted(state: &Path) {
+/// Run this test program as `role`, a process that dies by aborting.
+fn crashing(role: &str, test: &str, state: &Path) {
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            test,
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(ROLE, role)
+        .env(STATE, state)
+        .stdin(Stdio::null())
+        .status()
+        .unwrap();
+    assert!(!status.success(), "the {role} died");
+}
+
+/// A helper holds the block and dies; the next one keeps it, even once its
+/// owner's session is gone, until reset at boot or lifted from the seat.
+fn a_crashed_helpers_block_is_kept_until_reset(state: &Path) {
     let _tun = machine(state);
     let crash = |state: &Path| {
-        let status = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "netns_profile_crasher",
-                "--ignored",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(ROLE, "crasher")
-            .env(STATE, state)
-            .stdin(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(!status.success(), "the helper died");
+        crashing("crasher", "netns_profile_crasher", state);
         assert!(table_present(), "what it put up outlived it");
-        assert!(!sends(ELSEWHERE, 443));
+        assert_blocking(false);
     };
 
-    // Reset, as the reset unit does.
+    // Reset, as the reset unit does at boot.
     crash(state);
     let mut next = helper(state);
-    assert!(!next.is_idle(), "the next helper knows what was left");
+    assert!(
+        next.record().profile_block.is_some(),
+        "the next helper knows what was left"
+    );
     next.reset();
-    assert!(next.is_idle());
     assert_open();
 
-    // While the person is still logged in, a restarted helper keeps the
-    // block; once their session ends, its housekeeping lifts it.
+    // A restarted helper keeps the block, also once its owner's session
+    // ended (a crashed shell ends it), needing no process to keep it.
     crash(state);
     let mut next = helper(state);
     next.housekeeping();
-    assert!(table_present(), "kept while its owner is logged in");
+    assert_blocking(false);
     std::fs::remove_file(state.join("users/0")).unwrap();
     next.housekeeping();
+    assert_blocking(false);
     assert!(next.is_idle());
+    // Logged out, the owner no longer holds it against the person at the
+    // seat, whose shell lifts it.
+    assert_eq!(
+        next.handle(Caller { uid: 1000 }, Request::ReleaseProfileBlock)
+            .0,
+        Response::Done
+    );
     assert_open();
+}
+
+/// Where the deciding process keeps its intent, as the session keeps it in
+/// the settings: each profile set to connect with its servers.
+fn intent_file(state: &Path) -> PathBuf {
+    state.join("intent.json")
+}
+
+fn keep(state: &Path, intent: &Intent, servers: &BTreeMap<String, Vec<IpAddr>>) {
+    let kept: BTreeMap<&String, Vec<IpAddr>> = intent
+        .wanted()
+        .map(|profile| (profile, servers.get(profile).cloned().unwrap_or_default()))
+        .collect();
+    std::fs::write(intent_file(state), serde_json::to_vec(&kept).unwrap()).unwrap();
+}
+
+fn kept(state: &Path) -> BTreeMap<String, Vec<IpAddr>> {
+    serde_json::from_slice(&std::fs::read(intent_file(state)).unwrap()).unwrap()
+}
+
+/// The process deciding the block (the session) holds it for a profile
+/// that dropped, keeping its intent first, and dies. The block stays, and
+/// the next one, starting from what was kept, takes it over with the server
+/// still reachable, then lifts it only when the person turns the profile
+/// or its kill switch off.
+fn a_crashed_controllers_block_is_taken_over(state: &Path) {
+    let _tun = machine(state);
+    let on = BTreeMap::from([(PROFILE.to_owned(), Switch { allow_local: false })]);
+    let takeover = |released: &[String], switches: &BTreeMap<String, Switch>| {
+        crashing("controller", "netns_profile_controller", state);
+        // Between the two, nothing lets traffic out, even once the
+        // session the dead one ran in is gone.
+        assert_blocking(false);
+        let mut service = helper(state);
+        std::fs::remove_file(state.join("users/0")).unwrap();
+        service.housekeeping();
+        assert_blocking(false);
+        std::fs::write(state.join("users/0"), "STATE=active\n").unwrap();
+
+        let servers = kept(state);
+        let mut intent = Intent::adopt(servers.keys().cloned());
+        let blocking = intent.decide(switches, &BTreeMap::new(), released);
+        apply(
+            &mut service,
+            blocking.map(|blocking| block_for(&blocking, &servers)),
+        );
+        service
+    };
+
+    // Still set to connect and down: the next one blocks with the server
+    // the dead one looked up, so the tunnel can come back.
+    let mut service = takeover(&[], &on);
+    assert_blocking(false);
+    apply(&mut service, None);
+    assert_open();
+
+    // Turned off on purpose while no controller ran.
+    takeover(&[PROFILE.to_owned()], &on);
+    assert_open();
+
+    // Its kill switch turned off while no controller ran.
+    takeover(&[], &BTreeMap::new());
+    assert_open();
+}
+
+/// The session's part: the profile comes up and drops, the block holds,
+/// and the process dies without lifting it.
+#[test]
+#[ignore = "run by a_crashed_controllers_block_is_taken_over inside its namespace"]
+fn netns_profile_controller() {
+    if std::env::var(ROLE).as_deref() != Ok("controller") {
+        return;
+    }
+    let state = PathBuf::from(std::env::var(STATE).unwrap());
+    let mut service = helper(&state);
+    let switches = BTreeMap::from([(PROFILE.to_owned(), Switch { allow_local: false })]);
+    let servers = BTreeMap::from([(PROFILE.to_owned(), vec![IpAddr::V4(SERVER)])]);
+    let mut intent = Intent::default();
+    for activity in [Some(Activity::Activated), None] {
+        let active: BTreeMap<String, Activity> = activity
+            .map(|activity| BTreeMap::from([(PROFILE.to_owned(), activity)]))
+            .unwrap_or_default();
+        let blocking = intent.decide(&switches, &active, &[]);
+        keep(&state, &intent, &servers);
+        apply(
+            &mut service,
+            blocking.map(|blocking| block_for(&blocking, &servers)),
+        );
+    }
+    assert_blocking(false);
+    std::process::abort();
 }
 
 /// A helper that holds the block and dies without lifting it.
 #[test]
-#[ignore = "run by a_crashed_helpers_block_is_lifted inside its namespace"]
+#[ignore = "run by a_crashed_helpers_block_is_kept_until_reset inside its namespace"]
 fn netns_profile_crasher() {
     if std::env::var(ROLE).as_deref() != Ok("crasher") {
         return;
@@ -382,8 +489,9 @@ fn netns_profile_role() {
     match role.as_str() {
         "follows" => follows_the_profile_state(&state),
         "foreign" => a_foreign_caller_is_refused(&state),
-        "crash" => a_crashed_helpers_block_is_lifted(&state),
-        "crasher" => {}
+        "crash" => a_crashed_helpers_block_is_kept_until_reset(&state),
+        "takeover" => a_crashed_controllers_block_is_taken_over(&state),
+        "crasher" | "controller" => {}
         other => panic!("no role {other}"),
     }
 }
@@ -458,11 +566,21 @@ fn a_caller_other_than_the_seats_shell_is_refused() {
 }
 
 #[test]
-fn a_block_left_by_a_crashed_helper_is_lifted() {
+fn a_block_left_by_a_crashed_helper_is_kept_until_reset_at_boot() {
     tilo_test_env::require_capability!(
         NetworkTunnel,
         machine_ready(),
         "the namespace needs TUN devices, ip and nft"
     );
     in_namespace("crash");
+}
+
+#[test]
+fn a_block_left_by_a_crashed_session_is_taken_over_by_the_next() {
+    tilo_test_env::require_capability!(
+        NetworkTunnel,
+        machine_ready(),
+        "the namespace needs TUN devices, ip and nft"
+    );
+    in_namespace("takeover");
 }
