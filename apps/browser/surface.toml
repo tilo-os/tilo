@@ -112,6 +112,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "name-visit"
+kind = "undoable"
+params = [
+  { name = "url", required = true, schema = { type = "string" } },
+  { name = "title", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "forget"
 kind = "undoable"
 params = [
