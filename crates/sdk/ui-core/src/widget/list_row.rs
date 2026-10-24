@@ -847,6 +847,23 @@ impl<'a> ListRowFace<'a> {
         self.count.map(|count| count.to_string())
     }
 
+    /// How far inside the row's edge its trailing slot ends: the columns
+    /// [`Self::geometry`] lays out after it (a disclosure chevron, a check,
+    /// a status dot), each with its gap.
+    fn after_trailing(&self, m: &RowMetrics) -> f64 {
+        let mut width = 0.0;
+        if self.disclosure {
+            width += m.icon + m.column_gap;
+        }
+        if self.checked.is_some() {
+            width += m.icon + m.column_gap;
+        }
+        if self.status.is_some() {
+            width += m.dot + m.column_gap;
+        }
+        width
+    }
+
     /// Lay the columns out in `rect`, the row's outer rect.
     fn geometry(
         &self,
@@ -2936,6 +2953,9 @@ impl Widget for ListRow {
         let column_gap = metrics.column_gap;
         let pad_y = metrics.pad_y;
         let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
+        // The control stands in the slot the face reserves for it, inside
+        // the columns that follow it, not over them.
+        let after_trailing = self.with_face(|face| face.after_trailing(&metrics));
         self.metrics = Some(metrics);
         // Geometry outside a draw (hit-testing actions, measuring) reads the
         // theme the row was last laid out in.
@@ -3001,6 +3021,7 @@ impl Widget for ListRow {
             style.flex_shrink = 0.0;
             style.align_self = Some(taffy::AlignSelf::Center);
             style.margin.left = length(crate::num::f32_of_f64(column_gap));
+            style.margin.right = length(crate::num::f32_of_f64(after_trailing));
             style.margin.top = length(crate::num::f32_of_f64(pad_y));
             style.margin.bottom = length(crate::num::f32_of_f64(pad_y));
             trailing.own_min = style.min_size.width;
