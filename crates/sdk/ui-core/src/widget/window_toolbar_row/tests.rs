@@ -404,10 +404,7 @@ fn calendar() -> WindowToolbar {
             ToolbarAction::new("next", "chevron-right", "Next week").navigating(),
             ToolbarAction::new("today", "calendar", "Today"),
         ],
-        location: Some(ToolbarLocation {
-            label: "Oct 19 – 25, 2026".into(),
-            ..ToolbarLocation::default()
-        }),
+        location: Some(ToolbarLocation::period(a_week())),
         views: Some(ToolbarViews {
             name: "View".into(),
             choices: vec![
@@ -426,11 +423,31 @@ fn calendar() -> WindowToolbar {
     .bounded()
 }
 
+/// Mon, Oct 19 to Sun, Oct 25, 2026.
+fn a_week() -> crate::format::Period {
+    let day = |d| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap_or_default();
+    crate::format::Period::Days(day(19), day(25))
+}
+
+/// The calendar's bar with an address-like location, which cannot be the
+/// views' picker.
+fn calendar_with_a_field() -> WindowToolbar {
+    let mut toolbar = calendar();
+    if let Some(location) = toolbar.location.as_mut() {
+        location.editable = true;
+    }
+    toolbar
+}
+
 fn calendar_row(width: f64) -> ToolbarRow {
+    calendar_row_of(&calendar(), width)
+}
+
+fn calendar_row_of(toolbar: &WindowToolbar, width: f64) -> ToolbarRow {
     let mut row = ToolbarRow::new();
     row.show(
         3,
-        Some(&calendar()),
+        Some(toolbar),
         Theme::dark().motion(),
         crate::motion::frame_now(),
     );
@@ -572,38 +589,76 @@ fn a_view_is_chosen_in_the_row_or_from_the_menu_when_the_row_has_no_room() {
 /// slots beside its bar's own search, History and window controls.
 const COMPACT_CALENDAR_ROW: f64 = 233.0;
 
+/// The views a row's open menu lists, as assistive technology reaches
+/// each: its name, what it runs, and its check.
+fn listed_views(row: &ToolbarRow) -> Vec<(String, String, bool, Option<bool>)> {
+    row.menu_entries
+        .iter()
+        .flatten()
+        .filter(|entry| matches!(entry, MenuEntry::View(_)))
+        .filter_map(|entry| row.entry_semantics(*entry))
+        .collect()
+}
+
 #[test]
-fn a_narrow_row_folds_today_then_the_views_and_keeps_its_navigation_and_location() {
-    // Room for previous and next, the location at its least and the menu:
-    // Today, which jumps rather than steps, folds first.
-    let mut row = calendar_row(293.0);
-    let slots = row.slots().clone();
+fn the_location_picks_the_view_from_the_width_its_narrower_form_fits_whole() {
+    let at = (233..=900)
+        .map(f64::from)
+        .find(|width| calendar_row(*width).slots().views_in_location())
+        .expect("a row wide enough for the period's narrower form makes it the views' picker");
+
+    // Just narrower, the views are the overflow menu's.
+    let mut below = calendar_row(at - 1.0);
+    assert!(below.slots().views.is_empty() && below.slots().views_menu == Rect::ZERO);
     assert!(
-        slots.views_menu.area() > 0.0,
-        "the views menu stands in the row"
+        below.slots().location.area() > 0.0,
+        "the period still stands"
     );
-    assert!(slots.leading[0].area() > 0.0 && slots.leading[1].area() > 0.0);
-    assert_eq!(slots.leading[2], Rect::ZERO, "Today folds");
+    assert!(below.open_overflow());
+    let in_overflow = listed_views(&below);
+
+    // At it, the location is the picker, and lists the same views.
+    let mut picker = calendar_row(at);
+    let slots = picker.slots().clone();
+    assert_eq!(
+        slots.views_menu, slots.location,
+        "the location picks the view"
+    );
+    assert!(slots.views.is_empty(), "no switcher beside it");
+    assert!(picker.press(slots.location.center()));
+    assert!(picker.release(slots.location.center()));
+    assert_eq!(picker.menu_labels(), ["Month", "Week", "Day"]);
+    assert_eq!(
+        listed_views(&picker),
+        in_overflow,
+        "one menu of views, wherever it opens"
+    );
+    assert_eq!(in_overflow.len(), 3);
+    picker.menu.close();
+    assert!(picker.open_overflow());
     assert!(
-        slots.location.width() >= MIN_LOCATION_PX,
-        "{:?}",
-        slots.location
-    );
-    assert!(slots.location.x0 >= slots.leading[1].x1);
-    assert!(slots.views_menu.x0 >= slots.location.x1);
-    assert!(slots.overflow.x0 >= slots.views_menu.x1);
-    assert!(row.open_overflow());
-    assert_eq!(
-        row.menu_entries.first().copied().flatten(),
-        Some(MenuEntry::Leading(2)),
-        "the overflow menu starts with Today"
-    );
-    assert!(row.perform(&format!("{LEADING_TARGET_PREFIX}today")));
-    assert_eq!(
-        row.take_events(),
-        vec![(3, ToolbarEvent::Action { id: "today".into() })]
+        listed_views(&picker).is_empty(),
+        "the overflow menu does not list them again"
     );
 
+    let nodes = picker.accessibility();
+    let label = a_week().forms().first().cloned().unwrap_or_default();
+    let node = find_node(&nodes, Role::Button, &label).expect("named by the period it shows");
+    assert_eq!(
+        node.value.as_deref(),
+        Some("Week"),
+        "valued by the chosen view"
+    );
+    assert_eq!(node.description.as_deref(), Some("View"));
+    assert!(picker.perform(&format!("{VIEW_TARGET_PREFIX}day")));
+    assert_eq!(
+        picker.take_events(),
+        vec![(3, ToolbarEvent::Action { id: "day".into() })]
+    );
+}
+
+#[test]
+fn a_compact_row_folds_today_then_the_views_and_keeps_its_navigation_and_location() {
     // A compact window's row: the views go into the overflow menu before
     // previous and next do, and the location keeps at least its least width.
     let mut compact = calendar_row(COMPACT_CALENDAR_ROW);
@@ -636,7 +691,7 @@ fn a_narrow_row_folds_today_then_the_views_and_keeps_its_navigation_and_location
 
 #[test]
 fn a_narrow_row_folds_the_views_into_a_menu_of_every_view() {
-    let mut row = calendar_row(420.0);
+    let mut row = calendar_row_of(&calendar_with_a_field(), 420.0);
     let slots = row.slots().clone();
     assert!(slots.views.is_empty(), "no segmented switcher");
     let menu = slots.views_menu;
@@ -675,7 +730,7 @@ fn a_narrow_row_folds_the_views_into_a_menu_of_every_view() {
     );
     assert!(row.menu.is_open());
 
-    let mut toolbar = calendar();
+    let mut toolbar = calendar_with_a_field();
     if let Some(views) = toolbar.views.as_mut() {
         views.chosen = "day".into();
     }
