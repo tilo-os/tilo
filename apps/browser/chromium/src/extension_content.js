@@ -20,14 +20,26 @@
   });
   // A call nothing answers (id 0): what a port carries.
   const tell = (method, args) => send(JSON.stringify({id: 0, method, args}));
-  // Chrome's APIs return a promise, or call a trailing callback instead.
+  // Chrome's APIs return a promise, or call a trailing callback instead,
+  // with runtime.lastError set while it runs when the call failed.
   const api = (method) => (...args) => {
     const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
     const result = method(...args);
     if (!callback) return result;
     result.then((value) => callback(value), (error) => {
-      console.error(`Unchecked runtime.lastError: ${error.message}`);
-      callback();
+      const text = String((error && error.message) || error);
+      let checked = false;
+      Object.defineProperty(runtime, 'lastError', {
+        configurable: true,
+        enumerable: true,
+        get() { checked = true; return {message: text}; },
+      });
+      try {
+        callback();
+      } finally {
+        Object.defineProperty(runtime, 'lastError', {configurable: true, enumerable: true, writable: true, value: undefined});
+        if (!checked) console.error(`Unchecked runtime.lastError: ${text}`);
+      }
     });
     return undefined;
   };

@@ -45,13 +45,23 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   title, an icon, off) reaches the Browser for that page's tab alone and
   goes with the page; what it sets for every tab reaches every tab, also one
   opened later; and its popup opens over the page when it asks.
+- An extension whose security policy, or its page's own, lets it connect only
+  to its own servers (1Password, LastPass, NordPass) still reaches the host;
+  before any page was focused its current window is the page's; a failed
+  call sets runtime.lastError for its callback; it may set its button's
+  badge for any tab, a blank one too.
+- A script reaches the frame of a page an extension names (Bitwarden injects
+  its form filler into each frame that asks), or every frame, and a message
+  reaches one frame's content script.
 """
 import base64
 import hashlib
+import html
 import http.server
 import itertools
 import json
 from pathlib import Path
+import queue
 import re
 import secrets
 import shutil
@@ -128,12 +138,51 @@ def prologue_end(text):
             return end
 
 
+BRIDGE = 'https://extension-bridge.tilo.invalid'
+
+
+def admit_bridge(policy):
+    """`policy` letting pages connect to the bridge, as the Browser makes it
+    (extensions.rs, policy_with_bridge)."""
+    directives = [d.strip() for d in policy.split(';') if d.strip()]
+    names = [d.split()[0].lower() for d in directives]
+    index = names.index('connect-src') if 'connect-src' in names else None
+    governing = index if index is not None else names.index('default-src') if 'default-src' in names else None
+    if governing is None:
+        return policy
+    sources = [s for s in directives[governing].split()[1:] if s.lower() != "'none'"]
+    if any(s.rstrip('/') in ('*', 'https:', BRIDGE) for s in sources):
+        return policy
+    directive = 'connect-src ' + ' '.join(sources + [BRIDGE])
+    if index is None:
+        directives.append(directive)
+    else:
+        directives[index] = directive
+    return '; '.join(directives)
+
+
+def admit_bridge_in_pages(root):
+    """Each page's own policy (a `<meta>`) letting it reach the bridge, as the
+    Browser makes it (extensions.rs, page_with_bridge)."""
+    meta = re.compile(r'(<meta\s+http-equiv="content-security-policy"\s+content=")([^"]*)(")', re.IGNORECASE)
+    for page in root.rglob('*.html'):
+        text = page.read_text()
+        admitted = meta.sub(lambda m: m[1] + html.escape(admit_bridge(html.unescape(m[2])), quote=True) + m[3], text)
+        page.write_text(admitted)
+
+
 def prepare(source, into):
     """A copy of the fixture at `source` set up as the Browser sets up an
-    extension it installs (extensions.rs, prepare_tabs): its own worker runs
-    the tab script first, with a token the engine is told of."""
+    extension it installs (extensions.rs, prepare_tabs): its pages may reach
+    the engine whatever their policy, and its own worker runs the tab script
+    first, with a token the engine is told of."""
     target = Path(shutil.copytree(source, into / source.name)).resolve()
     manifest = json.loads((target / 'manifest.json').read_text())
+    policy = manifest.get('content_security_policy', {})
+    if isinstance(policy, dict) and 'extension_pages' in policy:
+        policy['extension_pages'] = admit_bridge(policy['extension_pages'])
+        (target / 'manifest.json').write_text(json.dumps(manifest))
+    admit_bridge_in_pages(target)
     worker = manifest.get('background', {}).get('service_worker')
     if not worker:
         return target, None
@@ -281,7 +330,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
-            body = f'<!doctype html><html{lang}><title>page {self.path}</title><body>page</body></html>'.encode()
+            # A page with a login form in a frame of its own, as some sites have.
+            frame = '<iframe src="/inner"></iframe>' if self.path == '/framed' else ''
+            body = f'<!doctype html><html{lang}><title>page {self.path}</title><body>page{frame}</body></html>'.encode()
         if self.path.startswith('/tracker/'):
             kind, body = 'text/javascript', b'window.tracked = true;'
         elif self.path.startswith('/shielded'):
@@ -308,12 +359,13 @@ class ExtensionTabs(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def start(self, *names, access, installed=None, profile=None, files=None):
+    def start(self, *names, access, installed=None, profile=None, files=None, focus=True):
         """A host with the fixtures `names` loaded, each granted what the
         Browser grants an installed extension (`access`: name -> (permissions,
         hosts)), with `files` (name -> {file: bytes}) written into its copy. A
         host started again with the `installed` directory and the `profile` of
-        an earlier one finds the same extensions there."""
+        an earlier one finds the same extensions there. With `focus`, the
+        person has focused the first page."""
         if installed is None:
             directory = tempfile.TemporaryDirectory(prefix='tilo-extension-tabs-')
             self.addCleanup(directory.cleanup)
@@ -340,7 +392,8 @@ class ExtensionTabs(unittest.TestCase):
                 command['token'] = token
             host.send(op='extension_access', **command)
         host.send(op='resize', width=800, height=600, scale_factor=1.0)
-        host.send(op='focus', focused=True)
+        if focus:
+            host.send(op='focus', focused=True)
         return host, ids
 
     def report(self, name):
@@ -363,6 +416,11 @@ class ExtensionTabs(unittest.TestCase):
     def toolbar_reads(self, host, extension):
         """What the Browser's toolbar reads of the extension's button, from
         its running worker."""
+        return json.loads(self.in_worker(host, extension, READ_ACTION))
+
+    def in_worker(self, host, extension, expression):
+        """`expression`'s value in the extension's running worker, read as the
+        toolbar reads it."""
         self.calls = getattr(self, 'calls', 0)
 
         def call(method, params, session=None):
@@ -381,11 +439,11 @@ class ExtensionTabs(unittest.TestCase):
                       if t['type'] == 'service_worker' and t['url'].startswith(prefix))
         session = call('Target.attachToTarget', {'targetId': target, 'flatten': True})['sessionId']
         try:
-            read = call('Runtime.evaluate', {'expression': READ_ACTION, 'awaitPromise': True, 'returnByValue': True}, session)
+            read = call('Runtime.evaluate', {'expression': expression, 'awaitPromise': True, 'returnByValue': True}, session)
         finally:
             call('Target.detachFromTarget', {'sessionId': session})
         self.assertNotIn('exceptionDetails', read)
-        return json.loads(read['result']['value'])
+        return read['result']['value']
 
     def panel(self, host, tab, url):
         """An extension page shown in a panel over tab 1, as the Browser
@@ -599,7 +657,45 @@ class ExtensionTabs(unittest.TestCase):
         host, ids = self.start('watcher', access={'watcher': (['scripting'], ['http://127.0.0.1/*'])})
         host.settle(1.0)
         host.navigate(self.url + '/watched')
-        self.assertRegex(self.title(host, 1, 'watched:'), r'^watched:\d+$')
+        try:
+            title = self.title(host, 1, 'watched:')
+        except (TimeoutError, queue.Empty):
+            self.fail('the worker heard ' + self.in_worker(host, ids['watcher'], 'JSON.stringify(heard)'))
+        self.assertRegex(title, r'^watched:\d+$')
+
+    def test_an_extension_that_may_connect_only_to_its_own_servers_finds_its_tabs(self):
+        # Before the person focused any page, as when the Browser starts: the
+        # last focused window is still the page's, as in Chrome.
+        host, ids = self.start('vault', access={'vault': (['tabs'], [])}, focus=False)
+        page = self.url + '/vault'
+        host.navigate(page)
+        # A tab still blank, as a new one is.
+        host.send(op='create_tab', tab=3)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 3)
+        self.panel(host, 2, f'chrome-extension://{ids["vault"]}/popup.html')
+        vault = json.loads(self.title(host, 2, 'vault:')[len('vault:'):])
+        self.assertEqual(vault, {
+            'url': page,
+            'worker': {
+                'url': page,
+                'missing': {'value': True, 'error': 'No window with id: 2000000000.'},
+                'badge': {'blank': 'set', 'page': 'set', 'shown': '3', 'missing': 'No tab with id: 2000000000.'},
+            },
+            'missing': {'value': True, 'error': 'No tab with id: 2000000000.'},
+            'cleared': True,
+        })
+
+    def test_a_script_reaches_the_frame_a_message_came_from(self):
+        host, ids = self.start('framer', access={'framer': (['scripting'], ['http://127.0.0.1/*'])})
+        host.navigate(self.url + '/framed')
+        framed = json.loads(self.title(host, 1, 'framed:')[len('framed:'):])
+        self.assertEqual(framed, {
+            'top': {'frame': 0, 'injected': '/framed', 'id': True},
+            'inner': {'frame': True, 'injected': '/inner', 'id': True},
+            'all': [['main', '/framed'], ['inner', '/inner']],
+            'where': '/inner',
+            'missing': True,
+        })
 
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):
         host, ids = self.start('clicker', access={'clicker': (['activeTab', 'scripting'], [])})
