@@ -169,6 +169,11 @@ pub struct DraftState {
     /// device and after every restart.
     #[model(readonly)]
     pub shown_as: Option<String>,
+    /// What `draft-message` or `draft-reply` wrote, as a fingerprint
+    /// ([`DraftState::fingerprint`]): while the draft still matches it,
+    /// nobody took it up and those verbs may write over it.
+    #[model(readonly)]
+    pub drafted: Option<String>,
 }
 
 impl DraftState {
@@ -234,7 +239,42 @@ impl DraftState {
             attachments: data.attachments,
             rich_body: self.rich_body.clone(),
             shown_as: self.shown_as.clone(),
+            drafted: None,
         }
+    }
+
+    /// A fingerprint of this draft as written, its body started from the
+    /// file `body_digest` names: every field a person changes, and the
+    /// import its body was started from.
+    pub(crate) fn fingerprint(&self, body_digest: &str) -> String {
+        let written = serde_json::json!([
+            self.sender,
+            self.to,
+            self.cc,
+            self.bcc,
+            self.subject,
+            self.body,
+            self.html_body,
+            self.calendar_ics,
+            self.attachments,
+            body_digest,
+        ]);
+        tilo_content::hash_bytes(written.to_string().as_bytes())
+    }
+
+    /// Whether `draft-message` or `draft-reply` wrote this draft and nobody
+    /// changed it since: no field, and its body not started again.
+    pub(crate) fn untouched_since_drafted(&self) -> bool {
+        let (Some(drafted), Some(digest)) = (
+            &self.drafted,
+            self.rich_body
+                .as_ref()
+                .and_then(RichText::state)
+                .and_then(tilo_document::RichTextState::file_digest),
+        ) else {
+            return false;
+        };
+        *drafted == self.fingerprint(digest)
     }
 
     /// Whether it holds anything: a recipient, a subject, a body, an
@@ -377,14 +417,12 @@ impl Mail {
         #[param("Its HTML, when it starts formatted")] html: Option<String>,
     ) {
         let mut body = RichText::default();
-        let html = html
-            .filter(|html| !html.trim().is_empty())
-            .unwrap_or_else(|| quoted_html(&text));
         body.perform(RichTextAction::ReplaceFormatted {
             format: tilo_document::action::ImportFormat::Html,
-            bytes: bounded_text(&html, MAX_DRAFT_BODY_CHARS, true).into_bytes(),
+            bytes: started_body(&text, html),
         });
         self.draft.rich_body = Some(body);
+        self.draft.drafted = None;
     }
 
     /// Save draft
@@ -481,6 +519,7 @@ impl Mail {
             ));
         }
         outbox.push(id, outgoing);
+        self.draft.drafted = None;
         Ok(())
     }
 
@@ -502,9 +541,10 @@ impl Mail {
     /// Draft message
     ///
     /// Writes the draft a person reviews and sends: who it goes to, its
-    /// subject and text. Nothing is sent; a draft already being written is
+    /// subject and text. Nothing is sent. A draft drafted here before and
+    /// changed by nobody since is written over; one a person is writing is
     /// left alone.
-    #[action(local, audience = "agents")]
+    #[action(answers, local, audience = "agents")]
     pub fn draft_message(
         &mut self,
         #[param("Recipients, comma-separated")] to: String,
@@ -519,8 +559,9 @@ impl Mail {
     ///
     /// Writes a reply to a message held in the mailbox as the draft, the
     /// original quoted below it, for a person to review and send. Nothing
-    /// is sent.
-    #[action(local, audience = "agents")]
+    /// is sent. A draft drafted here before and changed by nobody since is
+    /// written over; one a person is writing is left alone.
+    #[action(answers, local, audience = "agents")]
     pub fn draft_reply(
         &mut self,
         #[param("The id of the held message it answers")] message: String,
@@ -577,6 +618,15 @@ fn prepare_attachment(params: &mut mailbox::Attach) -> Result<(), String> {
     params.size = Some(staged.size);
     params.mime = Some(staged.mime);
     Ok(())
+}
+
+/// The HTML a draft body starts from: `html`, or `text` with its `>` lines
+/// quoted.
+pub(crate) fn started_body(text: &str, html: Option<String>) -> Vec<u8> {
+    let html = html
+        .filter(|html| !html.trim().is_empty())
+        .unwrap_or_else(|| quoted_html(text));
+    bounded_text(&html, MAX_DRAFT_BODY_CHARS, true).into_bytes()
 }
 
 /// `text` as HTML: each line a paragraph, a line starting with `> `
