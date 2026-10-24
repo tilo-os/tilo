@@ -64,6 +64,11 @@ pub(super) struct Running {
     pub(super) repaired: bool,
     /// How many times it planned again for news ([`MOST_NEWS_REPLANS`]).
     pub(super) news_replans: u32,
+    /// The steps a re-plan for news replaced, until that re-plan is made:
+    /// one that answers nothing (no steps, "nothing offered fits") picks
+    /// them up again rather than ending the task, so a wait planned a
+    /// moment ago still waits.
+    pub(super) news_resume: Option<Vec<Step>>,
     /// Its waits for messages ([`StepAction::Wait`]).
     pub(super) waits: Waits,
     /// The records its steps opened or acted on: what a re-plan is always
@@ -457,6 +462,37 @@ impl Running {
             ) || error.starts_with(NOTHING_LEFT))
     }
 
+    /// Take up again the steps a re-plan for news replaced, before what
+    /// is left, once that re-plan answered nothing. Returns whether there
+    /// were any.
+    pub(super) fn resume_after_news(&mut self) -> bool {
+        let Some(replaced) = self.news_resume.take() else {
+            return false;
+        };
+        for step in replaced.into_iter().rev() {
+            self.steps.push_front(step);
+        }
+        true
+    }
+
+    /// Put `steps`, a plan of the rest, before what is left
+    /// ([`Self::queue_rest`]). A plan of none answering a re-plan for news
+    /// takes up what that re-plan replaced; one that only plans again has
+    /// not answered yet, and what was replaced waits for its answer.
+    pub(super) fn queue_answer(&mut self, steps: Vec<Step>) {
+        let answered_nothing = steps.is_empty();
+        let replans = steps
+            .iter()
+            .all(|step| matches!(step.action, StepAction::Continue(_)));
+        if !replans {
+            self.news_resume = None;
+        }
+        self.queue_rest(steps);
+        if answered_nothing {
+            self.resume_after_news();
+        }
+    }
+
     /// Put `steps`, a plan of the rest, before what is left. The export
     /// turn runs exports only: a model asked for the missing export that
     /// rewrote the note as well lost what the first plan had written right.
@@ -511,6 +547,7 @@ impl Running {
             observed: VecDeque::new(),
             repaired: false,
             news_replans: 0,
+            news_resume: None,
             waits: Waits::default(),
             touched: Vec::new(),
             made: Vec::new(),
