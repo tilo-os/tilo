@@ -420,29 +420,6 @@ pub(super) fn draw_track(
     ui::widget::Slider::paint(scene, tf, theme, &face);
 }
 
-/// Draw a segmented control over caller-owned rects through the toolkit's
-/// shared [`ui::widget::ToggleGroup::paint`], so the transition row and the
-/// export dialog's option groups look like every other segmented control.
-pub(super) fn draw_segmented(
-    scene: &mut Scene,
-    tf: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    segments: &[Rect],
-    labels: &[&str],
-    selected: usize,
-    cursor: Point,
-) {
-    let hovered = segments.iter().position(|r| r.contains(cursor));
-    let size = segments
-        .first()
-        .map_or(ControlSize::Regular, |r| control_size_for(*r, theme));
-    let face = ui::widget::SegmentedFace::new(segments, labels, selected)
-        .hovered(hovered)
-        .control_size(size);
-    ui::widget::ToggleGroup::paint(scene, tf, tr, theme, &face);
-}
-
 /// Where each part of the transport's readout goes, or `None` for a part
 /// that does not fit **whole**.
 ///

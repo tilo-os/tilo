@@ -95,6 +95,9 @@ fn take_steps() -> usize {
 
 /// A blank editor whose edits go through a test dispatcher, as a hosted
 /// editor's go through the host's.
+#[path = "strip_menu_tests.rs"]
+mod strip_menu_tests;
+
 fn editor() -> VideoEditorApp {
     let mut app = VideoEditorApp::new();
     app.actions = Some(ui::framework::testing::dispatcher::<Project>(
@@ -5628,7 +5631,7 @@ fn export_dialog_layout_availability_and_shortcuts() {
     // "Export needs the `GStreamer` build" and paint an enabled primary Export
     // button directly beneath that sentence.
     {
-        let (mut app, doc) = app_sized(1280.0, 800.0);
+        let (mut app, _doc) = app_sized(1280.0, 800.0);
         app.presentation.export_open = true;
         // The event path lays the dialog out with the theme of the last
         // frame, so paint one first.
@@ -5642,7 +5645,7 @@ fn export_dialog_layout_availability_and_shortcuts() {
         );
         if !app.export_is_offered() {
             // Pressing it must do nothing at all — no job, no status change.
-            app.press_export(&doc, l.confirm.center());
+            app.press_export(l.confirm.center());
             assert!(
                 matches!(app.export_status, ExportStatus::Idle),
                 "a refused Export must not move the status",

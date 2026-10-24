@@ -1,3 +1,4 @@
+use super::strip_menu::StripHost;
 #[allow(
     clippy::wildcard_imports,
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
@@ -462,7 +463,9 @@ impl VideoEditorApp {
             return;
         }
         if self.presentation.export_open {
-            self.press_export(state, p);
+            if !self.open_folded_strip(StripHost::Export, p) {
+                self.press_export(p);
+            }
             return;
         }
         // The shortcut sheet and the go-to-timecode field paint the same
@@ -505,7 +508,9 @@ impl VideoEditorApp {
         // An open inspector overlay owns its own rect, before the preview and
         // timeline underneath it get a look.
         if r.inspector_overlay && self.inspector_is_visible(r) && r.inspector.contains(p) {
-            self.press_inspector(r, p);
+            if !self.open_folded_strip(StripHost::Inspector, p) {
+                self.press_inspector(r, p);
+            }
             return;
         }
         // Empty-bin "Import media" affordance.
@@ -573,7 +578,9 @@ impl VideoEditorApp {
         }
         // Inspector controls.
         if self.inspector_is_visible(r) && r.inspector.contains(p) {
-            self.press_inspector(r, p);
+            if !self.open_folded_strip(StripHost::Inspector, p) {
+                self.press_inspector(r, p);
+            }
             return;
         }
         // Transport controls.
@@ -1218,7 +1225,7 @@ impl VideoEditorApp {
         self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
-    pub(super) fn press_export(&mut self, state: &AutoCommit, p: Point) {
+    pub(super) fn press_export(&mut self, p: Point) {
         // Laid out from the current state, as the next frame will paint it —
         // see `chrome_theme`.
         let l = self.with_dialog_layout(super::VideoEditorApp::export_layout);
@@ -1247,7 +1254,6 @@ impl VideoEditorApp {
                 if self.export_is_offered() {
                     self.request_export();
                 }
-                let _ = state;
             }
             Some(ModalHit::Card) => {
                 // Only an option the body shows can be chosen: on a window too
