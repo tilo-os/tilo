@@ -29,7 +29,6 @@ use super::{
     permissions_pane_layout,
 };
 use ui::TextRole;
-use ui::text_render::TextStyle;
 
 /// The "At a glance" stat tiles: the base surface inside the raised summary
 /// card, with a hairline derived against the card. Where a palette makes
@@ -252,6 +251,9 @@ pub struct WorkspaceSettingsOverlay {
     general_footer_height: f64,
     transition: ui::motion::Presence,
     tab_pill_rects: [Rect; 5],
+    /// The strip that switches between the lens's tabs, and the labels it
+    /// was built with (the catalogue's, which follow the language).
+    tabs: Option<(Vec<String>, ui::widget::ViewTabs)>,
     default_app_rects: Vec<(desktop_policy::ResourceKind, Rect, Rect)>,
     revoke_rects: Vec<(String, Rect)>,
     grant_composer_rects: Option<GrantComposerRects>,
@@ -310,6 +312,7 @@ impl Default for WorkspaceSettingsOverlay {
             general_footer_height: 48.0,
             transition: ui::motion::Presence::closed(),
             tab_pill_rects: [Rect::ZERO; 5],
+            tabs: None,
             default_app_rects: Vec::new(),
             revoke_rects: Vec::new(),
             grant_composer_rects: None,
@@ -1749,12 +1752,10 @@ impl WorkspaceSettingsOverlay {
         (identity, close)
     }
 
-    /// Tab strip. Every pill is a real destination: a host who has
-    /// granted nothing yet still needs to reach the tab that grants.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one ordered paint pass keeps responsive label bounds aligned with tab hit targets"
-    )]
+    /// The tab strip: [`ui::widget::ViewTabs`] over the lens's five tabs,
+    /// each a real destination (a host who has granted nothing yet still
+    /// needs to reach the tab that grants). A narrow lens shows the short
+    /// labels; the strip's tab rects are the click targets.
     fn draw_ws_settings_tab_strip(
         &mut self,
         scene: &mut Scene,
@@ -1764,159 +1765,43 @@ impl WorkspaceSettingsOverlay {
         rect: Rect,
         active_tab: WsTab,
     ) {
-        let tokens = &theme.tokens;
-        let colors = &tokens.colors;
-        let label_style = tokens.typography.style(TextRole::Body);
         let tabs = WsTab::all();
-        let nav = Self::nav_rect_for(rect);
-        // The strip's track: a quiet lift under the Selector pills and a
-        // hairline derived against the panel ground (HIG §9.2/§9.5), not a
-        // ramp slot inside a faded declared border.
-        let nav_rr = RoundedRect::from_rect(nav, f64::from(tokens.radii.control));
-        scene.fill(Fill::NonZero, transform, colors.lift(0.35), None, &nav_rr);
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            ui::tokens::colors::Colors::hairline_on(
-                ui::chrome::shell::panel_ground(theme),
-                ui::chrome::shell::HAIRLINE_ALPHA,
-            ),
-            None,
-            &nav_rr,
-        );
-        let segment_w = nav.width() / f64_of_usize(tabs.len());
-        // Every pill gets the same treatment: the plan is measured once for
-        // the whole strip, so the strip never shows one elided label next to
-        // four intact ones or one icon next to four bare labels.
-        let plan = tab_strip_plan(
-            text_renderer,
-            &label_style,
-            segment_w - 2.0 * Self::PILL_INSET,
-        );
-        // Segment widths follow the measured labels once equal fifths cannot
-        // hold the widest one (the `s1` pill margins each side are part of
-        // the need), so "General" at 200 % is not elided beside pills with
-        // slack.
-        let reserved = TAB_LABEL_INSET
-            + 2.0 * Self::PILL_INSET
-            + if plan.icons {
-                TAB_ICON_PX + TAB_ICON_GAP
-            } else {
-                0.0
-            };
-        let needs: Vec<f64> = tabs
-            .iter()
-            .map(|tab| {
-                let label = if plan.compact {
-                    tab.compact_label()
-                } else {
-                    tab.label()
-                };
-                f64::from(text_renderer.measure_style(&label, None, &label_style).0) + reserved
-            })
-            .collect();
-        let widths = tab_pill_widths(&needs, nav.width());
-        // Written into the component's cache after the loop
-        // so one source of geometry feeds draw and click-routing.
-        let mut pill_rects = [Rect::ZERO; 5];
-        for (i, tab) in tabs.iter().enumerate() {
-            let active = *tab == active_tab;
-            let label = if plan.compact {
-                tab.compact_label()
-            } else {
-                tab.label()
-            };
-
-            let seg_x0 = nav.x0 + widths.iter().take(i).sum::<f64>();
-            let seg_w = widths.get(i).copied().unwrap_or(segment_w);
-            let pill_rect = Rect::new(
-                seg_x0 + Self::PILL_INSET,
-                nav.y0 + Self::PILL_INSET,
-                seg_x0 + seg_w - Self::PILL_INSET,
-                nav.y1 - Self::PILL_INSET,
-            );
-            if let Some(slot) = pill_rects.get_mut(i) {
-                *slot = pill_rect;
-            }
-            // Selector role (HIG §9.1/§9.3): a capsule, and the chosen tab is
-            // a lift with a derived hairline — never a declared border on a
-            // raised fill, which is invisible on the dark preset.
-            let pill_radius = ui::chrome::ChromeRole::Selector.radius(theme, pill_rect.height());
-            let pill = RoundedRect::from_rect(pill_rect, pill_radius);
-            if active {
-                let tier =
-                    ui::chrome::selection_tier(theme, ui::chrome::SelectionState::active(true));
-                scene.fill(Fill::NonZero, transform, tier.fill, None, &pill);
-                if let Some(border) = tier.border {
-                    // Crisp: the hairline covers the pill's outermost pixel
-                    // row, the same row every `ui::surface::card` edge uses.
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        border,
-                        None,
-                        &ui::surface::edge_outline(pill_rect, pill_radius),
-                    );
-                }
-            }
-            let color = if active {
-                colors.text_primary
-            } else {
-                colors.text_dim
-            };
-            let icon = match tab {
-                WsTab::General => ui::icons::Icon::Settings2,
-                WsTab::Members => ui::icons::Icon::Home,
-                WsTab::Agents => ui::icons::Icon::Sparkles,
-                WsTab::Permissions => ui::icons::Icon::Shield,
-                WsTab::Apps => ui::icons::Icon::LayoutGrid,
-            };
-            let show_icon = plan.icons;
-            let icon_size = if show_icon { TAB_ICON_PX } else { 0.0 };
-            let icon_gap = if show_icon { TAB_ICON_GAP } else { 0.0 };
-            let label = text_renderer.elide_to_width_style(
-                &label,
-                f32_of_f64(pill_rect.width() - icon_size - icon_gap - 8.0),
-                &label_style,
-            );
-            let (w, h) = text_renderer.measure_style(&label, None, &label_style);
-            let content_w = icon_size + icon_gap + f64::from(w);
-            let content_x = pill_rect.center().x - content_w / 2.0;
-            if show_icon {
-                ui::icons::draw_icon(
-                    scene,
-                    transform,
-                    Rect::new(
-                        content_x,
-                        pill_rect.center().y - icon_size / 2.0,
-                        content_x + icon_size,
-                        pill_rect.center().y + icon_size / 2.0,
-                    ),
-                    icon,
-                    if active {
-                        colors.intent.accent_hover
-                    } else {
-                        color
-                    },
-                    ui::icons::LUCIDE_DEFAULT_STROKE_PX,
-                );
-            }
-            text_renderer.draw_style(
-                scene,
-                &label,
-                color,
-                transform.pre_translate(
-                    (
-                        content_x + icon_size + icon_gap,
-                        pill_rect.center().y - f64::from(h) / 2.0,
-                    )
-                        .into(),
-                ),
-                None,
-                &label_style,
-            );
+        let labels: Vec<String> = tabs.iter().map(WsTab::label).collect();
+        if self.tabs.as_ref().is_none_or(|(built, _)| *built != labels) {
+            let segments = tabs
+                .iter()
+                .zip(&labels)
+                .map(|(tab, label)| {
+                    ui::widget::Segment::new(label.clone()).short(tab.compact_label())
+                })
+                .collect();
+            let strip = ui::widget::ViewTabs::new(segments, 0)
+                .with_id("ws_settings_tabs")
+                .with_accessible_name(t("workspace-settings-title"));
+            self.tabs = Some((labels, strip));
         }
-        self.tab_pill_rects = pill_rects;
+        let Some((_, strip)) = self.tabs.as_mut() else {
+            return;
+        };
+        let selected = tabs.iter().position(|tab| *tab == active_tab).unwrap_or(0);
+        if strip.selected() != selected {
+            strip.set_selected(selected);
+        }
+        let nav = Self::nav_rect_for(rect);
+        strip.apply_layout_external(nav);
+        ui::widget::Widget::draw(
+            strip,
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+        // The first draw measures the labels in this theme; place again so
+        // the targets are where the tabs now stand.
+        strip.apply_layout_external(nav);
+        self.tab_pill_rects =
+            std::array::from_fn(|index| strip.tab_rect(index).unwrap_or(Rect::ZERO));
     }
 
     /// Dispatches to the Members/Permissions/Apps tab body when one of
@@ -2998,24 +2883,9 @@ impl WorkspaceSettingsOverlay {
     }
 }
 
-/// Glyph size and gap for a tab pill's leading icon.
 /// The Public card: its title and switch, the listing's line, and the role
 /// and description controls.
 const PUBLIC_CARD_HEIGHT: f64 = 124.0;
-const TAB_ICON_PX: f64 = 15.0;
-const TAB_ICON_GAP: f64 = 7.0;
-/// Text inset inside a tab pill, both sides together.
-const TAB_LABEL_INSET: f64 = 8.0;
-
-/// One decision for the whole tab strip: which label set to show, and
-/// whether the pills have room for their icons.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct TabStripPlan {
-    /// Use every tab's `compact_label` instead of its full label.
-    pub compact: bool,
-    /// Paint the leading icon in every pill.
-    pub icons: bool,
-}
 
 /// A card's button: the shared [`ui::widget::ButtonFace`] of `role`,
 /// pressed in while `toggled`, dimmed and inert while not `enabled`.
@@ -3062,73 +2932,6 @@ fn paint_card_button(
             .toggled(button.toggled)
             .disabled(!button.enabled),
     );
-}
-
-/// Measure the strip's labels at the size they are drawn and choose the
-/// densest treatment where **every** tab still fits its pill intact.
-///
-/// The previous rule switched to compact labels on the lens width alone
-/// and decided icons per pill, so at 200 % text the active "General"
-/// pill elided while its neighbours did not and one pill out of five kept
-/// an icon. Elision is the last resort, applied uniformly, never the first.
-pub(crate) fn tab_strip_plan(
-    text_renderer: &mut TextRenderer,
-    style: &TextStyle,
-    pill_w: f64,
-) -> TabStripPlan {
-    let mut widest = |labels: &[String]| -> f64 {
-        labels
-            .iter()
-            .map(|label| f64::from(text_renderer.measure_style(label, None, style).0))
-            .fold(0.0, f64::max)
-    };
-    let full: Vec<String> = WsTab::all().iter().map(WsTab::label).collect();
-    let compact: Vec<String> = WsTab::all().iter().map(WsTab::compact_label).collect();
-    let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
-    let fits = |label_w: f64, with_icon: bool| {
-        label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w
-    };
-    let full_w = widest(&full);
-    if fits(full_w, true) {
-        return TabStripPlan {
-            compact: false,
-            icons: true,
-        };
-    }
-    let compact_w = widest(&compact);
-    if fits(compact_w, true) {
-        return TabStripPlan {
-            compact: true,
-            icons: true,
-        };
-    }
-    if fits(full_w, false) {
-        return TabStripPlan {
-            compact: false,
-            icons: false,
-        };
-    }
-    TabStripPlan {
-        compact: true,
-        icons: false,
-    }
-}
-
-/// Segment widths for the tab strip. Equal shares while every label fits
-/// its share; otherwise each segment takes its measured share of the strip,
-/// so one long label is not elided while its neighbours keep slack. Always
-/// sums to `nav_width`.
-pub(crate) fn tab_pill_widths(needs: &[f64], nav_width: f64) -> Vec<f64> {
-    let count = needs.len();
-    if count == 0 {
-        return Vec::new();
-    }
-    let equal = nav_width / f64_of_usize(count);
-    let total: f64 = needs.iter().sum();
-    if needs.iter().all(|need| *need <= equal) || total <= 0.0 {
-        return vec![equal; count];
-    }
-    needs.iter().map(|need| need / total * nav_width).collect()
 }
 
 /// Accent-toned text on `ground`: the accent as ink, stepped out until it
@@ -3636,72 +3439,6 @@ mod tests {
         {
             let close = WorkspaceSettingsOverlay::close_rect_for(Rect::new(0.0, 0.0, 540.0, 700.0));
             assert!(close.width() >= 32.0 && close.height() >= 32.0);
-        }
-    }
-
-    #[test]
-    fn tab_strip_compacts_labels_before_eliding_and_measures_only_when_needed() {
-        {
-            let mut text = TextRenderer::new();
-            // The 540 px laptop lens at 100 %: five ~95 px pills.
-            let base = Theme::dark();
-            let plan = tab_strip_plan(&mut text, &base.text(TextRole::Body), 95.6);
-            assert!(plan.icons, "at 100% every pill has room for its icon");
-            // The same lens at 200 % text: no pill can hold a full label, so the
-            // whole strip drops to compact labels (and icons only if they all
-            // fit) instead of eliding the active tab alone.
-            let large = Theme::dark().with_text_scale(2.0);
-            let label_style = large.text(TextRole::Body);
-            // In the 540 px lens even compact labels overflow a 95.6 px pill at
-            // 28 px type, so the plan drops to compact labels without icons and
-            // every pill elides by the same rule — never the active tab alone.
-            let plan = tab_strip_plan(&mut text, &label_style, 95.6);
-            assert_eq!(
-                plan,
-                TabStripPlan {
-                    compact: true,
-                    icons: false
-                }
-            );
-            // In the 800 px lens (145.6 px pills) compact labels fit with icons.
-            let plan = tab_strip_plan(&mut text, &label_style, 145.6);
-            assert_eq!(
-                plan,
-                TabStripPlan {
-                    compact: true,
-                    icons: true
-                }
-            );
-            let widest = WsTab::all()
-                .iter()
-                .map(|tab| {
-                    f64::from(
-                        text.measure_style(&tab.compact_label(), None, &label_style)
-                            .0,
-                    )
-                })
-                .fold(0.0, f64::max);
-            assert!(
-                widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
-                "the chosen plan fits its widest label ({widest}) into the pill"
-            );
-        }
-
-        {
-            let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
-            assert_eq!(equal.len(), 5);
-            assert!(equal.iter().all(|w| (*w - 100.0).abs() < f64::EPSILON));
-
-            let measured = tab_pill_widths(&[120.0, 80.0, 80.0, 90.0, 70.0], 500.0);
-            assert!(
-                (measured.iter().sum::<f64>() - 500.0).abs() < 1e-9,
-                "fills the strip exactly"
-            );
-            for (need, width) in [120.0, 80.0, 80.0, 90.0, 70.0].iter().zip(&measured) {
-                assert!(width >= need, "every label fits its pill: {measured:?}");
-            }
-            assert!(measured[0] > measured[4]);
-            assert!(tab_pill_widths(&[], 500.0).is_empty());
         }
     }
 
