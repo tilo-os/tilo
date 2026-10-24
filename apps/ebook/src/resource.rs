@@ -1130,6 +1130,16 @@ impl ResourceSurface<Ebook, BooksEffect> for BooksApp {
         self.attach_host(&cx);
     }
 
+    const APPLIED: bool = true;
+
+    /// A removal applied here, from the shelf, the palette, a script or an
+    /// agent once the person agreed: this device forgets the book's file.
+    fn applied(&mut self, action: &<Ebook as tilo_resource::Resource>::Action) {
+        if let EbookAction::RemoveFromLibrary(removed) = &action.operation {
+            self.forget_removed(&removed.book);
+        }
+    }
+
     fn stage(&mut self, scenario: Option<&str>) {
         self.stage_scenario(scenario.unwrap_or("read"));
     }
