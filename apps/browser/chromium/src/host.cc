@@ -1016,7 +1016,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
           const bool again=click_count_>0 && type==click_button_ && now-click_time_<=std::chrono::milliseconds(500)
             && std::abs(event.x-click_x_)<=4 && std::abs(event.y-click_y_)<=4;
           click_count_=again?std::min(click_count_+1,3):1;
-          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;
+          click_button_=type;click_time_=now;click_x_=event.x;click_y_=event.y;activated_=now;
         }
         host->SendMouseClickEvent(event,type,!down,std::max(click_count_,1)); }
     } else if(op=="modifiers") key_modifiers_=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
@@ -1024,7 +1024,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto frame=browser_->GetFocusedFrame();
       if(frame) { if(d->GetString("direction")=="undo") frame->Undo();else frame->Redo(); }
     }
-    else if(op=="key") Key(d);
+    else if(op=="key") {if(d->GetBool("down"))activated_=std::chrono::steady_clock::now();Key(d);}
     else if(op=="scripts" || op=="blocking_scripts") {auto& scripts=op=="scripts"?scripts_:blocking_scripts_;scripts.clear();auto list=d->GetList("scripts");if(list) for(size_t i=0;i<list->GetSize();++i) scripts.push_back(list->GetString(i));UpdateScriptPolicy();}
     else if(op=="permission_decision") capabilities_->PermissionDecision(d->GetInt("id"),d->GetBool("allow"),d->HasKey("dismiss") && d->GetType("dismiss")==VTYPE_BOOL && d->GetBool("dismiss"));
     else if(op=="clear_on_exit") clear_on_exit=d->GetBool("enabled");
@@ -1122,6 +1122,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void LoadUrl(const std::string& url) {if(browser_)browser_->GetMainFrame()->LoadURL(url);}
   void ReloadPage(bool bypass) {if(!browser_)return;if(bypass)browser_->ReloadIgnoreCache();else browser_->Reload();}
   bool detached() const {return transfer_owner_;}
+  // The person clicked here or pressed a key within the last few seconds,
+  // as long as Chromium counts it as their activation of the page.
+  bool activated() const {return activated_ && std::chrono::steady_clock::now()-*activated_<=std::chrono::seconds(5);}
   bool accepts_downloads() const {return browser_ && !transfer_owner_ && !native_closing_;}
   void CloseNative() {if(!browser_ || native_closing_)return;InvalidateCredentials();native_closing_=true;browser_->GetHost()->CloseDevTools();browser_->GetHost()->CloseBrowser(true);}
   void DetachVisible() {
@@ -1412,6 +1415,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
+  std::optional<std::chrono::steady_clock::time_point> activated_;
   CefRefPtr<tilo::TabInspector> inspector_;CefRefPtr<tilo::DocumentScripts> extension_scripts_;
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
@@ -1665,6 +1669,26 @@ void StartExtensionTabs() {
   hooks.frame=[](int tab)->std::shared_ptr<tilo::ExtensionFrame> {auto client=ClientOf(tab);return client?client->PaintedFrame():nullptr;};
   hooks.pipe=&PipeCall;
   hooks.event=[](int tab,const std::string& name,CefRefPtr<CefDictionaryValue> fields) {if(auto client=ClientOf(tab))client->Event(name,fields);};
+  // An extension's download belongs to a page, as every download here
+  // does: the one it was asked on, else any the person can see.
+  hooks.download=[](int tab,const std::string& url,const std::string& name,tilo::Downloads::Started done) {
+    auto client=ClientOf(tab);
+    if(client && !client->accepts_downloads()) {client=nullptr;tab=0;}
+    for(const auto& [id,other]:clients)if(!client && other->accepts_downloads() && !other->ExtensionState().panel) {client=other;tab=id;}
+    if(!downloads || !client) {done(0,"No page to download from");return;}
+    downloads->Expect(tab,url,name,std::move(done));
+    client->browser_->GetHost()->StartDownload(url);
+  };
+  hooks.open_download=[](int tab,int id,bool reveal)->std::string {
+    if(!downloads || !downloads->Known(id))return "Invalid downloadId";
+    if(downloads->CompletedPath(id).empty())return "Download must be complete";
+    auto client=ClientOf(tab);
+    if(!client)return "No window to open it in";
+    auto fields=CefDictionaryValue::Create();fields->SetInt("id",id);fields->SetBool("reveal",reveal);
+    client->Event("extension_download_open",fields);
+    return "";
+  };
+  hooks.activated=[](int tab) {auto client=ClientOf(tab);return client && client->activated();};
   hooks.pipe_listen=[](const std::string& session,tilo::ExtensionTabs::PipeListener listener) {
     if(listener)pipe_listeners[session]=std::move(listener);else pipe_listeners.erase(session);
   };

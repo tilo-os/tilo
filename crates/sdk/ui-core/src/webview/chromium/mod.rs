@@ -2223,6 +2223,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_some_and(|text| text.len() <= 1024 * 1024)
         }
         "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
+        "extension_download_open" => valid_id(value) && value["reveal"].is_boolean(),
         "find_selection" => {
             valid_id(value)
                 && ["x", "y", "width", "height"].iter().all(|key| {
@@ -2589,6 +2590,10 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             extension_permissions::decode(value)?
         }
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
+        "extension_download_open" => WebViewEvent::ExtensionDownloadOpen {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            reveal: value["reveal"].as_bool()?,
+        },
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             ok: value["ok"].as_bool()?,

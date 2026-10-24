@@ -563,6 +563,23 @@ content scripts (with `sender.tab`) work without help.
   the same. An API Chromium itself gives only an extension that holds it
   in Chromium's own records (`chrome.bookmarks`) stays missing when the
   person grants it here: what the host answers follows the grant.
+- `downloads.download` goes through the Browser's own downloads
+  (`src/capabilities.h`): Chromium cancels a download an extension starts
+  on none of its windows' tabs, so the host starts it on the page the call
+  came from or the one in front, and the person is asked as for any
+  download, which also answers `saveAs`. The extension gets the download's
+  id once it started (the first download on that page from the address it
+  asked for), and it is saved under the last part of `filename`, in a
+  folder of its own like every download here. An address is a web one,
+  `data:` or a blob of the extension's own pages; a request body or headers
+  of its own are refused. Everything else (`search`, `pause`, `resume`,
+  `cancel`, `erase`, `onCreated`, `onChanged`) is Chromium's, which sees
+  every download of the profile. `open` and `show` ask the Browser showing
+  the page (`extension_download_open`), which opens a complete download, or
+  shows it in its folder, as its own Open and Show in Files do; `open`
+  needs `downloads.open` and, as in Chrome, the person's click or key in
+  the extension's page, or on its button, menu item or shortcut, in the
+  last five seconds.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for

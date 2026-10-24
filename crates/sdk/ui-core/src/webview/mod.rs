@@ -655,6 +655,13 @@ pub enum WebViewEvent {
         id: String,
         granted: ExtensionPermissionSet,
     },
+    /// An extension asked to open one of the engine's complete downloads
+    /// (`chrome.downloads.open`), or show it in its folder (`reveal`,
+    /// `chrome.downloads.show`), from this tab's window.
+    ExtensionDownloadOpen {
+        id: u32,
+        reveal: bool,
+    },
     SiteStatus(SiteStatus),
     SiteResult {
         request_id: u32,

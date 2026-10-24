@@ -84,6 +84,12 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   extension holds at once, reaches the page with, and hears of in its
   worker; what it gives up it loses. What it was granted in an earlier run
   it holds from the start.
+- An extension's download is the Browser's: the person is asked, under the
+  name the extension chose; the extension learns its id, finds it, pauses,
+  resumes and cancels it and hears of each change; a refusal reaches it as
+  Chrome's; its own data, and a file its page made, download too; it opens
+  a download only on the person's click, and shows one in its folder,
+  through the Browser.
 """
 import base64
 import hashlib
@@ -360,6 +366,8 @@ MENU_PAGE = """<!doctype html><title>menus</title><body style="margin:0">
 KEYS_PAGE = (b'<!doctype html><title>keys</title><body>keys'
              b"<script>addEventListener('keydown', (e) => { document.title = 'key:' + e.key; });</script>")
 IMAGE = b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'
+# A file served under /download/, slowly enough to pause it on its way.
+DOWNLOAD = bytes(range(256)) * (4 * 4096)
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -383,6 +391,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass
 
     def do_GET(self):
+        if self.path.startswith('/download/'):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', 'attachment; filename=served.bin')
+            self.send_header('Content-Length', str(len(DOWNLOAD)))
+            self.end_headers()
+            for at in range(0, len(DOWNLOAD), 65536):
+                self.wfile.write(DOWNLOAD[at:at + 65536])
+                self.wfile.flush()
+                time.sleep(0.05)
+            return
         kind = 'text/html'
         if self.path == '/shot':
             body = SHOT.encode()
@@ -1457,6 +1476,115 @@ class ExtensionTabs(unittest.TestCase):
         missing = self.in_worker(host, spotter, "chrome.declarativeNetRequest.getMatchedRules({tabId: 2000000000})"
                                  ".then(() => 'answered', (e) => e.message)")
         self.assertEqual(missing, 'No tab with id: 2000000000.')
+
+    def test_an_extensions_download_is_the_browsers_and_the_extension_follows_it(self):
+        host, ids = self.start('downloader', access={'downloader': (['downloads', 'downloads.open'], [])})
+        host.navigate(self.url + '/page')
+        worker = lambda expression: self.in_worker(host, ids['downloader'], f'outcome({expression})')
+
+        def first(match):
+            """The first event since the last one `first` returned that
+            `match`es, also one that came while the test waited for another."""
+            for at in range(self.mark, len(host.seen)):
+                if match(host.seen[at]):
+                    self.mark = at + 1
+                    return host.seen[at]
+            found = host.until(match)
+            self.mark = len(host.seen)
+            return found
+        self.mark = 0
+
+        # Refused before anything is fetched, with Chrome's errors.
+        self.assertEqual(worker("chrome.downloads.download({url: 'file:///etc/hosts'})"), {'error': 'Invalid URL'})
+        self.assertEqual(worker(f"chrome.downloads.download({{url: '{self.url}/download/a', filename: '../up.bin'}})"),
+                         {'error': 'Invalid filename'})
+        self.assertFalse(any(e['event'] == 'download_prompt' for e in host.seen))
+
+        # The person is asked, under the name the extension chose, and the
+        # extension has the download's id as it starts.
+        address = f'{self.url}/download/kept'
+        started = worker(f"chrome.downloads.download({{url: '{address}', filename: 'reports/kept.bin', saveAs: true}})")
+        prompt = first(lambda e: e['event'] == 'download_prompt')
+        self.assertEqual(started, {'value': prompt['id']})
+        self.assertEqual((prompt['name'], prompt['url']), ('kept.bin', address))
+        download = prompt['id']
+        host.send(op='download_decision', id=download, allow=True)
+        first(lambda e: e['event'] == 'download' and e['id'] == download and e['received'] >= 65536)
+
+        # Paused and resumed by the extension, which finds it as it is.
+        self.assertEqual(worker(f'chrome.downloads.pause({download})'), {'value': None})
+        paused = worker(f'chrome.downloads.search({{id: {download}}})')['value']
+        self.assertEqual([(item['paused'], item['state'], item['url']) for item in paused], [(True, 'in_progress', address)])
+        self.assertEqual(worker(f'chrome.downloads.resume({download})'), {'value': None})
+        done = first(lambda e: e['event'] == 'download' and e['id'] == download and e['state'] != 'progress')
+        self.assertEqual(done['state'], 'complete', done)
+        self.assertEqual(Path(done['path']).name, 'kept.bin')
+        self.assertEqual(Path(done['path']).read_bytes(), DOWNLOAD)
+        found = worker("chrome.downloads.search({filenameRegex: 'kept'})")['value']
+        self.assertEqual([(item['id'], item['state'], item['filename']) for item in found], [(download, 'complete', done['path'])])
+
+        # It heard of each change, as from Chrome.
+        heard = self.in_worker(host, ids['downloader'], 'JSON.stringify(heard)')
+        changes = [entry['changed'] for entry in json.loads(heard) if 'changed' in entry and entry['changed']['id'] == download]
+        created = [entry['created'] for entry in json.loads(heard) if 'created' in entry]
+        self.assertEqual([(item['id'], item['url']) for item in created], [(download, address)])
+        self.assertIn({'current': True, 'previous': False}, [change.get('paused') for change in changes])
+        self.assertIn({'current': False, 'previous': True}, [change.get('paused') for change in changes])
+        self.assertEqual(changes[-1]['state'], {'current': 'complete', 'previous': 'in_progress'})
+
+        # Opened only on the person's click, as in Chrome; shown in its
+        # folder at any time. The Browser showing the page does either.
+        self.assertEqual(worker(f'chrome.downloads.open({download})'), {'error': 'User gesture required'})
+        self.assertFalse(any(e['event'] == 'extension_download_open' for e in host.seen))
+        # Chrome's show() answers at once, with nothing.
+        self.assertTrue(self.in_worker(host, ids['downloader'], f'chrome.downloads.show({download}) === undefined'))
+        shown = first(lambda e: e['event'] == 'extension_download_open')
+        self.assertEqual((shown.get('tab', 1), shown['id'], shown['reveal']), (1, download, True))
+        host.send(op='extension_click', id=ids['downloader'])
+        host.settle(0.5)
+        self.assertEqual(worker(f'chrome.downloads.open({download})'), {'value': None})
+        opened = first(lambda e: e['event'] == 'extension_download_open' and not e['reveal'])
+        self.assertEqual((opened.get('tab', 1), opened['id']), (1, download))
+
+        # A download the person refuses is one the extension hears was
+        # cancelled; one it cancels itself stops.
+        started = worker(f"chrome.downloads.download({{url: '{self.url}/download/refused'}})")
+        refused = first(lambda e: e['event'] == 'download_prompt')
+        self.assertEqual(started, {'value': refused['id']})
+        self.assertEqual(refused['name'], 'served.bin')
+        host.send(op='download_decision', id=refused['id'], allow=False)
+        first(lambda e: e['event'] == 'download' and e['id'] == refused['id'] and e['state'] == 'cancelled')
+        item = worker(f"chrome.downloads.search({{id: {refused['id']}}})")['value']
+        self.assertEqual([(i['state'], i['error']) for i in item], [('interrupted', 'USER_CANCELED')])
+        self.assertEqual(worker(f'chrome.downloads.open({refused["id"]})'), {'error': 'Download must be complete'})
+
+        started = worker(f"chrome.downloads.download({{url: '{self.url}/download/cancelled'}})")
+        cancelled = first(lambda e: e['event'] == 'download_prompt')
+        host.send(op='download_decision', id=cancelled['id'], allow=True)
+        first(lambda e: e['event'] == 'download' and e['id'] == cancelled['id'] and e['received'] > 0)
+        self.assertEqual(worker(f"chrome.downloads.cancel({cancelled['id']})"), {'value': None})
+        first(lambda e: e['event'] == 'download' and e['id'] == cancelled['id'] and e['state'] == 'cancelled')
+
+        # Its own data, which needs no server.
+        data = 'data:text/csv;base64,' + base64.b64encode(b'name,count\nkept,1\n').decode()
+        started = worker(f"chrome.downloads.download({{url: '{data}', filename: 'export.csv'}})")
+        exported = first(lambda e: e['event'] == 'download_prompt')
+        self.assertEqual(started, {'value': exported['id']})
+        self.assertEqual(exported['name'], 'export.csv')
+        host.send(op='download_decision', id=exported['id'], allow=True)
+        saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
+        self.assertEqual(saved['state'], 'complete', saved)
+        self.assertEqual(Path(saved['path']).read_bytes(), b'name,count\nkept,1\n')
+
+        # A file one of its pages made, from the page's own address for it.
+        self.panel(host, 2, f'chrome-extension://{ids["downloader"]}/export.html')
+        exported = first(lambda e: e['event'] == 'download_prompt')
+        self.assertEqual(self.title(host, 2, 'exported:'), f'exported:{exported["id"]}')
+        self.assertEqual(exported['name'], 'settings.csv')
+        host.send(op='download_decision', id=exported['id'], allow=True)
+        saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
+        self.assertEqual(saved['state'], 'complete', saved)
+        self.assertEqual(Path(saved['path']).read_bytes(), b'setting,on\n')
 
 
 def walk(items):

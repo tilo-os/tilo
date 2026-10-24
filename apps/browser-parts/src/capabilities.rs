@@ -99,6 +99,26 @@ fn open_download(
     Ok(request.thread_name("browser-open-download").send())
 }
 
+/// Open a finished download, or reveal its folder, and say in the downloads'
+/// notice why that did not work.
+fn launch_download(path: &std::path::Path, reveal: bool, notice: &ui::LocalStateWriter<String>) {
+    match open_download(path, reveal) {
+        Err(message) => notice.set(message),
+        Ok(channel) => {
+            let notice = notice.clone();
+            let _ = std::thread::Builder::new()
+                .name("browser-open-download-result".into())
+                .spawn(move || {
+                    notice.set(match channel.recv() {
+                        Ok(ui::portal::LaunchOutcome::Opened) => String::new(),
+                        Ok(ui::portal::LaunchOutcome::Failed(reason)) => reason,
+                        Err(_) => "Could not open the download. Try revealing its folder.".into(),
+                    });
+                });
+        }
+    }
+}
+
 #[derive(Default)]
 struct Download {
     name: String,
@@ -234,6 +254,9 @@ impl Capabilities {
             }
             WebViewEvent::NativeDownloadRequested { id, url, name } => {
                 self.request_download(id, url, name);
+            }
+            WebViewEvent::ExtensionDownloadOpen { id, reveal } => {
+                self.open_for_extension(id, reveal);
             }
             WebViewEvent::DownloadUpdated {
                 id,
@@ -442,6 +465,25 @@ impl Capabilities {
     pub fn prompt_is_permission(&self) -> bool {
         !self.permissions.is_empty() || self.asks_for_extension()
     }
+    /// An extension asked to open the engine's download `id`, or show it in
+    /// its folder (`chrome.downloads.open`, `show`), as the person's Open and
+    /// Show in Files do. The engine asks only for a complete one; the file
+    /// it was saved to must still be there. Whether it was opened.
+    pub fn open_for_extension(&self, id: u32, reveal: bool) -> bool {
+        let downloads = self.downloads.borrow();
+        let Some(path) = downloads
+            .records
+            .get(&id)
+            .filter(|download| download.state == "complete" && !download.path.is_empty())
+            .map(|download| std::path::PathBuf::from(&download.path))
+        else {
+            tracing::warn!("an extension's download {id} was not opened: it is not complete here");
+            return false;
+        };
+        drop(downloads);
+        launch_download(&path, reveal, &self.notice.writer());
+        true
+    }
     /// The person dismissed the question on offer: a permission is set aside
     /// unanswered, so the site may ask again; an extension's request and a
     /// download are declined.
@@ -537,29 +579,8 @@ impl Capabilities {
                     let path = std::path::PathBuf::from(&d.path);
                     let notice = self.notice.writer();
                     buttons.push(
-                        Button::new(&format!("browser.download.{name}.{id}"), label).on_effect(
-                            move || match open_download(&path, reveal) {
-                                Err(message) => notice.set(message),
-                                Ok(channel) => {
-                                    let notice = notice.clone();
-                                    let _ = std::thread::Builder::new()
-                                        .name("browser-open-download-result".into())
-                                        .spawn(move || {
-                                            notice.set(match channel.recv() {
-                                                Ok(ui::portal::LaunchOutcome::Opened) => {
-                                                    String::new()
-                                                }
-                                                Ok(ui::portal::LaunchOutcome::Failed(reason)) => {
-                                                    reason
-                                                }
-                                                Err(_) => "Could not open the download. \
-                                                             Try revealing its folder."
-                                                    .into(),
-                                            });
-                                        });
-                                }
-                            },
-                        ),
+                        Button::new(&format!("browser.download.{name}.{id}"), label)
+                            .on_effect(move || launch_download(&path, reveal, &notice)),
                     );
                 }
             }
@@ -919,5 +940,28 @@ mod tests {
                 "browser.download.terminal-status"
             ));
         }
+    }
+
+    #[test]
+    fn an_extension_opens_only_a_complete_download_the_engine_reported() {
+        let mut capabilities = Capabilities::default();
+        let update = |id, state: &str| WebViewEvent::DownloadUpdated {
+            id,
+            state: state.into(),
+            // Gone since: nothing is launched, the notice says so.
+            path: "/nonexistent/tilo-extension-download".into(),
+            name: "report.csv".into(),
+            url: "https://downloads.test/report.csv".into(),
+            retryable: true,
+            received: 10,
+            total: 20,
+            error: String::new(),
+        };
+        capabilities.apply(update(3, "progress"));
+        capabilities.apply(update(4, "complete"));
+        assert!(!capabilities.open_for_extension(3, false));
+        assert!(!capabilities.open_for_extension(9, true));
+        assert!(capabilities.open_for_extension(4, false));
+        assert!(capabilities.open_for_extension(4, true));
     }
 }
