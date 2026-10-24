@@ -41,8 +41,9 @@ test('an invitation names the inviter and comes back as base64url text', async (
 test('the owner lists, admits, declines and removes people', async () => {
   const host = fakeHost({
     List: () => ({Rooms: [room]}),
-    Requests: () => ({Requests: [{request_id: key(9), user_public_key: key(0xcc), device_public_key: key(0xcd), name: 'Cy', role: 'Editor', requested_at_ns: 5e6},
-      {request_id: key(8), user_public_key: key(0), device_public_key: key(0), name: 'ed@example.org', role: 'Editor', requested_at_ns: 6e6}]}),
+    Requests: () => ({Requests: [{request_id: key(9), user_public_key: key(0xcc), device_public_key: key(0xcd), name: 'Cy', role: 'Editor', requested_at_ns: 5e6}]}),
+    WaitList: () => ({WaitList: [{request_id: key(8), contact: 'ed@example.org', added_at_ns: 6e6}]}),
+    Unlist: () => ({WaitList: []}),
     Pending: () => ({Pending: [{invite_id: key(4), role: 'Editor', expires_at_ns: 9e9}]}),
     Notices: () => ({Notices: [{PreAdmitted: {user_public_key: key(0xdd), name: 'Di', label: 'di@example.com', role: 'Editor', at_ns: 7e6}}]}),
     Admit: () => ({Room: room}),
@@ -56,11 +57,12 @@ test('the owner lists, admits, declines and removes people', async () => {
   assert.equal(listed.name, 'Acme');
   assert.deepEqual(listed.members[0], {userPublicKey: 'aa'.repeat(32), name: 'Ada', role: 'editor', owner: true, removed: false});
   assert.deepEqual(listed.waiting, [
-    {requestId: '09'.repeat(32), userPublicKey: 'cc'.repeat(32), devicePublicKey: 'cd'.repeat(32), name: 'Cy', role: 'editor', requestedAtMs: 5, contact: null},
-    // Left at the door without an invitation: the address to invite.
-    {requestId: '08'.repeat(32), userPublicKey: '00'.repeat(32), devicePublicKey: '00'.repeat(32), name: 'ed@example.org', role: 'editor',
-      requestedAtMs: 6, contact: 'ed@example.org'},
+    {requestId: '09'.repeat(32), userPublicKey: 'cc'.repeat(32), devicePublicKey: 'cd'.repeat(32), name: 'Cy', role: 'editor', requestedAtMs: 5},
   ]);
+  // Addresses left at the door are a list of their own: nobody to admit.
+  assert.deepEqual(await membership.waitList(), [{requestId: '08'.repeat(32), contact: 'ed@example.org', addedAtMs: 6}]);
+  await membership.unlist('08'.repeat(32));
+  assert.deepEqual(host.sent.at(-1), {Unlist: {room: ROOM, request_id: key(8)}});
   assert.deepEqual(listed.invitations, [{inviteId: '04'.repeat(32), role: 'editor', expiresAtMs: 9000}]);
   assert.deepEqual(listed.notices, [{kind: 'pre-admitted', userPublicKey: 'dd'.repeat(32), name: 'Di', label: 'di@example.com', role: 'editor', atMs: 7}]);
 

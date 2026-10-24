@@ -3,7 +3,7 @@
 //! `POST /join` and watching pages by `POST /spectate`, each under the
 //! room's limits. While the room takes people by invitation, someone without
 //! one leaves an email address at `POST /wait-list`, which the room keeps
-//! with its join requests for whoever may invite.
+//! on its wait list for whoever may invite.
 
 use crate::config::{Config, PersistentConfig};
 use crate::guests::GuestLedger;
@@ -982,8 +982,8 @@ impl Persistent {
         })
     }
 
-    /// `POST /wait-list`: keep the visitor's address with the room's join
-    /// requests, to be invited at. Each address counts against its own
+    /// `POST /wait-list`: keep the visitor's address on the room's wait
+    /// list, to be invited at. Each address counts against its own
     /// per-address window, so one address cannot fill the list.
     pub async fn wait(
         &self,

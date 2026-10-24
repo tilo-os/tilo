@@ -112,9 +112,8 @@ pub struct PersistentArgs {
     pub members_only: bool,
     /// How many requests left at the door the room keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
-    /// without an invitation leaves, listed with the room's join requests
-    /// for whoever may invite until they decline it. `0`: the door keeps
-    /// none.
+    /// without an invitation leaves, on the room's wait list for whoever
+    /// may invite until they take it off. `0`: the door keeps none.
     #[arg(
         long = "wait-list-max",
         value_name = "COUNT",

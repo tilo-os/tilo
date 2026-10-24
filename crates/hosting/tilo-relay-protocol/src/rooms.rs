@@ -380,6 +380,18 @@ pub enum RoomsRequest {
         /// (`room:<id>/app:<app>/…`).
         node: String,
     },
+    /// The requests left at `room`'s door, oldest first: answered with
+    /// [`RoomsReply::WaitList`]. Whoever may invite.
+    WaitList {
+        room: String,
+    },
+    /// Take a request left at `room`'s door off its wait list, once it was
+    /// invited or is not to be: answered with [`RoomsReply::WaitList`].
+    Unlist {
+        room: String,
+        /// The entry.
+        request_id: [u8; 32],
+    },
 }
 
 /// The answer to a [`RoomsRequest`].
@@ -405,6 +417,8 @@ pub enum RoomsReply {
     Notices(Vec<RoomNotice>),
     /// Whether the caller may, for [`RoomsRequest::Permits`].
     Permits(bool),
+    /// The requests left at the door, oldest first.
+    WaitList(Vec<WaitListEntry>),
 }
 
 /// One `/join` step.
@@ -498,18 +512,15 @@ pub enum JoinReply {
 }
 
 // Requests left at the door. A room that takes people by invitation also
-// keeps the requests of people who asked at its door without one: each
-// leaves an address to be invited at ([`JoinRequest::contact`]), and someone
-// who may invite answers it with an invitation of their own, sent there, or
-// declines it. A request redeemed from an invitation is one too
-// ([`JoinRequest`]), waiting for someone who may let them in.
+// keeps the requests of people who asked at its door without one, each an
+// address to be invited at ([`WaitListEntry`]).
 
-/// The longest address a request left at the door gives ([`JoinRequest::contact`]):
+/// The longest address a request left at the door gives ([`WaitListEntry`]):
 /// the longest an email address can be.
 pub const MAX_CONTACT_CHARS: usize = 254;
 
 /// `text` as the address a request left at a room's door keeps
-/// ([`JoinRequest::contact`]): an email address, trimmed and lowercased, so
+/// ([`WaitListEntry`]): an email address, trimmed and lowercased, so
 /// one address is one request however it was typed.
 ///
 /// # Errors
@@ -539,17 +550,20 @@ pub fn contact_address(text: &str) -> Result<String, &'static str> {
     }
 }
 
-impl JoinRequest {
-    /// For a request left at the door without an invitation, the address
-    /// ([`contact_address`]) its answer goes to: someone who may invite
-    /// sends an invitation of their own there, or declines the request.
-    /// Such a request has no person or device yet (both all zero) and is
-    /// named by the address; its role is the one an invitation gives. The
-    /// room keeps it until it is declined.
-    pub fn contact(&self) -> Option<&str> {
-        (self.user_public_key == [0; 32] && self.device_public_key == [0; 32])
-            .then_some(self.name.as_str())
-    }
+/// A request left at the door of a room that takes people by invitation:
+/// someone who has no invitation, and so no identity the room knows yet,
+/// left an address to be invited at. Someone who may invite sends an
+/// invitation of their own there, then takes the entry off the list
+/// ([`RoomsRequest::Unlist`]). Unlike a [`JoinRequest`] it names no person
+/// or device: it is not anyone to admit.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WaitListEntry {
+    /// The entry, for [`RoomsRequest::Unlist`].
+    pub request_id: [u8; 32],
+    /// The address ([`contact_address`]).
+    pub contact: String,
+    /// When it was left.
+    pub added_at_ns: u64,
 }
 
 #[cfg(test)]

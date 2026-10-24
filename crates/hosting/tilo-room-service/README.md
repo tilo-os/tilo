@@ -191,8 +191,8 @@ it the service refuses to start. The full design is in
 a stranger's `POST /join` is refused, and the page offers the room's wait
 list, signing in with an existing Tilo identity, and pasting an invitation
 link. `POST /wait-list` `{email}` keeps one address, normalized (trimmed,
-lowercased, at most 254 characters), as a join request with that contact in
-the relay's room store (`<room>.wait-list` beside the room on
+lowercased, at most 254 characters), on the room's wait list in the relay's
+room store (`<room>.wait-list` beside the room on
 `TILO_ROOMS_STATE`). It answers `200 {email}`, also for an address already
 listed, so nobody learns who else is on it; `400 invalid-email`; `429
 too-many` with `Retry-After` past 5 addresses in ten minutes or 20 a day from

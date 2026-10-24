@@ -46,8 +46,6 @@ const member = value => ({
   owner: value.owner,
   removed: value.removed,
 });
-/** Whether `key` (32 bytes) is all zero: no person or device yet. */
-const unknown = key => key?.length === 32 && Array.from(key).every(byte => byte === 0);
 const waiting = value => ({
   requestId: hex(value.request_id),
   userPublicKey: hex(value.user_public_key),
@@ -55,10 +53,11 @@ const waiting = value => ({
   name: value.name,
   role: pageRole(value.role),
   requestedAtMs: Math.floor(value.requested_at_ns / 1e6),
-  // A request left at the door without an invitation (the room's wait
-  // list): no person or device yet, named by the address to invite, which
-  // is answered with an invitation, not `admit`.
-  contact: unknown(value.user_public_key) && unknown(value.device_public_key) && value.name ? value.name : null,
+});
+const listed = value => ({
+  requestId: hex(value.request_id),
+  contact: value.contact,
+  addedAtMs: Math.floor(value.added_at_ns / 1e6),
 });
 const invitation = value => ({
   inviteId: hex(value.invite_id),
@@ -144,8 +143,7 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
      * The room as governance records it: `{room, name, generation, members,
      * waiting, invitations, notices}`. `members` include removed people
      * (`removed`); `waiting` are people who redeemed an invitation and wait
-     * for `admit` or `decline`, or left an address at the door (`contact`)
-     * to be sent an invitation or declined; `invitations` are those still redeemable;
+     * for `admit` or `decline`; `invitations` are those still redeemable;
      * `notices` tell the owner who joined under a pre-admission
      * (`{kind: 'pre-admitted', userPublicKey, name, label, role, atMs}`).
      */
@@ -176,6 +174,16 @@ export function createMembership({rooms, room, displayName = '', preAdmit, now =
     /** Turn a waiting person away. */
     async decline(requestIdHex) {
       expect(await ask({Decline: {room, request_id: bytesOf(requestIdHex)}}), 'Requests');
+    },
+    /** The addresses left at the room's door without an invitation, oldest
+     * first: `{requestId, contact, addedAtMs}` each, nobody to admit but an
+     * address to send an invitation to. For whoever may invite. */
+    async waitList() {
+      return expect(await ask({WaitList: {room}}), 'WaitList').map(listed);
+    },
+    /** Take an address off the wait list (`requestId` from `waitList`). */
+    async unlist(requestIdHex) {
+      expect(await ask({Unlist: {room, request_id: bytesOf(requestIdHex)}}), 'WaitList');
     },
     /** Change a member's role. */
     async setRole(userPublicKey, role) {

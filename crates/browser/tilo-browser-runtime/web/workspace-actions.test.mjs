@@ -76,9 +76,9 @@ test('a member the room lets invite hears who asks to join and lets them in', as
 
 test('the wait list is listed with who waits, gets no banner, and each address is invited with a link of its own', async () => {
   const {peer, calls} = adasRoom({owner: false, letsIn: true});
-  const ed = {requestId: '05'.repeat(32), name: 'ed@example.org', role: 'editor', userPublicKey: '00'.repeat(32),
-    contact: 'ed@example.org', requestedAtMs: 1000};
-  const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership, requests: async () => [ed]}};
+  const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
+  const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership, requests: async () => [],
+    waitList: async () => [ed], unlist: async requestId => { calls.push(['unlist', requestId]); }}};
   const {mount, shown, banners} = desktop();
   const polls = [];
   const shared = [];
@@ -92,14 +92,14 @@ test('the wait list is listed with who waits, gets no banner, and each address i
   assert.deepEqual(ids(shown.at(-1)), [INVITE.id, WAITING.id]);
   assert.equal(banners.length, 0);
   await actions.perform(WAITING.id);
-  assert.deepEqual(await listed.load(), [ed]);
+  assert.deepEqual(await listed.load(), {people: [], waitList: [ed]});
   await listed.invite(ed);
   assert.deepEqual(calls.at(-1), ['invite', {role: 'editor'}]);
   assert.equal(shared[0].title, 'Invite ed@example.org');
   assert.match(shared[0].body, /^Send this link to ed@example\.org\./);
   assert.equal(shared[0].link, `https://tilo.so/#/@node.example:8443/w/${ROOM}?invite=SIGNED-invitation`);
-  await listed.decline(ed.requestId);
-  assert.deepEqual(calls.at(-1), ['decline', ed.requestId]);
+  await listed.unlist(ed.requestId);
+  assert.deepEqual(calls.at(-1), ['unlist', ed.requestId]);
 });
 
 test('a member who just invited someone hears who asks to join, though the host did not show them at first', async () => {
