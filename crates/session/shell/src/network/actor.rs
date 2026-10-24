@@ -3566,6 +3566,7 @@ impl ActorState {
                     Arc::clone(&replaying),
                     self.internal_tx.clone(),
                     None,
+                    true,
                 );
                 self.host_sessions.insert(
                     (ws, peer),
@@ -5354,6 +5355,7 @@ fn spawn_host_pump(
     replaying: Arc<std::sync::atomic::AtomicBool>,
     tx: mpsc::Sender<InternalEvent>,
     native_scope: Option<Arc<native_ingress::Scope>>,
+    keepalive: bool,
 ) -> tokio::task::JoinHandle<()> {
     use std::sync::atomic::Ordering;
     tokio::spawn(async move {
@@ -5362,7 +5364,11 @@ fn spawn_host_pump(
         loop {
             let inbound = tokio::select! {
                 inbound = session.recv() => inbound,
-                alive = host_keepalive(&session, &mut pinged) => {
+                // A session with this device's own host runs in process: no
+                // link can die under it, and its end ends `recv`. Only a
+                // remote host is kept up, so a device hosting its rooms with
+                // nobody connected wakes for nothing.
+                alive = host_keepalive(&session, &mut pinged), if keepalive => {
                     if !alive {
                         tracing::warn!(ws, host = %host, "workspace host stopped answering; reconnecting");
                         break;

@@ -564,6 +564,7 @@ impl ActorState {
             Arc::clone(&replaying),
             self.internal_tx.clone(),
             Some(scope.clone()),
+            !local,
         );
         // What this device said while the session was down: its channel
         // governance (the steward redelivers its own) and its sealed writes.
