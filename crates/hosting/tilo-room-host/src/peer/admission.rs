@@ -21,7 +21,7 @@ pub(super) async fn enqueue_state(
     metrics: Arc<crate::metrics::Metrics>,
 ) -> Result<(), PeerError> {
     Box::pin(enqueue_state_inner(
-        workspace, envelope, source, role, metrics, false,
+        workspace, envelope, source, role, metrics, false, false,
     ))
     .await
     .map(drop)
@@ -273,6 +273,7 @@ pub(crate) async fn enqueue_host_state(
         crate::auth::PeerRole::Device,
         metrics,
         false,
+        true,
     ))
     .await
     .map(HostAdmission)
@@ -292,6 +293,7 @@ pub async fn enqueue_federated(
         crate::auth::PeerRole::PeerRelay,
         metrics,
         sync,
+        false,
     ))
     .await
     .map(drop)
@@ -369,6 +371,7 @@ pub(super) async fn enqueue_state_inner(
     role: crate::auth::PeerRole,
     metrics: Arc<crate::metrics::Metrics>,
     sync: bool,
+    host: bool,
 ) -> Result<AdmittedState, PeerError> {
     let (author, delta) = admitted_delta(&envelope)?;
     let delta_len = delta.len();
@@ -432,6 +435,7 @@ pub(super) async fn enqueue_state_inner(
         workers: owner.workers(),
         workspace: workspace.clone(),
         source,
+        host,
         metrics,
         trace: admission_trace.clone(),
         timing: PublicationTiming {
@@ -976,6 +980,8 @@ struct StatePublisher {
     workers: Arc<tokio::sync::Semaphore>,
     workspace: SharedWorkspace,
     source: Option<StateSource>,
+    /// The host's own change: the room's or a channel's governance.
+    host: bool,
     metrics: Arc<crate::metrics::Metrics>,
     trace: Option<StateAdmissionTrace>,
     timing: PublicationTiming,
@@ -1135,7 +1141,14 @@ impl StatePublisher {
                 }
                 break;
             }
-            let frame = LiveFrame::new(&runtime, &envelope, &budget, fanned, self.source.as_ref());
+            let frame = LiveFrame::new(
+                &runtime,
+                &envelope,
+                &budget,
+                fanned,
+                self.source.as_ref(),
+                self.host,
+            );
             // Presence the author sent after this delta was held for
             // it and goes out with it; from here on nothing waits.
             if let Envelope::Delta {

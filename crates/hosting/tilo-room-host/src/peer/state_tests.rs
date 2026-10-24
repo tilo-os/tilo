@@ -990,6 +990,51 @@ async fn ordered_checkpoints_reach_a_device_once_per_channel_until_rearmed() {
     assert!(fixture.recipient_disconnected.try_recv().is_err());
 }
 
+/// The room's own changes reach every live device. A governor that starts
+/// its document over from a base, or rolls its publications over, sends the
+/// commit as checkpoints alone: no delta carries what changed, so a device
+/// that took a checkpoint on the channel this session still takes this one.
+#[tokio::test]
+async fn the_hosts_own_checkpoint_reaches_a_device_that_took_one_this_session() {
+    let mut fixture = Fixture::new();
+    fixture.enqueue_checkpoint(1, vec![1; 64]).await;
+    fixture.drained().await;
+    assert!(
+        fixture.recipient_rx.try_recv().is_ok(),
+        "the first checkpoint"
+    );
+    for time in 2..=3_u64 {
+        let rebased = Envelope::Delta {
+            workspace_id: 7,
+            author_device_public_key: [9; 32],
+            authored_at_ns: time,
+            delta: crate::coedit::CoeditPayload::Checkpoint {
+                channel: [3; 32],
+                body: vec![u8::try_from(time).unwrap(); 64],
+            }
+            .encode()
+            .unwrap(),
+            signature: [0; 64],
+        };
+        let admission =
+            crate::peer::enqueue_host_state(&fixture.workspace, rebased, fixture.metrics.clone())
+                .await
+                .unwrap();
+        fixture.drained().await;
+        drop(admission);
+        assert!(
+            fixture.recipient_rx.try_recv().is_ok(),
+            "the host's checkpoint {time} reached the live device"
+        );
+    }
+    fixture.enqueue_checkpoint(4, vec![4; 64]).await;
+    fixture.drained().await;
+    assert!(
+        fixture.recipient_rx.try_recv().is_err(),
+        "a device's own idle checkpoint is still gated"
+    );
+}
+
 #[tokio::test]
 async fn ordered_checkpoint_is_marked_served_only_after_successful_enqueue() {
     let mut fixture = Fixture::with_delivery_capacity(1);
@@ -1698,6 +1743,7 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
         PeerRole::PeerRelay,
         fixture.metrics.clone(),
         true,
+        false,
     ))
     .await
     .unwrap();
@@ -1717,6 +1763,7 @@ async fn failed_sync_fallback_does_not_advance_the_materialized_retry_fence() {
         PeerRole::PeerRelay,
         fixture.metrics.clone(),
         true,
+        false,
     ))
     .await
     .unwrap();
