@@ -218,6 +218,12 @@ run = "python3 tools/policy/check_ui_clock_contract.py"
 inputs = ["crates/sdk/ui-core/**", "crates/sdk/tilo-host/**", "clippy.toml"]
 
 [[step]]
+name = "no-transient-cards"
+label = "Transient notices are the window bar's"
+run = "python3 tools/policy/check_no_transient_cards.py"
+inputs = ["apps/**", "crates/**", "examples/**"]
+
+[[step]]
 name = "motion-library"
 label = "Animations are composed from the motion library"
 run = "python3 tools/policy/check_motion_library.py"

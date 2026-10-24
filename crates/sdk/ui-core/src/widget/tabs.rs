@@ -545,6 +545,10 @@ impl TabBar {
         }
         let row = shift_rect(self.toolbar_row.row(), shift);
         self.toolbar_row.lay_out(row);
+        let strip = self.toolbar_row.strip_rect();
+        if strip.area() > 0.0 {
+            self.toolbar_row.place_strip(shift_rect(strip, shift));
+        }
     }
 
     /// Source pill's opacity while the drag-ghost is visible; low enough to read as
@@ -770,9 +774,13 @@ impl TabBar {
     }
 
     /// The row the active tab's toolbar stands in.
-    #[cfg(test)]
     pub(crate) fn toolbar_row(&self) -> &super::window_toolbar_row::ToolbarRow {
         &self.toolbar_row
+    }
+
+    /// The row the active tab's toolbar stands in, to press and perform.
+    pub(crate) fn toolbar_row_mut(&mut self) -> &mut super::window_toolbar_row::ToolbarRow {
+        &mut self.toolbar_row
     }
 
     /// The slots `id`'s app declared.
@@ -886,9 +894,15 @@ impl TabBar {
     }
 
     /// The bar's height: one row, or two with the active tab's slots under
-    /// the tabs.
+    /// the tabs, and a compact window's notice strip under those.
     #[must_use]
     pub fn bar_height(&self) -> f64 {
+        self.rows_height() + self.toolbar_row.strip_height()
+    }
+
+    /// The height of the bar's rows: the tabs (or the title), and the active
+    /// tab's slots under them where they have a row of their own.
+    fn rows_height(&self) -> f64 {
         if self.two_rows() {
             TAB_BAR_HEIGHT + TOOLBAR_ROW_HEIGHT
         } else {
@@ -950,8 +964,28 @@ impl TabBar {
         }
     }
 
-    /// Show the active tab's slots and lay them out where they stand now.
+    /// Show the active tab's slots and lay them out where they stand now,
+    /// a compact window's notice strip under the bar's rows.
     fn lay_out_toolbar_row(&mut self) {
+        self.show_toolbar_row();
+        let rect = self.toolbar_row_rect();
+        self.toolbar_row.lay_out(rect);
+        let strip = self.toolbar_row.strip_height();
+        let top = self.rect.y0 + self.rows_height();
+        self.toolbar_row.place_strip(if strip > 0.0 {
+            Rect::new(
+                self.rect.x0 + super::window_controls::EDGE_INSET,
+                top,
+                (self.rect.x1 - super::window_controls::EDGE_INSET).max(self.rect.x0),
+                top + strip,
+            )
+        } else {
+            Rect::ZERO
+        });
+    }
+
+    /// Hand the active tab's slots to the row.
+    fn show_toolbar_row(&mut self) {
         let active = self.active_id;
         let mut toolbar = self.active_toolbar().cloned();
         // With nothing open the window is named by its app: slots that name
@@ -967,8 +1001,6 @@ impl TabBar {
         }
         self.toolbar_row
             .show(active, toolbar.as_ref(), self.motion, crate::time::now());
-        let rect = self.toolbar_row_rect();
-        self.toolbar_row.lay_out(rect);
     }
 
     /// How far the tabs' bodies have grown in: `0` while the window shows
@@ -3826,6 +3858,19 @@ impl Widget for TabBar {
         self.reduce_motion = theme.reduce_motion || self.host_reduced_motion;
         self.motion = EffectiveMotion::new(theme.tokens.motion, self.reduce_motion);
         self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
+        // A compact window says its app's notice in a strip under the bar's
+        // rows: the bar measures it for the width it last had.
+        if self.window_controls {
+            let width = self.rect.width();
+            self.toolbar_row.set_compact(
+                width > 0.0 && width < f64::from(theme.tokens.metrics.compact_breakpoint),
+            );
+            self.show_toolbar_row();
+            self.toolbar_row.measure_strip(
+                theme,
+                (width - 2.0 * super::window_controls::EDGE_INSET).max(0.0),
+            );
+        }
         // `TAB_BAR_HEIGHT` is a fixed 44px layout constant, well inside `f32`'s
         // exact-integer range.
         #[allow(

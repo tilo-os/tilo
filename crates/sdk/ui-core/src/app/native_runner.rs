@@ -3638,6 +3638,10 @@ impl AppHandler {
     /// already summed, [`wheel_batch`]).
     fn platform_window_event(&mut self, window_id: WindowId, event: WindowEvent) {
         let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
+        // Ctrl+C copies whichever source is typing: name the chord by its
+        // Latin key before any handler matches it.
+        let event =
+            crate::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
         // What this event opens or closes follows it (a key lands it at
         // once, a click moves it): `motion::input_source`.
         crate::motion::note_input(&event);
@@ -4453,6 +4457,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),
@@ -4477,7 +4482,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 .into_iter()
                 .chain(app.local_input_capture_deadline())
                 .chain(app.presence_ctx.interaction_next_wake_deadline(now))
+                .chain(app.accessibility.zoom.deadline())
                 .any(|due| due <= now);
+            app.accessibility.zoom.publish();
             let widget_due = app
                 .root_widget
                 .next_wake_deadline()
@@ -4506,6 +4513,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     app.presence_ctx
                         .interaction_next_wake_deadline(crate::time::now()),
                 )
+                .chain(app.accessibility.zoom.deadline())
                 .min(),
             app.close_admission.save_waiting,
             crate::time::now(),

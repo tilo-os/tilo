@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Swapper", "version": "1.0",
+ "permissions": ["tabs"],
+ "background": {"service_worker": "worker.js"},
+ "content_scripts": [{"matches": ["http://127.0.0.1/*"], "js": ["content.js"]}]}

@@ -32,7 +32,6 @@ use ui::paint::PaintCtx;
 use ui::tokens::TextRole;
 use ui::widget::Continuable;
 use ui::widget::data_table::DataTableFace;
-use ui::widget::toast::ToastAnchor;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, MediaArt,
     MediaCardFace, MediaSize, SkeletonFace, SkeletonShape,
@@ -1162,12 +1161,7 @@ impl Widget for MusicApp {
             .with_name(page_name)
             .with_children(page_content);
 
-        let mut children = vec![search, page, player];
-        children.extend(
-            self.toast
-                .access_node()
-                .map(|toast| toast.with_hashed_key("toast")),
-        );
+        let children = vec![search, page, player];
         Some(
             AccessNode::new(Role::Group)
                 .with_name("Music")
@@ -1675,7 +1669,7 @@ impl MusicApp {
         invocation: tilo_actions::InvocationId,
         transport: &crate::actions::MusicEffect,
     ) -> Result<ui::framework::Effected, String> {
-        let next = crate::actions::next_playback(transport, &self.pb, &|id| {
+        let (mut next, edit) = crate::actions::next_playback(transport, &self.pb, &|id| {
             self.playback_track(id).is_some()
         })
         .ok_or_else(|| {
@@ -1685,18 +1679,18 @@ impl MusicApp {
             )
         })??;
         self.dirty = true;
-        let next_index = matches!(transport, crate::actions::MusicEffect::PlayNext { .. })
-            .then_some(next.queue_index + 1);
-        if next_index.is_some() && self.pb.shuffle {
-            self.ensure_shuffle_order();
+        // The shuffled order follows the edit exactly as the person's own
+        // queue edits move it: a song put next is heard next, and what has
+        // played stays played.
+        let before = edit.and_then(|edit| self.follow_shuffled_edit(edit, &mut next));
+        let effected = self.start_or_apply_playback(invocation, next);
+        if effected.is_err()
+            && let Some(before) = before
+            && self.shuffle_order.len() != self.pb.queue.len()
+        {
+            self.shuffle_order = before;
         }
-        let effected = self.start_or_apply_playback(invocation, next)?;
-        // A song put next is heard next under shuffle too, as the person's
-        // own Play next does.
-        if let Some(index) = next_index {
-            self.shuffle_next(index);
-        }
-        Ok(effected)
+        effected
     }
 
     /// Move to `next`: only starting a source waits for the audio it starts.
@@ -2259,7 +2253,9 @@ impl MusicApp {
         // Apply any deferred `--shots` staging now that `rect` is known.
         self.apply_shot_stage();
         self.tick();
-        self.dirty |= self.toast.expire();
+        // A result says so in the window's bar while it lasts.
+        self.toast.expire();
+        self.toast.publish();
 
         // The shell holds the sidebar and the transport; this is the
         // content column.
@@ -2314,7 +2310,6 @@ impl MusicApp {
         self.open_staged_track_menu();
         self.open_staged_facet();
 
-        self.draw_toast(ctx);
         self.paint_highlight(ctx);
 
         if self.name_prompt.is_none() {
@@ -4543,20 +4538,6 @@ impl MusicApp {
     }
 
     // ---- now playing bar --------------------------------------------------
-
-    // ---- toast ------------------------------------------------------------
-
-    fn draw_toast(&self, ctx: &mut PaintCtx<'_>) {
-        let area = Rect::new(self.body_rect.x0, self.rect.y0, self.rect.x1, self.rect.y1);
-        self.toast.paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
-            area,
-            ToastAnchor::BottomCenter,
-        );
-    }
 
     // ---- gather helpers (own data so draw can borrow &mut self) -----------
 

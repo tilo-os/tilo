@@ -493,3 +493,51 @@ fn an_index_and_a_text_on_their_way_are_waited_for_and_the_passage_opens() {
     assert_eq!(books.view, View::Reader, "it opens once its text is here");
     assert_eq!(books.chapter, chapter, "at the passage's chapter");
 }
+
+/// A store book that could not be fetched says to try again, and carries
+/// Try again: pressed by pointer or through its semantic action, wide or
+/// compact, it fetches the book again.
+#[test]
+fn a_store_book_that_did_not_arrive_carries_try_again() {
+    for (width, semantic) in [
+        (1280.0, false),
+        (1280.0, true),
+        (420.0, false),
+        (420.0, true),
+    ] {
+        let mut app = TestApp::<EbookShell>::capture(Some("search")).unwrap();
+        app.harness().present_in_window_bar();
+        {
+            let books = books(&mut app);
+            books.report_failure(format!(
+                "Couldn’t open 7.epub: {}",
+                crate::store::unreachable_message()
+            ));
+            books.retry_store = Some(7);
+        }
+        app.settle();
+        let shown = app
+            .harness()
+            .window_bar_notice(width)
+            .expect("the failure is in the bar");
+        let names: Vec<String> = shown
+            .buttons
+            .into_iter()
+            .map(|button| button.name)
+            .collect();
+        assert_eq!(names, ["Try again"], "{width}");
+        let before = books(&mut app).import_generation;
+        let harness = app.harness();
+        let pressed = if semantic {
+            harness.invoke_window_notice_action(width, 0)
+        } else {
+            harness.click_window_notice_action(width, 0)
+        };
+        pressed.expect("Try again is in the bar");
+        app.settle();
+        assert!(
+            books(&mut app).import_generation > before,
+            "Try again fetched the book again ({width}, semantic: {semantic})"
+        );
+    }
+}

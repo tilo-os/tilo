@@ -392,6 +392,8 @@ pub(crate) enum Hit {
     /// Toggle the participant list expand/collapse in the overlay.
     CallParticipantsToggle,
     CallMute,
+    /// Hear nothing of the call (and be muted), or hear it again.
+    CallDeafen,
     /// Turn this person's camera on or off in the call.
     CallCamera,
     /// Share this person's screen in the call, or stop.
@@ -450,6 +452,7 @@ impl Hit {
             Self::EditSave => "chat.edit-save".into(),
             Self::EditCancel => "chat.edit-cancel".into(),
             Self::CallMute => "chat.call-mute".into(),
+            Self::CallDeafen => "chat.call-deafen".into(),
             Self::CallCamera => "chat.call-camera".into(),
             Self::CallScreen => "chat.call-screen".into(),
             Self::CallParticipantsToggle => "chat.call-participants".into(),
@@ -3818,6 +3821,11 @@ impl ChatApp {
                         Role::ToggleButton,
                         self.call.muted,
                     ),
+                    Hit::CallDeafen => (
+                        crate::i18n::t("chat-call-deafen"),
+                        Role::ToggleButton,
+                        self.call.deafened,
+                    ),
                     Hit::CallCamera => ("Camera".into(), Role::ToggleButton, !self.call.audio_only),
                     Hit::CallScreen => {
                         ("Share screen".into(), Role::ToggleButton, self.call.sharing)
@@ -3879,6 +3887,7 @@ impl ChatApp {
                     Hit::ToggleRightFlap
                         | Hit::TogglePins
                         | Hit::CallMute
+                        | Hit::CallDeafen
                         | Hit::Attach
                         | Hit::Send
                         | Hit::ComposerEmoji(_)

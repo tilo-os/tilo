@@ -86,10 +86,12 @@ fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
         RowKind::Go => "globe",
         RowKind::History => "history",
         RowKind::Search | RowKind::Suggestion => "search",
+        RowKind::Extension => "box",
     };
     let detail = match row.kind {
-        // A visited page's address under its title.
-        RowKind::History => row.detail.clone(),
+        // A visited page's address under its title; the extension a
+        // keyword's row goes to.
+        RowKind::History | RowKind::Extension => row.detail.clone(),
         // The typed words: which engine they go to.
         RowKind::Search => crate::resource::CATALOG.t_args(
             "browser-suggestion-search",
@@ -164,6 +166,8 @@ impl BrowserWidget {
         let mut actions = Vec::new();
         // On a Web Store item: the reason to be on the page, first in the row.
         actions.extend(self.extensions.bar_offer());
+        // An extension's side panel beside the page closes from the row.
+        actions.extend(self.extensions.bar_side_panel());
         actions.extend([
             ToolbarAction::new(
                 if loading { STOP } else { RELOAD },

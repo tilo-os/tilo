@@ -13,6 +13,7 @@ use tilo_actions::door::ActionDescriptor;
 use tilo_browser_peer::DocumentRoute;
 
 use super::AgentParticipant;
+use super::unopened::Reading;
 
 /// The kind of the rich text a record publishes as its body: an app whose
 /// new record publishes it at the root (`word-processor.document/body`)
@@ -66,12 +67,15 @@ impl AgentParticipant {
     /// is not open, else its first line of text (a document's heading).
     pub(super) fn document_title(&mut self, route: &DocumentRoute) -> Option<String> {
         match self.apps.get(route) {
-            Some(replica) => self.unopened.open_text(route, replica).and_then(|text| {
-                text.lines()
-                    .map(|line| line.trim_start_matches('#').trim())
-                    .find(|line| !line.is_empty())
-                    .map(str::to_owned)
-            }),
+            Some(replica) => self
+                .unopened
+                .open_text(route, replica, Reading::Plain)
+                .and_then(|text| {
+                    text.lines()
+                        .map(|line| line.trim_start_matches('#').trim())
+                        .find(|line| !line.is_empty())
+                        .map(str::to_owned)
+                }),
             None => self.record_title(route),
         }
     }

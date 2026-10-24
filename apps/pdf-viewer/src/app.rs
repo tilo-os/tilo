@@ -26,8 +26,6 @@ use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use std::time::Duration;
-
 use crate::actions::PdfEffect;
 use std::path::Path;
 use ui::Widget;
@@ -44,7 +42,7 @@ use ui::surface::Region;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, Transient};
+use ui::widget::toast::{ToastKind, Transient};
 use ui::widget::{
     AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace,
     ContextMenu as SharedContextMenu, ControlSize, DEFAULT_PADDING,
@@ -52,6 +50,7 @@ use ui::widget::{
     PAN_SLOP, RowAction, RowLeading, Segment, SegmentedFace, SegmentedStyle, SmallContentAlign,
     TextInput, ToggleGroup, ViewportState,
 };
+use ui::window_toolbar::ToolbarNotice;
 
 use crate::markup::{PagePlanEntry, PdfMarkup};
 use crate::model::{
@@ -464,9 +463,6 @@ pub struct PdfApp {
     /// Screenshot-only: arm a live page-rail reorder drag each frame so a still
     /// frame captures the drag ghost + reflow gap. Never set at runtime.
     shots_rail_drag: bool,
-    /// Screenshot-only: pin the floating page bubble open so a still frame shows
-    /// the transient page-info overlay. Never set at runtime.
-    shots_page_bubble: bool,
     /// Screenshot-only: defer opening the annotation menu until after the
     /// initial CRDT sync has populated its target.
     shots_context_menu: bool,
@@ -638,6 +634,8 @@ pub struct PdfApp {
     /// A transient one-line status (e.g. "Saved to …"), shown as a toast for a
     /// notice's lifetime or until the next document action.
     status_note: Transient<String>,
+    /// The failure of `status_note` whose Try again asks for its work again.
+    note_action: Option<(String, note_action::NoteAction)>,
     /// The last copied region, whose outcome can arrive after its note.
     region_copy: ui::CopyWatch,
     /// An in-flight XDG-portal *save* request (mirrors `portal_rx`).
@@ -713,18 +711,12 @@ pub struct PdfApp {
     canvas_rect: Rect,
     sidebar_rect: Rect,
 
-    /// The floating page-info bubble — a transient overlay (the shared
-    /// [`ui::StatusBubble`]) that appears on a page change or while the pointer
-    /// hovers the bottom-centre of the canvas, then fades. It replaces the old
-    /// always-on bottom status strip so the canvas keeps that vertical space.
-    page_bubble: ui::StatusBubble,
-    /// The page the bubble last announced, so a page change re-pokes it.
-    bubble_shown_page: usize,
-    /// The bubble's pill + chevron rects, captured during draw for hover
-    /// detection and click hit-testing.
-    bubble_rect: Rect,
-    bubble_prev: Rect,
-    bubble_next: Rect,
+    /// The page and the zoom, said in the window's bar for a while when one
+    /// of them changes (not on opening), so the canvas keeps its whole
+    /// height.
+    page_notice: Transient<String>,
+    /// The page and zoom percent last said, so only a change is news.
+    page_said: Option<(usize, u32)>,
 
     // Sidebar content hit-targets, captured during draw.
     sidebar_hits: Vec<(SidebarHit, Rect)>,
@@ -887,11 +879,10 @@ impl PdfApp {
         self.show_rail = true;
     }
 
-    /// Screenshot-only: pin the floating page bubble open so a still frame shows
-    /// the transient page-info overlay (instead of the old bottom strip).
+    /// Screenshot-only: say the page and the zoom in the window's bar, as a
+    /// page change does.
     pub fn arm_shots_page_bubble(&mut self) {
-        self.shots_page_bubble = true;
-        self.page_bubble.poke(ui::time::now());
+        self.page_notice.show(self.page_line());
     }
 
     /// Screenshot-only: open the annotation action menu over the sample page
@@ -1041,7 +1032,6 @@ impl PdfApp {
             load_error: None,
             content,
             shots_rail_drag: false,
-            shots_page_bubble: false,
             shots_context_menu: false,
             shots_panel: None,
             shots_selection: false,
@@ -1119,6 +1109,7 @@ impl PdfApp {
             shift_down: false,
             source_path: None,
             status_note: Transient::new(),
+            note_action: None,
             region_copy: ui::CopyWatch::default(),
             portal_save_rx: None,
             save_destination: None,
@@ -1147,11 +1138,8 @@ impl PdfApp {
             rail_rect: Rect::ZERO,
             canvas_rect: Rect::ZERO,
             sidebar_rect: Rect::ZERO,
-            page_bubble: ui::StatusBubble::new(),
-            bubble_shown_page: 0,
-            bubble_rect: Rect::ZERO,
-            bubble_prev: Rect::ZERO,
-            bubble_next: Rect::ZERO,
+            page_notice: Transient::new(),
+            page_said: None,
             sidebar_hits: Vec::new(),
             edit_rect: Rect::ZERO,
             sel_hud: None,
@@ -1774,8 +1762,8 @@ impl PdfApp {
         // The controls are the window bar's: the panels and the pages take
         // the window's whole height.
         let mid_top = r.y0;
-        // No reserved bottom strip: the page-info bubble floats over the canvas
-        // (see `draw_page_bubble`), so the content spans to the window bottom.
+        // No reserved bottom strip: the page and the zoom are said in the
+        // window's bar, so the content spans to the window bottom.
         let mid_bottom = r.y1;
         self.review.snap(self.show_sidebar);
         self.review.resolve(self.review_outer());
@@ -2203,7 +2191,10 @@ impl PdfApp {
             }
             Err(error) => {
                 tracing::warn!(%error, "submitting a page import failed");
-                self.status_note.show(crate::t("pdf-note-import-failed"));
+                self.show_failure(
+                    crate::t("pdf-note-import-failed"),
+                    note_action::NoteAction::Import,
+                );
                 self.dirty = true;
                 false
             }
@@ -2433,23 +2424,10 @@ impl PdfApp {
         }
         let (image_key, (pgw, pgh)) = self.region_source(region);
         let Some(image) = self.raster_images.get(&image_key) else {
-            let Some(document) = self.raster_document.as_ref() else {
+            if self.raster_document.is_none() {
                 return false;
-            };
-            let document_id = document.id;
-            // Asked for on its own, outside the frame's render batch, so a
-            // batch that moves on with the view never cancels it.
-            let asked = self.raster_handle.as_ref().is_some_and(|handle| {
-                handle
-                    .request_render(RenderRequest {
-                        document_id,
-                        page: image_key.0,
-                        target_width: image_key.1,
-                    })
-                    .is_ok()
-            });
-            if asked {
-                self.region_waiting = Some((document_id, region));
+            }
+            if self.ask_region_render(region) {
                 self.status_note
                     .show_progress(crate::t("pdf-note-copying-area"));
             } else {
@@ -2472,6 +2450,55 @@ impl PdfApp {
         }));
         self.dirty = true;
         true
+    }
+
+    /// Ask for the page render a crop of `region` is cut from, on its own,
+    /// outside the frame's render batch, so a batch that moves on with the
+    /// view never cancels it; the marquee waits for it. Whether it was
+    /// asked for (a marquee that could not ask waits for nothing).
+    fn ask_region_render(&mut self, region: RegionSelect) -> bool {
+        let Some(document_id) = self.raster_document.as_ref().map(|document| document.id) else {
+            self.region_waiting = None;
+            return false;
+        };
+        let (page, target_width) = self.region_source(region).0;
+        let asked = self.raster_handle.as_ref().is_some_and(|handle| {
+            handle
+                .request_render(RenderRequest {
+                    document_id,
+                    page,
+                    target_width,
+                })
+                .is_ok()
+        });
+        self.region_waiting = asked.then_some((document_id, region));
+        asked
+    }
+
+    /// Ask again for the render a waiting marquee needs, when the result it
+    /// waited for was lost on the way (the bounded result queue let it go,
+    /// or an open that then failed dropped the queued request): nothing
+    /// else would ever bring it, and the copy would wait for good.
+    fn ask_again_for_waiting_region(&mut self) {
+        let Some((document_id, region)) = self.region_waiting else {
+            return;
+        };
+        let current = self
+            .raster_document
+            .as_ref()
+            .is_some_and(|document| document.id == document_id);
+        if !current
+            || self
+                .raster_images
+                .contains_key(&self.region_source(region).0)
+        {
+            // Settled by `copy_waiting_region` this frame.
+            return;
+        }
+        if !self.ask_region_render(region) {
+            self.status_note.show(crate::t("pdf-note-area-not-copied"));
+            self.dirty = true;
+        }
     }
 
     /// Copy a released marquee whose page render has arrived. One whose
@@ -2657,7 +2684,7 @@ impl PdfApp {
             ui::portal::SaveOutcome::Cancelled => self.finish_portal_action(false, None),
             ui::portal::SaveOutcome::Failed(reason) => {
                 tracing::warn!(%reason, "writing the saved PDF failed");
-                self.status_note.show(save_failed_note(&name));
+                self.show_failure(save_failed_note(&name), note_action::NoteAction::Save);
                 self.finish_portal_action(false, Some(reason));
             }
         }
@@ -2680,7 +2707,8 @@ impl PdfApp {
             return false;
         }
         let Some(document) = self.raster_document.as_ref() else {
-            self.status_note.show(save_failed_note(&display_name(path)));
+            // No folder or name would help: there is no PDF to save yet.
+            self.status_note.show(crate::t("pdf-note-save-no-document"));
             self.dirty = true;
             return false;
         };
@@ -2688,7 +2716,10 @@ impl PdfApp {
             Ok(id) => id,
             Err(error) => {
                 tracing::warn!(%error, "submitting a save failed");
-                self.status_note.show(save_failed_note(&display_name(path)));
+                self.show_failure(
+                    save_failed_note(&display_name(path)),
+                    note_action::NoteAction::Save,
+                );
                 self.dirty = true;
                 return false;
             }
@@ -2720,7 +2751,10 @@ impl PdfApp {
             }
             Err(error) => {
                 tracing::warn!(%error, "submitting a save failed");
-                self.status_note.show(save_failed_note(&display_name(path)));
+                self.show_failure(
+                    save_failed_note(&display_name(path)),
+                    note_action::NoteAction::Save,
+                );
                 self.dirty = true;
                 false
             }
@@ -4087,6 +4121,7 @@ impl PdfApp {
             .as_ref()
             .map(RasterHandle::drain_events)
             .unwrap_or_default();
+        let mut lost_region_render = false;
         for event in events {
             match event {
                 RasterEvent::Opened {
@@ -4169,6 +4204,9 @@ impl PdfApp {
                         .is_some_and(|pending| pending.id == request.id) =>
                 {
                     self.pending_open = None;
+                    // The open dropped the queued page work, a waiting
+                    // marquee's render with it.
+                    lost_region_render = true;
                     self.record_open_failure(&request.path, &error);
                     self.finish_portal_action(false, Some(error));
                 }
@@ -4202,6 +4240,7 @@ impl PdfApp {
                     self.raster_tile_batch.clear();
                     self.raster_render_batch.clear();
                     self.text_requests_dropped();
+                    lost_region_render = true;
                     self.dirty = true;
                 }
                 RasterEvent::Rendered { request, image }
@@ -4217,6 +4256,16 @@ impl PdfApp {
                     self.raster_render_pending.remove(&key);
                     if let Some(image) = image {
                         self.raster_images.insert(key, image);
+                    } else if self
+                        .region_waiting
+                        .is_some_and(|(_, region)| self.region_source(region).0 == key)
+                    {
+                        // The engine could not draw the page for the crop:
+                        // the marquee waiting for it is not copied, and
+                        // the person is told.
+                        self.region_waiting = None;
+                        self.status_note.show(crate::t("pdf-note-area-not-copied"));
+                        self.dirty = true;
                     }
                     if request.target_width > crate::tiles::THUMB_MAX_PX {
                         self.delivered_pages.push(request.page);
@@ -4429,7 +4478,10 @@ impl PdfApp {
                 {
                     self.pending_import = None;
                     tracing::warn!(%error, "importing pages failed");
-                    self.status_note.show(crate::t("pdf-note-import-failed"));
+                    self.show_failure(
+                        crate::t("pdf-note-import-failed"),
+                        note_action::NoteAction::Import,
+                    );
                     self.dirty = true;
                 }
                 RasterEvent::SavePrepared { request, temporary }
@@ -4451,8 +4503,10 @@ impl PdfApp {
                     {
                         self.pending_save = None;
                         tracing::warn!(%error, "committing the saved PDF failed");
-                        self.status_note
-                            .show(save_failed_note(&display_name(&request.path)));
+                        self.show_failure(
+                            save_failed_note(&display_name(&request.path)),
+                            note_action::NoteAction::Save,
+                        );
                         self.dirty = true;
                         self.finish_portal_action(false, Some(error));
                     }
@@ -4492,8 +4546,10 @@ impl PdfApp {
                     self.save_destination = None;
                     self.pending_save = None;
                     tracing::warn!(%error, "saving the PDF failed");
-                    self.status_note
-                        .show(save_failed_note(&display_name(&request.path)));
+                    self.show_failure(
+                        save_failed_note(&display_name(&request.path)),
+                        note_action::NoteAction::Save,
+                    );
                     self.dirty = true;
                     self.finish_portal_action(false, Some(error));
                 }
@@ -4522,6 +4578,9 @@ impl PdfApp {
                 }
                 _ => {}
             }
+        }
+        if lost_region_render {
+            self.ask_again_for_waiting_region();
         }
     }
 
@@ -4625,6 +4684,12 @@ impl Widget for PdfApp {
             self.status_note.show(crate::t("pdf-note-area-not-copied"));
             self.dirty = true;
         }
+        // The note says so in the window's bar while it lasts, as does a
+        // page or zoom change.
+        self.publish_status_note();
+        self.page_notice.expire();
+        self.page_notice
+            .publish(|line| ToolbarNotice::new(line.clone(), ToastKind::Info));
         let (state, _) = ui::doc::document_ref(state, path);
         if !self.raster_wake_bound
             && let Some(handle) = self.raster_handle.as_ref()
@@ -4860,14 +4925,8 @@ impl Widget for PdfApp {
         }
 
         // The reader's commands are the window bar's slots; what stays on
-        // the pages is the page bubble's stepping and the review panel's
-        // divider.
-        let mut controls = vec![
-            button("Previous page", "pdf.previous-page", self.bubble_prev)
-                .with_state(focusable().disabled(current <= 1)),
-            button("Next page", "pdf.next-page", self.bubble_next)
-                .with_state(focusable().disabled(current >= pages)),
-        ];
+        // the pages is the review panel's divider.
+        let mut controls = Vec::new();
         if !self.overlay_mode {
             controls.extend(self.review.resize_accessibility());
         }
@@ -5321,7 +5380,11 @@ impl Widget for PdfApp {
     }
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
-        self.status_note.deadline()
+        self.status_note
+            .deadline()
+            .into_iter()
+            .chain(self.page_notice.deadline())
+            .min()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -5353,13 +5416,8 @@ impl Widget for PdfApp {
             return owner_busy;
         }
         // Also tick while the PDF owner is busy, so its results are drained
-        // and painted without waiting for an input event. Also keep frames
-        // coming while the floating page bubble is lingering /
-        // fading, so it hides itself without needing a stray pointer event.
-        owner_busy
-            || self.page_bubble.needs_frame(ui::time::now())
-            || self.selection_autoscroll_velocity() != 0.0
-            || self.glide.is_active()
+        // and painted without waiting for an input event.
+        owner_busy || self.selection_autoscroll_velocity() != 0.0 || self.glide.is_active()
     }
 
     fn set_interaction_environment(
@@ -5388,11 +5446,6 @@ impl Widget for PdfApp {
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
-        if reduced {
-            self.page_bubble = ui::StatusBubble::new().with_linger(Duration::ZERO);
-        } else {
-            self.page_bubble = ui::StatusBubble::new();
-        }
         self.dirty = true;
     }
 
@@ -5724,6 +5777,7 @@ impl PdfApp {
 }
 
 mod content_import;
+mod note_action;
 mod scroll_damage;
 mod selection;
 mod window_bar;
@@ -5814,6 +5868,7 @@ mod selection_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use taffy::Size;
     use ui::search::SearchProvider as _;
 
@@ -5828,6 +5883,26 @@ mod tests {
 
     use tilo_automerge::ApplyIncoming;
     use tilo_test_env::hang_bound;
+
+    /// A note says so in the window's bar, not over the page, and leaves it
+    /// when it goes.
+    #[test]
+    fn a_note_is_the_window_bars_notice() {
+        let mut app = ui::framework::testing::TestApp::<crate::PdfViewerShell>::new()
+            .expect("the reader opens");
+        app.with_surface::<PdfApp, _>(|pdf| {
+            pdf.status_note
+                .show("Saved annotated PDF to report.pdf".to_owned());
+        });
+        app.settle();
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.text),
+            Some("Saved annotated PDF to report.pdf".to_owned())
+        );
+        app.with_surface::<PdfApp, _>(|pdf| pdf.status_note.dismiss());
+        app.settle();
+        assert_eq!(ui::window_toolbar::notice(), None);
+    }
 
     /// Two real PDFs on disk, from the bundled fixture. "Open a second
     /// document" has to be a second *file* — the bug is about one document's
@@ -6342,15 +6417,17 @@ mod tests {
         let (mut app, _st) = app_with_state();
         assert!((app.shown_zoom_percent() - (app.zoom() * 100.0).round()).abs() < f64::EPSILON);
 
-        // The page pill shows the zoom as a segment of its own, beside the
-        // page, which a zoom leaves as it was.
-        let (page, zoom) = app.page_pill_labels();
-        assert_eq!(zoom, format!("{:.0}%", (app.zoom() * 100.0).round()));
+        // The bar's line says the page and the zoom; a zoom says itself
+        // there, opening the document does not.
+        app.follow_page_line();
+        assert!(!app.page_notice.is_shown(), "opening is not a change");
+        let line = app.page_line();
+        assert!(line.ends_with(&format!("{:.0}%", (app.zoom() * 100.0).round())));
         app.zoom_by(1.5);
-        let (page_after, zoom_after) = app.page_pill_labels();
-        assert_eq!(page_after, page, "a zoom leaves the page segment as it was");
-        assert_eq!(zoom_after, format!("{:.0}%", (app.zoom() * 100.0).round()));
-        assert_ne!(zoom_after, zoom, "the zoom segment follows the zoom");
+        app.follow_page_line();
+        let said = app.page_notice.get().cloned().expect("a zoom says itself");
+        assert_ne!(said, line, "the line follows the zoom");
+        assert!(said.ends_with(&format!("{:.0}%", (app.zoom() * 100.0).round())));
     }
 
     /// The empty reader staged as screenshot `scenario` shows it.
@@ -6427,10 +6504,14 @@ mod tests {
                 .name
                 .as_deref()
                 .is_some_and(|value| value.contains("Page"))));
-            assert!(any_access_node(&tree, &|node| node
-                .action_target
-                .as_deref()
-                == Some("pdf.next-page")));
+            app.go_to_page(1);
+            assert!(
+                app.window_toolbar()
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "pdf.next-page" && action.enabled),
+                "Next page is the window bar's"
+            );
 
             app.go_to_page(1);
             assert!(app.perform_semantic_action(
@@ -7766,70 +7847,21 @@ mod tests {
             );
         }
 
-        // The floating page bubble draws (and captures its nav hit-rects) only
-        // while visible, and clears them once it fades — proving it is a transient
-        // overlay, not a permanent strip. Drives the real `draw_page_bubble`.
-        eprintln!("phase page_bubble_overlay_shows_then_hides");
+        // A page change says the page in the window's bar.
+        eprintln!("phase page_change_is_said_in_the_bar");
         {
             let (mut app, _st) = app_with_state();
-            app.has_document = true;
-            app.canvas_rect = Rect::new(0.0, 100.0, 800.0, 700.0);
-            let mut scene = Scene::new();
-            let mut tr = TextRenderer::new();
-            let theme = Theme::dark();
-
-            // Hidden by default (no page change, pointer away from the bottom): the
-            // overlay draws nothing and captures no clickable rect.
-            app.last_mouse = Point::new(10.0, 110.0);
-            app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+            app.go_to_page(1);
+            app.follow_page_line();
+            app.page_notice.dismiss();
+            app.go_to_page(2);
+            app.follow_page_line();
             assert_eq!(
-                app.bubble_rect,
-                Rect::ZERO,
-                "a hidden bubble captures no hit-rect"
+                app.page_notice.get().cloned(),
+                Some(app.page_line()),
+                "the new page is news"
             );
-
-            // A page change pokes it → it draws and captures its chevron rects.
-            app.page_bubble.poke(ui::time::now());
-            app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            assert_ne!(
-                app.bubble_rect,
-                Rect::ZERO,
-                "a visible bubble captures its rect"
-            );
-            assert!(
-                app.bubble_rect.y1 <= app.canvas_rect.y1 + 0.01,
-                "it floats within the canvas"
-            );
-            assert!(
-                app.bubble_rect.y0 > app.canvas_rect.y0,
-                "it sits near the bottom, not filling the canvas"
-            );
-            // The right chevron steps the page (a click is consumed).
-            let before = app.current_page;
-            assert!(
-                app.apply_page_bubble(app.bubble_next.center()),
-                "a click on the bubble is consumed"
-            );
-            assert!(
-                app.current_page >= before,
-                "the next chevron does not go backwards"
-            );
-
-            // After its linger, with the pointer away, it hides again.
-            app.page_bubble =
-                ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
-            app.page_bubble.poke(
-                ui::time::now()
-                    .checked_sub(std::time::Duration::from_millis(10))
-                    .unwrap(),
-            );
-            app.last_mouse = Point::new(10.0, 110.0);
-            app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            assert_eq!(
-                app.bubble_rect,
-                Rect::ZERO,
-                "the bubble hides after its linger"
-            );
+            assert!(app.page_line().starts_with("Page 2 of "));
         }
 
         eprintln!("phase rail_toggle_and_resize_reclaim_space");

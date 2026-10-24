@@ -80,7 +80,8 @@ Exit (`tiloexit0`, `100.100.64.1/24`):
   the tunnel network, no new connections from outside into the tunnel, TCP MSS
   clamped to the path.
 - firewalld's forward chain rejects what no zone policy accepts, so the image
-  binds `tiloexit0` to the `tilo-device-vpn` zone with a policy that accepts
+  binds `tiloexit0` to the `tilo-device-vpn` zone with a policy
+  (`tilo-device-vpn-out`; firewalld refuses a policy named like a zone) that accepts
   forwarding from it to any zone (`/usr/lib/firewalld`). NetworkManager leaves
   both interfaces alone (`managed=0`).
 

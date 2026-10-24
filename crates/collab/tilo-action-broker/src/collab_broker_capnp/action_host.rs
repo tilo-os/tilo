@@ -61,7 +61,7 @@ fn oversized_argument(argument: &str) -> Option<String> {
 
 /// A retired transport run cannot use a retained caller clone. Legacy callers
 /// without an execution retain their existing behavior.
-fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
+pub(super) fn check_execution(caller: &Caller) -> Result<(), ActionHostError> {
     if caller.execution_id().is_some() && !caller.execution_is_live() {
         return Err(ActionHostError::Unavailable {
             reason: "execution session ended".into(),

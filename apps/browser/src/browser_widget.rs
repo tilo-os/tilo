@@ -59,12 +59,14 @@ use ui::tilo_resource::Resource as _;
 
 #[cfg(test)]
 mod action_surface_tests;
+mod address_rows;
 mod continuity;
 mod library;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
 mod review_hooks;
+mod side_panel;
 mod toolbar;
 mod window_bar;
 
@@ -150,7 +152,9 @@ fn is_supported_web_url(value: &str) -> bool {
 pub(super) fn row_destination(row: &omnibox::Row, engine: &str) -> String {
     match row.kind {
         omnibox::RowKind::Search | omnibox::RowKind::Suggestion => search_url(engine, &row.url),
-        omnibox::RowKind::Go | omnibox::RowKind::History => row.url.clone(),
+        omnibox::RowKind::Go | omnibox::RowKind::History | omnibox::RowKind::Extension => {
+            row.url.clone()
+        }
     }
 }
 
@@ -318,6 +322,8 @@ struct CompositionKey {
     hosted: bool,
     compact: bool,
     immersive: bool,
+    /// The extension whose side panel shows, and whether it docks.
+    side_panel: Option<(String, bool)>,
 }
 
 /// Root widget for the browser app. See module docs.
@@ -416,6 +422,12 @@ pub struct BrowserWidget {
     /// the bar last said (`ToolbarEvent::Edit`); `None` while it is not
     /// being edited there.
     bar_query: Option<String>,
+    /// The address's text as the extensions' keywords last saw it, whether
+    /// it then followed one (the rows are the extension's), and whether the
+    /// extension's rows changed since they were shown.
+    keyword_typed: String,
+    keyword_active: bool,
+    keyword_dirty: bool,
     audio_muted: bool,
     media_playing: bool,
     media_document_generation: Option<u64>,
@@ -1257,6 +1269,9 @@ impl BrowserWidget {
             favicon: None,
             favicon_png: None,
             bar_query: None,
+            keyword_typed: String::new(),
+            keyword_active: false,
+            keyword_dirty: false,
             audio_muted: false,
             media_playing: false,
             media_document_generation: None,
@@ -2556,6 +2571,7 @@ impl BrowserWidget {
             hosted: ui::window_toolbar::is_hosted(),
             compact: self.compact_chrome,
             immersive: self.content_fullscreen && self.window_fullscreen_active,
+            side_panel: self.side_panel_key(theme),
         };
         if !self.composition_dirty
             && !self.structure_dirty
@@ -2694,12 +2710,7 @@ impl BrowserWidget {
             } else {
                 self.title.clone()
             };
-            Box::new(
-                WebView::new(self.engine.clone())
-                    .with_scale_factor(self.window_scale)
-                    .with_accessible_name(page_name)
-                    .with_test_id("browser.surface"),
-            )
+            self.page_beside_side_panel(page_name, theme)
         };
         // Loading is drawn on the toolbar's bottom edge (`draw`), not as a
         // band of its own: a band pushed the page down when a load began
@@ -2866,8 +2877,14 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionNotification { .. }
                 | WebViewEvent::ExtensionPermissionRequest { .. }
                 | WebViewEvent::ExtensionPermissions { .. }
-                | WebViewEvent::ExtensionSignIn { .. }) => {
+                | WebViewEvent::ExtensionSignIn { .. }
+                | WebViewEvent::ExtensionSidePanel { .. }) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
+                }
+                // What an extension suggests for its keyword in the address.
+                event @ (WebViewEvent::ExtensionOmniboxSuggestions { .. }
+                | WebViewEvent::ExtensionOmniboxDefault { .. }) => {
+                    self.keyword_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 WebViewEvent::CredentialResult(reply) => {
                     let requests = self.credentials.apply(reply);
@@ -3390,6 +3407,16 @@ impl BrowserWidget {
     /// Navigate to whatever the address bar currently holds.
     fn navigate_to_input(&mut self) {
         let url = self.address.with(Clone::clone);
+        // After an extension's keyword, Enter is the extension's: it acts on
+        // the words, often sending the page somewhere, as Send words to
+        // extension does.
+        if let Some(request) = self.extensions.omnibox_enter(&url) {
+            if let Err(error) = self.extensions.request(&request) {
+                tracing::warn!(%error, "the extension's keyword was not sent");
+            }
+            self.structure_dirty = true;
+            return;
+        }
         let trimmed = url.trim();
         if !trimmed.is_empty() {
             self.queue_navigate(trimmed.to_string());
@@ -3424,172 +3451,6 @@ impl BrowserWidget {
                     Vec::new(),
                 )));
         }
-    }
-
-    /// Forget everything the omnibox derived from the text being typed.
-    fn reset_omnibox(&mut self) {
-        self.suggestions.clear();
-        self.bar_rows.clear();
-        self.suggest_debounce.cancel();
-        self.remote.clear();
-        self.last_query = None;
-        self.last_typed.clear();
-        self.inline = None;
-        self.select_completion = None;
-    }
-
-    /// Refresh the address-bar suggestions while the address input is being
-    /// edited; hide them otherwise. Runs every frame, does bounded work, and
-    /// never waits on the network: the engine's suggestions arrive later
-    /// through `suggest_fetcher`.
-    fn update_suggestions(&mut self) {
-        if self.force_suggestions {
-            return; // headless overlay render — keep the pinned list
-        }
-        let text = if ui::window_toolbar::is_hosted() {
-            // The address is edited in the window's bar: what the bar said
-            // is being typed there.
-            self.bar_query.clone().unwrap_or_default()
-        } else if self.show_settings || !self.url_input_focused() {
-            String::new()
-        } else {
-            self.address.with(Clone::clone)
-        };
-        // The bar echoing the completion we put there is not new typing.
-        let typed = match &self.inline {
-            Some((typed, full)) if *full == text => typed.clone(),
-            _ => {
-                self.inline = None;
-                text
-            }
-        };
-        let query = typed.trim();
-        // Only suggest while the user is editing a *query* — not when the
-        // bar merely shows the loaded page's URL, and not for an empty bar.
-        let editing = !query.is_empty() && query != self.current_uri.trim();
-        if !editing {
-            if self.last_query.is_some()
-                || self.suggestions.is_visible()
-                || !self.bar_rows.is_empty()
-            {
-                self.reset_omnibox();
-            }
-            return;
-        }
-        let query = query.to_owned();
-        let mut dirty = self.last_query.as_deref() != Some(query.as_str());
-        if dirty {
-            self.on_query_changed(&query);
-        }
-        if let Some(answer) = self.suggest_fetcher.take()
-            && self.suggest_debounce.is_current(answer.generation)
-            && answer.query == query
-        {
-            self.remote = answer.suggestions;
-            dirty = true;
-        }
-        if let Some((generation, wanted)) = self
-            .suggest_debounce
-            .due(ui::time::now(), omnibox::DEBOUNCE)
-            && let Some(endpoint) = omnibox::suggest_endpoint(&self.settings.search_engine, &wanted)
-        {
-            self.suggest_fetcher.fetch(generation, wanted, endpoint);
-        }
-        if dirty || self.omni_stale {
-            self.rebuild_rows(&query);
-        }
-    }
-
-    /// The typed text changed: restart the quiet period for the engine's
-    /// suggestions and keep only the old ones that still fit.
-    fn on_query_changed(&mut self, query: &str) {
-        let lower = query.to_lowercase();
-        self.remote
-            .retain(|suggestion| suggestion.to_lowercase().starts_with(&lower));
-        if query.chars().count() >= 2 && !omnibox::looks_like_address(query) {
-            self.suggest_debounce.typed(query, ui::time::now());
-        } else {
-            self.suggest_debounce.cancel();
-            self.remote.clear();
-        }
-    }
-
-    /// Select the untyped tail of an inline completion, once the address
-    /// field holds the completed text.
-    fn select_inline_completion(&mut self) {
-        fn select(widget: &mut dyn Widget, state: &str) -> bool {
-            if widget.test_id() == Some(URL_INPUT_ID) {
-                ui::undo::set_state(widget, state);
-                return true;
-            }
-            widget
-                .children_mut()
-                .into_iter()
-                .any(|child| select(child, state))
-        }
-        let Some((end, start)) = self.select_completion.take() else {
-            return;
-        };
-        if let Some(c) = self.composed.element_mut() {
-            select(c, &format!("{end}:b:{start}"));
-        }
-    }
-
-    /// Match, merge and complete for `query`; set the dropdown's rows.
-    fn rebuild_rows(&mut self, query: &str) {
-        if self.omni_stale {
-            self.omni_index.rebuild(self.history.entries());
-            self.omni_stale = false;
-        }
-        let now = tilo_clock::unix_now();
-        let matches = self.omni_index.search(query, omnibox::MAX_ROWS, now);
-        let mut rows = omnibox::build_rows(
-            query,
-            &matches,
-            &self.remote,
-            &self.current_uri,
-            omnibox::MAX_ROWS,
-        );
-        // Complete inline only when the person is adding characters; after a
-        // deletion the text is theirs.
-        let growing = query.len() > self.last_typed.len() && query.starts_with(&self.last_typed);
-        if growing
-            && self.inline.is_none()
-            && let Some(full) = omnibox::inline_completion(query, matches.first())
-        {
-            self.select_completion = Some((full.len(), query.len()));
-            self.address.set(full.clone());
-            self.inline = Some((query.to_owned(), full));
-        }
-        if let Some((typed, full)) = &self.inline
-            && typed == query
-        {
-            omnibox::lead_with_address(&mut rows, full);
-        }
-        query.clone_into(&mut self.last_typed);
-        self.last_query = Some(query.to_owned());
-        if ui::window_toolbar::is_hosted() {
-            // The bar lists them under its address; the window lists none.
-            self.suggestions.clear();
-            self.bar_rows = rows;
-        } else {
-            self.bar_rows.clear();
-            self.suggestions
-                .set_search_engine(&crate::settings::search_engine_name(
-                    &self.settings.search_engine,
-                ));
-            self.suggestions.set_suggestions(rows);
-        }
-    }
-
-    /// Open a chosen dropdown row.
-    fn choose_row(&mut self, row: &omnibox::Row) {
-        self.suggestions.clear();
-        self.last_query = None;
-        self.inline = None;
-        let destination = row_destination(row, &self.settings.search_engine);
-        self.address.set(destination.clone());
-        self.queue_navigate(destination);
     }
 
     /// Rect of the address `TextInput` in the composed tree, for anchoring

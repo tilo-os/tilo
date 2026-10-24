@@ -190,6 +190,11 @@ fn presentation_files_open_and_save_through_the_chooser() {
         let (_, answer) = through_the_chooser(&mut bench, PortalOutcome::Opened(path), &OPEN);
         assert!(answer.is_err(), "the caller hears the open failed");
         assert!(bench.read(|app| matches!(app.io_toast.get(), Some((_, ToastKind::Error)))));
+        assert_eq!(
+            ui::window_toolbar::notice().map(|notice| notice.kind),
+            Some(ToastKind::Error),
+            "the window bar says the open failed"
+        );
         assert_eq!(bench.deck(), before, "a failed open changes nothing");
     }
 

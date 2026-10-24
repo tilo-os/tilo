@@ -708,8 +708,12 @@ fn a_wait_that_runs_out_plans_again_saying_nothing_arrived() {
     assert!(waiting.ran_out(now));
     assert_eq!(waiting.activity(), "Waiting for a message");
     assert!(
-        waiting.answered_by(&[], &[]),
-        "without a text, any change is it"
+        waiting.answered_by(&["Hi".into()], &[]),
+        "without a text, any message is it"
+    );
+    assert!(
+        !waiting.answered_by(&[], &[]),
+        "a change that added no message (a roster, a read mark) is not"
     );
     running
         .waits
@@ -1028,6 +1032,11 @@ fn news_that_interrupts_a_plan_shows_the_steps_it_was_about_to_run() {
         "{brief}"
     );
     assert!(brief.contains("2. so.tilo.chat export-content"), "{brief}");
+    assert_eq!(
+        running.news_resume.as_ref().map(Vec::len),
+        Some(2),
+        "the steps are kept for a re-plan that answers nothing"
+    );
     assert!(brief.contains("unless the news changes them"), "{brief}");
     assert!(
         brief.contains("must be checked against the record as it is now")
@@ -1056,6 +1065,7 @@ fn news_that_interrupts_a_plan_shows_the_steps_it_was_about_to_run() {
         panic!("{:?}", done.steps);
     };
     assert!(brief.contains("Your planned steps are done"), "{brief}");
+    assert!(done.news_resume.is_none(), "nothing was left to resume");
     assert!(
         brief.contains(
             "new messages arrived (chat).\n- chat, changed by Rae: LR-2041 code entered\nThey \

@@ -21,6 +21,8 @@ pub(crate) enum Slot {
     /// press away.
     ViewsMenu,
     Action(usize),
+    /// Button `n` of the notice's own, after its text.
+    Notice(usize),
     /// The button whose menu holds the actions the row has no room for.
     Overflow,
 }
@@ -50,6 +52,11 @@ pub(crate) struct Slots {
     /// The labelled leading actions in the row are text buttons
     /// ([`crate::window_toolbar::ToolbarAction::labelled`]), not icons.
     pub labelled: bool,
+    /// The notice's buttons, in order right after its text (none: it has
+    /// none, or the row has no room for its text).
+    pub notice: Vec<Rect>,
+    /// Which of the notice's buttons name themselves, not only their icon.
+    pub notice_labelled: Vec<bool>,
 }
 
 /// What the row lays out beside the toolbar: the view switcher's size and
@@ -80,6 +87,9 @@ pub(crate) struct LocationForms {
     /// What stands beside the text in the location at rest: its icon, a
     /// field's frame.
     pub chrome: f64,
+    /// Each of the notice's buttons as a text button (none: the notice up
+    /// has none, or it is not measured).
+    pub actions: Vec<f64>,
 }
 
 impl LocationForms {
@@ -108,6 +118,57 @@ impl LocationForms {
     pub(super) fn width(&self, form: usize) -> f64 {
         self.text.get(form).copied().unwrap_or(0.0)
     }
+
+    /// How a notice up in the location stands where the location has
+    /// `room` beside the navigation alone: its buttons' widths, which name
+    /// themselves, and the room the location keeps for the notice to stand
+    /// whole, its buttons included. The buttons name themselves, in order,
+    /// as far as they stand so beside the whole text in `room`: the last
+    /// is its icon first. The location keeps no more than `room`,
+    /// everything that yields before it in the menu, the text cut short
+    /// beside the buttons.
+    pub(super) fn notice(&self, toolbar: &WindowToolbar, room: f64) -> Option<NoticeFit> {
+        let notice = toolbar.notice.as_ref()?;
+        let whole = self.width(0) + self.chrome;
+        let count = notice.actions.len();
+        let fit = |named: usize| -> (Vec<f64>, Vec<bool>, f64) {
+            let labelled: Vec<bool> = (0..count)
+                .map(|i| i < named && self.actions.get(i).is_some_and(|w| *w > 0.0))
+                .collect();
+            let buttons: Vec<f64> = (0..count)
+                .map(|i| match (labelled[i], self.actions.get(i)) {
+                    (true, Some(width)) => *width,
+                    _ => CONTROL_PX,
+                })
+                .collect();
+            let beside = buttons.iter().map(|button| CONTROL_GAP + button).sum();
+            (buttons, labelled, beside)
+        };
+        let (buttons, labelled, beside) = (0..=count)
+            .rev()
+            .map(fit)
+            .find(|(_, labelled, beside)| {
+                labelled.iter().all(|named| !named) || whole + beside <= room
+            })
+            .unwrap_or_else(|| fit(0));
+        Some(NoticeFit {
+            buttons,
+            labelled,
+            least: (whole + beside).min(room),
+        })
+    }
+}
+
+/// How a notice up in the location stands in the row
+/// ([`LocationForms::notice`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct NoticeFit {
+    /// Its buttons' widths, in order.
+    pub(super) buttons: Vec<f64>,
+    /// Which of them name themselves.
+    pub(super) labelled: Vec<bool>,
+    /// The room the location keeps for it.
+    pub(super) least: f64,
 }
 
 /// The views, the location's forms and the labelled leading actions as
@@ -133,6 +194,8 @@ pub(super) struct MeasureKey {
     pub(super) editable: bool,
     pub(super) picker: bool,
     pub(super) icon: bool,
+    /// The notice's buttons' names.
+    pub(super) notice: Vec<String>,
     pub(super) text_scale: u32,
 }
 
@@ -179,12 +242,14 @@ pub(super) fn folded_views(measured: ViewsMeasure) -> ViewsPlace {
 /// Whether `toolbar`'s location can be the views' picker: a plain label,
 /// neither edited, nor a picker of its own places, nor a breadcrumb.
 pub(super) fn picks_views(toolbar: &WindowToolbar) -> bool {
-    toolbar.location.as_ref().is_some_and(|location| {
-        !location.editable
-            && location.choices.is_empty()
-            && location.segments.is_empty()
-            && !location.label.is_empty()
-    })
+    // A notice says what happened; it is no place to pick a view from.
+    toolbar.notice.is_none()
+        && toolbar.location.as_ref().is_some_and(|location| {
+            !location.editable
+                && location.choices.is_empty()
+                && location.segments.is_empty()
+                && !location.label.is_empty()
+        })
 }
 
 /// What one layout keeps in the row: the first `plain` leading actions
@@ -257,6 +322,13 @@ impl Slots {
     /// A labelled leading action is a text button only where the row folds
     /// nothing at all, its label included, and an icon otherwise: its label
     /// is the first thing a narrowing row gives up.
+    ///
+    /// A notice up in the location ([`WindowToolbar::notice`]) stands
+    /// whole, its button right after its text, before anything that yields
+    /// before the location stands in the row; its text is cut short only
+    /// where all of that is in the menu. Its button never is: it names
+    /// itself where it does so beside the whole text, and is its icon
+    /// where not.
     pub(crate) fn lay_out(
         toolbar: &WindowToolbar,
         row: Rect,
@@ -277,7 +349,10 @@ impl Slots {
             .location
             .width();
         let form = forms.fitting(room);
-        let least = forms.least(form, room);
+        let notice = forms.notice(toolbar, room);
+        let least = notice
+            .as_ref()
+            .map_or_else(|| forms.least(form, room), |notice| notice.least);
         let shown = (forms.width(form), least, form > 0);
         let icons = Self::arranged(toolbar, row, views, shown, &[]);
         let mut slots = if form == 0
@@ -297,7 +372,38 @@ impl Slots {
             icons
         };
         slots.form = form;
+        if let Some(notice) = notice {
+            slots.place_notice(notice, forms.width(form) + forms.chrome);
+        }
         slots
+    }
+
+    /// Put the notice's buttons in order right after its text, `text` wide
+    /// with its icon, and inside the location's end where the text is cut
+    /// short; the location keeps what is left before them.
+    fn place_notice(&mut self, notice: NoticeFit, text: f64) {
+        let location = self.location;
+        if notice.buttons.is_empty() || location.area() <= 0.0 {
+            return;
+        }
+        let span = notice.buttons.iter().sum::<f64>()
+            + CONTROL_GAP
+                * f64::from(u32::try_from(notice.buttons.len().saturating_sub(1)).unwrap_or(0));
+        let first = (location.x0 + text + CONTROL_GAP)
+            .min(location.x1 - span)
+            .max(location.x0);
+        let mut x0 = first;
+        self.notice = notice
+            .buttons
+            .iter()
+            .map(|width| {
+                let rect = Rect::new(x0, location.y0, (x0 + width).min(location.x1), location.y1);
+                x0 = rect.x1 + CONTROL_GAP;
+                rect
+            })
+            .collect();
+        self.notice_labelled = notice.labelled;
+        self.location.x1 = (first - CONTROL_GAP).max(location.x0);
     }
 
     /// Whether these slots keep everything of `toolbar` in the row: every
@@ -597,6 +703,9 @@ impl Slots {
         }
         if let Some(i) = self.actions.iter().position(|r| r.contains(p)) {
             return Some(Slot::Action(i));
+        }
+        if let Some(i) = self.notice.iter().position(|r| r.contains(p)) {
+            return Some(Slot::Notice(i));
         }
         if self.overflow.contains(p) {
             return Some(Slot::Overflow);

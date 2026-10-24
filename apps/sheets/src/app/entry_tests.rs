@@ -207,7 +207,7 @@ fn an_error_cell_explains_itself() {
 
     app.status = "Ready".into();
     app.grid.select_only((7, 20));
-    let bubble = app.status_bubble_label().unwrap_or_default();
+    let bubble = app.status_label().unwrap_or_default();
     assert!(bubble.contains("ends with an operator"), "bubble: {bubble}");
 
     for (raw, why) in [
@@ -217,7 +217,7 @@ fn an_error_cell_explains_itself() {
     ] {
         set_cells(&mut app, &mut doc, &[((7, 21), raw)]);
         app.grid.select_only((7, 21));
-        let bubble = app.status_bubble_label().unwrap_or_default();
+        let bubble = app.status_label().unwrap_or_default();
         assert!(bubble.contains(why), "{raw}: {bubble}");
     }
 

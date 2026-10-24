@@ -322,7 +322,9 @@ tilo-dialogs.workspace = true
 # readings its own System monitor widget shows; `udisks` adds each drive's
 # health to the storage it describes (Disks).
 tilo-system-stats = { path = "../../system/system-stats", features = ["udisks"] }
-package-store = { path = "../../packaging/package-store" }
+# `store`: opening a downloaded app records its use for the size sweep
+# (`launcher::recorded_use`).
+package-store = { path = "../../packaging/package-store", features = ["store"] }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # What leaves the person's apps goes to their Trash (`app_list`).
 host-fs = { path = "../../system/host-fs" }

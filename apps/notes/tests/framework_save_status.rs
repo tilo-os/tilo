@@ -99,8 +99,7 @@ fn idle(
     }
 }
 
-/// Keys arrive one by one, slower than the status bubble lingers and faster
-/// than the writer's debounce, so the status reads "Saving…" from the first
+/// Keys arrive one by one, faster than the writer's debounce, so the status reads "Saving…" from the first
 /// key to the last. The write then lands on the store's own thread with no
 /// further input, and the status still moves to "Saved".
 #[test]
@@ -129,21 +128,23 @@ fn a_note_typed_key_by_key_reads_saved_once_its_write_lands() {
 }
 
 /// Assistive technology hears what the screen shows: autosave cycling
-/// between "Saving…" and "Saved" is silent, a failed save is announced, and
-/// so is the save that ends it, once.
+/// between "Saving…" and "Saved" is silent, a failed save is said in the
+/// window's bar (its notice is a polite live region), and so is the save
+/// that ends it, once. The note's own tree announces nothing.
 #[test]
 fn only_a_failed_save_and_its_recovery_are_announced() {
     use ui::record::RecordSaveStatus;
     use ui::widget::Widget;
-    fn announced(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+    fn live(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
         if node.live.is_some() {
             out.push(node.name.clone().unwrap_or_default());
         }
         for child in &node.children {
-            announced(child, out);
+            live(child, out);
         }
     }
     ui::i18n::I18nManager::init("en-US");
+    ui::window_toolbar::notify(None);
     let mut doc = automerge::AutoCommit::new();
     read::initialize(&mut doc);
     doc.commit();
@@ -151,22 +152,32 @@ fn only_a_failed_save_and_its_recovery_are_announced() {
         notes::NotesApp::from_document(&doc, &ui::permissions::UserId("me".into())).unwrap();
     let status = ui::LocalState::new(RecordSaveStatus::Saved);
     app.follow_save_status(status.clone());
+    let mut said = None;
+    // What the bar newly says after the save state changes.
     let mut hear = |state: RecordSaveStatus| {
         status.set(state);
         app.sync(&doc, &automerge::ROOT);
-        let mut out = Vec::new();
-        announced(&app.accessibility().unwrap(), &mut out);
-        out
+        let mut own = Vec::new();
+        live(&app.accessibility().unwrap(), &mut own);
+        assert_eq!(
+            own,
+            Vec::<String>::new(),
+            "the note announces nothing itself"
+        );
+        let now = ui::window_toolbar::notice().map(|notice| notice.text);
+        let news = (now != said).then(|| now.clone()).flatten();
+        said = now;
+        news.into_iter().collect::<Vec<_>>()
     };
     for state in
         std::iter::repeat_n([RecordSaveStatus::Saving, RecordSaveStatus::Saved], 3).flatten()
     {
         assert_eq!(hear(state), Vec::<String>::new(), "autosave is silent");
     }
-    assert_eq!(
-        hear(RecordSaveStatus::Failed("disk failure".into())),
-        ["Save failed"],
-        "a failed save is announced"
+    let failed = hear(RecordSaveStatus::Failed("disk failure".into()));
+    assert!(
+        matches!(failed.as_slice(), [text] if text.starts_with("Save failed")),
+        "a failed save is announced: {failed:?}"
     );
     assert_eq!(
         hear(RecordSaveStatus::Saving),

@@ -2192,7 +2192,7 @@ impl MailApp {
         let kind = Self::status_kind(&msg);
         self.send_notice = std::mem::take(&mut self.sending_notice_next);
         if undoable {
-            self.nav.toast_with_action(msg, kind, "Undo");
+            self.nav.toast_with_action(msg, kind, "undo-2", "Undo");
         } else {
             self.nav.toast(msg, kind);
         }

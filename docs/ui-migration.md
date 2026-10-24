@@ -1944,37 +1944,29 @@ message.
 | What | Surface |
 |---|---|
 | Ln/Col, word or character count, selection size, unresolved conflict count, zoom level that the person checks while working | `chrome::status_bar`: `let (content, bar) = ui::chrome::status_bar::split(region, theme);` lay the region's content out in `content`, then `ui::chrome::status_bar::draw(scene, t, tr, theme, bar, left, right)` |
-| A change worth noticing once: "Synced", a page turn, a zoom step | `StatusBubble` |
+| A change worth noticing once: "Synced", a page turn, a zoom step | The window bar's notice: a `Transient<T>` (or `Notice`) shown on the change, `expire()` and `publish(..)` on every sync, its `deadline()` in `next_wake_deadline` |
 | A readout that does something when clicked (a zoom level, an offset that opens Go to) | `ui::chrome::status_bar::draw_readouts(scene, t, tr, theme, bar, &left, &right, hovered)` with `StatusReadout::action(text)`; it returns each readout's rect to hit-test. `status_bar::height` grows with the `Caption` line at a large text scale |
 | An error or warning the person has to act on, that stays until resolved | `Banner` (in the flow, above the content it concerns), with the action that resolves it inside it (`.with_action(button)`) |
 | A standing notice where nothing is wrong (a private window, a read-only copy) | `Banner::neutral(..)` |
-| A transient result or a recoverable error ("Copied", "Upload failed, retrying") | `Toast` (`ToastStack`, or `toast::paint_transient` for a painted app) |
-| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` every frame, `paint(scene, t, tr, theme, area, now)` from `draw_overlay`, route clicks with `click(p)` (`SaveAction::Retry` / `Dismiss`). Autosave's saving and saved never show (expose them in the app's accessibility status via `state()`); a failure is an error card with Try again that stays until the save succeeds, and that success is a one-time "Saved" bubble. Delete any save pill, pinned bubble or hand-drawn failure text |
+| A transient result or a recoverable error ("Copied", "Upload failed, retrying") | The window bar's notice, as above; its one action (Undo, Try again) rides along as `ToolbarNotice::action`, taken with `window_toolbar::take_notice_press(id)` |
+| A document's save state: "Saving…", "Saved", "Save failed" | `ui::SaveStatusSurface`: `set(SaveState::from(&record_save_status), now)` and `advance(now)` on every sync, then `take_bar_action()` (`SaveAction::Retry`) and `publish()`; `seen()` when the window draws. Autosave's saving and saved never show (expose them in the app's accessibility status via `state()`); a failure is the bar's error notice with Try again, held until a save succeeds, and that success is a one-time "Saved". Delete any save pill or hand-drawn failure text |
 
-StatusBubble, replacing the hand-rolled pattern (`pill_size` + a margin
-rect + a reveal zone + `push_layer(alpha)` + `draw_pill` + `poke` on change):
+The bar's notice replaces the hand-rolled floating pill (`pill_size` + a
+margin rect + a reveal zone + `push_layer(alpha)` + a hover pin):
 
 ```rust
-// state: status_bubble: ui::StatusBubble
-let now = ui::time::now();
-self.status_bubble.show(&label, now);              // every frame is fine; pokes on change only
-// in CursorMoved:
-self.status_bubble.pointer_moved(self.rect, p, tr, theme, now);
-// in draw (or draw_overlay):
-self.status_bubble.paint(scene, transform, tr, theme, self.rect, now);
-// in needs_animation_frame:
-self.status_bubble.needs_frame(ui::time::now())
+// state: said: ui::widget::toast::Transient<String>
+self.said.show(label);                             // on the change, once
+// on every sync:
+self.said.expire();
+self.said.publish(|text| ui::window_toolbar::ToolbarNotice::new(text.clone(), ToastKind::Info));
+// in next_wake_deadline:
+self.said.deadline()
 ```
 
-Delete the app's `status_shown` copy of the text, its `margin`/zone
-constants, `text_size` literals and the alpha layer. Delete
-`arm_status_bubble_for_shots`, `shots_status` and any forced-visible flag: a
-plain `--shots` waits until the bubble has faded. A screenshot scenario that
-wants the bubble in frame stages it in its stage hook with
-`status_bubble.show(text, now)` followed by `status_bubble.set_hover(true,
-now)`. A bubble that hosts controls (ebook's page arrows) keeps `pill_size`
-and `draw_pill`, and draws its arrows with `ui::icons::Icon::ChevronLeft` /
-`ChevronRight`.
+Delete the app's pill, its zone constants, its alpha layer and any
+forced-visible shot flag: under the capture clock a notice does not expire,
+so a scenario that stages one keeps it in frame.
 
 ### Scrims and media
 

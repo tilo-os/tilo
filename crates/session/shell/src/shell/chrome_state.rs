@@ -3984,24 +3984,34 @@ impl ChromeState {
     /// Clear the history log (the "Clear all" affordance in the
     /// notification centre). Bumps the revision so the surface re-syncs.
     pub fn clear_notification_history(&mut self) {
-        if self
-            .notification_log
-            .clear_history(std::time::Instant::now())
-        {
+        if self.notification_log.clear_history(ui::time::now()) {
             self.bump();
         }
     }
 
-    /// Whether Clear all can still be undone.
+    /// Whether Clear all can still be undone. The undo ends at its deadline,
+    /// not at the next frame that notices: an action can ask after an idle
+    /// while in which nothing painted.
     pub fn can_undo_notification_history_clear(&self) -> bool {
-        self.notification_log.can_undo_clear()
+        self.notification_log
+            .clear_deadline()
+            .is_some_and(|deadline| ui::time::now() < deadline)
+    }
+
+    /// When the undo of Clear all ends, for the compositor to wake then and
+    /// take its Undo away.
+    pub fn notification_history_clear_deadline(&self) -> Option<ui::time::Instant> {
+        self.notification_log.clear_deadline()
     }
 
     /// Restore the cleared oldest-first snapshot ahead of notifications that
     /// arrived during the undo window, preserving exact chronological order.
+    /// Past the window nothing comes back, whether or not a frame has run
+    /// since.
     pub fn undo_notification_history_clear(&mut self) -> bool {
+        let expired = self.notification_log.expire_clear(ui::time::now());
         let restored = self.notification_log.undo_clear();
-        if restored {
+        if expired || restored {
             self.bump();
         }
         restored

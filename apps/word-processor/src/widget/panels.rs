@@ -24,7 +24,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::Widget;
-use ui::widget::toast::{ToastAnchor, ToastKind};
+use ui::widget::toast::ToastKind;
 use ui::widget::{Button, ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, SegmentedFace};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -1379,26 +1379,6 @@ impl WordProcessorWidget {
         // Scroll the freshly-inserted TOC (always at the document top) into
         // view: the table itself is the visible result.
         self.scroll_y = 0.0;
-    }
-
-    /// Draw the transient confirmation through the shared toast-card renderer.
-    /// It remains anchored above the status bar and is dismissed by the next
-    /// interaction.
-    pub(super) fn draw_toast(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let area = Rect::new(
-            self.rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1 - self.layout_bar_height,
-        );
-        self.toast
-            .paint(scene, transform, tr, theme, area, ToastAnchor::BottomCenter);
     }
 }
 

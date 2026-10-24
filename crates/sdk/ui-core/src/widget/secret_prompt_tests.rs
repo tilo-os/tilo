@@ -358,7 +358,7 @@ fn a_finger_gets_targets_of_at_least_44_px_and_the_pin_keypad() {
         .chain([&layout.cancel, &layout.primary])
     {
         assert!(
-            rect.height() >= TOUCH_TARGET,
+            rect.height() >= f64::from(InteractionEnvironment::TOUCH.minimum_target()),
             "{rect:?} is too short for a finger"
         );
     }

@@ -1,0 +1,4 @@
+{"manifest_version": 3, "name": "Keyword", "version": "1.0",
+ "omnibox": {"keyword": "kw"},
+ "permissions": ["activeTab"],
+ "background": {"service_worker": "worker.js"}}

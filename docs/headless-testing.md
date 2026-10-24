@@ -797,7 +797,13 @@ not offer now (hex mode on plain text, the desktop's search) fails the step.
 same). The app is then built as that capture is: from the scenario's fixtures
 (its sample processes, forecast or library) instead of the device's live
 sources, with the scenario's edits applied and its scene staged, and only then
-do the actions run. With `window_bar` it is how a review shows the app's real
+do the actions run. Every action the app publishes can be invoked there, as in a
+drive of the app someone uses, and the work an invoked action starts runs; the
+window starts nothing on its own (no fetch, no projection drain), so what it
+shows stays the scenario's. `TestApp::drive(scenario)` is the same window in a
+Rust test, and `testing::unreachable_actions` invokes every action it publishes
+with sample arguments from each parameter's schema and names any the door could
+not address or bind. With `window_bar` it is how a review shows the app's real
 content under the bar, from the one set of sample data the app's shots use:
 
 ```json

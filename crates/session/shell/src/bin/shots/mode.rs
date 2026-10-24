@@ -88,10 +88,13 @@ pub mod offscreen {
 
         fn film(
             &mut self,
-            _driver: &mut ShellDriver,
+            driver: &mut ShellDriver,
             prefix: &str,
             frames: Vec<scenario::film::FilmFrame>,
         ) {
+            // Frames render on the ground the live compositor clears to, so a
+            // film reads as the screen did.
+            let ground = driver.ground();
             let mut described = Vec::with_capacity(frames.len());
             for frame in frames {
                 let name = frame
@@ -99,8 +102,7 @@ pub mod offscreen {
                     .map_or_else(|| "before".to_owned(), |i| format!("{i:03}"));
                 let path = self.dir.join(format!("{prefix}-{name}.png"));
                 self.renderer.set_backdrop(frame.backdrop);
-                self.renderer
-                    .render_png(&frame.scene, Color::TRANSPARENT, &path);
+                self.renderer.render_png(&frame.scene, ground, &path);
                 described.push(serde_json::json!({
                     "index": frame.index,
                     "ms": frame.index.map(|_| frame.at.as_secs_f64() * 1000.0),

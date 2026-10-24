@@ -3,16 +3,15 @@
 //! The byte grid is genuine content drawing — a dense, fixed-pitch canvas
 //! with a cursor synced across two parallel columns — so it paints itself,
 //! reading every colour, size and gap from the theme. Everything around it is
-//! the framework's: the inspector drawer, the status bar, the property list,
-//! the empty state and the toast. The file's name, the edit mode, the
-//! inspector's toggle, search and History are the window bar's.
+//! the framework's: the inspector drawer, the status bar, the property list
+//! and the empty state. The file's name, the edit mode, the inspector's
+//! toggle, a failure's notice, search and History are the window bar's.
 
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind};
 use ui::widget::{PropertyListFace, PropertyRow, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
@@ -94,7 +93,6 @@ impl HexView {
     ) {
         if !self.has_file {
             self.paint_empty_state(scene, transform, tr, theme, presence);
-            self.paint_notices(scene, transform, tr, theme);
             return;
         }
         self.paint_grid(scene, transform, tr, theme);
@@ -111,7 +109,6 @@ impl HexView {
         }
         self.paint_status(scene, transform, tr, theme);
         self.paint_inspector_region(scene, transform, tr, theme, presence);
-        self.paint_notices(scene, transform, tr, theme);
     }
 
     /// The column labels, the rules between the columns and the rows of
@@ -389,13 +386,6 @@ impl HexView {
         let mut left = vec![StatusReadout::action(&offset)];
         left.extend(selected.as_deref().map(StatusReadout::text));
         left.extend(edited.as_deref().map(StatusReadout::text));
-        // A change worth noticing once ("Saved") reads in the status bar
-        // while it lingers, so it never covers the grid.
-        let notice = self
-            .status_bubble
-            .is_visible(ui::time::now())
-            .then(|| self.status_bubble.text().to_owned());
-        left.extend(notice.as_deref().map(StatusReadout::text));
         let hovered = self.offset_readout.contains(self.last_mouse).then_some(0);
         let rects = draw_readouts(
             scene,
@@ -525,32 +515,5 @@ impl HexView {
             .role(ui::widget::ButtonRole::Plain)
             .hovered(rect.contains(self.last_mouse));
         ui::widget::Button::paint(scene, transform, tr, theme, &face);
-    }
-
-    /// Transient notices over the content: a failed open or save as a
-    /// toast ("Saved" reads in the status bar).
-    fn paint_notices(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let area = if self.has_file {
-            self.geo.bubble_area
-        } else {
-            self.rect
-        };
-        if let Some((title, detail)) = self.problem.get() {
-            self.problem.paint(
-                scene,
-                transform,
-                tr,
-                theme,
-                area,
-                ToastAnchor::BottomRight,
-                &ToastCard::new(title, ToastKind::Error).body(detail),
-            );
-        }
     }
 }

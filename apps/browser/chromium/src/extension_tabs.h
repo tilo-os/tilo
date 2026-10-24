@@ -20,7 +20,10 @@
 // the host last painted of it, runs extensions' keyboard shortcuts
 // (extension_commands.h) on the keys the Browser forwards into a page, and
 // counts what extensions' network rules did in each tab's page
-// (action_counts.h). Events (a click, a command, a tab loading)
+// (action_counts.h). What the person types after an extension's keyword in
+// the Browser's address reaches the extension (`omnibox`), and its
+// suggestions go back. Events (a click, a command, a tab loading, the
+// address's keyword)
 // reach a service worker through the DevTools pipe, which wakes it if it
 // sleeps; the host attaches only for as long as that takes, so an extension's
 // worker still sleeps when idle.
@@ -65,6 +68,10 @@ inline constexpr char kExtensionBridge[] = "https://extension-bridge.tilo.invali
 inline constexpr size_t kMaxBridgeRequest = 8 * 1024 * 1024;
 // The most frames of one page an injection reaches.
 inline constexpr size_t kMaxFrames = 256;
+// The most suggestions an extension shows under the address at once, and
+// the longest text of one.
+inline constexpr size_t kMaxOmniboxSuggestions = 16;
+inline constexpr size_t kMaxOmniboxText = 2048;
 // What Chrome answers a message or a port nothing receives.
 inline constexpr char kNoReceiver[] = "Could not establish connection. Receiving end does not exist.";
 // What the extension's world in a frame evaluates to learn which frame it
@@ -290,7 +297,7 @@ class ExtensionTabs {
 
   // The Browser's own extension, whose worker answers which tab each page
   // is (Identify).
-  void SetIdentity(const std::string& id) { identity_ = id; }
+  void SetIdentity(const std::string& id) { identity_ = id; starting_.erase(id); }
 
   // What the extension may do, from its manifest as installed: its API
   // permissions, its host permissions (`hosts`) and, apart from those, where
@@ -309,12 +316,16 @@ class ExtensionTabs {
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     if (token.empty()) return;
     tokens_[token] = id;
+    // Its worker runs the tab script and will say what it listens for; until
+    // it has, the tab events it may want are kept for it (Announce). The
+    // Browser's own runs none and listens for none.
+    if (id != identity_ && !reported_.count(id)) starting_[id] = std::chrono::steady_clock::now();
     // What its worker asked before the Browser said whose token it is.
     for (auto it = held_.begin(); it != held_.end();) {
       if (it->token != token) { ++it; continue; }
       auto held = std::move(*it);
       it = held_.erase(it);
-      Ensure([this, id, held] { Handle(id, 0, held.method, ToJson(Wrap(held.args)), held.reply); });
+      Respond(id, 0, held.method, held.args, held.reply);
     }
   }
   // What the extension may ask for later, and what of it the person
@@ -350,6 +361,8 @@ class ExtensionTabs {
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     listening_.erase(id);
     gestures_.erase(id);
+    reported_.erase(id);
+    starting_.erase(id);
     for (auto it = granted_.begin(); it != granted_.end();) it = it->first == id ? granted_.erase(it) : std::next(it);
     captures_.erase(id);
     for (auto it = ports_.begin(); it != ports_.end();) it = it->second.extension == id ? ports_.erase(it) : std::next(it);
@@ -365,6 +378,8 @@ class ExtensionTabs {
     counts_.Forget(id);
     for (auto it = shown_.begin(); it != shown_.end();) it = it->first.first == id ? shown_.erase(it) : std::next(it);
     sign_in_.Forget(id);
+    omnibox_tabs_.erase(id);
+    omnibox_defaults_.erase(id);
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
@@ -395,6 +410,13 @@ class ExtensionTabs {
       }
     }
     if (!ExtensionId(extension)) { Fail(reply, "Not an extension"); return; }
+    Respond(extension, caller, method, args, reply);
+  }
+  // Answer a request once every page tab's id is known; what an extension
+  // listens for needs no tab, and is taken at once, so an event that follows
+  // reaches it.
+  void Respond(const std::string& extension, int caller, const std::string& method, CefRefPtr<CefDictionaryValue> args, Reply reply) {
+    if (method == "listen" || method == "listening") { Handle(extension, caller, method, ToJson(Wrap(args)), reply); return; }
     Ensure([this, extension, caller, method, args, reply] { Handle(extension, caller, method, ToJson(Wrap(args)), reply); });
   }
   // Answer one request of an extension's script. `caller` is the host tab of
@@ -409,6 +431,19 @@ class ExtensionTabs {
       const auto name = StringOf(args, "event");
       if (Listenable(name)) listening_[extension].insert(name);
       Succeed(reply, nullptr);
+    } else if (method == "listening") {
+      // The worker's first script ran: every event it listens for. It hears
+      // now what it missed while it started.
+      auto events = args->GetList("events");
+      for (size_t i = 0; events && i < events->GetSize() && i < 64; ++i) {
+        const auto name = events->GetString(i).ToString();
+        if (Listenable(name)) listening_[extension].insert(name);
+      }
+      Succeed(reply, nullptr);
+      if (!caller && reported_.insert(extension).second) {
+        starting_.erase(extension);
+        Replay(extension);
+      }
     } else if (method == "tabs.query") {
       auto list = CefListValue::Create();
       for (const auto& tab : tabs) if (!tab.panel && Matches(extension, tab, args, tabs, from)) list->SetDictionary(list->GetSize(), TabObject(extension, tab));
@@ -518,6 +553,16 @@ class ExtensionTabs {
       SignIn(extension, tabs, args, reply);
     } else if (method == "identity.wait") {
       WaitForSignIn(extension, IntOf(args, "flow").value_or(0), reply);
+    } else if (method == "sidePanel.show") {
+      SidePanel(extension, caller, tabs, args, reply);
+    } else if (method == "sidePanel.shown") {
+      // The tabs its pages show beside or over, whose side panel may be one.
+      auto list = CefListValue::Create();
+      for (const auto& tab : tabs) {
+        if (!tab.panel || tab.url.rfind("chrome-extension://" + extension + "/", 0) != 0) continue;
+        if (const auto* opener = Find(tabs, tab.opener); opener && !opener->panel) list->SetInt(list->GetSize(), opener->id);
+      }
+      Succeed(reply, Wrap(list));
     } else if (method == "windows.update") {
       const auto* tab = ByExtensionId(tabs, IntOf(args, "windowId"));
       if (!tab) { Fail(reply, "No window with id: " + std::to_string(IntOf(args, "windowId").value_or(-1)) + "."); return; }
@@ -566,6 +611,42 @@ class ExtensionTabs {
                          : hooks_.open_download(tab->tab, *id, !open);
       if (!error.empty()) { Fail(reply, error); return; }
       Succeed(reply, nullptr);
+    } else if (method == "omnibox.suggest") {
+      // What the extension suggests for what the person typed after its
+      // keyword: for the address of the page it was typed over, by the
+      // request it answers, which the Browser holds against what it asked.
+      const auto at = omnibox_tabs_.find(extension);
+      const auto request = IntOf(args, "request");
+      auto suggestions = args->GetList("suggestions");
+      if (!request || !suggestions) { Fail(reply, "Invalid suggestions"); return; }
+      if (at == omnibox_tabs_.end() || !hooks_.event) { Succeed(reply, nullptr); return; }
+      auto list = CefListValue::Create();
+      for (size_t i = 0; i < suggestions->GetSize() && list->GetSize() < kMaxOmniboxSuggestions; ++i) {
+        auto suggestion = suggestions->GetDictionary(i);
+        const auto content = StringOf(suggestion, "content");
+        const auto description = StringOf(suggestion, "description");
+        // Chrome refuses a suggestion without content or description.
+        if (content.empty() || description.empty() || content.size() > kMaxOmniboxText || description.size() > kMaxOmniboxText) continue;
+        auto entry = CefDictionaryValue::Create();
+        entry->SetString("content", content);
+        entry->SetString("description", description);
+        list->SetDictionary(list->GetSize(), entry);
+      }
+      auto fields = CefDictionaryValue::Create();
+      fields->SetString("id", extension);
+      fields->SetInt("request", *request);
+      fields->SetList("suggestions", list);
+      hooks_.event(at->second, "extension_omnibox_suggestions", fields);
+      Succeed(reply, nullptr);
+    } else if (method == "omnibox.setDefaultSuggestion") {
+      // The first row under the address while the person types after the
+      // keyword; `%s` stands for what they typed. Kept for the next time,
+      // and shown now if they are typing.
+      const auto description = StringOf(args, "description");
+      if (description.size() > kMaxOmniboxText) { Fail(reply, "Invalid suggestion"); return; }
+      if (description.empty()) omnibox_defaults_.erase(extension); else omnibox_defaults_[extension] = description;
+      if (const auto at = omnibox_tabs_.find(extension); at != omnibox_tabs_.end()) TellOmniboxDefault(extension, at->second);
+      Succeed(reply, nullptr);
     } else if (method == "commands.getAll") {
       auto list = CefListValue::Create();
       for (const auto& command : commands_.All(extension)) {
@@ -598,6 +679,45 @@ class ExtensionTabs {
     } else {
       Fail(reply, "Tilo does not support " + method + " yet");
     }
+  }
+
+  // The extension's side panel beside the page of the tab `args.tabId`:
+  // shown at `url` (`open`), shown or closed as a click on its button does
+  // (`toggle`), following its options where it shows (`options`: `url`, or
+  // closed for none), or closed (`close`). The Browser shows it; Chromium
+  // finds no window to. Opening needs a gesture, as in Chrome: the person's
+  // activation of the extension's page that asks, or their use of its
+  // button, menu item or shortcut a moment ago, during whose listeners the
+  // script checks it.
+  void SidePanel(const std::string& extension, int caller, const std::vector<ExtensionTab>& tabs, CefRefPtr<CefDictionaryValue> args,
+                 const Reply& reply) {
+    if (!Has(extension, "sidePanel")) { Fail(reply, "The extension may not show a side panel"); return; }
+    const auto mode = StringOf(args, "mode");
+    if (mode != "open" && mode != "toggle" && mode != "options" && mode != "close") { Fail(reply, "Malformed request"); return; }
+    const auto* tab = ByExtensionId(tabs, IntOf(args, "tabId"));
+    if (!tab) { Fail(reply, "No tab with id: " + std::to_string(IntOf(args, "tabId").value_or(0)) + "."); return; }
+    const auto url = StringOf(args, "url");
+    const bool own = url.size() <= 2048 && url.rfind("chrome-extension://" + extension + "/", 0) == 0;
+    if ((mode == "open" || mode == "toggle") && !own) { Fail(reply, "No active side panel for tabId: " + std::to_string(tab->id)); return; }
+    if (mode == "options" && !url.empty() && !own) { Fail(reply, "Malformed request"); return; }
+    const auto* from = Find(tabs, caller);
+    if ((mode == "open" || mode == "toggle") && !(from ? hooks_.activated && hooks_.activated(from->tab) : Gestured(extension))) {
+      Fail(reply, "`sidePanel.open()` may only be called in response to a user gesture.");
+      return;
+    }
+    // Options and closing matter only where its pages show.
+    if (mode == "options" || mode == "close") {
+      bool shown = false;
+      for (const auto& other : tabs)
+        if (other.panel && other.opener == tab->tab && other.url.rfind("chrome-extension://" + extension + "/", 0) == 0) shown = true;
+      if (!shown) { Succeed(reply, nullptr); return; }
+    }
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetString("mode", mode);
+    if (own && mode != "close") fields->SetString("url", url); else fields->SetNull("url");
+    if (hooks_.event) hooks_.event(tab->tab, "extension_side_panel", fields);
+    Succeed(reply, nullptr);
   }
 
   // The extensions' items for the menu the person opened on a page. A web
@@ -674,7 +794,26 @@ class ExtensionTabs {
     gestures_[extension] = std::chrono::steady_clock::now();
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
-    Push(extension, "action.onClicked", args, true);
+    if (!Has(extension, "sidePanel")) { Push(extension, "action.onClicked", args, true); return; }
+    // Its side panel may open on the click instead (extension_tabs.js).
+    InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.clicked(" + ToJson(Wrap(TabObject(extension, *found))) + ") : -1", true,
+             [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+  }
+
+  // The person asked the Browser to open the extension's side panel beside
+  // the page of `tab`: its page for that tab opens, as from Chrome's side
+  // panel menu. Its worker knows which page that is, and wakes for it.
+  void OpenSidePanel(const std::string& extension, int tab) {
+    Ensure([this, extension, tab] {
+      const auto tabs = Tabs();
+      const auto* found = Find(tabs, tab);
+      if (!found || found->panel || !access_.count(extension) || !Has(extension, "sidePanel")) return;
+      gestures_[extension] = std::chrono::steady_clock::now();
+      auto id = CefValue::Create();
+      id->SetInt(found->id);
+      InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.showPanel(" + ToJson(id) + ") : false", true,
+               [](std::optional<std::string>, CefRefPtr<CefValue>) {});
+    });
   }
 
   // The person chose an extension's notification: its body, or the button
@@ -727,6 +866,43 @@ class ExtensionTabs {
     Push(extension, "commands.onCommand", args, true);
   }
 
+  // The person typed the extension's keyword (its manifest's `omnibox`)
+  // in the address of `tab`'s window, and then: began (`started`), typed
+  // `text` (`changed`, a `request` its suggestions answer), pressed Enter
+  // or chose a suggestion (`entered`), or left (`cancelled`). The extension
+  // hears of each as in Chrome, woken if it sleeps; Enter lets one that
+  // asked for activeTab read and script the page until it navigates, and
+  // it goes where the extension sends it (`tabs.update`).
+  void Omnibox(const std::string& extension, int tab, const std::string& input, const std::string& text, int request) {
+    if (!access_.count(extension)) return;
+    Ensure([this, extension, tab, input, text, request] { OmniboxNow(extension, tab, input, text, request); });
+  }
+  void OmniboxNow(const std::string& extension, int tab, const std::string& input, const std::string& text, int request) {
+    const auto tabs = Tabs();
+    const auto* found = Find(tabs, tab);
+    if (!found || found->panel || !access_.count(extension)) return;
+    auto args = CefListValue::Create();
+    if (input == "started") {
+      omnibox_tabs_[extension] = tab;
+      TellOmniboxDefault(extension, tab);
+      Push(extension, "omnibox.onInputStarted", args, true);
+    } else if (input == "changed") {
+      omnibox_tabs_[extension] = tab;
+      args->SetString(0, text);
+      args->SetInt(1, request);
+      Push(extension, "omnibox.onInputChanged", args, true);
+    } else if (input == "entered") {
+      omnibox_tabs_.erase(extension);
+      if (Has(extension, "activeTab")) granted_.insert({extension, found->id});
+      args->SetString(0, text);
+      args->SetString(1, "currentTab");
+      Push(extension, "omnibox.onInputEntered", args, true);
+    } else if (input == "cancelled") {
+      omnibox_tabs_.erase(extension);
+      Push(extension, "omnibox.onInputCancelled", args, false);
+    }
+  }
+
   // The tab can be told of things: what extensions set for their buttons on
   // every tab before it opened.
   void Introduce(int tab) {
@@ -752,17 +928,16 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || found->panel) return;
-    for (const auto& [extension, events] : listening_) {
-      if (!events.count("tabs.onUpdated")) continue;
+    Announce("tabs.onUpdated", [this, page = *found, change](const std::string& extension) {
       auto visible = change->Copy(false);
-      if (!SeesContents(extension, *found)) { visible->Remove("url"); visible->Remove("title"); visible->Remove("favIconUrl"); }
-      if (visible->GetSize() == 0) continue;
+      if (!SeesContents(extension, page)) { visible->Remove("url"); visible->Remove("title"); visible->Remove("favIconUrl"); }
+      if (visible->GetSize() == 0) return;
       auto args = CefListValue::Create();
-      args->SetInt(0, found->id);
+      args->SetInt(0, page.id);
       args->SetDictionary(1, visible);
-      args->SetDictionary(2, TabObject(extension, *found));
+      args->SetDictionary(2, TabObject(extension, page));
       Push(extension, "tabs.onUpdated", args, false);
-    }
+    });
   }
   // The tab's main frame committed a new document: the worlds the host made
   // in the old one went with it, and so did the ports to them and from it.
@@ -788,33 +963,32 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || found->panel) return;
-    for (const auto& [extension, events] : listening_) {
-      if (events.count("tabs.onActivated")) {
-        auto info = CefDictionaryValue::Create();
-        info->SetInt("tabId", found->id);
-        info->SetInt("windowId", found->id);
-        auto args = CefListValue::Create();
-        args->SetDictionary(0, info);
-        Push(extension, "tabs.onActivated", args, false);
-      }
-      // Each tab is its window's only one: activating it highlights it
-      // alone, which Chrome tells as well.
-      if (events.count("tabs.onHighlighted")) {
-        auto info = CefDictionaryValue::Create();
-        info->SetInt("windowId", found->id);
-        auto ids = CefListValue::Create();
-        ids->SetInt(0, found->id);
-        info->SetList("tabIds", ids);
-        auto args = CefListValue::Create();
-        args->SetDictionary(0, info);
-        Push(extension, "tabs.onHighlighted", args, false);
-      }
-      if (events.count("windows.onFocusChanged")) {
-        auto args = CefListValue::Create();
-        args->SetInt(0, found->id);
-        Push(extension, "windows.onFocusChanged", args, false);
-      }
-    }
+    const int id = found->id;
+    Announce("tabs.onActivated", [this, id](const std::string& extension) {
+      auto info = CefDictionaryValue::Create();
+      info->SetInt("tabId", id);
+      info->SetInt("windowId", id);
+      auto args = CefListValue::Create();
+      args->SetDictionary(0, info);
+      Push(extension, "tabs.onActivated", args, false);
+    });
+    // Each tab is its window's only one: activating it highlights it
+    // alone, which Chrome tells as well.
+    Announce("tabs.onHighlighted", [this, id](const std::string& extension) {
+      auto info = CefDictionaryValue::Create();
+      info->SetInt("windowId", id);
+      auto ids = CefListValue::Create();
+      ids->SetInt(0, id);
+      info->SetList("tabIds", ids);
+      auto args = CefListValue::Create();
+      args->SetDictionary(0, info);
+      Push(extension, "tabs.onHighlighted", args, false);
+    });
+    Announce("windows.onFocusChanged", [this, id](const std::string& extension) {
+      auto args = CefListValue::Create();
+      args->SetInt(0, id);
+      Push(extension, "windows.onFocusChanged", args, false);
+    });
   }
   void Created(int tab) {
     if (!Listened("tabs.onCreated")) return;
@@ -824,12 +998,11 @@ class ExtensionTabs {
     const auto tabs = Tabs();
     const auto* found = Find(tabs, tab);
     if (!found || found->panel) return;
-    for (const auto& [extension, events] : listening_) {
-      if (!events.count("tabs.onCreated")) continue;
+    Announce("tabs.onCreated", [this, page = *found](const std::string& extension) {
       auto args = CefListValue::Create();
-      args->SetDictionary(0, TabObject(extension, *found));
+      args->SetDictionary(0, TabObject(extension, page));
       Push(extension, "tabs.onCreated", args, false);
-    }
+    });
   }
   // The tab's zoom changed from `before` to `after` (factors, 1 unzoomed):
   // the Browser zoomed the page, or one of its site, or the tab showed a
@@ -840,17 +1013,16 @@ class ExtensionTabs {
       const auto tabs = Tabs();
       const auto* found = Find(tabs, tab);
       if (!found || found->panel) return;
-      for (const auto& [extension, events] : listening_) {
-        if (!events.count("tabs.onZoomChange")) continue;
+      Announce("tabs.onZoomChange", [this, id = found->id, before, after](const std::string& extension) {
         auto info = CefDictionaryValue::Create();
-        info->SetInt("tabId", found->id);
+        info->SetInt("tabId", id);
         info->SetDouble("oldZoomFactor", before);
         info->SetDouble("newZoomFactor", after);
         info->SetDictionary("zoomSettings", ZoomSettings());
         auto args = CefListValue::Create();
         args->SetDictionary(0, info);
         Push(extension, "tabs.onZoomChange", args, false);
-      }
+      });
     });
   }
   // A page asked for `url` in a new tab (a link to a new tab, or
@@ -872,6 +1044,7 @@ class ExtensionTabs {
     const auto* found = Find(tabs, tab);
     sign_in_.Closed(tab, ExtensionSignIn::Clock::now());
     native_.erase(tab);
+    worded_.erase(tab);
     unknown_.erase(tab);
     openers_.erase(tab);
     for (auto it = openers_.begin(); it != openers_.end();) it = it->second == tab ? openers_.erase(it) : std::next(it);
@@ -882,19 +1055,20 @@ class ExtensionTabs {
     buttons_on_.erase(tab);
     counts_.Removed(tab);
     for (auto it = shown_.begin(); it != shown_.end();) it = it->first.second == tab ? shown_.erase(it) : std::next(it);
+    for (auto it = omnibox_tabs_.begin(); it != omnibox_tabs_.end();) it = it->second == tab ? omnibox_tabs_.erase(it) : std::next(it);
     if (!found || found->panel) return;
     for (auto it = granted_.begin(); it != granted_.end();) it = it->second == found->id ? granted_.erase(it) : std::next(it);
     for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.second == found->id ? action_states_.erase(it) : std::next(it);
-    for (const auto& [extension, events] : listening_) {
-      if (!events.count("tabs.onRemoved")) continue;
+    const int id = found->id;
+    Announce("tabs.onRemoved", [this, id](const std::string& extension) {
       auto info = CefDictionaryValue::Create();
-      info->SetInt("windowId", found->id);
+      info->SetInt("windowId", id);
       info->SetBool("isWindowClosing", true);
       auto args = CefListValue::Create();
-      args->SetInt(0, found->id);
+      args->SetInt(0, id);
       args->SetDictionary(1, info);
       Push(extension, "tabs.onRemoved", args, false);
-    }
+    });
   }
   // The Browser shows the page of sign-in `flow` of `extension` in `tab`, a
   // panel or out of sight: false when it is no such sign-in's.
@@ -986,22 +1160,22 @@ class ExtensionTabs {
       const auto* source = Find(tabs, pending.source);
       if (!opened || !source || opened->panel) return;
       const double stamp = std::chrono::duration<double, std::milli>(std::chrono::system_clock::now().time_since_epoch()).count();
-      for (const auto& [extension, events] : listening_) {
-        if (!events.count("webNavigation.onCreatedNavigationTarget") || !Has(extension, "webNavigation")) continue;
+      Announce("webNavigation.onCreatedNavigationTarget", [this, pending, stamp, from = source->id, to = opened->id](const std::string& extension) {
+        if (!Has(extension, "webNavigation")) return;
         auto details = CefDictionaryValue::Create();
-        details->SetInt("sourceTabId", source->id);
+        details->SetInt("sourceTabId", from);
         // The frame's id and its process are Chromium's: the tab script
         // reads them from the source tab's frames (extension_tabs.js).
         details->SetInt("sourceProcessId", -1);
         details->SetInt("sourceFrameId", 0);
         if (!pending.main_frame) details->SetString("sourceFrameUrl", pending.frame_url);
-        details->SetInt("tabId", opened->id);
+        details->SetInt("tabId", to);
         details->SetString("url", pending.url);
         details->SetDouble("timeStamp", stamp);
         auto args = CefListValue::Create();
         args->SetDictionary(0, details);
         Push(extension, "webNavigation.onCreatedNavigationTarget", args, false);
-      }
+      });
     });
   }
   // Chromium's zoom belongs to the site (host.cc), in Chrome's terms.
@@ -1012,6 +1186,8 @@ class ExtensionTabs {
     settings->SetDouble("defaultZoomFactor", 1);
     return settings;
   }
+  // A tab event kept for a starting worker, told to an extension by `tell`.
+  struct Kept { std::string event; std::chrono::steady_clock::time_point at; std::function<void(const std::string&)> tell; };
   // Calls of a token no extension was given in time are no extension's.
   void Unheld(const std::string& token) {
     for (auto it = held_.begin(); it != held_.end();) {
@@ -1078,9 +1254,44 @@ class ExtensionTabs {
       self->hooks_.save_menus(self->menus_.Save());
     }, this, alive), 250);
   }
-  bool Listened(const std::string& event) const {
+  // Whether an extension may hear of `event`: one listens for it, or a
+  // worker has yet to say what it listens for.
+  bool Listened(const std::string& event) {
     for (const auto& [extension, events] : listening_) if (events.count(event)) return true;
-    return false;
+    return Starting();
+  }
+  // How long the tab events a starting worker may want are kept for it: a
+  // worker starts with the engine, or as it is added, in its own time.
+  static constexpr std::chrono::seconds kStartingWorker{30};
+  static constexpr size_t kMaxKept = 128;
+  // Whether a worker is still to say what it listens for: one the Browser
+  // gave its token a moment ago, or one that asked before it did.
+  bool Starting() {
+    const auto now = std::chrono::steady_clock::now();
+    for (auto it = starting_.begin(); it != starting_.end();) it = now - it->second > kStartingWorker ? starting_.erase(it) : std::next(it);
+    return !starting_.empty() || !held_.empty();
+  }
+  // Tell `event` to each extension that listens for it, and keep it for a
+  // worker that has yet to say whether it does: once it has, it hears what
+  // it missed (Replay), as a worker in Chrome hears what woke it.
+  void Announce(const std::string& event, std::function<void(const std::string&)> tell) {
+    std::vector<std::string> listeners;
+    for (const auto& [extension, events] : listening_) if (events.count(event)) listeners.push_back(extension);
+    for (const auto& extension : listeners) tell(extension);
+    if (!Starting()) { kept_.clear(); return; }
+    if (kept_.size() >= kMaxKept) kept_.pop_front();
+    kept_.push_back(Kept{event, std::chrono::steady_clock::now(), std::move(tell)});
+  }
+  void Replay(const std::string& extension) {
+    const auto now = std::chrono::steady_clock::now();
+    while (!kept_.empty() && now - kept_.front().at > kStartingWorker) kept_.pop_front();
+    // A copy: telling may keep more.
+    auto kept = kept_;
+    for (const auto& event : kept) {
+      auto found = listening_.find(extension);
+      if (found != listening_.end() && found->second.count(event.event)) event.tell(extension);
+    }
+    if (!Starting()) kept_.clear();
   }
   // The host's tabs, each by the id Chromium's extension APIs know it by
   // once it was identified, by its browser's until then.
@@ -1101,9 +1312,12 @@ class ExtensionTabs {
     if (!identity_.empty())
       for (const auto& tab : hooks_.tabs()) {
         // One that could not be identified is asked about again once it
-        // shows another page, not on every call.
+        // shows another page, not on every call. One known by its page's
+        // word alone is asked again once it shows a page Chromium lists with
+        // its tab, whose answer is Chromium's own (Learn).
         const auto failed = unknown_.find(tab.tab);
-        if (!tab.panel && !native_.count(tab.tab) && (failed == unknown_.end() || failed->second != tab.url)) missing.push_back(tab.tab);
+        const bool ask = !native_.count(tab.tab) || (worded_.count(tab.tab) && !Worded(tab.url));
+        if (!tab.panel && ask && (failed == unknown_.end() || failed->second != tab.url)) missing.push_back(tab.tab);
       }
     if (missing.empty()) { then(); return; }
     auto left = std::make_shared<size_t>(missing.size());
@@ -1123,15 +1337,17 @@ class ExtensionTabs {
   // extension a word only the host and the page know, and Chromium tells
   // that extension the tab the message came from.
   void Identify(const std::vector<int>& tabs) {
-    auto finish = [this, tabs] {
+    auto once = std::make_shared<bool>(false);
+    auto finish = [this, tabs, once] {
+      if (*once) return;
+      *once = true;
       // An extension's page may have been between documents when asked: it
       // is asked again on the next call.
       const auto open = hooks_.tabs();
-      const std::string own = "chrome-extension://" + identity_ + "/";
       for (int tab : tabs) {
         const auto* entry = Find(open, tab);
-        const bool page = entry && entry->url.rfind("chrome-extension://", 0) == 0 && entry->url.rfind(own, 0) != 0;
-        if (entry && !page && !native_.count(tab)) unknown_[tab] = entry->url;
+        const bool page = entry && Worded(entry->url);
+        if (entry && !page && (!native_.count(tab) || worded_.count(tab))) unknown_[tab] = entry->url;
         else unknown_.erase(tab);
       }
       for (int tab : tabs) {
@@ -1140,11 +1356,16 @@ class ExtensionTabs {
         for (auto& callback : callbacks) callback();
       }
     };
+    // Every call and event on these tabs waits for this: an answer lost on
+    // the way (a worker gone as it was asked) holds none of them past ten
+    // seconds; the tabs are asked about again on their next page.
+    std::weak_ptr<bool> alive = alive_;
+    CefPostDelayedTask(TID_UI, base::BindOnce([](std::weak_ptr<bool> alive, std::function<void()> finish) {
+      if (!alive.expired()) finish();
+    }, alive, std::function<void()>(finish)), 10000);
     std::map<int, std::string> words;
-    const std::string own = "chrome-extension://" + identity_ + "/";
     for (const auto& tab : hooks_.tabs())
-      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end() && tab.url.rfind("chrome-extension://", 0) == 0 && tab.url.rfind(own, 0) != 0)
-        words[tab.tab] = Word();
+      if (std::find(tabs.begin(), tabs.end(), tab.tab) != tabs.end() && Worded(tab.url)) words[tab.tab] = Word();
     Tell(words, [this, tabs, words, finish] {
       Targets(tabs, [this, words, finish](std::map<int, std::string> targets) {
         if (targets.empty() && words.empty()) { finish(); return; }
@@ -1154,27 +1375,48 @@ class ExtensionTabs {
         value->SetList(list);
         InWorker(identity_, "globalThis.__tiloTabIds ? __tiloTabIds(" + ToJson(value) + ") : null", false, [this, targets, words, finish](std::optional<std::string> error, CefRefPtr<CefValue> value) {
           auto ids = !error && value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
-          // What a page's word answers outranks its target, which Chromium
-          // lists with no tab for an extension's page.
-          std::map<int, int> learnt;
-          for (const auto& [tab, target] : targets) if (const auto id = ids ? IntOf(ids, target.c_str()) : std::nullopt) learnt[tab] = *id;
-          for (const auto& [tab, word] : words) if (const auto id = ids ? IntOf(ids, word.c_str()) : std::nullopt) learnt[tab] = *id;
-          Learn(learnt);
+          std::map<int, int> seen, told;
+          for (const auto& [tab, target] : targets) if (const auto id = ids ? IntOf(ids, target.c_str()) : std::nullopt) seen[tab] = *id;
+          for (const auto& [tab, word] : words) if (const auto id = ids ? IntOf(ids, word.c_str()) : std::nullopt) told[tab] = *id;
+          Learn(seen, told);
           finish();
         });
       });
     });
   }
-  // Keep each tab's id, but only one Chromium could have given: positive,
-  // the tab still open, and no other tab's. An extension's page that relays
-  // its word to another of its tabs gets neither tab an id it does not have.
-  void Learn(const std::map<int, int>& learnt) {
+  // Keep each tab's id, but only one Chromium could have given: positive
+  // and the tab still open. The id Chromium lists with a tab's target
+  // (`seen`) is its own; the one an extension's page's word answers (`told`)
+  // is the page's say: two pages of one extension that trade their words get
+  // each other's tab. So a word takes no id another tab has, and gives way
+  // to the target's once the tab shows a page Chromium lists with it, before
+  // an extension that meets the tab's real id there (in `sender.tab`) asks
+  // the host about it.
+  void Learn(const std::map<int, int>& seen, const std::map<int, int>& told) {
     const auto open = hooks_.tabs();
+    for (const auto& [tab, id] : seen) {
+      if (id <= 0 || !Find(open, tab)) continue;
+      bool held = false;
+      for (auto it = native_.begin(); it != native_.end();) {
+        if (it->first == tab || it->second != id) { ++it; continue; }
+        if (!worded_.count(it->first)) { held = true; ++it; continue; }
+        worded_.erase(it->first);
+        it = native_.erase(it);
+      }
+      if (held) continue;
+      native_[tab] = id;
+      worded_.erase(tab);
+    }
     std::map<int, int> uses;
     for (const auto& [tab, id] : native_) ++uses[id];
-    for (const auto& [tab, id] : learnt) ++uses[id];
-    for (const auto& [tab, id] : learnt)
-      if (id > 0 && uses[id] == 1 && Find(open, tab)) native_[tab] = id;
+    for (const auto& [tab, id] : told) if (!seen.count(tab)) ++uses[id];
+    for (const auto& [tab, id] : told)
+      if (!seen.count(tab) && id > 0 && uses[id] == 1 && Find(open, tab)) { native_[tab] = id; worded_.insert(tab); }
+  }
+  // A tab whose page is another extension's own: Chromium lists it with no
+  // tab, so the page's word tells which tab it is.
+  bool Worded(const std::string& url) const {
+    return url.rfind("chrome-extension://", 0) == 0 && url.rfind("chrome-extension://" + identity_ + "/", 0) != 0;
   }
   // A word no page can guess: 128 random bits, in letters.
   static std::string Word() {
@@ -1227,7 +1469,8 @@ class ExtensionTabs {
     static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated",
                                              "tabs.onHighlighted", "tabs.onZoomChange", "tabs.onRemoved", "windows.onFocusChanged", "webNavigation.onCreatedNavigationTarget",
                                              "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed",
-                                             "permissions.onAdded", "permissions.onRemoved"};
+                                             "permissions.onAdded", "permissions.onRemoved",
+                                             "omnibox.onInputStarted", "omnibox.onInputChanged", "omnibox.onInputEntered", "omnibox.onInputCancelled"};
     return names.count(name) > 0;
   }
   static bool Populate(CefRefPtr<CefDictionaryValue> args) {
@@ -1277,7 +1520,9 @@ class ExtensionTabs {
     } else if (method == "notifications.update") {
       auto updated = notifications_.Update(extension, id, NotificationOptionsOf(args->GetDictionary("options")));
       if (updated.error) { Fail(reply, *updated.error); return; }
-      if (updated.updated) TellNotification(extension, id);
+      // A change to one shown makes no sound: a download's progress would
+      // sound at every step.
+      if (updated.updated) TellNotification(extension, id, true);
       answer->SetBool(updated.updated);
     } else if (method == "notifications.clear") {
       const bool cleared = notifications_.Clear(extension, id);
@@ -1331,7 +1576,8 @@ class ExtensionTabs {
   }
   // Tell the Browser what the notification shows now, or that it is gone,
   // through the page the person used last: a notification is no tab's.
-  void TellNotification(const std::string& extension, const std::string& id) {
+  // `quiet`: shown without a sound, whatever the extension asked.
+  void TellNotification(const std::string& extension, const std::string& id, bool quiet = false) {
     if (!hooks_.event) return;
     const auto tabs = Tabs();
     const auto* tab = LastFocused(tabs);
@@ -1359,7 +1605,7 @@ class ExtensionTabs {
       fields->SetList("buttons", buttons);
       if (shown->progress) fields->SetInt("progress", *shown->progress);
       fields->SetBool("require_interaction", shown->require_interaction);
-      fields->SetBool("silent", shown->silent);
+      fields->SetBool("silent", shown->silent || quiet);
     }
     hooks_.event(tab->tab, "extension_notification", fields);
   }
@@ -1862,25 +2108,30 @@ class ExtensionTabs {
     std::vector<std::string> documents;
     bool MainOnly() const { return !all && ids.empty() && documents.empty(); }
   };
-  // What an injection's `target` names, or why Chrome would refuse it.
+  // Whether `document` has the shape of Chromium's document ids: a token
+  // of 32 hex digits, not all zero (ExtensionApiFrameIdMap).
+  static bool DocumentIdShaped(const std::string& document) {
+    return document.size() == 32 && std::all_of(document.begin(), document.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; }) &&
+           document.find_first_not_of('0') != std::string::npos;
+  }
+  // What an injection's `target` names, or why Chrome would refuse it, in
+  // Chromium's words (scripting_utils.cc): naming a list counts, even an
+  // empty one.
   static std::optional<std::string> FramesOf(CefRefPtr<CefDictionaryValue> target, FrameQuery& wanted) {
     wanted.all = target && target->GetType("allFrames") == VTYPE_BOOL && target->GetBool("allFrames");
     auto ids = target && target->GetType("frameIds") == VTYPE_LIST ? target->GetList("frameIds") : nullptr;
     for (size_t i = 0; ids && i < ids->GetSize(); ++i)
       if (auto id = IntOf(ids->GetValue(i)); id && std::find(wanted.ids.begin(), wanted.ids.end(), *id) == wanted.ids.end()) wanted.ids.push_back(*id);
     auto documents = target && target->GetType("documentIds") == VTYPE_LIST ? target->GetList("documentIds") : nullptr;
-    bool malformed = false;
+    if (wanted.all && (ids || documents)) return std::string("Cannot specify 'allFrames' if either 'frameIds' or 'documentIds' is specified.");
+    if (ids && documents) return std::string("Cannot specify both 'frameIds' and 'documentIds'.");
     for (size_t i = 0; documents && i < documents->GetSize(); ++i) {
-      const auto document = documents->GetType(i) == VTYPE_STRING ? documents->GetString(i).ToString() : std::string();
-      if (document.empty() || document.size() > 64 || wanted.documents.size() >= kMaxFrames) { malformed = true; continue; }
+      if (documents->GetType(i) != VTYPE_STRING || wanted.documents.size() >= kMaxFrames)
+        return std::string("Error at property 'documentIds': Each must be a document's id.");
+      const auto document = documents->GetString(i).ToString();
+      if (!DocumentIdShaped(document)) return "Invalid document id " + document.substr(0, 64);
       if (std::find(wanted.documents.begin(), wanted.documents.end(), document) == wanted.documents.end()) wanted.documents.push_back(document);
     }
-    const bool by_id = ids && ids->GetSize();
-    const bool by_document = documents && documents->GetSize();
-    if (wanted.all && by_id) return std::string("Cannot specify both 'allFrames' and 'frameIds'.");
-    if (wanted.all && by_document) return std::string("Cannot specify both 'allFrames' and 'documentIds'.");
-    if (by_id && by_document) return std::string("Cannot specify both 'frameIds' and 'documentIds'.");
-    if (malformed) return std::string("Error at property 'documentIds': Each must be a document's id.");
     if (!wanted.all && wanted.ids.size() == 1 && wanted.ids[0] == 0) wanted.ids.clear();
     return std::nullopt;
   }
@@ -1906,12 +2157,12 @@ class ExtensionTabs {
       std::vector<Frame> chosen;
       for (int id : wanted.ids) {
         auto found = std::find_if(frames.begin(), frames.end(), [id](const Frame& frame) { return frame.id == id; });
-        if (found == frames.end()) { Release(frames); Fail(reply, "No frame with id " + std::to_string(id) + " in tab with id " + std::to_string(tab_id) + "."); return; }
+        if (found == frames.end()) { Release(frames); Fail(reply, "No frame with id " + std::to_string(id) + " in tab with id " + std::to_string(tab_id)); return; }
         chosen.push_back(*found);
       }
       for (const auto& document : wanted.documents) {
         auto found = std::find_if(frames.begin(), frames.end(), [&](const Frame& frame) { return frame.document == document; });
-        if (found == frames.end()) { Release(frames); Fail(reply, "No document with id " + document + " in tab with id " + std::to_string(tab_id) + "."); return; }
+        if (found == frames.end()) { Release(frames); Fail(reply, "No document with id " + document + " in tab with id " + std::to_string(tab_id)); return; }
         if (std::none_of(chosen.begin(), chosen.end(), [&](const Frame& known) { return known.devtools == found->devtools; })) chosen.push_back(*found);
       }
       // Every frame the script can run in, as Chrome passes over those it
@@ -2768,7 +3019,7 @@ class ExtensionTabs {
     name->SetString(event);
     InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.dispatch(" + ToJson(name) + ", " + ToJson(Wrap(args)) + ") : -1",
              event == "action.onClicked" || event == "commands.onCommand" || event == "contextMenus.onClicked" ||
-                 event == "notifications.onClicked" || event == "notifications.onButtonClicked",
+                 event == "notifications.onClicked" || event == "notifications.onButtonClicked" || event == "omnibox.onInputEntered",
              [](std::optional<std::string>, CefRefPtr<CefValue>) {});
   }
   // Evaluate `expression` in the extension's service worker, waking it if
@@ -2858,17 +3109,20 @@ class ExtensionTabs {
     });
   }
   // Wait until the worker ran its first script, which registers its
-  // listeners: a woken worker is attached to as it starts. One the Browser
-  // could not give the tab APIs is waited for no longer than a moment.
+  // listeners: a woken worker is attached to as it starts. One whose tab
+  // script runs is waited for while its first script does, up to ten
+  // seconds (a large extension's takes a while on a busy machine); one the
+  // Browser could not give the tab APIs no longer than a moment.
   void Ready(const std::string& session, int tries, std::function<void()> then) {
     auto params = CefDictionaryValue::Create();
     // The Browser's own extension runs no tab script: its worker is ready
     // once it can tell tabs' ids.
-    params->SetString("expression", "!!(globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.ready : globalThis.__tiloTabIds)");
+    params->SetString("expression", "globalThis.__tiloExtensionTabs ? (__tiloExtensionTabs.ready ? 2 : 1) : (globalThis.__tiloTabIds ? 2 : 0)");
     params->SetBool("returnByValue", true);
     hooks_.pipe("Runtime.evaluate", params, session, [this, session, tries, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       auto remote = ok && result ? result->GetDictionary("result") : nullptr;
-      if ((remote && remote->GetType("value") == VTYPE_BOOL && remote->GetBool("value")) || tries >= 40) { then(); return; }
+      const int state = IntOf(remote, "value").value_or(0);
+      if (state == 2 || tries >= (state == 1 ? 400 : 40)) { then(); return; }
       CefPostDelayedTask(TID_UI, base::BindOnce([](ExtensionTabs* self, std::string session, int tries, std::function<void()> then) {
         self->Ready(session, tries + 1, then);
       }, this, session, tries, then), 25);
@@ -3163,7 +3417,21 @@ class ExtensionTabs {
   // The most requests one report of the Browser's own extension carries.
   static constexpr size_t kMaxActedBatch = 512;
 
+  // The extension's default suggestion, or none, for the address of `tab`.
+  void TellOmniboxDefault(const std::string& extension, int tab) {
+    if (!hooks_.event) return;
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    if (const auto at = omnibox_defaults_.find(extension); at != omnibox_defaults_.end()) fields->SetString("description", at->second);
+    else fields->SetNull("description");
+    hooks_.event(tab, "extension_omnibox_default", fields);
+  }
+
   Hooks hooks_;
+  // The tab whose address each extension's keyword is being typed in, and
+  // the default suggestion each set (`omnibox.setDefaultSuggestion`).
+  std::map<std::string, int> omnibox_tabs_;
+  std::map<std::string, std::string> omnibox_defaults_;
   // What each extension set for its button on every tab, and the tabs on
   // which one set something for that tab alone.
   std::map<std::string, CefRefPtr<CefDictionaryValue>> buttons_;
@@ -3181,6 +3449,11 @@ class ExtensionTabs {
   std::map<int, Asking> asking_;
   int asked_ = 0;
   std::map<std::string, std::set<std::string>> listening_;
+  // Extensions whose worker said what it listens for since the host
+  // started, and those given a token whose worker has yet to, since when.
+  std::set<std::string> reported_;
+  std::map<std::string, std::chrono::steady_clock::time_point> starting_;
+  std::deque<Kept> kept_;
   std::set<std::pair<std::string, int>> granted_;
   // When the person last used each extension's button, menu item or
   // shortcut.
@@ -3198,6 +3471,8 @@ class ExtensionTabs {
   std::string identity_;
   // Each tab's id among Chromium's, once learnt; it lasts the tab's life.
   std::map<int, int> native_;
+  // Each tab whose id only its page's word told (Learn).
+  std::set<int> worded_;
   // Each tab the host could not identify, by the address it showed then.
   std::map<int, std::string> unknown_;
   // Pages' requests for new tabs not yet shown (Opening), and the tab each

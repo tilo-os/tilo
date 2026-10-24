@@ -595,18 +595,6 @@ fn find_hit(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Point> {
             pred(&action)
         })
         .or_else(|| {
-            [
-                (ReaderBubbleAction::PreviousPage, Action::PrevPage),
-                (ReaderBubbleAction::NextPage, Action::NextPage),
-            ]
-            .into_iter()
-            .find_map(|(bubble_action, action)| {
-                pred(&action)
-                    .then(|| app.reader_bubble.action_center(bubble_action))
-                    .flatten()
-            })
-        })
-        .or_else(|| {
             app.hits
                 .iter()
                 .rev()
@@ -2289,20 +2277,14 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
     // --- phase: next_page_advances_position ---
     {
         let mut app = app_with_sample();
-        // The page-nav stepper now lives on the floating page bubble, which is
-        // transient — arm it open so its next chevron registers a NextPage hit,
-        // then click that chevron on the real hit-testing path.
-        app.arm_reader_bubble_for_shots();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
         let (c0, p0) = (app.chapter, app.page);
-        let next = find_hit(&app, |a| matches!(a, Action::NextPage))
-            .expect("next chevron on the page bubble");
-        assert!(click(&mut app, &mut doc, next), "next handled");
+        app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         assert_eq!(
             (app.chapter, app.page),
             (c0, p0 + 1),
-            "the visible chevron turns exactly one page, never seeks underneath"
+            "Next page turns exactly one page"
         );
         assert!(
             !app.progress_dragging,
@@ -2310,43 +2292,28 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
         );
     }
 
-    // --- phase: page_bubble_surfaces_on_a_page_change ---
-    // The floating page bubble is hidden on a settled reader and surfaced by
-    // a page change without leaving an invisible navigation hit behind.
+    // --- phase: a_page_change_is_said_in_the_bar ---
+    // A settled reader says nothing; a page change says the reading
+    // position in the window's bar, and the page's foot stays the slider's.
     {
         let mut app = app_with_sample();
         let mut doc = library_doc();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Settled reader: the bubble is not up, and no NextPage hit is exposed in
-        // the bottom band (an invisible bubble never eats a click there).
         assert!(
             !app.needs_animation_frame(),
             "a settled reader schedules no animation frames"
         );
-        assert!(
-            find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
-            "the hidden bubble exposes no page-nav hit"
-        );
-        // A page turn pokes the bubble; the next frame draws it (its chevrons are
-        // hit-testable) and it keeps requesting frames so it can fade on its own.
+        assert!(!app.page_notice.is_shown(), "opening a book is not news");
         app.dispatch(Action::NextPage, &mut Edits::lend(&mut doc));
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(
-            find_hit(&app, |a| matches!(a, Action::NextPage)).is_some(),
-            "a page change surfaces the bubble's next chevron"
+        assert_eq!(
+            app.page_notice.get().cloned(),
+            Some(app.page_line()),
+            "a page change says where the reader is"
         );
         assert!(
-            app.reader_bubble.needs_frame(ui::time::now()),
-            "the visible bubble schedules its own fade-out frames"
-        );
-        // The bubble shares the foot's band with the progress slider:
-        // reaching for the slider gives the band back to it at once.
-        let track = app.progress_slider_track;
-        app.cursor = Point::new(track.x0 + 2.0, track.center().y);
-        frame(&mut app, &mut doc, 1000.0, 700.0);
-        assert!(
-            find_hit(&app, |a| matches!(a, Action::NextPage)).is_none(),
-            "the pointer on the slider hides the page bubble"
+            find_hit(&app, |a| matches!(a, Action::SeekProgress)).is_some(),
+            "the foot is the progress slider's"
         );
     }
 
@@ -5200,15 +5167,14 @@ fn a_dropped_file_opens_without_a_hover_and_a_non_book_names_itself() {
     );
 }
 
-/// "Couldn't open x.epub" offers nothing to do but close it, so it leaves
-/// on its own after a notice's lifetime: the app wakes for it, and once it
-/// is due the card is gone and leaves no close button behind.
+/// "Couldn't open x.epub" offers nothing to do, so it says so in the
+/// window's bar and leaves on its own after a notice's lifetime: the app
+/// wakes for it, and once it is due the bar no longer says it.
 #[test]
 fn a_failed_open_leaves_on_its_own() {
     use ui::time::testing::with_monotonic_time;
     use ui::widget::toast::NOTICE_LIFETIME;
     let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
-    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
     let start = ui::time::now();
     let due = start + NOTICE_LIFETIME;
     with_monotonic_time(start, || {
@@ -5218,40 +5184,35 @@ fn a_failed_open_leaves_on_its_own() {
         );
     });
     assert_eq!(app.next_wake_deadline(), Some(due), "it wakes the app");
-    let draw = |app: &mut BooksApp| {
-        app.hits.clear();
-        let theme = ui::theme::Theme::default();
-        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
-        app.draw_load_toast(&mut PaintCtx::new(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text,
-            &theme,
-        ));
-        app.hits
-            .iter()
-            .any(|hit| matches!(hit.action, Action::DismissLoadError))
-    };
-    with_monotonic_time(start, || assert!(draw(&mut app), "the failure shows"));
-    with_monotonic_time(due + Duration::from_millis(1), || {
-        assert!(!draw(&mut app), "a failure past its time is not painted");
-        app.dirty = false;
+    let said = |app: &mut BooksApp| {
         app.expire_load_toast();
+        ui::window_toolbar::notice().map(|notice| (notice.text, notice.kind))
+    };
+    with_monotonic_time(start, || {
+        assert_eq!(
+            said(&mut app),
+            Some((
+                "Couldn’t open x.epub: not a book".to_owned(),
+                ui::widget::toast::ToastKind::Error
+            )),
+            "the failure shows in the window's bar"
+        );
     });
-    assert!(app.dirty, "the window repaints without it");
+    with_monotonic_time(due + Duration::from_millis(1), || {
+        assert_eq!(said(&mut app), None, "a failure past its time is gone");
+    });
     assert_eq!(app.load_error.as_deref(), None);
     assert_eq!(app.next_wake_deadline(), None, "nothing left to wake for");
 }
 
-/// "Opening x.epub" follows the import: it stays for as long as the import
-/// runs, however long that is, and goes with it.
+/// "Opening x.epub" follows the import: it stays in the window's bar for as
+/// long as the import runs, however long that is, and goes with it.
 #[test]
 fn opening_a_book_shows_until_the_import_ends() {
     use std::path::PathBuf;
     use ui::time::testing::with_monotonic_time;
     use ui::widget::toast::{NOTICE_LIFETIME, Transient};
     let mut app = BooksApp::new(crate::resource::library_dispatcher_for_test(), false);
-    app.toast_area = Rect::new(0.0, 0.0, 800.0, 600.0);
     let start = ui::time::now();
     let at = |seconds: u64| start + Duration::from_secs(seconds);
     with_monotonic_time(start, || {
@@ -5260,24 +5221,19 @@ fn opening_a_book_shows_until_the_import_ends() {
             path: PathBuf::from("/home/reader/Books/x.epub"),
             kind: ImportKind::Open,
             expected_book_id: None,
+            store_book: None,
             card: Transient::showing_progress(()),
         });
     });
-    let painted = |app: &mut BooksApp| {
-        let theme = ui::theme::Theme::default();
-        let (mut scene, mut text) = (vello::Scene::new(), TextRenderer::new());
-        app.draw_load_toast(&mut PaintCtx::new(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            &mut text,
-            &theme,
-        ));
-        !scene.encoding().is_empty()
-    };
+    let said = || ui::window_toolbar::notice().map(|notice| notice.text);
     for second in [3, 6, 9] {
         with_monotonic_time(at(second), || {
             app.expire_load_toast();
-            assert!(painted(&mut app), "still opening at {second}s");
+            assert_eq!(
+                said().as_deref(),
+                Some("Opening x.epub"),
+                "still opening at {second}s"
+            );
         });
     }
     assert_eq!(
@@ -5287,7 +5243,8 @@ fn opening_a_book_shows_until_the_import_ends() {
     );
     app.import_loading = None;
     with_monotonic_time(at(10), || {
-        assert!(!painted(&mut app), "the import ended");
+        app.expire_load_toast();
+        assert_eq!(said(), None, "the import ended");
     });
     assert_eq!(app.next_wake_deadline(), None);
 }

@@ -521,3 +521,46 @@ fn a_volume_is_a_local_bounded_query_for_one_participant() {
         );
     }
 }
+
+#[test]
+fn deafened_is_muted_in_a_call_and_said_only_when_set() {
+    let command = Request::new(Command::SetDeafened { deafened: true });
+    assert_eq!(
+        Request::decode(&command.encode().unwrap()).unwrap(),
+        command
+    );
+    assert!(
+        String::from_utf8(command.encode().unwrap())
+            .unwrap()
+            .contains(r#"{"op":"set_deafened","deafened":true}"#)
+    );
+    let mut snapshot = Snapshot::unavailable();
+    snapshot.deafened = true;
+    assert!(
+        snapshot.encode().is_err(),
+        "nobody is deafened outside a call"
+    );
+    snapshot.state = State::Live;
+    snapshot.issue = None;
+    assert!(snapshot.encode().is_ok());
+    snapshot.muted = false;
+    assert!(snapshot.encode().is_err(), "a deafened person is muted");
+    snapshot.deafened = false;
+    assert!(
+        !String::from_utf8(snapshot.encode().unwrap())
+            .unwrap()
+            .contains("deafened"),
+        "written only when set"
+    );
+
+    let mut roster = Roster {
+        channel_id: "voice".into(),
+        people: vec![person(1), person(2)],
+        muted: vec![person(1)],
+        deafened: vec![person(1)],
+        ..Roster::default()
+    };
+    assert!(roster.valid());
+    roster.deafened = vec![person(2)];
+    assert!(!roster.valid(), "the deafened are among the muted");
+}

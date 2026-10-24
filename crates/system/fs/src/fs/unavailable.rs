@@ -50,15 +50,19 @@ impl UnavailableNote {
     }
 
     /// Bytes arrived, so a device that keeps the file is reachable again.
-    /// Only a note a read left is cleared; a transfer's own failure stays
-    /// until that transfer reports again.
+    /// The "no peer delivered" failure goes, whether a read noted it or a
+    /// retry that has ended (the person's "Retry download" while the device
+    /// was still offline): nothing else would ever take it back, and the
+    /// file would read as unavailable while it opens. A transfer still in
+    /// charge (queued, or a pin's fetch waiting for its next attempt) reports
+    /// its own outcome, and any other failure stays.
     fn clear(&self) {
         let mut registry = self.registry.lock_recover();
         let Some(record) = registry.get(self.record_id) else {
             return;
         };
         let noted = record.transfer.phase == TransferPhase::Idle
-            && record.transfer.retry_count == 0
+            && record.transfer.retry_at_ms.is_none()
             && record
                 .transfer
                 .last_error
@@ -69,6 +73,9 @@ impl UnavailableNote {
         }
         let mut record = record.clone();
         record.transfer.last_error = None;
+        // Bytes arriving ends the run of failures a retry counted, so the
+        // next read no peer answers is noted again.
+        record.transfer.retry_count = 0;
         if let Err(error) = registry.put(record) {
             eprintln!("could not note that a file is available again: {error}");
         }
@@ -210,13 +217,17 @@ mod tests {
         assert_eq!(state.transfer.phase, TransferPhase::Downloading);
         assert_eq!(state.transfer.last_error, None);
 
-        let mut retried = RecordAvailability::new(note.record_id, RecordKind::File);
-        retried.transfer.retry_count = 1;
-        retried.transfer.last_error = Some(TransferError {
+        // What a pin's fetch that no peer answered leaves: queued for its
+        // next attempt, which reports the outcome.
+        let mut retrying = RecordAvailability::new(note.record_id, RecordKind::File);
+        retrying.transfer.phase = TransferPhase::Queued;
+        retrying.transfer.retry_count = 1;
+        retrying.transfer.retry_at_ms = Some(9_000);
+        retrying.transfer.last_error = Some(TransferError {
             message: NO_PEER_DELIVERED_ERROR.into(),
             occurred_at_ms: 5,
         });
-        note.registry.lock_recover().put(retried.clone()).unwrap();
+        note.registry.lock_recover().put(retrying.clone()).unwrap();
         noted_bounded_read(
             Duration::from_millis(100),
             async { Ok(()) },
@@ -226,8 +237,44 @@ mod tests {
         .unwrap();
         assert_eq!(
             note.registry.lock_recover().get(note.record_id),
-            Some(&retried),
-            "a retry's failure is the retry's to clear"
+            Some(&retrying),
+            "a pin's retry still to come is the pin's to report"
+        );
+    }
+
+    /// "Retry download" while the device that keeps the file is offline
+    /// fails and ends there. Once that device is back, bytes a read gets
+    /// make the file available again; nothing else would.
+    #[tokio::test]
+    async fn bytes_after_a_retry_that_ended_make_the_file_available_again() {
+        let (_dir, note) = note();
+        // What a retry the person asked for leaves when no peer answered.
+        let mut retried = RecordAvailability::new(note.record_id, RecordKind::File);
+        retried.transfer.retry_count = 1;
+        retried.transfer.last_error = Some(TransferError {
+            message: NO_PEER_DELIVERED_ERROR.into(),
+            occurred_at_ms: 5,
+        });
+        note.registry.lock_recover().put(retried).unwrap();
+        assert!(projection(&note).unavailable());
+
+        let bound = Duration::from_millis(100);
+        let read = noted_bounded_read(bound, async { Ok(vec![7_u8]) }, Some(note.clone())).await;
+        assert_eq!(read.unwrap(), vec![7]);
+        let back = projection(&note);
+        assert!(!back.unavailable(), "bytes that arrived make it available");
+        assert_eq!(back.transfer.last_error, None);
+
+        let failed = noted_bounded_read(
+            bound,
+            async { Err::<Vec<u8>, _>(anyhow!("no peer served the content")) },
+            Some(note.clone()),
+        )
+        .await;
+        assert!(failed.is_err());
+        assert!(
+            projection(&note).unavailable(),
+            "the next read no peer answers is noted again"
         );
     }
 }

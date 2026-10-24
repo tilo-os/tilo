@@ -211,9 +211,11 @@ fn an_agent_reruns_the_failing_test_of_a_run() {
         serde_json::json!({ "test": test }),
     )
     .expect("the agent's rerun runs and settles");
+    // The run's package and target selection come back, so only the
+    // library that reported the test builds again.
     assert_eq!(
         typed_line(&mut app, &lines),
-        format!("cargo test -p terminal -- --exact {test}"),
+        format!("cargo test -p terminal --lib -- --exact {test}"),
         "typed at the prompt, once"
     );
     settle_until(&mut app, |state| {

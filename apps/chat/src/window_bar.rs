@@ -60,6 +60,19 @@ impl ChatApp {
             };
             let label = crate::i18n::t(label);
             actions.push((ToolbarAction::new("call-mute", icon, label), Hit::CallMute));
+            // Hearing the call, beside speaking into it: in the menu, so
+            // the row keeps the call, its microphone and Leave.
+            let (icon, label) = if self.call.deafened {
+                ("headphone-off", "chat-call-undeafen")
+            } else {
+                ("headphones", "chat-call-deafen")
+            };
+            actions.push((
+                ToolbarAction::new("call-deafen", icon, crate::i18n::t(label))
+                    .on(self.call.deafened)
+                    .in_menu(),
+                Hit::CallDeafen,
+            ));
             actions.push((
                 ToolbarAction::new(
                     "call-leave",

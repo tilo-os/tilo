@@ -1,4 +1,4 @@
-# Tilo patches: stop topic timers that have no work, reach every neighbour
+# Tilo patches: stop topic timers that have no work, reach every neighbour, broadcast only with one
 
 crates.io `iroh-gossip` 0.101.0, verbatim (archive SHA-256
 `4e1dc4b05f73e7a1b9e83b531eb63c3fd671b0af3aeb13b59c546dd7ca747515`, upstream
@@ -54,6 +54,18 @@ authenticating each other after a restart. Such a message now goes to every
 direct neighbour, eager or lazy (`a_neighbours_only_message_reaches_lazy_neighbours_too`, and
 through the public topic state `gossip_neighbours_only_messages_cross_a_pruned_link` in
 `crates/system/fs/tests/iroh_idle.rs`).
+
+## No broadcast without a neighbour
+
+`broadcast` cached a swarm message and armed the cache sweep with no eager
+or lazy peer to send it to. Nobody could graft it, and a neighbour that
+comes later is never offered an older message, so a desktop whose last
+collaborator had left kept sweeping for every local change it broadcast
+long after. With no neighbour, `broadcast` now does nothing
+(`a_broadcast_nobody_hears_arms_nothing`, and through the public topic state
+`gossip_sweeps_a_topic_cache_only_while_it_holds_messages` in
+`crates/system/fs/tests/iroh_idle.rs`). Tilo restates what a new neighbour
+needs when it joins.
 
 ## Built as an rlib only (`Cargo.toml`)
 

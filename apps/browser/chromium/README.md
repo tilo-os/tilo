@@ -428,7 +428,8 @@ content scripts (with `sender.tab`) work without help.
   moving the worker: extensions read their worker's address and load their
   helpers against it) and in its own pages (a document script). It answers
   `tabs`, `windows`, `action.onClicked`, `contextMenus`, `notifications`,
-  the button's look for one tab and `scripting` by asking the host at
+  `omnibox`, the button's look for one tab and `scripting` by asking the
+  host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
   written into it; a page cannot show either. An extension whose security
@@ -445,7 +446,10 @@ content scripts (with `sender.tab`) work without help.
   before an extension is told of one. An extension's own page is listed
   with no tab: it sends that extension a word only the host made, and
   Chromium tells the worker the tab the message came from. An id another
-  tab has already is not taken.
+  tab has already is not taken. The page's scripts see its word, so two
+  pages of one extension can trade theirs and be taken for each other's
+  tab; such an id gives way to the one Chromium lists once the tab shows a
+  page it lists with its tab, before any extension asks after that page.
 - What a tab shows an extension follows Chrome: its address and title with
   `tabs`, a host permission for the site, or a click on the extension's
   button over it (`activeTab`), which also lets it script the page until the
@@ -586,7 +590,8 @@ content scripts (with `sender.tab`) work without help.
   buttons) and answers `update`, `clear` and `getAll`. The Browser is told
   of each change through the page used last (`extension_notification`) and
   shows it as its own notification, named for the extension
-  (`extension_notices.rs`). The person choosing it or one of its buttons
+  (`extension_notices.rs`); a change by `update` (a download's progress)
+  shows without a sound, as does one the extension made `silent`. The person choosing it or one of its buttons
   comes back as `extension_notification_chosen`: the worker, woken if it
   sleeps, hears `onClicked` or `onButtonClicked`, then `onClosed` by the
   person, since Tilo takes a chosen notification away; `clear` is heard as
@@ -625,6 +630,39 @@ content scripts (with `sender.tab`) work without help.
   needs `downloads.open` and, as in Chrome, the person's click or key in
   the extension's page, or on its button, menu item or shortcut, in the
   last five seconds.
+- The address's keyword (`omnibox`): the Browser reads each extension's
+  manifest `omnibox.keyword`, and what the person types after it and a
+  space, in the window's bar or the window's own address field, is the
+  extension's (`extension_omnibox`): the host fires `onInputStarted`, then
+  `onInputChanged` for each change with the request its suggestions answer,
+  and `onInputCancelled` when the person leaves, waking the worker. What the
+  extension suggests for the latest change (`extension_omnibox_suggestions`)
+  and its default suggestion (`extension_omnibox_default`, `%s` standing
+  for what is typed) go to the page's tab, and the Browser lists them, plain,
+  under the address, the default first. Enter, or a suggestion chosen, fires
+  `onInputEntered` with its text and `currentTab`, makes that window the
+  extension's current one and grants `activeTab`, as Chrome does; the
+  extension sends the page where it says (`tabs.update`). The extension's
+  resource offers the same as `send-to-extension`, for scripts and agents.
+- Side panels (`sidePanel`): Chromium keeps an extension's options, for
+  every tab and for one, and how a click on its button treats the panel
+  (`setPanelBehavior`), and answers for them; it finds no window to show a
+  panel in. The script asks the host (`sidePanel.show`), which asks the
+  Browser (`extension_side_panel`) to show the page the options name beside
+  the tab's page, where the Browser lays it out at the window's trailing
+  edge, never over the page. `sidePanel.open` needs a gesture, as in
+  Chrome: it runs from a listener of something the person did (a click, a
+  keyboard shortcut, a menu item) while it runs, or from the extension's own
+  page the person used; the host also refuses one more than five seconds
+  after the person's last act for the extension. A click on its button
+  opens or closes the panel instead of reaching the extension when it asked
+  for that (`openPanelOnActionClick`) and its button has no popup, as in
+  Chrome; the worker wakes for the click and answers which page.
+  `setOptions` reaches the panel where it shows (another page, or closed
+  once turned off for the tab) and `sidePanel.close` closes it. The person
+  opens a panel from the Browser too (`extension_side_panel`, the page the
+  extension names for the tab). The panel is a panel tab, as a popup is: no
+  tab to the extension, its window the page beside it.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -658,7 +696,9 @@ content scripts (with `sender.tab`) work without help.
   Chrome shows the page in a window of its own; here the host asks the
   Browser to show it in a panel over the page in front
   (`extension_sign_in`), as a popup shows, under the name of the site it is
-  on. The Browser marks the panel's tab as that sign-in's
+  on. The extension's own page that asked (its settings, its popup) goes on
+  beneath it, so its call hears the outcome, and shows again once the
+  sign-in page closes. The Browser marks the panel's tab as that sign-in's
   (`extension_sign_in_panel`), and the host watches where it goes
   (`src/extension_sign_in.h`): once the page goes to the extension's own
   address, `https://<id>.chromiumapp.org/`, by a redirect, a link or a
@@ -680,16 +720,28 @@ content scripts (with `sender.tab`) work without help.
   signed in.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
-  worker still sleeps. `tests/extension_tabs.py` covers each of these.
+  worker still sleeps. A worker tells the host all it listens for once its
+  first script has run. Until it has (it starts with the engine, or as it is
+  added, and may ask before the Browser has said whose worker it is), the tab
+  events it may want are kept for it, for up to thirty seconds, and it hears
+  those it listens for then: a page that loads as the Browser starts is one
+  its extensions hear of, as in Chrome. `tests/extension_tabs.py` covers each
+  of these.
 
 ## Remaining integration work
 
-- Extensions' side panels are not offered. Their keyboard shortcuts run while
+- Extensions' side panels show beside the page they were opened for, one at a
+  time per window; `sidePanel.onOpened` and `onClosed` are not fired, and the
+  panel cannot be widened. Extensions' keyboard shortcuts run while
   a page has the keyboard, not while the address bar or a popup has it; the
   suggested keys are the ones given (there is no page to change them), and
-  `global` shortcuts work only in the Browser. Their context menu items show
-  no checkmark and no submenu, and appear only in a page's menu, not the
-  toolbar button's.
+  `global` shortcuts work only in the Browser. On macOS a shortcut with
+  Option (Alt) and no Command or Control does not run: the Browser forwards
+  the character Option types ("˚" for Option+K), not the key. A keyword's
+  Enter always goes to the current tab (no Alt+Enter for a new one), and its
+  suggestions cannot be deleted (`onDeleteSuggestion`). Their context menu
+  items show no checkmark and no submenu, and appear only in a page's menu,
+  not the toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - An extension's notification shows the Browser's icon, not its own or its
   image, and a notification the person dismisses without choosing it stays

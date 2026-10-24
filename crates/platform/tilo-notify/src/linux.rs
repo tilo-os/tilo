@@ -234,8 +234,9 @@ fn listen_for_clicks(connection: &Connection) {
     });
 }
 
-fn portal_add(connection: &Connection, n: &Notification) -> zbus::Result<()> {
-    let mut content: HashMap<&str, Value<'_>> = HashMap::new();
+/// What the portal is given of `n`.
+fn portal_content(n: &Notification) -> HashMap<&'static str, Value<'_>> {
+    let mut content: HashMap<&'static str, Value<'_>> = HashMap::new();
     content.insert("title", Value::from(n.title.as_str()));
     content.insert("body", Value::from(n.body.as_str()));
     if let Some(uri) = &n.activation {
@@ -257,6 +258,14 @@ fn portal_add(connection: &Connection, n: &Notification) -> zbus::Result<()> {
             .collect();
         content.insert("buttons", Value::from(buttons));
     }
+    if n.silent {
+        content.insert("sound", Value::from("silent"));
+    }
+    content
+}
+
+fn portal_add(connection: &Connection, n: &Notification) -> zbus::Result<()> {
+    let content = portal_content(n);
     let (dest, path, iface) = PORTAL;
     connection
         .call_method(
@@ -276,17 +285,26 @@ fn portal_remove(connection: &Connection, tag: &str) -> zbus::Result<()> {
         .map(drop)
 }
 
+/// The freedesktop hints of `n`.
+fn freedesktop_hints(n: &Notification) -> HashMap<&'static str, Value<'static>> {
+    let mut hints = HashMap::new();
+    // The specification has no warning level; only an error is critical.
+    if n.severity == crate::Severity::Error {
+        hints.insert("urgency", Value::U8(2));
+    }
+    if n.silent {
+        hints.insert("suppress-sound", Value::Bool(true));
+    }
+    hints
+}
+
 fn freedesktop_notify(connection: &Connection, app: &str, n: &Notification) -> zbus::Result<()> {
     let replaces = ids()
         .lock()
         .ok()
         .and_then(|ids| ids.get(&n.tag).copied())
         .unwrap_or(0);
-    let mut hints: HashMap<&str, Value<'_>> = HashMap::new();
-    // The specification has no warning level; only an error is critical.
-    if n.severity == crate::Severity::Error {
-        hints.insert("urgency", Value::U8(2));
-    }
+    let hints = freedesktop_hints(n);
     let activations = activations_of(n);
     let mut actions: Vec<&str> = Vec::new();
     if n.activation.is_some() {
@@ -550,7 +568,7 @@ impl Notifier for SessionNotifier {
         let notification = notification.clone();
         let app = self.app_id.clone();
         on_bus(move |connection| {
-            if notification.activation.is_some() {
+            if notification.activation.is_some() || !notification.buttons.is_empty() {
                 listen_for_clicks(connection);
             }
             either(
@@ -609,4 +627,25 @@ pub(crate) fn publish_priority_contacts(
                 }
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_quiet_notification_asks_both_services_for_no_sound() {
+        let loud = Notification::new("t", "Title", "");
+        assert!(!portal_content(&loud).contains_key("sound"));
+        assert!(!freedesktop_hints(&loud).contains_key("suppress-sound"));
+        let quiet = loud.quietly();
+        assert_eq!(
+            portal_content(&quiet).get("sound"),
+            Some(&Value::from("silent"))
+        );
+        assert_eq!(
+            freedesktop_hints(&quiet).get("suppress-sound"),
+            Some(&Value::Bool(true))
+        );
+    }
 }

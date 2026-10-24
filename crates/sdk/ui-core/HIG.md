@@ -671,23 +671,26 @@ the control or its row already shows.
 **Status has two homes.** What a person reads while working and expects to
 stay put (Ln/Col, a word count, unresolved conflicts) is persistent status in
 `chrome::status_bar`, which reserves its band (`status_bar::split`) so it
-never covers content. A change worth noticing once (a page turn, a finished sync) is
-the transient `StatusBubble`: it shows on change, hides by itself and floats
-in its area's bottom-trailing corner. An error the person must act on is a
-`Banner` (persistent, in the flow) or a `Toast` (transient, with an icon close
-button). A document's save state is `SaveStatusSurface`: autosave is the
-system's job, so "Saving…" and "Saved" never show (they stay in the
-accessibility status); a save still unconfirmed after `SAVE_STALL` (10 s) says
-"Couldn't save yet. Retrying…", then "Not saved" with Try again; a failed save
-is an error card with Try again that stays until the save succeeds, and that
-success is a one-time "Saved" in the transient bubble. The framework presents
-it for every framework window from the record's durability, with no wiring in
-the app; an app that also writes elsewhere (a file) reports those saves
+never covers content. A change worth noticing once (a page turn, a finished
+sync, a copy with Undo) is the window bar's notice
+(`window_toolbar::notify`, through `Transient::publish` or
+`Notice::publish`): it stands in the bar's location slot, icon and text, for a
+while, with its one action as a bar action while it shows; a newer one
+replaces it, and nothing stacks. No window widget paints a transient card. An
+error the person must act on is a `Banner` (persistent, in the flow) or a
+notice held until it is resolved. A document's save state is
+`SaveStatusSurface`, said in the same slot: autosave is the system's job, so
+"Saving…" and "Saved" never show (they stay in the accessibility status); a
+save still unconfirmed after `SAVE_STALL` (10 s) says "Couldn't save yet.
+Retrying…", then "Not saved" with Try again; a failed save is an error with
+Try again, held until a save succeeds, and that success is a one-time
+"Saved". The framework presents it for every framework window from the
+record's durability, with no wiring in the app; an app that also writes
+elsewhere (a file) reports those saves
 through `cx.saves()` (`framework::Saves`) and answers its Try again. Saving to
 the place a document already lives, Ctrl+S included, says nothing either; a
 save that put a copy somewhere out of sight names where ("Saved a copy as
-report.pdf"). An app never pokes or pins a save bubble, paints its own save
-pill or toasts "Saved"; `tools/policy/check_copy_language.py` fails such copy,
+report.pdf"). An app never paints its own save pill or says "Saved" itself; `tools/policy/check_copy_language.py` fails such copy,
 and `copy_save_exceptions.toml` lists, with reasons, the few uses of the word
 that are not about saving.
 
@@ -1210,7 +1213,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Destructive confirmation (a `ModalDialog` danger action only) | `semantic.danger` | none |
 | Card / Container (objects only) | `surfaces.raised`; a pressable one lifts on hover and press | `edge_on(fill)`; a section inside a card gets space, not a second edge |
 | TextInput / NumberInput / SearchField | field fill (hover `lift_on(fill, 0.5)`, focus `1.0`) | `edge_on(fill)`; focus `border_focus`; a value `Field::with_error` rejected edges the field in danger ink (`Widget::set_invalid`) and its message is danger ink |
-| Popover, ModalDialog, Toast, StatusBubble, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
+| Popover, ModalDialog, a shell notification card, video controls | the floating Panel body (`widget::floating_surface::paint`): `radii.panel`, the blurred material, `elevation.floating`; what stands on it is drawn with `theme.on_ground(panel_ground)`, whose `surfaces.raised` stays off the panel (`Colors::raised_on`) | `panel_border`, `floating_edge` on dark; a toast's severity is its leading icon's colour, as on a banner |
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Banner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
 | Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
@@ -1590,7 +1593,7 @@ yield files or the ratchet fails rather than passing empty.
 |---|---|---|---|
 | `theme` | ui-core `src`, shell `src`, `apps/*/src`; not `theme.rs`, `tokens/`, `presence/render.rs` | `literal_color`, `white_or_black`, `theme_blind_white` | `design_token_audit.rs::theme_escape_hatches_do_not_grow` |
 | `app-paint` | shell `src`, `apps/*/src`; same exemptions | `literal_color_new`, `ramp_slot`, `legacy_alias`, `desktop_ground`, `literal_radius`, `literal_alpha`, `raw_paint`, `glyph_icon`, `transparent_shot` | `design_token_audit.rs::app_and_shell_paint_knobs_do_not_grow` |
-| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, `status_bubble.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
+| `chrome-border` | ui-core `src/widget`, `src/chrome`, `surface.rs`, shell `src` | `declared_border` | `design_token_audit.rs::declared_borders_in_chrome_do_not_grow` |
 | `spacing` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src` | `pixel_const`, `taffy_length`, `literal_gap`, `literal_spacer` | `spacing_token_audit.rs::spacing_audit_sees_what_it_polices_and_literals_do_not_grow` |
 | `typography` | ui-core `src/widget`, `src/chrome`, shell `src`, `apps/*/src`; not `tokens/typography.rs`, `text_render*`, `text_metrics.rs` | `literal_font_size`, `legacy_size_api`, `font_size_const`, `type_step_arithmetic`, `raw_type_step`, `renderer_scale_helper` | `typography_token_audit.rs::typography_literals_do_not_grow` |
 | `copy` | `apps/*/src` | `all_caps_label`, `middle_dot_join`, `to_uppercase` | `copy_audit.rs::copy_rules_do_not_grow` |

@@ -74,11 +74,12 @@ pub fn now() -> Instant {
     Instant::now()
 }
 
-/// Per-thread monotonic scopes for tests of input work and due deadlines.
-/// Wall time and other threads continue to use their ordinary clocks.
+/// Per-thread clock scopes for tests: the monotonic clock for input work
+/// and due deadlines, the wall clock for what a capture pins. Other threads
+/// continue to use their ordinary clocks.
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing {
-    use super::Instant;
+    use super::{Instant, SystemTime};
     use std::cell::Cell;
 
     thread_local! {
@@ -103,6 +104,25 @@ pub mod testing {
     /// explicit later scope can exercise those timers independently.
     pub fn with_monotonic_time<T>(at: Instant, operation: impl FnOnce() -> T) -> T {
         let _restore = Restore(MONOTONIC.with(|clock| clock.replace(Some(at))));
+        operation()
+    }
+
+    struct RestoreWall(u64);
+
+    impl Drop for RestoreWall {
+        fn drop(&mut self) {
+            super::FROZEN_HERE_MS.with(|here| here.set(self.0));
+        }
+    }
+
+    /// Run `operation` with the wall clock pinned to `at` on this thread
+    /// alone, as [`super::freeze_wall`] pins it for a capture. Other threads
+    /// (the other tests of one process) keep their own clock: a test of the
+    /// pinned clock must not stop every notice and indicator beside it.
+    /// Nested scopes and unwinding restore the previous reading.
+    pub fn with_wall<T>(at: SystemTime, operation: impl FnOnce() -> T) -> T {
+        let ms = super::wall_ms(at);
+        let _restore = RestoreWall(super::FROZEN_HERE_MS.with(|here| here.replace(ms)));
         operation()
     }
 }
@@ -172,11 +192,16 @@ pub fn wall() -> SystemTime {
 /// pins another time later, so tests sharing one process each keep the
 /// time they chose; other threads read the last time pinned anywhere.
 pub fn freeze_wall(at: SystemTime) {
-    let ms = at
-        .duration_since(UNIX_EPOCH)
-        .map_or(1, |since| saturating_u64(since.as_millis()).max(1));
+    let ms = wall_ms(at);
     FROZEN_WALL_MS.store(ms, Ordering::Relaxed);
     FROZEN_HERE_MS.with(|here| here.set(ms));
+}
+
+/// `at` as a pinned reading: milliseconds since the Unix epoch, never `0`
+/// (which means the clock runs).
+fn wall_ms(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH)
+        .map_or(1, |since| saturating_u64(since.as_millis()).max(1))
 }
 
 /// Whether [`freeze_wall`] pinned the wall clock.

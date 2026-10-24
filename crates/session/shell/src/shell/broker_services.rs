@@ -593,6 +593,46 @@ pub(super) fn with_session_blobs<T>(
     result
 }
 
+/// The filesystem daemon's content store, as content puts write to it:
+/// each room's under the neutral [`CONTENT_PUT_SCOPE`], which every app of
+/// the room reads by reference.
+///
+/// [`CONTENT_PUT_SCOPE`]: tilo_action_broker::services::CONTENT_PUT_SCOPE
+struct SessionContentPuts;
+
+impl tilo_action_broker::services::ContentStoreServices for SessionContentPuts {
+    fn max_bytes(&self) -> u64 {
+        runtime_fs::blobs::MAX_BLOB_BYTES
+    }
+
+    fn begin(
+        &self,
+        room: &str,
+    ) -> Result<Box<dyn tilo_action_broker::services::ContentSink>, String> {
+        with_session_blobs(|client| {
+            client
+                .scope(room, tilo_action_broker::services::CONTENT_PUT_SCOPE)?
+                .begin_upload("application/octet-stream")
+        })
+        .map(|upload| Box::new(SessionContentSink(upload)) as Box<_>)
+        .map_err(|error| error.to_string())
+    }
+}
+
+/// One upload into the daemon's store; dropped unfinished, it is aborted.
+struct SessionContentSink(runtime_fs::blobs::BlobUpload);
+
+impl tilo_action_broker::services::ContentSink for SessionContentSink {
+    fn append(&mut self, bytes: &[u8]) -> Result<(), String> {
+        self.0.append(bytes).map_err(|error| error.to_string())
+    }
+
+    fn finish(self: Box<Self>) -> Result<(String, u64), String> {
+        let stored = self.0.finish().map_err(|error| error.to_string())?;
+        Ok((stored.hash, stored.len))
+    }
+}
+
 /// Decide every change this session's rooms receive by its claim against
 /// the app surface its op names: the one the installed app ships, or one
 /// read from the session's content store in the record's room and app; name,
@@ -2044,6 +2084,7 @@ pub fn native_services(
                 crate::shell::search::app_content_index::session(),
             ),
         )),
+        content_store: Some(Arc::new(SessionContentPuts)),
         speakers: network.clone().map(|network| {
             Arc::new(NativeSpeakers(network))
                 as Arc<dyn tilo_action_broker::services::SpeakerServices>
