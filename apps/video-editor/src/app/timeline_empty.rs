@@ -50,15 +50,19 @@ impl TimelineEmpty {
 }
 
 impl VideoEditorApp {
-    /// Where playheads and the ruler's grid lines end: across the tracks
-    /// while there are clips to cross; on an empty timeline, at the ruler,
-    /// clear of the add-track row and the empty state under it.
+    /// Where playheads and the ruler's grid lines end: at the last track
+    /// while there are clips to cross, clear of the add-track row under it
+    /// (and at the timeline's bottom when the tracks run past it); on an
+    /// empty timeline, at the ruler, clear of the add-track row and the
+    /// empty state under it.
     pub(super) fn playhead_bottom(&self, r: &Regions) -> f64 {
         if self.project.clips.is_empty() {
-            r.ruler.y1
-        } else {
-            r.timeline.y1
+            return r.ruler.y1;
         }
+        self.lane_rects(r)
+            .last()
+            .map_or(r.ruler.y1, |(_, _, lane)| lane.y1)
+            .clamp(r.ruler.y1, r.timeline.y1)
     }
 
     /// The tracks' content on an empty timeline: the lanes beside the

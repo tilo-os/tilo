@@ -13,7 +13,7 @@ use vello::kurbo::Rect;
 use super::{EXPORT, IMPORT, INSPECTOR, SPLIT};
 use crate::actions::VideoEditorEffect;
 use crate::app::VideoEditorApp;
-use crate::model::Project;
+use crate::model::{Project, TrackKind};
 
 /// The sample project in an editor `w` wide, laid out as a host lays it out;
 /// file choosers answered by a recording host, never put on a screen.
@@ -662,6 +662,43 @@ fn the_empty_timeline_shows_the_media_it_asks_to_drag() {
     );
 }
 
+/// With clips the playhead crosses the ruler and the tracks and ends at
+/// the last one: it never runs through the add-track row under them, with
+/// one track or with more.
+#[test]
+fn the_playhead_ends_at_the_last_track_clear_of_the_add_track_row() {
+    for width in [420.0, 1280.0] {
+        let mut app = sample(width);
+        for added in [false, true] {
+            if added {
+                app.add_track(TrackKind::Video);
+            }
+            let r = app.regions();
+            assert!(!app.project.clips.is_empty(), "fixture: there are clips");
+            let px = app.time_to_x(app.playhead, &r.lanes);
+            let line = Rect::new(px - 1.0, r.ruler.y0, px + 1.0, app.playhead_bottom(&r));
+            let lanes = app.lane_rects(&r);
+            let last = lanes.last().map(|(_, _, lane)| *lane).expect("a track");
+            assert!(
+                (line.y1 - last.y1).abs() < 1e-9 && line.y1 > r.ruler.y1,
+                "{width} px, {} tracks: the playhead ends at the last track: {line:?} vs {last:?}",
+                lanes.len()
+            );
+            let buttons = app.add_track_buttons(&r);
+            assert!(!buttons.is_empty(), "fixture: the add-track row is in view");
+            for (kind, button) in buttons {
+                let row = Rect::new(r.timeline.x0, button.y0, r.timeline.x1, button.y1);
+                assert!(
+                    line.intersect(row).area() <= 0.0,
+                    "{width} px, {} tracks: the playhead {line:?} crosses the \
+                     add-track row at {kind:?} {row:?}",
+                    lanes.len()
+                );
+            }
+        }
+    }
+}
+
 /// On an empty timeline the playhead stays in the ruler, clear of the
 /// add-track row and the empty state, which is centred on the tracks'
 /// content beside the header column; with a clip it crosses the tracks.
@@ -670,8 +707,10 @@ fn an_empty_timelines_playhead_stays_in_the_ruler() {
     for width in [420.0, 1280.0] {
         let mut app = sample(width);
         let r = app.regions();
-        assert!(
-            (app.playhead_bottom(&r) - r.timeline.y1).abs() < 1e-9,
+        let last_track = app.lane_rects(&r).last().map(|(_, _, lane)| lane.y1);
+        assert_eq!(
+            Some(app.playhead_bottom(&r)),
+            last_track,
             "{width} px: with clips the playhead spans the tracks"
         );
 
