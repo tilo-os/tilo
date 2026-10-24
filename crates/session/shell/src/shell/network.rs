@@ -82,6 +82,8 @@ mod joining;
 #[cfg(test)]
 mod node_member_tests;
 mod relay_rooms;
+mod session_host;
+pub(crate) use session_host::Placement;
 mod room_gate;
 #[cfg(test)]
 mod room_gate_tests;
