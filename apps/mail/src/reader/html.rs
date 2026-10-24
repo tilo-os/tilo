@@ -658,6 +658,7 @@ impl HtmlBody {
                     modifiers: ui::webview::KeyModifiers::command(
                         ui::platform::PlatformConventions::default(),
                     ),
+                    code: Some("KeyA"),
                 });
             }
         }

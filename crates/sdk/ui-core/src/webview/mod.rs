@@ -20,6 +20,7 @@
 
 pub mod chromium;
 mod credentials;
+pub mod key_code;
 mod service_sessions;
 pub use credentials::{
     AddressFields, CredentialAccount, CredentialAction, CredentialForm, CredentialReply,
@@ -105,6 +106,24 @@ pub(crate) fn changed_since<'a>(
         want -= 1;
     }
     (want == from).then_some(rects)
+}
+
+/// The page's focused editable field, as an engine reports it for the
+/// platform input method: what it takes, and where on the page it and the
+/// text being composed in it are, so the input method's candidates appear
+/// where the person types.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct TextField {
+    pub purpose: crate::ime::InputPurpose,
+    /// Line breaks are text (a text area, an editable document).
+    pub multiline: bool,
+    /// The field's box, in physical pixels from the view's top-left corner;
+    /// `None` when the engine cannot place it (a field in a frame of
+    /// another site).
+    pub bounds: Option<vello::kurbo::Rect>,
+    /// The box of the text an input method is composing, in the same
+    /// pixels, while it composes.
+    pub composition: Option<vello::kurbo::Rect>,
 }
 
 /// Latest-frame mailbox between an engine and the widget. Engines
@@ -609,7 +628,28 @@ pub enum WebViewCommand {
         key: KeyInput,
         down: bool,
         modifiers: KeyModifiers,
+        /// The key's place on the keyboard, as a DOM `KeyboardEvent.code`
+        /// ("KeyZ", "Digit1"), whatever the layout prints on it. A page's
+        /// shortcuts keep working on a layout whose letters are not Latin
+        /// (Ctrl+С on a Russian layout copies), and its `code` is the key
+        /// pressed. `None` when the sender does not know it.
+        code: Option<&'static str>,
     },
+    /// The input method's text being composed at the page's caret, in place
+    /// of any composed before. `cursor` is the composition's own caret or
+    /// selection, as byte offsets into `text`.
+    ImeComposition {
+        text: String,
+        cursor: Option<(usize, usize)>,
+    },
+    /// Text the input method committed: it takes the composition's place,
+    /// or goes in at the caret when nothing is being composed.
+    ImeCommit(String),
+    /// The input method withdrew its composition: the composed text leaves
+    /// the page.
+    ImeCancel,
+    /// The composition ends as it stands: its text stays in the page.
+    ImeFinish,
     /// Keyboard focus entered / left the page surface.
     SetFocused(bool),
     /// Compiled `WebKit` content-blocker JSON (`None` clears the filter).
@@ -1309,6 +1349,20 @@ pub trait WebViewEngine: Send + Sync {
     /// The engine this one wraps, for what only a backend can answer.
     fn wrapped(&self) -> Option<&SharedEngine> {
         None
+    }
+
+    /// Whether the engine takes an input method's composition
+    /// ([`WebViewCommand::ImeComposition`], [`WebViewCommand::ImeCommit`])
+    /// and reports the page's focused field ([`Self::text_field`]).
+    fn supports_composition(&self) -> bool {
+        self.wrapped()
+            .is_some_and(|engine| engine.supports_composition())
+    }
+
+    /// The page's focused editable field, for the platform input method;
+    /// `None` while nothing editable in the page has the focus.
+    fn text_field(&self) -> Option<TextField> {
+        self.wrapped().and_then(|engine| engine.text_field())
     }
 
     /// The pointer shape the page last asked for where the pointer is (a

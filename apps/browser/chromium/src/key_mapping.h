@@ -1,10 +1,12 @@
 #pragma once
+#include <algorithm>
 #include <cctype>
 #include <string>
 
 namespace tilo {
-// The IPC currently carries logical key names, not hardware scan codes. Use the
-// conventional US physical key for these names until the UI sends layout data.
+// The IPC carries logical key names and, when the sender knows it, the
+// physical key's DOM code. Without a code the conventional US key for the
+// name stands in.
 struct KeyMapping {
   int windows = 0;
   int mac = -1;
@@ -47,5 +49,61 @@ inline KeyMapping MapKey(const std::string& key) {
     if (character == symbol.value) return {symbol.windows,symbol.mac,symbol.x11,character,character};
   // Character events still carry text for characters without a known US key.
   return {0,-1,0,character,character};
+}
+
+// The US key at a place on the keyboard, named as a DOM KeyboardEvent.code
+// ("KeyY", "Digit1", "IntlBackslash"), or 0 for a place not named here.
+inline char UsCharacterAt(const std::string& code) {
+  if (code.size()==4 && code.compare(0,3,"Key")==0 && code[3]>='A' && code[3]<='Z')
+    return static_cast<char>(code[3]-'A'+'a');
+  if (code.size()==6 && code.compare(0,5,"Digit")==0 && code[5]>='0' && code[5]<='9') return code[5];
+  struct Place { const char* code; char character; };
+  static const Place places[] = {
+    {"Minus",'-'},{"Equal",'='},{"BracketLeft",'['},{"BracketRight",']'},
+    {"Backslash",'\\'},{"Semicolon",';'},{"Quote",'\''},{"Comma",','},
+    {"Period",'.'},{"Slash",'/'},{"Backquote",'`'},{"Space",' '},
+  };
+  for (const auto& place : places) if (code == place.code) return place.character;
+  return 0;
+}
+
+// Whether the protocol knows `code` as a place on the keyboard.
+inline bool KnownKeyCode(const std::string& code) {
+  return code=="IntlBackslash" || UsCharacterAt(code)!=0;
+}
+
+// Whether `code` reads as a DOM code at all ("ArrowLeft", "KeyA"). A code
+// the protocol does not place (a named key's) is taken and left to its name.
+inline bool KeyCodeShaped(const std::string& code) {
+  return !code.empty() && code.size()<=32 &&
+    std::all_of(code.begin(),code.end(),[](char c){return std::isalnum(static_cast<unsigned char>(c));});
+}
+
+// A key as the page should see it: what the layout makes of it (its text
+// and, for Latin letters and digits, its key code, as Chromium gives them on
+// each layout), on the physical key that was pressed. A key whose text has
+// no US key (a Cyrillic or Greek letter, a German umlaut) takes the key code
+// of the US key in its place, so Ctrl+С on a Russian layout is the page's
+// Ctrl+C, as in Chrome.
+inline KeyMapping MapKey(const std::string& key, const std::string& code) {
+  KeyMapping mapping = MapKey(key);
+  if (code.empty()) return mapping;
+  KeyMapping place;
+  if (code=="IntlBackslash") place = {226,10,94,0,0};
+  else if (const char at = UsCharacterAt(code)) place = MapKey(std::string(1,at));
+  else return mapping;
+  mapping.mac = place.mac;
+  mapping.x11 = place.x11;
+  if (mapping.windows==0) mapping.windows = place.windows;
+  return mapping;
+}
+
+// The Latin letter a shortcut names: the key's own when it is one, else the
+// US letter on the key pressed (Command+С on a Russian layout copies).
+inline char ShortcutLetter(const std::string& key, const std::string& code) {
+  if (key.size()==1 && std::isalpha(static_cast<unsigned char>(key[0])))
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(key[0])));
+  const char at = UsCharacterAt(code);
+  return at>='a' && at<='z' ? at : 0;
 }
 }  // namespace tilo

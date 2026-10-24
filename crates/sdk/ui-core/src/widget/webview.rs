@@ -57,6 +57,10 @@ use crate::widget::Widget;
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
 /// by the display factor before being sent to the engine).
 const WHEEL_LINE_PX: f64 = 40.0;
+/// How much of a focused field's top the input method is told the caret
+/// takes, in logical pixels, when the engine knows the field but not its
+/// caret: a line of text with room around it.
+const FIELD_LINE_HEIGHT: f64 = 40.0;
 
 /// Rounds a physical pixel extent to `u32`, clamping to `[0, u32::MAX]`
 /// first so a negative or absurdly large rect (a transient layout glitch)
@@ -113,6 +117,12 @@ pub struct WebView {
     /// host has replaced yet.
     preseeded: bool,
     focused: bool,
+    /// An input method is composing in the page's focused field.
+    composing: bool,
+    /// The input method emptied its composition. Whether that withdraws it
+    /// or makes way for its commit is known only from what follows in the
+    /// same batch of events ([`Self::settle_composition`]).
+    composition_emptied: bool,
     last_mouse: Point,
     /// The buttons pressed on the page and not yet released: the page keeps
     /// the pointer until they are, wherever it goes, as a drag does.
@@ -225,6 +235,8 @@ impl WebView {
             host_scaled: false,
             preseeded: false,
             focused: false,
+            composing: false,
+            composition_emptied: false,
             last_mouse: Point::ZERO,
             held: Vec::new(),
             pointer_inside: false,
@@ -655,6 +667,81 @@ impl WebView {
         false
     }
 
+    /// The page's focused field holds a lease for deferred text (dictation).
+    fn deferred_ready(&self) -> bool {
+        self.focused && self.engine.supports_text_input() && self.text_input.ready()
+    }
+
+    /// The page's focused field while this view has the keyboard and its
+    /// engine takes compositions.
+    fn page_field(&self) -> Option<crate::webview::TextField> {
+        (self.focused && self.engine.supports_composition())
+            .then(|| self.engine.text_field())
+            .flatten()
+    }
+
+    /// A page box the engine reported, in physical view pixels, in this
+    /// view's logical coordinates and inside it; `None` once it is out of
+    /// sight.
+    fn engine_to_view(&self, page: Rect) -> Option<Rect> {
+        let scale = f64::from(self.engine_scale());
+        let placed = Rect::new(
+            self.rect.x0 + page.x0 / scale,
+            self.rect.y0 + page.y0 / scale,
+            self.rect.x0 + page.x1 / scale,
+            self.rect.y0 + page.y1 / scale,
+        )
+        .intersect(self.rect);
+        // A box with no width (a caret) stays one; any other must show.
+        (placed.height() > 0.0 && (placed.width() > 0.0 || page.width() <= 0.0)).then_some(placed)
+    }
+
+    /// An emptied composition nothing committed in the same batch was
+    /// withdrawn: the page drops its text. Runs before anything else
+    /// reaches the page, and on every frame.
+    fn settle_composition(&mut self) {
+        if std::mem::take(&mut self.composition_emptied) && self.composing {
+            self.composing = false;
+            self.engine.send(WebViewCommand::ImeCancel);
+        }
+    }
+
+    /// The platform input method's preedit and commits, into the page's
+    /// focused field as a composition, the way a native field takes them.
+    fn input_method(&mut self, ime: &winit::event::Ime) {
+        match ime {
+            winit::event::Ime::Preedit(text, _) if text.is_empty() => {
+                self.composition_emptied = self.composing;
+            }
+            winit::event::Ime::Preedit(text, cursor) => {
+                // Composing edits the page: an original-field speech
+                // reservation retires as it does for a key press.
+                self.text_input.invalidate(&self.engine);
+                self.composing = true;
+                self.composition_emptied = false;
+                self.engine.send(WebViewCommand::ImeComposition {
+                    text: text.clone(),
+                    cursor: *cursor,
+                });
+            }
+            winit::event::Ime::Commit(text) => {
+                self.text_input.invalidate(&self.engine);
+                self.composing = false;
+                self.composition_emptied = false;
+                if !text.is_empty() {
+                    self.engine.send(WebViewCommand::ImeCommit(text.clone()));
+                }
+            }
+            winit::event::Ime::Disabled => {
+                self.composition_emptied = false;
+                if std::mem::take(&mut self.composing) {
+                    self.engine.send(WebViewCommand::ImeFinish);
+                }
+            }
+            winit::event::Ime::Enabled => {}
+        }
+    }
+
     /// Map a winit logical key to the engine's key model. Pure so tests can
     /// pin the table without synthesising `winit::KeyEvent`s (whose
     /// platform fields aren't portably constructible).
@@ -769,6 +856,7 @@ impl Widget for WebView {
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
+        self.settle_composition();
         self.text_input.pump(
             &self.engine,
             self.focused && self.engine.supports_text_input(),
@@ -776,35 +864,77 @@ impl Widget for WebView {
     }
 
     fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        (self.focused && self.engine.supports_text_input() && self.text_input.ready())
+        if let Some(field) = self.page_field() {
+            // A password never reaches the input method: its keys go to
+            // the page as they are, as in a native password field.
+            return (field.purpose != crate::ime::InputPurpose::Password).then(|| {
+                crate::ime::InputContent {
+                    purpose: field.purpose,
+                    hints: crate::ime::InputHints {
+                        multiline: field.multiline,
+                        ..crate::ime::InputHints::default()
+                    },
+                }
+            });
+        }
+        self.deferred_ready()
             .then_some(crate::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {
-        self.ime_content().is_some() && self.text_input.multiline()
+        self.ime_content().is_some()
+            && (self.page_field().is_some_and(|field| field.multiline)
+                || self.text_input.multiline())
     }
 
+    /// Where the person types: the text being composed while an input
+    /// method composes, else the top line of the focused field, so the
+    /// input method's candidates open beside it. An engine that cannot
+    /// place the field leaves the view's bottom-left corner.
     fn ime_cursor_rect(&self) -> Option<Rect> {
         self.ime_content()?;
-        Some(Rect::new(
+        let field = self.page_field();
+        let composition = field
+            .and_then(|field| field.composition)
+            .filter(|_| self.composing)
+            .and_then(|page| self.engine_to_view(page));
+        let line = field.and_then(|field| field.bounds).and_then(|page| {
+            let placed = self.engine_to_view(page)?;
+            // A tall field (a text area, an editable document) is placed by
+            // its first line, not below its whole box.
+            Some(Rect::new(
+                placed.x0,
+                placed.y0,
+                placed.x1,
+                placed.y1.min(placed.y0 + FIELD_LINE_HEIGHT),
+            ))
+        });
+        Some(composition.or(line).unwrap_or(Rect::new(
             self.rect.x0,
             self.rect.y1 - 1.0,
             self.rect.x0 + 1.0,
             self.rect.y1,
-        ))
+        )))
     }
 
+    /// Only a field leased for deferred text has a stamp: the input method
+    /// may serve a page field without one, but dictation needs the lease.
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         self.ime_content()?;
-        self.text_input.stamp(key)
+        self.deferred_ready()
+            .then(|| self.text_input.stamp(key))
+            .flatten()
     }
 
     fn ime_requires_deferred_ack(&self) -> bool {
         true
     }
 
+    /// A page that takes compositions takes an input method's commits as
+    /// a native field does; one that does not takes text only through
+    /// deferred receipts.
     fn ime_refuses_ordinary_commits(&self) -> bool {
-        true
+        !self.engine.supports_composition()
     }
 
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
@@ -881,6 +1011,14 @@ impl Widget for WebView {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let WindowEvent::Ime(ime) = event {
+            if self.focused && self.engine.supports_composition() {
+                self.input_method(ime);
+                *ctx.handled = true;
+            }
+            return;
+        }
+        self.settle_composition();
         // Someone is using the page: it is on screen, whether or not a frame
         // has been drawn since it came back.
         if matches!(
@@ -1062,6 +1200,7 @@ impl Widget for WebView {
                             alt: m.alt_key(),
                             meta: m.super_key(),
                         },
+                        code: crate::webview::key_code::dom_code(key_event.physical_key),
                     });
                     *ctx.handled = true;
                 }
@@ -1136,6 +1275,9 @@ impl Widget for WebView {
 
     fn set_focus(&mut self, focused: bool) {
         if self.focused != focused {
+            self.settle_composition();
+            // The page ends a composition its field loses the focus with.
+            self.composing = false;
             self.text_input.invalidate(&self.engine);
             self.focused = focused;
             self.engine.send(WebViewCommand::SetFocused(focused));
@@ -1537,7 +1679,7 @@ mod tests {
         }
     }
 
-    fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
+    pub(super) fn laid_out(engine: SharedEngine) -> (WebView, TaffyTree<()>, NodeId) {
         let mut w = WebView::new(engine);
         let mut tree = TaffyTree::<()>::new();
         let mut node_map = std::collections::HashMap::new();
@@ -1593,7 +1735,12 @@ mod tests {
         );
     }
 
-    fn dispatch(w: &mut WebView, tree: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
+    pub(super) fn dispatch(
+        w: &mut WebView,
+        tree: &TaffyTree<()>,
+        node: NodeId,
+        event: &WindowEvent,
+    ) {
         Dispatch::new().layout(tree, node).send(w, event);
     }
 
@@ -2761,3 +2908,7 @@ impl crate::widget::AppWidget for WebView {
         Some(crate::widget::AppKind::Browser)
     }
 }
+
+#[cfg(test)]
+#[path = "webview_ime_tests.rs"]
+mod ime_tests;

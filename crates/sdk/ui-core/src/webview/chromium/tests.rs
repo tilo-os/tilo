@@ -393,6 +393,7 @@ fn input_is_forwarded_exactly_and_coalesced_per_tab() {
                 alt: false,
                 meta: false,
             },
+            code: None,
         })
         .unwrap();
         assert_eq!(
