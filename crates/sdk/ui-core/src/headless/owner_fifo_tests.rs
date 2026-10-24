@@ -254,6 +254,11 @@ fn one_dirty_hidden_owner_of_110_enters_only_its_actual_model_and_save_service_w
         &queue,
         owners.into_iter().map(|(owner, _, _)| owner).collect(),
     );
+    // Every owner's first write lands on the store's thread, which then wakes
+    // that owner to show it saved. Land them all and take those wakes up
+    // before the one wake under test, however slowly the writer runs.
+    host.records.try_flush().unwrap();
+    frame.service_pending_owner_models().unwrap();
     let counts = seen
         .iter()
         .map(|s| (s.syncs.get(), s.saves.get()))

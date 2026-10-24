@@ -81,6 +81,12 @@ pub fn is_default_device_key(key: &str) -> bool {
     matches!(key, "default.audio.sink" | "default.audio.source")
 }
 
+/// Whether `media_class` is an output device node, whose level and mute
+/// [`watch_output_levels`] follows.
+pub fn is_output_class(media_class: &str) -> bool {
+    media_class == "Audio/Sink"
+}
+
 /// A running watch. Dropping it stops and joins the loop thread.
 pub struct AudioGraphWatch {
     #[cfg(all(feature = "pipewire", target_os = "linux"))]
@@ -102,13 +108,35 @@ impl std::fmt::Debug for AudioGraphWatch {
 /// no native `PipeWire` support. The caller falls back to a slower way of
 /// observing — never to not observing.
 pub fn watch(notify: impl Fn(GraphWatchEvent) + Send + 'static) -> Result<AudioGraphWatch, String> {
+    spawn(notify, false)
+}
+
+/// Like [`watch`], and also reports a change of any output's volume or
+/// mute (its `Props`), from whoever made it: a volume key, a slider, another
+/// app, `wpctl` in a terminal. An output's level changes only when someone
+/// changes it, so this goes quiet as the device graph does.
+///
+/// # Errors
+///
+/// As [`watch`].
+pub fn watch_output_levels(
+    notify: impl Fn(GraphWatchEvent) + Send + 'static,
+) -> Result<AudioGraphWatch, String> {
+    spawn(notify, true)
+}
+
+fn spawn(
+    notify: impl Fn(GraphWatchEvent) + Send + 'static,
+    output_levels: bool,
+) -> Result<AudioGraphWatch, String> {
     #[cfg(all(feature = "pipewire", target_os = "linux"))]
     {
-        native::spawn(notify).map(|native| AudioGraphWatch { _native: native })
+        native::spawn(notify, output_levels).map(|native| AudioGraphWatch { _native: native })
     }
     #[cfg(not(all(feature = "pipewire", target_os = "linux")))]
     {
         drop(notify);
+        let _ = output_levels;
         Err("native PipeWire support is not compiled in".into())
     }
 }
@@ -118,6 +146,7 @@ mod native {
     //! The registry listener and its loop thread.
 
     use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
     use std::rc::Rc;
     use std::sync::mpsc::{SyncSender, sync_channel};
     use std::thread::JoinHandle;
@@ -126,7 +155,10 @@ mod native {
     use pipewire as pw;
     use pw::types::ObjectType;
 
-    use super::{DEBOUNCE, DeviceGlobals, GlobalKind, GraphWatchEvent, is_default_device_key};
+    use super::{
+        DEBOUNCE, DeviceGlobals, GlobalKind, GraphWatchEvent, is_default_device_key,
+        is_output_class,
+    };
 
     pub(super) struct Watch {
         stop: pw::channel::Sender<()>,
@@ -146,12 +178,13 @@ mod native {
 
     pub(super) fn spawn(
         notify: impl Fn(GraphWatchEvent) + Send + 'static,
+        output_levels: bool,
     ) -> Result<Watch, String> {
         let (ready_tx, ready_rx) = sync_channel(1);
         let (stop, stop_rx) = pw::channel::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("tilo-audio-graph".into())
-            .spawn(move || run(&notify, stop_rx, &ready_tx))
+            .spawn(move || run(&notify, output_levels, stop_rx, &ready_tx))
             .map_err(|error| format!("start audio graph watch: {error}"))?;
         let watch = Watch {
             stop,
@@ -169,6 +202,9 @@ mod native {
     /// The bound `default` metadata: its global id, listener and proxy — in
     /// that order, so the listener drops before the proxy it listens on.
     type Bound = (u32, pw::metadata::MetadataListener, pw::metadata::Metadata);
+
+    /// A bound output node: its `Props` listener and proxy, listener first.
+    type Output = (pw::node::NodeListener, pw::node::Node);
 
     type Connected = (
         pw::main_loop::MainLoopRc,
@@ -207,6 +243,7 @@ mod native {
     )]
     fn run(
         notify: &dyn Fn(GraphWatchEvent),
+        output_levels: bool,
         stop_rx: pw::channel::Receiver<()>,
         ready: &SyncSender<Result<(), String>>,
     ) {
@@ -226,6 +263,7 @@ mod native {
         let completed = Rc::new(Cell::new(None));
         let globals = Rc::new(RefCell::new(DeviceGlobals::default()));
         let metadata = Rc::new(RefCell::new(None::<Bound>));
+        let outputs = Rc::new(RefCell::new(BTreeMap::<u32, Output>::new()));
 
         let mark = {
             let dirty = Rc::clone(&dirty);
@@ -268,6 +306,7 @@ mod native {
                 let registry = registry.clone();
                 let globals = Rc::clone(&globals);
                 let metadata = Rc::clone(&metadata);
+                let outputs = Rc::clone(&outputs);
                 let mark = mark.clone();
                 move |global| {
                     let props = global.props.as_ref();
@@ -308,12 +347,30 @@ mod native {
                     {
                         mark();
                     }
+                    if output_levels
+                        && kind == GlobalKind::Node
+                        && property("media.class").is_some_and(is_output_class)
+                        && let Ok(node) = registry.bind::<pw::node::Node, _>(global)
+                    {
+                        let listener = node
+                            .add_listener_local()
+                            .param({
+                                let mark = mark.clone();
+                                move |_, _, _, _, _| mark()
+                            })
+                            .register();
+                        node.subscribe_params(&[pw::spa::param::ParamType::Props]);
+                        outputs.borrow_mut().insert(global.id, (listener, node));
+                    }
                 }
             })
             .global_remove({
                 let globals = Rc::clone(&globals);
                 let metadata = Rc::clone(&metadata);
+                let outputs = Rc::clone(&outputs);
                 move |id| {
+                    let output = outputs.borrow_mut().remove(&id);
+                    drop(output);
                     let unbound = metadata
                         .borrow()
                         .as_ref()

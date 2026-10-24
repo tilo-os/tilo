@@ -152,7 +152,10 @@ try {
       await tab.evaluate('mount.requestSemantics()');
       await new Promise(done => setTimeout(done, 100));
     }
-    assert.fail(`Chat shows no "${label}" control`);
+    const shown = await tab.evaluate('[...document.querySelectorAll("#surface [aria-label], #surface [role=status], #surface [role=alert]")].map(node => node.getAttribute("aria-label") || node.textContent).filter(Boolean).slice(-80)');
+    console.error('Semantics', JSON.stringify(await tab.evaluate('mount.state().semantics')).slice(0, 6000));
+    console.error('Page log', JSON.stringify(tab.log ?? []).slice(-6000));
+    assert.fail(`Chat shows no "${label}" control among ${JSON.stringify(shown)}`);
   };
   const linked = '(async()=> { const text = await navigator.clipboard.readText(); return text.includes("/app/#/@") && text.includes(fixture.room); })()';
   await pressWhenShown('Copy resource link');

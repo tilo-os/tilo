@@ -1,12 +1,16 @@
-//! Live system status for the top bar: battery, network, volume.
+//! Live system status: battery, network, volume. The shell's one copy of
+//! these facts; the top bar and Quick Settings both draw from it.
 //!
-//! The network is followed, not polled: [`tilo_nm::watch`] on the session
-//! runtime publishes `NetworkManager`'s state as its signals arrive. Volume
-//! still costs a subprocess (`wpctl`), and the frame loop must never wait on
-//! one — a 200ms `fork`/`exec` is a dropped frame. So reads happen on a
-//! plain OS thread (not a tokio task, which would stall the session services
-//! behind the blocking `Command::output`), and the frame loop only copies a
-//! mutex-guarded snapshot.
+//! Each is followed, not polled: `NetworkManager`'s signals
+//! ([`tilo_nm::watch`]), `UPower`'s battery changes and `PipeWire`'s output
+//! level and mute ([`media::audio_watch::watch_output_levels`]) each ask for
+//! a fresh reading of their fact, and the compositor is woken when a reading
+//! changes what is shown. A reading can still cost a subprocess (`wpctl`),
+//! and the frame loop must never wait on one — a 200ms `fork`/`exec` is a
+//! dropped frame. So reads happen on a plain OS thread (not a tokio task,
+//! which would stall the session services behind the blocking
+//! `Command::output`), and the frame loop only copies a mutex-guarded
+//! snapshot.
 //!
 //! [`StatusBridge::spawn`] is called from real-session constructors
 //! only — a `--shots` render must produce the same pixels everywhere,
@@ -25,19 +29,24 @@ use tilo_nm::{NetworkState, NmState};
 use tilo_power_mgmt::{BatterySnapshot, BatteryState};
 use ui::floating_surface::HostNetworkStatus;
 
-/// Between network changes, still refresh battery, volume and the Wi-Fi
-/// bars. Thirty seconds is slow enough that idle does not fork `wpctl`
-/// twice a second, and fast enough that a charger still shows up while the
-/// user is looking at the tray. A missing system bus is retried on the same
+/// Between network changes, still refresh the Wi-Fi bars, whose signal
+/// strength `NetworkManager` does not signal. A service that cannot be
+/// reached (the system bus, `UPower`, `PipeWire`) is asked again on the same
 /// interval.
 ///
-/// Nothing else wakes the poller. `pw-dump --monitor` in particular does
-/// not: `PipeWire` reprints the graph on client and parameter churn, so a
-/// line-oriented watch never goes quiet, and each line forked `wpctl`. Volume
-/// arrives on the media-key path and on this interval. The privacy worker
-/// owns the only `pw-dump --monitor`, and it exits once the device graph is
-/// unchanged.
+/// `pw-dump --monitor` never wakes the poller: `PipeWire` reprints the graph
+/// on client and parameter churn, so a line-oriented watch never goes quiet.
+/// The privacy worker owns the only `pw-dump --monitor`, and it exits once
+/// the device graph is unchanged.
 const FALLBACK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Which fact a change asks the poller to read again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Read {
+    Link,
+    Battery,
+    Volume,
+}
 
 /// The latest `NetworkManager` reading: written by the follower on the
 /// session runtime, read by the poller thread. `None` while the system bus
@@ -50,6 +59,8 @@ type NetworkSlot = Arc<Mutex<Option<NetworkState>>>;
 pub struct SystemStatus {
     /// `Some` with `present == false` on a machine with no battery.
     pub battery: Option<BatterySnapshot>,
+    /// Time to empty or to full, when the battery reports its rate.
+    pub battery_time: Option<tilo_power_mgmt::BatteryTime>,
     pub link: Option<LinkStatus>,
     pub volume: Option<VolumeState>,
     /// Active capture streams, attributed from `PipeWire`'s server security
@@ -154,6 +165,18 @@ pub struct StatusBridge {
     /// Set on the rising edge of a requested frame. The privacy worker
     /// parks on it instead of arming its own timer.
     frame_interest: Arc<FrameInterest>,
+    /// Wakes the compositor when a followed reading changes what is shown.
+    wake: Arc<Mutex<Option<CompositorWake>>>,
+}
+
+/// The compositor's wake, held so a followed change can ask for a frame.
+#[derive(Clone)]
+struct CompositorWake(crate::session_runtime::Wake);
+
+impl std::fmt::Debug for CompositorWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CompositorWake")
+    }
 }
 
 #[derive(Debug)]
@@ -180,8 +203,10 @@ impl StatusBridge {
         *self.network.0.borrow()
     }
 
-    /// Wake the existing session loop only on sanitized network hint changes.
-    pub fn wake_network_changes(&self, wake: crate::session_runtime::Wake) {
+    /// Wake the session loop when a followed reading changes the status,
+    /// and on sanitized network hint changes.
+    pub fn wake_on_changes(&self, wake: crate::session_runtime::Wake) {
+        *self.wake.lock_recover() = Some(CompositorWake(Arc::clone(&wake)));
         let mut changes = self.network.0.subscribe();
         if let Ok(runtime) = crate::session_runtime::runtime() {
             runtime.spawn(async move {
@@ -204,7 +229,7 @@ impl StatusBridge {
         client: tilo_nm::NmClient,
     ) -> Result<(), tilo_nm::NmError> {
         let watch = client.watch().await?;
-        let (wake, poller_keepalive) = mpsc::channel();
+        let (wake, poller_keepalive) = mpsc::channel::<Read>();
         follow_network_readings(&NetworkSlot::default(), &wake, &self.network, watch).await;
         drop(poller_keepalive);
         Ok(())
@@ -214,20 +239,45 @@ impl StatusBridge {
         self.inner.lock().map(|g| g.clone()).unwrap_or_default()
     }
 
-    pub fn set(&self, mut status: SystemStatus) {
-        if let Ok(mut g) = self.inner.lock() {
-            // The slow poll owns battery/link/volume; the one-second media
-            // poll owns this field. Never let one cadence erase the other.
-            status.media.clone_from(&g.media);
-            *g = status;
+    /// Change the status through `change`, and wake the compositor when
+    /// that changed anything.
+    fn update(&self, change: impl FnOnce(&mut SystemStatus)) {
+        let changed = {
+            let mut status = self.inner.lock_recover();
+            let before = status.clone();
+            change(&mut status);
+            *status != before
+        };
+        if changed && let Some(CompositorWake(wake)) = self.wake.lock_recover().clone() {
+            wake();
         }
     }
 
-    /// Out of band, so a media key moves the indicator the same frame it was pressed.
+    pub fn set_link(&self, link: Option<LinkStatus>) {
+        self.update(|status| status.link = link);
+    }
+
+    /// The battery as read now, and its time to empty or full.
+    pub fn set_battery(
+        &self,
+        battery: BatterySnapshot,
+        time: Option<tilo_power_mgmt::BatteryTime>,
+    ) {
+        self.update(|status| {
+            status.battery = Some(battery);
+            status.battery_time = time;
+        });
+    }
+
+    /// A media key or a slider sets it out of band, so the indicator moves
+    /// the same frame it was pressed; `PipeWire`'s report of the change
+    /// then reads the same state back.
     pub fn set_volume(&self, volume: VolumeState) {
-        if let Ok(mut g) = self.inner.lock() {
-            g.volume = Some(volume);
-        }
+        self.update(|status| status.volume = Some(volume));
+    }
+
+    fn set_volume_reading(&self, volume: Option<VolumeState>) {
+        self.update(|status| status.volume = volume);
     }
 
     pub fn set_media(&self, media: Vec<os_actions::ActiveMediaUse>) {
@@ -246,13 +296,15 @@ impl StatusBridge {
         if self.polling.swap(true, Ordering::SeqCst) {
             return;
         }
-        let (wake_tx, wake_rx) = mpsc::channel();
+        let (wake_tx, wake_rx) = mpsc::channel::<Read>();
         let network = NetworkSlot::default();
         spawn_network_follower(
             Arc::clone(&network),
             wake_tx.clone(),
             Arc::clone(&self.network),
         );
+        spawn_battery_follower(wake_tx.clone());
+        spawn_output_level_follower(wake_tx.clone());
         let bridge = self.clone();
         let spawned = std::thread::Builder::new()
             .name("tilo-status".to_string())
@@ -260,11 +312,37 @@ impl StatusBridge {
                 // Held so a follower that never started cannot disconnect the
                 // channel and turn the wait below into a spin.
                 let _wake_tx = wake_tx;
+                let mut reads = vec![Read::Link, Read::Battery, Read::Volume];
                 loop {
-                    let reading = network.lock().ok().and_then(|slot| slot.clone());
-                    bridge.set(read_once(reading.as_ref()));
-                    if wake_rx.recv_timeout(FALLBACK_INTERVAL).is_ok() {
-                        while wake_rx.recv_timeout(Duration::from_millis(50)).is_ok() {}
+                    for read in std::mem::take(&mut reads) {
+                        match read {
+                            Read::Link => {
+                                let reading = network.lock().ok().and_then(|slot| slot.clone());
+                                bridge.set_link(link_from_network_state(
+                                    reading.as_ref(),
+                                    os_actions::wireless_link_quality_pct(),
+                                ));
+                            }
+                            Read::Battery => bridge.set_battery(
+                                tilo_power_mgmt::sysfs_battery_snapshot(),
+                                tilo_power_mgmt::sysfs_battery_time(),
+                            ),
+                            Read::Volume => {
+                                bridge.set_volume_reading(os_actions::get_volume_state().ok());
+                            }
+                        }
+                    }
+                    // Only the Wi-Fi bars are read on the interval.
+                    let first = wake_rx
+                        .recv_timeout(FALLBACK_INTERVAL)
+                        .unwrap_or(Read::Link);
+                    reads.push(first);
+                    // A burst (a headset brings a sink, a default switch and
+                    // a level) is read once.
+                    while let Ok(read) = wake_rx.recv_timeout(Duration::from_millis(50)) {
+                        if !reads.contains(&read) {
+                            reads.push(read);
+                        }
                     }
                 }
             });
@@ -350,10 +428,87 @@ pub(crate) fn privacy_frame_interest(was_requested: bool, frame_requested: bool)
     (frame_requested, frame_requested && !was_requested)
 }
 
+/// Follow `UPower`'s battery changes on the session runtime and ask the
+/// poller to read the battery on each: the same reading, from the same
+/// parser, whoever shows it.
+fn spawn_battery_follower(wake: Sender<Read>) {
+    match crate::session_runtime::runtime() {
+        Ok(runtime) => {
+            runtime.spawn(follow_battery(wake));
+        }
+        Err(error) => {
+            tracing::warn!(target: "tilo::status", %error, "battery not followed");
+        }
+    }
+}
+
+async fn follow_battery(wake: Sender<Read>) {
+    use futures_util::StreamExt as _;
+    loop {
+        match tilo_power_mgmt::upower::UPowerMonitor::connect().await {
+            Ok(upower) => {
+                let mut changes = upower.receive_battery_changes().await;
+                while changes.next().await.is_some() {
+                    if wake.send(Read::Battery).is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::debug!(target: "tilo::status", %error, "UPower not followed");
+            }
+        }
+        if wake.send(Read::Battery).is_err() {
+            return;
+        }
+        tokio::time::sleep(FALLBACK_INTERVAL).await;
+    }
+}
+
+/// Follow every output's level and mute in `PipeWire` on a thread of its
+/// own, and ask the poller to read the volume on each change, whoever made
+/// it.
+fn spawn_output_level_follower(wake: Sender<Read>) {
+    let spawned = std::thread::Builder::new()
+        .name("tilo-status-audio".to_string())
+        .spawn(move || {
+            loop {
+                let (events, changes) = mpsc::channel();
+                match media::audio_watch::watch_output_levels(move |event| {
+                    let _ = events.send(event);
+                }) {
+                    Ok(watch) => {
+                        for event in changes {
+                            if event == media::audio_watch::GraphWatchEvent::Lost {
+                                break;
+                            }
+                            if wake.send(Read::Volume).is_err() {
+                                return;
+                            }
+                        }
+                        drop(watch);
+                    }
+                    Err(error) => {
+                        tracing::debug!(target: "tilo::status", %error, "output level not followed");
+                    }
+                }
+                // PipeWire went away or never answered: read what is there
+                // (nothing, drawn as no glyph), then ask again later.
+                if wake.send(Read::Volume).is_err() {
+                    return;
+                }
+                std::thread::sleep(FALLBACK_INTERVAL);
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(target: "tilo::status", %error, "output level follower not started");
+    }
+}
+
 /// Follow `NetworkManager` on the session runtime and wake the poller on
 /// each change. Never on the compositor thread: the frame loop only reads
 /// the poller's snapshot.
-fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>, status: Arc<NetworkStatusSource>) {
+fn spawn_network_follower(slot: NetworkSlot, wake: Sender<Read>, status: Arc<NetworkStatusSource>) {
     match crate::session_runtime::runtime() {
         Ok(runtime) => {
             runtime.spawn(follow_network(slot, wake, status));
@@ -364,7 +519,7 @@ fn spawn_network_follower(slot: NetworkSlot, wake: Sender<()>, status: Arc<Netwo
     }
 }
 
-async fn follow_network(slot: NetworkSlot, wake: Sender<()>, status: Arc<NetworkStatusSource>) {
+async fn follow_network(slot: NetworkSlot, wake: Sender<Read>, status: Arc<NetworkStatusSource>) {
     loop {
         match tilo_nm::watch().await {
             Ok(watch) => {
@@ -388,7 +543,7 @@ async fn follow_network(slot: NetworkSlot, wake: Sender<()>, status: Arc<Network
 /// loss handling and projection; only connection acquisition differs.
 async fn follow_network_readings(
     slot: &NetworkSlot,
-    wake: &Sender<()>,
+    wake: &Sender<Read>,
     status: &NetworkStatusSource,
     mut watch: tilo_nm::NmWatch,
 ) -> bool {
@@ -406,7 +561,7 @@ async fn follow_network_readings(
 /// Store a reading and wake the poller. `false` once the poller is gone.
 fn publish_network(
     slot: &NetworkSlot,
-    wake: &Sender<()>,
+    wake: &Sender<Read>,
     status: &NetworkStatusSource,
     state: Option<NetworkState>,
 ) -> bool {
@@ -426,7 +581,7 @@ fn publish_network(
     if let Ok(mut current) = slot.lock() {
         *current = state;
     }
-    wake.send(()).is_ok()
+    wake.send(Read::Link).is_ok()
 }
 
 /// Project only connectivity and lossless metering, never primary link metadata.
@@ -454,22 +609,6 @@ pub(crate) fn link_from_network_state(
         state,
         wireless_quality_pct,
     ))
-}
-
-/// Public so a diagnostic or a test can take a reading without owning a
-/// poller; `network` is the latest `NetworkManager` reading.
-pub fn read_once(network: Option<&NetworkState>) -> SystemStatus {
-    let battery = Some(tilo_power_mgmt::sysfs_battery_snapshot());
-    // Allowed to fail — a machine without NetworkManager or PipeWire
-    // omits the glyph rather than claiming a state.
-    let link = link_from_network_state(network, os_actions::wireless_link_quality_pct());
-    let volume = os_actions::get_volume_state().ok();
-    SystemStatus {
-        battery,
-        link,
-        volume,
-        media: Vec::new(),
-    }
 }
 
 /// `0` when offline or wired (a cable has no bars), `1..=4` on Wi-Fi.
@@ -604,6 +743,7 @@ mod tests {
         {
             let s = SystemStatus {
                 battery: Some(battery(64, BatteryState::Charging)),
+                battery_time: None,
                 link: Some(LinkStatus {
                     kind: LinkKind::Wifi,
                     name: Some("Cafe WiFi".into()),
@@ -726,7 +866,7 @@ mod tests {
             std::thread::Builder::new()
                 .name("tilo-stat-wait".into())
                 .spawn(move || {
-                    poller.set(SystemStatus::default());
+                    poller.set_link(None);
                     let _ = wake_rx.recv_timeout(FALLBACK_INTERVAL);
                 })
                 .expect("status idle thread");

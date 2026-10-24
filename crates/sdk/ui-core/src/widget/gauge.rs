@@ -289,7 +289,16 @@ impl<'a> ProgressRingFace<'a> {
 
     fn fill_colour(&self, theme: &Theme) -> Color {
         match self.fill {
-            RingFill::Progress => theme.tokens.colors.intent.neutral_fill,
+            // The value fill, stepped until it also reads on the ring's
+            // own track, which is stronger than the bar's tinted one.
+            RingFill::Progress => {
+                let colors = &theme.tokens.colors;
+                crate::tokens::colors::value_fill_on(
+                    colors.intent.accent_ink,
+                    colors.surfaces.content,
+                    ring_track(colors.surfaces.content),
+                )
+            }
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "a 0..=1 fraction narrows to the thresholds' f32 exactly enough"
@@ -721,7 +730,7 @@ impl BarGauge {
         match self.fill {
             Fillcolor::Threshold(t) => t.color(theme, self.frac),
             Fillcolor::Fixed(c) => c,
-            Fillcolor::Neutral => theme.tokens.colors.intent.neutral_fill,
+            Fillcolor::Neutral => theme.tokens.colors.intent.value_fill,
         }
     }
 

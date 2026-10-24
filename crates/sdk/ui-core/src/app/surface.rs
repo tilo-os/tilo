@@ -1798,6 +1798,94 @@ mod tests {
         assert!(app.content_zoom() < 1.0, "Ctrl+Minus zoomed out");
     }
 
+    /// Zoom is not a keyboard-only capability: the window offers Zoom in,
+    /// Zoom out and Actual size as actions, to its palette and assistive
+    /// technology and, published, to agents and scripts, and each runs the
+    /// zoom its key does.
+    #[test]
+    fn zoom_is_an_action_of_every_window_not_only_its_keys() {
+        use crate::host_chrome::zoom::ZOOM_RESOURCE;
+        let (mut app, _) = clicks_app();
+        let region = Region {
+            size: (320, 200),
+            redraw: Cell::new(false),
+        };
+        app.surface_frame(&region, &mut Scene::new());
+        let scale = app.theme.ui_scale;
+        let address = |action: &str| tilo_actions::ActionAddress::new(ZOOM_RESOURCE, action);
+        let offered = |app: &mut App| {
+            app.publication_resources()
+                .iter()
+                .any(|resource| resource.id.as_str() == ZOOM_RESOURCE)
+        };
+        assert!(
+            !offered(&mut app),
+            "an app with no window a person sees has nothing to zoom"
+        );
+        // The window opens, taking up the zoom its app had on this device.
+        let dir = tempfile::tempdir().expect("a settings directory");
+        app.accessibility.zoom.restore_from(
+            crate::storage::Settings::for_app("so.tilo.zoom-actions")
+                .in_file(dir.path().join("settings.json")),
+        );
+
+        let local = app.history_local_resources();
+        let zoom = local
+            .iter()
+            .find(|resource| resource.id.as_str() == ZOOM_RESOURCE)
+            .expect("the window's own doors offer zoom");
+        let ids: Vec<_> = zoom
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        assert_eq!(ids, ["zoom-in", "zoom-out", "zoom-reset"]);
+        assert_eq!(zoom.actions[0].label, "Zoom in");
+
+        assert!(
+            app.invoke_local_address(&address("zoom-in"), None),
+            "the palette's and assistive technology's door runs Zoom in"
+        );
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(app.content_zoom() > 1.0, "Zoom in zoomed in");
+        assert!(app.theme.ui_scale > scale, "the content scale rose");
+        assert!(
+            app.accessibility.zoom.indicator_visible(crate::time::now()),
+            "the level shows, as it does for the keys"
+        );
+
+        assert!(app.invoke_local_address(&address("zoom-reset"), None));
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(
+            (app.content_zoom() - 1.0).abs() < f32::EPSILON,
+            "Actual size reset the zoom"
+        );
+        assert!((app.theme.ui_scale - scale).abs() < 1e-6);
+
+        assert!(
+            offered(&mut app),
+            "agents and scripts see the window's zoom"
+        );
+        let person = app.collaboration.local_author.0.clone();
+        app.invoke_resource_action(
+            ResourceInvocation::new(&address("zoom-out"), &person).broker_admitted(true),
+        )
+        .expect("the person's own call through the broker zooms out");
+        app.surface_frame(&region, &mut Scene::new());
+        assert!(app.content_zoom() < 1.0, "Zoom out zoomed out");
+
+        let before = app.content_zoom();
+        assert!(
+            app.invoke_resource_action(
+                ResourceInvocation::new(&address("zoom-in"), "a-collaborator")
+                    .broker_admitted(true),
+            )
+            .is_err(),
+            "a collaborator never zooms someone else's window"
+        );
+        assert!((app.content_zoom() - before).abs() < f32::EPSILON);
+    }
+
     #[test]
     fn physical_feedback_clears_when_framework_modal_takes_input() {
         let (mut app, _) = clicks_app();

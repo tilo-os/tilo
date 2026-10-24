@@ -99,6 +99,7 @@ fn a_continued_window_waits_for_its_record_then_reopens_on_it() {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         }],
         width: WindowWidth::Normal,
         maximized: false,

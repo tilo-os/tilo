@@ -17,8 +17,9 @@
 //! incremental, case-insensitive substring filter (Backspace edits it) so
 //! hundred-entry lists stay usable without endless scrolling. Opening a
 //! searchable list shows its search prompt and caret immediately. A
-//! shorter list never filters: a typed letter arms the next option starting
-//! with it.
+//! shorter list never filters: letters typed in quick succession arm the
+//! first option their name begins, one letter again steps on through the
+//! options it begins ([`crate::type_ahead`], as every list answers typing).
 //!
 //! Closed, the control is as wide as its widest option (`fill` spans the
 //! parent). Inside a [`crate::widget::Section`] or
@@ -118,6 +119,8 @@ pub struct Dropdown {
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
+    /// What has been typed into an open short list.
+    typing: crate::type_ahead::TypeAhead,
     scroll: f32,
     scrollbar: Scrollbar,
     scrollbar_gutter: f64,
@@ -296,6 +299,7 @@ impl Dropdown {
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
+            typing: crate::type_ahead::TypeAhead::default(),
             scroll: 0.0,
             scrollbar: Scrollbar::vertical(),
             scrollbar_gutter: 0.0,
@@ -1003,21 +1007,21 @@ impl Dropdown {
         self.scroll = self.scroll.clamp(0.0, self.max_scroll(n));
     }
 
-    /// Arm the next option after the highlighted one whose label starts
-    /// with `typed`, wrapping round; nothing when none does.
+    /// Arm the option whose label begins with what has been typed: letters
+    /// in quick succession spell a name, one letter again steps to the next
+    /// option it begins, wrapping round; nothing when none begins so. A
+    /// space only continues a name being typed.
     fn type_ahead(&mut self, typed: &str) {
-        let typed = typed.trim().to_lowercase();
-        if typed.is_empty() {
+        let now = crate::time::now();
+        if typed.trim().is_empty() && !self.typing.is_typing(now) {
             return;
         }
+        self.typing.type_text(typed, now);
         let n = self.options.len();
-        let next = (1..=n)
-            .map(|step| self.highlight.saturating_add(step) % n)
-            .find(|&index| {
-                self.options
-                    .get(index)
-                    .is_some_and(|label| label.to_lowercase().starts_with(&typed))
-            });
+        let next = self.typing.target(
+            self.options.iter().map(String::as_str),
+            Some(self.highlight),
+        );
         if let Some(index) = next {
             self.highlight = index;
             self.ensure_visible(index, n);
@@ -1032,6 +1036,7 @@ impl Dropdown {
         self.filter.clear();
         self.filter_selection = Selection::collapsed(0);
         self.filter_composition.clear();
+        self.typing.reset();
         let filtered = self.filtered();
         self.highlight = self.selected_pos(&filtered);
         self.scroll = 0.0;
@@ -3772,6 +3777,31 @@ mod tests {
                 &root,
             );
             assert_eq!(dd.highlight_index(), 3, "typing again moves on");
+            // Letters typed together spell a name: from UTC, "a" arms
+            // America, the first option it begins, and "as" goes on to Asia.
+            dd.close();
+            dd.do_open();
+            assert_eq!(dd.highlight_index(), 0);
+            for letter in ["a", "s"] {
+                feed_key(
+                    &mut dd,
+                    &key_press(Key::Character(letter.into()), Some(letter)),
+                    &mut doc,
+                    &root,
+                );
+            }
+            assert_eq!(dd.highlight_index(), 3, "\"as\" spells Asia");
+            feed_key(
+                &mut dd,
+                &key_press(Key::Character("x".into()), Some("x")),
+                &mut doc,
+                &root,
+            );
+            assert_eq!(
+                dd.highlight_index(),
+                3,
+                "a name no option begins leaves the highlight where it is"
+            );
             let node = Widget::accessibility(&dd).expect("semantics");
             assert_eq!(
                 node.value.as_deref(),

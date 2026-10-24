@@ -70,14 +70,9 @@ case $group in
       --transport "test-control socket, headless, release + dev-overrides, thin LTO" \
       --env-json "$out/env.json" --out "$out/agent.jsonl" --log "$out/compositor.log"
     env_json release none kvm > "$out/env-pipeline.json"
-    TILO_AGENT_PIPELINE_REPS=30 TILO_AGENT_PIPELINE_SAMPLES="$out/pipeline" \
-      cargo test --locked --release -p agent --lib pipelined_task_benchmark -- --nocapture
     TILO_AGENT_NATIVE_REPS=30 TILO_AGENT_NATIVE_SAMPLES="$out/native" \
       cargo test --locked --release -p agent --lib native_task_benchmark -- --nocapture
     for plan in pipelined sequential; do
-      python3 tools/perf/record.py emit --kpi "agent.task.${plan}.wall" --unit ms \
-        --samples-file "$out/pipeline/${plan}.txt" --env-json "$out/env-pipeline.json" \
-        --meta steps=3 --meta step_ms=100 >> "$out/agent.jsonl"
       python3 tools/perf/record.py emit --kpi "agent.task.native.${plan}.wall" --unit ms \
         --samples-file "$out/native/${plan}.txt" --env-json "$out/env-pipeline.json" \
         --meta steps=3 --meta step_ms=100 >> "$out/agent.jsonl"

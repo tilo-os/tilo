@@ -251,11 +251,14 @@ pub(crate) fn build(
                 })
             },
         ),
-        ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0)).with_widget(
-            move |row: &KvRow, _| -> Element {
+        // A pair reads across: on a wide window the key keeps to a third of
+        // the readable measure so its value starts beside it, and the value
+        // takes the rest of the panel.
+        ColumnDef::new("key", "Key", ColumnWidth::Flex(1.0))
+            .max_width(Metrics::BASE.readable_width / 3.0)
+            .with_widget(move |row: &KvRow, _| -> Element {
                 text_cell(&key_sink, table, row, &row.key, "Key", "key")
-            },
-        ),
+            }),
         ColumnDef::new("value", "Value", ColumnWidth::Flex(2.0)).with_widget(
             move |row: &KvRow, _| -> Element {
                 text_cell(&value_sink, table, row, &row.value, "Value", "value")
@@ -289,14 +292,8 @@ pub(crate) fn build(
         queue: queue.clone(),
     };
     let table = DataTable::from_model(columns, model).with_accessible_name(label);
-    // A pair reads across: on a wide window the value would sit a screen's
-    // width from its key, so the table keeps to the readable measure.
-    let element = ui::widget::Container::new()
-        .with_no_padding()
-        .readable()
-        .with_child(Box::new(table));
     KvTable {
-        element: Box::new(element),
+        element: Box::new(table),
         queue,
     }
 }

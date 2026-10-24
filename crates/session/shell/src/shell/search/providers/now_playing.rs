@@ -25,11 +25,15 @@ pub const PROVIDER_ID: &str = "media.now-playing";
 
 pub struct NowPlayingProvider {
     source: Rc<dyn NowPlayingSource>,
+    ranker: ui::search::ListIndex,
 }
 
 impl NowPlayingProvider {
     pub fn new(source: Rc<dyn NowPlayingSource>) -> Self {
-        Self { source }
+        Self {
+            source,
+            ranker: ui::search::ListIndex::default(),
+        }
     }
 }
 
@@ -82,16 +86,6 @@ impl Verb {
 
 fn id(verb: Verb, player: &PlayerSnapshot) -> String {
     format!("{}:{}", verb.prefix(), player_token(&player.bus_name))
-}
-
-fn matches(needle: &str, haystacks: &[&str]) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    haystacks
-        .iter()
-        .any(|text| text.to_lowercase().contains(needle))
-        .then_some(60)
 }
 
 /// The command `verb` sends to the player with `token`, resolved against the
@@ -157,8 +151,8 @@ impl SearchProvider for NowPlayingProvider {
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
         }
-        let needle = ctx.needle.trim().to_lowercase();
         let mut out = Vec::new();
+        let mut fields = Vec::new();
         for player in self.source.players() {
             for verb in Verb::ALL {
                 if !verb.available(&player) {
@@ -166,12 +160,16 @@ impl SearchProvider for NowPlayingProvider {
                 }
                 let action_id = id(verb, &player);
                 let title = verb.title(&player);
-                let Some(score) = matches(
-                    &needle,
-                    &[&title, player.headline(), &action_id, "media", "music"],
-                ) else {
-                    continue;
-                };
+                fields.push(vec![
+                    (title.clone(), ui::search::FieldWeight::TITLE),
+                    (
+                        player.headline().to_owned(),
+                        ui::search::FieldWeight::SUBTITLE,
+                    ),
+                    (action_id.clone(), ui::search::FieldWeight::IDENTITY),
+                    ("media".to_owned(), ui::search::FieldWeight::KEYWORD),
+                    ("music".to_owned(), ui::search::FieldWeight::KEYWORD),
+                ]);
                 let source = Rc::clone(&self.source);
                 let token = player_token(&player.bus_name);
                 out.push(SearchResult {
@@ -184,7 +182,7 @@ impl SearchProvider for NowPlayingProvider {
                     title,
                     subtitle: Some(player.headline().to_string()),
                     badge: None,
-                    score,
+                    score: 0,
                     params: if verb == Verb::Seek {
                         vec![ActionParam::required(
                             "position_s",
@@ -214,7 +212,7 @@ impl SearchProvider for NowPlayingProvider {
                 });
             }
         }
-        out
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle.trim(), out, &fields)
     }
 }
 

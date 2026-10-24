@@ -102,6 +102,14 @@ impl Tab {
             Tab::Partitions => "partitions",
         }
     }
+    /// The view's id in the window bar's switcher.
+    pub(crate) fn view_id(self) -> &'static str {
+        match self {
+            Tab::Overview => "disks.view.overview",
+            Tab::Smart => "disks.view.smart",
+            Tab::Partitions => "disks.view.partitions",
+        }
+    }
     pub(crate) fn title(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
@@ -425,7 +433,7 @@ impl DisksApp {
         let Some(drive) = self.topo.drives.get(self.selected) else {
             self.shell.set_content_title("");
             self.shell.set_content(if self.loading {
-                view::loading(self.tab, &self.intents, &self.scroll)
+                view::loading(&self.scroll)
             } else {
                 view::empty_state(self.unreadable.as_deref(), &self.intents)
             });
@@ -467,6 +475,9 @@ impl DisksApp {
                 ui::window_toolbar::ToolbarEvent::Action { id } => {
                     if id == view::RESCAN {
                         self.rescan();
+                    } else if let Some(tab) = Tab::all().into_iter().find(|tab| tab.view_id() == id)
+                    {
+                        self.set_tab(tab);
                     } else if let Some(action) = ActionKind::bar()
                         .into_iter()
                         .find(|action| action.key() == id)
@@ -493,6 +504,7 @@ impl DisksApp {
                     offer::shown(drive, self.selected_partition(drive)),
                 )
             }),
+            self.tab,
         );
         if self.declared_bar.as_ref() != Some(&bar) {
             ui::window_toolbar::declare(Some(bar.clone()));
@@ -506,7 +518,6 @@ impl DisksApp {
             match intent {
                 Intent::SelectDrive(index) => self.select(index),
                 Intent::SelectPartition(part) => self.select_part(part),
-                Intent::SetTab(tab) => self.set_tab(tab),
                 Intent::RunOn { action, partition } => self.trigger_action(action, partition),
                 Intent::Rescan => self.rescan(),
             }
@@ -1020,6 +1031,21 @@ mod tests {
             .unwrap_or_else(|| panic!("no widget {id}"))
     }
 
+    /// Where the partition map stands, as assistive technology finds it.
+    fn partition_map(app: &Framed<DisksApp>) -> Rect {
+        let harness = Framed::harness(app);
+        let id = harness
+            .a11y_node_named("Partition map")
+            .expect("the page shows the partition map");
+        harness
+            .a11y_nodes()
+            .into_iter()
+            .find(|(node, _)| *node == id)
+            .and_then(|(_, node)| node.bounds())
+            .map(|bounds| Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1))
+            .expect("the partition map has bounds")
+    }
+
     fn click_at(app: &mut Framed<DisksApp>, point: Point) {
         Framed::harness_mut(app).click_at(point.x, point.y);
     }
@@ -1058,14 +1084,16 @@ mod tests {
                 named(ActionKind::Format.key()).is_some(),
                 "the drive's format action is in the bar"
             );
-            let smart = window
-                .harness()
-                .a11y_node_named("Health")
-                .expect("the drive health tab");
+            let health = bar
+                .views
+                .as_ref()
+                .and_then(|views| views.choices.iter().find(|view| view.label == "Health"))
+                .expect("the drive's health is a view in the bar")
+                .id
+                .clone();
             window
                 .harness()
-                .perform_a11y_action(smart, &ui::a11y::Action::Activate)
-                .unwrap();
+                .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: health });
             window.settle();
             assert_eq!(
                 window.with_surface::<DisksApp, _>(|app| app.tab).unwrap(),
@@ -1194,7 +1222,7 @@ mod tests {
         opening.loading = true;
         let mut app = framed(opening, 1280.0, 800.0);
         Framed::harness_mut(&mut app).poll_frame().unwrap();
-        let tabs = target(&app, "disks-tabs");
+        let map = partition_map(&app);
         assert!(
             Framed::harness_mut(&mut app)
                 .inspection_json()
@@ -1206,9 +1234,9 @@ mod tests {
         Framed::harness_mut(&mut app).poll_frame().unwrap();
         assert!(app.drive().is_some(), "the reading fills the page");
         assert_eq!(
-            target(&app, "disks-tabs"),
-            tabs,
-            "the tabs stay where the opening page put them"
+            partition_map(&app),
+            map,
+            "the partition map stays where the opening page put it"
         );
     }
 
@@ -1224,16 +1252,18 @@ mod tests {
             assert_eq!(app.selected_part, None, "a fresh drive is the whole disk");
         }
 
-        // --- phase: choosing_a_tab_does_not_retarget_the_drive ---
+        // --- phase: choosing_a_view_does_not_retarget_the_drive ---
         {
             let mut app = at_width(1280.0);
-            let strip = target(&app, "disks-tabs");
-            click_at(
-                &mut app,
-                Point::new(strip.x0 + strip.width() * 0.5, strip.center().y),
-            );
+            ui::window_toolbar::deliver(ui::window_toolbar::ToolbarEvent::Action {
+                id: Tab::Smart.view_id().to_owned(),
+            });
+            app.take_window_toolbar_events();
             assert_eq!(app.tab, Tab::Smart);
-            assert_eq!(app.selected, 0, "changing tabs must not retarget the drive");
+            assert_eq!(
+                app.selected, 0,
+                "changing views must not retarget the drive"
+            );
         }
 
         // --- phase: a_disabled_action_does_nothing ---
@@ -1246,6 +1276,42 @@ mod tests {
             assert!(app.status.is_empty());
             assert!(app.running.is_none());
         }
+    }
+
+    /// The drive's views are the window bar's switcher: the bar shows
+    /// Overview, Health and Partitions with the open one chosen, choosing
+    /// one there shows it, and the page draws no tabs of its own.
+    #[test]
+    fn the_drives_views_are_the_window_bars_switcher() {
+        let mut app = at_width(1280.0);
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        let views = ui::window_toolbar::declared()
+            .and_then(|bar| bar.views)
+            .expect("the bar switches the drive's views");
+        let labels: Vec<&str> = views
+            .choices
+            .iter()
+            .map(|view| view.label.as_str())
+            .collect();
+        assert_eq!(labels, ["Overview", "Health", "Partitions"]);
+        assert_eq!(views.chosen, Tab::Overview.view_id());
+        assert!(
+            !Framed::harness(&app).targets().contains_key("disks-tabs"),
+            "the page draws no tabs of its own"
+        );
+
+        Framed::harness_mut(&mut app).press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: Tab::Partitions.view_id().to_owned(),
+        });
+        Framed::harness_mut(&mut app).poll_frame().unwrap();
+        assert_eq!(app.tab, Tab::Partitions);
+        assert_eq!(
+            ui::window_toolbar::declared()
+                .and_then(|bar| bar.views)
+                .map(|views| views.chosen),
+            Some(Tab::Partitions.view_id().to_owned()),
+            "the switcher shows the view it chose"
+        );
     }
 
     /// Partition selection scopes Mount and Unmount to the filesystem it names.

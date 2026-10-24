@@ -116,6 +116,7 @@ mod tests {
                     id,
                     title: format!("Window {}", id.saturating_sub(10)),
                     tile,
+                    app_title: None,
                 })
                 .collect(),
             active_tab: 10,

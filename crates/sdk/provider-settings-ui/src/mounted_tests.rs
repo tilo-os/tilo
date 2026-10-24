@@ -107,9 +107,7 @@ fn mounted_rendered_provider_controls_save_private_fields_and_follow_permissions
         1,
         "removal requires confirmation"
     );
-    app.harness().type_text("CONFIRM");
-    app.harness().key("Enter");
-    app.settle();
+    assert!(app.confirm_asked().is_some(), "the host asks");
     assert!(config(&mut app).profiles.is_empty());
     assert!(backend.state.lock_recover().config.profiles.is_empty());
     assert!(backend.state.lock_recover().keys.is_empty());

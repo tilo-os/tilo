@@ -900,6 +900,8 @@ pub struct FrameBuilder {
     /// The session network, once peer sync is up, so a control invoke can
     /// address an enrolled device.
     enrolled_actions: Option<std::sync::Arc<crate::shell::network::ShellNetwork>>,
+    /// Frames whose layout failed, skipped, and when that was last logged.
+    skipped_frames: ui::widget::SkippedFrames,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1225,6 +1227,7 @@ impl FrameBuilder {
             painted_backdrop: None,
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             enrolled_actions: None,
+            skipped_frames: ui::widget::SkippedFrames::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -1999,13 +2002,11 @@ impl FrameBuilder {
             )
         };
         if let Err(err) = layout_result {
-            // Same "should be structurally impossible" situation as
-            // `rebuild_layout_tree`'s node-creation call: log and skip this
-            // frame's apply_layout rather than aborting the session.
-            tracing::error!(
-                %err,
-                "frame-builder: widget layout did not settle; skipping apply_layout this frame"
-            );
+            // Skip this frame's apply_layout rather than aborting the
+            // session, as every host does with a layout that fails.
+            if let Some(line) = self.skipped_frames.skip(&err, ui::time::now()) {
+                tracing::error!("frame-builder: {line}");
+            }
             return;
         }
         let solved = std::time::Instant::now();
@@ -4487,6 +4488,29 @@ impl FrameBuilder {
         self.with_chrome(|st| st.set_fullscreen_group(group));
     }
 
+    /// The group of the client in its own full screen this frame, or
+    /// `None`. A client's full screen is the overlay drawn above everything
+    /// ([`Self::set_client_fullscreen_surface`]), never a layout collapse,
+    /// so another display's desktop stays visible and interactive. Except
+    /// while the shell takes the input over it (the search palette, a
+    /// sheet): the shell's surfaces would draw under the overlay unseen, so
+    /// the group is laid out full screen in the desktop itself, on its own
+    /// display, beneath them, and the top bar stays hidden.
+    pub fn set_client_fullscreen_group(&mut self, group: Option<u64>) {
+        let beneath_shell =
+            group.filter(|_| crate::shell::input_policy::chrome_captures_input(self));
+        self.set_fullscreen(beneath_shell);
+    }
+
+    /// The client in full screen, placed over `rect`: drawn as the overlay
+    /// above everything, unless [`Self::set_client_fullscreen_group`] laid
+    /// it out beneath the shell this frame. Then nothing is drawn above the
+    /// shell's surfaces and no frame of it goes straight to the display.
+    pub fn set_client_fullscreen_surface(&mut self, surface: Option<(u64, String, Rect)>) {
+        let beneath_shell = self.chrome().client_fullscreen_group().is_some();
+        self.set_fullscreen_surface(surface.filter(|_| !beneath_shell));
+    }
+
     /// The group currently promoted to full-output, or `None` in the normal
     /// tiled state. Exposed for the compositor + tests.
     pub fn fullscreen_group(&self) -> Option<u64> {
@@ -5483,6 +5507,14 @@ impl FrameBuilder {
         unsafe { &**widget }.ime_requires_deferred_ack()
     }
 
+    /// The focused field takes text only through deferred receipts.
+    pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
+        let widget = focus.and_then(|focus| self.node_map.get(&focus));
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        !self.host.palette_visible()
+            && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
+    }
+
     pub(crate) fn start_deferred_text(
         &mut self,
         focus: Option<NodeId>,
@@ -6247,6 +6279,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let mut strip = Strip::new(StripId::from(next_id()), "main");
@@ -7538,6 +7571,7 @@ mod tests {
                             kind: AppKind::Other("Notes".into()),
                             label: "Notes".into(),
                         },
+                        app_title: None,
                     }],
                     active_tab: 84,
                     width: WindowWidth::Fraction(667),
@@ -7800,6 +7834,7 @@ mod tests {
                 kind: AppKind::Other("Test".into()),
                 label: label.into(),
             },
+            app_title: None,
         };
 
         let window_groups = groups
@@ -8794,7 +8829,7 @@ mod tests {
             assert!(
                 names
                     .iter()
-                    .any(|name| name.contains("without an encrypted backup")),
+                    .any(|name| name.contains("without a recovery key or backup")),
                 "skip acknowledgement must be keyboard reachable: {names:?}"
             );
 
@@ -8803,7 +8838,7 @@ mod tests {
                 .into_iter()
                 .find(|id| {
                     focused_name(&fb, Some(*id))
-                        .is_some_and(|name| name.contains("without an encrypted backup"))
+                        .is_some_and(|name| name.contains("without a recovery key or backup"))
                 })
                 .expect("acknowledgement focus target");
             fb.set_native_focus(&mut focus, Some(acknowledgement));
@@ -9665,6 +9700,7 @@ mod tests {
                         // a real process from this frame-builder regression.
                         note: crate::shell::peer_windows::OPENING.into(),
                     },
+                    app_title: None,
                 },
                 Placement::NewGroup,
             );

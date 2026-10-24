@@ -363,7 +363,7 @@ impl StatePeer {
         // Readers without the key decide a sealed write by the claims of
         // its changes, as a member's page names them: each naming the units
         // its action may write by the surface the op names.
-        let surface = self.app_surfaces.0.as_ref().and_then(|of| of(app));
+        let surface = self.signed_surface(app);
         let claims = self.surfaces.with_footprints(
             &collab_types::Record {
                 room: &self.core.room,

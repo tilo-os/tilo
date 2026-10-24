@@ -2223,6 +2223,68 @@ impl WindowGroup {
         started
     }
 
+    /// Name tab `id` in place: its title becomes a field in its pill
+    /// ([`crate::widget::TabBar::begin_rename`]); `name` is what a reader
+    /// announces the field as. Returns whether the edit is open.
+    pub fn begin_tab_rename(&mut self, id: u64, name: &str) -> bool {
+        let started = self.navigation_bar_visible() && self.bar.begin_rename(id, name);
+        if started {
+            self.grip_dirty = true;
+        }
+        started
+    }
+
+    /// The tab being named in place, if any.
+    #[must_use]
+    pub fn renaming_tab(&self) -> Option<u64> {
+        self.bar.renaming()
+    }
+
+    /// Whether `p` is on the name field of a tab being named.
+    #[must_use]
+    pub fn tab_rename_hit(&self, p: Point) -> bool {
+        self.bar.rename_hit(p)
+    }
+
+    /// Hand a keyboard or text event to the name field while a tab is being
+    /// named; the shell routes the keyboard here while
+    /// [`Self::renaming_tab`]. Returns whether the field took it.
+    pub fn tab_rename_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut crate::widget::EventCtx<'_>,
+    ) -> bool {
+        let took = self.bar.rename_event(event, ctx);
+        self.grip_dirty = true;
+        took
+    }
+
+    /// Commit the name being edited, as Enter does. Returns whether a tab
+    /// was being named.
+    pub fn commit_tab_rename(&mut self) -> bool {
+        let committed = self.bar.commit_rename();
+        if committed {
+            self.grip_dirty = true;
+        }
+        committed
+    }
+
+    /// Put the title back, as Escape does. Returns whether a tab was being
+    /// named.
+    pub fn cancel_tab_rename(&mut self) -> bool {
+        let cancelled = self.bar.cancel_rename();
+        if cancelled {
+            self.grip_dirty = true;
+        }
+        cancelled
+    }
+
+    /// A name committed in place since the last call: the tab, and the name
+    /// (empty when the person cleared it).
+    pub fn take_tab_rename(&mut self) -> Option<(u64, String)> {
+        self.bar.take_rename()
+    }
+
     pub fn tabs(&self) -> &[TabDescriptor] {
         self.bar.tabs()
     }

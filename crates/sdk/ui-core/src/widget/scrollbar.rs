@@ -79,8 +79,6 @@ const LIGHT_REST_TOWARD_GROUND: f32 = 0.35;
 
 /// How long an overlay bar stays fully visible after the last scroll.
 pub(crate) const BAR_HOLD_MS: u64 = 900;
-/// How long it then takes to fade out.
-pub(crate) const BAR_FADE_MS: u64 = 320;
 
 /// The idle fade of an overlay scroll bar: fully visible for a moment after
 /// scrolling, then fading out, unless something holds it (the pointer near
@@ -163,7 +161,7 @@ impl BarFade {
     fn idle_fade(last_activity: Option<crate::time::Instant>) -> crate::animation::IdleFade {
         crate::animation::IdleFade::new(
             crate::time::Duration::from_millis(BAR_HOLD_MS),
-            crate::time::Duration::from_millis(BAR_FADE_MS),
+            crate::animation::CHROME_FADE,
         )
         .woken_at(last_activity)
     }

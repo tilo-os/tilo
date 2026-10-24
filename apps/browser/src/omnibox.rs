@@ -301,14 +301,41 @@ pub fn looks_like_address(text: &str) -> bool {
         })
 }
 
-/// The address a typed address row opens.
-fn address_target(text: &str) -> String {
+/// The address a typed address opens: as typed when it names its scheme;
+/// otherwise `http://` for an address on this machine or the local network
+/// (a development server, a router, a printer), which serve no TLS, and
+/// `https://` for any other site.
+pub(crate) fn address_target(text: &str) -> String {
     let text = text.trim();
     if text.contains("://") {
         text.to_owned()
+    } else if local_address(text) {
+        format!("http://{text}")
     } else {
         format!("https://{text}")
     }
+}
+
+/// Whether a typed address without a scheme names this machine (`localhost`),
+/// a device announced on the local network (`printer.local`) or an IP address.
+fn local_address(text: &str) -> bool {
+    let authority = text.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    if let Some(literal) = authority.strip_prefix('[') {
+        return literal
+            .split_once(']')
+            .is_some_and(|(ip, _)| ip.parse::<std::net::Ipv6Addr>().is_ok());
+    }
+    let host = authority
+        .rsplit_once(':')
+        .filter(|(_, port)| port.chars().all(|c| c.is_ascii_digit()))
+        .map_or(authority, |(host, _)| host)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let top_level = host.rsplit('.').next().unwrap_or_default();
+    matches!(top_level, "localhost" | "local") || host.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 /// The text to show with the untyped remainder selected, when the best
@@ -867,6 +894,29 @@ mod tests {
         assert!(!looks_like_address("rust lang"));
         assert!(!looks_like_address("you"));
         assert!(!looks_like_address("what is e.g. this"));
+    }
+
+    #[test]
+    fn a_local_address_opens_over_http_and_a_site_over_https() {
+        for (typed, opened) in [
+            ("localhost:3000", "http://localhost:3000"),
+            ("localhost", "http://localhost"),
+            (
+                "app.localhost:8080/login",
+                "http://app.localhost:8080/login",
+            ),
+            ("127.0.0.1:8080", "http://127.0.0.1:8080"),
+            ("192.168.1.1", "http://192.168.1.1"),
+            ("[::1]:8443", "http://[::1]:8443"),
+            ("printer.local/status", "http://printer.local/status"),
+            ("example.com", "https://example.com"),
+            ("localhost.example.com", "https://localhost.example.com"),
+            ("1.2.3.4.example", "https://1.2.3.4.example"),
+            ("http://intranet.example", "http://intranet.example"),
+            ("https://localhost:3000", "https://localhost:3000"),
+        ] {
+            assert_eq!(address_target(typed), opened, "{typed}");
+        }
     }
 
     #[test]

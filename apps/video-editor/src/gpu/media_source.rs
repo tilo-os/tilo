@@ -218,7 +218,14 @@ impl MediaFrameSource {
             let fps = if item.fps > 1.0 { item.fps } else { 30.0 };
             // A clip trimmed to run past its source's end holds the last
             // frame there: that is the picture, so it is what is asked for.
-            let last_frame_ms = (item.duration > 0.0).then(|| source_ms(item.duration - 1.0 / fps));
+            // A still has one picture, at its start, however long its clip
+            // runs: asking a single-frame file for a later instant finds
+            // nothing, and the layer would draw its representative fill.
+            let last_frame_ms = if item.kind == crate::model::MediaKind::Image {
+                Some(0)
+            } else {
+                (item.duration > 0.0).then(|| source_ms(item.duration - 1.0 / fps))
+            };
             sources.insert(
                 item.id,
                 (
@@ -580,7 +587,43 @@ impl FrameSource for MediaFrameSource {
 
 #[cfg(test)]
 mod tests {
-    use super::source_ms;
+    use super::{MediaFrameSource, source_ms};
+    use crate::model::{MediaItem, MediaKind, Project};
+
+    #[test]
+    fn a_still_is_asked_for_its_one_picture_wherever_its_clip_is() {
+        let dir = tempfile::tempdir().expect("a scratch directory");
+        let mut project = Project::new("Stills");
+        let mut item = |name: &str, kind: MediaKind| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"bytes").expect("a local file");
+            let item = MediaItem {
+                id: uuid::Uuid::new_v4(),
+                name: name.into(),
+                kind,
+                duration: 5.0,
+                fps: 30.0,
+                path: path.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let id = item.id;
+            project.media.push(item);
+            id
+        };
+        let still = item("Harbour.png", MediaKind::Image);
+        let footage = item("Harbour.mp4", MediaKind::Video);
+        let index = MediaFrameSource::index(&project);
+        assert_eq!(
+            index[&still].2,
+            Some(0),
+            "a still's picture is at its start"
+        );
+        assert!(
+            index[&footage].2.is_some_and(|last| last > 4000),
+            "footage holds its last frame: {:?}",
+            index[&footage].2
+        );
+    }
 
     #[test]
     fn a_frame_is_asked_for_inside_itself_not_inside_the_one_before() {

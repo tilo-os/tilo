@@ -38,7 +38,10 @@ impl ShellOverlayHost {
             .register(std::rc::Rc::clone(&app_content)
                 as std::rc::Rc<dyn crate::shell::search::SearchProvider>);
         self.search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ContinueProvider::new(broker.clone()),
+            crate::shell::search::providers::ContinueProvider::new(
+                crate::shell::search::app_content_index::session(),
+                broker.clone(),
+            ),
         ));
         // The catalogue again, now able to run a closed app's offered action
         // for an app this device does not have yet.
@@ -96,11 +99,10 @@ impl ShellOverlayHost {
         };
         let Some((room, person)) = ({
             let state = chrome.borrow();
-            state
-                .tree()
-                .desktop
+            let tree = state.tree();
+            tree.desktop
                 .active_workspace()
-                .map(|workspace| (workspace.room(), state.active_local_user()))
+                .map(|workspace| (workspace.room(), state.active_local_user_in(&tree)))
         }) else {
             return;
         };
@@ -227,7 +229,9 @@ impl ShellOverlayHost {
         // Where the windows were: the launcher's Continue. Reopening at an
         // anchor goes through the broker once one is attached.
         search_registry.register(std::rc::Rc::new(
-            crate::shell::search::providers::ContinueProvider::without_broker(),
+            crate::shell::search::providers::ContinueProvider::without_broker(
+                crate::shell::search::app_content_index::session(),
+            ),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::QuickAnswersProvider::new(),
@@ -553,6 +557,7 @@ impl ShellOverlayHost {
             qs_wifi_scanned_at: None,
             qs_hosted_section: None,
             status_bridge: None,
+            status_copied: std::cell::RefCell::default(),
             session_audio_policy: None,
             room_activity: inputs.room_activity,
             history_narrator: inputs.history_narrator,

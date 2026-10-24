@@ -209,14 +209,13 @@ impl ResourceApp for ChipDesignShell {
         let all =
             Box::new(cx.effect_button(tr("chip-show-all"), &ChipEffect::Inspect { report: None }));
         let graph = Box::new(cx.effect_button(tr("chip-graph-title"), &ChipEffect::OperatorGraph));
-        let search = Box::new(cx.search_button(ui::search::SearchRequest::this_app()));
         Box::new(
             NavShell::new()
                 .content_kind(ui::widget::ContentKind::Document)
                 .content(Box::new(Column::new().push(notice).push(content)))
                 // The window bar already names the app; the header holds only
-                // its commands.
-                .content_header("", vec![search, graph, all, import]),
+                // its commands, which the bar shows as its actions.
+                .content_header("", vec![graph, all, import]),
         )
     }
 

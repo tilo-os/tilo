@@ -32,6 +32,12 @@
 //! process-wide `static` instead (never drops); this type is `Send` to
 //! allow that.
 
+/// How a picture is drawn where no GPU adapter is: on the CPU in the native
+/// toolkit (`offscreen/cpu.rs`), not at all on a browser page, which has no
+/// CPU rasterizer (`offscreen/no_cpu.rs`). The native feature is only ever
+/// enabled off the web.
+#[cfg_attr(not(feature = "native"), path = "offscreen/no_cpu.rs")]
+mod cpu;
 pub mod pixels;
 
 use std::path::Path;
@@ -40,8 +46,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
 use pollster::FutureExt;
-#[cfg(not(target_arch = "wasm32"))]
-use tilo_lock::MutexRecover as _;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{AaConfig, AaSupport, FineDamageRect, RenderParams, Renderer, RendererOptions, Scene};
@@ -657,7 +661,7 @@ impl std::error::Error for OffscreenError {
 /// RGBA8: the bytes [`OffscreenRenderer::try_render_resilient`] answers
 /// with. Drawn on the GPU when a renderer can be built; without an adapter
 /// (a confined worker after [`disable_gpu`], a machine with no GPU) on the
-/// CPU through [`render_on_cpu`]. A browser page, which has no CPU
+/// CPU with `tilo-cpu-raster`. A browser page, which has no CPU
 /// rasterizer, gets an error.
 ///
 /// Each call builds a fresh renderer; a caller drawing many pictures of one
@@ -677,94 +681,15 @@ pub fn render_picture(
 ) -> Result<Vec<u8>, String> {
     match OffscreenRenderer::try_new(width, height) {
         Ok(mut offscreen) => offscreen.try_render_resilient(scene, bg),
-        Err(OffscreenError::NoAdapter) => render_without_gpu(scene, width, height, bg),
+        Err(OffscreenError::NoAdapter) => {
+            cpu::render(scene, width, height, bg).unwrap_or_else(|| {
+                Err(format!(
+                    "no renderer for a {width}x{height} picture: {}",
+                    OffscreenError::NoAdapter
+                ))
+            })
+        }
         Err(why) => Err(format!("no renderer for a {width}x{height} picture: {why}")),
-    }
-}
-
-/// [`render_on_cpu`]: what a picture is drawn with where no adapter is.
-#[cfg(not(target_arch = "wasm32"))]
-fn render_without_gpu(
-    scene: &Scene,
-    width: u32,
-    height: u32,
-    bg: Color,
-) -> Result<Vec<u8>, String> {
-    tracing::debug!(
-        width,
-        height,
-        "no GPU adapter: drawing a picture on the CPU"
-    );
-    render_on_cpu(scene, width, height, bg)
-}
-
-/// A browser page has no CPU rasterizer to draw a picture with.
-#[cfg(target_arch = "wasm32")]
-fn render_without_gpu(_: &Scene, width: u32, height: u32, _: Color) -> Result<Vec<u8>, String> {
-    Err(format!(
-        "no renderer for a {width}x{height} picture: {}",
-        OffscreenError::NoAdapter
-    ))
-}
-
-/// What `scene` draws over `bg` at `width` x `height`, rasterised on the
-/// CPU by `tilo-cpu-raster`: straight-alpha RGBA8, as the GPU renderer
-/// returns it. For when no [`OffscreenRenderer`] can be built.
-///
-/// # Errors
-/// Returns why the CPU rasterizer has no target of this size.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn render_on_cpu(scene: &Scene, width: u32, height: u32, bg: Color) -> Result<Vec<u8>, String> {
-    let stride = (width as usize).saturating_mul(4);
-    let mut rgba = vec![0; stride.saturating_mul(height as usize)];
-    let mut target = tilo_cpu_raster::Target::new(&mut rgba, width, height, stride)
-        .map_err(|error| format!("no CPU renderer for a {width}x{height} picture: {error}"))?;
-    let base = tilo_cpu_raster::color::AlphaColor::new(bg.components);
-    let mut rasterizer = CPU_RASTERIZER.lock_recover();
-    rasterizer
-        .get_or_insert_with(tilo_cpu_raster::CpuRasterizer::default)
-        .render(scene.encoding(), &mut target, None, base);
-    drop(rasterizer);
-    if bg.components[3] >= 1.0 {
-        // Everything drawn over an opaque backdrop is opaque; the 8-bit
-        // pipeline's rounding leaves a few pixels at 254, which the GPU path
-        // does not. Premultiplied and straight colour agree at full alpha.
-        for pixel in rgba.chunks_exact_mut(4) {
-            if let Some(alpha) = pixel.last_mut() {
-                *alpha = u8::MAX;
-            }
-        }
-    } else {
-        unpremultiply(&mut rgba);
-    }
-    Ok(rgba)
-}
-
-/// The CPU rasterizer [`render_on_cpu`] draws with, kept for the glyph
-/// outlines and images it has converted.
-#[cfg(not(target_arch = "wasm32"))]
-static CPU_RASTERIZER: Mutex<Option<tilo_cpu_raster::CpuRasterizer>> = Mutex::new(None);
-
-/// Premultiplied RGBA8 to straight alpha, in place.
-#[cfg(not(target_arch = "wasm32"))]
-fn unpremultiply(rgba: &mut [u8]) {
-    for pixel in rgba.chunks_exact_mut(4) {
-        let Some((&mut alpha, colour)) = pixel.split_last_mut() else {
-            continue;
-        };
-        if alpha == 0 || alpha == u8::MAX {
-            continue;
-        }
-        let alpha = u16::from(alpha);
-        for channel in colour {
-            // Rounded to nearest: (c * 255 + a / 2) / a, at most 255.
-            let straight = u16::from(*channel)
-                .saturating_mul(255)
-                .saturating_add(alpha >> 1)
-                .checked_div(alpha)
-                .unwrap_or(u16::MAX);
-            *channel = u8::try_from(straight).unwrap_or(u8::MAX);
-        }
     }
 }
 
@@ -4645,69 +4570,5 @@ mod tests {
                 0
             );
         }
-    }
-}
-
-#[cfg(all(test, not(target_arch = "wasm32")))]
-mod cpu_fallback_tests {
-    #![allow(
-        clippy::indexing_slicing,
-        clippy::arithmetic_side_effects,
-        reason = "test assertions read fixed pixel offsets"
-    )]
-
-    use super::render_on_cpu;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Rect};
-    use vello::peniko::{Color, Fill};
-
-    fn pixel(rgba: &[u8], width: u32, x: u32, y: u32) -> [u8; 4] {
-        let at = ((y * width + x) * 4) as usize;
-        let mut out = [0; 4];
-        out.copy_from_slice(&rgba[at..at + 4]);
-        out
-    }
-
-    /// Without an adapter a picture is still drawn, on the CPU, at the
-    /// asked size and in straight alpha like the GPU path.
-    #[test]
-    fn a_picture_without_a_gpu_is_drawn_on_the_cpu() {
-        let (width, height) = (40, 30);
-        let mut scene = Scene::new();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::from_rgb8(0xff, 0x00, 0x00),
-            None,
-            &Rect::new(0.0, 0.0, 20.0, 30.0),
-        );
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            Color::from_rgba8(0x00, 0x00, 0xff, 0x80),
-            None,
-            &Rect::new(20.0, 0.0, 40.0, 30.0),
-        );
-        let rgba = render_on_cpu(&scene, width, height, Color::TRANSPARENT)
-            .expect("the CPU rasterizer draws it");
-        assert_eq!(rgba.len(), (width * height * 4) as usize);
-        assert_eq!(pixel(&rgba, width, 5, 5), [0xff, 0x00, 0x00, 0xff]);
-        let [r, g, b, a] = pixel(&rgba, width, 30, 15);
-        assert_eq!((r, g), (0, 0));
-        assert!(b >= 0xfe, "straight alpha keeps the full blue, got {b}");
-        assert!(a.abs_diff(0x80) <= 1, "half coverage, got {a}");
-    }
-
-    /// The backdrop fills what the scene leaves uncovered, and over an
-    /// opaque one every pixel is opaque.
-    #[test]
-    fn the_backdrop_shows_where_nothing_is_drawn() {
-        let grey = Color::from_rgb8(0x33, 0x44, 0x55);
-        let rgba = render_on_cpu(&Scene::new(), 8, 8, grey).expect("drawn");
-        assert!(
-            rgba.chunks_exact(4)
-                .all(|pixel| pixel == [0x33, 0x44, 0x55, 0xff]),
-            "every pixel is the backdrop"
-        );
     }
 }

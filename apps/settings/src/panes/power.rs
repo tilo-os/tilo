@@ -242,6 +242,31 @@ fn health_explanation_shown(battery: &BatteryInfo) -> String {
     }
 }
 
+/// "44.6 Wh of 70 Wh": what the battery holds when full against when new.
+fn capacity_shown(battery: &BatteryInfo) -> Option<String> {
+    let (full, design) = battery.full_and_design_wh()?;
+    Some(t_args(
+        "power-capacity-of",
+        &[
+            ("full", ArgValue::from(watt_hours_shown(full))),
+            ("design", ArgValue::from(watt_hours_shown(design))),
+        ],
+    ))
+}
+
+/// "44.6 Wh", "70 Wh": a tenth where there is one.
+fn watt_hours_shown(wh: f64) -> String {
+    let tenths = (wh * 10.0).round();
+    let digits = usize::from(tenths % 10.0 != 0.0);
+    t_args(
+        "power-watt-hours",
+        &[(
+            "amount",
+            ArgValue::from(ui::format::decimal(tenths / 10.0, digits)),
+        )],
+    )
+}
+
 /// This device's power hardware, as the pane and the effects reach it.
 pub trait PowerControl: Send + Sync {
     /// The battery now.
@@ -354,6 +379,7 @@ impl PowerControl for SamplePower {
             on_ac: false,
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
+            unit: os_actions::CapacityUnit::Energy,
             charge_limit: Some(self.cap.lock_recover().current),
             remaining: Some(28_800_000),
             rate: Some(8_640_000),
@@ -801,6 +827,9 @@ impl PowerPane {
         }
         if let Some(health) = state.battery.health_percent() {
             battery_rows.push(value_row(&t("power-health"), &format!("{health}%")));
+            if let Some(capacity) = capacity_shown(&state.battery) {
+                battery_rows.push(value_row(&t("power-capacity-full"), &capacity));
+            }
             battery_rows.push(note(&health_explanation_shown(&state.battery)));
         } else {
             battery_rows.push(value_row(&t("power-health"), &t("power-health-unknown")));
@@ -1281,10 +1310,31 @@ mod tests {
             on_ac: false,
             full_capacity: Some(40_000_000),
             design_capacity: Some(50_000_000),
+            unit: os_actions::CapacityUnit::Energy,
             charge_limit: Some(80),
             remaining: Some(28_800_000),
             rate: Some(8_640_000),
         }
+    }
+
+    #[test]
+    fn a_worn_battery_says_what_it_holds_against_new() {
+        let worn = BatteryInfo {
+            full_capacity: Some(44_600_000),
+            design_capacity: Some(70_000_000),
+            ..sample_battery()
+        };
+        assert_eq!(worn.health_percent(), Some(64));
+        assert_eq!(capacity_shown(&worn).as_deref(), Some("44.6 Wh of 70 Wh"));
+        assert_eq!(
+            health_explanation_shown(&worn),
+            "Capacity is noticeably reduced; shorter runtime is expected."
+        );
+        let unknown = BatteryInfo {
+            design_capacity: None,
+            ..sample_battery()
+        };
+        assert_eq!(capacity_shown(&unknown), None);
     }
 
     #[test]

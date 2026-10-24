@@ -41,11 +41,14 @@ impl RemoteApp {
                 },
             ),
             Content::Form(model) => {
-                toolbar.leading.push(ToolbarAction::new(
-                    LEAVE_FORM,
-                    "arrow-left",
-                    I18nManager::lookup_plain("window-toolbar-back"),
-                ));
+                toolbar.leading.push(
+                    ToolbarAction::new(
+                        LEAVE_FORM,
+                        "arrow-left",
+                        I18nManager::lookup_plain("window-toolbar-back"),
+                    )
+                    .navigating(),
+                );
                 (
                     Some(String::from(if model.editing.is_some() {
                         "Edit connection"

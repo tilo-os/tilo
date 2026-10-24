@@ -294,6 +294,64 @@ fn initial_history_no_committed_read_peer_preserves_actual_public_dispatch() {
         } if *actual == invocation)));
 }
 
+/// A window a person sees publishes Zoom in, Zoom out and Actual size with
+/// the rest of its surface, and a call the broker delivers runs them. The
+/// surface check must know the zoom operation's handler: without it every
+/// shown window would withdraw its whole published surface, which no test
+/// without a window can notice.
+#[cfg(feature = "native")]
+#[test]
+fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
+    use crate::host_chrome::zoom::ZOOM_RESOURCE;
+    let (mut app, calls) = initial_history_app();
+    let requests = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+    app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
+        requests: requests.clone(),
+        directories: std::rc::Rc::new(std::cell::Cell::new(0)),
+    });
+    // The window opens, taking up the zoom its app had on this device.
+    let dir = tempfile::tempdir().expect("a settings directory");
+    app.accessibility.zoom.restore_from(
+        crate::storage::Settings::for_app("so.tilo.zoom-publication")
+            .in_file(dir.path().join("settings.json")),
+    );
+    app.publish_action_surface();
+    let published = app
+        .actions
+        .last_published_actions
+        .clone()
+        .expect("the shown window's surface is published, not withdrawn");
+    let mut zoom: Vec<_> = published
+        .iter()
+        .filter(|descriptor| descriptor.address.resource == ZOOM_RESOURCE)
+        .map(|descriptor| descriptor.address.action.as_str())
+        .collect();
+    zoom.sort_unstable();
+    assert_eq!(zoom, ["zoom-in", "zoom-out", "zoom-reset"]);
+    assert!(
+        published
+            .iter()
+            .any(|descriptor| descriptor.address.resource == "initial-probe"),
+        "offering zoom keeps the app's own actions published"
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        81,
+        invocation,
+        ZOOM_RESOURCE.into(),
+        "zoom-in".into(),
+        None,
+        "fixture-user",
+        None,
+    );
+    assert!(app.content_zoom() > 1.0, "the delivered Zoom in zoomed in");
+    assert_eq!(calls.get(), 0, "no other handler ran");
+    assert!(requests.borrow().iter().any(|request| matches!(request,
+        crate::collaboration::CollabRequest::UpdateInvocation {
+            update: tilo_actions::InvocationUpdate::Succeeded { invocation: actual, .. }, ..
+        } if *actual == invocation)));
+}
+
 #[test]
 fn initial_history_public_directory_requires_every_actual_live_record_owner() {
     let mut fixture = RoutedOwners::new();

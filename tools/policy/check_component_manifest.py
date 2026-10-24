@@ -429,7 +429,7 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                        "already installs that output." if owner else snippet(binary, binary, f"/usr/bin/{binary}"))
                 report.error(where, f"the compile builds --bin {binary}, which no os/components.toml "
                              "component declares", fix)
-        for output in sorted(set(re.findall(r"(?:target/release|desktop-artifacts)/([A-Za-z0-9_-]+)", body))):
+        for output in sorted(set(re.findall(r"(?:target/release|desktop-artifacts)/([A-Za-z0-9_.-]+)", body))):
             if output not in declared_outputs:
                 report.error(where, f"the compile stages build output {output!r}, which os/components.toml "
                              "does not install", snippet(output, output, f"/usr/bin/{output}"))

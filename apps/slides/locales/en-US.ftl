@@ -1,20 +1,19 @@
-# Slides — editor chrome. Every string a user reads in the header row, the
+# Slides — editor chrome. Every string a user reads in the window bar, the
 # slide sidebar, the properties inspector, the menus, the overview, the
 # presenter view and the keyboard reference. Keys are `slides-*` so they never
 # collide with another app's bundle in the shared registry.
 
-## Header row
-slides-present = Present
-slides-show-slides = Show slides
+## Window bar
+slides-deck-name = Presentation title
+slides-untitled = Untitled presentation
+slides-view = View
+slides-view-editor = Editor
+slides-view-overview = Overview
+slides-insert = Insert
 slides-show-properties = Show properties
-slides-tip-toggle-slides = Slides
-slides-tip-toggle-properties = Properties
-slides-tip-overview = Show all slides
-slides-tip-more-tools = More insert tools
+slides-hide-properties = Hide properties
 
 ## Slide sidebar
-slides-slides = Slides
-slides-hide-slides = Hide slides
 slides-drop-to-delete = Drop to delete
 
 ## Insert tools
@@ -25,7 +24,6 @@ slides-tool-line = Line
 slides-tool-image = Image
 
 ## Properties inspector
-slides-hide-properties = Hide properties
 slides-fill = Fill
 slides-stroke = Stroke
 slides-font = Font
@@ -114,7 +112,6 @@ slides-a11y-new-slide = New slide
 slides-a11y-duplicate-slide = Duplicate slide
 slides-a11y-delete-slide = Delete slide
 slides-a11y-start-presentation = Start presentation
-slides-a11y-slide-overview = Show all slides
 slides-a11y-open-slide = Open slide { $n }
 slides-a11y-insert = Insert { $kind }
 slides-a11y-fill = Fill { $role }
@@ -135,9 +132,6 @@ slides-a11y-background = Background { $name }
 slides-a11y-deck-theme = Deck theme { $name }
 slides-a11y-deck-look = Deck look { $name }
 slides-a11y-edit-notes = Edit speaker notes
-slides-a11y-slides-panel = Slides panel
-slides-a11y-properties-panel = Properties panel
-slides-a11y-more-tools = More insert tools
 
 ## Transient messages
 slides-toast-open-failed = Could not open the presentation

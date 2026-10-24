@@ -31,15 +31,17 @@ use ui::time::Instant;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::toast::ToastKind;
 use ui::widget::{
-    AppModel, Button, Column, Element, ModalDialog, ModelPath, NavPane, NavShell, Popover,
-    PopoverSide, SidebarPlacement, TextInputKind, Widget,
+    AppModel, Column, ModalDialog, ModelPath, NavPane, NavShell, Popover, PopoverSide,
+    SidebarPlacement, TextInputKind, Widget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::{Anchor, HeaderButton, reader_settings_panel};
+use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation};
+
+use crate::chrome::reader_settings_panel;
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::list_pane::{ListPane, ListState};
 use crate::modal::{ModalBody, ModalIntent};
@@ -106,10 +108,8 @@ pub(crate) enum Request {
     OpenOriginal,
     /// Show or hide the reading settings.
     ReaderSettings,
-    /// The overview's menu (import, export).
-    ListMenu,
-    /// The open article's menu (read state, tags).
-    ArticleMenu,
+    /// What a menu row or a menu entry of the window's bar does.
+    Menu(MenuAction),
     /// A feed's menu: the row it acts on (its lift), and the point it opens
     /// at (the pointer, or under the row or its More button).
     FeedMenu(Id, Rect, Option<Point>),
@@ -147,12 +147,87 @@ impl MenuAction {
     }
 }
 
+/// What a press of the reader's slot `id` in the window's bar asks for.
+fn window_request(id: &str) -> Option<Request> {
+    Some(match id {
+        "feeds.refresh" => Request::Refresh,
+        "feeds.add" => Request::AddSubscription,
+        "feeds.mark-all-read" => Request::MarkAllRead,
+        "feeds.import" => Request::Menu(MenuAction::Import),
+        "feeds.export" => Request::Menu(MenuAction::Export),
+        "feeds.star" => Request::StarOpen,
+        "feeds.open-original" => Request::OpenOriginal,
+        "feeds.reader-settings" => Request::ReaderSettings,
+        "feeds.toggle-read" => Request::Menu(MenuAction::ToggleRead),
+        "feeds.edit-tags" => Request::Menu(MenuAction::EditTags),
+        _ => return None,
+    })
+}
+
+/// The reader's commands in the window's bar. With an article in front its
+/// own commands lead (star, open the original, reading settings, then its
+/// read state and tags in the menu) and the library's follow in the menu;
+/// otherwise the library's lead. A command with nothing to act on is
+/// disabled, and one whose meaning flips with state names what it does now.
+fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
+    let action = |id: &str, icon: Icon, name: &str| ToolbarAction::new(id, icon.name(), name);
+    let refresh = match core.refresh_unavailable() {
+        Some((_, reason)) => action("feeds.refresh", Icon::Refresh, reason).enabled(false),
+        None => action("feeds.refresh", Icon::Refresh, "Refresh all feeds"),
+    };
+    let mark_all_read = action("feeds.mark-all-read", Icon::Check, "Mark all as read")
+        .enabled(core.store.unread_count_for(&core.filter) > 0);
+    let add = action("feeds.add", Icon::Plus, "Add subscription");
+    let import = action("feeds.import", Icon::FolderOpen, "Import OPML…").in_menu();
+    let export = action("feeds.export", Icon::Download, "Export OPML…")
+        .enabled(!core.store.feeds.is_empty())
+        .in_menu();
+    let article = core.open_article().filter(|_| front == NavPane::Content);
+    let Some(article) = article else {
+        return vec![refresh, add, mark_all_read, import, export];
+    };
+    let starred = article.starred;
+    vec![
+        action(
+            "feeds.star",
+            Icon::Star,
+            if starred {
+                "Remove star"
+            } else {
+                "Star article"
+            },
+        )
+        .on(starred),
+        action(
+            "feeds.open-original",
+            Icon::ExternalLink,
+            "Open original article",
+        )
+        .enabled(!article.url.is_empty()),
+        action("feeds.reader-settings", Icon::Settings2, "Reading settings"),
+        action(
+            "feeds.toggle-read",
+            Icon::Mail,
+            if article.read {
+                "Mark as unread"
+            } else {
+                "Mark as read"
+            },
+        )
+        .in_menu(),
+        action("feeds.edit-tags", Icon::Pencil, "Edit tags…").in_menu(),
+        refresh.in_menu(),
+        mark_all_read.in_menu(),
+        add.in_menu(),
+        import,
+        export,
+    ]
+}
+
 /// Which menu is open.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MenuKind {
     Feed(Id),
-    List,
-    Article,
 }
 
 /// The open menu and what each of its rows does.
@@ -402,8 +477,6 @@ pub(crate) struct Core {
     pub(crate) window: Rect,
     /// The screen a narrow window should bring to the front next.
     show_pane: Option<NavPane>,
-    /// Where the header controls that open a menu or panel sit.
-    pub(crate) anchors: HashMap<Anchor, Rect>,
     /// The first feed's sidebar row (its lift), as last painted.
     pub(crate) first_feed_row: Option<(Id, Rect)>,
 }
@@ -449,7 +522,6 @@ impl Core {
             pointer: Point::ZERO,
             window: Rect::ZERO,
             show_pane: None,
-            anchors: HashMap::new(),
             first_feed_row: None,
         };
         if demo {
@@ -995,66 +1067,6 @@ impl Core {
         );
     }
 
-    fn open_list_menu(&mut self) {
-        let anchor = self
-            .anchors
-            .get(&Anchor::ListMenu)
-            .copied()
-            .unwrap_or_default();
-        let has_feeds = !self.store.feeds.is_empty();
-        self.open_menu(
-            MenuKind::List,
-            anchor,
-            None,
-            vec![
-                (
-                    MenuItem::action("Import OPML…", || {}).with_icon(Icon::FolderOpen),
-                    MenuAction::Import,
-                ),
-                (
-                    MenuItem::action("Export OPML…", || {})
-                        .with_icon(Icon::Download)
-                        .with_enabled(has_feeds),
-                    MenuAction::Export,
-                ),
-            ],
-        );
-    }
-
-    fn open_article_menu(&mut self) {
-        let Some(read) = self.open_article().map(|a| a.read) else {
-            return;
-        };
-        let anchor = self
-            .anchors
-            .get(&Anchor::ArticleMenu)
-            .copied()
-            .unwrap_or_default();
-        self.open_menu(
-            MenuKind::Article,
-            anchor,
-            None,
-            vec![
-                (
-                    MenuItem::action(
-                        if read {
-                            "Mark as unread"
-                        } else {
-                            "Mark as read"
-                        },
-                        || {},
-                    )
-                    .with_icon(Icon::Mail),
-                    MenuAction::ToggleRead,
-                ),
-                (
-                    MenuItem::action("Edit tags…", || {}).with_icon(Icon::Pencil),
-                    MenuAction::EditTags,
-                ),
-            ],
-        );
-    }
-
     pub(crate) fn apply_menu_action(
         &mut self,
         action: MenuAction,
@@ -1377,8 +1389,7 @@ impl Core {
                 }
             }
             Request::OpenOriginal => self.open_selected_link(),
-            Request::ListMenu => self.open_list_menu(),
-            Request::ArticleMenu => self.open_article_menu(),
+            Request::Menu(action) => self.apply_menu_action(action, doc),
             Request::FeedMenu(id, row, None) => self.open_feed_menu(id, row),
             Request::FeedMenu(id, row, Some(at)) => self.open_feed_menu_at(id, row, at),
             Request::SetFolderCollapsed(id, collapsed) => {
@@ -1507,143 +1518,6 @@ impl Core {
 /// Layouts at one window size before a capture stages its scenario.
 const SETTLED_LAYOUTS: u32 = 3;
 
-/// The header row's actions: icon buttons that ask the root for a request.
-struct HeaderActions<'a> {
-    core: &'a Shared,
-    requests: &'a Requests,
-}
-
-impl HeaderActions<'_> {
-    fn button(&self, id: &str, icon: Icon, label: &str, request: Request) -> HeaderButton {
-        let requests = Rc::clone(self.requests);
-        // Refreshing fetches from the feeds' sites; every other header
-        // button opens something here or makes an edit, decided as one.
-        let button = Button::icon_only(id, icon, label);
-        let fetches = matches!(request, Request::Refresh);
-        let push = move || requests.borrow_mut().push(request.clone());
-        HeaderButton::new(
-            if fetches {
-                button.on_effect(push)
-            } else {
-                button.on_own_device_effect(push)
-            },
-            self.core,
-        )
-    }
-
-    /// The library's commands, beside the sidebar toggle.
-    fn sidebar(&self) -> Vec<Element> {
-        vec![
-            Box::new(
-                self.button(
-                    "feeds.refresh",
-                    Icon::Refresh,
-                    "Refresh all feeds",
-                    Request::Refresh,
-                )
-                .enabled_when(|core| core.refresh_unavailable().is_none())
-                // Disabled, it says why on hover and to a screen reader.
-                .named_by(|core| {
-                    core.refresh_unavailable()
-                        .map_or("Refresh all feeds", |(_, reason)| reason)
-                }),
-            ),
-            Box::new(self.button(
-                "feeds.new-folder",
-                Icon::FolderPlus,
-                "New folder",
-                Request::NewFolder,
-            )),
-            Box::new(self.button(
-                "feeds.add",
-                Icon::Plus,
-                "Add subscription",
-                Request::AddSubscription,
-            )),
-        ]
-    }
-
-    /// The article list's commands: search, mark all read, import and export.
-    fn overview(&self) -> Vec<Element> {
-        vec![
-            Box::new(ui::search::search_button(
-                ui::search::SearchRequest::this_app(),
-            )),
-            Box::new(
-                self.button(
-                    "feeds.mark-all-read",
-                    Icon::Check,
-                    "Mark all as read",
-                    Request::MarkAllRead,
-                )
-                .enabled_when(|core| core.store.unread_count_for(&core.filter) > 0),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.list-menu",
-                    Icon::MoreHorizontal,
-                    "More",
-                    Request::ListMenu,
-                )
-                .anchor(Anchor::ListMenu),
-            ),
-        ]
-    }
-
-    /// The open article's commands, or none without one.
-    fn article(&self, open: bool) -> Vec<Element> {
-        if open { self.content() } else { Vec::new() }
-    }
-
-    /// The open article's commands.
-    fn content(&self) -> Vec<Element> {
-        let has_article = |core: &Core| core.open_article().is_some();
-        vec![
-            Box::new(
-                self.button("feeds.star", Icon::Star, "Star article", Request::StarOpen)
-                    .enabled_when(has_article)
-                    .toggled_by(|core| core.open_article().is_some_and(|a| a.starred))
-                    .named_by(|core| {
-                        if core.open_article().is_some_and(|a| a.starred) {
-                            "Remove star"
-                        } else {
-                            "Star article"
-                        }
-                    }),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.open-original",
-                    Icon::ExternalLink,
-                    "Open original article",
-                    Request::OpenOriginal,
-                )
-                .enabled_when(|core| core.open_article().is_some_and(|a| !a.url.is_empty())),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.reader-settings",
-                    Icon::Settings2,
-                    "Reading settings",
-                    Request::ReaderSettings,
-                )
-                .enabled_when(has_article)
-                .anchor(Anchor::ReaderSettings),
-            ),
-            Box::new(
-                self.button(
-                    "feeds.article-menu",
-                    Icon::MoreHorizontal,
-                    "More",
-                    Request::ArticleMenu,
-                )
-                .enabled_when(has_article)
-                .anchor(Anchor::ArticleMenu),
-            ),
-        ]
-    }
-}
-
 /// The root's nodes while a dialog or the reading settings are mounted
 /// beside the shell. They join the tree so their controls take part in
 /// focus order and native accessibility; both present themselves in the
@@ -1661,12 +1535,7 @@ pub struct FeedsApp {
     core: Shared,
     requests: Requests,
     shell: NavShell,
-    /// The column titles last handed to the shell.
-    titles: (String, String),
-    /// Whether the content header holds the open article's commands. With
-    /// no article there is nothing to star, open or style, so it holds none.
-    article_actions: bool,
-    /// The reading settings, open under their header button.
+    /// The reading settings, open under the window bar's Reading settings.
     settings_panel: Option<Popover<Column>>,
     pub(crate) modal: Option<FeedsModal>,
     /// The dialog opened or closed: the retained tree must be rebuilt.
@@ -1701,32 +1570,19 @@ impl FeedsApp {
     fn build(demo: bool) -> Self {
         let core: Shared = Rc::new(RefCell::new(Core::new(demo)));
         let requests: Requests = Rc::default();
-        let (titles, article_actions) = {
-            let core = core.borrow();
-            (
-                (core.filter_title(), core.article_title()),
-                core.open_article().is_some(),
-            )
-        };
-        let actions = HeaderActions {
-            core: &core,
-            requests: &requests,
-        };
+        // The reader's commands are the window bar's slots
+        // ([`Self::declare_window_toolbar`]): the shell draws no header row.
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Reading)
             .with_id("feeds.shell")
+            .with_window_toolbar()
             .sidebar(Box::new(SidebarNav::new(&core, &requests)))
             .overview(Box::new(ListPane::new(&core)))
-            .content(Box::new(ReaderPane::new(&core)))
-            .sidebar_header("", actions.sidebar())
-            .overview_header(titles.0.clone(), actions.overview())
-            .content_header(titles.1.clone(), actions.article(article_actions));
+            .content(Box::new(ReaderPane::new(&core)));
         Self {
             core,
             requests,
             shell,
-            titles,
-            article_actions,
             settings_panel: None,
             modal: None,
             overlays_dirty: false,
@@ -1788,12 +1644,7 @@ impl FeedsApp {
                     core.set_toast(error);
                 }
                 drop(core);
-                let ready = self
-                    .core
-                    .borrow()
-                    .anchors
-                    .get(&Anchor::ReaderSettings)
-                    .is_some_and(|r| r.area() > 0.0);
+                let ready = self.shell.geometry().content_column.width() > 0.0;
                 if !ready {
                     self.pending_scenario = Some(scenario);
                     return;
@@ -1983,19 +1834,18 @@ impl FeedsApp {
             self.close_settings_panel();
             return;
         }
-        let (anchor, settings) = {
+        let settings = {
             let core = self.core.borrow();
             if core.open_article().is_none() {
                 return;
             }
-            (
-                core.anchors
-                    .get(&Anchor::ReaderSettings)
-                    .copied()
-                    .unwrap_or_default(),
-                core.settings,
-            )
+            core.settings
         };
+        // The panel opens from the window bar's Reading settings, which
+        // stands over the article's column: under the column's top edge,
+        // at its trailing side.
+        let column = self.shell.geometry().content_column;
+        let anchor = Rect::new(column.x1, column.y0, column.x1, column.y0);
         self.core.borrow_mut().menu = None;
         let window = Widget::get_rect(&self.shell);
         self.settings_panel = Some(
@@ -2009,8 +1859,6 @@ impl FeedsApp {
         self.overlays_dirty = true;
     }
 
-    /// Apply what retained controls asked for, bring the screen a choice
-    /// asked for to the front, and keep the column titles current.
     /// Hand the core's latest notice to the shell, which shows and expires it.
     fn take_toast(&mut self) {
         self.core.borrow_mut().announce_answers();
@@ -2022,6 +1870,7 @@ impl FeedsApp {
     }
 
     fn settle_controls(&mut self, doc: &mut ui::widget::Edits<'_>) {
+        self.take_window_toolbar_events();
         let opened = std::mem::take(&mut *self.opened.borrow_mut());
         for id in opened {
             let _ = self.core.borrow_mut().open_item(&id);
@@ -2043,14 +1892,7 @@ impl FeedsApp {
         {
             self.close_settings_panel();
         }
-        let (pane, titles, article_actions) = {
-            let mut core = self.core.borrow_mut();
-            (
-                core.show_pane.take(),
-                (core.filter_title(), core.article_title()),
-                core.open_article().is_some(),
-            )
-        };
+        let pane = self.core.borrow_mut().show_pane.take();
         if let Some(pane) = pane {
             // Only a narrow window has screens to bring forward.
             if !self.shell.geometry().stack.is_empty() {
@@ -2063,22 +1905,48 @@ impl FeedsApp {
                 self.shell.close_sidebar();
             }
         }
-        if titles.0 != self.titles.0 {
-            self.shell.set_overview_title(titles.0.clone());
-        }
-        if article_actions != self.article_actions {
-            let actions = HeaderActions {
-                core: &self.core,
-                requests: &self.requests,
-            }
-            .article(article_actions);
-            self.shell.set_content_header(titles.1.clone(), actions);
-            self.article_actions = article_actions;
-        } else if titles.1 != self.titles.1 {
-            self.shell.set_content_title(titles.1.clone());
-        }
-        self.titles = titles;
+        self.declare_window_toolbar();
         self.take_toast();
+    }
+
+    /// Turn what the person pressed in the window's bar into requests: the
+    /// shell runs its own slots (the sidebar toggle, Back).
+    fn take_window_toolbar_events(&mut self) {
+        for event in ui::window_toolbar::take_events() {
+            if self.shell.window_toolbar_event(&event) {
+                continue;
+            }
+            if let ToolbarEvent::Action { id } = event
+                && let Some(request) = window_request(&id)
+            {
+                self.requests.borrow_mut().push(request);
+            }
+        }
+    }
+
+    /// Declare the window bar's slots: the shell's own, the place being
+    /// read as the location, and the reader's commands.
+    fn declare_window_toolbar(&self) {
+        let mut toolbar = self.shell.window_toolbar();
+        let core = self.core.borrow();
+        let narrow = self.shell.geometry().stack.len() > 1;
+        let front = if narrow {
+            self.shell.front_pane()
+        } else {
+            NavPane::Content
+        };
+        // The list being read; a narrow window showing an article names its
+        // feed, as the article's own title is the reader's heading.
+        let feed = Some(core.article_title()).filter(|title| narrow && !title.is_empty());
+        toolbar.location = Some(ToolbarLocation {
+            label: feed
+                .filter(|_| front == NavPane::Content)
+                .unwrap_or_else(|| core.filter_title()),
+            ..ToolbarLocation::default()
+        });
+        NavShell::push_window_actions(&mut toolbar, window_actions(&core, front));
+        drop(core);
+        ui::window_toolbar::declare(Some(toolbar));
     }
 
     fn handle_semantic(
@@ -2213,6 +2081,7 @@ impl ui::widget::Decorator for FeedsApp {
         }
         self.take_toast();
         Widget::sync(&mut self.shell, state, path);
+        self.declare_window_toolbar();
         if let Some(modal) = self.modal.as_mut() {
             modal.dialog.sync(state, path);
         }
@@ -2541,8 +2410,6 @@ impl ui::widget::Decorator for FeedsApp {
                 AccessNode::new(Role::Menu)
                     .with_name(match open.kind {
                         MenuKind::Feed(_) => "Feed actions",
-                        MenuKind::List => "More",
-                        MenuKind::Article => "Article actions",
                     })
                     .with_children(items),
             );

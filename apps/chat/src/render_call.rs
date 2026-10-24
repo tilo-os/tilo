@@ -67,9 +67,7 @@ type OverlayButton = (String, bool, bool, bool, Hit, Rect);
 /// Catalogue keys of every label the controls bar can show, both halves of
 /// each toggle pair included, so the measurement covers a label before the
 /// toggle that reveals it.
-const CALL_CONTROL_KEYS: [&str; 11] = [
-    "chat-call-mute",
-    "chat-call-unmute",
+const CALL_CONTROL_KEYS: [&str; 8] = [
     "chat-call-deafen",
     "chat-call-undeafen",
     "chat-call-audio-only",
@@ -78,7 +76,6 @@ const CALL_CONTROL_KEYS: [&str; 11] = [
     "chat-call-share-screen",
     "chat-call-stop-sharing",
     "chat-call-collapse",
-    "chat-call-leave",
 ];
 
 /// Measured sizes the expanded call overlay is laid out with.
@@ -105,11 +102,9 @@ pub(crate) struct CallOverlayMetrics {
     pub side_pad: f64,
     /// Gap between the bar and the window's bottom edge (`s4`).
     pub bottom_pad: f64,
-    /// Measured line box of the header's title.
-    pub title_h: f64,
-    /// Space above (`s6`) and below (`s4`) the title.
+    /// Space above the tiles (`s6`): the call is named by the window bar's
+    /// location and the channels' chosen row, never a title of its own.
     pub header_pad_top: f64,
-    pub header_pad_bottom: f64,
     /// What an unmeasured label's button adds to the label: its icon, the
     /// gap after it and the side padding.
     pub button_chrome_w: f64,
@@ -135,9 +130,7 @@ impl CallOverlayMetrics {
             inner_pad: f64::from(sp.s2),
             side_pad: f64::from(sp.s6),
             bottom_pad: f64::from(sp.s4),
-            title_h: f64::from(theme.text(TextRole::Title).line_height_px()),
             header_pad_top: f64::from(sp.s6),
-            header_pad_bottom: f64::from(sp.s4),
             button_chrome_w: f64::from(metrics.icon_md)
                 + f64::from(metrics.icon_label_gap)
                 + 2.0 * f64::from(sp.s3),
@@ -166,9 +159,9 @@ impl CallOverlayMetrics {
         label.chars().count() as f64 * self.label_size / 2.0 + self.button_chrome_w
     }
 
-    /// Height of the title block above the tile band.
+    /// Height of the space above the tile band.
     pub(crate) fn header_h(&self) -> f64 {
-        self.header_pad_top + self.title_h + self.header_pad_bottom
+        self.header_pad_top
     }
 }
 
@@ -225,7 +218,6 @@ impl ChatApp {
             .collect();
         let measured = CallOverlayMetrics {
             button_w,
-            title_h: line_of(tr, &theme.text(TextRole::Title)),
             ..CallOverlayMetrics::of(theme)
         };
         if self.call_overlay_metrics != measured {
@@ -854,21 +846,8 @@ impl ChatApp {
         let cy = panel.y1 - pad - bh;
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
-        let muted = self.call.muted;
-        let no_microphone = crate::i18n::t("chat-call-no-microphone");
+        // The microphone and leaving are the window bar's.
         let mut ctrls: Vec<(&str, Icon, ButtonRole, Hit)> = vec![
-            (
-                if self.microphone_missing() {
-                    no_microphone.as_str()
-                } else if muted {
-                    "Unmute"
-                } else {
-                    "Mute"
-                },
-                if muted { Icon::MicOff } else { Icon::Mic },
-                ButtonRole::Secondary,
-                Hit::CallMute,
-            ),
             (
                 if self.call.audio_only {
                     "Camera"
@@ -884,12 +863,6 @@ impl ChatApp {
                 Icon::Maximize2,
                 ButtonRole::Secondary,
                 Hit::CallExpand,
-            ),
-            (
-                "Leave",
-                Icon::PhoneOff,
-                ButtonRole::Destructive,
-                Hit::CallLeave,
             ),
         ];
         let share = |n: usize| {
@@ -948,24 +921,6 @@ impl ChatApp {
         // The expanded call is its own page over the whole window, so the
         // conversation does not show through between the tiles.
         ui::surface::region(scene, tf, self.rect, ui::surface::Region::Content, theme);
-
-        let m = &self.call_overlay_metrics;
-        let title_y = self.rect.y0 + m.header_pad_top;
-        let title = self
-            .channel(&self.call.channel)
-            .map_or_else(|| "Call".into(), |c| c.name.clone());
-        let style = theme.text(TextRole::Title);
-        let max_w = self.rect.width() - 2.0 * m.side_pad;
-        let shown = elide(tr, &title, &style, max_w);
-        let tw = width_of(tr, &shown, &style);
-        text(
-            &mut PaintCtx::new(scene, tf, tr, theme),
-            &shown,
-            &style,
-            theme.text_primary,
-            Point::new(self.rect.center().x - tw / 2.0, title_y),
-            None,
-        );
 
         let parts = self.call_participants();
         let sharer = self.screen_sharer();
@@ -1143,8 +1098,6 @@ impl ChatApp {
         let r = self.rect;
         let m = &self.call_overlay_metrics;
         let inset = m.side_pad;
-        // Below the measured title (the 1× rule before the first paint), so a
-        // scaled title pushes the tiles down instead of painting over them.
         let top = r.y0 + m.header_h();
         let (bar, _) = self.overlay_controls_layout();
         let bottom = (bar.y0 - m.bottom_pad).max(top + 1.0);
@@ -1226,23 +1179,12 @@ impl ChatApp {
     /// (which sizes buttons from these labels) and the pre-paint measurement
     /// (which measures exactly these labels), so a toggled label — Mute →
     /// Unmute — is measured the frame it appears.
-    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 5] {
+    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 3] {
         let t = crate::i18n::t;
         let speak = self.call_allows(crate::call::CallAction::Speak);
+        // The microphone and leaving are the window bar's, wherever the call
+        // is shown.
         [
-            (
-                t(if self.microphone_missing() {
-                    "chat-call-no-microphone"
-                } else if self.call.muted {
-                    "chat-call-unmute"
-                } else {
-                    "chat-call-mute"
-                }),
-                self.call.muted,
-                false,
-                speak,
-                Hit::CallMute,
-            ),
             (
                 t(if self.call.audio_only {
                     "chat-call-camera-on"
@@ -1266,7 +1208,6 @@ impl ChatApp {
                 Hit::CallScreen,
             ),
             (t("chat-call-collapse"), false, false, true, Hit::CallExpand),
-            (t("chat-call-leave"), false, true, true, Hit::CallLeave),
         ]
     }
 
@@ -2013,11 +1954,9 @@ mod tests {
         // Phase: overlay_metrics_fall_back_to_the_theme_before_the_first_paint.
         {
             let m = CallOverlayMetrics::default();
-            // The header: `s6` + a Title line + `s4`.
-            assert!(
-                (m.header_h() - (m.header_pad_top + m.title_h + m.header_pad_bottom)).abs() < 1e-6
-            );
-            assert!(m.title_h > 0.0 && m.button_h > 0.0);
+            // Above the tiles only air: the window bar names the call.
+            assert!((m.header_h() - m.header_pad_top).abs() < 1e-6);
+            assert!(m.header_pad_top > 0.0 && m.button_h > 0.0);
             // An unmeasured label is estimated from its length, so the
             // geometry tests (which never paint) still resolve, and a longer
             // label is estimated wider.
@@ -2038,16 +1977,6 @@ mod tests {
                 m.button_width("Unmute"),
                 CallOverlayMetrics::default().button_width("Unmute")
             );
-        }
-        // Phase: a_scaled_title_pushes_the_tile_band_down_by_its_extra_height.
-        {
-            let base = CallOverlayMetrics::default();
-            let m = CallOverlayMetrics {
-                title_h: base.title_h * 2.0,
-                ..CallOverlayMetrics::default()
-            };
-            let grew = m.header_h() - base.header_h();
-            assert!((grew - base.title_h).abs() < 1e-9, "grew {grew}");
         }
         // Phase: controls_pack_into_rows_that_fit.
         {

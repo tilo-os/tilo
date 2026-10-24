@@ -589,12 +589,18 @@ class FirmwareTrimContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "would remove firmware"):
             hardware_profile.validate_definition(local)
 
-    def test_only_the_lenovo_board_trims_and_the_layer_applies_it(self):
+    def test_boards_trim_foreign_firmware_generic_keeps_all_and_the_layer_applies_it(self):
         profiles = self.ROOT / "hardware/profiles"
+        trimmed = set()
         for path in profiles.glob("*.json"):
             data = json.loads(path.read_text(encoding="utf-8"))
-            if data["id"] != "lenovo-83ed":
+            if data["id"] == "generic":
                 self.assertNotIn("firmware_exclude", data, path.name)
+            elif data.get("firmware_exclude"):
+                hardware_profile.validate_definition(data)
+                trimmed.add(data["id"])
+        # Neither board has a PC GPU, so neither ships its firmware.
+        self.assertEqual(trimmed, {"lenovo-83ed", "orangepi-3b-v2-1"})
         layer = (self.ROOT / "dev/install-board-layer.sh").read_text(encoding="utf-8")
         self.assertIn("dnf remove -y --no-autoremove", layer)
         self.assertIn("firmware_exclude", layer)
