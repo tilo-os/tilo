@@ -7689,6 +7689,7 @@ mod tests {
                 .expect("the action is registered");
             (action.apply)(&mut c.borrow_mut(), &ActionArgs::none())
                 .expect("the room's owner may admit an agent");
+            governed(&c, FIXTURE_USER);
 
             let after = c
                 .borrow()
@@ -7830,6 +7831,7 @@ mod tests {
             (action.apply)(&mut c.borrow_mut(), &args).expect("owner admits agent");
 
             let state = c.borrow();
+            let user = state.active_local_user();
             let mut tree = state.tree_mut();
             let asked: Vec<_> = tree
                 .take_governance_requests()
@@ -7855,7 +7857,6 @@ mod tests {
                 "nothing changes here before the room's admitted document carries it"
             );
             // What the governor applies and the admitted document carries.
-            let user = state.active_local_user();
             let ws = tree
                 .desktop
                 .active_workspace_mut()
