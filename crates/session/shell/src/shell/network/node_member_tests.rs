@@ -177,7 +177,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     tree.persist_path = Some(session_dir.join("state.json"));
     let tree = tree.shared();
     let session_cert = Arc::new(Mutex::new(None));
-    let net = {
+    let net = Arc::new({
         let session_cert = Arc::clone(&session_cert);
         ShellNetwork::spawn_with(
             tree.clone(),
@@ -203,8 +203,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             },
         )
         .unwrap()
-    };
-    let net = Arc::new(net);
+    });
     let (session_key, session_cert) = session_cert.lock().unwrap().clone().unwrap();
     assert!(!session_cert.capabilities.can_act_as_host);
     let _ = net.join_default_workspace();
@@ -397,6 +396,57 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             .iter()
             .any(|invitation| invitation.invite_id == issued.invite_id),
         "a cancelled invitation is no longer pending at the relay"
+    );
+
+    // The session, a device of Ada's that does not host, saves a shortcut
+    // into the room its relay hosts: signed here as Ada's, committed there,
+    // and back in the room as the session holds it.
+    let ada_person = hex::encode(session_cert.user_public_key);
+    let shortcut: tilo_automation::Shortcut = serde_json::from_value(serde_json::json!({
+        "id": "standup",
+        "name": "Standup notes",
+        "steps": [],
+        "saved_by": ada_person,
+    }))
+    .unwrap();
+    let saving = runtime.spawn(
+        crate::shell::broker_services::NativeShortcutLibrary::commit(
+            tree.clone(),
+            Some(Arc::clone(&net)),
+            room,
+            ada_person.clone(),
+            tilo_automation::ShortcutChange::Save(Box::new(shortcut)),
+        ),
+    );
+    until("the room's host to commit the shortcut", || {
+        net.tick();
+        saving.is_finished().then_some(())
+    });
+    runtime
+        .block_on(saving)
+        .unwrap()
+        .expect("the room's host commits the session's shortcut");
+    let held = until("the session to hold the saved shortcut", || {
+        net.tick();
+        tree.read()
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.room() == room)?
+            .shortcuts
+            .iter()
+            .find(|shortcut| shortcut.id == "standup")
+            .cloned()
+    });
+    assert_eq!(
+        tilo_peer_state::room::proven_saver(
+            &acme.room,
+            &held,
+            &RevocationList::new(),
+            tilo_clock::unix_now_ns(),
+        ),
+        Some(ada_person),
+        "saved with the session device's proof"
     );
 
     // The browser announces no identity to the session, yet its actions

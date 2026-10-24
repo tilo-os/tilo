@@ -1,13 +1,14 @@
 //! A member's own business in a room this relay governs, as actions
 //! (provider [`MEMBER_ACTIONS_PROVIDER`]): claiming their topology namespace,
-//! recording their own effect receipt, and having the host create the empty
-//! record of an app they open there first.
+//! recording their own effect receipt, saving a shortcut as themselves, and
+//! having the host create the empty record of an app they open there first.
 //!
 //! None is governance, and none grants anything: each runs a room method
 //! that decides it for the person the room certified the calling device to
 //! (a claim needs their current Write, a receipt is only their own, and a
 //! record only for an app the room lets author and a record they may
-//! change). Every person the room admitted is offered all three; an agent or
+//! change, and a shortcut only as themselves). Every person the room
+//! admitted is offered all four; an agent or
 //! a bot is offered none.
 
 use serde_json::{Value, json};
@@ -15,7 +16,7 @@ use tilo_actions::remote::{ActionHostError, Caller, CatalogueRow, InvokeRequest}
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_relay_session::rooms::{
     CLAIM_TOPOLOGY_NAMESPACE, MEMBER_ACTIONS_PROVIDER, MEMBER_RESOURCE_KIND,
-    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, member_resource,
+    PREPARE_APPLICATION_RECORD, RECORD_EFFECT_RECEIPT, SAVE_SHORTCUT, member_resource,
 };
 
 use super::{Args, Publisher, Verb, invalid, refused};
@@ -28,7 +29,7 @@ pub(super) const MEMBER: Publisher = Publisher {
 };
 
 /// What a member does for themselves, in catalogue order.
-const MEMBER_VERBS: [Verb; 3] = [
+const MEMBER_VERBS: [Verb; 4] = [
     Verb {
         id: CLAIM_TOPOLOGY_NAMESPACE,
         label: "Claim topology namespace",
@@ -50,7 +51,22 @@ const MEMBER_VERBS: [Verb; 3] = [
         kind: ActionKind::Outside,
         params: record_params,
     },
+    Verb {
+        id: SAVE_SHORTCUT,
+        label: "Save shortcut",
+        gate: SAVE_SHORTCUT,
+        kind: ActionKind::Undoable,
+        params: shortcut_params,
+    },
 ];
+
+fn shortcut_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "change",
+        ParamType::Text,
+        "The shortcut to save or remove, as JSON text; a saved one names as its saver nobody or the caller, by their device's proof.",
+    )]
+}
 
 fn claim_params() -> Vec<ActionParam> {
     vec![ActionParam::required(
@@ -139,6 +155,12 @@ impl Rooms {
                 let redacted = args.required_text("redacted")?;
                 self.record_member_effect_receipt(&room, &device, invocation, redacted.as_bytes())
                     .await
+            }
+            SAVE_SHORTCUT => {
+                let change: tilo_automation::ShortcutChange =
+                    serde_json::from_str(args.required_text("change")?)
+                        .map_err(|_| invalid("`change` must be a shortcut change as JSON"))?;
+                self.save_member_shortcut(&room, &device, &change).await
             }
             PREPARE_APPLICATION_RECORD => {
                 let request = crate::rooms::member_records::PrepareApplicationRecordRequest {

@@ -323,6 +323,7 @@ fn refresh_draft(source: &MorningSource) -> tilo_automation::Shortcut {
         grant: Vec::new(),
         triggers: Vec::new(),
         saved_by: None,
+        saved_proof: None,
     }
 }
 

@@ -2321,37 +2321,15 @@ impl WorkspaceTree {
         )
     }
 
-    /// Save `shortcut` in `workspace_id`, replacing the shortcut with the
-    /// same id. `false` when the workspace is not held here.
-    pub fn save_workspace_shortcut(
-        &mut self,
-        workspace_id: WorkspaceId,
-        shortcut: &tilo_automation::Shortcut,
-    ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-        else {
-            return false;
-        };
-        match workspace
-            .shortcuts
-            .iter_mut()
-            .find(|saved| saved.id == shortcut.id)
-        {
-            Some(saved) => *saved = shortcut.clone(),
-            None => workspace.shortcuts.push(shortcut.clone()),
-        }
-        workspace
-            .shortcuts
-            .sort_by(|left, right| left.id.cmp(&right.id));
-        if tilo_desktop_model::desktop_doc::upsert_shortcut(&mut self.doc, workspace_id, shortcut) {
-            self.commit_room_change();
-        }
-        self.queue_save();
-        true
+    /// The device revocations the room document of `room` records, against
+    /// which a saved shortcut's proof is judged each time it arms
+    /// ([`tilo_peer_state::room::proven_saver`]). `None` when this device
+    /// holds no document of the room: nothing saved there arms.
+    #[must_use]
+    pub fn room_revocations(&self, room: RoomId) -> Option<tilo_user_identity::RevocationList> {
+        self.room_docs
+            .get(&room)
+            .map(tilo_peer_state::room::room_revocations)
     }
 
     /// Record that `claim.device` takes a fire time of one of the shortcuts
@@ -2398,39 +2376,6 @@ impl WorkspaceTree {
             &mut self.doc,
             workspace_id,
             claim,
-        ) {
-            self.commit_room_change();
-        }
-        self.queue_save();
-        true
-    }
-
-    /// Delete shortcut `shortcut_id` from `workspace_id`. `false` when there
-    /// was no such shortcut.
-    pub fn remove_workspace_shortcut(
-        &mut self,
-        workspace_id: WorkspaceId,
-        shortcut_id: &str,
-    ) -> bool {
-        let Some(workspace) = self
-            .desktop
-            .workspaces
-            .iter_mut()
-            .find(|workspace| workspace.id == workspace_id)
-        else {
-            return false;
-        };
-        let before = workspace.shortcuts.len();
-        workspace
-            .shortcuts
-            .retain(|shortcut| shortcut.id != shortcut_id);
-        if workspace.shortcuts.len() == before {
-            return false;
-        }
-        if tilo_desktop_model::desktop_doc::remove_shortcut(
-            &mut self.doc,
-            workspace_id,
-            shortcut_id,
         ) {
             self.commit_room_change();
         }
@@ -2917,12 +2862,16 @@ impl WorkspaceTree {
         actor: &UserId,
         changes: Vec<tilo_action_policy::Change>,
     ) -> Result<PolicyEdit, tilo_action_policy::Refusal> {
-        self.desktop
+        let edit = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)
             .ok_or_else(|| tilo_action_policy::Refusal::NotPermitted("no such workspace".into()))?
-            .govern_all_at(actor, changes, tilo_clock::unix_now())
+            .govern_all_at(actor, changes, tilo_clock::unix_now())?;
+        // An admitted projection reaches the authority exports.
+        self.export_fs_capabilities();
+        Ok(edit)
     }
 
     /// Make `person` a member of `workspace_id` holding `role` here, as
@@ -2962,7 +2911,8 @@ impl WorkspaceTree {
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
-        self.desktop
+        let granted = self
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == workspace_id)?
@@ -2970,7 +2920,9 @@ impl WorkspaceTree {
             .ok()?
             .sandbox_granted
             .first()
-            .cloned()
+            .cloned();
+        self.export_fs_capabilities();
+        granted
     }
 
     /// Take the policy changes asked of governors as their governor would,
