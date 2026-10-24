@@ -107,7 +107,7 @@ const FLATHUB_INSTALL_PREFIX: &str = "flathub-install:";
 
 /// Matching like the installed apps': words spread over fields, typos in
 /// names.
-const CATALOGUE_MATCHING: Matching = Matching::NAMES;
+const CATALOGUE_MATCHING: Matching = Matching::LOOSE;
 
 /// (installed apps, Tilo registries, Flathub and blocks, host apps).
 type Generation = (u64, u64, u64, u64);
