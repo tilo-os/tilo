@@ -478,6 +478,18 @@ content scripts (with `sender.tab`) work without help.
   answers when the worker does not. A port's messages go to the host in
   order, batched while a request is under way, and on from the host to the
   worker or page the same way, so a burst wakes the worker once.
+- An offscreen document (`chrome.offscreen`, which MV3 extensions make to
+  parse HTML, copy to the clipboard or play sound) is Chromium's own: made,
+  found (`hasDocument`, `runtime.getContexts`) and closed as in Chrome, it
+  has Chrome's one API there, `runtime`, and asks its worker for whatever
+  needs a tab. A message from a script the host runs in a page reaches it
+  as well: Chromium keeps the document with no tab, so for an extension
+  with the `offscreen` permission the host finds it among the pipe's
+  targets and delivers the message there, attached for as long as that
+  takes. A port such a script opens does not reach it. Its sound plays
+  through Chromium's own output, not the audio bridge, which CEF feeds only
+  with its browsers' sound: a governed Browser, which has no audio device,
+  plays none of it.
 - `scripting.executeScript` reaches the frames an extension names
   (`frameIds`, `documentIds`, `allFrames`) and `tabs.sendMessage` one frame
   (`frameId`, `documentId`), as Bitwarden injects its form filler into each

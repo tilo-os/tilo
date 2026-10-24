@@ -2472,14 +2472,50 @@ class ExtensionTabs {
   // A message from a script in a world the host made, for every listener of
   // the extension, in its worker and its open pages alike: answered by the
   // first reply, with nothing when none came, and refused when no listener
-  // heard it.
+  // heard it. Its offscreen document (`chrome.offscreen`) hears it too, as in
+  // Chrome: Chromium keeps that document with no tab, so the host looks for
+  // it, and only for an extension that may make one.
   void ToExtension(const std::string& extension, CefRefPtr<CefValue> message, CefRefPtr<CefDictionaryValue> sender, Answer answer) {
-    const auto ends = Ends(extension);
-    if (ends.empty()) { answer(std::string(kNoReceiver), nullptr); return; }
+    // Read now: the message does not outlive the call it came with.
+    auto expression = Dispatch(message, sender);
+    if (!Has(extension, "offscreen")) { Broadcast(extension, Ends(extension), {}, expression, std::move(answer)); return; }
+    OffscreenDocuments(extension, [this, extension, expression, answer = std::move(answer)](std::vector<std::string> documents) mutable {
+      Broadcast(extension, Ends(extension), std::move(documents), expression, std::move(answer));
+    });
+  }
+  // The extension's offscreen documents, by their targets on the pipe.
+  void OffscreenDocuments(const std::string& extension, std::function<void(std::vector<std::string>)> then) {
+    hooks_.pipe("Target.getTargets", nullptr, "", [extension, then = std::move(then)](bool ok, CefRefPtr<CefDictionaryValue> result) {
+      const std::string prefix = "chrome-extension://" + extension + "/";
+      std::vector<std::string> documents;
+      auto infos = ok && result ? result->GetList("targetInfos") : nullptr;
+      for (size_t i = 0; infos && i < infos->GetSize(); ++i) {
+        auto info = infos->GetDictionary(i);
+        if (StringOf(info, "type") == "background_page" && StringOf(info, "url").rfind(prefix, 0) == 0) documents.push_back(StringOf(info, "targetId"));
+      }
+      then(std::move(documents));
+    });
+  }
+  // Evaluate `expression` in a document the host has no tab for, attached
+  // to on the pipe for as long as that takes.
+  void InDocument(const std::string& target, const std::string& expression, Answer answer) {
+    auto params = CefDictionaryValue::Create();
+    params->SetString("targetId", target);
+    params->SetBool("flatten", true);
+    hooks_.pipe("Target.attachToTarget", params, "", [this, expression, answer = std::move(answer)](bool ok, CefRefPtr<CefDictionaryValue> result) mutable {
+      const auto session = ok && result ? StringOf(result, "sessionId") : std::string();
+      if (session.empty()) { answer(std::string("The document is gone"), nullptr); return; }
+      Run(session, Waiting{expression, false, std::move(answer)}, [this, session] {
+        hooks_.pipe("Target.detachFromTarget", Session(session), "", [](bool, CefRefPtr<CefDictionaryValue>) {});
+      });
+    });
+  }
+  void Broadcast(const std::string& extension, const std::vector<int>& ends, std::vector<std::string> documents,
+                 const std::string& expression, Answer answer) {
+    if (ends.empty() && documents.empty()) { answer(std::string(kNoReceiver), nullptr); return; }
     struct Round { size_t left; bool done = false, heard = false; Answer answer; };
-    auto round = std::make_shared<Round>(Round{ends.size(), false, false, std::move(answer)});
-    const auto expression = Dispatch(message, sender);
-    for (int end : ends) AtEnd(extension, end, expression, [round](std::optional<std::string> error, CefRefPtr<CefValue> value) {
+    auto round = std::make_shared<Round>(Round{ends.size() + documents.size(), false, false, std::move(answer)});
+    const Answer heard = [round](std::optional<std::string> error, CefRefPtr<CefValue> value) {
       if (round->done) return;
       auto result = !error && value && value->GetType() == VTYPE_DICTIONARY ? value->GetDictionary() : nullptr;
       if (result && result->HasKey("reply")) {
@@ -2491,7 +2527,9 @@ class ExtensionTabs {
       if (--round->left) return;
       round->done = true;
       if (round->heard) round->answer(std::nullopt, nullptr); else round->answer(std::string(kNoReceiver), nullptr);
-    });
+    };
+    for (int end : ends) AtEnd(extension, end, expression, heard);
+    for (const auto& document : documents) InDocument(document, expression, heard);
   }
 
   // A script in a page opened `port` (runtime.connect): every end of the

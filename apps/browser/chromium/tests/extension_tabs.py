@@ -105,6 +105,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   sight: a site that sends them straight back signs them in, one whose page
   loads and waits for them says it needs them. getAuthToken says no one
   signed in to the Browser.
+- An offscreen document an extension makes, finds and closes
+  (chrome.offscreen) parses for its worker, which answers it for the tabs it
+  has no API for, and a script the extension injected into the page reaches
+  it, as in Chrome.
 """
 import base64
 import hashlib
@@ -1809,6 +1813,23 @@ class ExtensionTabs(unittest.TestCase):
         self.assertEqual(len(json.loads(read('JSON.stringify(signIns)'))), 4, 'still going on')
         host.send(op='close_tab', tab=6)
         self.assertEqual(outcomes(5)[4], {'error': 'The user did not approve access.'})
+
+    def test_an_offscreen_document_works_for_its_worker_and_hears_the_page(self):
+        host, ids = self.start('offscreener', access={'offscreener': (['offscreen', 'activeTab', 'scripting', 'tabs'], [])})
+        page = self.url + '/parsed'
+        host.navigate(page)
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['offscreener'])
+        seen = json.loads(self.title(host, 1, 'offscreen:')[len('offscreen:'):])
+        # The document has Chrome's one API there, runtime, and the worker
+        # answers for the tabs: the page in front, asked of by no tab.
+        front = {'url': page, 'from': '/offscreen.html', 'tabless': True}
+        self.assertEqual(seen, {
+            'before': False, 'after': True, 'contexts': ['/offscreen.html'],
+            'second': 'Only a single offscreen document may be created.',
+            'parsed': {'title': 'page /parsed', 'apis': ['runtime'], 'front': front},
+            'direct': {'title': 'from the page', 'apis': ['runtime'], 'front': front},
+            'closed': False})
 
 
 def walk(items):
