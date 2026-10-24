@@ -9841,7 +9841,7 @@ mod loop_gating_tests {
             "wakeups that change nothing take neither the tree nor the protection lock"
         );
 
-        drop(state.workspace_tree.write());
+        crate::shell::tab_binding::note_tab_artwork_changed(&mut state.workspace_tree.write());
         state.sync_capture_protection();
         assert_eq!(
             state.capture_protection_passes(),
