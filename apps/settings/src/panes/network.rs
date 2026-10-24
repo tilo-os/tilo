@@ -728,20 +728,7 @@ impl NetworkSnapshot {
     /// system bus, so this never runs on the UI thread.
     fn read(initial: bool) -> Self {
         let profiles = os_actions::list_saved_network_profiles();
-        let radios = os_actions::get_radio_state();
-        let networks = os_actions::list_wifi_networks();
-        let on_wifi = networks
-            .as_ref()
-            .is_ok_and(|networks| networks.iter().any(|network| network.connected));
         Self {
-            link: on_wifi
-                .then(os_actions::network_settings::wifi_link_details)
-                .and_then(Result::ok),
-            networks,
-            wifi_enabled: Some(wifi_enabled_from(&radios)),
-            wired: Some(os_actions::get_wired()),
-            radios: Some(radios),
-            connectivity: Some(os_actions::get_connectivity()),
             wake_settings: profiles
                 .as_deref()
                 .unwrap_or_default()
@@ -756,6 +743,34 @@ impl NetworkSnapshot {
                 .map(load_profile_settings)
                 .unwrap_or_default(),
             profiles: Some(profiles),
+            plugins: initial.then(os_actions::network_settings::installed_vpn_plugins),
+            device_vpn: DeviceVpnPart::Read(DeviceVpnStatus::load()),
+            ..Self::status()
+        }
+    }
+
+    /// What changes as the device runs: the radios, the links, the
+    /// networks in range, the hotspot's clients and the VPNs. The saved
+    /// profiles, their settings and the session's device VPN (whose file
+    /// is followed on its own) are not read, so adopting it leaves them.
+    fn status() -> Self {
+        let radios = os_actions::get_radio_state();
+        let networks = os_actions::list_wifi_networks();
+        let on_wifi = networks
+            .as_ref()
+            .is_ok_and(|networks| networks.iter().any(|network| network.connected));
+        Self {
+            link: on_wifi
+                .then(os_actions::network_settings::wifi_link_details)
+                .and_then(Result::ok),
+            networks,
+            wifi_enabled: Some(wifi_enabled_from(&radios)),
+            wired: Some(os_actions::get_wired()),
+            radios: Some(radios),
+            connectivity: Some(os_actions::get_connectivity()),
+            profiles: None,
+            profile_settings: HashMap::new(),
+            wake_settings: HashMap::new(),
             hotspot_clients: Some(os_actions::list_hotspot_clients()),
             vpns: Some(os_actions::list_vpn_connections().map(|vpns| {
                 vpns.into_iter()
@@ -771,8 +786,8 @@ impl NetworkSnapshot {
                     })
                     .collect()
             })),
-            plugins: initial.then(os_actions::network_settings::installed_vpn_plugins),
-            device_vpn: DeviceVpnPart::Read(DeviceVpnStatus::load()),
+            plugins: None,
+            device_vpn: DeviceVpnPart::NotRead,
         }
     }
 
@@ -1001,6 +1016,18 @@ pub(crate) trait NetworkService: Send + Sync {
     fn networks(&self) -> NetworkSnapshot {
         NetworkSnapshot::networks_only(self.snapshot(false).networks)
     }
+    /// What changes as the device runs (the radios, the links, the
+    /// networks in range, the VPNs) without the saved profiles and their
+    /// settings: what is read again when the device reports a change.
+    fn status(&self) -> NetworkSnapshot {
+        self.snapshot(false)
+    }
+    /// Follow the device: `changed` is called, on another thread, each time
+    /// it reports a change Network shows, for as long as the answer is
+    /// held. `None` when nothing can be followed.
+    fn follow(&self, _changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        None
+    }
     /// Ask the device to check internet connectivity again, so the next
     /// snapshot carries a fresh verdict. Only the explicit refresh does this.
     fn recheck_connectivity(&self) {}
@@ -1065,6 +1092,20 @@ impl NetworkService for DeviceNetwork {
 
     fn snapshot(&self, initial: bool) -> NetworkSnapshot {
         NetworkSnapshot::read(initial)
+    }
+
+    fn status(&self) -> NetworkSnapshot {
+        NetworkSnapshot::status()
+    }
+
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        match os_actions::network::follow_network_changes(changed) {
+            Ok(follow) => Some(Box::new(follow)),
+            Err(error) => {
+                warn!(target: "tilo::settings", %error, "NetworkManager's changes are not followed");
+                None
+            }
+        }
     }
 
     fn device_vpn(&self) -> Option<DeviceVpnStatus> {
@@ -1783,6 +1824,10 @@ pub struct NetworkModel {
     /// and whose page is one of this pane's: the window's [`mobile::MobileArea`]
     /// keeps it, the pane composes and polls it.
     mobile: Option<Shared<mobile::MobileModel>>,
+    /// What follows the device while a pane shows the model.
+    following: std::rc::Weak<crate::watch::Counted>,
+    /// The device's change count when the model last started a read.
+    changes_seen: u64,
     changed: bool,
 }
 
@@ -2014,6 +2059,8 @@ impl NetworkModel {
             vpn: vpn::VpnState::default(),
             jobs: Vec::new(),
             mobile: None,
+            following: std::rc::Weak::new(),
+            changes_seen: 0,
             changed: false,
         }
     }
@@ -2073,14 +2120,68 @@ impl NetworkModel {
     /// Start reading a snapshot in the background; a newer read supersedes
     /// an older one still running.
     fn start_snapshot(&mut self) {
+        let initial = !self.loaded;
+        // A whole read covers every change the device reported before it.
+        if let Some(changes) = self.device_changes() {
+            self.changes_seen = changes;
+        }
+        self.start_read(move |service| service.snapshot(initial));
+    }
+
+    /// The device's change count, while it is followed.
+    fn device_changes(&self) -> Option<u64> {
+        self.following.upgrade()?.changes()
+    }
+
+    /// Read the device's status again once it reported a change: a VPN
+    /// brought up from quick settings, a cable pulled out, airplane mode
+    /// turned on elsewhere shows while the page is open. One read at a
+    /// time; changes during it are read after it, and none while a change
+    /// of the pane's own runs (its landing reads the device anyway).
+    fn read_reported_changes(&mut self) {
+        let Some(changes) = self.device_changes() else {
+            return;
+        };
+        if changes == self.changes_seen
+            || !self.loaded
+            || self.snapshot.is_some()
+            || self.in_flight > 0
+        {
+            return;
+        }
+        self.changes_seen = changes;
+        self.start_read(|service| service.status());
+    }
+
+    /// Follow the device while a pane shows the model.
+    fn follow_device(&mut self) -> Rc<crate::watch::Counted> {
+        if let Some(held) = self.following.upgrade() {
+            return held;
+        }
+        let service = Arc::clone(&self.service);
+        let started = crate::watch::shared(&mut self.following, move || {
+            crate::watch::Counted::start(|changed| service.follow(changed))
+        });
+        // Nothing was followed while no pane showed the model: a model
+        // already read reads the status again once; a first read on its way
+        // covers it.
+        self.changes_seen = if self.loaded { u64::MAX } else { 0 };
+        started
+    }
+
+    /// Read with `read` in the background; a newer read supersedes an older
+    /// one still running.
+    fn start_read(
+        &mut self,
+        read: impl FnOnce(&dyn NetworkService) -> NetworkSnapshot + Send + 'static,
+    ) {
         let (sender, receiver) = crate::channel::channel();
         let service = Arc::clone(&self.service);
-        let initial = !self.loaded;
         let wake = ui::WakeHandle::new();
         let started = crate::device_read::thread(
             "settings-network-read",
             Box::new(move || {
-                if sender.send(service.snapshot(initial)).is_ok() {
+                if sender.send(read(service.as_ref())).is_ok() {
                     wake.wake();
                 }
             }),
@@ -3569,6 +3670,7 @@ impl PaneModel for NetworkModel {
 
     fn poll(&mut self) -> bool {
         self.poll_background();
+        self.read_reported_changes();
         self.poll_prompt();
         self.poll_device_vpn();
         if let Some(mobile) = &self.mobile
@@ -3616,7 +3718,8 @@ impl PaneModel for NetworkModel {
     }
 
     fn follow(&mut self) -> Option<Rc<dyn std::any::Any>> {
-        self.follow_device_vpn()
+        let device = self.follow_device();
+        Some(Rc::new((device, self.follow_device_vpn())))
     }
 }
 

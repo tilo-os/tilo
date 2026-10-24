@@ -133,6 +133,14 @@ impl FakeDevice {
     fn interface(&self) -> String {
         self.interface.clone()
     }
+
+    #[zbus(signal, name = "StateChanged")]
+    async fn state_signal(
+        emitter: &SignalEmitter<'_>,
+        new: u32,
+        old: u32,
+        reason: u32,
+    ) -> zbus::Result<()>;
 }
 
 /// A Wi-Fi device whose scans finish when the test says so.
@@ -539,4 +547,59 @@ async fn a_vpn_that_drops_is_not_counted_as_turned_off() {
             break;
         }
     }
+}
+
+/// The change watch counts what network settings shows (a device changing
+/// state, the root's properties) and not a Wi-Fi device's scan bookkeeping,
+/// and ends with the connection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_change_watch_counts_what_settings_shows() {
+    let (server, client) = serve(wifi_nm(2, Arc::default())).await;
+    let mut changes = NmClient::new(client).watch_changes().await.unwrap();
+    assert_eq!(changes.count(), 0);
+
+    // A finished scan first, then the cable going out: only the second is
+    // a change.
+    let wireless = server
+        .object_server()
+        .interface::<_, FakeWireless>(DEVICE)
+        .await
+        .unwrap();
+    wireless.get_mut().await.last_scan = 2_000;
+    wireless
+        .get()
+        .await
+        .last_scan_changed(wireless.signal_emitter())
+        .await
+        .unwrap();
+    let device = server
+        .object_server()
+        .interface::<_, FakeDevice>(DEVICE)
+        .await
+        .unwrap();
+    FakeDevice::state_signal(device.signal_emitter(), 30, 100, 40)
+        .await
+        .unwrap();
+    let counted = tilo_test_env::within("a device changing state is a change", changes.changed())
+        .await
+        .expect("the follower is still running");
+    assert_eq!(counted, 1);
+    // The scan came first on the wire: had it counted, it would be by now.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert_eq!(changes.count(), 1, "a finished scan is not a change");
+
+    // Metered and the primary connection: two root properties.
+    update(&server, |nm| nm.metered = 1).await;
+    while changes.count() < 3 {
+        tilo_test_env::within("the root's properties are changes", changes.changed())
+            .await
+            .expect("the follower is still running");
+    }
+
+    // The interfaces hold the server's connection too.
+    drop((wireless, device, server));
+    tilo_test_env::within("the watch ends with the connection", async {
+        while changes.changed().await.is_some() {}
+    })
+    .await;
 }

@@ -358,6 +358,11 @@ struct FakeNetwork {
     scan_refusal: Mutex<Option<String>>,
     /// What the session publishes of the person's devices as VPNs.
     device_vpn: Mutex<Option<settings_store::device_vpn::DeviceVpnStatus>>,
+    /// Whether the device can be followed, as `NetworkManager` can.
+    follows: std::sync::atomic::AtomicBool,
+    /// What tells the model of a change, while it follows the device.
+    follower: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    status_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl FakeNetwork {
@@ -537,6 +542,24 @@ impl NetworkService for FakeNetwork {
 
     fn device_vpn(&self) -> Option<settings_store::device_vpn::DeviceVpnStatus> {
         self.device_vpn.lock().unwrap().clone()
+    }
+
+    fn status(&self) -> NetworkSnapshot {
+        self.status_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut snapshot = NetworkSnapshot::of_networks(self.networks.lock().unwrap().clone());
+        snapshot.vpns = Some(Ok(self.vpns.lock().unwrap().clone()));
+        snapshot.profiles = None;
+        snapshot.plugins = None;
+        snapshot
+    }
+
+    fn follow(&self, changed: Box<dyn Fn() + Send + Sync>) -> Option<Box<dyn std::any::Any>> {
+        if !self.follows.load(std::sync::atomic::Ordering::Relaxed) {
+            return None;
+        }
+        *self.follower.lock().unwrap() = Some(Arc::from(changed));
+        Some(Box::new(()))
     }
 
     fn change(&self, change: &NetworkChange) -> Result<(), String> {
@@ -2585,4 +2608,73 @@ fn the_vpn_tool_opens_settings_where_it_asks() {
         model.page_key(),
         Some(super::vpn::profile_page_key(&work_vpn().uuid))
     );
+}
+
+/// A change the device reports while Network is shown is read at once: a
+/// VPN brought up or down from quick settings or `nmcli` shows without
+/// reopening the page, and only the status is read again, not every saved
+/// profile's settings. Showing the page reads what changed while nothing
+/// followed; once no pane shows the model, nothing is read.
+#[test]
+fn a_change_the_device_reports_shows_while_network_is_open() {
+    let fake = Arc::new(FakeNetwork::default());
+    fake.vpns.lock().unwrap().push(work_vpn());
+    fake.follows
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut network = model(&fake);
+    // The networks were just looked for: no periodic scan comes between.
+    network.scanned_at = Some(ui::time::now());
+    assert_eq!(network.vpn_summary(), t("net-vpn-off"));
+    let snapshots = fake
+        .snapshot_reads
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let status_reads = || fake.status_reads.load(std::sync::atomic::Ordering::Relaxed);
+    // Poll as the window does until the pane shows `summary`; whether a
+    // poll asked the pane to show something new.
+    let poll_until = |network: &mut NetworkModel, summary: &str| {
+        let deadline = tilo_test_env::hang_deadline();
+        let mut recomposed = false;
+        while network.vpn_summary() != summary {
+            recomposed |= network.poll();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the device was never read again"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        recomposed
+    };
+
+    // Brought up while no pane showed the model.
+    fake.vpns.lock().unwrap()[0].active = true;
+    let following = PaneModel::follow(&mut network).expect("a shown pane follows the device");
+    let changed = fake
+        .follower
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the device is followed while the pane shows it");
+    assert!(poll_until(&mut network, "Work"), "the pane shows it");
+    assert_eq!(status_reads(), 1, "showing the page reads the status once");
+
+    // Brought down while the page is open.
+    fake.vpns.lock().unwrap()[0].active = false;
+    changed();
+    assert!(
+        poll_until(&mut network, &t("net-vpn-off")),
+        "the pane shows the change"
+    );
+    assert_eq!(status_reads(), 2, "one change, one status read");
+    assert_eq!(
+        fake.snapshot_reads
+            .load(std::sync::atomic::Ordering::Relaxed),
+        snapshots,
+        "a reported change does not read every profile's settings again"
+    );
+
+    drop(following);
+    changed();
+    network.poll();
+    assert!(network.snapshot.is_none(), "a closed pane reads nothing");
+    assert_eq!(status_reads(), 2);
 }
