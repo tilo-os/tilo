@@ -729,11 +729,13 @@ content scripts (with `sender.tab`) work without help.
   panel cannot be widened. Extensions' keyboard shortcuts run while
   a page has the keyboard, not while the address bar or a popup has it; the
   suggested keys are the ones given (there is no page to change them), and
-  `global` shortcuts work only in the Browser. A keyword's Enter always
-  goes to the current tab (no Alt+Enter for a new one), and its suggestions
-  cannot be deleted (`onDeleteSuggestion`). Their context menu items show
-  no checkmark and no submenu, and appear only in a page's menu, not the
-  toolbar button's.
+  `global` shortcuts work only in the Browser. On macOS a shortcut with
+  Option (Alt) and no Command or Control does not run: the Browser forwards
+  the character Option types ("˚" for Option+K), not the key. A keyword's
+  Enter always goes to the current tab (no Alt+Enter for a new one), and its
+  suggestions cannot be deleted (`onDeleteSuggestion`). Their context menu
+  items show no checkmark and no submenu, and appear only in a page's menu,
+  not the toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - An extension's notification shows the Browser's icon, not its own or its
   image, and a notification the person dismisses without choosing it stays
