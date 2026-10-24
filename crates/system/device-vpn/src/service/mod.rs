@@ -73,7 +73,7 @@ impl<B: Backend> Service<B> {
     pub fn handle(&mut self, caller: Caller, request: Request) -> (Response, Option<OwnedFd>) {
         match request {
             Request::Status => (self.status(), None),
-            Request::OpenClient { link } => match self.open_client(caller, link) {
+            Request::OpenClient { link } => match self.open_client(caller, &link) {
                 Ok(fd) => (
                     Response::Opened {
                         interface: CLIENT_INTERFACE.into(),
@@ -84,7 +84,7 @@ impl<B: Backend> Service<B> {
                 Err(response) => (response, None),
             },
             Request::CloseClient => (self.close_client(caller), None),
-            Request::OpenExit { link } => match self.open_exit(caller, link) {
+            Request::OpenExit { link } => match self.open_exit(caller, &link) {
                 Ok(fd) => (
                     Response::Opened {
                         interface: EXIT_INTERFACE.into(),
@@ -134,7 +134,7 @@ impl<B: Backend> Service<B> {
         Ok(())
     }
 
-    fn open_client(&mut self, caller: Caller, link: ClientLink) -> Result<OwnedFd, Response> {
+    fn open_client(&mut self, caller: Caller, link: &ClientLink) -> Result<OwnedFd, Response> {
         if let Some(refused) =
             self.owned_by_another(self.record.client.as_ref().map(|c| c.owner), caller)
         {
@@ -153,7 +153,7 @@ impl<B: Backend> Service<B> {
             .map_err(|message| Response::Failed { message })?;
         let commands = plan::open_client(
             caller.uid,
-            &link,
+            link,
             previous
                 .as_ref()
                 .map(|previous| (previous.owner, &previous.link)),
@@ -211,7 +211,7 @@ impl<B: Backend> Service<B> {
         self.save();
     }
 
-    fn open_exit(&mut self, caller: Caller, link: ExitLink) -> Result<OwnedFd, Response> {
+    fn open_exit(&mut self, caller: Caller, link: &ExitLink) -> Result<OwnedFd, Response> {
         if let Some(refused) =
             self.owned_by_another(self.record.exit.as_ref().map(|e| e.owner), caller)
         {
@@ -237,7 +237,7 @@ impl<B: Backend> Service<B> {
         });
         self.save();
         let result = self
-            .run_all(&plan::open_exit(&link, !was_forwarding))
+            .run_all(&plan::open_exit(link, !was_forwarding))
             .and_then(|()| {
                 if was_forwarding {
                     Ok(())

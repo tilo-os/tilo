@@ -20,8 +20,8 @@ pub struct Config {
     pub busctl: PathBuf,
     /// The record of what is set up, gone at reboot with everything it names.
     pub record: PathBuf,
-    /// Present while NetworkManager's global DNS points at the tunnel, which
-    /// NetworkManager keeps across reboots.
+    /// Present while `NetworkManager`'s global DNS points at the tunnel, which
+    /// `NetworkManager` keeps across reboots.
     pub dns_marker: PathBuf,
     pub forwarding: PathBuf,
     pub sys_class_net: PathBuf,
@@ -68,7 +68,7 @@ impl LinuxBackend {
             .map_or_else(|_| Record::default(), |bytes| Record::parse(&bytes))
     }
 
-    /// Whether NetworkManager's DNS was left pointing at a tunnel.
+    /// Whether `NetworkManager`'s DNS was left pointing at a tunnel.
     pub fn dns_marked(&self) -> bool {
         self.config.dns_marker.exists()
     }

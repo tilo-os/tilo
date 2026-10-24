@@ -61,6 +61,8 @@ pub mod device_local_actions;
 pub(crate) mod device_pairing;
 pub mod device_unlock;
 pub mod device_unlock_runtime;
+#[cfg(target_os = "linux")]
+pub mod device_vpn;
 pub mod device_wake;
 pub mod directory_sheet;
 #[cfg(test)]

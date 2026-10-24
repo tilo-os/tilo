@@ -17,10 +17,11 @@ and nobody configures keys, ports or endpoints.
   person's own VPN profiles. Options: all traffic or only the exit's home
   network(s); DNS through the exit; a kill switch that blocks traffic while
   the tunnel is down.
-- The same state and controls are actions on the `network.device-vpn`
-  resources (connect through a device, stop, offer this device, stop a device
-  using it), so automation, agents and assistive technology reach exactly
-  what the switches reach.
+- The same state and controls are actions on the person's devices in the
+  palette's continuity actions (`vpn.through.*`, `vpn.stop.*`,
+  `vpn.exit.stop.*`, `vpn.exit.share`/`unshare`), dispatched through the same
+  device-fabric action path as the other continuity controls, so automation,
+  agents and assistive technology reach exactly what the switches reach.
 
 ## Pieces
 
@@ -122,20 +123,58 @@ none), and `device_vpn.stop` (a one-off request to stop a device using this
 exit). Settings, quick settings and the actions all write those; the shell
 follows them and makes the tunnel match.
 
-- **Offers** are a presence fact: a device whose exit switch is on (and whose
-  image has the helper) sets `vpn_exit` in its fabric capabilities, so the
-  person's other devices list it without asking each one.
-- **Client states:** connecting, connected (through which device, since
-  when), reconnecting, blocked (kill switch on, tunnel down), and failed with
-  the reason in the person's words. A tunnel that drops reconnects with
-  backoff. With the kill switch the helper's block stays in place meanwhile;
-  without it, routes and DNS are undone at once so traffic flows normally.
+- **Offers** are learnt by asking: when the person's online devices change,
+  and every five minutes, the shell probes each one on the tunnel ALPN, and
+  lists those that answer with an offer. (A fabric capability would spare the
+  probes, but adding a field changes the fabric's Postcard schema, which
+  devices on another version would then refuse whole.)
+- **Client states:** connecting, connected (since when), reconnecting (with
+  whether the kill switch blocks meanwhile), refused (the exit does not count
+  this device as the person's, its switch is off, or it has no room), and
+  failed (the helper is not installed, refused the route, or "only my home
+  network" found none). A tunnel that drops reconnects with backoff (one
+  second doubling to a minute); a refusal that may change by itself is asked
+  again every thirty seconds. Once the tunnel has been up, the kill switch
+  keeps the helper's link (and so its block) while it is down; without it, the
+  link is undone at once so traffic flows normally. The decisions are pure
+  functions (`controller.rs`), tested apart from the I/O.
 - **Stop at the exit** ends that device's session with `stopped`; the client
   then clears its own choice, so it does not dial straight back, and says it
   was stopped from the exit.
 - **Status** is published to `$XDG_RUNTIME_DIR/tilo/device-vpn.json` (with the
   publisher's pid and start time, like the display snapshot), which Settings
-  reads; quick settings and the actions read it in process.
+  reads with `DeviceVpnStatus::load`; quick settings and the actions read it
+  in process.
+
+### Settings
+
+`settings_store::device_vpn` is the whole seam for Settings → Network → VPN:
+
+- `DeviceVpnStatus::load()` and `rows()`: one `DeviceVpnRow` per device this
+  one routes or could route through (the current one first), each titled
+  "Through" and the device's name, with its `ClientState` while on. Turning a
+  row on writes `THROUGH` (`Through::device(id)`, options in `routes`, `dns`,
+  `kill_switch`); off clears it.
+- The opt-in row is `EXIT` (off by default; offer it while
+  `exit_available`), with `exit_users` listed under it, each with Stop, which
+  writes `STOP` (`StopRequest::after(previous, device)`).
+
+## Tests
+
+- The helper's decisions against a fake backend (`service/tests.rs`): another
+  account refused, out-of-bounds requests refused before anything runs, a
+  failed step undone, the kill switch surviving a dropped tunnel, forwarding
+  put back.
+- The tunnel over two loopback iroh endpoints with in-memory devices
+  (`tunnel/tests.rs`): another person's device refused, the person's device
+  refused while the exit is off, packets both ways, spoofed sources dropped,
+  stop and switch-off ending a running tunnel, DNS through the gateway, and a
+  packet too large answered with "fragmentation needed".
+- Two network namespaces through real TUN devices set up by the helper's
+  Linux backend (`tests/netns_tunnel.rs`), skipped without `/dev/net/tun`,
+  `ip`, `nft` and user namespaces unless `TILO_REQUIRE_TUN=1`; t's
+  `device-vpn-namespaces` check provides them.
+- The controller's kill switch and refusal handling (`controller.rs`).
 
 ## Limits
 

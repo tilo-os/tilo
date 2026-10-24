@@ -51,6 +51,8 @@ esac
 # pinned source with Tilo's patch by tools/ci/install-xwayland-satellite.sh once
 # Rust is installed; this installs its build headers and the font and cursor
 # library it needs at runtime.
+# iproute and nftables: the device VPN helper's backend sets up its TUN
+# devices with them, which tilo-device-vpn's namespace test drives.
 # pipewire, wireplumber and pipewire-gstreamer: a private PipeWire with a
 # session manager, which the screen-capture tests start to serve a headless
 # screen node to the production pipewiresrc capture path; pipewire-utils'
@@ -75,7 +77,8 @@ install_test_runtime_fedora() {
         cryptsetup swtpm swtpm-tools tpm2-tools \
         libsecret gnome-keyring python3-gobject \
         xorg-x11-server-Xwayland xcb-util-cursor-devel open-sans-fonts \
-        pipewire wireplumber pipewire-gstreamer pipewire-utils
+        pipewire wireplumber pipewire-gstreamer pipewire-utils \
+        iproute nftables
     # Package scriptlets that create system accounts (sysusers) or compile
     # GSettings schemas can be skipped or fail inside unprivileged image
     # builds without failing the transaction. Replay both idempotently so the

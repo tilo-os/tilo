@@ -15,8 +15,8 @@ name = "tilo-device-vpn"
 path = "src/main.rs"
 required-features = ["service"]
 
-# Needs `ip`, `nft`, `unshare` and /dev/net/tun, and runs in t with nested
-# sandboxes.
+# Needs `ip`, `nft`, `unshare` and /dev/net/tun: skipped without them, except
+# where TILO_REQUIRE_TUN promises them (t's device-vpn-namespaces check).
 [[test]]
 name = "netns_tunnel"
 path = "tests/netns_tunnel.rs"
@@ -46,6 +46,7 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
 iroh.workspace = true
 

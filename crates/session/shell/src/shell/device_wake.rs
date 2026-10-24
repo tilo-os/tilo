@@ -710,7 +710,7 @@ pub fn parse_mac(text: &str) -> Option<[u8; 6]> {
 
 /// Each interface's first IPv4 subnet.
 #[cfg(target_os = "linux")]
-fn ipv4_subnets() -> BTreeMap<String, Ipv4Subnet> {
+pub(crate) fn ipv4_subnets() -> BTreeMap<String, Ipv4Subnet> {
     let mut subnets = BTreeMap::new();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: `getifaddrs` fills `head` with a list we free below.

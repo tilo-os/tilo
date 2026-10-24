@@ -72,8 +72,9 @@ impl Ipv4Net {
     }
 
     fn mask(self) -> u32 {
-        u32::MAX
-            .checked_shl(32 - u32::from(self.prefix))
+        32_u32
+            .checked_sub(u32::from(self.prefix))
+            .and_then(|shift| u32::MAX.checked_shl(shift))
             .unwrap_or(0)
     }
 
@@ -180,7 +181,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<Ipv4Net>(&json).unwrap(), net);
         assert!(serde_json::from_str::<Ipv4Net>(r#""1.2.3.4/8""#).is_err());
         assert_eq!(
-            Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).map(|n| n.mask()),
+            Ipv4Net::new(Ipv4Addr::UNSPECIFIED, 0).map(Ipv4Net::mask),
             Some(0)
         );
     }

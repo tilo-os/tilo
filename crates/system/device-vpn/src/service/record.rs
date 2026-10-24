@@ -10,7 +10,7 @@ pub struct ClientRecord {
     /// The person whose shell opened it, and whose traffic it routes.
     pub owner: u32,
     pub link: ClientLink,
-    /// Whether NetworkManager's global DNS points at the tunnel.
+    /// Whether `NetworkManager`'s global DNS points at the tunnel.
     pub dns_set: bool,
 }
 
@@ -31,7 +31,7 @@ pub struct Record {
 }
 
 impl Record {
-    /// Whether NetworkManager's DNS needs putting back.
+    /// Whether `NetworkManager`'s DNS needs putting back.
     pub fn dns_set(&self) -> bool {
         self.client.as_ref().is_some_and(|client| client.dns_set)
     }

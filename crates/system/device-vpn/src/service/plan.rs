@@ -270,7 +270,7 @@ const NM: [&str; 8] = [
     "org.freedesktop.NetworkManager",
 ];
 
-/// NetworkManager's global DNS: every name asked of the gateway, or (with
+/// `NetworkManager`'s global DNS: every name asked of the gateway, or (with
 /// `None`) back to each connection's own servers.
 #[must_use]
 pub fn global_dns(through_gateway: bool) -> Command {
@@ -330,7 +330,7 @@ pub fn open_client(
 }
 
 /// Undo a client tunnel: its rules, routes, kill switch and interface.
-/// NetworkManager's DNS is the caller's to put back ([`global_dns`]).
+/// `NetworkManager`'s DNS is the caller's to put back ([`global_dns`]).
 #[must_use]
 pub fn close_client(owner: u32, link: &ClientLink) -> Vec<Command> {
     let mut commands = rule_commands(owner, link, "del");

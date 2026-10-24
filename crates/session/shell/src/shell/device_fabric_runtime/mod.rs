@@ -2139,6 +2139,8 @@ impl DeviceFabricRuntime {
         self.merge_remote_state(network, selection, &device, policy);
         publish_device_displays(network, policy, &mut self.published_displays);
         crate::shell::device_unlock_runtime::refresh(network);
+        #[cfg(target_os = "linux")]
+        crate::shell::device_vpn::refresh(network);
         if policy.permits(ContinuityCapability::WifiSettings)
             && let Err(error) = network.refresh_wifi_credential_recipients()
         {
@@ -6812,6 +6814,10 @@ pub fn device_fabric_view(
         tethering: crate::shell::personal_tethering_runtime::tethering_statuses(),
         remote_capture: crate::shell::remote_capture::runtime::active_view(),
         device_unlocks: crate::shell::device_unlock_runtime::pending_device_unlocks(),
+        #[cfg(target_os = "linux")]
+        device_vpn: crate::shell::device_vpn::view(),
+        #[cfg(not(target_os = "linux"))]
+        device_vpn: None,
     }
 }
 
