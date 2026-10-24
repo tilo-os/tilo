@@ -4428,15 +4428,16 @@ async fn run(
         }
     }
 
-    for (_, topic) in state.topics {
+    for topic in state.topics.values() {
         topic.pump.abort();
     }
-    for (_, host) in state.host_sessions {
+    for host in state.host_sessions.values() {
         host.pump.abort();
     }
-    for (_, (_, task)) in state.surface_fanout_tasks {
+    for (_, task) in state.surface_fanout_tasks.values() {
         task.abort();
     }
+    drop(state);
     reporting_addrs.abort();
     let _ = router.shutdown().await;
 }

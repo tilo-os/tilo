@@ -255,6 +255,7 @@ impl ShellNetwork {
                 RemoteActionMessage::Invoke(invoke),
             )
             .ok_or("this device's host does not answer its own operations")?;
+        drop(host);
         match self.runtime_handle()?.block_on(pending) {
             Some(RemoteActionMessage::Receipt(receipt)) => {
                 relay_rooms::receipt_value(receipt.status)
@@ -318,6 +319,7 @@ impl ShellNetwork {
                 .unwrap_or_else(PoisonError::into_inner);
             let waiting = waiting(&tree, &placing);
             placing.extend(waiting.iter().map(|(room, _, _)| *room));
+            drop(placing);
             waiting
         };
         for (room, local, name) in waiting {
@@ -359,6 +361,7 @@ impl ShellNetwork {
             .runtime_handle()?
             .block_on(host.rooms().summary(&room.to_string()))
             .is_ok();
+        drop(host);
         if !held {
             let created: CreatedRoom = relay_rooms::answer_of(self.local_host_action(
                 ws,

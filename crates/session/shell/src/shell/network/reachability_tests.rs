@@ -158,9 +158,11 @@ fn two_desktops_holding_their_relays_back_still_sync_and_then_wake_them() {
         first.administered_room(room)
     });
 
-    let mut second_tree = WorkspaceTree::default();
-    second_tree.persist_path = Some(dir.path().join("second/workspaces.json"));
-    let second_tree = second_tree.shared();
+    let second_tree = WorkspaceTree {
+        persist_path: Some(dir.path().join("second/workspaces.json")),
+        ..WorkspaceTree::default()
+    }
+    .shared();
     let second = device_reaching(
         second_tree.clone(),
         &dir.path().join("second"),
