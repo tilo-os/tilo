@@ -171,7 +171,15 @@ case "$command" in
         # already carries fails here, before it fails to apply.
         python3 /work/check-patches.py /work/kernel-patches.toml /work/kernel-patches \
             --fedora-srpm /usr/lib/tilo/kernel-buildroot-srpm.txt
-        if [ -d "$applied" ] && diff -r "$applied" /work/kernel-patches >/dev/null 2>&1; then
+        # The patches to apply: all but those Fedora's kernel already has as
+        # a stable backport (check-patches.py --carried).
+        carried=$(python3 /work/check-patches.py /work/kernel-patches.toml /work/kernel-patches \
+            --fedora-srpm /usr/lib/tilo/kernel-buildroot-srpm.txt --carried)
+        wanted=$(mktemp -d)
+        for patch in /work/kernel-patches/*.patch; do
+            printf '%s\n' "$carried" | grep -Fxq "${patch##*/}" || cp "$patch" "$wanted/"
+        done
+        if [ -d "$applied" ] && diff -r "$applied" "$wanted" >/dev/null 2>&1; then
             echo "kernel patches unchanged since the last prepare"
         else
             if [ -d "$applied" ]; then
@@ -187,7 +195,7 @@ case "$command" in
             # against the unpatched tree. A patch that does not apply takes
             # back the ones before it, so the tree is left unpatched.
             done_patches=""
-            for patch in /work/kernel-patches/*.patch; do
+            for patch in "$wanted"/*.patch; do
                 if ! git apply "$patch"; then
                     echo "kernel patch does not apply: ${patch##*/}" >&2
                     for undo in $done_patches; do
@@ -198,8 +206,9 @@ case "$command" in
                 done_patches="$patch $done_patches"
             done
             mkdir "$applied"
-            cp /work/kernel-patches/*.patch "$applied/"
+            cp "$wanted"/*.patch "$applied/"
         fi
+        rm -rf "$wanted"
         # Do not compile upstream's libcrypto-backed sign-file/extract-cert.
         # Kbuild still asks extract-cert for our CONFIG_MODULE_SIG_KEY, so provide
         # the already-validated DER certificate through a deliberately tiny shim.

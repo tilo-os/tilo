@@ -6,7 +6,9 @@
 #
 # `merged` is the first mainline release (tag) that contains the patch, and
 # `commit` the mainline commit. A patch without `merged` is not in mainline;
-# `upstream` says why it is carried and where it stands.
+# `upstream` says why it is carried and where it stands. `stable` is the first
+# stable release of its series with the backport: from it on the build leaves
+# the patch out, so a buildroot refresh onto that release needs no change here.
 
 fedora_kernel = "kernel-7.2.10-200.fc44"
 
@@ -126,4 +128,5 @@ commit = "8cb5c17be3a2fadc41075d04ce1c24c831546aaf"
 file = "0023-Revert-wifi-ath12k-add-panic-handler.patch"
 upstream = "The 7.2.11 stable backport of the mainline revert: ath12k's panic notifier sleeps, so a panic on a machine with a WCN7850 hangs before kmsg_dump writes pstore or drm_panic draws"
 merged = "v7.3"
+stable = "v7.2.11"
 commit = "05165f7b3b9ab6817fe216c24f90755b7c5e15f3"
