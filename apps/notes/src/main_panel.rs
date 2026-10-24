@@ -452,6 +452,13 @@ pub struct MainPanel {
     /// in, as every Tilo scroll surface has; a wheel's notches move it at
     /// once and never glide.
     glide: ui::ScrollMomentum,
+    /// The motion toward a match the window's search made current: it
+    /// glides there, or fades in when far ([`ui::motion::ScrollTo`]).
+    scroll_to: ui::motion::ScrollTo,
+    /// Device pixels per logical pixel where the panel last handled input,
+    /// and the theme's motion where it was last laid out.
+    device_scale: f64,
+    motion: ui::tokens::EffectiveMotion,
     /// When the block drag last scrolled the page, for its speed.
     drag_scroll_tick: Option<ui::time::Instant>,
     scroll_content_height: f64,
@@ -536,6 +543,9 @@ impl MainPanel {
             drawn_title_overhang: None,
             scroll_y: 0.0,
             glide: ui::ScrollMomentum::new(),
+            scroll_to: ui::motion::ScrollTo::new(),
+            device_scale: 1.0,
+            motion: ui::tokens::EffectiveMotion::default(),
             drag_scroll_tick: None,
             scroll_content_height: 0.0,
             bottom_inset: 0.0,
@@ -1182,6 +1192,8 @@ impl MainPanel {
     /// body: the window keeps asking for frames until it comes to rest.
     pub fn gliding(&self) -> bool {
         self.glide.is_active()
+            || self.scroll_to.target().is_some()
+            || self.scroll_to.is_moving(ui::motion::frame_now())
     }
 
     /// Carry a glide on to `now`. It moves only the body, which the frame
@@ -1189,6 +1201,15 @@ impl MainPanel {
     /// pixels): no change of the model, so nothing is reported. It stops at
     /// either end of the note.
     pub fn advance_glide(&mut self) {
+        let now = ui::motion::frame_now();
+        if let Some(at) = self
+            .scroll_to
+            .offset_in_device_pixels(now, self.device_scale)
+        {
+            self.set_scroll_offset(at.y);
+            let _ = self.scroll_to.arrived(now);
+            return;
+        }
         if !self.glide.is_active() {
             return;
         }
@@ -1562,6 +1583,7 @@ impl Widget for MainPanel {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.motion = theme.motion();
         // The page the zoom is judged against is the one the window theme
         // sets, so a grown page never grows itself further.
         let window_metrics = Metrics::of(theme);
@@ -1844,13 +1866,36 @@ impl Widget for MainPanel {
                     let margin = self
                         .body_bottom_inset()
                         .min((viewport_h - caret.height()).max(0.0));
+                    let mut target = self.scroll_y;
                     if at_document_start {
-                        self.scroll_y = 0.0;
+                        target = 0.0;
                     } else if caret.y0 - self.scroll_y < viewport_top {
-                        self.scroll_y = caret.y0 - viewport_top;
+                        target = caret.y0 - viewport_top;
                     } else if caret.y1 + margin - self.scroll_y > viewport_bottom {
-                        self.scroll_y = caret.y1 + margin - viewport_bottom;
+                        target = caret.y1 + margin - viewport_bottom;
                     }
+                    let target = target.clamp(0.0, max_scroll);
+                    // A match the search made current glides into view, or
+                    // lands and fades in when far; the caret lands.
+                    let jump = if found.is_some() && target.to_bits() != self.scroll_y.to_bits() {
+                        self.glide.stop();
+                        self.scroll_to.go(
+                            Vec2::new(0.0, self.scroll_y),
+                            Vec2::new(0.0, target),
+                            Vec2::new(self.rect.width(), viewport_h),
+                            self.motion,
+                            ui::motion::frame_now(),
+                        )
+                    } else {
+                        ui::motion::ScrollJump::Land
+                    };
+                    self.scroll_y = match jump {
+                        ui::motion::ScrollJump::Glide => self
+                            .scroll_to
+                            .offset_in_device_pixels(ui::motion::frame_now(), self.device_scale)
+                            .map_or(target, |at| at.y),
+                        ui::motion::ScrollJump::FadeIn | ui::motion::ScrollJump::Land => target,
+                    };
                     self.follow_caret = false;
                 }
                 let clamped = self.scroll_y.clamp(0.0, max_scroll);
@@ -2234,8 +2279,11 @@ impl Widget for MainPanel {
         // delta as a cursor move. Fingers (a touchpad, a touchscreen) move
         // the body 1:1 and, lifted while moving, leave it gliding to a stop
         // (the shared `ScrollMomentum`).
+        self.device_scale = ctx.scale_factor;
         if let WindowEvent::MouseWheel { delta, phase, .. } = event {
             self.follow_caret = false;
+            // The hand takes over a match's glide from where it is drawn.
+            self.scroll_to.take_over(ui::motion::frame_now());
             let pixel = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
             let dy = match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => {

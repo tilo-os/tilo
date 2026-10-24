@@ -780,6 +780,12 @@ impl Widget for MessageList {
         self.region.needs_animation_frame(&self.theme)
     }
 
+    /// A glide after a flick scrolls as the wheel does: a copy.
+    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+        self.scrolled |= self.region.advance();
+        false
+    }
+
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.region.next_wake_deadline(&self.theme)
     }

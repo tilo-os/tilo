@@ -671,6 +671,12 @@ impl ProjectionOverlay {
     /// compositor published and what changed in settings. Painting reads
     /// none of it again. Waiting itself is not animation; the existing native
     /// wake schedules this update and only a change invalidates the sheet.
+    /// Step the remote list's glide after a flick to the frame's time;
+    /// returns whether it moved.
+    pub(crate) fn advance_scroll(&mut self) -> bool {
+        self.was_open && self.remote_scroll.advance()
+    }
+
     pub(crate) fn poll_storage(&mut self, open: bool) -> bool {
         let opened = open && !self.session_open;
         self.sync_open_state(open);

@@ -1117,6 +1117,19 @@ impl CollaboratorsOverlay {
         self.keyboard_focus = None;
     }
 
+    /// Step a glide after a flick to the frame's time, from the host's
+    /// `update`; returns whether the roster moved.
+    pub fn advance_scroll(&mut self) -> bool {
+        let moved = self
+            .scroll
+            .as_mut()
+            .is_some_and(ui::widget::ScrollRegion::advance);
+        if moved {
+            self.targets.cancel_pointer_press();
+        }
+        moved
+    }
+
     pub fn needs_animation_frame(&self) -> bool {
         let now = ui::time::now();
         self.reveal.is_moving(now)
