@@ -11,13 +11,13 @@
 //! requests carry identity material read from the disk
 //! ([`ShellNetwork::publish_sync_requests`]), and the governance changes
 //! made here, each of which waits for its room's governor
-//! ([`ShellNetwork::send_governance_requests_off_loop`]). One thread runs
+//! ([`ShellNetwork::send_outbox_off_loop`]). One thread runs
 //! them all, in the order they came, so enrollments are finished by one
 //! writer at a time and a room's changes reach its governor in order.
 use super::ShellNetwork;
 use crate::shell::{
     peer_sync_overlay::{PeerSyncRequest, PeerSyncResponse, PendingInvitationSummary},
-    state::{RoomId, WorkspaceId},
+    state::WorkspaceId,
 };
 use std::sync::{
     Arc, Mutex, OnceLock, PoisonError,
@@ -44,8 +44,7 @@ enum Work {
     /// Enter the rooms a configured host lists (each, when `None`).
     HostRooms(Option<iroh::EndpointId>),
     SyncRound,
-    Governance(Vec<(RoomId, crate::shell::state::GovernanceRequest)>),
-    Receipts(Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>),
+    Outbox(Vec<crate::shell::state::Outgoing>),
 }
 
 #[derive(Default)]
@@ -97,12 +96,7 @@ impl ShellNetwork {
                                 sync_queued.store(false, Ordering::Release);
                                 network.publish_sync_requests_now();
                             }
-                            Work::Governance(requests) => {
-                                network.send_governance_requests(requests);
-                            }
-                            Work::Receipts(receipts) => {
-                                network.record_unrecorded_receipts(receipts);
-                            }
+                            Work::Outbox(entries) => network.send_outbox(&entries),
                         }));
                     if ran.is_err() {
                         tracing::error!("a peer-sync request panicked on its worker");
@@ -296,38 +290,22 @@ impl ShellNetwork {
                 | Work::FollowList(_)
                 | Work::HostRooms(_)
                 | Work::SyncRound
-                | Work::Governance(_)
-                | Work::Receipts(_),
+                | Work::Outbox(_),
             )) => Ok(()),
         }
     }
 
-    /// Hand `requests` to the worker, which asks their governors; answered
-    /// with them when the session started no worker.
-    pub(super) fn governance_off_loop(
+    /// Hand `entries` of the outbox to the worker, which asks their rooms'
+    /// hosts; answered with them when the session started no worker.
+    pub(super) fn outbox_off_loop(
         &self,
-        requests: Vec<(RoomId, crate::shell::state::GovernanceRequest)>,
-    ) -> Result<(), Vec<(RoomId, crate::shell::state::GovernanceRequest)>> {
+        entries: Vec<crate::shell::state::Outgoing>,
+    ) -> Result<(), Vec<crate::shell::state::Outgoing>> {
         let Some(worker) = self.peer_sync_worker.worker.get() else {
-            return Err(requests);
+            return Err(entries);
         };
-        match worker.send(Work::Governance(requests)) {
-            Err(mpsc::SendError(Work::Governance(requests))) => Err(requests),
-            Ok(()) | Err(mpsc::SendError(_)) => Ok(()),
-        }
-    }
-
-    /// Hand `receipts` to the worker, which asks their rooms' hosts to
-    /// record them; answered with them when the session started no worker.
-    pub(super) fn receipts_off_loop(
-        &self,
-        receipts: Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>,
-    ) -> Result<(), Vec<(RoomId, tilo_desktop_model::WorkspaceEffectReceipt)>> {
-        let Some(worker) = self.peer_sync_worker.worker.get() else {
-            return Err(receipts);
-        };
-        match worker.send(Work::Receipts(receipts)) {
-            Err(mpsc::SendError(Work::Receipts(receipts))) => Err(receipts),
+        match worker.send(Work::Outbox(entries)) {
+            Err(mpsc::SendError(Work::Outbox(entries))) => Err(entries),
             Ok(()) | Err(mpsc::SendError(_)) => Ok(()),
         }
     }
