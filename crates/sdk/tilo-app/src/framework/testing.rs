@@ -125,7 +125,9 @@ impl Profile {
     }
 
     /// The profile's content store, which the app keeps handed files and
-    /// other bytes its record names in, instead of the person's.
+    /// other bytes its record names in, instead of the person's. It stands in
+    /// for the device store of the one room the app is mounted in, so a
+    /// content reference resolves in it as on a device.
     fn content(&self) -> tilo_content::ContentStore {
         match self {
             Self::Temporary(directory, ..) | Self::Window(directory, ..) => {
@@ -133,6 +135,7 @@ impl Profile {
             }
             Self::DataDir(directory) => data_dir_content(directory),
         }
+        .for_one_room()
     }
 }
 

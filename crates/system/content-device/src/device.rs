@@ -211,6 +211,12 @@ impl ContentBackend for DeviceBackend {
     fn shared(&self) -> bool {
         true
     }
+
+    /// The capability is the window's (room, app) scope: the daemon serves an
+    /// address only when that room references it.
+    fn room_scoped(&self) -> bool {
+        true
+    }
 }
 
 /// The one launcher-granted device connection shared by stores in this process.
