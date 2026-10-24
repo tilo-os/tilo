@@ -224,11 +224,11 @@ fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
     use tilo_app::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
     GENESIS_TASKS.set(tasks);
-    // A save-status resample is an independent idle frame at 100 ms. Under
-    // CI load it can fall between press and release and publish again even
-    // though the keystroke did no extra work. Keep the real hosted path, but
-    // hold monotonic time during this input-only observation. The separate
-    // overdue-save test below advances it explicitly.
+    // Keep the real hosted path, but hold monotonic time during this
+    // input-only observation, so no deadline of the window's falls due
+    // between press and release and publishes work the keystroke did not
+    // cause. The separate save-status test below covers the frame after the
+    // draft's write lands.
     let typed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
         drive_live_window::<Keystrokes, _>(|app| {
             app.init_layout();
@@ -291,8 +291,7 @@ fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
     use tilo_app::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
 
-    let at = tilo_app::time::now();
-    let seen = tilo_app::time::testing::with_monotonic_time(at, || {
+    let seen = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
         drive_live_window::<Keystrokes, _>(|app| {
             app.init_layout();
             host_frame(app);
@@ -304,22 +303,26 @@ fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
             app.surface_input(&Region, key_input(&key, ElementState::Released), false);
             host_frame(app);
             assert_eq!(draft_value(app).as_deref(), Some("a"));
-            let later = at
-                .checked_add(tilo_app::time::Duration::from_millis(100))
-                .unwrap();
-            let ((), phases) = observe(|| {
-                tilo_app::time::testing::with_monotonic_time(later, || host_frame(app));
-            });
-            assert!(
-                phases
-                    .iter()
-                    .any(|phase| phase.phase == "framework.publication"),
-                "the real overdue save-status frame must still publish"
+            // The window shows the draft as "Saving…" until the record's
+            // store has written it, after its writer's debounce, on the
+            // store's own thread; nothing resamples it on a timer. When the
+            // write lands the store wakes the window, and the host frame
+            // after that must publish the new save state without losing
+            // what was typed. Run host frames, as a live host does while it
+            // waits, until one publishes.
+            tilo_test_env::wait_until(
+                "the frame after the draft's write landed to publish",
+                || {
+                    let ((), phases) = observe(|| host_frame(app));
+                    phases
+                        .iter()
+                        .any(|phase| phase.phase == "framework.publication")
+                },
             );
             assert_eq!(draft_value(app).as_deref(), Some("a"));
         })
     });
-    seen.expect("a live window whose durability timer becomes due");
+    seen.expect("a live window whose record's write lands");
 }
 
 /// Which half of a keystroke [`hosted_frame_ms`] times.
