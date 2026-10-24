@@ -14,6 +14,7 @@ use super::idle_quiet_tests::{
 };
 use super::{NetCmd, Reach, ShellNetwork, host_identity_for_key, needs_reachability};
 use crate::network::actor::gossip_caches_drain_within;
+use crate::shell::peer_sync_overlay::PeerSyncResponse;
 use crate::shell::state::{GovernanceRequest, RoomId, WorkspaceTree, WorkspaceTreeHandle};
 
 /// How often a desktop whose relays rest may block, every thread of the
@@ -250,7 +251,21 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         .try_send(NetCmd::Connect { addr: first_addr })
         .unwrap();
     let invitation = first.issue_invite(home_workspace, 3600).unwrap();
-    second.accept_peer_invitation(&invitation).unwrap();
+    // The collaborator's enrollment finishes when it is asked about, as the
+    // join sheet asks.
+    let PeerSyncResponse::EnrollmentPending { id } =
+        second.accept_peer_invitation(&invitation).unwrap()
+    else {
+        panic!("redeeming the invitation enrolls with the room's host");
+    };
+    until("the collaborator to enroll at the room's host", || {
+        first.tick();
+        second.tick();
+        match second.poll_enrollment(id).unwrap() {
+            PeerSyncResponse::EnrollmentPending { .. } => None,
+            joined => Some(joined),
+        }
+    });
     until("the collaborator to hold the room", || {
         first.tick();
         second.tick();
@@ -407,8 +422,9 @@ fn an_invite_minted_on_an_idle_desktop_names_its_home_relay() {
 
 /// A desktop whose relays are down governs the room it hosts in process:
 /// admitting a person and then removing them are its own host's room
-/// governance actions, asked through the host's in-process caller, and both
-/// reach the room's admitted document without a relay or a peer.
+/// governance actions, asked through the host's in-process caller (an
+/// endpoint cannot dial itself), and both reach the room's admitted
+/// document without a relay or a peer.
 #[test]
 #[serial_test::serial]
 fn a_room_hosted_here_is_governed_in_process_with_the_relays_down() {
@@ -444,31 +460,29 @@ fn a_room_hosted_here_is_governed_in_process_with_the_relays_down() {
             .find(|workspace| workspace.room() == room)
             .and_then(|workspace| workspace.policy.members.get(&guest).copied())
     };
-    tree.write().request_governance(
+    net.ask_governor(
         room,
         GovernanceRequest::Policy(tilo_action_policy::Change::AddMember {
             person: guest.clone(),
             role: tilo_action_policy::Role::Viewer,
         }),
-    );
-    until("the host to admit the person", || {
+    )
+    .expect("this device's host admits the person");
+    until("the admission to reach the room's document here", || {
         net.tick();
         (role_of(&tree) == Some(tilo_action_policy::Role::Viewer)).then_some(())
     });
-    tree.write().request_governance(
+    net.ask_governor(
         room,
         GovernanceRequest::Policy(tilo_action_policy::Change::RemoveMember {
             person: guest.clone(),
         }),
-    );
-    until("the host to remove the person", || {
+    )
+    .expect("this device's host removes the person");
+    until("the removal to reach the room's document here", || {
         net.tick();
         role_of(&tree).is_none().then_some(())
     });
-    assert!(
-        tree.read().governance_requests.is_empty(),
-        "every change was taken by this device's own host"
-    );
     assert!(
         net.reachability.is_dormant(),
         "governing a room hosted here started the relays; held up by (transport, session) {:?}",

@@ -69,6 +69,8 @@ mod community_tests;
 #[cfg(test)]
 mod device_approval_tests;
 pub(crate) mod device_approvals;
+#[cfg(test)]
+mod device_steward_tests;
 pub(crate) mod directory;
 #[cfg(test)]
 mod directory_tests;
