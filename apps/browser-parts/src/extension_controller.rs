@@ -1807,7 +1807,7 @@ mod tests {
         ];
         let told = WebViewEvent::ExtensionMenu {
             id: id.clone(),
-            items: items.clone(),
+            items,
         };
         assert!(controller.on_engine_event(told.clone(), &shared));
         assert!(!controller.on_engine_event(told, &shared), "nothing new");
