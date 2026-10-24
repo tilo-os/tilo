@@ -395,6 +395,31 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
         .cert;
     let ada = Member::admitted(&rooms, &cert, &room, 40).await;
     let bo = Member::admitted(&rooms, &cert, &room, 50).await;
+    // Ada shows in the room's Chat as Ada: Discord is told that name.
+    let catalogue = AppCatalogue::native();
+    let ada_id = hex::encode(ada.user_public_key);
+    rooms
+        .author_application(
+            &room,
+            &cert,
+            &catalogue,
+            CHAT,
+            &room_record(&catalogue, CHAT),
+            |doc| {
+                chat::demo::apply_as(
+                    doc,
+                    &ada_id,
+                    chat::Chat::INTRODUCE.with(chat::record::chat::Introduce {
+                        name: "Ada".into(),
+                        initials: "A".into(),
+                        color: 0,
+                    }),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
 
     let discord = Arc::new(FakeDiscord::new());
     let bridge = tokio::spawn(
@@ -455,7 +480,7 @@ async fn the_bridge_carries_a_voice_channel_both_ways_while_anyone_is_in_it() {
         async move {
             asked
                 .and_then(|(_, status)| status)
-                .filter(|status| status.starts_with("On Tilo: "))
+                .filter(|status| status == "On Tilo: Ada")
         }
     })
     .await;
