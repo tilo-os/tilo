@@ -744,12 +744,19 @@ pub struct WorkspaceTree {
     pub native_authority: super::native_workspace_owner::NativeAuthorityStorage,
     #[serde(skip)]
     pub native_runtime: super::native_workspace_owner::NativeStateRuntime,
-    /// Enrolled rooms whose governor stewards their channels: a node (a
-    /// host its person's root let own workspaces). Their records are sealed channels
-    /// every member opens itself, never documents the governor commits.
+    /// Enrolled rooms whose governor stewards their channels: every hosted
+    /// room, whether a person's device or a relay hosts it. Their records
+    /// are sealed channels every member opens itself, never documents the
+    /// governor commits.
     /// Projected from the owner, so not persisted.
     #[serde(skip)]
     pub stewarded_rooms: BTreeSet<RoomId>,
+    /// Enrolled rooms whose host stewards no channels (a host that may not
+    /// own workspaces): their records are documents the native owner
+    /// commits. A held room is in neither set until its replica is
+    /// projected, and then in exactly one. Projected, so not persisted.
+    #[serde(skip)]
+    pub committed_record_rooms: BTreeSet<RoomId>,
     /// Each room's admitted roster: every device its governor admitted,
     /// keyed by endpoint id (the device key), with its root-signed
     /// certificate and its person's revocations. Projected from the
@@ -931,6 +938,7 @@ impl Default for WorkspaceTree {
             native_authority: super::native_workspace_owner::NativeAuthorityStorage::default(),
             native_runtime: super::native_workspace_owner::NativeStateRuntime::default(),
             stewarded_rooms: BTreeSet::new(),
+            committed_record_rooms: BTreeSet::new(),
             room_rosters: BTreeMap::new(),
             policy_revision: 0,
             doc: AutoCommit::new(),
@@ -1187,11 +1195,29 @@ impl WorkspaceTree {
         joined
     }
 
-    /// Whether `room`'s app records are documents its native owner commits.
-    /// In a room whose governor stewards channels they are sealed instead:
-    /// each app seals and opens its record's channel itself.
+    /// Whether `room`'s app records are documents its native owner commits:
+    /// only a held room whose host stewards no channels. A room still
+    /// joining or being placed has no records here yet, and a hosted room's
+    /// records are sealed ([`Self::seals_records`]).
     pub(crate) fn commits_native_documents(&self, room: RoomId) -> bool {
-        !self.stewarded_rooms.contains(&room)
+        self.committed_record_rooms.contains(&room)
+    }
+
+    /// Whether `room`'s app records are sealed channels each app opens
+    /// itself: a held room its host stewards.
+    pub(crate) fn seals_records(&self, room: RoomId) -> bool {
+        self.stewarded_rooms.contains(&room)
+    }
+
+    /// Why no app opens a document in `room` on this device, as a catalogue
+    /// id, when none can: the room is on this device only, or it is still
+    /// joining or being placed on its host and holds no records yet.
+    pub(crate) fn documents_unavailable(&self, room: RoomId) -> Option<&'static str> {
+        if self.on_this_device_only(room) {
+            return Some("workspace-on-this-device-only-no-documents");
+        }
+        (self.is_joining(room) || self.pending_placements.contains(&room))
+            .then_some("workspace-not-ready-no-documents")
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
@@ -1199,13 +1225,15 @@ impl WorkspaceTree {
         let Some(document) = peer.admitted_room() else {
             return;
         };
-        // A node: an always-on host its person's root let own workspaces.
-        // The relay it runs stewards the channels of the rooms it governs.
-        let governor = &peer.authority().capabilities;
-        if governor.can_own_workspaces && governor.can_act_as_host && !governor.foreign {
+        // Whoever hosts the room, a person's device or a relay, its host
+        // stewards the channels of the rooms it governs exactly as the host
+        // decides it (`tilo_room_host`'s stewardship): the room is sealed.
+        if peer.authority().capabilities.stewards_room_channels() {
             self.stewarded_rooms.insert(room);
+            self.committed_record_rooms.remove(&room);
         } else {
             self.stewarded_rooms.remove(&room);
+            self.committed_record_rooms.insert(room);
         }
         // The room's replica is here: its join, or its placement on its
         // host, is over, and the room has its workspace, the one made for
@@ -3082,6 +3110,33 @@ impl WorkspaceTree {
         std::mem::take(&mut self.governance_refusals)
     }
 
+    /// Whether a room waits to be placed that no workspace is any longer:
+    /// placing it would make a room nothing shows. Such an entry is
+    /// bookkeeping, never what the person made.
+    pub fn has_orphaned_placements(&self) -> bool {
+        self.pending_placements
+            .iter()
+            .any(|room| !self.has_workspace(*room))
+    }
+
+    /// Stop waiting to place each room no workspace is any longer
+    /// ([`Self::has_orphaned_placements`]). Answers the rooms dropped.
+    pub fn drop_orphaned_placements(&mut self) -> Vec<RoomId> {
+        let orphaned: Vec<RoomId> = self
+            .pending_placements
+            .iter()
+            .filter(|room| !self.has_workspace(**room))
+            .copied()
+            .collect();
+        for room in &orphaned {
+            self.pending_placements.remove(room);
+        }
+        if !orphaned.is_empty() {
+            self.queue_save();
+        }
+        orphaned
+    }
+
     /// The rooms of workspaces made here that wait to be created on a host,
     /// taken: the network places each and enrolls this device in it. Saved,
     /// so a placement taken is not taken again after a restart.
@@ -3227,6 +3282,7 @@ impl WorkspaceTree {
             self.room_docs.remove(&room);
             self.continuation_rooms.remove(&room);
             self.joining_rooms.remove(&room);
+            self.pending_placements.remove(&room);
             self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
             self.queue_save();
             drop(removed);
@@ -3262,6 +3318,7 @@ impl WorkspaceTree {
         self.room_docs.remove(&room);
         self.continuation_rooms.remove(&room);
         self.joining_rooms.remove(&room);
+        self.pending_placements.remove(&room);
         self.seed_doc_from_cache();
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
         self.queue_save();
