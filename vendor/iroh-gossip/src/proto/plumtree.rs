@@ -470,6 +470,12 @@ impl<PI: PeerIdentity> State<PI> {
         };
         let message = Gossip { id, content, scope };
         let me = self.me;
+        // TILO PATCH: with no neighbour, eager or lazy, nobody hears the
+        // message, and a neighbour that comes later is never offered it:
+        // caching it would only arm the sweep.
+        if self.eager_push_peers.is_empty() && self.lazy_push_peers.is_empty() {
+            return;
+        }
         if let DeliveryScope::Swarm(_) = scope {
             self.received_messages
                 .insert(id, (), now + self.config.message_id_retention);
@@ -966,6 +972,32 @@ mod test {
             .collect();
         sent.sort_unstable();
         assert_eq!(sent, vec![2, 3]);
+    }
+
+    /// TILO PATCH: a topic with no neighbour neither sends, caches nor
+    /// sweeps what it is asked to broadcast.
+    #[test]
+    fn a_broadcast_nobody_hears_arms_nothing() {
+        let config: Config = Default::default();
+        let mut state = State::new(1, config, 1024);
+        let now = Instant::now();
+        let mut io = VecDeque::new();
+        for scope in [Scope::Swarm, Scope::Neighbors] {
+            state.handle(
+                InEvent::Broadcast(b"alone".to_vec().into(), scope),
+                now,
+                &mut io,
+            );
+        }
+        state.handle(InEvent::NeighborUp(2), now, &mut io);
+        state.handle(InEvent::NeighborDown(2), now, &mut io);
+        state.handle(
+            InEvent::Broadcast(b"left alone".to_vec().into(), Scope::Swarm),
+            now,
+            &mut io,
+        );
+        assert!(io.is_empty(), "{io:?}");
+        assert!(state.cache.is_empty() && state.received_messages.is_empty());
     }
 
     /// TILO PATCH: the sweep is armed by the first cached message, stops once
