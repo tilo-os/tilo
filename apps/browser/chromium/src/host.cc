@@ -552,7 +552,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     auto loaded=CefDictionaryValue::Create();loaded->SetString("url",uri);loaded->SetInt("status",status);Event("loaded",loaded);
   }
   void OnLoadingStateChange(CefRefPtr<CefBrowser> browser,bool loading,bool back,bool forward) override {
-    auto d=CefDictionaryValue::Create();d->SetBool("back",back);d->SetBool("forward",forward);Event("history",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("back",back && !tilo::OnlyBootstrapBehind(browser));d->SetBool("forward",forward);Event("history",d);
     if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("status",loading?"loading":"complete");extension_tabs->Updated(id_,change);}
     if(loading) { navigation_busy_=true; main_navigation_finished_=false; failed_main_navigation_.reset(); return; }
     // OnLoadEnd excludes same-document history; overall loading settles it.
@@ -754,7 +754,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     std::string op=scoped?command->GetString("command").ToString():command->GetString("op").ToString();
     auto frame=browser_->GetMainFrame();
     if(op=="navigate") {navigation_target_=command->GetString("url");CefURLParts parts;if(CefParseURL(navigation_target_,parts))navigation_target_=CefString(&parts.spec).ToString();TraceGeometry("navigate-load-url",id_);frame->LoadURL(command->GetString("url"));}
-    else if(op=="back" && browser_->CanGoBack())browser_->GoBack();
+    else if(op=="back" && browser_->CanGoBack() && !tilo::OnlyBootstrapBehind(browser_))browser_->GoBack();
     else if(op=="forward" && browser_->CanGoForward())browser_->GoForward();
     else if(op=="reload")browser_->Reload();
     else if(op=="site_action" && SiteCommand(command)) {}
