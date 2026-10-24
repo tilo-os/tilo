@@ -880,6 +880,40 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
 }
 
 #[test]
+fn a_browser_that_cannot_join_calls_says_so_plainly() {
+    let (mut app, mut doc) = app_with_doc();
+    app.on_hit(
+        Hit::Channel("c_standup".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    let mut refused = ui::native_media::Snapshot::unavailable();
+    refused.state = ui::native_media::State::Ended;
+    refused.issue = Some(ui::native_media::Issue::Unsupported);
+    answer_voice(&mut app, &refused);
+    render_frame(&mut app, 1280.0, 720.0);
+    let said = crate::i18n::t("chat-call-issue-unsupported");
+    assert!(said.contains("browser"), "{said}");
+    assert_eq!(app.media_error.as_deref(), Some(said.as_str()));
+    let root = app.accessibility().expect("chat semantics");
+    let status = root
+        .children
+        .iter()
+        .find(|node| {
+            matches!(node.role, ui::a11y::Role::StaticText)
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("in call"))
+        })
+        .and_then(|node| node.description.clone());
+    assert_eq!(
+        status.as_deref(),
+        Some(said.as_str()),
+        "the call panel says why, not a call that never connects"
+    );
+}
+
+#[test]
 fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
     let (mut app, _doc) = app_with_doc();
     app.call.join("c_huddle");

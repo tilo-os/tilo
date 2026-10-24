@@ -598,6 +598,7 @@ impl crate::app::ChatApp {
                 ui::native_media::Issue::CameraLost => "chat-call-issue-camera-lost",
                 ui::native_media::Issue::ScreenDenied => "chat-call-issue-screen-denied",
                 ui::native_media::Issue::ScreenLost => "chat-call-issue-screen-lost",
+                ui::native_media::Issue::Unsupported => "chat-call-issue-unsupported",
             })
         });
         self.refresh_native_streams();

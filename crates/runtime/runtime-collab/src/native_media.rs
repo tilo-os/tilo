@@ -271,6 +271,9 @@ pub enum Issue {
     ScreenDenied,
     /// Sharing the screen could not start, or stopped.
     ScreenLost,
+    /// This device cannot take part in calls at all (a browser without
+    /// the WebTransport the call's carrier needs): no retry helps.
+    Unsupported,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
