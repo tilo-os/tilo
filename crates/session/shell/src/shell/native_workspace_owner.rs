@@ -396,6 +396,44 @@ pub(crate) fn test_open_in_progress(
     (release, holder)
 }
 
+/// What keeps [`test_chrome_governing_its_room`]'s room alive: its
+/// directory and its owner.
+#[cfg(test)]
+pub(crate) type GovernedRoomGuard = (tempfile::TempDir, NativeWorkspaceOwner);
+
+/// A chrome acting as the person who governs the active room, a room this
+/// device holds, with the room's invite action granted: where an
+/// invitation can be issued. Keep the guard alive for the test's length.
+#[cfg(test)]
+pub(crate) fn test_chrome_governing_its_room()
+-> (crate::shell::chrome_state::Chrome, GovernedRoomGuard) {
+    use crate::shell::invite_policy::{native_governor, tests::grant_invite};
+    let (directory, owner, room, _now, _key) = test_enrolled_owner();
+    let governor = crate::shell::state::person_id_of(
+        native_governor(Some(owner.clone()), room).expect("the room's admitted governor"),
+    )
+    .expect("person id");
+    let handle = test_tree_of(&owner);
+    {
+        let mut tree = handle.write();
+        let workspace = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.room() == room)
+            .expect("the enrolled room's workspace");
+        grant_invite(workspace, &governor);
+        let local = workspace.id;
+        tree.desktop.active = local;
+    }
+    let chrome = crate::shell::chrome_state::ChromeState::new_with_fixture_handle(
+        handle,
+        crate::shell::hosted_inputs::HostedTileInputs::default(),
+    );
+    chrome.borrow_mut().act_as(governor);
+    (chrome, (directory, owner))
+}
+
 #[cfg(test)]
 pub(crate) fn test_tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
     tests::tree_of(owner)

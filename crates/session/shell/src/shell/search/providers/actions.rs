@@ -5852,7 +5852,8 @@ mod tests {
         // Phase `collaboration_actions_enqueue_typed_requests_through_the_provider`.
         {
             let provider = ActionsProvider::new();
-            let chrome = chrome_with_room();
+            let (chrome, _governed) =
+                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
             chrome.borrow_mut().peer_sync_enabled = true;
             let results = action_results(&provider, &chrome);
 
@@ -6087,7 +6088,8 @@ mod tests {
         {
             let p = ActionsProvider::new();
             // Peer-sync and agent rows included, so "everything" means the whole table.
-            let c = chrome_with_room();
+            let (c, _governed) =
+                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
             c.borrow_mut().peer_sync_enabled = true;
             let cs = c.borrow();
             let doc = AutoCommit::new();
@@ -7590,7 +7592,8 @@ mod tests {
             // session has nothing to invite into. Without a broker the agent
             // row (also an "Invite …") stays out of this ranking, as it does
             // for a roomless session.
-            let on = chrome_with_room();
+            let (on, _governed) =
+                crate::shell::native_workspace_owner::test_chrome_governing_its_room();
             on.borrow_mut().peer_sync_enabled = true;
             on.borrow_mut()
                 .set_collab_unavailable("this phase ranks the peer rows alone");
@@ -8626,6 +8629,7 @@ mod tests {
             &save_args,
         )
         .unwrap();
+        governed(&chrome, FIXTURE_USER);
 
         let assign = {
             let state = chrome.borrow();
@@ -8663,6 +8667,7 @@ mod tests {
             &assign_args,
         )
         .unwrap();
+        governed(&chrome, FIXTURE_USER);
 
         let state = chrome.borrow();
         let tree = state.tree();
@@ -8953,19 +8958,17 @@ mod tests {
         role
     }
 
-    /// The member's role as the replicated room document records it.
-    fn replicated_role_of(chrome: &Chrome, member: &str) -> Option<crate::shell::state::CapRole> {
+    /// The room's governor takes the changes asked of it as `actor`, and
+    /// the room's projection carries them here: for tests, which have no
+    /// governor.
+    fn governed(chrome: &Chrome, actor: &str) {
         let state = chrome.borrow();
-        let tree = state.tree();
-        let mut from_doc = tilo_desktop_model::DesktopTree::default();
-        tilo_desktop_model::desktop_doc::rebuild(&tree.doc, &mut from_doc);
-        let active = tree.desktop.active;
-        drop(tree);
-        from_doc
-            .workspaces
-            .iter()
-            .find(|ws| ws.id == active)
-            .and_then(|ws| ws.role_of(member))
+        let mut tree = state.tree_mut();
+        assert!(
+            tree.has_governance_requests(),
+            "the change is asked of the room's governor"
+        );
+        tree.govern_requests_here_for_test(&actor.to_owned());
     }
 
     /// The active room's whole authority: its policy and its sandbox.
@@ -9002,12 +9005,13 @@ mod tests {
                 disposition,
                 crate::shell::search::InvocationDisposition::Accepted(_)
             ));
-            assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Viewer));
             assert_eq!(
-                replicated_role_of(&chrome, "bob"),
-                Some(CapRole::Viewer),
-                "the change reached the replicated room document, not only the cache"
+                role_of(&chrome, "bob"),
+                Some(CapRole::Editor),
+                "nothing changes here before the room's governor takes it"
             );
+            governed(&chrome, FIXTURE_USER);
+            assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Viewer));
         }
 
         // Phase `an_unconfirmed_or_unknown_change_changes_nothing`.
@@ -9087,6 +9091,7 @@ mod tests {
                 &serde_json::json!({"participant_id": "bob", "role": "commenter", "confirm": true}),
             )
             .expect("administration delegated as a capability is administration");
+            governed(&chrome, FIXTURE_USER);
             assert_eq!(role_of(&chrome, "bob"), Some(CapRole::Commenter));
         }
     }
@@ -9102,8 +9107,8 @@ mod tests {
                 &serde_json::json!({"participant_id": "bob", "confirm": true}),
             )
             .expect("the owner may remove a member");
+            governed(&chrome, FIXTURE_USER);
             assert_eq!(role_of(&chrome, "bob"), None);
-            assert_eq!(replicated_role_of(&chrome, "bob"), None);
         }
 
         // Phase `the_recorded_owner_cannot_be_removed`.
@@ -9206,9 +9211,11 @@ mod tests {
         {
             let chrome = chrome_with_room();
             apply(&chrome, "agent.invite", AGENT_INVITE_PARAMS, "Scribe").expect("owner admits");
+            governed(&chrome, FIXTURE_USER);
             assert!(grants_of(&chrome, "scribe") > 0, "admitted");
             apply(&chrome, "agent.remove", AGENT_REMOVE_PARAMS, "  SCRIBE ")
                 .expect("the owner may remove the agent, named in any case");
+            governed(&chrome, FIXTURE_USER);
             assert_eq!(
                 grants_of(&chrome, "scribe"),
                 0,
@@ -9238,6 +9245,7 @@ mod tests {
         {
             let chrome = chrome_with_room();
             apply(&chrome, "agent.invite", AGENT_INVITE_PARAMS, "scribe").expect("owner admits");
+            governed(&chrome, FIXTURE_USER);
             chrome
                 .borrow_mut()
                 .tree_mut()

@@ -2863,20 +2863,92 @@ impl WorkspaceTree {
     /// documents would carry them: for tests, which have no governor.
     #[cfg(test)]
     pub(crate) fn govern_requests_here_for_test(&mut self, actor: &UserId) {
+        use tilo_desktop::workspace_settings::GovernanceOperation as Operation;
+        use tilo_desktop_model::commands::DesktopCommand;
+        let now = tilo_clock::unix_now();
         for (room, request) in self.take_governance_requests() {
-            let GovernanceRequest::Policy(change) = request else {
-                continue;
-            };
-            if let Some(workspace) = self
+            let Some(workspace) = self
                 .desktop
                 .workspaces
                 .iter_mut()
                 .find(|w| w.room() == room)
-            {
-                workspace
-                    .govern_as_at(actor, change, tilo_clock::unix_now())
-                    .expect("the governor takes the change");
-            }
+            else {
+                continue;
+            };
+            let operation = match request {
+                GovernanceRequest::Policy(change) => {
+                    workspace
+                        .govern_as_at(actor, change, now)
+                        .expect("the governor takes the change");
+                    continue;
+                }
+                GovernanceRequest::Command(DesktopCommand::RenameWorkspace { name }) => {
+                    workspace.name = name;
+                    continue;
+                }
+                GovernanceRequest::Command(DesktopCommand::SavePreset { preset_json }) => {
+                    let preset: tilo_action_policy::Preset =
+                        serde_json::from_str(&preset_json).expect("a preset");
+                    Operation::SavePreset {
+                        name: preset.name,
+                        description: preset.description,
+                        rules: preset.rules,
+                    }
+                }
+                GovernanceRequest::Command(DesktopCommand::AssignPreset {
+                    preset,
+                    subject_kind,
+                    subject,
+                    expires_unix,
+                }) => Operation::AssignPreset {
+                    preset,
+                    subject: match subject_kind.as_str() {
+                        "app" => tilo_action_policy::Subject::app(subject),
+                        "agent" => tilo_action_policy::Subject::agent(subject),
+                        _ => tilo_action_policy::Subject::person(subject),
+                    },
+                    expires_unix,
+                },
+                GovernanceRequest::Command(DesktopCommand::GrantAppAction {
+                    app,
+                    target_app,
+                    resource,
+                    action,
+                    lifetime,
+                }) => Operation::GrantAppAction {
+                    app,
+                    target_app,
+                    resource,
+                    action,
+                    lifetime,
+                },
+                GovernanceRequest::Command(DesktopCommand::RevokeAppAction {
+                    app,
+                    target_app,
+                    resource,
+                    action,
+                }) => Operation::RevokeAppAction {
+                    app,
+                    target_app,
+                    resource,
+                    action,
+                },
+                GovernanceRequest::GrantSandbox(cap) => {
+                    workspace
+                        .grant_sandbox_as_at(actor, cap, now)
+                        .expect("the governor takes the capability");
+                    continue;
+                }
+                GovernanceRequest::RevokeSandbox(id) => {
+                    workspace
+                        .revoke_sandbox_as_at(actor, &id, now)
+                        .expect("the governor takes the capability back");
+                    continue;
+                }
+                GovernanceRequest::Command(_) => continue,
+            };
+            tilo_desktop::workspace_settings::apply_governance(workspace, actor, operation, now)
+                .expect("the governor takes the change");
         }
     }
 
