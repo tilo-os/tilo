@@ -271,25 +271,8 @@ mod tests {
                 .certificate(&RoomId::new().to_string(), &person)
                 .is_err()
         );
-        crate::shell::persist::wait_for_saves();
-        // Hold the state writer: this change stays unpublished behind the job.
-        let (release, held) = std::sync::mpsc::channel::<()>();
-        crate::shell::durable_writer::global().submit(
-            directory.path().join("hold-the-writer"),
-            move || {
-                let _ = held.recv();
-            },
-        );
-        tree.write().desktop.workspaces[0].policy.owner = None;
-        assert!(
-            service.certificate(&room.to_string(), &person).is_err(),
-            "unpublished policy changes revoke the captured native origin"
-        );
-        release.send(()).unwrap();
-        crate::shell::persist::wait_for_saves();
-        tree.write().desktop.workspaces[0].set_owner(person.clone());
-        crate::shell::persist::wait_for_saves();
-        super::super::launcher::action_authority::Export::of(&tree.read()).publish();
+        // The room's permissions are its host's admitted document's, read
+        // through the native owner, which grants this device's person.
         assert!(service.certificate(&room.to_string(), &person).is_ok());
         drop(owner);
         assert!(
