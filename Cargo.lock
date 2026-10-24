@@ -22320,28 +22320,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vpn"
-version = "0.1.0"
-dependencies = [
- "bounded-command",
- "os-actions",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "taffy",
- "tilo-app",
- "tilo-automerge-fork",
- "tilo-history",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "uuid",
- "workspace-hack",
- "zeroize",
-]
-
-[[package]]
 name = "vte"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

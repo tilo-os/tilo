@@ -444,14 +444,6 @@
       ]
     },
     {
-      "id": "so.tilo.vpn",
-      "name": "VPN Studio",
-      "category": "Network",
-      "platforms": [
-        "tilo-os"
-      ]
-    },
-    {
       "id": "so.tilo.windows",
       "name": "Windows Apps",
       "category": "System",

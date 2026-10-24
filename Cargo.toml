@@ -148,7 +148,6 @@ members = [
     "apps/typst-editor",
     "apps/video-editor",
     "apps/video-player",
-    "apps/vpn",
     "apps/weather",
     "apps/web-search",
     "apps/windows",
