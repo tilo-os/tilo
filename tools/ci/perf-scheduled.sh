@@ -148,7 +148,12 @@ case $group in
     for run in 1 2 3; do
       TILO_IDLE_SHELL_BIN="$target/debug/shell" TILO_IDLE_WAKEUP_WINDOW_SECS=60 \
         bash tools/test-env.sh "$target/debug/examples/idle-wakeups" > "$out/idle-$run.log" 2>&1 || status=$?
-      grep -A40 '^idle wakeups over' "$out/idle-$run.log" || tail -n 40 "$out/idle-$run.log"
+      # The report: every thread's row, the frame loop and what was logged.
+      if grep -q '^IDLE-WAKEUPS ' "$out/idle-$run.log"; then
+        sed -n '/^idle wakeups over/,/^IDLE-WAKEUPS /p' "$out/idle-$run.log"
+      else
+        tail -n 40 "$out/idle-$run.log"
+      fi
     done
     env_json dev lavapipe kvm > "$out/env.json"
     python3 tools/perf/adapters.py idle-wakeups --env-json "$out/env.json" "$out"/idle-*.log > "$out/wakeups.jsonl"
