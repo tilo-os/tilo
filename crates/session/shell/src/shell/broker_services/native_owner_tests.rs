@@ -50,7 +50,8 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
         drop(owner);
         let mut tree = super::super::persist::load_tree_from(&path).unwrap();
         tree.persist_path = Some(path.clone());
-        let service = NativeOwnerCommitService::new(tree.shared(), None);
+        let tree = tree.shared();
+        let service = NativeOwnerCommitService::new(tree.clone(), None);
         // Building the service only starts the owner's open, off this
         // thread: the barrier under test is the commit's, after it.
         let deadline = tilo_test_env::hang_deadline();
@@ -60,6 +61,15 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                 "the service's owner never opened"
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // The fixture's governor may own workspaces, so opening projected
+        // the room sealed. The barrier under test guards the one room kind
+        // whose records the owner commits: a held room whose host stewards
+        // no channels.
+        {
+            let mut tree = tree.write();
+            tree.stewarded_rooms.remove(&room);
+            tree.committed_record_rooms.insert(room);
         }
         assert!(OwnerCommitService::requires_room(
             &service,
