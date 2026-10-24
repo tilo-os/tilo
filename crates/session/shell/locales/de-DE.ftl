@@ -1666,6 +1666,7 @@ governance-change-members = Status eines Mitglieds ändern
 governance-change-access = Zugriff auf diesen Arbeitsbereich ändern
 governance-change-presets = Vorlagen dieses Arbeitsbereichs ändern
 governance-change-settings = Einstellungen dieses Arbeitsbereichs ändern
+governance-change-history = Erledigtes im Verlauf dieses Arbeitsbereichs festhalten
 search-action-invitation-issue = Einladung erstellen
 search-action-invitation-issue-subtitle = Eine Einladung in diesen Arbeitsbereich mit Rolle und Gültigkeitsdauer erzeugen
 search-action-invitation-list = Offene Einladungen anzeigen
