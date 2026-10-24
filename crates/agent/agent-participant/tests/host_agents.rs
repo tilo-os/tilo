@@ -75,7 +75,7 @@ use support::{Device, ROOM, enrol, ready, start_peer, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
-const CALCULATOR: &str = "so.tilo.calculator";
+const EBOOK: &str = "so.tilo.ebook";
 
 struct Hosted {
     relay: Relay,
@@ -1377,20 +1377,29 @@ fn last_task_is(grant: &str, state: TaskState, tasks: usize) -> impl Fn(&AgentsS
     }
 }
 
-/// Work out one sum, then clear the calculator's history: an action whose
-/// contract asks a person first.
-fn clear_history() -> String {
+/// Put a book on the shelf, then take it off again: Undo puts the row back
+/// but not this device's access to the book's file, so its contract asks a
+/// person first (`#[action(irreversible)]`). Clearing the calculator's
+/// history no longer does: Undo takes that back, so it runs at once.
+fn shelve_then_remove() -> String {
     serde_json::json!([
         {
-            "app": CALCULATOR,
-            "resource": "calculator.document",
-            "action": "commit-history",
-            "arguments": {"expr": "1+1", "result": "2"},
+            "app": EBOOK,
+            "resource": "ebook.library",
+            "action": "shelve",
+            "arguments": {
+                "book": "book:dusk",
+                "title": "Dusk",
+                "author": "Ada",
+                "subject": "",
+                "shared": false,
+            },
         },
         {
-            "app": CALCULATOR,
-            "resource": "calculator.document",
-            "action": "clear-history",
+            "app": EBOOK,
+            "resource": "ebook.library",
+            "action": "remove-from-library",
+            "arguments": {"book": "book:dusk"},
         },
     ])
     .to_string()
@@ -1421,7 +1430,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
                 serde_json::json!({
                     "label": "Careful",
                     "rooms": [ROOM],
-                    "apps": [CALCULATOR],
+                    "apps": [EBOOK],
                     "expiresInSecs": 3600,
                 })
                 .as_object()
@@ -1445,7 +1454,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
             SUPERVISOR_RESOURCE,
             SPAWN_ACTION,
             InvokeArgument::Json(
-                serde_json::json!({ "grant": grant, "task": clear_history(), "room": ROOM })
+                serde_json::json!({ "grant": grant, "task": shelve_then_remove(), "room": ROOM })
                     .as_object()
                     .unwrap()
                     .clone(),
@@ -1460,9 +1469,9 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     assert_eq!(question.agent_id, grant);
     assert_eq!(question.agent_label, "Careful");
     assert_eq!(question.room, ROOM);
-    // The action as the calculator offers it, not the agent's own words.
-    assert_eq!(question.action_label, "Remove every history entry");
-    assert_eq!(question.resource_label, "Calculator");
+    // The action as the reader offers it, not the agent's own words.
+    assert_eq!(question.action_label, "Remove from library");
+    assert_eq!(question.resource_label, "Books");
     assert_eq!(question.risk, "destructive");
     assert!(
         question.question().starts_with("Careful wants to ")
@@ -1515,7 +1524,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
         .call(
             &agent_resource(&grant),
             MESSAGE_ACTION,
-            InvokeArgument::Text(clear_history()),
+            InvokeArgument::Text(shelve_then_remove()),
         )
         .await
         .unwrap();
