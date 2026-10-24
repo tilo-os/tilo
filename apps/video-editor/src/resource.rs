@@ -824,3 +824,53 @@ impl ResourceApp for VideoEditor {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reach_tests {
+    use ui::framework::ResourceApp as _;
+    use ui::framework::testing::{TestApp, unreachable_actions};
+
+    /// The walk's slices: a drive of one scenario walks dozens of actions,
+    /// so each slice is its own test and they run side by side.
+    const SLICES: usize = 4;
+
+    /// Every action the app publishes is reachable by address in a drive of
+    /// every `SLICES`th scenario from `slice`: none is advertised yet
+    /// handled only by a click. The scenarios stage fixtures; the app
+    /// someone opens acts on this machine, so it is not walked.
+    fn walk(slice: usize) {
+        for scenario in super::VideoEditor::scenarios()
+            .iter()
+            .skip(slice)
+            .step_by(SLICES)
+        {
+            let mut app = TestApp::<super::VideoEditor>::drive(scenario)
+                .unwrap_or_else(|error| panic!("{scenario}: {error}"));
+            assert_eq!(
+                unreachable_actions(&mut app),
+                Vec::<String>::new(),
+                "{scenario}: published actions a drive cannot invoke"
+            );
+        }
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_0() {
+        walk(0);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_1() {
+        walk(1);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_2() {
+        walk(2);
+    }
+
+    #[test]
+    fn a_drive_of_every_scenario_reaches_every_published_action_3() {
+        walk(3);
+    }
+}
