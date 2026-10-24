@@ -36,6 +36,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+# What Chromium writes on every test machine, which says nothing of a failure.
+NOISE = ('dbus/bus.cc', 'dbus/object_proxy.cc', 'Failed to adjust OOM score')
+
+
+class HostTimeout(TimeoutError, queue.Empty):
+    """No awaited event came in time: a TimeoutError, and the queue.Empty
+    callers caught before the wait said what the host did meanwhile."""
+
+
 class Host:
     def __init__(self, args=(), profile=None):
         # A profile given is the caller's, kept when the host closes: a later
@@ -76,10 +85,13 @@ class Host:
         deadline = time.monotonic()+timeout
         while True:
             if time.monotonic() >= deadline:
-                raise TimeoutError('No matching native event; latest events: '+repr(self.seen[-8:]))
-            event = self.events.get(timeout=max(.01,deadline-time.monotonic()))
+                raise HostTimeout(self.report('no matching native event'))
+            try:
+                event = self.events.get(timeout=max(.01,deadline-time.monotonic()))
+            except queue.Empty:
+                raise HostTimeout(self.report('no matching native event')) from None
             if isinstance(event, Exception):
-                raise event
+                raise self.ended(event)
             self.seen.append(event)
             if predicate(event):
                 return event
@@ -91,8 +103,31 @@ class Host:
             except queue.Empty:
                 return
             if isinstance(event, Exception):
-                raise event
+                raise self.ended(event)
             self.seen.append(event)
+    def ended(self, error):
+        """The reader's `error`, with how the host ended when its IPC did:
+        a host gone mid-test says why on its stderr, or by its exit status."""
+        if not isinstance(error, EOFError):
+            return error
+        try:
+            code = self.p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            code = 'nothing yet'
+        return EOFError(self.report(f'{error}; the host exited with {code}'))
+    def report(self, what):
+        return f'{what}; latest events: {self.seen[-12:]!r}\nthe host said:\n{self.diagnostics()}'
+    def diagnostics(self, limit=6000):
+        """The end of what the host wrote to stderr, without Chromium's
+        complaints about the session bus and OOM scores a test machine has
+        none of. Read where it is, never moving the offset the host writes at."""
+        try:
+            size = os.fstat(self.log.fileno()).st_size
+            text = os.pread(self.log.fileno(), size, 0).decode(errors='replace')
+        except (OSError, ValueError):
+            return ''
+        lines = [line for line in text.splitlines() if not any(noise in line for noise in NOISE)]
+        return '\n'.join(lines)[-limit:]
     def navigate(self, url):
         self.send(op='navigate',url=url)
         self.until(lambda e: e['event']=='loaded' and e['url'].rstrip('/')==url.rstrip('/'))
@@ -106,7 +141,7 @@ class Host:
             self.send(op='shutdown')
             self.until(lambda e:e['event']=='closed')
             code = self.p.wait(timeout=HANG_BOUND)
-            assert code==0, f'the host exited with {code}'
+            assert code==0, self.report(f'the host exited with {code}')
         finally:
             if self.p.poll() is None:
                 self.p.kill()
