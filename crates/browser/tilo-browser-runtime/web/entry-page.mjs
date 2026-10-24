@@ -75,10 +75,14 @@ async function settleRoom(known, runtime) {
   }
 }
 
-function card(text, choices) {
+/** A question over the page with its answers as buttons; resolves to the
+ * value of the one taken. `name` marks the card (`data-card`), for tests and
+ * tools driving the page to tell which question it asks. */
+function card(text, choices, name) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card';
+    if (name) form.dataset.card = name;
     const message = document.createElement('p');
     message.textContent = text;
     // One or two answers sit side by side, the first the one to take; a
@@ -799,7 +803,7 @@ export async function startEntryPage({mode}) {
     },
     readAccounts: async origin => readBrowserAccounts({origin, runtime: await loadRuntime(), currentDevice: profile => profileDevice(profile)}),
     chooseAccount: accounts => card('Open this link as',
-      accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account])),
+      accounts.map(account => [account.displayName || account.userPublicKey.slice(0, 12), account]), 'accounts'),
     // A guest ticket: a fresh device of the room's root, certified once the
     // web host spent the ticket on this page's pairing code. The root key is
     // read from the host's own certificate, so the link need not carry it.
