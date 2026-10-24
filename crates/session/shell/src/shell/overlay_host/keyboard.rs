@@ -702,6 +702,7 @@ impl ShellOverlayHost {
     /// Run `action` once, as its chord does; for the action door, which
     /// has no key event. `false` when it is not a desktop shortcut the
     /// host runs.
+    #[cfg(test)]
     pub(crate) fn run_shortcut_action(
         &mut self,
         action: settings_store::hardware::ShortcutAction,

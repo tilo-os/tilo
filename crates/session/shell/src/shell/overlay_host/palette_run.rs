@@ -362,14 +362,11 @@ impl ShellOverlayHost {
         ticket: crate::shell::search::PendingInvocation,
     ) -> Result<(), crate::shell::search::action_api::ActionError> {
         self.run_requested_shortcut_actions();
-        match ticket()? {
-            Some(_) => Ok(()),
-            None => {
-                self.pending_action_admissions
-                    .push((title.to_owned(), ticket));
-                Ok(())
-            }
+        if ticket()?.is_none() {
+            self.pending_action_admissions
+                .push((title.to_owned(), ticket));
         }
+        Ok(())
     }
 
     /// Start collecting `result`'s arguments. Words after its title in the
