@@ -51,7 +51,7 @@ tilo_automerge_isolate::test_worker!();
 tilo_agent_participant::app_worker!();
 
 use tilo_relay_client::frame;
-use tilo_relay_protocol::{auth, config, live, policy};
+use tilo_relay_protocol::{auth, live, policy};
 use tilo_relay_session::{client, coedit, position};
 
 mod transport {

@@ -293,18 +293,6 @@ fn default_priority() -> i32 {
     0
 }
 
-/// Local recovery contract for an admitted checkpoint publisher. This is
-/// intentionally absent from persisted configuration and wire protocols.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum CheckpointPrefixRecovery {
-    /// Generic SDK/browser/relay publishers have no automatic resend promise.
-    #[default]
-    Disabled,
-    /// The native session owner republishes its complete durable baseline on
-    /// every new Ready session after an uncertain send.
-    NativeOwnerDurableBaseline,
-}
-
 fn default_device_role() -> DeviceRole {
     DeviceRole::AlwaysOnServer
 }
