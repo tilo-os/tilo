@@ -569,10 +569,18 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        self.commit_action_with_invalidation(true);
+        self.commit_action_with(CommitKind::Action);
     }
 
-    fn commit_action_with_invalidation(&mut self, invalidate: bool) {
+    /// Commit after an input that only moved the view (a wheel or touchpad
+    /// pan): nothing in it can ask for undo or redo, so the history sweep,
+    /// which visits every mapped widget, is left to the next input that can
+    /// (what earlier input queued, its own sweep took).
+    pub(super) fn commit_view_change(&mut self) {
+        self.commit_action_with(CommitKind::ViewOnly);
+    }
+
+    fn commit_action_with(&mut self, commit: CommitKind) {
         if self.framework_input.get()
             || self
                 .history
@@ -581,7 +589,8 @@ impl App {
         {
             return;
         }
-        let history_changed = self.service_history();
+        let invalidate = commit == CommitKind::Action;
+        let history_changed = commit == CommitKind::Action && self.service_history();
         if history_changed {
             self.needs_sync = true;
             self.layout.layout_dirty = true;
@@ -1713,4 +1722,14 @@ impl App {
         }
         Ok(true)
     }
+}
+
+/// What a handled input asks [`App::commit_action_with`] to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CommitKind {
+    /// Any input: sweep the widgets for history requests, commit, and
+    /// invalidate what the input may have changed.
+    Action,
+    /// An input that only moved the view.
+    ViewOnly,
 }

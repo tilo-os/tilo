@@ -582,6 +582,8 @@ pub(crate) struct SectionPaint<'a> {
     pub focused: Option<SectionStop>,
     /// The password typed so far can be submitted.
     pub password_ready: bool,
+    /// The motion of the switches the section paints.
+    pub faces: &'a ui::widget::FaceMotions,
 }
 
 /// Paint `layout`'s items.
@@ -970,7 +972,12 @@ fn paint_profile(ctx: &mut PaintCtx<'_>, rect: Rect, p: &SectionPaint<'_>, index
         ctx.scene,
         ctx.transform,
         ctx.theme,
-        &ToggleFace::new(switch, profile.active).hovered(hovered),
+        &ToggleFace::new(switch, profile.active)
+            .pose(
+                p.faces
+                    .switch(("vpn", &profile.uuid), profile.active, ctx.theme.motion()),
+            )
+            .hovered(hovered),
     );
 }
 

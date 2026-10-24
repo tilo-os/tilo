@@ -2913,7 +2913,7 @@ mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
 mod checkbox;
-pub use checkbox::{Checkbox, CheckboxFace, CheckboxInteract};
+pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract};
 mod column;
 pub use column::Column;
 mod composition;
@@ -2936,9 +2936,12 @@ pub use manual::{
 };
 mod row;
 pub use row::Row;
+mod face_motions;
+pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    Toggle, ToggleColors, ToggleFace, ToggleInteract, toggle_accessibility, toggle_face_colors,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract,
+    toggle_accessibility, toggle_face_colors,
 };
 mod stack;
 pub use stack::Stack;

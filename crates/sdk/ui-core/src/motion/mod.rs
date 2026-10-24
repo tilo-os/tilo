@@ -20,6 +20,7 @@
 //! | [`Float`] | a reaction rising from the pointer it was sent from |
 //! | [`Breathe`] | a live state's soft ring (someone in a call) |
 //! | [`Feedback`] | press and hover tints |
+//! | [`ControlChange`] / [`Thumb`] / [`Mark`] | a switch's knob and tint, a checkbox's mark, a slider's thumb, a badge's count |
 //! | [`Attention`] | a refusal's shake, a single pulse |
 //!
 //! Every motion runs on [`MotionValue`]: a spring solved in closed form, so it
@@ -61,9 +62,9 @@ pub(crate) use clock::pin_frame;
 pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
 pub use disclosure::Disclosure;
 pub use named::{
-    Ambient, Appear, Attention, Breathe, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth,
-    Extent, Feedback, Float, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient,
-    WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
+    Ambient, Appear, Attention, Breathe, CROSS_FADE, ControlChange, CrossFade, Disclose, Drill,
+    DrillDepth, Extent, Feedback, Float, Follow, ListChange, Mark, PanelSlide, Reveal, Snap,
+    Speaking, Thumb, Transient, WindowMotion, Zoom, held_by_aim, stage, unit_opacity,
 };
 pub use pose::Pose;
 pub use presence::Presence;

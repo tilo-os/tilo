@@ -2889,6 +2889,11 @@ done
 env = { RUST_BACKTRACE = "1" }
 inputs = ["fuzz/**", "crates/**", "vendor/**", "Cargo.toml", "Cargo.lock"]
 writable_sources = true
+# LeakSanitizer's exit-time leak check stops the process's threads with ptrace, which the
+# job sandbox refuses: the check dies there with a fatal error and an empty "crash" input.
+# A micro-VM allows it, so every target keeps its leak check.
+isolation = "vm"
+requirement = { cores = 4, memory = "8GiB" }
 on = ["stable", "dispatch"]
 timeout_secs = 5400
 cost = "heavy"

@@ -486,6 +486,7 @@ impl ShellOverlayHost {
             workspace_rename_submit_held: false,
             palette_was_visible: false,
             palette_transition: ui::motion::Presence::closed(),
+            faces: ui::widget::FaceMotions::default(),
             group_row_ptrs: HashMap::new(),
             strip_pan_quantum: None,
             content_built_for_ws: None,

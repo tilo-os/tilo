@@ -360,6 +360,9 @@ pub struct CalendarApp {
     /// pristine object; every other event follows normal autosave semantics.
     fresh_draft: Option<Event>,
     dirty: bool,
+    /// The editor's switch and checkboxes, sliding and filling as a click
+    /// turns them.
+    faces: ui::widget::FaceMotions,
 
     // --- timeline (week/day) scroll + drag -------------------------------
     /// Vertical scroll of the full-24h week/day hour grid. Driven manually
@@ -530,6 +533,7 @@ impl CalendarApp {
             status_close: Rect::ZERO,
             fresh_draft: None,
             dirty: true,
+            faces: ui::widget::FaceMotions::default(),
             timeline: TimelineInteraction::new(),
             agenda: AgendaView::new(),
             tasks: TasksView::new(),
@@ -4415,6 +4419,7 @@ impl Widget for CalendarApp {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || self.faces.is_moving(ui::motion::frame_now())
             || self.notes_editor.needs_redraw()
             || self.title_input.needs_redraw()
             || self.location_input.needs_redraw()
@@ -4479,6 +4484,8 @@ impl Widget for CalendarApp {
         self.timeline.needs_animation_frame()
             || self.agenda.needs_animation_frame()
             || self.tasks.needs_animation_frame()
+            // The editor's switch and boxes, turning as a click turns them.
+            || self.faces.is_moving(ui::motion::frame_now())
     }
 
     fn is_layout_dirty(&self) -> bool {

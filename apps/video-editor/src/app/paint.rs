@@ -323,6 +323,7 @@ pub(super) fn draw_switch_row(
     rect: Rect,
     label: &str,
     on: bool,
+    pose: ui::widget::SwitchPose,
     hovered: bool,
 ) {
     let theme = ctx.theme;
@@ -333,7 +334,9 @@ pub(super) fn draw_switch_row(
     let style = theme.text(role);
     let shown = elide_at(label, room as f32, &style, ctx.text);
     ctx.text_role_in_band(&shown, role, ink, rect.x0, rect, None);
-    let face = ui::widget::ToggleFace::new(track, on).hovered(hovered);
+    let face = ui::widget::ToggleFace::new(track, on)
+        .pose(pose)
+        .hovered(hovered);
     ui::widget::Toggle::paint(ctx.scene, ctx.transform, theme, &face);
 }
 
