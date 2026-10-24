@@ -1414,16 +1414,15 @@ pub fn merge_room_contents(
             // A foreign strip no longer being merged in goes, but for the
             // windows of ours in it: they are ours to publish, and the
             // document lost them only with the strip.
-            None => match keep_own_windows(strip, &is_local) {
-                Some((strip, dropped)) => {
+            None => {
+                if let Some((strip, dropped)) = keep_own_windows(strip, &is_local) {
                     changed |= dropped;
                     kept.push((i, strip));
-                }
-                None => {
+                } else {
                     changed = true;
                     vanished.push(StripId::from(sid));
                 }
-            },
+            }
             Some(rep) => {
                 let order = rep.order;
                 let merged = merge_strip(strip, rep, &is_local, &mut changed);
