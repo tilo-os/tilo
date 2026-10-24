@@ -31,6 +31,18 @@ pub(crate) struct Desktop {
     log: Log,
 }
 
+/// The shell binary a desktop runs. Cargo supplies it at compile time for
+/// integration tests, not examples; scheduled and A/B runs explicitly select
+/// the shell they built.
+fn shell_binary() -> std::ffi::OsString {
+    std::env::var_os("TILO_IDLE_SHELL_BIN")
+        .or_else(|| {
+            option_env!("CARGO_BIN_EXE_shell")
+                .map(|built| tilo_test_env::package_binary_at("shell", built).into_os_string())
+        })
+        .expect("set TILO_IDLE_SHELL_BIN to the explicitly built shell binary")
+}
+
 impl Desktop {
     /// The headless compositor on a fresh private runtime, signed in, with a
     /// Notes tab saved in its session; returns once its control socket
@@ -78,15 +90,7 @@ impl Desktop {
         let identity_root = seed_identity(&runtime_dir);
         let control = runtime_dir.join("ctl");
 
-        // Cargo supplies this at compile time for integration tests, not
-        // examples. Scheduled and A/B runs explicitly select the shell they built.
-        let shell = std::env::var_os("TILO_IDLE_SHELL_BIN")
-            .or_else(|| {
-                option_env!("CARGO_BIN_EXE_shell")
-                    .map(|built| tilo_test_env::package_binary_at("shell", built).into_os_string())
-            })
-            .expect("set TILO_IDLE_SHELL_BIN to the explicitly built shell binary");
-        let mut command = Command::new(shell);
+        let mut command = Command::new(shell_binary());
         // A person's session keeps GStreamer's plugin registry in its cache.
         // Share one across this run's test processes (tools/test-env.sh), so
         // only the first pays for the scan.
