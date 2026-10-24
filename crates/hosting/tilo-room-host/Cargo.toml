@@ -74,6 +74,8 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 tilo-browser-peer = { path = "../../browser/tilo-browser-peer", default-features = false, optional = true }
 
 [dev-dependencies]
+# The store's continuity tests count each thread's heap.
+tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

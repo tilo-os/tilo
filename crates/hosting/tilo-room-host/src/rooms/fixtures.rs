@@ -75,7 +75,7 @@ impl TestHost {
     }
 
     /// The compactor of its workspaces.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "agents"))]
     pub(crate) fn compactor(&self) -> &crate::compaction::Compactor {
         self.host.compactor()
     }
