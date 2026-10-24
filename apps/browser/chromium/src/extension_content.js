@@ -117,18 +117,17 @@
     sendMessage: api((...args) => {
       // sendMessage([extensionId,] message [, options]), bound as Chrome
       // binds it: of two, the first is the extension's id when it can be one
-      // (a string or null), else the second is the options.
-      if (args.length > 2 || (args.length === 2 && (args[0] === null || typeof args[0] === 'string'))) {
+      // (a string, null or undefined), else the second is the options.
+      if (args.length > 2 || (args.length === 2 && (args[0] == null || typeof args[0] === 'string'))) {
         const target = args.shift();
-        if (target !== null && target !== undefined && target !== content.id) {
-          return Promise.reject(new Error('Could not establish connection. Receiving end does not exist.'));
-        }
+        if (target != null && target !== content.id) return Promise.reject(new Error(NO_RECEIVER));
       }
       return call('sendMessage', {message: args[0]});
     }),
-    // connect([extensionId,] [connectInfo])
+    // connect([extensionId,] [connectInfo]): as in Chrome, a first string,
+    // null or undefined is the id, and null or undefined means this one.
     connect: (...args) => {
-      const target = typeof args[0] === 'string' ? args.shift() : content.id;
+      const target = args.length && (args[0] == null || typeof args[0] === 'string') ? args.shift() ?? content.id : content.id;
       const info = args[0] || {};
       const id = 'c' + ++nextPort;
       const opened = port(id, info.name === undefined ? '' : String(info.name));

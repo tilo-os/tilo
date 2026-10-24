@@ -10,7 +10,8 @@ these fixtures keep what broke, without the store or the sites:
   (by key and time, as video speed controllers do) drops none.
 - An extension added while a page is open runs its script there, as High
   Contrast and dark modes do once installed, and that script follows the
-  settings the person changes in its popup and gets its worker's answers.
+  settings the person changes in its popup and gets its worker's answers,
+  bound as Chrome binds a null or undefined extension id.
 """
 import http.server
 import json
@@ -67,7 +68,7 @@ class SiteExtensions(unittest.TestCase):
         seen = next((e for e in reversed(host.seen) if match(e)), None)
         return (seen or host.until(match))['title']
 
-    def test_a_shortcut_pressed_twice_counts_twice(self):
+    def test_a_shortcut_pressed_three_times_counts_three(self):
         host = self.host('shortcut')
         host.navigate(self.url + '/keys')
         for presses in (1, 2, 3):
@@ -87,8 +88,12 @@ class SiteExtensions(unittest.TestCase):
         extension = json.loads(loaded['body'])['id']
         host.send(op='extension_access', id=extension, permissions=['scripting', 'storage'],
                   hosts=['<all_urls>'], token=token)
-        # Its install-time script reached the open page and its worker answered it.
-        self.title(host, 1, lambda title: title == 'settler:{"reply":"hello /open"}')
+        # Its install-time script reached the open page and its worker answered
+        # it, whether the script named no extension with null or undefined.
+        greeted = self.title(host, 1, lambda title: title.startswith('settler:')
+                             and all(f'"{key}":' in title for key in ('reply', 'again', 'port')))
+        self.assertEqual(json.loads(greeted[len('settler:'):]),
+                         {'reply': 'hello /open', 'again': 'hello again', 'port': 'settings'})
         # The person picks a setting in its popup.
         host.send(op='create_tab', tab=2)
         host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
@@ -97,7 +102,8 @@ class SiteExtensions(unittest.TestCase):
         host.send(op='navigate', tab=2, url=f'chrome-extension://{extension}/popup.html')
         followed = self.title(host, 1, lambda title: title.startswith('settler:') and '"local":' in title and '"area":' in title)
         self.assertEqual(json.loads(followed[len('settler:'):]),
-                         {'reply': 'hello /open', 'area': 'local', 'mode': 'dark', 'local': 'dark'})
+                         {'reply': 'hello /open', 'again': 'hello again', 'port': 'settings',
+                          'area': 'local', 'mode': 'dark', 'local': 'dark'})
 
 
 if __name__ == '__main__':

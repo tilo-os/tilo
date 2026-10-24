@@ -15,3 +15,4 @@ chrome.runtime.onInstalled.addListener(async () => {
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (message && message.hello) reply('hello ' + message.hello);
 });
+chrome.runtime.onConnect.addListener((port) => port.postMessage({name: port.name}));
