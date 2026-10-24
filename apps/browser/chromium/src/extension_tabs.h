@@ -2108,25 +2108,30 @@ class ExtensionTabs {
     std::vector<std::string> documents;
     bool MainOnly() const { return !all && ids.empty() && documents.empty(); }
   };
-  // What an injection's `target` names, or why Chrome would refuse it.
+  // Whether `document` has the shape of Chromium's document ids: a token
+  // of 32 hex digits, not all zero (ExtensionApiFrameIdMap).
+  static bool DocumentIdShaped(const std::string& document) {
+    return document.size() == 32 && std::all_of(document.begin(), document.end(), [](char c) { return std::isxdigit(static_cast<unsigned char>(c)) != 0; }) &&
+           document.find_first_not_of('0') != std::string::npos;
+  }
+  // What an injection's `target` names, or why Chrome would refuse it, in
+  // Chromium's words (scripting_utils.cc): naming a list counts, even an
+  // empty one.
   static std::optional<std::string> FramesOf(CefRefPtr<CefDictionaryValue> target, FrameQuery& wanted) {
     wanted.all = target && target->GetType("allFrames") == VTYPE_BOOL && target->GetBool("allFrames");
     auto ids = target && target->GetType("frameIds") == VTYPE_LIST ? target->GetList("frameIds") : nullptr;
     for (size_t i = 0; ids && i < ids->GetSize(); ++i)
       if (auto id = IntOf(ids->GetValue(i)); id && std::find(wanted.ids.begin(), wanted.ids.end(), *id) == wanted.ids.end()) wanted.ids.push_back(*id);
     auto documents = target && target->GetType("documentIds") == VTYPE_LIST ? target->GetList("documentIds") : nullptr;
-    bool malformed = false;
+    if (wanted.all && (ids || documents)) return std::string("Cannot specify 'allFrames' if either 'frameIds' or 'documentIds' is specified.");
+    if (ids && documents) return std::string("Cannot specify both 'frameIds' and 'documentIds'.");
     for (size_t i = 0; documents && i < documents->GetSize(); ++i) {
-      const auto document = documents->GetType(i) == VTYPE_STRING ? documents->GetString(i).ToString() : std::string();
-      if (document.empty() || document.size() > 64 || wanted.documents.size() >= kMaxFrames) { malformed = true; continue; }
+      if (documents->GetType(i) != VTYPE_STRING || wanted.documents.size() >= kMaxFrames)
+        return std::string("Error at property 'documentIds': Each must be a document's id.");
+      const auto document = documents->GetString(i).ToString();
+      if (!DocumentIdShaped(document)) return "Invalid document id " + document.substr(0, 64);
       if (std::find(wanted.documents.begin(), wanted.documents.end(), document) == wanted.documents.end()) wanted.documents.push_back(document);
     }
-    const bool by_id = ids && ids->GetSize();
-    const bool by_document = documents && documents->GetSize();
-    if (wanted.all && by_id) return std::string("Cannot specify both 'allFrames' and 'frameIds'.");
-    if (wanted.all && by_document) return std::string("Cannot specify both 'allFrames' and 'documentIds'.");
-    if (by_id && by_document) return std::string("Cannot specify both 'frameIds' and 'documentIds'.");
-    if (malformed) return std::string("Error at property 'documentIds': Each must be a document's id.");
     if (!wanted.all && wanted.ids.size() == 1 && wanted.ids[0] == 0) wanted.ids.clear();
     return std::nullopt;
   }
@@ -2152,12 +2157,12 @@ class ExtensionTabs {
       std::vector<Frame> chosen;
       for (int id : wanted.ids) {
         auto found = std::find_if(frames.begin(), frames.end(), [id](const Frame& frame) { return frame.id == id; });
-        if (found == frames.end()) { Release(frames); Fail(reply, "No frame with id " + std::to_string(id) + " in tab with id " + std::to_string(tab_id) + "."); return; }
+        if (found == frames.end()) { Release(frames); Fail(reply, "No frame with id " + std::to_string(id) + " in tab with id " + std::to_string(tab_id)); return; }
         chosen.push_back(*found);
       }
       for (const auto& document : wanted.documents) {
         auto found = std::find_if(frames.begin(), frames.end(), [&](const Frame& frame) { return frame.document == document; });
-        if (found == frames.end()) { Release(frames); Fail(reply, "No document with id " + document + " in tab with id " + std::to_string(tab_id) + "."); return; }
+        if (found == frames.end()) { Release(frames); Fail(reply, "No document with id " + document + " in tab with id " + std::to_string(tab_id)); return; }
         if (std::none_of(chosen.begin(), chosen.end(), [&](const Frame& known) { return known.devtools == found->devtools; })) chosen.push_back(*found);
       }
       // Every frame the script can run in, as Chrome passes over those it

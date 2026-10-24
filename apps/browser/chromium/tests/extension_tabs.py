@@ -1290,8 +1290,12 @@ class ExtensionTabs(unittest.TestCase):
             # Every frame but the panel, which takes no script.
             'all': [['/framed', '/framed'], ['/inner', '/inner'], ['/outer', '/outer']],
             'intoPanel': 'error: The page could not run the script',
-            'both': "error: Cannot specify both 'allFrames' and 'frameIds'.",
-            'gone': 'error: No document with id 0123456789ABCDEF0123456789ABCDEF in tab with id %d.' % tab,
+            # Chromium's words for a target it refuses (scripting_utils.cc).
+            'both': "error: Cannot specify 'allFrames' if either 'frameIds' or 'documentIds' is specified.",
+            'allAndDocuments': "error: Cannot specify 'allFrames' if either 'frameIds' or 'documentIds' is specified.",
+            'idsAndDocuments': "error: Cannot specify both 'frameIds' and 'documentIds'.",
+            'malformed': 'error: Invalid document id nope',
+            'gone': 'error: No document with id 0123456789ABCDEF0123456789ABCDEF in tab with id %d' % tab,
             'ids': True,
         })
 
