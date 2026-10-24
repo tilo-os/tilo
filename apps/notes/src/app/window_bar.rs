@@ -2,8 +2,9 @@
 //!
 //! While the desktop's bar hosts them, the content header leaves the window
 //! and the bar shows the page tree's toggle, the note as the window's location, then New note and
-//! the note's actions; search is the bar's own. The page tree keeps its
-//! header. Outside a Tilo session the header stays in the window.
+//! the note's actions; search is the bar's own. The page tree's header
+//! keeps only its title then, so New note stands once, in the bar. Outside
+//! a Tilo session both headers stay in the window, New note in the tree's.
 
 use std::rc::Rc;
 
@@ -59,11 +60,18 @@ impl NotesApp {
         if hosted != self.header_in_bar {
             self.header_in_bar = hosted;
             self.shell.set_sidebar_toggle_in_window_bar(hosted);
-            let actions = if hosted {
-                Vec::new()
+            let (tree_actions, actions) = if hosted {
+                (Vec::new(), Vec::new())
             } else {
-                Self::content_header_actions(&self.header)
+                (
+                    Self::page_tree_header_actions(&self.header),
+                    Self::content_header_actions(&self.header),
+                )
             };
+            // window-bar: fallback, the bar holds New note while it hosts the window
+            self.shell
+                .set_sidebar_header(ui::i18n!("notes-title"), tree_actions);
+            // window-bar: fallback, the bar holds the note's actions while it hosts the window
             self.shell.set_content_header("", actions);
             if !hosted {
                 ui::window_toolbar::declare(None);
@@ -105,7 +113,7 @@ impl NotesApp {
 
 #[cfg(test)]
 mod tests {
-    use super::NotesApp;
+    use super::{NEW_NOTE, NotesApp};
     use ui::framework::testing::TestApp;
 
     /// Notes in its window bar at `size`, on `scenario`'s note.
@@ -140,7 +148,7 @@ mod tests {
     /// The window bar holds the note's controls, so the note has no header
     /// row of its own at any width: it starts right under the bar, or under
     /// its notice's strip. Only a docked page tree keeps its header, which
-    /// holds its title and New note.
+    /// holds its title (New note is the bar's).
     #[test]
     fn a_note_starts_right_under_the_window_bar() {
         let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
@@ -166,5 +174,41 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn new_note_in_window(app: &NotesApp) -> bool {
+        ui::widget::find_test_id(&app.shell, crate::app::NEW_NOTE_BUTTON_ID).is_some()
+    }
+
+    #[test]
+    fn hosted_by_the_window_bar_new_note_stands_once_in_the_bar() {
+        ui::i18n::I18nManager::init("en-US");
+        let mut test = ui::framework::testing::TestApp::<crate::NotesShell>::new().unwrap();
+        ui::window_toolbar::set_hosted(false);
+        test.surface_mut::<NotesApp>().sync_window_toolbar();
+        // The shell puts a changed header in place when it lays out.
+        test.settle();
+        assert!(
+            new_note_in_window(test.surface_mut::<NotesApp>()),
+            "outside a Tilo session the page tree's header holds New note"
+        );
+
+        ui::window_toolbar::set_hosted(true);
+        test.surface_mut::<NotesApp>().sync_window_toolbar();
+        test.settle();
+        assert!(
+            !new_note_in_window(test.surface_mut::<NotesApp>()),
+            "the page tree draws no New note of its own while the bar hosts the window"
+        );
+        let declared = ui::window_toolbar::declared().expect("the note's slots are declared");
+        assert_eq!(
+            declared
+                .actions
+                .iter()
+                .filter(|action| action.id == NEW_NOTE)
+                .count(),
+            1,
+            "the bar holds New note once"
+        );
     }
 }

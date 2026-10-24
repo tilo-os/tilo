@@ -658,22 +658,27 @@ impl NotesApp {
         };
         vec![
             Box::new(note_menu),
+            // window-bar: fallback, the bar's search while it hosts the window
             Box::new(ui::search::search_button(
                 ui::search::SearchRequest::this_app(),
             )),
         ]
     }
 
-    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
-        let new_note = {
-            let header = Rc::clone(header);
+    /// The page tree's header actions: New note.
+    fn page_tree_header_actions(header: &Rc<HeaderRequests>) -> Vec<ui::widget::Element> {
+        let header = Rc::clone(header);
+        vec![Box::new(
             Button::icon_only(
                 NEW_NOTE_BUTTON_ID,
                 ui::icons::Icon::Plus,
                 &ui::i18n!("notes-affordance-new-note"),
             )
-            .on_view(move || header.new_note.set(true))
-        };
+            .on_view(move || header.new_note.set(true)),
+        )]
+    }
+
+    fn build_shell(columns: &Columns, header: &Rc<HeaderRequests>) -> NavShell {
         let actions = Self::content_header_actions(header);
         // Maximized, the header lives in the window's bar: the note has the
         // whole window until the person reaches for the top edge.
@@ -683,7 +688,10 @@ impl NotesApp {
             .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
-            .sidebar_header(ui::i18n!("notes-title"), vec![Box::new(new_note)])
+            .sidebar_header(
+                ui::i18n!("notes-title"),
+                Self::page_tree_header_actions(header),
+            )
             .content_header("", actions)
     }
 
