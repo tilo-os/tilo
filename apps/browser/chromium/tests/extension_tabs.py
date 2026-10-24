@@ -69,6 +69,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   the frame and the document a message from the panel came from (Evernote
   Web Clipper answers its panel so), and the page's frames by their
   documents, while the panel answers every message itself.
+- An extension's notifications reach the Browser to show, a progress and
+  two buttons with them, and change and go as the extension says; getAll
+  lists those shown. The person choosing one, or one of its buttons, reaches
+  the worker, which hears it closed.
 """
 import base64
 import hashlib
@@ -881,6 +885,79 @@ class ExtensionTabs(unittest.TestCase):
             host.settle(2.0)
         host.send(op='extension_click', id=ids['clicker'])
         self.title(host, 1, 'clicked:true|clicked:true')
+
+    def test_notifications_reach_the_browser_and_a_choice_reaches_the_worker(self):
+        host, ids = self.start('notifier', access={'notifier': (['notifications'], [])})
+        notifier = ids['notifier']
+        host.navigate(self.url + '/notified')
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, notifier, 'typeof heard') != 'object':
+            self.assertLess(time.monotonic(), deadline, 'the worker never started')
+            host.settle(0.25)
+
+        def told(mark, notification):
+            """What the Browser was told of `notification` after `mark`."""
+            match = lambda e: e['event'] == 'extension_notification' and e['notification'] == notification
+            return next((e for e in host.seen[mark:] if match(e)), None) or host.until(match)
+
+        def heard(count):
+            """What the worker heard, once it heard `count` things."""
+            deadline = time.monotonic() + HANG_BOUND
+            while True:
+                seen = json.loads(self.in_worker(host, notifier, 'JSON.stringify(heard)'))
+                if len(seen) >= count:
+                    return seen
+                self.assertLess(time.monotonic(), deadline, f'the worker heard only {seen}')
+                host.settle(0.25)
+
+        # A progress notification with buttons: the Browser is told what it
+        # shows, through the page in front, with the two buttons Chrome shows.
+        mark = len(host.seen)
+        created = self.in_worker(host, notifier, """chrome.notifications.create('copy', {
+            type: 'progress', iconUrl: 'icon.png', title: 'Copying', message: 'Two files', progress: 40,
+            buttons: [{title: 'Pause'}, {title: 'Stop'}, {title: 'Third'}]})""")
+        self.assertEqual(created, 'copy')
+        shown = told(mark, 'copy')
+        self.assertEqual({key: shown.get(key) for key in ('tab', 'id', 'title', 'message', 'progress', 'buttons', 'items')},
+                         {'tab': 1, 'id': notifier, 'title': 'Copying', 'message': 'Two files', 'progress': 40,
+                          'buttons': ['Pause', 'Stop'], 'items': []})
+
+        # Without an id, with a callback: one is made up. A missing property
+        # sets runtime.lastError, as in Chrome.
+        made = self.in_worker(host, notifier, """new Promise((resolve) => chrome.notifications.create(
+            {type: 'basic', iconUrl: 'icon.png', title: 'Hello', message: 'World'}, resolve))""")
+        self.assertRegex(made, r'^[0-9a-f-]{36}$')
+        self.assertNotIn('progress', told(mark, made))
+        refused = self.in_worker(host, notifier, """new Promise((resolve) => chrome.notifications.create(
+            'bad', {type: 'basic', title: 'No message'}, () => resolve(chrome.runtime.lastError.message)))""")
+        self.assertEqual(refused, 'Some of the required properties are missing: type, iconUrl, title and message.')
+
+        # An update keeps what it does not name; one of a notification not
+        # shown changes nothing.
+        mark = len(host.seen)
+        self.assertIs(self.in_worker(host, notifier, "chrome.notifications.update('copy', {progress: 80})"), True)
+        updated = told(mark, 'copy')
+        self.assertEqual((updated['title'], updated['progress']), ('Copying', 80))
+        self.assertIs(self.in_worker(host, notifier, "chrome.notifications.update('none', {progress: 1})"), False)
+        self.assertEqual(self.in_worker(host, notifier, 'chrome.notifications.getAll()'), {'copy': True, made: True})
+
+        # The person chooses a button, then the other's body: the worker
+        # hears which, and that each closed by the person's hand.
+        host.send(op='extension_notification_chosen', id=notifier, notification='copy', button=1)
+        self.assertEqual(heard(2), [['button', 'copy', 1], ['closed', 'copy', True]])
+        host.send(op='extension_notification_chosen', id=notifier, notification=made)
+        self.assertEqual(heard(4)[2:], [['clicked', made], ['closed', made, True]])
+        self.assertEqual(self.in_worker(host, notifier, 'chrome.notifications.getAll()'), {})
+
+        # Cleared by the extension: the Browser takes it away, and the worker
+        # hears it closed, not by the person.
+        self.in_worker(host, notifier, """chrome.notifications.create('later', {
+            type: 'basic', iconUrl: 'icon.png', title: 'Later', message: 'Soon'})""")
+        mark = len(host.seen)
+        self.assertIs(self.in_worker(host, notifier, "chrome.notifications.clear('later')"), True)
+        self.assertIs(told(mark, 'later').get('cleared'), True)
+        self.assertEqual(heard(5)[4:], [['closed', 'later', False]])
+        self.assertIs(self.in_worker(host, notifier, "chrome.notifications.clear('later')"), False)
 
     # chrome.contextMenus: items in the page's menu, and a choice reaching
     # the extension.

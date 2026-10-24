@@ -615,6 +615,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ExtensionPanel { .. }
             | WebViewCommand::ExtensionClick { .. }
             | WebViewCommand::ExtensionMenuChoice { .. }
+            | WebViewCommand::ExtensionNotificationChosen { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }

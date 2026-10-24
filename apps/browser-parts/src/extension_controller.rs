@@ -378,7 +378,8 @@ impl ExtensionController {
 
     /// What the engine says of extensions' toolbar buttons on this window's
     /// page: one changed, the page's own values went with its document, one
-    /// asks to open its popup, or the person pressed its keyboard shortcut.
+    /// asks to open its popup, or the person pressed its keyboard shortcut;
+    /// or of an extension's notification, which the system shows.
     /// Returns whether the interface changed.
     pub fn on_engine_event(&mut self, event: WebViewEvent, engine: &SharedEngine) -> bool {
         if !self.active {
@@ -432,6 +433,30 @@ impl ExtensionController {
             WebViewEvent::ExtensionExecuteAction { id } => {
                 self.open_action(&id, engine);
                 true
+            }
+            // Shown by the system, named for the extension; one taken away
+            // goes also for an extension no longer installed.
+            WebViewEvent::ExtensionNotification {
+                id,
+                notification,
+                notice,
+            } => {
+                let name = self
+                    .installed
+                    .iter()
+                    .find(|extension| extension.id == id && extension.enabled)
+                    .map(|extension| extension.name.clone());
+                if notice.is_some() && name.is_none() {
+                    return false;
+                }
+                crate::extension_notices::announce(
+                    &*ui::host::current().notifications,
+                    engine,
+                    name.as_deref().unwrap_or_default(),
+                    &id,
+                    (&notification, notice.as_ref()),
+                );
+                false
             }
             _ => false,
         }

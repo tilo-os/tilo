@@ -280,6 +280,21 @@ pub enum ExtensionMenuItem {
     Separator,
 }
 
+/// What an extension's notification (`chrome.notifications`) shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ExtensionNotice {
+    pub title: String,
+    pub message: String,
+    /// A line under the message (`contextMessage`), empty for none.
+    pub context: String,
+    /// A list notification's items: each a title and a message.
+    pub items: Vec<(String, String)>,
+    /// Its buttons' names, at most two.
+    pub buttons: Vec<String>,
+    /// How far along a progress notification is, from 0 to 100.
+    pub progress: Option<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebViewCommand {
     /// A DevTools command for extension management: the engine allows only
@@ -510,6 +525,14 @@ pub enum WebViewCommand {
         id: String,
         key: String,
     },
+    /// The person chose the notification `notification` of the extension
+    /// `id`: its body, or the button at `button`. The extension hears of it
+    /// and of the notification closing.
+    ExtensionNotificationChosen {
+        id: String,
+        notification: String,
+        button: Option<u8>,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -579,6 +602,14 @@ pub enum WebViewEvent {
     ExtensionMenu {
         id: String,
         items: Vec<ExtensionMenuItem>,
+    },
+    /// An extension showed or changed its notification `notification`
+    /// (`notice`), or took it away (`None`). A notification is no tab's:
+    /// it comes through the page the person used last.
+    ExtensionNotification {
+        id: String,
+        notification: String,
+        notice: Option<ExtensionNotice>,
     },
     SiteStatus(SiteStatus),
     SiteResult {

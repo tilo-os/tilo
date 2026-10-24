@@ -51,6 +51,7 @@
 #include "include/wrapper/cef_closure_task.h"
 #include "extension_commands.h"
 #include "extension_menus.h"
+#include "extension_notifications.h"
 #include "extension_tabs_script.h"
 #include "match_pattern.h"
 
@@ -314,6 +315,8 @@ class ExtensionTabs {
     for (auto it = action_states_.begin(); it != action_states_.end();) it = it->first.first == id ? action_states_.erase(it) : std::next(it);
     // Chromium starts it again with its button as the manifest made it.
     buttons_.erase(id);
+    // Its notifications go with it.
+    for (const auto& notification : notifications_.Forget(id)) TellNotification(id, notification);
   }
   // The items the profile kept from an earlier run.
   void LoadMenus(const std::string& json) { menus_.Load(json); }
@@ -496,6 +499,8 @@ class ExtensionTabs {
       Succeed(reply, Wrap(settings));
     } else if (method == "action.set" || method == "action.get") {
       Button(extension, tabs, method == "action.get", args, reply);
+    } else if (method.rfind("notifications.", 0) == 0) {
+      Notify(extension, method, args, reply);
     } else if (method == "commands.getAll") {
       auto list = CefListValue::Create();
       for (const auto& command : commands_.All(extension)) {
@@ -583,6 +588,25 @@ class ExtensionTabs {
     auto args = CefListValue::Create();
     args->SetDictionary(0, TabObject(extension, *found));
     Push(extension, "action.onClicked", args, true);
+  }
+
+  // The person chose an extension's notification: its body, or the button
+  // at `button`. The extension hears of it, and of the notification
+  // closing, since Tilo takes a notification away once it is chosen. A
+  // sleeping worker wakes for what it listens to.
+  void NotificationChosen(const std::string& extension, const std::string& id, std::optional<int> button) {
+    const auto* shown = notifications_.Find(extension, id);
+    if (!access_.count(extension) || !shown) return;
+    auto args = CefListValue::Create();
+    args->SetString(0, id);
+    if (button && *button >= 0 && static_cast<size_t>(*button) < shown->buttons.size()) {
+      args->SetInt(1, *button);
+      Push(extension, "notifications.onButtonClicked", args, false);
+    } else {
+      Push(extension, "notifications.onClicked", args, false);
+    }
+    notifications_.Clear(extension, id);
+    Closed(extension, id, true);
   }
 
   // The person pressed a key on the page of `tab` (no extension's panel):
@@ -985,7 +1009,8 @@ class ExtensionTabs {
     }
   }
   static bool Listenable(const std::string& name) {
-    static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged"};
+    static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated", "tabs.onRemoved", "windows.onFocusChanged",
+                                             "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed"};
     return names.count(name) > 0;
   }
   static bool Populate(CefRefPtr<CefDictionaryValue> args) {
@@ -1019,6 +1044,113 @@ class ExtensionTabs {
     if (const auto* tab = Find(tabs, hooks_.focused()); tab && !tab->panel) return tab;
     for (const auto& tab : tabs) if (!tab.panel) return &tab;
     return nullptr;
+  }
+
+  // `chrome.notifications`: kept here (extension_notifications.h) and shown
+  // by the Browser, which is told of each change (`extension_notification`).
+  void Notify(const std::string& extension, const std::string& method, CefRefPtr<CefDictionaryValue> args, const Reply& reply) {
+    if (!Has(extension, "notifications")) { Fail(reply, "The extension may not show notifications"); return; }
+    const auto id = StringOf(args, "id");
+    auto answer = CefValue::Create();
+    if (method == "notifications.create") {
+      auto created = notifications_.Create(extension, id, NotificationOptionsOf(args->GetDictionary("options")));
+      if (created.error) { Fail(reply, *created.error); return; }
+      TellNotification(extension, created.id);
+      answer->SetString(created.id);
+    } else if (method == "notifications.update") {
+      auto updated = notifications_.Update(extension, id, NotificationOptionsOf(args->GetDictionary("options")));
+      if (updated.error) { Fail(reply, *updated.error); return; }
+      if (updated.updated) TellNotification(extension, id);
+      answer->SetBool(updated.updated);
+    } else if (method == "notifications.clear") {
+      const bool cleared = notifications_.Clear(extension, id);
+      if (cleared) { TellNotification(extension, id); Closed(extension, id, false); }
+      answer->SetBool(cleared);
+    } else if (method == "notifications.getAll") {
+      auto all = CefDictionaryValue::Create();
+      for (const auto& shown : notifications_.All(extension)) all->SetBool(shown, true);
+      answer->SetDictionary(all);
+    } else {
+      Fail(reply, "Tilo does not support " + method + " yet");
+      return;
+    }
+    Succeed(reply, answer);
+  }
+  static NotificationOptions NotificationOptionsOf(CefRefPtr<CefDictionaryValue> options) {
+    NotificationOptions read;
+    if (!options) return read;
+    auto text = [&](const char* key) -> std::optional<std::string> {
+      if (options->GetType(key) == VTYPE_STRING) return options->GetString(key).ToString();
+      return std::nullopt;
+    };
+    read.type = text("type");
+    read.title = text("title");
+    read.message = text("message");
+    read.context = text("contextMessage");
+    // An icon or image given as pixels (ImageData) counts as given.
+    read.icon = text("iconUrl");
+    if (!read.icon && options->GetType("iconUrl") == VTYPE_DICTIONARY) read.icon = std::string("image");
+    read.image = text("imageUrl");
+    if (!read.image && options->GetType("imageUrl") == VTYPE_DICTIONARY) read.image = std::string("image");
+    if (options->GetType("progress") == VTYPE_INT) read.progress = options->GetInt("progress");
+    else if (options->GetType("progress") == VTYPE_DOUBLE) read.progress = options->GetDouble("progress");
+    if (options->GetType("requireInteraction") == VTYPE_BOOL) read.require_interaction = options->GetBool("requireInteraction");
+    if (options->GetType("silent") == VTYPE_BOOL) read.silent = options->GetBool("silent");
+    if (auto items = options->GetList("items")) {
+      read.items.emplace();
+      for (size_t i = 0; i < items->GetSize(); ++i) {
+        auto item = items->GetType(i) == VTYPE_DICTIONARY ? items->GetDictionary(i) : nullptr;
+        if (item) read.items->push_back({StringOf(item, "title"), StringOf(item, "message")});
+      }
+    }
+    if (auto buttons = options->GetList("buttons")) {
+      read.buttons.emplace();
+      for (size_t i = 0; i < buttons->GetSize(); ++i) {
+        auto button = buttons->GetType(i) == VTYPE_DICTIONARY ? buttons->GetDictionary(i) : nullptr;
+        if (button) read.buttons->push_back(StringOf(button, "title"));
+      }
+    }
+    return read;
+  }
+  // Tell the Browser what the notification shows now, or that it is gone,
+  // through the page the person used last: a notification is no tab's.
+  void TellNotification(const std::string& extension, const std::string& id) {
+    if (!hooks_.event) return;
+    const auto tabs = Tabs();
+    const auto* tab = LastFocused(tabs);
+    if (!tab) return;
+    auto fields = CefDictionaryValue::Create();
+    fields->SetString("id", extension);
+    fields->SetString("notification", id);
+    const auto* shown = notifications_.Find(extension, id);
+    if (!shown) {
+      fields->SetBool("cleared", true);
+    } else {
+      fields->SetString("title", shown->title);
+      fields->SetString("message", shown->message);
+      fields->SetString("context", shown->context);
+      auto items = CefListValue::Create();
+      for (const auto& item : shown->items) {
+        auto entry = CefDictionaryValue::Create();
+        entry->SetString("title", item.title);
+        entry->SetString("message", item.message);
+        items->SetDictionary(items->GetSize(), entry);
+      }
+      fields->SetList("items", items);
+      auto buttons = CefListValue::Create();
+      for (const auto& button : shown->buttons) buttons->SetString(buttons->GetSize(), button);
+      fields->SetList("buttons", buttons);
+      if (shown->progress) fields->SetInt("progress", *shown->progress);
+      fields->SetBool("require_interaction", shown->require_interaction);
+      fields->SetBool("silent", shown->silent);
+    }
+    hooks_.event(tab->tab, "extension_notification", fields);
+  }
+  void Closed(const std::string& extension, const std::string& id, bool by_user) {
+    auto args = CefListValue::Create();
+    args->SetString(0, id);
+    args->SetBool(1, by_user);
+    Push(extension, "notifications.onClosed", args, false);
   }
 
   // Where an extension may send a tab, as in Chrome: a web page, a blank
@@ -2183,7 +2315,8 @@ class ExtensionTabs {
     auto name = CefValue::Create();
     name->SetString(event);
     InWorker(extension, "globalThis.__tiloExtensionTabs ? __tiloExtensionTabs.dispatch(" + ToJson(name) + ", " + ToJson(Wrap(args)) + ") : -1",
-             event == "action.onClicked" || event == "commands.onCommand" || event == "contextMenus.onClicked",
+             event == "action.onClicked" || event == "commands.onCommand" || event == "contextMenus.onClicked" ||
+                 event == "notifications.onClicked" || event == "notifications.onButtonClicked",
              [](std::optional<std::string>, CefRefPtr<CefValue>) {});
   }
   // Evaluate `expression` in the extension's service worker, waking it if
@@ -2477,6 +2610,7 @@ class ExtensionTabs {
   uint64_t port_ = 0;
   uint64_t generation_ = 0;
   ExtensionMenus menus_;
+  ExtensionNotifications notifications_;
 #if defined(OS_MAC)
   ExtensionCommands commands_{true};
 #else
