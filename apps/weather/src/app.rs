@@ -2067,16 +2067,17 @@ mod framework_tests {
         .unwrap();
         assert_eq!(app.state().model().locations[0].id, tokyo);
         let removed = app.state().model().locations[3].id;
-        assert!(
-            app.call_on(
-                &location_resource_id(removed),
-                "remove",
-                serde_json::json!({})
-            )
-            .is_err(),
-            "removing a place asks for confirmation"
-        );
-        assert_eq!(app.state().model().locations.len(), 4);
+        app.call_on(
+            &location_resource_id(removed),
+            "remove",
+            serde_json::json!({}),
+        )
+        .expect("Undo takes a removed place back, so removing asks nothing");
+        assert_eq!(app.state().model().locations.len(), 3);
+        assert!(app.undo(), "removing a place is one undo step");
+        let restored = app.state().model();
+        assert_eq!(restored.locations.len(), 4);
+        assert_eq!(restored.locations[3].id, removed, "back where it was");
     }
 
     /// What an agent does to the places is history a person can read.
