@@ -386,6 +386,9 @@ oobe_to_connect_field() {
 # through org.a11y.atspi.Action, then observed back through the live AT-SPI
 # tree. It catches a provider that advertises controls but drops
 # ActionRequest messages before the compositor's widget dispatcher.
+# The backup step's acknowledgement, as the shell says it
+# (onboarding-backup-skip-acknowledgement in crates/session/shell/locales/en-US.ftl).
+skip_backup_acknowledgement="I understand that without a recovery key or backup, losing this device means losing this identity."
 oobe_to_backup() {
   if node_named "Back" >/dev/null && node_named "Identity backup file" >/dev/null; then
     click_named "Back"
@@ -401,7 +404,7 @@ oobe_to_backup() {
   wait_for_names "Create local identity"
   click_named "Create local identity"
   wait_for_names \
-    "I understand that without an encrypted backup, losing this device means losing this identity." \
+    "$skip_backup_acknowledgement" \
     "Continue without backup"
 }
 
@@ -468,9 +471,9 @@ sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBB
       # No backup in a disposable release VM; say so explicitly, as a person
       # skipping it would.
       wait_for_names \
-        "I understand that without an encrypted backup, losing this device means losing this identity." \
+        "$skip_backup_acknowledgement" \
         "Continue without backup"
-      click_named "I understand that without an encrypted backup, losing this device means losing this identity."
+      click_named "$skip_backup_acknowledgement"
       wait_for_names "Continue without backup"
       click_named "Continue without backup"
       # The media codecs step appears only where the codec pack is offered. A new
