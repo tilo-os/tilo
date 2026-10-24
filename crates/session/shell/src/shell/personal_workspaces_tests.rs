@@ -89,15 +89,18 @@ fn a_room_held_here_is_listed_with_the_device_hosting_it_and_entered_there_by_th
     );
     assert!(adoption.release.is_empty());
 
-    // Brought again before its workspace is here, it is asked for again
-    // (entering is idempotent); once its workspace is here, never again.
+    // Brought again before it is held, it is asked for again (entering is
+    // idempotent), its workspace here or not: a join left from the session
+    // before goes on by being entered.
     let again = board_list.adopt_into(&mut board_tree, &board.key());
     assert_eq!(again.enter.len(), 1);
     board_tree = tree_of(&[("Board's own", RoomId::new()), ("Plans", plans)]);
-    let held_board = board_list.adopt_into(&mut board_tree, &board.key());
-    assert!(
-        held_board.enter.is_empty(),
-        "a room held here is not entered"
+    board_tree.joining_rooms.insert(plans);
+    let with_workspace = board_list.adopt_into(&mut board_tree, &board.key());
+    assert_eq!(
+        with_workspace.enter.len(),
+        1,
+        "a workspace of the room that is not its replica: the room is entered"
     );
 }
 
@@ -181,7 +184,7 @@ fn a_workspace_deleted_on_one_device_is_released_on_the_other() {
     let mut board_tree = tree_of(&[("Plans", plans), ("Notes", notes)]);
     send(&mut laptop_list, &laptop, &mut board_list);
     let adoption = board_list.adopt_into(&mut board_tree, &board.key());
-    assert!(adoption.enter.is_empty() && adoption.release.is_empty());
+    assert!(adoption.release.is_empty());
 
     // Deleted on the laptop.
     assert!(laptop_list.publish_local(&tree_of(&[("Notes", notes)]), &held));
@@ -208,7 +211,10 @@ fn a_workspace_kept_off_a_device_is_released_there() {
     send(&mut laptop_list, &laptop, &mut board_list);
     let adoption = board_list.adopt_into(&mut board_tree, &board.key());
     assert_eq!(adoption.release, vec![plans]);
-    assert!(adoption.enter.is_empty());
+    assert!(
+        adoption.enter.iter().all(|entry| entry.room != plans),
+        "nor is it entered"
+    );
 }
 
 #[test]

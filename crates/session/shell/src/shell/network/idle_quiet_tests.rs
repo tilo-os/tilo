@@ -524,7 +524,7 @@ fn a_converged_idle_pair_exchanges_no_messages_and_repaints_nothing_for_a_minute
     );
     assert!(first_net.join_default_workspace());
     let mut second_tree = WorkspaceTree::default();
-    assert!(second_tree.join_enrolled_room(room));
+    assert!(second_tree.join_room("Home", room).is_some());
     let second_tree = second_tree.shared();
     let second_net = device(
         second_tree.clone(),

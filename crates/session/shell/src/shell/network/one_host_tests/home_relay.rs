@@ -15,6 +15,9 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use super::{Device, Person, Wakes, hosted_workspace, scratch, until};
 use crate::shell::state::RoomId;
 
+/// The name Ada's home relay goes by: an identifier, not copy.
+const RELAY_LABEL: &str = "ada-home-relay";
+
 /// Ada's home relay, running in this test.
 pub(super) struct HomeRelay {
     pub(super) relay: tilo_relay::Relay,
@@ -34,12 +37,15 @@ impl HomeRelay {
         let key = SigningKey::from_bytes(&[0x5E; 32]);
         let cert = person.certify(
             &key,
-            "Ada's home relay",
+            RELAY_LABEL,
             tilo_user_identity::cloud_enrollment::host_capabilities(),
         );
         let state = dir.join("relay");
         let relay = runtime
-            .block_on(tilo_relay::Relay::start(
+            // On this machine only, as the devices are: a test's relay never
+            // reaches the public relays, where another run's relay of the
+            // same key would take its place.
+            .block_on(tilo_relay::Relay::start_with_relay_mode(
                 tilo_relay::RelayConfig {
                     state_root: state.clone(),
                     ..tilo_relay::RelayConfig::default()
@@ -50,6 +56,7 @@ impl HomeRelay {
                     device_cert: cert.clone(),
                     revocations: RevocationList::new(),
                 },
+                iroh::RelayMode::Disabled,
             ))
             .unwrap();
         let addr = relay.node_addr();
@@ -59,7 +66,7 @@ impl HomeRelay {
             device_node_id: hex::encode(cert.device_public_key),
             relay_service_node_id: hex::encode(addr.id.as_bytes()),
             relay_endpoint: Some(addr),
-            label: "Ada's home relay".into(),
+            label: RELAY_LABEL.into(),
             user_public_key: hex::encode(person.user()),
             device_cert: Some(cert),
             relay_workspace_ids: vec![super::super::personal_continuity_topic_id(&person.user())],
@@ -185,7 +192,7 @@ fn a_home_relay_hosts_only_the_workspace_chosen_for_it_and_carries_it_while_its_
     assert_eq!(
         on_relay(&first),
         (
-            Some("Ada's home relay".to_owned()),
+            Some(RELAY_LABEL.to_owned()),
             vec![(personal, false), (scratchpad, false)]
         )
     );
