@@ -614,12 +614,19 @@ fn needs_reachability(
     other_devices: bool,
 ) -> Option<&'static str> {
     // A room names this device too, so only an endpoint other than this one
-    // is a peer.
-    let shared = tree.rooms().into_iter().any(|room| {
-        tree.room_peer_endpoints(room)
-            .iter()
-            .any(|peer| peer.to_string() != local_endpoint)
-    });
+    // is a peer. A native room's names are no reason: its document keeps a
+    // removed member's devices as signed history, so who may still dial is
+    // its membership, read below and in `ShellNetwork::hosts_other_members`.
+    let native: std::collections::BTreeSet<_> = tree.native_authority.rooms().collect();
+    let shared = tree
+        .rooms()
+        .into_iter()
+        .filter(|room| !native.contains(room))
+        .any(|room| {
+            tree.room_peer_endpoints(room)
+                .iter()
+                .any(|peer| peer.to_string() != local_endpoint)
+        });
     if shared {
         Some("a room shared with a peer")
     } else if tree
