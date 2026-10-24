@@ -35,11 +35,14 @@ mod tests {
             } else {
                 BODY_TEXT_MIN_CONTRAST
             };
-            // The resume heading on its washed card; the agent task heading
-            // and the brief's open affordance on the sheet itself.
+            // The resume heading on its washed card, the brief's open
+            // affordance on the sheet itself, and the agent task heading on
+            // the explorer's detail pane (4.43:1 on the light theme when it
+            // was measured on the sheet instead).
             for (what, ground) in [
                 ("resume heading", resume_card_ground(&theme)),
                 ("sheet caption", ui::chrome::shell::panel_ground(&theme)),
+                ("agent task heading", explorer_pane_ground(&theme)),
             ] {
                 let ratio = ui::a11y::contrast_ratio(accent_text_on(&theme, ground), ground);
                 assert!(
