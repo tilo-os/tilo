@@ -1,0 +1,639 @@
+{
+  "schema_version": 4,
+  "workspaces": [
+    {
+      "id": 17471151804430417921,
+      "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+      "name": "Home",
+      "strips": [
+        {
+          "id": 17471151804430417922,
+          "name": "Main",
+          "window_groups": [
+            {
+              "id": 17471151804430418296,
+              "tabs": [
+                {
+                  "id": 17471151804430418295,
+                  "title": "Alacritty",
+                  "tile": {
+                    "LocalApp": {
+                      "app_id": "Alacritty",
+                      "label": "Alacritty",
+                      "note": ""
+                    }
+                  }
+                }
+              ],
+              "active_tab": 17471151804430418295,
+              "width": "Normal",
+              "maximized": false
+            }
+          ]
+        }
+      ],
+      "collaborators": [],
+      "pending_ownership_transfer": null,
+      "ownership_transfer_audit": [],
+      "ownership_transfer_cancellations": [],
+      "policy": {
+        "room": "5ba25f73-87c5-447f-a5a6-880dc4249a81",
+        "owner": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241",
+        "members": {},
+        "grants": [
+          {
+            "id": "role:viewer:0",
+            "subject": {
+              "role": "viewer"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:commenter:0",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:commenter:1",
+            "subject": {
+              "role": "commenter"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/**/field:comments",
+            "kinds": [
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:0",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:1",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "outside"
+            ],
+            "answer": "ask",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:2",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:editor:3",
+            "subject": {
+              "role": "editor"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/**/field:moderation",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:0",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:1",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "outside"
+            ],
+            "answer": "ask",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:2",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:3",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/**/field:moderation",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:4",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:remove-member",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:5",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:ban",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:6",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:unban",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:7",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:restrict",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:8",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:unrestrict",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:9",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:pause-bot",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:moderator:10",
+            "subject": {
+              "role": "moderator"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room/action:resume-bot",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "role:owner:0",
+            "subject": {
+              "role": "owner"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable",
+              "outside"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "role": "owner"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.mail",
+            "subject": {
+              "app": "so.tilo.mail"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.notes",
+            "subject": {
+              "app": "so.tilo.notes"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.file-explorer",
+            "subject": {
+              "app": "so.tilo.file-explorer"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.monitor",
+            "subject": {
+              "app": "so.tilo.monitor"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.browser",
+            "subject": {
+              "app": "so.tilo.browser"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.terminal",
+            "subject": {
+              "app": "so.tilo.terminal"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.chat",
+            "subject": {
+              "app": "so.tilo.chat"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.store",
+            "subject": {
+              "app": "so.tilo.store"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.passwords",
+            "subject": {
+              "app": "so.tilo.passwords"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.feeds",
+            "subject": {
+              "app": "so.tilo.feeds"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "app-author:so.tilo.settings",
+            "subject": {
+              "app": "so.tilo.settings"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read",
+              "undoable"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "agent-member:claude-code:observer",
+            "subject": {
+              "agent": "claude-code"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "agent-member:claude-code:observer:no-governance",
+            "subject": {
+              "agent": "claude-code"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "agent-member:probe:observer",
+            "subject": {
+              "agent": "probe"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81",
+            "kinds": [
+              "read"
+            ],
+            "answer": "allow",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          },
+          {
+            "id": "agent-member:probe:observer:no-governance",
+            "subject": {
+              "agent": "probe"
+            },
+            "node": "room:5ba25f73-87c5-447f-a5a6-880dc4249a81/kind:tilo.room",
+            "kinds": [
+              "undoable",
+              "outside"
+            ],
+            "answer": "deny",
+            "lifetime": "until_revoked",
+            "granted_by": {
+              "person": "61fd5d11de98fe19ddba9ae2149dd14abb8c3c8c72473bb787b0f1552f751241"
+            }
+          }
+        ]
+      },
+      "sandbox": [],
+      "presets": [],
+      "default_apps": {
+        "policy": {},
+        "user_choices": {}
+      },
+      "tasks": [],
+      "effect_receipts": [],
+      "shortcuts": [],
+      "schedule_claims": [],
+      "shared_surfaces": {}
+    }
+  ],
+  "active": 17471151804430417921,
+  "active_strip": {
+    "17471151804430417921": 17471151804430417922
+  },
+  "active_group": {},
+  "outputs": {
+    "home": {
+      "17471151804430418232": "edid:Samsung Display|0x4189|",
+      "17471151804430418296": "edid:Samsung Display|0x4189|",
+      "17471151804430418306": "edid:Samsung Display|0x4189|",
+      "17471151804430418319": "edid:Samsung Display|0x4189|",
+      "17471151804430418329": "edid:Samsung Display|0x4189|"
+    },
+    "origin": {
+      "17471151804430418232": "output:0",
+      "17471151804430418296": "output:0",
+      "17471151804430418306": "output:0"
+    },
+    "displays": [
+      {
+        "id": 0,
+        "monitor": "edid:Samsung Display|0x4189|",
+        "x": 0.0,
+        "y": 0.0,
+        "width": 1472.0,
+        "height": 920.0
+      }
+    ]
+  },
+  "collaborators": [],
+  "room_authority": {},
+  "room_peer_names": {},
+  "room_peer_identities": {},
+  "room_share_floor": {},
+  "continuation_tabs": [],
+  "continuation_rooms": [],
+  "continuation_owned_tabs": {},
+  "continuation_closed_tabs": {},
+  "continuation_file_references": {},
+  "native_document_tabs": {},
+  "local_app_records": {},
+  "package_launches": {}
+}

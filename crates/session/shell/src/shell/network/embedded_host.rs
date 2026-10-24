@@ -193,6 +193,22 @@ impl ShellNetwork {
         ))
     }
 
+    /// Whether this device's own host holds `room`, as the native owner,
+    /// already open, has it.
+    pub(super) fn hosted_here(&self, room: RoomId) -> bool {
+        let Some(owner) = self.opened_native_owner() else {
+            return false;
+        };
+        let own = *self.local_peer_id.as_bytes();
+        owner
+            .with_current(room, |view| {
+                Ok(view
+                    .transport_hint()
+                    .is_ok_and(|hint| tilo_joined_room::session::hosted_by(hint, &own)))
+            })
+            .unwrap_or(false)
+    }
+
     /// Where this device's host keeps its rooms.
     fn host_state_root(&self) -> Result<PathBuf, String> {
         let path = self
@@ -320,10 +336,20 @@ impl ShellNetwork {
         Ok(())
     }
 
+    /// Whether this network places workspaces at all: it has a host of its
+    /// own and an identity to create rooms as. Neither changes while it
+    /// runs, so a device without them never tries, rather than failing on
+    /// every pass; its workspaces wait, pending, for the network a
+    /// provisioned identity starts.
+    fn places_workspaces(&self) -> bool {
+        self.embedded_host.host.is_some() && self.host_identity.is_some()
+    }
+
     /// Whether a workspace waits to be placed and no pass is queued for it,
     /// never waiting: the frame loop asks.
     fn placements_pending(&self) -> bool {
-        !self.embedded_host.queued.load(Ordering::Acquire)
+        self.places_workspaces()
+            && !self.embedded_host.queued.load(Ordering::Acquire)
             && self.tree.try_read().is_some_and(|tree| {
                 let placing = self
                     .embedded_host
@@ -376,6 +402,9 @@ impl ShellNetwork {
     /// each once. Blocks on the host and the disk: runs on the peer-sync
     /// worker.
     pub(crate) fn place_pending_workspaces(&self) {
+        if !self.places_workspaces() {
+            return;
+        }
         let (waiting, before) = {
             let tree = self.tree.read();
             let before = self.placing_now(&tree);
@@ -565,27 +594,40 @@ impl super::governance_requests::LocalGovernor for OwnHostGovernor {
         room: RoomId,
         route: super::governance_requests::GovernanceRoute,
     ) -> Result<(), String> {
-        use super::governance_requests::GovernanceRoute;
-        match route {
-            GovernanceRoute::Rooms { action, arguments } => {
-                let invoke = relay_rooms::invocation(
-                    tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER,
-                    tilo_actions::remote::room_governance_resource(&room.to_string()),
-                    action,
-                    arguments,
-                );
-                serve_in_process(
-                    &self.host,
-                    &self.identity,
-                    &self.runtime,
-                    room_topic_id(room),
-                    invoke,
-                )
-                .map(drop)
-            }
-            GovernanceRoute::Membership { .. } | GovernanceRoute::Command(_) => {
-                Err("this device's room host has no action for this change yet".into())
-            }
-        }
+        let invoke = relay_rooms::invocation(
+            tilo_actions::remote::ROOM_GOVERNANCE_PROVIDER,
+            tilo_actions::remote::room_governance_resource(&room.to_string()),
+            route.action,
+            route.arguments,
+        );
+        serve_in_process(
+            &self.host,
+            &self.identity,
+            &self.runtime,
+            room_topic_id(room),
+            invoke,
+        )
+        .map(drop)
+    }
+
+    fn record_receipt(
+        &self,
+        room: RoomId,
+        receipt: &tilo_desktop_model::WorkspaceEffectReceipt,
+    ) -> Result<(), String> {
+        let invoke = relay_rooms::invocation(
+            tilo_relay_session::rooms::MEMBER_ACTIONS_PROVIDER,
+            tilo_relay_session::rooms::member_resource(&room.to_string()),
+            tilo_relay_session::rooms::RECORD_EFFECT_RECEIPT,
+            relay_rooms::receipt_arguments(receipt)?,
+        );
+        serve_in_process(
+            &self.host,
+            &self.identity,
+            &self.runtime,
+            room_topic_id(room),
+            invoke,
+        )
+        .map(drop)
     }
 }
