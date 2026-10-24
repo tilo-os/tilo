@@ -30,7 +30,7 @@ impl TimelineEmptyAction {
 
 /// The empty timeline as laid out for one frame.
 pub(super) struct TimelineEmpty {
-    /// Where the state is centred: the lanes, down to the timeline's end.
+    /// Where the state is centred: the tracks' content area.
     pub(super) area: Rect,
     pub(super) message: &'static str,
     pub(super) action: Option<TimelineEmptyAction>,
@@ -50,23 +50,55 @@ impl TimelineEmpty {
 }
 
 impl VideoEditorApp {
-    /// The empty timeline, while no clip is on it.
+    /// Where playheads and the ruler's grid lines end: across the tracks
+    /// while there are clips to cross; on an empty timeline, at the ruler,
+    /// clear of the add-track row and the empty state under it.
+    pub(super) fn playhead_bottom(&self, r: &Regions) -> f64 {
+        if self.project.clips.is_empty() {
+            r.ruler.y1
+        } else {
+            r.timeline.y1
+        }
+    }
+
+    /// The tracks' content on an empty timeline: the lanes beside the
+    /// header column, under the add-track row.
+    pub(super) fn timeline_content_area(&self, r: &Regions) -> Rect {
+        let top = self
+            .add_track_buttons(r)
+            .iter()
+            .map(|(_, button)| button.y1 + S2)
+            .fold(r.lanes.y0, f64::max)
+            .min(r.timeline.y1);
+        Rect::new(r.lanes.x0, top, r.lanes.x1, r.timeline.y1)
+    }
+
+    /// Whether the person has the Media pane shown (or showing), at any
+    /// width: one button per job, so while it is, its own Import and its
+    /// list answer the empty timeline's words.
+    pub(super) fn media_pane_shown(&self) -> bool {
+        self.bin_flap.is_open(self.bin_layout())
+    }
+
+    /// The empty timeline, while no clip is on it. It carries a button
+    /// only while the Media pane, which does the job, is hidden.
     pub(super) fn timeline_empty(&self, r: &Regions) -> Option<TimelineEmpty> {
         if !self.project.clips.is_empty() {
             return None;
         }
-        let area = Rect::new(r.lanes.x0, r.lanes.y0, r.lanes.x1, r.timeline.y1);
+        let area = self.timeline_content_area(r);
+        let hidden = !self.media_pane_shown();
         Some(if self.project.media.is_empty() {
             TimelineEmpty {
                 area,
                 message: "Import media, then drag it here.",
-                action: Some(TimelineEmptyAction::Import),
+                action: hidden.then_some(TimelineEmptyAction::Import),
             }
         } else {
             TimelineEmpty {
                 area,
                 message: "Drag a clip from the media bin onto a track.",
-                action: (!self.bin_is_visible(r)).then_some(TimelineEmptyAction::ShowMedia),
+                action: hidden.then_some(TimelineEmptyAction::ShowMedia),
             }
         })
     }
