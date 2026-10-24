@@ -235,6 +235,7 @@ doc = false
 "data-encoding-2_10_0" = { package = "data-encoding", version = "^2.10.0", default-features = false, features = ["alloc", "default", "std"] }
 "data-encoding-macro-0_1_19" = { package = "data-encoding-macro", version = "^0.1.19", default-features = false, features = [] }
 "data-url-0_3_2" = { package = "data-url", version = "^0.3.2", default-features = false, features = ["alloc", "default", "std"] }
+"davey-0_1_5" = { package = "davey", path = "../../../vendor/davey", default-features = false, features = ["default"] }
 "db-client" = { path = "../../../apps/db-client", default-features = false, features = [] }
 "der-0_7_10" = { package = "der", version = "^0.7.10", default-features = false, features = ["alloc", "derive", "flagset", "oid", "pem", "std", "zeroize"] }
 "der-0_8_1" = { package = "der", version = "^0.8.1", default-features = false, features = ["alloc", "oid", "pem", "std", "zeroize"] }
@@ -692,6 +693,8 @@ doc = false
 "openmls_traits-0_6_0" = { package = "openmls_traits", version = "^0.6.0", default-features = false, features = ["default"] }
 "option-ext-0_2_0" = { package = "option-ext", version = "^0.2.0", default-features = false, features = [] }
 "option-operations-0_6_1" = { package = "option-operations", version = "^0.6.1", default-features = false, features = ["default", "std"] }
+"opus-0_4_0" = { package = "opus", version = "^0.4.0", default-features = false, features = [] }
+"opusic-sys-0_7_5" = { package = "opusic-sys", version = "^0.7.5", default-features = false, features = ["bundled", "default"] }
 "ordered-channel-1_2_0" = { package = "ordered-channel", version = "^1.2.0", default-features = false, features = ["crossbeam-channel"] }
 "ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = ["default", "std"] }
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
@@ -713,7 +716,7 @@ doc = false
 "password-hash-0_6_1" = { package = "password-hash", version = "^0.6.1", default-features = false, features = ["getrandom"] }
 "passwords" = { path = "../../../apps/passwords", default-features = false, features = [] }
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
-"pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["hmac"] }
+"pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
 "pdf-viewer" = { path = "../../../apps/pdf-viewer", default-features = false, features = [] }
 "pdf-writer-0_15_0" = { package = "pdf-writer", version = "^0.15.0", default-features = false, features = [] }
@@ -902,6 +905,7 @@ doc = false
 "rustypipe-0_11_4" = { package = "rustypipe", path = "../../../vendor/rustypipe", default-features = false, features = ["rustls-no-provider"] }
 "ruzstd-0_9_1" = { package = "ruzstd", version = "^0.9.1", default-features = false, features = ["std"] }
 "ryu-1_0_23" = { package = "ryu", version = "^1.0.23", default-features = false, features = [] }
+"salsa20-0_10_2" = { package = "salsa20", version = "^0.10.2", default-features = false, features = [] }
 "salsa20-0_11_0" = { package = "salsa20", version = "^0.11.0", default-features = false, features = [] }
 "same-file-1_0_6" = { package = "same-file", version = "^1.0.6", default-features = false, features = [] }
 "saturating-0_1_0" = { package = "saturating", version = "^0.1.0", default-features = false, features = [] }
@@ -910,6 +914,7 @@ doc = false
 "scoped-tls-1_0_1" = { package = "scoped-tls", version = "^1.0.1", default-features = false, features = [] }
 "scopeguard-1_2_0" = { package = "scopeguard", version = "^1.2.0", default-features = false, features = ["default", "use_std"] }
 "scratchpad" = { path = "../../../apps/scratchpad", default-features = false, features = [] }
+"scrypt-0_11_0" = { package = "scrypt", version = "^0.11.0", default-features = false, features = [] }
 "scrypt-0_12_0" = { package = "scrypt", version = "^0.12.0", default-features = false, features = [] }
 "sctk-adwaita-0_11_1" = { package = "sctk-adwaita", version = "^0.11.1", default-features = false, features = [] }
 "sd-notify-0_4_5" = { package = "sd-notify", version = "^0.4.5", default-features = false, features = [] }
@@ -1749,6 +1754,7 @@ doc = false
 "heapless-0_7_17" = { package = "heapless", version = "^0.7.17", default-features = false, features = ["atomic-polyfill", "cas", "serde"] }
 "heck-0_5_0" = { package = "heck", version = "^0.5.0", default-features = false, features = [] }
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
+"hex-literal-0_3_4" = { package = "hex-literal", version = "^0.3.4", default-features = false, features = [] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
@@ -1928,6 +1934,7 @@ doc = false
 "parking_lot_core-0_9_12" = { package = "parking_lot_core", version = "^0.9.12", default-features = false, features = [] }
 "paste-1_0_15" = { package = "paste", version = "^1.0.15", default-features = false, features = [] }
 "pastey-0_2_3" = { package = "pastey", version = "^0.2.3", default-features = false, features = [] }
+"pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
 "pem-3_0_6" = { package = "pem", version = "^3.0.6", default-features = false, features = ["default", "std"] }
 "pem-rfc7468-0_7_0" = { package = "pem-rfc7468", version = "^0.7.0", default-features = false, features = ["alloc"] }
@@ -2554,6 +2561,7 @@ doc = false
 "data-encoding-2_10_0" = { package = "data-encoding", version = "^2.10.0", default-features = false, features = ["alloc", "default", "std"] }
 "data-encoding-macro-0_1_19" = { package = "data-encoding-macro", version = "^0.1.19", default-features = false, features = [] }
 "data-url-0_3_2" = { package = "data-url", version = "^0.3.2", default-features = false, features = ["alloc", "default", "std"] }
+"davey-0_1_5" = { package = "davey", path = "../../../vendor/davey", default-features = false, features = ["default"] }
 "db-client" = { path = "../../../apps/db-client", default-features = false, features = [] }
 "der-0_7_10" = { package = "der", version = "^0.7.10", default-features = false, features = ["alloc", "derive", "flagset", "oid", "pem", "std", "zeroize"] }
 "der-0_8_1" = { package = "der", version = "^0.8.1", default-features = false, features = ["alloc", "oid", "pem", "std", "zeroize"] }
@@ -3011,6 +3019,8 @@ doc = false
 "openmls_traits-0_6_0" = { package = "openmls_traits", version = "^0.6.0", default-features = false, features = ["default"] }
 "option-ext-0_2_0" = { package = "option-ext", version = "^0.2.0", default-features = false, features = [] }
 "option-operations-0_6_1" = { package = "option-operations", version = "^0.6.1", default-features = false, features = ["default", "std"] }
+"opus-0_4_0" = { package = "opus", version = "^0.4.0", default-features = false, features = [] }
+"opusic-sys-0_7_5" = { package = "opusic-sys", version = "^0.7.5", default-features = false, features = ["bundled", "default"] }
 "ordered-channel-1_2_0" = { package = "ordered-channel", version = "^1.2.0", default-features = false, features = ["crossbeam-channel"] }
 "ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = ["default", "std"] }
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
@@ -3032,7 +3042,7 @@ doc = false
 "password-hash-0_6_1" = { package = "password-hash", version = "^0.6.1", default-features = false, features = ["getrandom"] }
 "passwords" = { path = "../../../apps/passwords", default-features = false, features = [] }
 "pathdiff-0_2_3" = { package = "pathdiff", version = "^0.2.3", default-features = false, features = [] }
-"pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["hmac"] }
+"pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
 "pdf-viewer" = { path = "../../../apps/pdf-viewer", default-features = false, features = [] }
 "pdf-writer-0_15_0" = { package = "pdf-writer", version = "^0.15.0", default-features = false, features = [] }
@@ -3221,6 +3231,7 @@ doc = false
 "rustypipe-0_11_4" = { package = "rustypipe", path = "../../../vendor/rustypipe", default-features = false, features = ["rustls-no-provider"] }
 "ruzstd-0_9_1" = { package = "ruzstd", version = "^0.9.1", default-features = false, features = ["std"] }
 "ryu-1_0_23" = { package = "ryu", version = "^1.0.23", default-features = false, features = [] }
+"salsa20-0_10_2" = { package = "salsa20", version = "^0.10.2", default-features = false, features = [] }
 "salsa20-0_11_0" = { package = "salsa20", version = "^0.11.0", default-features = false, features = [] }
 "same-file-1_0_6" = { package = "same-file", version = "^1.0.6", default-features = false, features = [] }
 "saturating-0_1_0" = { package = "saturating", version = "^0.1.0", default-features = false, features = [] }
@@ -3229,6 +3240,7 @@ doc = false
 "scoped-tls-1_0_1" = { package = "scoped-tls", version = "^1.0.1", default-features = false, features = [] }
 "scopeguard-1_2_0" = { package = "scopeguard", version = "^1.2.0", default-features = false, features = ["default", "use_std"] }
 "scratchpad" = { path = "../../../apps/scratchpad", default-features = false, features = [] }
+"scrypt-0_11_0" = { package = "scrypt", version = "^0.11.0", default-features = false, features = [] }
 "scrypt-0_12_0" = { package = "scrypt", version = "^0.12.0", default-features = false, features = [] }
 "sctk-adwaita-0_11_1" = { package = "sctk-adwaita", version = "^0.11.1", default-features = false, features = [] }
 "sd-notify-0_4_5" = { package = "sd-notify", version = "^0.4.5", default-features = false, features = [] }
@@ -4067,6 +4079,7 @@ doc = false
 "heapless-0_7_17" = { package = "heapless", version = "^0.7.17", default-features = false, features = ["atomic-polyfill", "cas", "serde"] }
 "heck-0_5_0" = { package = "heck", version = "^0.5.0", default-features = false, features = [] }
 "hex-0_4_3" = { package = "hex", version = "^0.4.3", default-features = false, features = ["alloc", "default", "std"] }
+"hex-literal-0_3_4" = { package = "hex-literal", version = "^0.3.4", default-features = false, features = [] }
 "hex-literal-1_1_0" = { package = "hex-literal", version = "^1.1.0", default-features = false, features = [] }
 "hexane-1_0_0-alpha_5" = { package = "hexane", version = "^1.0.0-alpha.5", default-features = false, features = [] }
 "hexf-parse-0_2_1" = { package = "hexf-parse", version = "^0.2.1", default-features = false, features = [] }
@@ -4246,6 +4259,7 @@ doc = false
 "parking_lot_core-0_9_12" = { package = "parking_lot_core", version = "^0.9.12", default-features = false, features = [] }
 "paste-1_0_15" = { package = "paste", version = "^1.0.15", default-features = false, features = [] }
 "pastey-0_2_3" = { package = "pastey", version = "^0.2.3", default-features = false, features = [] }
+"pbkdf2-0_12_2" = { package = "pbkdf2", version = "^0.12.2", default-features = false, features = ["default", "hmac"] }
 "pbkdf2-0_13_0" = { package = "pbkdf2", version = "^0.13.0", default-features = false, features = ["default", "hmac"] }
 "pem-3_0_6" = { package = "pem", version = "^3.0.6", default-features = false, features = ["default", "std"] }
 "pem-rfc7468-0_7_0" = { package = "pem-rfc7468", version = "^0.7.0", default-features = false, features = ["alloc"] }
