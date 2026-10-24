@@ -601,7 +601,10 @@ What it can read depends on the channel and on its certificate:
 
 Tilo's own components carry no telemetry, analytics or crash-upload client: no
 such crate is in the build (`tools/policy/check_no_telemetry.py`), panics and desktop freezes are written only to
-`~/.cache/tilo/crashes/` (`crash_log`), and the image removes `systemd-coredump`. A feedback report
+`~/.cache/tilo/crashes/` (`crash_log`), the kernel's records of the computer stopping (pstore) are copied
+there at the next start (`shell::crash_records`), and the image removes `systemd-coredump`. Settings → About
+lists those records and an agent reads them through the host's `tilo.crash-records` actions, under the same
+grants as Settings; neither sends one anywhere. A feedback report
 leaves only when the person has configured a destination room and approved the
 reviewed report; it travels to that room over the collaboration transport,
 never to a Tilo service (`docs/architecture/feedback.md`). What does leave,

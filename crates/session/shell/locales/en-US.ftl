@@ -3213,6 +3213,13 @@ crash-notice-app-name = Desktop
 crash-notice-title = The desktop restarted
 crash-notice-froze-body = It stopped responding at { $time }. A record of what happened stays on this computer.
 crash-notice-crashed-body = It stopped unexpectedly at { $time }. A record of what happened stays on this computer.
+crash-notice-stopped-title = The computer restarted
+crash-notice-stopped-body = It stopped unexpectedly before this start. A record of what happened stays on this computer.
+host-crash-records-resource = Problems
+host-crash-records-list = List problems
+host-crash-records-list-detail = When the desktop or the computer stopped, newest first, without the details.
+host-crash-records-read = Read a problem's details
+host-crash-records-read-detail = Everything the record of one problem holds. It stays on this computer.
 
 ## Desk widgets
 

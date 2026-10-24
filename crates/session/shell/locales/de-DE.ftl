@@ -3168,6 +3168,13 @@ crash-notice-app-name = Desktop
 crash-notice-title = Der Desktop wurde neu gestartet
 crash-notice-froze-body = Er reagierte um { $time } nicht mehr. Ein Bericht darüber bleibt auf diesem Computer.
 crash-notice-crashed-body = Er wurde um { $time } unerwartet beendet. Ein Bericht darüber bleibt auf diesem Computer.
+crash-notice-stopped-title = Der Computer wurde neu gestartet
+crash-notice-stopped-body = Er wurde vor diesem Start unerwartet angehalten. Ein Bericht darüber bleibt auf diesem Computer.
+host-crash-records-resource = Probleme
+host-crash-records-list = Probleme auflisten
+host-crash-records-list-detail = Wann der Desktop oder der Computer angehalten hat, das Neueste zuerst, ohne die Einzelheiten.
+host-crash-records-read = Einzelheiten eines Problems lesen
+host-crash-records-read-detail = Alles, was der Bericht über ein Problem enthält. Er bleibt auf diesem Computer.
 
 ## Desk widgets
 
