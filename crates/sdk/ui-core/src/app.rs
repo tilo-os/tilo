@@ -764,7 +764,7 @@ impl AppConstructionInputs {
             profiler: crate::profiling::FrameProfiler::from_env,
             floating_surface_client:
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
-            startup_presence_scope: PresenceKey::for_local_workspace,
+            startup_presence_scope: crate::presence::local_workspace_key,
             surface_id: ConstructionValue::Lazy(crate::local_surface_id),
         }
     }

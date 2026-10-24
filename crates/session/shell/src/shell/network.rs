@@ -1720,7 +1720,7 @@ pub(crate) const DESKTOP_PRESENCE_APP: &str = "tilo-shell";
 /// where the person is outside the resources they share.
 fn in_shared_resource(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
     use collab_types::PeerPresencePayload as P;
-    use ui::presence::{PointerSpace, PresenceKey};
+    use collab_types::presence::{PointerSpace, PresenceKey};
     if app_id == DESKTOP_PRESENCE_APP
         || !matches!(
             presence.payload,
@@ -1765,8 +1765,8 @@ fn says_only_here(app_id: &str, presence: &collab_types::PeerPresence) -> bool {
     use collab_types::PeerPresencePayload as P;
     app_id == DESKTOP_PRESENCE_APP
         && matches!(
-            postcard::from_bytes::<ui::presence::PresenceKey>(&presence.key),
-            Ok(ui::presence::PresenceKey::Workspace { .. })
+            postcard::from_bytes::<collab_types::presence::PresenceKey>(&presence.key),
+            Ok(collab_types::presence::PresenceKey::Workspace { .. })
         )
         && matches!(
             presence.payload,
@@ -3676,7 +3676,7 @@ impl ShellNetwork {
     ) -> bool {
         let shared = RoomId::parse(cluster_id)
             .is_some_and(|room| !room.is_nil() && self.person_root_of_room(room).is_none());
-        let Ok(key) = postcard::to_stdvec(&ui::presence::PresenceKey::Workspace {
+        let Ok(key) = postcard::to_stdvec(&collab_types::presence::PresenceKey::Workspace {
             id: cluster_id.to_owned(),
         }) else {
             return false;
@@ -7642,7 +7642,7 @@ impl ShellNetwork {
             ui::collaboration::PresencePayload::Arrived,
             ui::collaboration::PresencePayload::Left,
         ] {
-            let key = ui::presence::PresenceKey::Workspace {
+            let key = collab_types::presence::PresenceKey::Workspace {
                 id: room.to_string(),
             };
             if let Some(presence) = crate::shell::collab_presence::to_peer(&key, &payload) {

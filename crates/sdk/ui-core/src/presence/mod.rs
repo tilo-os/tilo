@@ -39,6 +39,32 @@ pub use render::{
     paint_reaction, paint_speaking_ring,
 };
 
+/// The scope this process should publish its presence under — the room
+/// it collaborates in, or `None` when it has no room. Read from
+/// [`local_cluster_id`](crate::collaboration::local_cluster_id), the
+/// same value the routing address is built from, so the two cannot drift apart.
+///
+/// `None` when the room is the nil uuid: that value addresses nobody
+/// (`CrdtRoute::is_addressable` rejects it — an unminted room would
+/// otherwise make every unconfigured machine share one room). Fail closed.
+pub fn local_workspace_key() -> Option<PresenceKey> {
+    let cluster = crate::collaboration::local_cluster_id();
+    if cluster.is_nil() {
+        return None;
+    }
+    Some(PresenceKey::Workspace {
+        id: cluster.to_string(),
+    })
+}
+
+/// [`PresenceKey::surface_pointer`] for this process's own surface. The
+/// coordinates a winit `CursorMoved` carries are surface-local, so this
+/// is the only representation an app can provide.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_surface_pointer() -> PresenceKey {
+    PresenceKey::surface_pointer(crate::local_surface_id())
+}
+
 /// How long a "just typed" highlight lingers, its fade included: the
 /// standard trace of a collaborator's mark ([`crate::motion::Trace`]).
 pub const TYPING_FADE: crate::time::Duration = crate::motion::Trace::LIFE;
