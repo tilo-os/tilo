@@ -173,14 +173,15 @@ fn readers(
 }
 
 /// The stewards of `room`'s channels, under `dir`, when `authority` (this
-/// relay) may own workspaces.
+/// host, a relay or a person's device) stewards the channels of the rooms
+/// it governs ([`tilo_user_identity::DeviceCapabilities::stewards_room_channels`]).
 fn stewardship(
     dir: &Path,
     room: &str,
     authority: &DeviceCert,
     key: &SigningKey,
 ) -> Option<Arc<stewardship::Steward>> {
-    authority.capabilities.can_own_workspaces.then(|| {
+    authority.capabilities.stewards_room_channels().then(|| {
         Arc::new(stewardship::Steward::new(stewardship::Stewardship::new(
             room,
             dir.join(format!("{room}.channels")),
