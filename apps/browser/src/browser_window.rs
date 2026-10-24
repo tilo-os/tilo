@@ -134,6 +134,15 @@ impl BrowserWindow {
         self.page.attach_downloads(store);
     }
 
+    /// Keep the widths extensions' side panels are dragged to in this
+    /// device's settings.
+    pub(crate) fn attach_side_panel_widths(
+        &mut self,
+        store: ui::storage::Settings<crate::extension_controller::SidePanelWidths>,
+    ) {
+        self.page.attach_side_panel_widths(store);
+    }
+
     /// Keep the page's visits in the person's browsing history.
     pub(crate) fn attach_personal_bookmarks(
         &mut self,
@@ -1680,5 +1689,146 @@ mod tests {
             };
             assert!(ok, "{typed}: {urls:?}");
         }
+    }
+
+    /// The keys the engine host gives no extension's command because the
+    /// Browser keeps them (`chromium/src/browser_keeps.inc`) are exactly
+    /// the keys a command could hold that the Browser answers before its
+    /// page sees them: every such key is pressed here through the window's
+    /// own handling, and one the page never gets is the Browser's. The list
+    /// is checked for the platform the test runs on.
+    #[test]
+    fn the_engine_keeps_from_extensions_exactly_the_keys_the_browser_answers() {
+        use winit::keyboard::ModifiersState as M;
+        let mac = cfg!(target_os = "macos");
+        let platform = if mac { "mac " } else { "linux " };
+        // A key as a manifest spells it on this platform: its modifiers as
+        // the window holds them, and its name.
+        let parse = |spec: &str| {
+            let mut held = M::empty();
+            let mut key = String::new();
+            for token in spec.split('+') {
+                match token {
+                    "Ctrl" if mac => held |= M::SUPER,
+                    "Ctrl" | "MacCtrl" => held |= M::CONTROL,
+                    "Alt" => held |= M::ALT,
+                    "Shift" => held |= M::SHIFT,
+                    name => name.clone_into(&mut key),
+                }
+            }
+            (held, key)
+        };
+        // Each entry for this platform, and whether the host answers it
+        // itself rather than the Browser.
+        let listed: Vec<((M, String), bool)> = include_str!("../chromium/src/browser_keeps.inc")
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with('"'))
+            .map(|line| line.trim_end_matches(',').trim_matches('"'))
+            .filter_map(|entry| entry.strip_prefix(platform))
+            .map(|entry| match entry.strip_suffix(" (host)") {
+                Some(spec) => (parse(spec), true),
+                None => (parse(entry), false),
+            })
+            .collect();
+        assert!(listed.len() > 10, "the list was read: {listed:?}");
+
+        // The key the window is handed for `key` held with Shift or not,
+        // on a US layout, as the engine host reads it back.
+        let logical = |key: &str, shift: bool| -> Key {
+            let named = |named| Key::Named(named);
+            match key {
+                "Comma" => Key::Character(if shift { "<" } else { "," }.into()),
+                "Period" => Key::Character(if shift { ">" } else { "." }.into()),
+                "Space" => named(NamedKey::Space),
+                "Home" => named(NamedKey::Home),
+                "End" => named(NamedKey::End),
+                "PageUp" => named(NamedKey::PageUp),
+                "PageDown" => named(NamedKey::PageDown),
+                "Delete" => named(NamedKey::Delete),
+                "Tab" => named(NamedKey::Tab),
+                "Up" => named(NamedKey::ArrowUp),
+                "Down" => named(NamedKey::ArrowDown),
+                "Left" => named(NamedKey::ArrowLeft),
+                "Right" => named(NamedKey::ArrowRight),
+                digit if digit.bytes().all(|b| b.is_ascii_digit()) && shift => {
+                    let index = usize::from(digit.as_bytes()[0] - b'0');
+                    Key::Character(")!@#$%^&*("[index..=index].into())
+                }
+                letter if shift => Key::Character(letter.to_ascii_uppercase().into()),
+                other => Key::Character(other.to_ascii_lowercase().into()),
+            }
+        };
+        // Whether the window answers `key` held with `held`: its page,
+        // which has the keyboard, never gets it.
+        let answers = |key: Key, held: M| {
+            let (mut window, engine) = window();
+            let (tree, root, _nodes) = layout(&mut window);
+            assert!(window.page_mut().focus_control("browser.surface"));
+            let pressed = |engine: &PageEngine| {
+                engine
+                    .commands
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|command| matches!(command, WebViewCommand::Key { down: true, .. }))
+                    .count()
+            };
+            let before = pressed(&engine);
+            let event = key_event_with_state(key, ElementState::Pressed);
+            dispatch(&mut window, (&tree, root), &event, held);
+            pressed(&engine) == before
+        };
+        // The page has the keyboard: a key nobody keeps reaches it.
+        assert!(!answers(Key::Character("y".into()), M::ALT | M::SHIFT));
+
+        let keys = ('A'..='Z').chain('0'..='9').map(String::from).chain(
+            [
+                "Comma", "Period", "Space", "Home", "End", "PageUp", "PageDown", "Delete", "Tab",
+                "Up", "Down", "Left", "Right",
+            ]
+            .map(String::from),
+        );
+        // The modifiers a manifest can give a key on this platform: Ctrl or
+        // Alt (on macOS Command or Control, or both, or Option), maybe
+        // Shift; never Ctrl with Alt.
+        let sets = if mac {
+            vec![M::SUPER, M::SUPER | M::CONTROL, M::CONTROL, M::ALT]
+        } else {
+            vec![M::CONTROL, M::ALT]
+        };
+        let mut drift = Vec::new();
+        for key in keys {
+            for held in sets.iter().flat_map(|&held| [held, held | M::SHIFT]) {
+                let entry = |host: bool| {
+                    listed
+                        .iter()
+                        .any(|((m, k), h)| *h == host && *m == held && *k == key)
+                };
+                let answered = answers(logical(&key, held.shift_key()), held);
+                if entry(true) {
+                    if answered {
+                        drift.push(format!(
+                            "{held:?} {key}: the host's, yet the Browser answers it"
+                        ));
+                    }
+                } else if answered != entry(false) {
+                    drift.push(format!(
+                        "{held:?} {key}: the Browser {} it, the list {}",
+                        if answered {
+                            "answers"
+                        } else {
+                            "leaves the page"
+                        },
+                        if entry(false) { "keeps it" } else { "does not" },
+                    ));
+                }
+            }
+        }
+        assert!(
+            drift.is_empty(),
+            "chromium/src/browser_keeps.inc and the Browser's own keys differ:\n{}",
+            drift.join("\n")
+        );
     }
 }

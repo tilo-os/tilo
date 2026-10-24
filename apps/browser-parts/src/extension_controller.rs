@@ -41,6 +41,7 @@ use crate::web_store;
 mod omnibox;
 mod side_panel;
 use side_panel::SidePanel;
+pub use side_panel::{SIDE_PANEL_PAGE, SidePanelWidths, side_panel_bounds};
 
 /// Copy with one name in it, as `key` says it.
 fn named(key: &str, name: &str) -> String {
@@ -382,6 +383,13 @@ pub struct ExtensionController {
     quiet_sign_ins: Vec<SharedEngine>,
     /// The extension typed to after its keyword in the address, if any.
     omnibox: ExtensionOmnibox,
+    /// The widths the person dragged side panels to, by extension, and
+    /// where they are kept on this device (none: a private or headless
+    /// window keeps them for its life only).
+    side_panel_widths: HashMap<String, f32>,
+    side_panel_store: Option<ui::storage::Settings<SidePanelWidths>>,
+    /// The keys extensions' commands hold, as the engine told them.
+    shortcuts: Vec<ui::webview::ExtensionShortcut>,
 }
 
 /// The switches `installed` asks for that this session has not made yet,
@@ -473,7 +481,18 @@ impl ExtensionController {
             questions: Vec::new(),
             quiet_sign_ins: Vec::new(),
             omnibox: ExtensionOmnibox::default(),
+            side_panel_widths: HashMap::new(),
+            side_panel_store: None,
+            shortcuts: Vec::new(),
         }
+    }
+
+    /// Extensions as installed, for a test of the window around them; a
+    /// window's own come from the profile.
+    #[doc(hidden)]
+    pub fn use_installed_for_tests(&mut self, installed: Vec<Installed>) {
+        self.refresh = false;
+        self.installed = installed;
     }
 
     /// The requests for more access extensions made since asked, which the
@@ -641,6 +660,10 @@ impl ExtensionController {
             WebViewEvent::ExtensionExecuteAction { id } => {
                 self.open_action(&id, engine);
                 true
+            }
+            WebViewEvent::ExtensionShortcuts(shortcuts) => {
+                self.shortcuts = shortcuts;
+                false
             }
             // Shown by the system, named for the extension; one taken away
             // goes also for an extension no longer installed.

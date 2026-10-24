@@ -345,8 +345,9 @@ struct CompositionKey {
     hosted: bool,
     compact: bool,
     immersive: bool,
-    /// The extension whose side panel shows, and whether it docks.
-    side_panel: Option<(String, bool)>,
+    /// The extension whose side panel shows, whether it docks, and how wide
+    /// it stands.
+    side_panel: Option<(String, bool, f32)>,
 }
 
 /// Root widget for the browser app. See module docs.
@@ -411,6 +412,14 @@ pub struct BrowserWidget {
     /// or autofill panel, a permission or download question, or the no-video
     /// note.
     anchored_panel: Option<Box<dyn Widget>>,
+    /// The edge between the page and a docked side panel, which the person
+    /// drags to widen the panel (`side_panel.rs`), and its layout node: kept
+    /// across layouts so a drag goes on, replaced only in `build_layout`.
+    side_panel_edge: Option<Box<ui::widget::SplitHandle>>,
+    side_panel_edge_node: Option<NodeId>,
+    /// How the edge was last drawn (lit, where), to repaint it when that
+    /// changes.
+    side_panel_edge_drawn: Option<(bool, Rect)>,
     panel_dismissed: ui::LocalState<Option<PanelKind>>,
     pip_choice: ui::LocalState<Option<PipChoice>>,
     pending_chrome_focus: Option<(NodeId, &'static str)>,
@@ -1137,6 +1146,16 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
+    /// Keep the widths the person drags extensions' side panels to in this
+    /// device's settings, starting from those kept there.
+    pub(crate) fn attach_side_panel_widths(
+        &mut self,
+        store: ui::storage::Settings<crate::extension_controller::SidePanelWidths>,
+    ) {
+        self.extensions.attach_side_panel_widths(store);
+        self.structure_dirty = true;
+    }
+
     pub(crate) fn attach_history(
         &mut self,
         record: ui::framework::PersonRecord<crate::history::BrowsingHistory>,
@@ -1275,6 +1294,9 @@ impl BrowserWidget {
             page_dialog_node: None,
             credentials: crate::credentials::Credentials::new(browsing_mode.is_private()),
             anchored_panel: None,
+            side_panel_edge: None,
+            side_panel_edge_node: None,
+            side_panel_edge_drawn: None,
             panel_dismissed: ui::LocalState::new(None),
             pip_choice: ui::LocalState::new(None),
             pending_chrome_focus: None,
@@ -2912,7 +2934,8 @@ impl BrowserWidget {
                 | WebViewEvent::ExtensionPermissionRequest { .. }
                 | WebViewEvent::ExtensionPermissions { .. }
                 | WebViewEvent::ExtensionSignIn { .. }
-                | WebViewEvent::ExtensionSidePanel { .. }) => {
+                | WebViewEvent::ExtensionSidePanel { .. }
+                | WebViewEvent::ExtensionShortcuts(_)) => {
                     self.structure_dirty |= self.extensions.on_engine_event(event, &self.engine);
                 }
                 // What an extension suggests for its keyword in the address.
@@ -3859,7 +3882,7 @@ impl BrowserWidget {
         self.focus_control(URL_INPUT_ID)
     }
 
-    fn focus_control(&mut self, id: &str) -> bool {
+    pub(crate) fn focus_control(&mut self, id: &str) -> bool {
         fn clear(widget: &mut dyn Widget) {
             widget.set_focus(false);
             for child in widget.children_mut() {
@@ -3879,6 +3902,11 @@ impl BrowserWidget {
                 }
             }
             true
+        }
+        // The side panel's edge is no control of the composed tree: it
+        // lets go of the keyboard as any of them does.
+        if let Some(edge) = self.side_panel_edge.as_deref_mut() {
+            edge.set_focused(false);
         }
         self.composed.element_mut().is_some_and(|composed| {
             clear(composed);
@@ -4464,6 +4492,8 @@ impl Widget for BrowserWidget {
             children.push(node);
             self.page_dialog_node = Some(node);
         }
+        self.side_panel_edge_node = self.build_side_panel_edge(taffy, theme, node_map);
+        children.extend(self.side_panel_edge_node);
         taffy.widget_node(style, &children, node_map, self)
     }
 
@@ -4494,6 +4524,7 @@ impl Widget for BrowserWidget {
         if let Some(r) = self.address_input_rect() {
             self.suggestions.set_anchor(r, self.rect);
         }
+        self.place_side_panel_edge();
         self.publish_content_rect();
         self.refresh_active_pip_region();
     }
@@ -4523,6 +4554,7 @@ impl Widget for BrowserWidget {
         if let Some(c) = self.composed.element_mut() {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
+        self.paint_side_panel_edge(scene, transform, theme);
         // One hairline under the toolbar row separates it from the page;
         // while the page loads, the loading line takes its place.
         if let Some(rect) = self.find_rect("browser.toolbar") {
@@ -4550,6 +4582,7 @@ impl Widget for BrowserWidget {
         if let Some(toolbar) = self.find_rect("browser.toolbar") {
             regions.push(toolbar);
         }
+        regions.extend(self.side_panel_edge_damage());
     }
 
     /// The suggestion dropdown is a field, not a tree child, so paint it
@@ -4609,9 +4642,28 @@ impl Widget for BrowserWidget {
     /// The page holding a button pressed on it keeps the pointer: the
     /// window hands it the drag's moves and its release, wherever they land.
     fn wants_pointer_capture(&self) -> bool {
-        self.composed
-            .element()
-            .is_some_and(Widget::wants_pointer_capture)
+        self.side_panel_edge
+            .as_ref()
+            .is_some_and(|edge| edge.is_dragging())
+            || self
+                .composed
+                .element()
+                .is_some_and(Widget::wants_pointer_capture)
+    }
+
+    /// The side panel's edge lit or moved since it was drawn needs a frame,
+    /// as anything the composed tree, the popover or the dialog changed.
+    fn needs_redraw(&self) -> bool {
+        let children = self.children();
+        children.is_empty()
+            || self.side_panel_edge_damage().is_some()
+            || children.iter().any(|child| child.needs_redraw())
+    }
+
+    fn mark_drawn(&mut self) {
+        for child in self.children_mut() {
+            child.mark_drawn();
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4822,6 +4874,11 @@ impl Widget for BrowserWidget {
                 return;
             }
         }
+        // The side panel's edge takes a press on it, the drag that follows
+        // and a keyboard step while it has focus.
+        if self.side_panel_edge_event(event, ctx) {
+            return;
+        }
         if self.handle_address_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
@@ -4835,6 +4892,28 @@ impl Widget for BrowserWidget {
         if self.handle_browser_shortcut(event, *ctx.modifiers) {
             *ctx.handled = true;
             return;
+        }
+
+        // One of extensions' keyboard shortcuts, pressed while the address
+        // has the keyboard: its command runs over the page before the field
+        // sees the key, as in Chrome, after the Browser's own keys above. A
+        // key the page has is the engine's to look up.
+        if let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == ElementState::Pressed
+            && self.url_input_focused()
+            && let Some(input) = ui::widget::WebView::map_key(&key.logical_key)
+        {
+            let held = ctx.modifiers.state();
+            let modifiers = ui::webview::KeyModifiers {
+                ctrl: held.control_key(),
+                shift: held.shift_key(),
+                alt: held.alt_key(),
+                meta: held.super_key(),
+            };
+            if self.extensions.command_key(&input, modifiers, &self.engine) {
+                *ctx.handled = true;
+                return;
+            }
         }
 
         // Cmd/Ctrl+F can be followed by text before the host rebuilds the bar.
@@ -4945,10 +5024,17 @@ impl Widget for BrowserWidget {
             return self.page_menu.accessibility();
         }
         if !self.back_menu.is_open() {
-            return self.suggestions.accessibility().map(|node| {
+            // The suggestions under the address, and the side panel's edge.
+            let nodes: Vec<_> = self
+                .suggestions
+                .accessibility()
+                .into_iter()
+                .chain(self.side_panel_edge_access())
+                .collect();
+            return (!nodes.is_empty()).then(|| {
                 AccessNode::new(Role::Group)
                     .with_name("Browser")
-                    .with_children(vec![node])
+                    .with_children(nodes)
             });
         }
         let direction = self.menu_direction?;
@@ -4995,6 +5081,9 @@ impl Widget for BrowserWidget {
         _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
+        if self.side_panel_edge_action(target, action) {
+            return true;
+        }
         if self
             .suggestions
             .perform_accessibility_action(target, action)

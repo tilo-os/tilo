@@ -2054,6 +2054,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         | "extension_omnibox_default"
         | "extension_side_panel" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
+        "extension_shortcuts" => decode_extension_shortcuts(value).is_some(),
         "extension_permission_request" | "extension_permissions" => {
             extension_permissions::decode(value).is_some()
         }
@@ -2358,7 +2359,8 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id }
-        | WebViewCommand::ExtensionOpenSidePanel { id } => extension_id(id),
+        | WebViewCommand::ExtensionOpenSidePanel { id }
+        | WebViewCommand::ExtensionSidePanelPage { id } => extension_id(id),
         WebViewCommand::ExtensionMenuChoice { id, key } => {
             extension_id(id) && !key.is_empty() && key.len() <= 1024
         }
@@ -2392,6 +2394,11 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             key: KeyInput::Character(text),
             ..
         } => text.len() <= 65536,
+        // A shortcut's key is one character, or a named key.
+        WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Character(text),
+            ..
+        } => text.len() <= 16,
         WebViewCommand::SetUserScripts(scripts) | WebViewCommand::SetBlockingScripts(scripts) => {
             scripts.len() <= 1024
                 && scripts
@@ -2537,6 +2544,9 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
             extension_permissions::decode(value)?
         }
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
+        "extension_shortcuts" => {
+            WebViewEvent::ExtensionShortcuts(decode_extension_shortcuts(value)?)
+        }
         "extension_download_open" => WebViewEvent::ExtensionDownloadOpen {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
             reveal: value["reveal"].as_bool()?,
@@ -2854,6 +2864,16 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ExtensionOpenSidePanel { id } => {
             json!({"op":"extension_side_panel","id":id})
         }
+        WebViewCommand::ExtensionSidePanelPage { id } => {
+            json!({"op":"extension_panel","side_panel":id})
+        }
+        WebViewCommand::ExtensionCommandKey { key, modifiers } => {
+            let key = match key {
+                KeyInput::Character(value) => value,
+                KeyInput::Named(named) => format!("{named:?}"),
+            };
+            json!({"op":"extension_command_key","key":key,"ctrl":modifiers.ctrl,"shift":modifiers.shift,"alt":modifiers.alt,"meta":modifiers.meta})
+        }
         WebViewCommand::DevTools {
             request_id,
             method,
@@ -2946,7 +2966,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
 
 mod event_decoding;
 use event_decoding::{
-    decode_extension_event, decode_page_dialog, decode_site_event, valid_site_event,
+    decode_extension_event, decode_extension_shortcuts, decode_page_dialog, decode_site_event,
+    valid_site_event,
 };
 #[cfg(test)]
 mod extension_tests;

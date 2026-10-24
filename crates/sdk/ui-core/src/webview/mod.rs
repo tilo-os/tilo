@@ -158,6 +158,58 @@ impl KeyModifiers {
     }
 }
 
+/// A key one of extensions' commands holds (`commands` in a manifest), as
+/// Chrome names it ("Y", "9", "Comma", "Up"), with its modifiers: `meta` is
+/// Command on macOS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionShortcut {
+    pub key: String,
+    pub modifiers: KeyModifiers,
+}
+
+impl ExtensionShortcut {
+    /// The shortcut a key pressed makes, its key named as Chrome names it,
+    /// as the engine host reads the keys the Browser forwards
+    /// (`extension_commands.h`, `KeyShortcut`): with Shift a digit, a comma
+    /// or a period is the US layout's symbol on it.
+    #[must_use]
+    pub fn pressed(key: &KeyInput, modifiers: KeyModifiers) -> Option<Self> {
+        let key = match key {
+            KeyInput::Named(named) => match named {
+                NamedKey::ArrowUp => "Up",
+                NamedKey::ArrowDown => "Down",
+                NamedKey::ArrowLeft => "Left",
+                NamedKey::ArrowRight => "Right",
+                NamedKey::Home => "Home",
+                NamedKey::End => "End",
+                NamedKey::PageUp => "PageUp",
+                NamedKey::PageDown => "PageDown",
+                NamedKey::Delete => "Delete",
+                NamedKey::Tab => "Tab",
+                NamedKey::Enter | NamedKey::Backspace | NamedKey::Escape => return None,
+            }
+            .to_owned(),
+            KeyInput::Character(text) => {
+                let mut chars = text.chars();
+                let (Some(c), None) = (chars.next(), chars.next()) else {
+                    return None;
+                };
+                match c {
+                    c if c.is_ascii_alphanumeric() => c.to_ascii_uppercase().to_string(),
+                    ',' | '<' => "Comma".to_owned(),
+                    '.' | '>' => "Period".to_owned(),
+                    ' ' => "Space".to_owned(),
+                    c => {
+                        let digit = ")!@#$%^&*(".find(c)?;
+                        digit.to_string()
+                    }
+                }
+            }
+        };
+        Some(Self { key, modifiers })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedKey {
     Enter,
@@ -729,6 +781,21 @@ pub enum WebViewCommand {
     ExtensionOpenSidePanel {
         id: String,
     },
+    /// This tab shows extension `id`'s side panel beside the page used
+    /// last: to extensions it is no tab and that page is its window, and
+    /// the extension hears of the panel opening and closing
+    /// (`sidePanel.onOpened`, `sidePanel.onClosed`).
+    ExtensionSidePanelPage {
+        id: String,
+    },
+    /// The person pressed one of extensions' keyboard shortcuts
+    /// ([`WebViewEvent::ExtensionShortcuts`]) while the Browser's own field
+    /// had the keyboard: the extension's command runs over this tab's page,
+    /// and the page sees nothing of the key.
+    ExtensionCommandKey {
+        key: KeyInput,
+        modifiers: KeyModifiers,
+    },
     DownloadDecision {
         id: u32,
         allow: bool,
@@ -793,6 +860,10 @@ pub enum WebViewEvent {
     ExtensionExecuteAction {
         id: String,
     },
+    /// The keys extensions' commands hold now, as Chrome names them: the
+    /// Browser runs them (`ExtensionCommandKey`) while its own field has the
+    /// keyboard, before the field sees them.
+    ExtensionShortcuts(Vec<ExtensionShortcut>),
     /// What extension `id`'s toolbar button menu holds now; empty when it
     /// holds nothing.
     ExtensionMenu {

@@ -768,3 +768,104 @@ fn an_extensions_side_panel_opens_closes_and_follows_its_options() {
         &WebViewCommand::ExtensionOpenSidePanel { id: "short".into() }
     ));
 }
+
+#[test]
+fn a_side_panels_tab_and_a_shortcut_pressed_in_the_browsers_field_reach_the_host() {
+    use crate::webview::{ExtensionShortcut, KeyModifiers, NamedKey};
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionSidePanelPage { id: id.into() }),
+        Some(json!({"op":"extension_panel","side_panel":id}))
+    );
+    assert!(!command_within_limits(
+        &WebViewCommand::ExtensionSidePanelPage { id: "short".into() }
+    ));
+    let shift_ctrl = KeyModifiers {
+        ctrl: true,
+        shift: true,
+        ..KeyModifiers::default()
+    };
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Character("Y".into()),
+            modifiers: shift_ctrl,
+        }),
+        Some(
+            json!({"op":"extension_command_key","key":"Y","ctrl":true,"shift":true,"alt":false,"meta":false})
+        )
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Named(NamedKey::ArrowUp),
+            modifiers: shift_ctrl,
+        }),
+        Some(
+            json!({"op":"extension_command_key","key":"ArrowUp","ctrl":true,"shift":true,"alt":false,"meta":false})
+        )
+    );
+    assert!(!command_within_limits(
+        &WebViewCommand::ExtensionCommandKey {
+            key: KeyInput::Character("y".repeat(17)),
+            modifiers: shift_ctrl,
+        }
+    ));
+
+    // The keys extensions' commands hold, as Chrome names them.
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(json!({"event":"extension_shortcuts","tab":1,"shortcuts":[
+            {"key":"Y","ctrl":true,"alt":false,"shift":true,"meta":false},
+            {"key":"Comma","ctrl":false,"alt":true,"shift":false,"meta":false}]})),
+        Some(WebViewEvent::ExtensionShortcuts(vec![
+            ExtensionShortcut {
+                key: "Y".into(),
+                modifiers: shift_ctrl,
+            },
+            ExtensionShortcut {
+                key: "Comma".into(),
+                modifiers: KeyModifiers {
+                    alt: true,
+                    ..KeyModifiers::default()
+                },
+            },
+        ]))
+    );
+    for bad in [
+        json!({"event":"extension_shortcuts","shortcuts":[{"key":"y","ctrl":true,"alt":false,"shift":false,"meta":false}]}),
+        json!({"event":"extension_shortcuts","shortcuts":[{"key":"Escape","ctrl":true,"alt":false,"shift":false,"meta":false}]}),
+        json!({"event":"extension_shortcuts","shortcuts":[{"key":"Y","ctrl":true}]}),
+        json!({"event":"extension_shortcuts"}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+
+    // A key pressed, named as the host names the keys it is forwarded.
+    let pressed = |key: KeyInput, shift: bool| {
+        ExtensionShortcut::pressed(
+            &key,
+            KeyModifiers {
+                ctrl: true,
+                shift,
+                ..KeyModifiers::default()
+            },
+        )
+        .map(|shortcut| shortcut.key)
+    };
+    let text = |text: &str| KeyInput::Character(text.into());
+    assert_eq!(pressed(text("y"), false).as_deref(), Some("Y"));
+    assert_eq!(pressed(text("Y"), true).as_deref(), Some("Y"));
+    assert_eq!(pressed(text("!"), true).as_deref(), Some("1"));
+    assert_eq!(pressed(text(")"), true).as_deref(), Some("0"));
+    assert_eq!(pressed(text("<"), true).as_deref(), Some("Comma"));
+    assert_eq!(pressed(text(" "), false).as_deref(), Some("Space"));
+    assert_eq!(
+        pressed(KeyInput::Named(NamedKey::ArrowLeft), false).as_deref(),
+        Some("Left")
+    );
+    assert_eq!(pressed(KeyInput::Named(NamedKey::Enter), false), None);
+    assert_eq!(pressed(text("é"), false), None);
+    assert_eq!(pressed(text("ab"), false), None);
+}
