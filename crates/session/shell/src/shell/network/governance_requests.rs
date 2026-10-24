@@ -113,10 +113,6 @@ pub(crate) trait LocalGovernor: Send + Sync {
 impl ShellNetwork {
     /// Install the room host this device runs as the governor of the rooms
     /// placed on it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the in-process room host installs itself")
-    )]
     pub(crate) fn install_local_governor(&self, governor: std::sync::Arc<dyn LocalGovernor>) {
         let _ = self.local_governor.set(governor);
         // Requests waiting for a governor out of reach may reach this one.
