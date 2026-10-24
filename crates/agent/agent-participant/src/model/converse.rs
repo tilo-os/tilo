@@ -721,9 +721,15 @@ fn lost_reasoning(response: &ModelResponse) -> Option<String> {
 pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document holds as \
     {{Sheet1!B2}} (a range: {{Sheet1!B2:B9}}) or {{<app>:<record>/<read>#/json/pointer}}, or \
     compute one as {{= expr }} (+ - * / %, sum, avg, min, max, round, abs, and dates: \
-    workday(date, n) for n business days, add_days, days_between), with references such as \
-    Sheet1!B2 as operands and an optional format after | ($, %, 0.00, long): the host fills it \
-    in when the step runs. Never work numbers or dates out yourself. To quote one item of a \
+    workday(date, n) for n business days, add_days, add_months, days_between, \
+    days_inclusive(start, end, …) totalling ranges with both ends counted, \
+    days_within(from, to, start, end, …) counting only their days inside a window), with \
+    references such as Sheet1!B2 as operands and an optional format after | ($, %, 0.00, \
+    long): the host fills it in when the step runs. A date or number argument may also be \
+    written as arithmetic in words (10 business days after 2026-10-14, 289 - 50, 4 x 38.50, \
+    sum of 120, 80 and 45): the host computes it. Never work numbers or dates out yourself; \
+    a date a document writes is noted after it as the host reads it (03/04/1988 \
+    [1988-04-03]): use that. To quote one item of a \
     list, say which in [ ] after the pointer and the host picks it: \
     {{mail/read#/messages[from~Ada, after 2026-10-14T09:15Z, newest]/subject}}, \
     {{Sheet1!A1:H9[Invoice=INV-7]/Status}} (field=value, field~text, !=, after/before \

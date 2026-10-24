@@ -439,7 +439,10 @@ pub fn observation_within(
     most: usize,
 ) -> Option<String> {
     let value = output.value.as_ref().filter(|value| !value.is_null())?;
-    let text = compact(read_content(value)).to_string();
+    // Dates and amounts as the host reads them, noted beside what the
+    // document writes, so the model copies an ISO date rather than
+    // working out which way `03/04/2026` goes.
+    let text = compact(&crate::values::annotate_json(read_content(value))).to_string();
     let text = if text.chars().count() > most {
         format!("{}… (cut)", text.chars().take(most).collect::<String>())
     } else {

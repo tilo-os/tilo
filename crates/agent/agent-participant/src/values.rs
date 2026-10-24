@@ -30,17 +30,30 @@
 //! left as it is. A reference that names nothing, or a value that is
 //! missing or cannot be computed, fails the step with the reference named,
 //! which the task's repair then plans around.
+//!
+//! Two helps need no syntax at all. An argument whose parameter takes a
+//! date or a number may be arithmetic in words (`10 business days after
+//! 2026-10-14`, `289 - 50`), which the host computes ([`plain`]); and
+//! the dates and amounts a read's answer writes are noted beside them as
+//! the host reads them (`03/04/1988 [1988-04-03]`, [`annotate`]), so the
+//! model copies ISO rather than guessing which way a date goes.
 
+mod annotate;
 mod dates;
 mod expr;
 mod pattern;
+mod plain;
 mod select;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod typed_tests;
 
 use std::collections::BTreeMap;
 
+pub(crate) use annotate::{annotate_json, annotate_text, unannotated};
 pub(crate) use expr::Value;
+pub(crate) use plain::fill as fill_plain;
 
 /// A read a reference names: of `app` (its id, or the last part of it), on
 /// `record` or the one the host picks, the operation `operation` (an
@@ -249,7 +262,11 @@ impl Binder<'_> {
                     .quoted(&reference)
                     .map_err(|why| format!("{text}: {why}"))?;
                 Value::from_json(&raw)
-            }),
+            })
+            // Arithmetic said in words (`10 business days after
+            // 2026-10-14`) computes too; the expression's own error is the
+            // one shown when neither reads it.
+            .or_else(|why| plain::evaluate(source).map_err(|_| why)),
         }
     }
 

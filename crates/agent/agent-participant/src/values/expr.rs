@@ -518,6 +518,46 @@ const fn as_f64(days: i64) -> f64 {
     days as f64
 }
 
+/// The date ranges `arguments` give as start and end in turn, each start
+/// at or before its end; a list (a range of cells' rows) gives its dates
+/// in the same order.
+fn ranges(
+    function: &str,
+    arguments: &[Value],
+) -> Result<Vec<(chrono::NaiveDate, chrono::NaiveDate)>, String> {
+    fn flat(value: &Value, out: &mut Vec<chrono::NaiveDate>) -> Result<(), String> {
+        match value {
+            Value::List(items) => items.iter().try_for_each(|item| flat(item, out)),
+            one => {
+                out.push(one.date()?);
+                Ok(())
+            }
+        }
+    }
+    let mut found = Vec::new();
+    for argument in arguments {
+        flat(argument, &mut found)?;
+    }
+    if found.is_empty() || found.len() % 2 != 0 {
+        return Err(format!(
+            "{function} takes ranges as pairs of dates, start then end; it was given {}",
+            found.len()
+        ));
+    }
+    found
+        .chunks(2)
+        .map(|pair| match pair {
+            [start, end] if start <= end => Ok((*start, *end)),
+            [start, end] => Err(format!(
+                "{function}: the range from {} ends before it starts, on {}",
+                dates::iso(*start),
+                dates::iso(*end)
+            )),
+            _ => Err(format!("{function} takes ranges as pairs of dates")),
+        })
+        .collect()
+}
+
 /// A whole count, of days or of decimal places.
 fn days(number: f64) -> Result<i64, String> {
     if number.fract() != 0.0 || number.abs() > 1e7 {
@@ -623,7 +663,8 @@ fn call(name: &str, arguments: &[Value]) -> Result<Value, String> {
         _ => {
             return Err(format!(
                 "unknown function `{name}`: use sum, avg, min, max, count, round, abs, floor, \
-                 ceil, percent, date, today, add_days, workday, days_between or networkdays"
+                 ceil, percent, date, today, add_days, workday, add_months, add_years, \
+                 days_between, networkdays, days_inclusive, days_exclusive or days_within"
             ));
         }
     })
@@ -678,12 +719,71 @@ fn date_call(lower: &str, arguments: &[Value]) -> Result<Option<Value>, String> 
             exactly(2)?;
             Value::Number(as_f64(dates::between(one(0)?.date()?, one(1)?.date()?)))
         }
+        "add_months" | "addmonths" | "edate" => {
+            exactly(2)?;
+            Value::Date(
+                dates::add_months(one(0)?.date()?, days(one(1)?.number()?)?)
+                    .ok_or("a date out of range")?,
+            )
+        }
+        "add_years" | "addyears" => {
+            exactly(2)?;
+            let years = days(one(1)?.number()?)?;
+            Value::Date(
+                dates::add_months(one(0)?.date()?, years.saturating_mul(12))
+                    .ok_or("a date out of range")?,
+            )
+        }
         "business_days_between" | "networkdays" => {
             exactly(2)?;
             Value::Number(as_f64(dates::business_days_between(
                 one(0)?.date()?,
                 one(1)?.date()?,
             )))
+        }
+        _ => return range_call(lower, arguments),
+    }))
+}
+
+/// The functions totalling days over ranges of dates; `None` for a name
+/// that is not one.
+fn range_call(lower: &str, arguments: &[Value]) -> Result<Option<Value>, String> {
+    let first = |at: usize| {
+        arguments
+            .get(at)
+            .ok_or_else(|| format!("{lower} takes a window, then ranges"))
+    };
+    Ok(Some(match lower {
+        "days_inclusive" | "days_exclusive" => {
+            let ranges = ranges(lower, arguments)?;
+            let extra = i64::from(lower == "days_inclusive");
+            Value::Number(as_f64(ranges.iter().try_fold(
+                0_i64,
+                |total, (start, end)| {
+                    total
+                        .checked_add(dates::between(*start, *end).saturating_add(extra))
+                        .ok_or("too many days")
+                },
+            )?))
+        }
+        "days_within" => {
+            let (from, to) = (first(0)?.date()?, first(1)?.date()?);
+            if to < from {
+                return Err(format!(
+                    "days_within takes its window first, earliest first: {} is after {}",
+                    dates::iso(from),
+                    dates::iso(to)
+                ));
+            }
+            let ranges = ranges(lower, arguments.get(2..).unwrap_or_default())?;
+            Value::Number(as_f64(ranges.iter().fold(0_i64, |total, (start, end)| {
+                let (start, end) = ((*start).max(from), (*end).min(to));
+                if end < start {
+                    total
+                } else {
+                    total.saturating_add(dates::between(start, end).saturating_add(1))
+                }
+            })))
         }
         _ => return Ok(None),
     }))
