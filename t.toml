@@ -524,7 +524,7 @@ requires = ["arch=any"]
 requirement = { cores = 1, memory = "2GiB" }
 run = "python3 tools/policy/findings.py python3 tools/policy/check_action_confirmation.py"
 hints = { builds = false }
-inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs", "tools/policy/check_action_confirmation.py", "tools/policy/findings.py", "tools/policy/rust_source.py"]
+inputs = ["apps/**/*.rs", "crates/**/*.rs", "examples/**/*.rs", "tools/policy/undoable-deletions.toml", "tools/policy/check_action_confirmation.py", "tools/policy/findings.py", "tools/policy/rust_source.py"]
 
 [[check]]
 name = "policy/app-copy"
