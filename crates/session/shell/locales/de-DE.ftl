@@ -32,6 +32,7 @@ workspace-needs-join-again = Erneut beitreten, um teilzunehmen
 workspace-not-joined-yet = Noch nicht beigetreten
 workspace-on-this-device-only = Nur auf diesem Gerät
 workspace-on-this-device-only-no-documents = Dieser Arbeitsbereich ist nur auf diesem Gerät: Apps können darin keine Dokumente öffnen.
+workspace-not-ready-no-documents = Dieser Arbeitsbereich ist noch nicht bereit: Apps können darin Dokumente öffnen, sobald er es ist.
 workspace-join-again-needs-invitation = Bitte um eine neue Einladung, um diesem Arbeitsbereich beizutreten
 workspace-kept-before-joining = { $name } vor dem Beitritt
 
