@@ -14130,7 +14130,9 @@ pub fn run() {
         if paint_stats {
             frames_total = frames_total.saturating_add(1);
             if paint_ticks {
-                eprintln!("paint-tick: painted={should_paint} woke={last_wake}");
+                crate::stderr_guard::write_line(format_args!(
+                    "paint-tick: painted={should_paint} woke={last_wake}"
+                ));
             }
             if should_paint {
                 frames_painted = frames_painted.saturating_add(1);
@@ -14171,17 +14173,17 @@ pub fn run() {
                 stats_since = Instant::now();
             } else if stats_since.elapsed() >= Duration::from_secs(2) {
                 if !paint_stats_idle.is_zero() {
-                    eprintln!(
+                    crate::stderr_guard::write_line(format_args!(
                         "paint-stats: idle {:.0}s before this, nothing painted",
                         paint_stats_idle.as_secs_f64()
-                    );
+                    ));
                     paint_stats_idle = Duration::ZERO;
                 }
                 let animation_host_labels =
                     crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
                         .collect::<Vec<_>>()
                         .join(",");
-                eprintln!(
+                crate::stderr_guard::write_line(format_args!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
@@ -14203,7 +14205,7 @@ pub fn run() {
                     present_pipe
                         .as_ref()
                         .map_or(0, super::present::PresentPipe::backpressured),
-                );
+                ));
                 frames_total = 0;
                 frames_painted = 0;
                 cause_events = 0;
@@ -14211,11 +14213,11 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
-                eprintln!(
+                crate::stderr_guard::write_line(format_args!(
                     "paint-stats: wakes {} | widget-deadline owner {:?}",
                     wakes_seen.take_summary(),
                     widget_wake_owner.take().unwrap_or_default(),
-                );
+                ));
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
