@@ -91,6 +91,8 @@ pub enum View {
     Browse,
     Queue,
     Lyrics,
+    /// The song playing, large: what the transport's cover opens.
+    NowPlaying,
     Album(String),
     Artist(String),
     Playlist(String),
@@ -507,6 +509,8 @@ pub struct MusicApp {
     places: NavFeed,
     /// What plays, as the transport in the shell's band shows it.
     transport: TransportFeed,
+    /// The Now Playing page's song and its cover's flight from the band.
+    now_playing: render::NowPlaying,
     /// What the transport's actions read when they are invoked.
     playing_now: std::sync::Arc<shell::Playing>,
     /// The shell's own buttons in the window's bar; none outside a shell.
@@ -916,6 +920,7 @@ impl MusicApp {
             content_height: 0.0,
             places: NavFeed::new(),
             transport: TransportFeed::new(),
+            now_playing: render::NowPlaying::default(),
             playing_now: std::sync::Arc::default(),
             bar: None,
             pane: None,
@@ -4292,6 +4297,10 @@ impl MusicApp {
                 .open(ui::search::SearchRequest::this_app()),
             "skeleton" => self.snap_skeleton(),
             "nowplaying" => self.snap_nowplaying(),
+            "nowplaying-page" => {
+                self.shot_stage = Some(ShotStage::NowPlaying);
+                self.view = View::NowPlaying;
+            }
             "queue" => self.snap_queue(),
             "lyrics" => self.snap_lyrics(),
             "downloading" => self.snap_downloading(),
