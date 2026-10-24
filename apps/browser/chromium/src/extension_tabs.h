@@ -1115,16 +1115,19 @@ class ExtensionTabs {
     const int key = tab.tab;
     const int tab_id = tab.id;
     const auto wanted = FramesOf(args->GetDictionary("target"));
-    Frames(extension, tab, !wanted.all && wanted.ids.empty(), [this, inspector, extension, caller, key, tab_id, content, sources, main_world, wanted, reply](std::vector<Frame> frames) {
+    Frames(extension, tab, !wanted.all && wanted.ids.empty(), wanted.all ? std::vector<int>() : wanted.ids, [this, inspector, extension, caller, key, tab_id, content, sources, main_world, wanted, reply](std::vector<Frame> frames) {
       std::vector<Frame> chosen;
       for (int id : wanted.ids) {
         auto found = std::find_if(frames.begin(), frames.end(), [id](const Frame& frame) { return frame.id == id; });
         if (found == frames.end()) { Release(frames); Fail(reply, "No frame with id " + std::to_string(id) + " in tab with id " + std::to_string(tab_id) + "."); return; }
         chosen.push_back(*found);
       }
+      // Every frame the script can run in, as Chrome passes over those it
+      // cannot reach: a frame whose page the extension's scripts left (it
+      // went to one they do not match) keeps its id but has no world.
       if (wanted.all)
         for (const auto& frame : frames)
-          if (frame.id >= 0 && std::none_of(chosen.begin(), chosen.end(), [&](const Frame& known) { return known.id == frame.id; })) chosen.push_back(frame);
+          if (frame.id >= 0 && Runnable(frame, main_world) && std::none_of(chosen.begin(), chosen.end(), [&](const Frame& known) { return known.id == frame.id; })) chosen.push_back(frame);
       if (!wanted.all && wanted.ids.empty() && !frames.empty()) chosen.push_back(frames.front());
       // Sessions of frames not asked for go now.
       std::vector<Frame> unused;
@@ -1148,8 +1151,8 @@ class ExtensionTabs {
           results->SetDictionary(results->GetSize(), entry);
           (*next)(index + 1);
         };
+        if (!Runnable(frame, main_world)) { ran(std::string("The page could not run the script"), nullptr); return; }
         if (main_world || frame.world) { RunSources(inspector, frame.session, main_world ? frame.page : frame.world, sources, ran); return; }
-        if (frame.id != 0) { ran(std::string("The page could not run the script"), nullptr); return; }
         ContentWorld(extension, caller, key, inspector, frame.devtools, content, [this, inspector, sources, ran](int context) {
           if (!context) { ran(std::string("The page could not run the script"), nullptr); return; }
           RunSources(inspector, "", context, sources, ran);
@@ -1178,19 +1181,30 @@ class ExtensionTabs {
   // on the pipe that reaches it when another site's process renders it
   // (empty: the tab's inspector does).
   struct Frame { std::string devtools; int id = -1; int world = 0; int page = 0; std::string session; };
+  // Whether a script can run in `frame`: in the page's own world (MAIN), or
+  // in the extension's world there. Only the main frame has the page's own
+  // world as context 0, and only there the host makes the extension a world
+  // it lacks; in any other frame, context 0 would be the main frame's.
+  static bool Runnable(const Frame& frame, bool main_world) {
+    if (frame.id == 0 && frame.session.empty()) return true;
+    return main_world ? frame.page != 0 : frame.world != 0;
+  }
   // The frames of the tab's page, the main frame first; with `main_only`,
   // the main frame alone. Those the page's process renders the tab's
   // inspector reaches; a frame another site's process renders is a target
   // of its own, reached on the pipe. Chromium knows a frame by an id the
   // inspector does not show; a message from the extension's world there
   // tells it (extension_tabs.js answers it), and it lasts as long as the
-  // frame. The caller lets go of the frames' sessions (Release).
-  void Frames(const std::string& extension, const ExtensionTab& tab, bool main_only, std::function<void(std::vector<Frame>)> then) {
+  // frame. The caller lets go of the frames' sessions (Release). When the
+  // frames `wanted` are all among those the tab's inspector reaches, no
+  // other site's frame is attached to: a message to one frame does not
+  // cost a session for every frame of every other site on the page.
+  void Frames(const std::string& extension, const ExtensionTab& tab, bool main_only, std::vector<int> wanted, std::function<void(std::vector<Frame>)> then) {
     auto inspector = hooks_.inspector(tab.tab);
     if (!inspector) { then({}); return; }
     const bool keep = hooks_.keeps_contexts(tab.tab);
     const int key = tab.tab;
-    inspector->Call("Page.getFrameTree", nullptr, [this, inspector, extension, keep, key, main_only, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
+    inspector->Call("Page.getFrameTree", nullptr, [this, inspector, extension, keep, key, main_only, wanted, then](bool ok, CefRefPtr<CefDictionaryValue> result) {
       std::vector<Frame> frames;
       std::function<void(CefRefPtr<CefDictionaryValue>)> walk = [&](CefRefPtr<CefDictionaryValue> node) {
         if (!node || frames.size() >= kMaxFrames) return;
@@ -1203,13 +1217,16 @@ class ExtensionTabs {
       walk(ok && result ? result->GetDictionary("frameTree") : nullptr);
       if (frames.empty()) { then({}); return; }
       inspector->Collect(true);
-      inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, key, main_only, frames, then](bool, CefRefPtr<CefDictionaryValue>) mutable {
+      inspector->Call("Runtime.enable", nullptr, [this, inspector, extension, keep, key, main_only, wanted, frames, then](bool, CefRefPtr<CefDictionaryValue>) mutable {
         for (const auto& context : inspector->contexts()) Place(frames, context, extension, "", false);
         inspector->Collect(false);
         if (!keep) inspector->Call("Runtime.disable", nullptr, [](bool, CefRefPtr<CefDictionaryValue>) {});
         auto local = std::make_shared<std::vector<Frame>>(std::move(frames));
-        Identified(inspector, key, local, [this, extension, key, main_only, local, then] {
-          if (main_only) { then(*local); return; }
+        Identified(inspector, key, local, [this, extension, key, main_only, wanted, local, then] {
+          const bool reached = !wanted.empty() && std::all_of(wanted.begin(), wanted.end(), [&](int id) {
+            return std::any_of(local->begin(), local->end(), [id](const Frame& frame) { return frame.id == id; });
+          });
+          if (main_only || reached) { then(*local); return; }
           RemoteFrames(extension, key, local, then);
         });
       });
@@ -1534,7 +1551,7 @@ class ExtensionTabs {
     // One frame's content scripts, which an extension names by the id a
     // message from there gave it (`sender.frameId`).
     const bool subframe = frame_id && *frame_id != 0;
-    Frames(extension, tab, !subframe, [this, inspector, extension, key, message, sender, expression, answer, frame_id, subframe, reply](std::vector<Frame> frames) {
+    Frames(extension, tab, !subframe, subframe ? std::vector<int>{*frame_id} : std::vector<int>(), [this, inspector, extension, key, message, sender, expression, answer, frame_id, subframe, reply](std::vector<Frame> frames) {
       const Frame* frame = nullptr;
       for (const auto& entry : frames) if (subframe ? entry.id == *frame_id : entry.id == 0) frame = &entry;
       if (frame && frame->world) {

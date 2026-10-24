@@ -457,7 +457,11 @@ content scripts (with `sender.tab`) work without help.
   extension's world in the frame with a message only the tab script answers
   (`sender.frameId`). A frame another site's process renders is a target of
   its own, which the host attaches to on the pipe for as long as the call
-  takes; the pipe carries a script whole, up to 16 MiB.
+  takes, and only when the frames named are not all in the page's own
+  process; the pipe carries a script whole, up to 16 MiB. `allFrames`
+  passes over a frame the script cannot run in, as Chrome does: one whose
+  page the extension's content scripts do not match keeps its id but has
+  no world of the extension.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
   tab an extension was told of before the host learnt its id among
