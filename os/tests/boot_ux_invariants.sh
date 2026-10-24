@@ -18,6 +18,9 @@ if ! containerfile_has_copy "$containerfile" os/dev/make-boot-splash.py /usr/loc
   exit 1
 fi
 grep -Fq 'plymouth-plugin-script' "$containerfile"
+# Names and messages on the boot sign-in screen are drawn by the label plugin.
+grep -Fq 'plymouth-plugin-label' "$containerfile"
+grep -Fq 'Image.Text(' "$script"
 if ! grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback tilo-sibling-unlock"' "$root/os/scripts/build-initramfs.sh" \
   || ! grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$containerfile"; then
   printf 'initramfs must explicitly include crypt, TPM, Plymouth, and Tilo rollback unlock modules\n' >&2
@@ -48,6 +51,15 @@ assert "SetPosition" not in body("setup_dialog"), \
 hotplug = body("display_hotplug")
 assert "display_password" in hotplug and "display_normal" in hotplug, \
     "a display change must re-run the layout of whichever screen is showing"
+assert "draw_signin()" in hotplug, \
+    "a display change must lay the sign-in screen out again too"
+assert "tilo-signin-" in body("display_message"), \
+    "the theme must take the sign-in screen's messages"
+# Every message tilo-boot-signin sends is one the theme reads.
+signin = body("signin_message")
+for key in ("people", "person", "choose", "name", "kind", "back", "note",
+            "checking", "end"):
+    assert f'key == "{key}"' in signin, f"tilo.script ignores tilo-signin-{key}"
 PY
 if grep -Eq '^[[:space:]]+dialog\.(heading|help|entry|lock|bullet_image)[[:space:]]*=' "$script"; then
   printf 'Plymouth dialog state must be assigned globally from callbacks\n' >&2
@@ -108,14 +120,25 @@ if grep -Fq 'recognisable q' "$root/os/dev/make-boot-splash.py" \
   printf 'boot artwork still carries a retired Tilo mark\n' >&2
   exit 1
 fi
-python3 - "$tmp/plymouth" <<'PY'
-import pathlib, struct, sys
+python3 - "$tmp/plymouth" "$script" <<'PY'
+import pathlib, re, struct, sys
 root = pathlib.Path(sys.argv[1])
 expected = {"tilo-logo.png", "entry.png", "lock.png", "bullet.png",
             "unlock-heading.png", "unlock-help.png", "unlock-retry.png",
             "starting-tilo.png", "shutting-down.png", "startup-help.png",
-            "progress-background.png", "progress-fill.png"}
+            "progress-background.png", "progress-fill.png",
+            # The sign-in screen (tilo.script, "Sign-in").
+            "avatar.png", "avatar-person.png", "signin-heading.png",
+            "placeholder-pin.png", "placeholder-password.png",
+            "note-wrong-pin.png", "note-wrong-password.png", "note-wait.png",
+            "signing-in.png", "hint-other-ways.png", "hint-someone-else.png",
+            "list-heading.png", "list-keys.png", "row.png", "row-selected.png",
+            "cant-sign-in.png", "account-1.png", "account-2.png", "account-3.png",
+            "account-4.png"}
 assert {path.name for path in root.iterdir()} == expected
+# Every image the theme loads by name is one the build renders.
+loaded = set(re.findall(r'Image\("([^"]+\.png)"\)', open(sys.argv[2]).read()))
+assert loaded and loaded <= expected, sorted(loaded - expected)
 for path in root.iterdir():
     data = path.read_bytes()
     assert data[:8] == b"\x89PNG\r\n\x1a\n", path

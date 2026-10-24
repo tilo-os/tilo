@@ -562,7 +562,13 @@ volume, so the key file the hook writes is:
 /run/cryptsetup-keys.d/root.key
 ```
 
-`systemd-cryptsetup` consults that path before it tries any token. The
+`systemd-cryptsetup` consults that path before it tries any token. A root whose
+header carries `tilo-signin` tokens asks first for a person's own PIN or password
+instead ([sign-in.md](sign-in.md) §3.2): `tilo-boot-signin` takes it, and `tilo-auth
+boot-unlock` writes the same key file from that person's keyslot and leaves the
+one-time handoff to their session. "Can't sign in" (Enter on an empty field) ends
+it, and everything below runs as on any other root. The key file is removed once
+the volume is attached, because `/run` is carried into the booted system. The
 `tilo-rollback` dracut module installs the binary, its TPM tools and public policy
 key, the root generator and the discovery helper. The hook asks for the PIN only
 when the LUKS header actually contains a `tilo-rollback` token. A command line

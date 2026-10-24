@@ -179,8 +179,7 @@ def progress_pixel(width, first, second):
     return pixel
 
 
-def text_png(path, text, size, color, weight="Regular"):
-    """Rasterize text now so the tiny initramfs never needs fonts or Pango."""
+def noto_sans(size, weight="Regular"):
     # The index also names the instance of a variable font (FreeType reads
     # its high 16 bits), so a variable Noto Sans is drawn at `weight` rather
     # than at its default instance.
@@ -192,7 +191,12 @@ def text_png(path, text, size, color, weight="Regular"):
     ).stdout.partition("\n")
     if not font_path:
         raise RuntimeError("fontconfig could not resolve Noto Sans")
-    font = ImageFont.truetype(font_path, size, index=int(index or 0))
+    return ImageFont.truetype(font_path, size, index=int(index or 0))
+
+
+def text_png(path, text, size, color, weight="Regular"):
+    """Rasterize text now so the tiny initramfs never needs fonts or Pango."""
+    font = noto_sans(size, weight)
     probe = PillowImage.new("RGBA", (1, 1))
     bounds = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
     width = bounds[2] - bounds[0] + 4
@@ -202,6 +206,60 @@ def text_png(path, text, size, color, weight="Regular"):
         (2 - bounds[0], 2 - bounds[1]), text, font=font, fill=(*color, 255)
     )
     image.save(path, format="PNG", optimize=True)
+
+
+KEYCAP_FILL = (31, 34, 51)
+KEYCAP_EDGE = (98, 106, 150)
+
+
+def hint_png(path, parts, size, color):
+    """A key hint: text with each named key drawn as a keycap (HIG §4)."""
+    font = noto_sans(size)
+    key_font = noto_sans(size - 3, "SemiBold")
+    probe = ImageDraw.Draw(PillowImage.new("RGBA", (1, 1)))
+    ascent, descent = font.getmetrics()
+    cap_height = ascent + descent + 10
+    pieces = []
+    for kind, text in parts:
+        if kind == "key":
+            bounds = probe.textbbox((0, 0), text, font=key_font)
+            pieces.append((kind, text, bounds[2] - bounds[0] + 18))
+        else:
+            pieces.append((kind, text, probe.textlength(text, font=font)))
+    width = round(sum(piece[2] for piece in pieces)) + 4
+    height = cap_height + 4
+    image = PillowImage.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    x = 2.0
+    for kind, text, advance in pieces:
+        if kind == "key":
+            draw.rounded_rectangle((x, 2, x + advance - 1, 2 + cap_height - 1), radius=6,
+                                   fill=(*KEYCAP_FILL, 255), outline=(*KEYCAP_EDGE, 255),
+                                   width=1)
+            draw.text((x + advance / 2, 2 + cap_height / 2), text, font=key_font,
+                      fill=(*color, 255), anchor="mm")
+        else:
+            draw.text((x, 2 + cap_height / 2), text, font=font, fill=(*color, 255),
+                      anchor="lm")
+        x += advance
+    image.save(path, format="PNG", optimize=True)
+
+
+def person_pixel(size, disc, figure):
+    """The avatar of someone whose initial the boot screen cannot draw."""
+    center = size / 2
+    disc_pixel = circle_pixel(size, disc)
+
+    def pixel(x, y):
+        px, py = x + 0.5, y + 0.5
+        head = math.hypot(px - center, py - size * 0.38) - size * 0.16
+        body = math.hypot((px - center) / 1.35, py - size * 0.86) - size * 0.26
+        inside = 1.0 - smoothstep(-0.75, 0.75, min(head, body))
+        base = disc_pixel(x, y)
+        if base[3] == 0:
+            return base
+        return (*blend(base[:3], figure, inside), base[3])
+    return pixel
 
 
 def main(directory):
@@ -223,10 +281,48 @@ def main(directory):
              (240, 240, 250), "SemiBold")
     text_png(os.path.join(directory, "startup-help.png"),
              "Press Esc to view startup messages", 16, (158, 163, 186))
+    sign_in_assets(directory)
     png(os.path.join(directory, "progress-background.png"), 280, 4,
         progress_pixel(280, (54, 57, 75), (54, 57, 75)))
     png(os.path.join(directory, "progress-fill.png"), 280, 4,
         progress_pixel(280, (59, 67, 118), (111, 130, 255)))
+
+
+TEXT = (240, 240, 250)
+MUTED = (158, 163, 186)
+ERROR = (244, 169, 154)
+
+
+def sign_in_assets(directory):
+    """The sign-in screen's fixed text and shapes (tilo.script, "Sign-in")."""
+    def out(name):
+        return os.path.join(directory, name)
+
+    png(out("avatar.png"), 96, 96, circle_pixel(96, (59, 67, 118)))
+    png(out("avatar-person.png"), 96, 96, person_pixel(96, (59, 67, 118), (226, 224, 255)))
+    text_png(out("signin-heading.png"), "Sign in", 26, TEXT, "SemiBold")
+    text_png(out("placeholder-pin.png"), "PIN", 18, MUTED)
+    text_png(out("placeholder-password.png"), "Password", 18, MUTED)
+    text_png(out("note-wrong-pin.png"), "Incorrect PIN. Try again.", 17, ERROR)
+    text_png(out("note-wrong-password.png"), "Incorrect password. Try again.", 17, ERROR)
+    text_png(out("note-wait.png"), "Too many failed attempts. Wait, then try again.", 17, ERROR)
+    text_png(out("signing-in.png"), "Signing in\u2026", 17, MUTED)
+    hint_png(out("hint-other-ways.png"),
+             [("text", "Can't sign in? Press "), ("key", "Enter"),
+              ("text", " with the field empty.")], 16, MUTED)
+    hint_png(out("hint-someone-else.png"),
+             [("text", "Someone else, or can't sign in? Press "), ("key", "Enter"),
+              ("text", " with the field empty.")], 16, MUTED)
+    text_png(out("list-heading.png"), "Who's signing in?", 26, TEXT, "SemiBold")
+    hint_png(out("list-keys.png"),
+             [("text", "Press "), ("key", "Tab"), ("text", " to move and "),
+              ("key", "Enter"), ("text", " to choose.")], 16, MUTED)
+    png(out("row.png"), 360, 56, rounded_rect(360, 56, 14, (31, 34, 51), (45, 49, 72), 1))
+    png(out("row-selected.png"), 360, 56,
+        rounded_rect(360, 56, 14, (40, 45, 74), (111, 130, 255), 2))
+    text_png(out("cant-sign-in.png"), "Can't sign in", 20, TEXT)
+    for number in range(1, 5):
+        text_png(out(f"account-{number}.png"), f"Account {number}", 20, TEXT)
 
 
 if __name__ == "__main__":
