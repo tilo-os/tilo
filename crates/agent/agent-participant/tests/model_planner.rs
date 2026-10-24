@@ -95,6 +95,7 @@ fn explicit_steps_still_bypass_the_model() {
         then: None,
         reply: None,
         wait: None,
+        ..Answer::default()
     })));
     let steps = planner
         .plan(
@@ -119,6 +120,7 @@ fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
         then: None,
         reply: None,
         wait: None,
+        ..Answer::default()
     })));
     let refused = invented.plan("tidy up", &context).unwrap_err();
     assert!(refused.contains("not offered"), "{refused}");
@@ -130,6 +132,7 @@ fn an_answer_outside_the_offers_is_refused_and_an_open_continues() {
         then: Some("add a page called Plans".into()),
         reply: None,
         wait: None,
+        ..Answer::default()
     })));
     let steps = opening.plan("open notes and add a page", &context).unwrap();
     assert_eq!(steps[0].app, "so.tilo.notes");

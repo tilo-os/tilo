@@ -128,7 +128,7 @@ impl AgentParticipant {
             .cloned()
             .collect();
         let reference = self.reference(referenced);
-        let (produced, observed, (pictures, rendered)) = self
+        let (produced, observed, (pictures, rendered), obligations) = self
             .running
             .as_ref()
             .map(|running| {
@@ -136,6 +136,7 @@ impl AgentParticipant {
                     running.produced.clone(),
                     running.observations(),
                     running.pictures(request.is_some()),
+                    request.as_ref().map(|_| running.checklist.shown()),
                 )
             })
             .unwrap_or_default();
@@ -162,6 +163,7 @@ impl AgentParticipant {
                 .map(|running| running.new_documents.clone())
                 .unwrap_or_default(),
             retries: self.task_retries.clone(),
+            obligations: obligations.unwrap_or_default(),
         }
     }
 

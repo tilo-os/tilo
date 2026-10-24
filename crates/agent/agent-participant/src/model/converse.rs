@@ -738,6 +738,61 @@ pub(crate) const VALUES_NOTE: &str = " Any argument may quote a value a document
     an item by its fields (field-edit upsert-item {match: {field: value}, value}), never by \
     position.";
 
+/// How the `plan` tool's checklist is used, told once in its description so
+/// every turn and task sends the same bytes.
+pub(crate) const OBLIGATIONS_NOTE: &str = " When a request asks for more than one thing, its \
+    first plan lists in `obligations` each deliverable it asks for, in order, a few words each \
+    (\"set LR-2041 status Signed in\", \"add LR-2041 session row\", \"post 'LR-2041 signed in' \
+    in #logins\"): the changes, posts, messages and files it wants, never reads, waits or your \
+    reply. Give each step that fulfils one its number in `for`. Every later plan is shown the \
+    list with what is still to do: plan those too, tagged the same way. The task cannot finish \
+    while one is open: when it is about to, you are shown the open ones and may set one aside \
+    in `set_aside` with a short reason (\"already done by …\", \"not possible: …\"). One set \
+    aside before then stays open, so never set aside what a wait or a later step will do.";
+
+/// The `plan` schema's checklist: `obligations`, each step's `for` and
+/// `set_aside` ([`OBLIGATIONS_NOTE`]).
+fn add_obligations(properties: &mut serde_json::Map<String, serde_json::Value>) {
+    if let Some(step) = properties
+        .get_mut("steps")
+        .and_then(|steps| steps.pointer_mut("/items/properties"))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        step.insert(
+            "for".into(),
+            serde_json::json!({
+                "type": "integer",
+                "description": "The number of the obligation this step fulfils, if any."
+            }),
+        );
+    }
+    properties.insert(
+        "obligations".into(),
+        serde_json::json!({
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "On the request's first plan only: what it asks for, one short item \
+                each, in order, numbered from 1."
+        }),
+    );
+    properties.insert(
+        "set_aside".into(),
+        serde_json::json!({
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "item": {"type": "integer"},
+                    "reason": {"type": "string"}
+                },
+                "required": ["item", "reason"],
+                "additionalProperties": false
+            },
+            "description": "Obligations you will not plan, by number, each with why in a few words."
+        }),
+    );
+}
+
 /// The [`READ_VIEW`] tool definition.
 fn read_view_definition() -> ToolDefinition {
     ToolDefinition {
@@ -819,6 +874,7 @@ pub(crate) fn planning_tools(
             continue;
         }
         tool.description.push_str(VALUES_NOTE);
+        tool.description.push_str(OBLIGATIONS_NOTE);
         let schema = &mut tool.input_schema;
         if let Some(properties) = schema
             .get_mut("properties")
@@ -843,6 +899,7 @@ pub(crate) fn planning_tools(
                         part, planned once the app is open. Never work the steps could do now."
                 }),
             );
+            add_obligations(properties);
         }
         if let Some(required) = schema
             .get_mut("required")

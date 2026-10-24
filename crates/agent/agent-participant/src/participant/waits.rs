@@ -930,5 +930,6 @@ pub(super) fn take_news(running: &mut Running, news: &mut Vec<DocumentRoute>, ar
         record: None,
         action: StepAction::Continue(news_brief(&news, arrived, &pending)),
         carries: None,
+        serves: None,
     });
 }
