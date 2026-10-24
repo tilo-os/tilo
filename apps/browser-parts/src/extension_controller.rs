@@ -626,10 +626,14 @@ impl ExtensionController {
         changed
     }
 
+    /// The record of the extension Chromium knows as `id`, from the last
+    /// read of the profile: never the disk, since this runs on the frame.
     fn info_of(&self, id: &str) -> Option<&ExtensionInfo> {
         self.infos
             .iter()
-            .find(|info| extensions::chrome_id(info).as_deref() == Some(id))
+            .zip(&self.installed)
+            .find(|(_, extension)| extension.id == id)
+            .map(|(info, _)| info)
     }
 
     fn run(&mut self, command: Command, engine: &SharedEngine) {
@@ -1106,6 +1110,9 @@ impl ExtensionController {
                         E::TurnOnExtension { id: id.clone() }.bound()
                     });
                 }
+                if extension.enabled && extension.action.is_some() {
+                    resource = resource.with_action(E::UseExtension { id: id.clone() }.bound());
+                }
                 if extension.enabled && extension.options.is_some() {
                     resource =
                         resource.with_action(E::OpenExtensionSettings { id: id.clone() }.bound());
@@ -1137,6 +1144,7 @@ impl ExtensionController {
             | ExtensionRequest::TurnOff(id)
             | ExtensionRequest::Pin(id, _)
             | ExtensionRequest::OpenSettings(id)
+            | ExtensionRequest::Use(id)
             | ExtensionRequest::Remove(id) => id.clone(),
         };
         let (info, extension) = self
@@ -1151,7 +1159,9 @@ impl ExtensionController {
             }
             ExtensionRequest::TurnOn(_) => Command::Enable(id),
             ExtensionRequest::TurnOff(_) => Command::Disable(id),
-            ExtensionRequest::Pin(..) if !extension.enabled || extension.action.is_none() => {
+            ExtensionRequest::Pin(..) | ExtensionRequest::Use(_)
+                if !extension.enabled || extension.action.is_none() =>
+            {
                 return Err("This extension is off or has no toolbar button".into());
             }
             ExtensionRequest::Pin(_, pinned) => Command::Pin(id, *pinned),
@@ -1161,9 +1171,54 @@ impl ExtensionController {
                 return Err("This extension is off or has no settings page".into());
             }
             ExtensionRequest::OpenSettings(_) => Command::OpenSettings(id),
+            ExtensionRequest::Use(_) => Command::OpenAction(id),
             ExtensionRequest::Remove(_) => Command::Remove(id),
         };
         (self.queue(command))();
+        Ok(())
+    }
+
+    /// Adding the Web Store item on the page, as the extensions' resource
+    /// offers it: available on an item not added yet; none in a window that
+    /// manages no extensions.
+    pub fn add_action(&self) -> Option<ui::tilo_actions::ActionSpec> {
+        use ui::tilo_resource::Effect as _;
+        let add = crate::effects::BrowserEffect::AddExtension.bound();
+        self.active.then(|| match self.bar_offer() {
+            Some(offer) if offer.enabled => add,
+            Some(_) => add.unavailable("adding", "Another extension is being added"),
+            None => add.unavailable(
+                "no_store_item",
+                "Open an extension's page on the Chrome Web Store first",
+            ),
+        })
+    }
+
+    /// Show what the Web Store item on the page may do, on the next `sync`,
+    /// as Add to Tilo Browser does: the person adds it from the offer.
+    ///
+    /// # Errors
+    /// When there is no Web Store item on the page, it is added already or
+    /// another is being added.
+    pub fn offer_store_item(&self) -> Result<(), String> {
+        if !self.active {
+            return Err("This window has no extensions".into());
+        }
+        let item = self
+            .store_item
+            .as_ref()
+            .ok_or("Open an extension's page on the Chrome Web Store first")?;
+        if self
+            .installed
+            .iter()
+            .any(|extension| extension.id == item.id)
+        {
+            return Err("This extension is already added".into());
+        }
+        if self.busy {
+            return Err("Another extension is being added".into());
+        }
+        (self.queue(Command::Fetch(item.id.clone())))();
         Ok(())
     }
 
@@ -1446,6 +1501,19 @@ mod tests {
         resource: &Resource,
         action: &str,
     ) -> Result<(), String> {
+        invoke_operation(resource, action, |operation| match operation {
+            crate::effects::BrowserOperation::Extension(request) => controller.request(&request),
+            other => Err(format!("{other:?} is no extension request")),
+        })
+    }
+
+    /// The operation the action `action` of `resource` decodes to, as a
+    /// caller of the door sends it, handed to `run`.
+    fn invoke_operation(
+        resource: &Resource,
+        action: &str,
+        run: impl FnOnce(crate::effects::BrowserOperation) -> Result<(), String>,
+    ) -> Result<(), String> {
         use ui::tilo_resource::Effect as _;
         let spec = resource
             .actions
@@ -1456,10 +1524,7 @@ mod tests {
             .build_json(&serde_json::Map::new())
             .map_err(|error| format!("{error:?}"))?;
         let effect = crate::effects::BrowserEffect::from_payload(&encoded.payload)?;
-        match effect.operation() {
-            crate::effects::BrowserOperation::Extension(request) => controller.request(&request),
-            other => Err(format!("{other:?} is no extension request")),
-        }
+        run(effect.operation())
     }
 
     #[test]
@@ -1503,6 +1568,7 @@ mod tests {
             [
                 "show-extensions",
                 "turn-off-extension",
+                "use-extension",
                 "open-extension-settings",
                 "pin-extension",
                 "remove-extension"
@@ -1511,6 +1577,7 @@ mod tests {
         let resource = controller.resources().remove(0);
         for action in [
             "turn-off-extension",
+            "use-extension",
             "pin-extension",
             "open-extension-settings",
             "remove-extension",
@@ -1521,6 +1588,7 @@ mod tests {
             queued(&controller),
             [
                 format!("Disable({id:?})"),
+                format!("OpenAction({id:?})"),
                 format!("Pin({id:?}, true)"),
                 format!("OpenSettings({id:?})"),
                 format!("Remove({id:?})"),
@@ -1544,6 +1612,10 @@ mod tests {
             "no settings page while it is off"
         );
         assert!(
+            invoke(&mut controller, &resource, "use-extension").is_err(),
+            "no button while it is off"
+        );
+        assert!(
             controller
                 .request(&ExtensionRequest::Remove("unknown".into()))
                 .is_err()
@@ -1553,6 +1625,48 @@ mod tests {
                 .request(&ExtensionRequest::TurnOn(id))
                 .is_err(),
             "a private window has no extensions"
+        );
+    }
+
+    /// Adding from the Web Store is the extensions' action on a store item
+    /// not added yet; it shows the offer the person adds it from.
+    #[test]
+    fn adding_from_the_store_is_an_action_on_a_store_item_only() {
+        let available = |controller: &ExtensionController| {
+            controller.add_action().map(|spec| {
+                matches!(
+                    spec.contract.availability,
+                    ui::tilo_actions::Availability::Available
+                )
+            })
+        };
+        let mut controller = ExtensionController::new(true);
+        assert_eq!(available(&controller), Some(false), "away from the store");
+        assert!(controller.offer_store_item().is_err());
+        controller.store_item = web_store::item_from_url(STORE_ITEM);
+        assert_eq!(available(&controller), Some(true));
+        let extensions = ui::tilo_actions::Resource::new(
+            "browser.extensions",
+            "browser.extensions",
+            "Extensions",
+        )
+        .with_action(controller.add_action().unwrap());
+        invoke_operation(&extensions, "add-extension", |operation| match operation {
+            crate::effects::BrowserOperation::AddExtension => controller.offer_store_item(),
+            other => Err(format!("{other:?} is not adding")),
+        })
+        .unwrap();
+        assert_eq!(
+            queued(&controller),
+            [r#"Fetch("ddkjiahejlhfcafbddmgiahcphecmpfh")"#],
+            "fetched to show what it may do, as the button does"
+        );
+        controller.busy = true;
+        assert_eq!(available(&controller), Some(false));
+        assert!(controller.offer_store_item().is_err(), "one at a time");
+        assert_eq!(
+            ExtensionController::new(false).add_action().map(|_| ()),
+            None
         );
     }
 

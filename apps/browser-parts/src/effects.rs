@@ -1,7 +1,7 @@
 //! What a browser window does that changes no document: navigating its
 //! page, reading and operating the page for an agent, its library and
 //! settings presentations, history and site data on this device, Picture in
-//! Picture and downloads.
+//! Picture, zoom, downloads and extensions.
 //!
 //! Every effect reaches this device's engine, files or portals, so only the
 //! person at it may invoke them. Each rides the row of what it acts on —
@@ -142,6 +142,21 @@ pub enum BrowserEffect {
         #[param("The extension's id")]
         id: String,
     },
+    /// Use extension
+    ///
+    /// What its toolbar button does: opens its popup over this page, or lets
+    /// it act on this page.
+    #[effect(row, returns)]
+    UseExtension {
+        #[param("The extension's id")]
+        id: String,
+    },
+    /// Add extension from the Web Store
+    ///
+    /// On an extension's Chrome Web Store page: shows what it may do, and
+    /// the person adds it with Add extension.
+    #[effect(row, returns)]
+    AddExtension,
     /// Open extension settings
     #[effect(row, returns)]
     OpenExtensionSettings {
@@ -226,6 +241,21 @@ pub enum BrowserEffect {
         #[param("The download's id")]
         id: String,
     },
+    /// Zoom in
+    ///
+    /// Makes the page larger on this device; answers the page's size.
+    #[effect(row, returns)]
+    ZoomIn,
+    /// Zoom out
+    ///
+    /// Makes the page smaller on this device; answers the page's size.
+    #[effect(row, returns)]
+    ZoomOut,
+    /// Show actual size
+    ///
+    /// Puts the page back at its own size.
+    #[effect(row, returns, idempotent)]
+    ResetZoom,
     /// Read page content
     ///
     /// Answers with the page's outline: its elements and their refs.
@@ -442,6 +472,11 @@ impl BrowserEffect {
             Self::UnpinExtension { id } => {
                 BrowserOperation::Extension(ExtensionRequest::Pin(id, false))
             }
+            Self::UseExtension { id } => BrowserOperation::Extension(ExtensionRequest::Use(id)),
+            Self::AddExtension => BrowserOperation::AddExtension,
+            Self::ZoomIn => BrowserOperation::Zoom { step: 1 },
+            Self::ZoomOut => BrowserOperation::Zoom { step: -1 },
+            Self::ResetZoom => BrowserOperation::Zoom { step: 0 },
             Self::OpenExtensionSettings { id } => {
                 BrowserOperation::Extension(ExtensionRequest::OpenSettings(id))
             }
@@ -525,6 +560,8 @@ pub enum ExtensionRequest {
     /// Pin its button to the toolbar (`true`) or take it off.
     Pin(String, bool),
     OpenSettings(String),
+    /// What its toolbar button does: open its popup, or tell it of the click.
+    Use(String),
     Remove(String),
 }
 
@@ -602,4 +639,11 @@ pub enum BrowserOperation {
     },
     Page(PageRequest),
     Extension(ExtensionRequest),
+    /// Offer the Web Store item on the page, as Add to Tilo Browser does.
+    AddExtension,
+    /// Zoom the page a `step` in (`1`) or out (`-1`), or back to its own
+    /// size (`0`).
+    Zoom {
+        step: i32,
+    },
 }
