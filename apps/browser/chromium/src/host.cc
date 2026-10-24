@@ -342,6 +342,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     return false;
   }
+  // Answer a page menu still open: Chromium closing the browser with it
+  // pending crashes.
+  void CancelMenu() { if(context_callback_){auto callback=context_callback_;context_callback_=nullptr;callback->Cancel();} }
   void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
   void OnFindResult(CefRefPtr<CefBrowser>,int identifier,int count,const CefRect& selection,int active,bool final_update) override {
@@ -1923,7 +1926,7 @@ void CloseHost() {
   closing=true;
   if(downloads) downloads->Close();
   if(clients.empty()) {CefQuitMessageLoop();return;}
-  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
+  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->CancelMenu();client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
 }
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);
