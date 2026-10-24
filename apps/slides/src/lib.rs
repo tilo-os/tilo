@@ -10,7 +10,7 @@
 //! toolkit.
 //!
 //! Architecture mirrors the other native apps: a pure data [`model`], an
-//! Automerge-backed [`doc`] layer, a shared slide [`render`]er, and a root
+//! Automerge-backed `doc` layer, a shared slide [`render`]er, and a root
 //! [`app::SlidesApp`] widget that owns the editor, inspector, thumbnail
 //! rail and a full-screen present mode. [`SlidesShell`] is the app every
 //! host launches, and its screenshot scenarios.

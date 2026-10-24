@@ -147,7 +147,7 @@ impl ShellOverlayHost {
 
     /// Show the passing time to the trigger sources, start whatever fired,
     /// and bring the keymap's shortcut chords up to date. Runs each frame;
-    /// does real work at most every [`TICK_INTERVAL`]. Whether a run was
+    /// does real work at most every `TICK_INTERVAL`. Whether a run was
     /// started.
     pub fn tick_shortcut_triggers(&mut self) -> bool {
         let now = Instant::now();

@@ -121,7 +121,7 @@ pub enum HelloError {
     /// goes on to `initialize` on the same connection, as the protocol has
     /// it fall back. Nothing is asked of the person and nothing runs.
     Discover(serde_json::Value),
-    /// The line was unreadable, over [`MAX_HELLO`], or the client left.
+    /// The line was unreadable, over `MAX_HELLO`, or the client left.
     Io(io::Error),
 }
 

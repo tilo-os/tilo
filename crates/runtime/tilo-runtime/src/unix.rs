@@ -199,7 +199,7 @@ impl Connections {
 
 /// Spawn `command` as `app_id` with its service connections inherited.
 /// # Errors
-/// Returns [`Connections::prepare`] or spawn errors.
+/// Returns `Connections::prepare` or spawn errors.
 pub fn launch(
     mut command: Command,
     app_id: &str,

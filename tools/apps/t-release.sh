@@ -49,7 +49,7 @@ cd "$repo_root"
 # Public settings the release has always used (formerly repository variables).
 package_base=https://code.tilo.so/api/packages/tilo/generic
 registry_url=https://apps.tilo.so
-registry_owner_pubkey=55d9a9c748bcfe34200832c18c5f0cf7932f17571612321eaa542474fa2abe06
+registry_owner_pubkey=$(publication TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY)
 
 default_apps() {
   python3 -I tools/ci/python.py tools/apps/app_release.py --collection default | jq -r '.apps | join(" ")'

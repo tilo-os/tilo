@@ -3,7 +3,7 @@
 //! The shelf is app-managed and persisted, not re-derived from a magic
 //! folder every launch. A book enters the library when the reader opens it
 //! or when it turns up in a watched folder; from then on its identity and
-//! public metadata live in the CRDT ([`crate::doc`]). Source paths and folder
+//! public metadata live in the CRDT ([`crate::resource`]). Source paths and folder
 //! grants remain local. Shared copies resolve from their content-addressed
 //! workspace filename; local copies are rediscovered only through explicitly
 //! supplied watch roots. [`hydrate_library`] reads those available books, and

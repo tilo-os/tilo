@@ -424,6 +424,11 @@ const PREFLIGHT_OK_PREFIX: &str = "\u{1}storage-preflight-ok:";
 const PREFLIGHT_FAIL_PREFIX: &str = "\u{1}storage-preflight-fail:";
 const RECOVERY_KEY_PREFIX: &str = "::tilo-recovery-key::";
 
+/// The log line a finished install from a medium ends with.
+const INSTALLED_REMOVE_MEDIUM: &str = "Installed. Remove the installer medium, then reboot.";
+/// The log line a finished staged install ends with: there is no medium.
+const INSTALLED_RESTART: &str = "Installed. Restart to start Tilo.";
+
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 520.0;
 const CARD_PADDING: f32 = 28.0;
@@ -1583,8 +1588,7 @@ impl InstallerApp {
         self.step = Step::Install;
         self.install_state = InstallState::Done;
         self.status_lines = sample_install_log();
-        self.status_lines
-            .push("Installed — remove the medium and reboot.".to_string());
+        self.status_lines.push(INSTALLED_REMOVE_MEDIUM.to_string());
     }
 
     /// Pose the finish card after the real recovery-key marker has arrived.
@@ -2406,11 +2410,14 @@ impl InstallerApp {
     fn mark_install_done(&mut self) {
         self.install_state = InstallState::Done;
         self.reset_viewport();
-        self.status_lines.push(if self.internal_host().is_some() {
-            "Installed — restart to start Tilo.".to_string()
-        } else {
-            "Installed — remove the medium and reboot.".to_string()
-        });
+        self.status_lines.push(
+            if self.internal_host().is_some() {
+                INSTALLED_RESTART
+            } else {
+                INSTALLED_REMOVE_MEDIUM
+            }
+            .to_string(),
+        );
         // Completion replaces an unfocusable progress surface with recovery
         // and power controls. Put keyboard users on the first recovery action
         // deterministically instead of retaining a stale node from Review.
@@ -4074,7 +4081,7 @@ fn friendly_install_status(lines: &[String]) -> Vec<String> {
             || lower.contains("finalizing")
         {
             add("Finalizing the secure boot setup…");
-        } else if lower.contains("installed — remove the medium") {
+        } else if line == INSTALLED_REMOVE_MEDIUM || line == INSTALLED_RESTART {
             add("Tilo is ready");
         }
     }
@@ -6317,6 +6324,36 @@ mod tests {
                     "Securing disk unlock and recovery…",
                     "Touch your security key to continue…",
                 ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_finished_install_reports_tilo_ready_whether_staged_or_from_a_medium() {
+        for (mut app, last_line) in [
+            (InstallerApp::with_disks(sample()), INSTALLED_REMOVE_MEDIUM),
+            (staged_app(), INSTALLED_RESTART),
+        ] {
+            app.step = Step::Install;
+            app.install_state = InstallState::Running;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            for line in [
+                "Starting install to /dev/vdb for user ada (btrfs).",
+                CTRL_DONE,
+            ] {
+                app.on_external_event(line, &mut ui::widget::Edits::lend(&mut doc), &root);
+            }
+            assert_eq!(app.install_state, InstallState::Done);
+            assert_eq!(app.status_lines.last().map(String::as_str), Some(last_line));
+            // The finish screen's progress list and the console's stages
+            // must not end on a step that still sounds in progress.
+            let state = app.console_state();
+            let stages = state["install"]["stages"].as_array().unwrap();
+            assert_eq!(
+                stages.last().and_then(Value::as_str),
+                Some("Tilo is ready"),
+                "{last_line}: {stages:?}"
             );
         }
     }

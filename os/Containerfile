@@ -225,9 +225,10 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
 # Everything Windows apps need that is large: the FEX payload and the x86 guest
 # root (ARM), Proton, the Steam runtime and the virtio-win media, about 3.1 GB.
 # It is packed here as tilo-windows-compat.raw, a sysext overlaying those exact
-# /usr paths, and is NOT part of the OS image. build-image.yml exports the
-# `windows-compat-sysext` target, publishes the image next to the signed
-# manifest tools/extensions/sysext_image.py writes, and a device installs it
+# /usr paths, and is NOT part of the OS image. OS release publication exports
+# the `windows-compat-sysext` target (no t check does yet), publishes the image
+# next to the signed manifest tools/extensions/sysext_image.py writes, and a
+# device installs it
 # when its owner first enables Windows apps or creates a Windows VM
 # (/usr/share/tilo/system-extensions/sysext.d/windows-compat.json).
 FROM ${BASE_REF} AS windows-compat-sysext-build
@@ -1839,7 +1840,7 @@ ARG RPMS_REF
 # the fly, and swap kernel-core → tilo-kernel-core.  --nogpgcheck: our
 # in-house RPMs aren't signed by Fedora's key. The image build verifies the
 # digest-pinned tilo-kernel image's cosign signature and provenance before
-# consuming it (os/dev/verify-kernel-provenance.sh, run by build-image.yml);
+# consuming it (os/dev/verify-kernel-provenance.sh);
 # os/etc/containers/policy.json has no tilo-kernel scope, and an installed
 # machine never pulls that image.
 #
@@ -3245,10 +3246,9 @@ COPY --from=runtime-resolver-link /out/ /etc/
 #   final   the split rootfs plus the UKI under /boot, which is the one tree
 #           excluded from that digest.
 #
-# `split` keeps /kernel/<kver>/vmlinuz, from which the signed development board
-# (os/Containerfile.board) restores the kernel exactly as built, and drops the
-# initramfs: the UKI's .initrd section is the same bytes, and the dev image
-# restores it from there (os/scripts/unseal-rootfs.py). Kept, it was a third
+# `split` keeps /kernel/<kver>/vmlinuz, from which the dev image restores the
+# kernel exactly as built, and drops the initramfs: the UKI's .initrd section is
+# the same bytes, and the dev image restores it from there (os/scripts/unseal-rootfs.py). Kept, it was a third
 # 102 MB copy in every pull, beside the UKI and the original the split whites
 # out.
 #

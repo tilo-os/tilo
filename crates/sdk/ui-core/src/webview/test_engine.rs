@@ -610,11 +610,15 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::PermissionDecision { .. }
             | WebViewCommand::PermissionDismissed { .. }
             | WebViewCommand::ExtensionAccess { .. }
+            | WebViewCommand::ExtensionGrants { .. }
+            | WebViewCommand::ExtensionPermissionDecision { .. }
             | WebViewCommand::ExtensionForget { .. }
             | WebViewCommand::ExtensionIdentity { .. }
             | WebViewCommand::ExtensionPanel { .. }
+            | WebViewCommand::ExtensionSignInPanel { .. }
             | WebViewCommand::ExtensionClick { .. }
             | WebViewCommand::ExtensionMenuChoice { .. }
+            | WebViewCommand::ExtensionNotificationChosen { .. }
             | WebViewCommand::DownloadDecision { .. }
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }

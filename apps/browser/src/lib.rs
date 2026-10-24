@@ -83,6 +83,8 @@ pub use browser_parts::extension_controller;
 #[cfg(not(test))]
 pub use browser_parts::extension_host;
 #[cfg(not(test))]
+pub use browser_parts::extension_notices;
+#[cfg(not(test))]
 pub use browser_parts::extension_toolbar;
 #[cfg(not(test))]
 pub use browser_parts::extensions;
@@ -144,6 +146,7 @@ mod parts {
     pub mod engine_setup;
     pub mod extension_controller;
     pub mod extension_host;
+    pub mod extension_notices;
     pub mod extension_toolbar;
     pub mod extensions;
     pub mod library;
@@ -166,9 +169,9 @@ pub(crate) use parts::service_sessions;
 pub use parts::{
     actions, address_controls, autofill, back_hold, blocker, browsing_mode, capabilities,
     credentials, crx, downloads, effects, engine_setup, extension_controller, extension_host,
-    extension_toolbar, extensions, library, native_blocker, notice, page_menu, page_popups,
-    private_window, rows, service_destinations, service_profiles, site_controls, storage,
-    web_store,
+    extension_notices, extension_toolbar, extensions, library, native_blocker, notice, page_menu,
+    page_popups, private_window, rows, service_destinations, service_profiles, site_controls,
+    storage, web_store,
 };
 
 pub use browser_widget::BrowserWidget;

@@ -4,7 +4,7 @@
 //! The list is the toolkit's navigation list, so rows, selection lift,
 //! keyboard handling, section headers and the narrow push behaviour are the
 //! same as every other Tilo sidebar. Choosing a category publishes a typed,
-//! process-local navigation request which [`crate::SettingsApp::sync`]
+//! process-local navigation request which `crate::SettingsApp::sync`
 //! consumes to switch the active category. Navigation is presentation state:
 //! it must not become a replicated preference, an undo entry, or a document
 //! click flag.

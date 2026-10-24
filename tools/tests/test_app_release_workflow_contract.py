@@ -343,7 +343,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
     def check(self, workflow):
         script = (ROOT / 'os/tests/release_pipeline_invariants.sh').read_text()
         start = script.index("grep -Fq 'dist/apps/app-collections.toml' \"$apps\"")
-        end = script.index("\ngrep -Fq 'TILO_APP_COLLECTION_SHA256'", start)
+        end = script.index("\ngrep -Fq 'TAPP_DIR=/out/prebuilt-apps'", start)
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             path = Path(directory) / 'release-apps.yml'
             path.write_bytes(workflow.encode())

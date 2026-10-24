@@ -15,7 +15,7 @@
 //! | `/node` | — | [`NodeInfo`] |
 //! | `/certify` | `CertificationRequest` | `CertifyReply` |
 //! | `/certify/wait` | request digest `[u8; 32]` | `CertifyReply` (long-poll) |
-//! | `/session` | [`Hello`] | [`SessionChallenge`]; `403` [`SessionRefusal`] |
+//! | `/session` | [`Hello`](crate::auth::Hello) | [`SessionChallenge`]; `403` [`SessionRefusal`] |
 //! | `/session/finish` | [`SessionFinish`] | [`SessionGrant`]; `403` [`SessionRefusal`] |
 //! | `/session/end` ([`SESSION_END_PATH`]) | the session token, lowercase hex text | `204` |
 //! | `/send` | `Vec<Envelope>` | `204` |
@@ -225,7 +225,7 @@ pub struct NodeInfo {
     pub session: Option<[u8; 32]>,
 }
 
-/// The host's answer to a session [`Hello`].
+/// The host's answer to a session [`Hello`](crate::auth::Hello).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionChallenge {
     /// The same [`HelloAck`] the relay stream answers with.

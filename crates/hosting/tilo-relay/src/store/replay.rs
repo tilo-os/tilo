@@ -1085,7 +1085,7 @@ impl WorkspaceStore {
     /// Invoke under one owner operation until Done; later mutations must not
     /// interleave before every selected source has its immutable hardlink,
     /// or, for a retained frame, is listed under the capture's lease (it is
-    /// pinned when the snapshot is prepared: [`CaptureLeases`]).
+    /// pinned when the snapshot is prepared: `CaptureLeases`).
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"

@@ -821,7 +821,7 @@ pub fn codec_runtime_complete(part: &Part, base: &Base) -> bool {
         || base.installed.contains_key("openh264")
 }
 
-/// The contents of usr/lib/extension-release.d/extension-release.<name>.
+/// The contents of `usr/lib/extension-release.d/extension-release.<name>`.
 ///
 /// # Errors
 /// A value or key that could change the file's meaning.

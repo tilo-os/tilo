@@ -8,7 +8,7 @@
 //! [`desktop_entry::icon_theme`]. PNGs are decoded and downscaled, SVGs are
 //! rasterised by `resvg` at the device size the chrome paints them at, and
 //! both are cached, since chrome asks every frame. All of it runs on the
-//! resolver's own thread ([`Resolver`]), never on the compositor's loop.
+//! resolver's own thread (`Resolver`), never on the compositor's loop.
 //!
 //! An icon that cannot be found or decoded is simply absent: every caller
 //! keeps its own glyph or letter badge as the fallback.

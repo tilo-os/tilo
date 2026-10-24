@@ -54,9 +54,9 @@ measures main's newest image for both architectures and records
 An update downloads every layer whose digest the device does not have. A
 Containerfile layer is a new blob whenever its instruction runs again, so
 with one layer per instruction an update between two commits that changed one
-app pulled about 78 % of the image. Release / OS therefore re-lays
-every generic image it publishes out by content before anything consumes it
-("Rechunk the image", `os/dev/rechunk-image.sh`):
+app pulled about 78 % of the image. `os/dev/rechunk-image.sh` re-lays an image
+out by content; it needs a BuildKit builder, so the releases t publishes
+(`publish-os-release`) are not rechunked yet:
 
 - `os/Containerfile.rechunk` runs [chunkah](https://github.com/coreos/chunkah)
   (built offline from its checksum-pinned release) over the raw image's root:

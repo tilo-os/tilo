@@ -113,7 +113,7 @@ pub enum CaptureOutcome {
 }
 
 /// Why a capture found nothing to read: its source resolved to no rect.
-/// Matched by [`nothing_to_capture`] to tell the person plainly.
+/// Matched by `failure_of` to tell the person plainly.
 pub const NOTHING_TO_CAPTURE: &str = "the selected source has no paintable pixels";
 
 /// The outcome for a failed capture of `source`: [`CaptureOutcome::Uncapturable`]

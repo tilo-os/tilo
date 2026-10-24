@@ -35,7 +35,7 @@ pub struct ViewRect {
 /// same mechanism the undo path uses to restore a caret across a rebuild.
 /// `ordinal` is stable exactly when the tree shape is — the condition under
 /// which restoring a caret is meaningful; `ephemeral` is the opaque string
-/// from [`crate::widget::Widget::get_state`]/`set_state`.
+/// from [`crate::undo::UndoPoints::get_state`]/`set_state`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct FocusView {
     pub ordinal: usize,

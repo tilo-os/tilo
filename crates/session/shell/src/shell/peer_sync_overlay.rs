@@ -3,7 +3,7 @@
 //! This component owns the local interaction: what the sheet is asking,
 //! what was typed and chosen, the clipboard and the requests it makes. The
 //! sheet itself is the shared modal and the shared controls
-//! ([`sheet::Sheet`]); this file says what they mean. The shell host mounts
+//! (`sheet::Sheet`); this file says what they mean. The shell host mounts
 //! the overlay in its widget tree like any retained widget, performs the
 //! network request it takes from [`PeerSyncOverlay::take_request`] and
 //! returns the result through [`PeerSyncOverlay::finish_typed_request`].

@@ -230,7 +230,7 @@ pub fn responses_url(profile: &ProviderProfile) -> String {
     }
 }
 
-/// The request URL for `profile`: [`url`], or its Responses route.
+/// The request URL for `profile`: [`url()`], or its Responses route.
 pub fn profile_url(profile: &ProviderProfile) -> String {
     if speaks_responses(profile) {
         responses_url(profile)

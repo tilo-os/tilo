@@ -5,7 +5,7 @@
 //! one). Filtering matches keywords as well as labels, so `/h2` finds
 //! "Heading 2"; each row shows the Markdown that makes the same block.
 //!
-//! Not a [`CommandPalette`](crate::widget::CommandPalette): that is a
+//! Not a [`CommandPalette`](crate::CommandPalette): that is a
 //! full-screen search affordance pinned at 360 px, wider than most
 //! paragraph blocks; this is a compact popover anchored at the caret.
 

@@ -41,7 +41,7 @@ pub fn reference(number: u64) -> String {
 }
 
 /// The number a reference as it reads (`#12`) names, the inverse of
-/// [`reference`].
+/// [`reference()`].
 #[must_use]
 pub fn number(reference: &str) -> Option<u64> {
     reference.trim().strip_prefix('#')?.parse().ok()

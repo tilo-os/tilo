@@ -335,7 +335,7 @@ impl Widget for WordProcessorWidget {
     }
 
     /// Top-layer pass: paint the right-click context menu (when open) so it
-    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`].
+    /// floats above the page + chrome. Delegates to the shared [`ContextMenu`](ui::widget::context_menu::ContextMenu).
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,

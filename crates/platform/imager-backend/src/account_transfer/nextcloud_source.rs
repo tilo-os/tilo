@@ -1,5 +1,5 @@
 //! Read-only native Nextcloud HTTP credential migration after exact account selection.
-//! Upstream custody key: https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp
+//! Upstream custody key: <https://github.com/nextcloud/desktop/blob/master/src/libsync/creds/abstractcredentials.cpp>
 use super::{Candidate, ConnectionError, Connector, Origin, Provider, SourceRoots};
 use std::path::Path;
 use zeroize::Zeroizing;

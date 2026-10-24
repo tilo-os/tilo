@@ -341,3 +341,258 @@ fn an_extensions_button_menu_arrives_and_a_choice_names_its_item() {
         assert!(!command_within_limits(&bad), "{bad:?}");
     }
 }
+
+#[test]
+fn an_extensions_notification_arrives_and_a_choice_goes_back() {
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(
+            json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy",
+            "title":"Copying","message":"Two files","context":"","items":[{"title":"a","message":"b"}],
+            "buttons":["Pause","Stop"],"progress":40,"require_interaction":false,"silent":false})
+        ),
+        Some(WebViewEvent::ExtensionNotification {
+            id: id.into(),
+            notification: "copy".into(),
+            notice: Some(crate::webview::ExtensionNotice {
+                title: "Copying".into(),
+                message: "Two files".into(),
+                context: String::new(),
+                items: vec![("a".into(), "b".into())],
+                buttons: vec!["Pause".into(), "Stop".into()],
+                progress: Some(40),
+            }),
+        })
+    );
+    assert_eq!(
+        event(
+            json!({"event":"extension_notification","tab":2,"id":id,"notification":"copy","cleared":true})
+        ),
+        Some(WebViewEvent::ExtensionNotification {
+            id: id.into(),
+            notification: "copy".into(),
+            notice: None,
+        })
+    );
+    // Past the host's bounds, or not an extension's: refused.
+    let shown = |extra: Value| {
+        let mut value = json!({"event":"extension_notification","id":id,"notification":"n",
+            "title":"T","message":"M","context":"","items":[],"buttons":[]});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        value
+    };
+    assert!(event(shown(json!({}))).is_some());
+    for bad in [
+        shown(json!({"progress":101})),
+        shown(json!({"buttons":["a","b","c"]})),
+        shown(json!({"title":"x".repeat(4097)})),
+        shown(json!({"notification":"n".repeat(501)})),
+        shown(json!({"id":"short"})),
+        shown(json!({"message":null})),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+
+    let chosen = |button| WebViewCommand::ExtensionNotificationChosen {
+        id: id.into(),
+        notification: "copy".into(),
+        button,
+    };
+    assert!(command_within_limits(&chosen(Some(1))));
+    assert_eq!(
+        encode_command(chosen(Some(1))),
+        Some(
+            json!({"op":"extension_notification_chosen","id":id,"notification":"copy","button":1})
+        )
+    );
+    assert_eq!(
+        encode_command(chosen(None)),
+        Some(json!({"op":"extension_notification_chosen","id":id,"notification":"copy"}))
+    );
+    assert!(!command_within_limits(&chosen(Some(2))));
+}
+
+#[test]
+fn an_extensions_request_for_more_access_reaches_the_browser_and_its_answer_the_engine() {
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let set = |permissions: &[&str], origins: &[&str]| crate::webview::ExtensionPermissionSet {
+        permissions: permissions.iter().map(|&entry| entry.to_owned()).collect(),
+        origins: origins.iter().map(|&entry| entry.to_owned()).collect(),
+    };
+    let grants = WebViewCommand::ExtensionGrants {
+        id: id.into(),
+        optional: set(&["tabs"], &["https://*.example.org/*"]),
+        granted: set(&["tabs"], &[]),
+    };
+    assert!(command_within_limits(&grants));
+    assert_eq!(
+        encode_command(grants),
+        Some(json!({"op":"extension_grants","id":id,
+            "optional":{"permissions":["tabs"],"hosts":["https://*.example.org/*"]},
+            "granted":{"permissions":["tabs"],"hosts":[]}}))
+    );
+    let decision = WebViewCommand::ExtensionPermissionDecision {
+        request: 3,
+        allow: true,
+    };
+    assert!(command_within_limits(&decision));
+    assert_eq!(
+        encode_command(decision),
+        Some(json!({"op":"extension_permission_decision","request":3,"allow":true}))
+    );
+    for bad in [
+        WebViewCommand::ExtensionPermissionDecision {
+            request: 0,
+            allow: true,
+        },
+        WebViewCommand::ExtensionGrants {
+            id: "short".into(),
+            optional: set(&[], &[]),
+            granted: set(&[], &[]),
+        },
+        WebViewCommand::ExtensionGrants {
+            id: id.into(),
+            optional: crate::webview::ExtensionPermissionSet {
+                permissions: vec![String::new(); 513],
+                origins: Vec::new(),
+            },
+            granted: set(&[], &[]),
+        },
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(
+            json!({"event":"extension_permission_request","tab":2,"request":4,"id":id,
+            "permissions":["tabs"],"origins":["http://127.0.0.1/*"]})
+        ),
+        Some(WebViewEvent::ExtensionPermissionRequest {
+            request: 4,
+            id: id.into(),
+            asked: set(&["tabs"], &["http://127.0.0.1/*"]),
+        })
+    );
+    // All it holds now, also nothing.
+    assert_eq!(
+        event(
+            json!({"event":"extension_permissions","tab":2,"id":id,"permissions":[],"origins":[]})
+        ),
+        Some(WebViewEvent::ExtensionPermissions {
+            id: id.into(),
+            granted: set(&[], &[]),
+        })
+    );
+    // A request for nothing, without its number, from no extension, or of
+    // another shape: refused.
+    for bad in [
+        json!({"event":"extension_permission_request","request":4,"id":id,"permissions":[],"origins":[]}),
+        json!({"event":"extension_permission_request","id":id,"permissions":["tabs"],"origins":[]}),
+        json!({"event":"extension_permission_request","request":0,"id":id,"permissions":["tabs"],"origins":[]}),
+        json!({"event":"extension_permission_request","request":4,"id":"short","permissions":["tabs"],"origins":[]}),
+        json!({"event":"extension_permissions","id":id,"permissions":"tabs","origins":[]}),
+        json!({"event":"extension_permissions","id":id,"permissions":[7],"origins":[]}),
+        json!({"event":"extension_permissions","id":id,"permissions":[]}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+}
+
+#[test]
+fn an_extensions_request_to_open_a_download_names_the_download_and_how() {
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    assert_eq!(
+        event(json!({"event":"extension_download_open","tab":2,"id":7,"reveal":false})),
+        Some(WebViewEvent::ExtensionDownloadOpen {
+            id: 7,
+            reveal: false
+        })
+    );
+    assert_eq!(
+        event(json!({"event":"extension_download_open","tab":2,"id":7,"reveal":true})),
+        Some(WebViewEvent::ExtensionDownloadOpen {
+            id: 7,
+            reveal: true
+        })
+    );
+    for bad in [
+        json!({"event":"extension_download_open","tab":2,"id":0,"reveal":false}),
+        json!({"event":"extension_download_open","tab":2,"id":"7","reveal":false}),
+        json!({"event":"extension_download_open","tab":2,"id":7}),
+        json!({"event":"extension_download_open","tab":2,"id":7,"reveal":"yes"}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+}
+
+#[test]
+fn an_extension_asks_the_person_to_sign_in_on_a_web_page() {
+    let id = "abcdefghijklmnopabcdefghijklmnop";
+    let event = |value: Value| {
+        validate_event(&value).ok()?;
+        decode_event(&value)
+    };
+    let page = "https://accounts.example/authorize?client_id=1&redirect_uri=x";
+    assert_eq!(
+        event(
+            json!({"event":"extension_sign_in","tab":2,"id":id,"url":page,"interactive":true,"flow":3})
+        ),
+        Some(WebViewEvent::ExtensionSignIn {
+            id: id.into(),
+            url: page.into(),
+            interactive: true,
+            flow: 3,
+        })
+    );
+    // Only a web page, of a bounded length, from an extension's id, for a
+    // sign-in the engine numbered.
+    let sign_in = |url: Value| json!({"event":"extension_sign_in","id":id,"url":url,"interactive":false,"flow":1});
+    for bad in [
+        sign_in(json!(format!("chrome-extension://{id}/p.html"))),
+        sign_in(json!("javascript:alert(1)")),
+        sign_in(json!("file:///etc/passwd")),
+        sign_in(json!(format!("https://example.test/{}", "a".repeat(8192)))),
+        sign_in(Value::Null),
+        json!({"event":"extension_sign_in","id":"short","url":page,"interactive":true,"flow":1}),
+        json!({"event":"extension_sign_in","id":id,"url":page,"flow":1}),
+        json!({"event":"extension_sign_in","id":id,"url":page,"interactive":true,"flow":0}),
+        json!({"event":"extension_sign_in","id":id,"url":page,"interactive":true,"flow":1u64 << 31}),
+    ] {
+        assert_eq!(event(bad.clone()), None, "{bad}");
+    }
+    // The tab the Browser shows it in is marked as that sign-in's.
+    let panel = WebViewCommand::ExtensionSignInPanel {
+        id: id.into(),
+        flow: 3,
+    };
+    assert!(command_within_limits(&panel));
+    assert_eq!(
+        encode_command(panel),
+        Some(json!({"op":"extension_sign_in_panel","id":id,"flow":3}))
+    );
+    for bad in [
+        WebViewCommand::ExtensionSignInPanel {
+            id: "ABCDEFGHIJKLMNOPABCDEFGHIJKLMNOP".into(),
+            flow: 3,
+        },
+        WebViewCommand::ExtensionSignInPanel {
+            id: id.into(),
+            flow: 0,
+        },
+    ] {
+        assert!(!command_within_limits(&bad), "{bad:?}");
+    }
+}

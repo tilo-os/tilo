@@ -15,7 +15,7 @@
 //!   `otpauth://` URI parser, and the account colour slots.
 //! * [`totp`] — RFC 6238 code generation on the `RustCrypto` HMAC/SHA
 //!   primitives, plus period timing for the countdown ring.
-//! * [`doc`] — the secret-free Automerge account-metadata mirror.
+//! * `doc` — the secret-free Automerge account-metadata mirror.
 //! * [`list`] — the [`list::AccountList`] main screen.
 //! * [`add_panel`] — the [`add_panel::AddAccountPanel`] sheet.
 //! * [`qr`] — QR ingestion: pure-Rust, offline decode from an image file.

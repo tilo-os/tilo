@@ -14,7 +14,7 @@
 //! takes each arena's lock while it walks it. It waits until the closes have
 //! settled (Vello evicts the window's last frame two paints later, and a
 //! client often destroys several surfaces in a row) and runs at most once per
-//! [`MIN_INTERVAL`]. Between requests the thread sleeps on a condition
+//! `MIN_INTERVAL`. Between requests the thread sleeps on a condition
 //! variable, so an idle session never wakes for it.
 //!
 //! The same trim returns what a software GPU freed. Lavapipe keeps

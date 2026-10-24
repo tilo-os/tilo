@@ -2878,7 +2878,7 @@ impl Widget for SlidesApp {
     }
 
     /// An assistive technology operates the words being edited, through
-    /// the node [`Self::words_access_node`] gave them.
+    /// the node `Self::words_access_node` gave them.
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,

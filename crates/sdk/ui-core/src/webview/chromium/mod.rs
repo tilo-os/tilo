@@ -4,6 +4,9 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod audio;
+mod extension_notification;
+mod extension_permissions;
+mod extension_sign_in;
 pub mod install;
 mod menus;
 mod protocol;
@@ -1919,9 +1922,10 @@ fn valid_site_event(value: &Value, event: &str) -> bool {
         }
 }
 
-/// An `extension_action`, `extension_open_popup` or `extension_execute_action`
-/// event, when every part of it is what the host sends: the extension's id,
-/// its own pages, bounded text and an icon of at most 128 pixels a side.
+/// An `extension_action`, `extension_open_popup`, `extension_execute_action`,
+/// `extension_notification` or `extension_sign_in` event, when every part of
+/// it is what the host sends: the extension's id, its own pages or a web page
+/// to sign in on, bounded text and an icon of at most 128 pixels a side.
 fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
     // or the event is refused.
@@ -1944,6 +1948,12 @@ fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
     };
     if value["event"] == "extension_execute_action" {
         return Some(WebViewEvent::ExtensionExecuteAction { id: id.into() });
+    }
+    if value["event"] == "extension_notification" {
+        return extension_notification::decode(id, value);
+    }
+    if value["event"] == "extension_sign_in" {
+        return extension_sign_in::decode(id, value);
     }
     if value["event"] == "extension_open_popup" {
         let url = value["url"].as_str().filter(|url| own(url))?;
@@ -2117,10 +2127,15 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
         "credential_result" => super::CredentialReply::decode(value).is_some(),
         "service_session_result" => super::ServiceSessionReply::decode(value).is_some(),
         "site_status" | "site_result" => valid_site_event(value, event),
-        "extension_action" | "extension_open_popup" | "extension_execute_action" => {
-            decode_extension_event(value).is_some()
-        }
+        "extension_action"
+        | "extension_open_popup"
+        | "extension_execute_action"
+        | "extension_notification"
+        | "extension_sign_in" => decode_extension_event(value).is_some(),
         "extension_menu" => decode_extension_menu(value).is_some(),
+        "extension_permission_request" | "extension_permissions" => {
+            extension_permissions::decode(value).is_some()
+        }
         "devtools_result" => {
             value["request_id"]
                 .as_u64()
@@ -2213,6 +2228,7 @@ fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .is_some_and(|text| text.len() <= 1024 * 1024)
         }
         "link_status" => value["url"].as_str().is_some_and(|url| url.len() <= 8192),
+        "extension_download_open" => valid_id(value) && value["reveal"].is_boolean(),
         "find_selection" => {
             valid_id(value)
                 && ["x", "y", "width", "height"].iter().all(|key| {
@@ -2393,6 +2409,21 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
                     commands.is_object() && commands.to_string().len() <= 64 * 1024
                 })
         }
+        WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted,
+        } => {
+            extension_id(id)
+                && [optional, granted].iter().all(|set| {
+                    [&set.permissions, &set.origins].iter().all(|list| {
+                        list.len() <= 512 && list.iter().all(|entry| entry.len() <= 2048)
+                    })
+                })
+        }
+        WebViewCommand::ExtensionPermissionDecision { request, .. } => {
+            *request > 0 && i32::try_from(*request).is_ok()
+        }
         WebViewCommand::ExtensionForget { id }
         | WebViewCommand::ExtensionIdentity { id }
         | WebViewCommand::ExtensionClick { id } => extension_id(id),
@@ -2400,6 +2431,16 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
             extension_id(id) && !key.is_empty() && key.len() <= 1024
         }
         WebViewCommand::ExtensionPanel { action } => action.as_deref().is_none_or(extension_id),
+        WebViewCommand::ExtensionNotificationChosen {
+            id,
+            notification,
+            button,
+        } => {
+            extension_id(id) && notification.len() <= 500 && button.is_none_or(|button| button < 2)
+        }
+        WebViewCommand::ExtensionSignInPanel { id, flow } => {
+            extension_id(id) && *flow > 0 && i32::try_from(*flow).is_ok()
+        }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
         | WebViewCommand::DownloadDecision { id, .. }
@@ -2549,10 +2590,19 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         "tab_detached" => WebViewEvent::TabDetached,
         "close_blocked" => WebViewEvent::TabCloseBlocked,
         "site_status" | "site_result" => decode_site_event(value, value["event"].as_str()?)?,
-        "extension_action" | "extension_open_popup" | "extension_execute_action" => {
-            decode_extension_event(value)?
+        "extension_action"
+        | "extension_open_popup"
+        | "extension_execute_action"
+        | "extension_notification"
+        | "extension_sign_in" => decode_extension_event(value)?,
+        "extension_permission_request" | "extension_permissions" => {
+            extension_permissions::decode(value)?
         }
         "extension_action_reset" => WebViewEvent::ExtensionActionReset,
+        "extension_download_open" => WebViewEvent::ExtensionDownloadOpen {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            reveal: value["reveal"].as_bool()?,
+        },
         "devtools_result" => WebViewEvent::DevToolsResult {
             request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
             ok: value["ok"].as_bool()?,
@@ -2822,6 +2872,17 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             }
             command
         }
+        WebViewCommand::ExtensionGrants {
+            id,
+            optional,
+            granted,
+        } => {
+            let set = |set: &super::ExtensionPermissionSet| json!({"permissions":set.permissions,"hosts":set.origins});
+            json!({"op":"extension_grants","id":id,"optional":set(&optional),"granted":set(&granted)})
+        }
+        WebViewCommand::ExtensionPermissionDecision { request, allow } => {
+            json!({"op":"extension_permission_decision","request":request,"allow":allow})
+        }
         WebViewCommand::ExtensionForget { id } => json!({"op":"extension_forget","id":id}),
         WebViewCommand::ExtensionIdentity { id } => json!({"op":"extension_identity","id":id}),
         WebViewCommand::ExtensionPanel { action } => match action {
@@ -2831,6 +2892,20 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::ExtensionClick { id } => json!({"op":"extension_click","id":id}),
         WebViewCommand::ExtensionMenuChoice { id, key } => {
             json!({"op":"extension_menu_action","id":id,"key":key})
+        }
+        WebViewCommand::ExtensionNotificationChosen {
+            id,
+            notification,
+            button,
+        } => match button {
+            Some(button) => json!({"op":"extension_notification_chosen","id":id,
+                "notification":notification,"button":button}),
+            None => {
+                json!({"op":"extension_notification_chosen","id":id,"notification":notification})
+            }
+        },
+        WebViewCommand::ExtensionSignInPanel { id, flow } => {
+            json!({"op":"extension_sign_in_panel","id":id,"flow":flow})
         }
         WebViewCommand::DevTools {
             request_id,

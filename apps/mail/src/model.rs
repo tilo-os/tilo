@@ -84,7 +84,7 @@ impl Folder {
     }
 
     /// The stable string key this folder is stored under in the CRDT (and the
-    /// key a [`crate::actions::MailAction::Move`] carries). The inverse of
+    /// key a [`crate::resource::Mail::move_messages`] carries). The inverse of
     /// [`Folder::from_key`]. Kept here (rather than in `doc`) so the action layer
     /// and the persistence layer share one canonical spelling.
     pub fn as_key(self) -> &'static str {
@@ -204,7 +204,7 @@ pub struct Attachment {
     #[serde(skip, default)]
     pub content: Vec<u8>,
     /// The bytes are kept on this device with the message's other kept mail
-    /// ([`crate::store`]), to be read when the attachment is opened or saved.
+    /// (`crate::store`), to be read when the attachment is opened or saved.
     #[serde(default)]
     pub kept: bool,
     /// The `Content-ID` of a part the message's HTML shows in place
@@ -311,8 +311,8 @@ pub struct Message {
     pub starred: bool,
     pub folder: Folder,
     /// User-applied labels/tags, mirrored from the CRDT (`flags/<id>/labels`).
-    /// These are set exclusively through [`crate::actions::MailAction::AddLabel`]
-    /// / [`crate::actions::MailAction::RemoveLabel`] and overlaid onto the
+    /// These are set exclusively through field edits of
+    /// [`crate::resource::MessageState::labels`] and overlaid onto the
     /// in-memory message by [`crate::resource::Mail::apply_flags`]; empty for a
     /// message that has never been tagged.
     #[serde(default)]

@@ -61,7 +61,7 @@ pub struct QueuedLaunch {
     pub portal_workspace_id: Option<String>,
     pub requested_at: std::time::Instant,
     /// Whether an app that is still running in the tray with no window may
-    /// be reopened through its tray item ([`reopen_from_tray`]) instead.
+    /// be reopened through its tray item (`reopen_from_tray`) instead.
     /// Cleared on the launch that follows an item refusing.
     pub reopen_from_tray: bool,
 }

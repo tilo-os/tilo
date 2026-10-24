@@ -1,7 +1,7 @@
 //! Persistent browsing history + fuzzy address-bar ranking.
 //!
 //! The store is a flat list of [`HistoryEntry`] rows keyed by URL. Every
-//! navigation calls [`History::record`], which de-duplicates by URL
+//! navigation calls [`History::record_at`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It is the person's own record
 //! ([`BrowsingHistory`]): it follows them to their other devices and never

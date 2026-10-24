@@ -115,10 +115,10 @@ pub fn parse_from(
 }
 
 /// Where a CI build of `tag` can come from, in the order `vm upgrade` tries
-/// them: the dev images dev-disk.yml publishes (from the unsigned integration
-/// image, then from a signed release), which the VM pulls itself; then the
+/// them: the dev images published for it (built on the unsigned integration
+/// image, then on a signed release), which the VM pulls itself; then the
 /// production images a dev image can be built FROM here: the integration image
-/// build-image.yml pushes for every main build, then the signed release.
+/// of a main build (t's publish-os-dev-<arch>), then the signed release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CiCandidates {
     pub dev_images: Vec<String>,

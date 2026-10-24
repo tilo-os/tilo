@@ -46,7 +46,7 @@
 //!   (`iCloud` Drive's web API) declares [`Support::BestEffort`], and the UI
 //!   labels it.
 //!
-//! The [`conformance`] suite (feature `conformance`) checks any provider
+//! The `conformance` suite (feature `conformance`) checks any provider
 //! against an in-process fake, a real server in a container, or a live
 //! account, unchanged.
 

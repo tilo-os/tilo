@@ -28,7 +28,7 @@
 //!   Each upstream group becomes one egress group, frames in order.
 //!
 //! Subscribers receive a scope of their room prefix, served from a view the
-//! host owns per session ([`crate::mirror`]), and subscribe per member. The
+//! host owns per session (`crate::mirror`), and subscribe per member. The
 //! host may inject frames into a member's `ops/<record>` track
 //! ([`LiveRelay::inject_ops`]); host frames always form their own groups.
 //! Revocation drops the revoked session's view (it receives nothing more),

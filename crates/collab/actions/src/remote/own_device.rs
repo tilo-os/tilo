@@ -4,7 +4,7 @@
 //! An app on one device names one of the person's enrolled devices, an
 //! application and one of that application's actions; the host on this
 //! device admits the request, carries it to the other device as an ordinary
-//! [`InvokeRequest`](super::InvokeRequest) on a workspace both devices
+//! [`InvokeRequest`] on a workspace both devices
 //! share, follows it there, and records the other device's outcome as this
 //! invocation's. Nothing here is a new wire format: the other device sees
 //! the same request any of the person's devices sends it, and decides it

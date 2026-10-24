@@ -85,20 +85,6 @@ class DevImageContractTests(unittest.TestCase):
             errors = "\n".join(self.findings(root))
             self.assertIn('does not label the image sh.tilo.image.flavour="dev"', errors)
             self.assertIn("never runs os/scripts/unseal-rootfs.py", errors)
-        with self.subTest(phase='ci builds the dev image with the local recipe'):
-            root = self.fixture()
-            workflow = root / ".forgejo/workflows/dev-disk.yml"
-            workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
-                                "          test -f os/Containerfile.dev\n"
-                                "          ./os/dev/build-dev-image.sh\n")
-            self.assertEqual(self.findings(root), [])
-            workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
-                                "          podman build --file os/Containerfile.dev --tag localhost/tilo-vm:ci .\n")
-            self.assertIn(".forgejo/workflows/dev-disk.yml: builds os/Containerfile.dev itself",
-                          "\n".join(self.findings(root)))
-            workflow.write_text("jobs:\n  b:\n    steps:\n      - run: echo nothing\n")
-            self.assertIn("no longer builds the dev image with os/dev/build-dev-image.sh",
-                          "\n".join(self.findings(root)))
 
     def test_missing_package_generator_cannot_skip_parity_verification(self):
         root = self.fixture()

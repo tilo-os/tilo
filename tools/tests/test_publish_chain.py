@@ -390,7 +390,9 @@ case $1 in
 import base64, json, sys
 args = sys.argv[1:]
 value = lambda flag: args[args.index(flag) + 1]
-statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://slsa.dev/provenance/v1",
+kind = value("--type")
+statement = {"_type": "https://in-toto.io/Statement/v0.1",
+             "predicateType": "https://slsa.dev/provenance/v1" if kind == "slsaprovenance1" else kind,
              "subject": [{"name": args[-1].rsplit("/", 1)[-1], "digest": {"sha256": value("--hash")}}],
              "predicate": json.load(open(value("--predicate")))}
 payload = base64.b64encode(json.dumps(statement, separators=(",", ":")).encode()).decode()
@@ -592,6 +594,23 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("cosign verify-blob-attestation", self.log.read_text())
 
+    def test_another_predicate_is_attested_beside_the_provenance(self):
+        self.provenance()
+        (self.out / "freshness.json").write_text(json.dumps({"digest": self.digest, "generation": 3}))
+        for args in (("oci-sign.sh",), ("oci-attest.sh",),
+                     ("oci-attest.sh", "freshness.json", "https://tilo.sh/security/release-freshness/v1")):
+            result = self.run_script(args[0], "r.example/img", str(self.out), *args[1:], ref="stable")
+            self.assertEqual(result.returncode, 0, result.stderr)
+        envelope = json.loads((self.out / "freshness.attestation.json").read_text())
+        statement = json.loads(base64.b64decode(envelope["payload"]))
+        self.assertEqual(statement["predicateType"], "https://tilo.sh/security/release-freshness/v1")
+        self.assertEqual(statement["subject"][0]["digest"], {"sha256": self.digest[7:]})
+        (self.out / "generation").write_text("3\n")
+        result = self.publish("release:once:gen{generation}", ref="stable")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.receipt()["tags"], ["gen3"])
+        self.assertIn("--type https://tilo.sh/security/release-freshness/v1", self.log.read_text())
+
     def test_development_provenance_is_attested_on_main_only(self):
         self.provenance()
         env = {"TILO_DEV_SIGNING": "1"}
@@ -746,6 +765,8 @@ class ScriptTests(unittest.TestCase):
         """os-board-publish.sh on what `os-image.sh board` leaves in OUT."""
         (self.out / "board").write_text(board + "\n")
         (self.out / "revision").write_text(revision + "\n")
+        (self.out / "disk").mkdir(exist_ok=True)
+        (self.out / "disk/disk.qcow2").write_bytes(b"flashable disk")
         return self.run_script("os-board-publish.sh", "lenovo-83ed", str(self.out), ref="main")
 
     def moving_tag_names(self, revision: str) -> None:
@@ -764,6 +785,11 @@ class ScriptTests(unittest.TestCase):
         self.assertEqual(receipt["repository"], "registry.tilo.so/tilo/tilo-vm")
         self.assertEqual(receipt["tags"], [f"main-{COMMIT[:7]}-lenovo-83ed", "lenovo-83ed-ci"])
         self.assertEqual((receipt["digest"], receipt["signed"]), (self.digest, False))
+        # Its flashable disk, named for the board, with the commit it is of.
+        disks = self.tmp / "registry/packages/aarch64-lenovo-83ed"
+        self.assertEqual((disks / "tilo-vm-lenovo-83ed.qcow2").read_bytes(), b"flashable disk")
+        self.assertTrue((disks / "tilo-vm-lenovo-83ed.qcow2.sha256").read_text().endswith("  tilo-vm-lenovo-83ed.qcow2\n"))
+        self.assertEqual((disks / "revision").read_text(), COMMIT + "\n")
 
     def test_the_board_moving_tag_moves_only_forward_along_main(self):
         older = "f" * 40

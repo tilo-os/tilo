@@ -1,7 +1,7 @@
 //! Root of the firewall manager.
 //!
 //! [`FirewallApp`] is a [`NavShell`] window: the zones are the sidebar and the
-//! selected zone is the content (see [`crate::view`]). This module owns what
+//! selected zone is the content (see `crate::view`). This module owns what
 //! the shell cannot: the configuration and where it came from, the zone and
 //! rule the person is looking at, the add-rule draft, the delete
 //! confirmation, the last result, and the effects that push the

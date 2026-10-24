@@ -3,13 +3,13 @@
 //! returns only after the elevated program exited; none of them touches
 //! disks, partitions or boot variables.
 //!
-//! - [`restart_to_firmware_settings`] — `secure-boot-on`: suspends BitLocker
+//! - `restart_to_firmware_settings` — `secure-boot-on`: suspends BitLocker
 //!   for exactly one restart when it protects the Windows volume (a firmware
 //!   settings change would otherwise demand the recovery key), then
 //!   `shutdown /r /fw /t 0`.
-//! - [`disable_fast_startup`] — `hibernation`: `powercfg /h off`, which turns
+//! - `disable_fast_startup` — `hibernation`: `powercfg /h off`, which turns
 //!   off hibernation and with it Fast Startup, then re-probes.
-//! - [`restart_now`] — "Restart to install Tilo" after staging.
+//! - `restart_now` — "Restart to install Tilo" after staging.
 
 use super::scripts::{self, DriveLetter};
 
@@ -19,7 +19,7 @@ pub const EXIT_BITLOCKER_STATUS: i32 = 21;
 pub const EXIT_BITLOCKER_SUSPEND: i32 = 22;
 pub const EXIT_BITLOCKER_STILL_ON: i32 = 23;
 
-/// The elevated half of [`restart_to_firmware_settings`]. The authoritative
+/// The elevated half of `restart_to_firmware_settings`. The authoritative
 /// BitLocker status is read through `Win32_EncryptableVolume` (the provider
 /// behind `Suspend-BitLocker`, present on every edition that can encrypt).
 /// When the provider is missing the program proceeds only if the unprivileged
@@ -48,7 +48,7 @@ exit $LASTEXITCODE
     )
 }
 
-/// The elevated half of [`disable_fast_startup`].
+/// The elevated half of `disable_fast_startup`.
 pub fn disable_fast_startup_program() -> String {
     "$ErrorActionPreference = 'Stop'\n& \"$env:SystemRoot\\System32\\powercfg.exe\" /h off\nexit $LASTEXITCODE\n"
         .to_string()

@@ -91,6 +91,7 @@ pub mod futo;
 mod i18n;
 pub mod imclient;
 pub mod inject;
+#[doc(no_inline)]
 pub use tilo_keyboard_map::touch as layout;
 pub mod learned;
 pub mod output;

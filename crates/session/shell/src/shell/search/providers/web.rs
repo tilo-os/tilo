@@ -6,7 +6,7 @@
 //!   browser as `web+search:`, and the browser runs it on the search engine
 //!   the person chose in its preferences: the desktop never needs to know
 //!   the engine. With no browser that takes the scheme, the query opens on
-//!   [`FALLBACK_ENGINE`] in whatever opens web addresses.
+//!   `FALLBACK_ENGINE` in whatever opens web addresses.
 //! - **Known services** ([`SERVICES`], one table) answer a query that starts
 //!   with their name or a keyword: "youtube cats" offers "Search `YouTube` for
 //!   cats", which ranks like an exact name, so among the first rows. A

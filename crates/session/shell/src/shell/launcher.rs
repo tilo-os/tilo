@@ -911,7 +911,7 @@ pub enum LaunchError {
     HostAppRefused { desktop_id: String, detail: String },
     /// The app's build needs interface versions newer than this system
     /// serves; the system's update has been started
-    /// ([`crate::shell::app_versions`]).
+    /// (`crate::shell::app_versions`).
     SystemBehind { package_id: String, unmet: String },
 }
 
@@ -1793,7 +1793,7 @@ fn trusted_identities_dir() -> PathBuf {
 /// The session owns both directory and file. A temporary 0600 inode is fully
 /// written before rename, so Files sees either the previous whole snapshot or
 /// the next whole snapshot, never a prefix. It is not synced: the runtime
-/// directory does not outlive the session (see [`write_runtime_private`]). This function accepts
+/// directory does not outlive the session (see `write_runtime_private`). This function accepts
 /// only the typed governance format; Contacts and presence payloads cannot be
 /// accidentally serialized through it.
 ///

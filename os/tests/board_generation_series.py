@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,7 +22,7 @@ class BoardSeries(unittest.TestCase):
         (self.path / "manifest").write_bytes(self.manifest)
         (self.path / "registry.json").write_text(json.dumps({"gen9": self.digest}))
         (self.path / "key").write_text("fixture key")
-        self.predicate = {"runDetails": {"builder": {"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
+        self.predicate = {"runDetails": {"builder": {"id": "https://code.tilo.so/tilo/t/os-release-v1"},
             "byproducts": [{"name": "independent-rebuild", "uri": "urn:tilo:verification:manifest-digest-equal"}]},
             "buildDefinition": {"buildType": "https://tilo.sh/buildtypes/bootc-os/v1",
             "internalParameters": {"expectedReleaseDigest": self.digest},
@@ -89,26 +88,6 @@ else:
         # Existing initialized state needs no continuing genesis input.
         self.env.pop("TILO_BOARD_SERIES_SEED")
         self.assertEqual(self.run_allocator().stdout.strip(), "2")
-
-    def test_actual_lenovo_workflow_allocates_verified_successor_generation(self):
-        dev = self.path / "os/dev"
-        dev.mkdir(parents=True)
-        for name in ("board-generation.sh", "next-generation.sh", "_common.sh"):
-            (dev / name).symlink_to(ROOT / "os/dev" / name)
-        workflow = (ROOT / ".forgejo/workflows/build-image.yml").read_text()
-        block = workflow.split("- name: Resolve the image generation from the published series\n", 1)[1]
-        block = block.split("        run: |\n", 1)[1]
-        lines = []
-        for line in block.splitlines():
-            if line and not line.startswith("          "):
-                break
-            lines.append(line)
-        output = self.path / "generation-env"
-        env = self.env | {"HARDWARE_PROFILE": "lenovo-83ed", "GITHUB_ENV": str(output)}
-        result = subprocess.run(["bash", "-c", textwrap.dedent("\n".join(lines))],
-                                cwd=self.path, env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(output.read_text(), "TILO_GENERATION=2\n")
 
     def test_missing_or_mutable_seed_refuses_before_publication(self):
         for seed in ["", "code.tilo.so/tilo/tilo:lenovo-83ed-latest"]:

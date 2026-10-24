@@ -372,7 +372,7 @@ fn push_event(
 }
 
 /// This device's own wake routes, re-read from its interfaces at most every
-/// [`ROUTE_SCAN_INTERVAL`]. `previous` is what it last advertised.
+/// `ROUTE_SCAN_INTERVAL`. `previous` is what it last advertised.
 pub fn local_routes(previous: &[WakeRoute]) -> Vec<WakeRoute> {
     let now = Instant::now();
     {

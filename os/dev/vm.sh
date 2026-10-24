@@ -533,6 +533,7 @@ GUEST_TESTS=(
   "os/tests/input-hotplug-check.sh input-hotplug-check.sh"
   "os/tests/installed-admin-actions.sh installed-admin-actions.sh"
   "os/tests/projection-boot-check.sh projection-boot-check.sh"
+  "os/tests/live-update-check.sh live-update-check.sh"
 )
 
 # Each call copies GUEST_TESTS from this checkout into a private directory in

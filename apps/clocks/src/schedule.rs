@@ -1,6 +1,6 @@
 //! When alarms and timers ring on this device.
 //!
-//! What rings is the person's [`Clocks`](crate::Clocks), the same on every
+//! What rings is the person's [`Clocks`], the same on every
 //! device. Whether this device has already rung it is not: each device keeps
 //! its own delivery ledger ([`OnThisDevice`]), persisted across restarts and
 //! never synced, so every device rings a deadline exactly once however often

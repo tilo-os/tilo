@@ -410,8 +410,8 @@ content scripts (with `sender.tab`) work without help.
   makes the worker run it first, `extensions.rs` `prepare_tabs`, without
   moving the worker: extensions read their worker's address and load their
   helpers against it) and in its own pages (a document script). It answers
-  `tabs`, `windows`, `action.onClicked`, `contextMenus`, the button's look
-  for one tab and `scripting` by asking the host at
+  `tabs`, `windows`, `action.onClicked`, `contextMenus`, `notifications`,
+  the button's look for one tab and `scripting` by asking the host at
   `https://extension-bridge.tilo.invalid/`, which the host serves itself. A
   page of the extension is known by its frame's address, its worker by a token
   written into it; a page cannot show either. An extension whose security
@@ -535,11 +535,104 @@ content scripts (with `sender.tab`) work without help.
   `action.onClicked`. `commands.getAll` lists the button's command first,
   then the rest by name, each with its key as Chrome shows it ("Ctrl+Shift+Y"
   on Linux) or none, and its description localized.
+- `notifications` are kept by the host (`src/extension_notifications.h`),
+  which checks them as Chrome does (a type, an icon, a title and a message;
+  a progress from 0 to 100 only for a progress notification; at most two
+  buttons) and answers `update`, `clear` and `getAll`. The Browser is told
+  of each change through the page used last (`extension_notification`) and
+  shows it as its own notification, named for the extension
+  (`extension_notices.rs`). The person choosing it or one of its buttons
+  comes back as `extension_notification_chosen`: the worker, woken if it
+  sleeps, hears `onClicked` or `onButtonClicked`, then `onClosed` by the
+  person, since Tilo takes a chosen notification away; `clear` is heard as
+  `onClosed` not by the person.
+- `chrome.permissions` (`src/extension_permissions.h`): Chromium asks the
+  person for an extension's optional access in a dialog of its own window,
+  and answers "Could not find an active window." here. The Browser tells
+  the host what each extension's manifest offers for later
+  (`optional_permissions`, `optional_host_permissions`) and what of it the
+  person granted (`extension_grants`); `request`, made in answer to
+  something the person did and only for what the manifest offers, asks the
+  Browser (`extension_permission_request`), which asks the person in its
+  shared prompt, granting at once what Chrome asks nobody about, and
+  answers (`extension_permission_decision`). What the extension holds then
+  counts for its tabs, scripting, capture and menu items at once, it hears
+  of it (`onAdded`, `onRemoved`) in its worker and pages, and the Browser
+  keeps it with the extension (`extension_permissions`). `contains`,
+  `getAll` and `remove` (never of what the manifest requires) answer from
+  the same. An API Chromium itself gives only an extension that holds it
+  in Chromium's own records (`chrome.bookmarks`) stays missing when the
+  person grants it here: what the host answers follows the grant.
+- `downloads.download` goes through the Browser's own downloads
+  (`src/capabilities.h`): Chromium cancels a download an extension starts
+  on none of its windows' tabs, so the host starts it on the page the call
+  came from or the one in front, and the person is asked as for any
+  download, which also answers `saveAs`. The extension gets the download's
+  id once it started (the first download on that page from the address it
+  asked for), and it is saved under the last part of `filename`, in a
+  folder of its own like every download here. An address is a web one,
+  `data:` or a blob of the extension's own pages; a request body or headers
+  of its own are refused. Everything else (`search`, `pause`, `resume`,
+  `cancel`, `erase`, `onCreated`, `onChanged`) is Chromium's, which sees
+  every download of the profile. `open` and `show` ask the Browser showing
+  the page (`extension_download_open`), which opens a complete download, or
+  shows it in its folder, as its own Open and Show in Files do; `open`
+  needs `downloads.open` and, as in Chrome, the person's click or key in
+  the extension's page, or on its button, menu item or shortcut, in the
+  last five seconds.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
   this site" and uBlock Origin Lite's element zapper do) closes once its
   calls are answered, or after two seconds.
+- Network rules (`declarativeNetRequest`) block and redirect in the
+  Browser's tabs, but Chromium counts what they did there for no tab (its
+  rules see the tab id -1), so it shows no count on an ad blocker's button
+  and answers for no tab. The Browser's own extension sees each request a
+  rule blocked, or redirected to an extension's file, by the tab webRequest
+  reports it for, and tells the host (`requests.acted`, with a token the
+  Browser writes beside its worker, `extensions.rs` `write_manager`). The
+  host (`src/action_counts.h`) keeps them for the page each tab shows, from
+  when it began loading, and counts each for the extensions whose button
+  shows the page's count (`setExtensionActionOptions` with
+  `displayActionCountAsBadgeText`, as uBlock Origin Lite asks). A redirect
+  to a file by its extension's id counts for that extension; any other
+  request counts for the one extension with network rules, or else for each
+  whose own rules match it (`testMatchOutcome`, which Chromium offers here,
+  every extension being unpacked to it). The count reaches the Browser as
+  the page's badge for that tab (`extension_action`), under text the
+  extension set for the page; it changes as the extension says
+  (`tabUpdate`) and goes with the page. The toolbar shows no badge for
+  Chromium's placeholder for every tab. `getMatchedRules({tabId})` answers
+  an extension with `declarativeNetRequestFeedback`, or `activeTab` granted
+  on the tab, with its rules that blocked or redirected requests of the
+  page; `onRuleMatchedDebug` reports what Chromium reports, tab id -1.
+  Rules that only change a request (headers, an upgrade to https) and a
+  blocked page itself are not counted.
+- An extension signs in to its service with `identity.launchWebAuthFlow`.
+  Chrome shows the page in a window of its own; here the host asks the
+  Browser to show it in a panel over the page in front
+  (`extension_sign_in`), as a popup shows, under the name of the site it is
+  on. The Browser marks the panel's tab as that sign-in's
+  (`extension_sign_in_panel`), and the host watches where it goes
+  (`src/extension_sign_in.h`): once the page goes to the extension's own
+  address, `https://<id>.chromiumapp.org/`, by a redirect, a link or a
+  script, the navigation is turned away, the call ends with that address
+  and the panel closes. Closing the panel turns the sign-in down ("The user
+  did not approve access.", as in Chrome), and so does a second sign-in of
+  the same extension for the first. A sign-in that may not ask the person
+  (`interactive` false) is loaded out of sight in a tab of its own, as
+  Chrome loads it: the site sending the person straight back ends it with
+  the address; its page loading without doing so ends it as needing them
+  ("User interaction required."), or with `abortOnLoadForNonInteractive`
+  false, for a site whose script sends them back later, its time running
+  out (`timeoutMsForNonInteractive`, a minute at most). The extension asks
+  for the outcome in turns the host holds 20 seconds each, and calls
+  Chromium between them, which keeps its worker awake as Chrome keeps it
+  awake during the call.
+  `getRedirectURL` names the extension's address; `getAuthToken`, which
+  signs in with the Browser's own Google account, answers that no one is
+  signed in.
 - A click or a tab event reaches a worker through the DevTools pipe, which
   wakes it if it sleeps; the host attaches only while it delivers, so an idle
   worker still sleeps. `tests/extension_tabs.py` covers each of these.
@@ -553,6 +646,13 @@ content scripts (with `sender.tab`) work without help.
   no checkmark and no submenu, and appear only in a page's menu, not the
   toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
+- An extension's notification shows the Browser's icon, not its own or its
+  image, and a notification the person dismisses without choosing it stays
+  in `getAll` until the extension clears it: Tilo's notification service
+  says nothing of a dismissal.
+- A rule's redirect to an extension's file at an address of its own for the
+  session (`use_dynamic_url`, as uBlock Origin Lite's stand-ins for ad
+  scripts are) is counted but does not run in the page.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.
   Other site storage, including IndexedDB/localStorage/service workers, needs

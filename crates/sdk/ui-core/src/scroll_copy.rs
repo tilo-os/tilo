@@ -26,7 +26,7 @@
 //! repainted. The renderer copies first ([`encode_copies`], or
 //! [`copy_pixels`] on a CPU canvas), then rasterizes the damage.
 //!
-//! A relayout's moves are checked against the offers ([`moves_besides`]):
+//! A relayout's moves are checked against the offers (`moves_besides`):
 //! content that moved by its scroller's delta is the copy's; content that
 //! came, went or stayed put (a long list mounting rows, a pinned title, a
 //! sticky header) is damage; anything else that moved makes the host
@@ -897,7 +897,7 @@ const BAND: u32 = 128;
 /// A target's scratch space for copies within it, which a copy cannot do in
 /// place: WebGPU refuses a copy whose source and destination are the same
 /// texture's same subresource. Each copy moves through it in bands of at
-/// most [`BAND`] rows, so it holds a band, not a viewport.
+/// most `BAND` rows, so it holds a band, not a viewport.
 #[derive(Default)]
 pub struct CopyScratch {
     texture: Option<wgpu::Texture>,
