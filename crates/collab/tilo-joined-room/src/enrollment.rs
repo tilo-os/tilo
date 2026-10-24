@@ -431,6 +431,7 @@ impl NativeWorkspaceOwner {
             publication: Some(publication::StoredPublication::default()),
             workspace_memberships: std::collections::BTreeMap::new(),
             effect_receipts: std::collections::BTreeMap::new(),
+            shortcut_change: None,
             effect_history_root: None,
             successions: Vec::new(),
         };
