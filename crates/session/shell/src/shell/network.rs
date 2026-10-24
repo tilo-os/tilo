@@ -4703,6 +4703,7 @@ impl ShellNetwork {
     /// Why what this session has recorded needs this device reachable, if
     /// it does ([`needs_reachability`]).
     fn session_reachability_need(&self) -> Option<&'static str> {
+        self.retire_redeemed_invitations();
         let tree = self.tree.clone();
         let now = tilo_clock::unix_now();
         let open_invitations = self
@@ -4770,6 +4771,7 @@ impl ShellNetwork {
     /// inventory before rows are returned to the UI.
     #[must_use]
     pub fn pending_invitations(&self, room: RoomId) -> Vec<PendingInvitation> {
+        self.retire_redeemed_invitations();
         let Ok(mut pending) = self.pending_identity_admissions.lock() else {
             return Vec::new();
         };
@@ -4788,6 +4790,42 @@ impl ShellNetwork {
             .collect();
         rows.sort_by_key(|invite| (invite.expiry_unix_seconds, invite.id));
         rows
+    }
+
+    /// Forget the invitations their room's admitted document says were
+    /// redeemed: each is redeemed once, so nobody is still to come with it.
+    fn retire_redeemed_invitations(&self) {
+        let invitations: Vec<([u8; 32], RoomId)> = match self.pending_identity_admissions.lock() {
+            Ok(pending) if !pending.is_empty() => pending
+                .values()
+                .map(|invite| (invite.id, invite.room))
+                .collect(),
+            _ => return,
+        };
+        let redeemed: Vec<[u8; 32]> = {
+            let tree = self.tree.read();
+            invitations
+                .into_iter()
+                .filter(|(id, room)| {
+                    tree.room_docs
+                        .get(room)
+                        .is_some_and(|doc| tilo_peer_state::room::invitation_redeemed(doc, id))
+                })
+                .map(|(id, _)| id)
+                .collect()
+        };
+        if redeemed.is_empty() {
+            return;
+        }
+        let Ok(mut pending) = self.pending_identity_admissions.lock() else {
+            return;
+        };
+        for id in &redeemed {
+            pending.remove(id);
+        }
+        if let Some(path) = self.pending_invitations_path.as_deref() {
+            persist_pending_invitations(path, &pending);
+        }
     }
 
     /// Return the original signed token without extending its lifetime or
