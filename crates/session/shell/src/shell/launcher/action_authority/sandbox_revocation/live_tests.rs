@@ -237,13 +237,9 @@ fn publish_fixture(live: &LiveTree, scope: Scope) -> (WorkspaceTree, Arc<Authori
     let room = tree.desktop.workspaces[0].room();
     let grant = CapOverride::grant(Subject::app("so.tilo.reader"), scope, Access::Write)
         .with_id("live-grant");
-    let authority = tree.native_runtime.action_authority();
-    // Making the tree's workspace saved it, and that save publishes the tree
-    // as it was then, without the grant, on the state writer. Let it land
-    // first: publishing it after this one would withdraw the grant.
-    authority.writer().flush();
     tree.desktop.workspaces[0].sandbox.push(grant.clone());
     Export::of(&tree).publish();
+    let authority = tree.native_runtime.action_authority();
     let mut published = lock(&authority.published);
     let capture = || {
         Sandbox::capture(
