@@ -27,6 +27,10 @@ pub const THROUGH: Key<Option<Through>> = Key::new(SECTION, "through", || None);
 /// this one. A new request has a new id; the session acts on each id once.
 pub const STOP: Key<Option<StopRequest>> = Key::new(SECTION, "stop", || None);
 
+/// The status file holds a handful of devices; anything larger is not one the
+/// session wrote.
+const MAX_STATUS_BYTES: u64 = 262_144;
+
 /// What this device routes through another.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -203,7 +207,8 @@ impl DeviceVpnStatus {
     #[must_use]
     pub fn load_at(path: &std::path::Path) -> Option<Self> {
         crate::published::note_file_read();
-        let status: Self = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+        let bytes = tilo_files::native::bounded::read(path, MAX_STATUS_BYTES).ok()??;
+        let status: Self = serde_json::from_slice(&bytes).ok()?;
         publisher_live_in(
             path.parent()?,
             status.publisher_pid,
