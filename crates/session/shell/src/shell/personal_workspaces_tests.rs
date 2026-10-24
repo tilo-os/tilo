@@ -77,6 +77,7 @@ fn open_tab(tree: &mut WorkspaceTree, room: RoomId, salt: u16, title: &str) -> u
                 kind: AppKind::Other("Notes".into()),
                 label: title.into(),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,

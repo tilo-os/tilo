@@ -58,6 +58,7 @@ fn shell_with_a_claimed_editor(
             app_id: EDITOR.into(),
             surface_id: 7,
         },
+        app_title: None,
     });
     tree.continuation_closed_tabs.insert(CLOSED_TAB, room);
     let (mut net, commands) = personal_continuity_network_for_test([0x7C; 32]);
@@ -284,6 +285,7 @@ fn a_room_push_never_waits_for_another_threads_hold_on_the_tree() {
                     kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
                     label: "Notes".into(),
                 },
+                app_title: None,
             });
             guard.seed_doc_from_cache();
             drop(guard);
@@ -361,6 +363,7 @@ fn a_peers_room_batch_merges_off_the_loop() {
                 kind: AppKind::Other("Notes".into()),
                 label: "Draft".into(),
             },
+            app_title: None,
         }],
         active_tab: tab,
         width: WindowWidth::Normal,

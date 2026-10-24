@@ -30,6 +30,9 @@ pub enum WindowMenuAction {
     MoveToWorkspace(WorkspaceId),
     /// A new tab of the same app, beside this one.
     NewTab,
+    /// Name the tab in place, in its pill: only a host (non-Tilo) window's
+    /// tab, whose title is the window's own rather than an app's resource.
+    RenameTab,
     SplitRight,
     /// Detach the tab into a new window at the end of the strip.
     MoveToNewGroup,
@@ -62,6 +65,7 @@ impl WindowMenuAction {
                 format!("{MOVE_TO_WORKSPACE_KEY}:{}", workspace.raw())
             }
             Self::NewTab => "tabmenu:new-tab".into(),
+            Self::RenameTab => "tabmenu:rename".into(),
             Self::SplitRight => "tabmenu:split-right".into(),
             Self::MoveToNewGroup => "tabmenu:new-group".into(),
             Self::CloseTab => "tabmenu:close".into(),
@@ -92,6 +96,7 @@ impl WindowMenuAction {
             Self::FullScreen,
             Self::Maximize,
             Self::NewTab,
+            Self::RenameTab,
             Self::SplitRight,
             Self::MoveToNewGroup,
             Self::CloseTab,
@@ -114,6 +119,9 @@ pub struct WindowMenuFacts {
     pub strips: Vec<(StripId, String)>,
     /// The other workspaces the window could move to, by name.
     pub workspaces: Vec<(WorkspaceId, String)>,
+    /// The tab shows a host window this device may name
+    /// ([`crate::shell::tab_binding::may_rename_tab`]).
+    pub renamable: bool,
 }
 
 /// One row the menu offers.
@@ -250,7 +258,8 @@ fn move_rows(facts: &WindowMenuFacts) -> [WindowMenuRow; 2] {
 ///
 /// 1. Full screen and Maximize (or Exit full screen and Restore);
 /// 2. Move to strip and Move to workspace, each a nested menu of places;
-/// 3. New tab, and for a tabbed window Split right and Move to new group;
+/// 3. New tab, Rename tab for a host window's tab, and for a tabbed window
+///    Split right and Move to new group;
 /// 4. Close tab, for a tabbed window, then Close window;
 /// 5. Tell an agent…, as every context menu ends.
 ///
@@ -302,6 +311,14 @@ pub fn window_menu_rows(facts: &WindowMenuFacts, config: &ShortcutConfig) -> Vec
             fixed("fixed-duplicate-tab"),
         ),
     ]);
+    if facts.renamable {
+        rows.push(entry(
+            WindowMenuAction::RenameTab,
+            t("shell-window-menu-rename-tab"),
+            Icon::Pencil,
+            None,
+        ));
+    }
     if tabbed {
         rows.push(entry(
             WindowMenuAction::SplitRight,
@@ -430,6 +447,7 @@ mod tests {
             full_screen: false,
             strips: vec![(StripId(2), "Research".into())],
             workspaces: vec![(WorkspaceId(9), "Studio".into())],
+            renamable: false,
         }
     }
 
@@ -561,5 +579,36 @@ mod tests {
         };
         let rows = window_menu_rows(&state, &config);
         assert_eq!(labels(&rows)[..2], ["Exit full screen", "Restore"]);
+    }
+
+    /// A host window's tab offers Rename tab, beside New tab, and the row
+    /// round-trips through its semantic key; a Tilo app's tab titles itself
+    /// and is offered none.
+    #[test]
+    fn only_a_host_windows_tab_offers_rename() {
+        let config = ShortcutConfig::default();
+        let app = labels(&window_menu_rows(&facts(2), &config))
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(!app.iter().any(|label| label == "Rename tab"));
+
+        let host = WindowMenuFacts {
+            renamable: true,
+            ..facts(1)
+        };
+        let rows = window_menu_rows(&host, &config);
+        let shown = labels(&rows);
+        let new_tab = shown.iter().position(|l| *l == "New tab").expect("New tab");
+        assert_eq!(shown.get(new_tab + 1), Some(&"Rename tab"));
+        assert!(
+            rows.iter()
+                .any(|row| row.action() == Some(WindowMenuAction::RenameTab))
+        );
+        assert_eq!(WindowMenuAction::RenameTab.semantic_key(), "tabmenu:rename");
+        assert_eq!(
+            WindowMenuAction::from_semantic_key("tabmenu:rename"),
+            Some(WindowMenuAction::RenameTab)
+        );
     }
 }

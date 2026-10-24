@@ -9242,6 +9242,7 @@ mod tests {
                     kind: crate::shell::state::AppKind::Other("so.tilo.notes".into()),
                     label: "Notes".into(),
                 },
+                app_title: None,
             });
             tree.seed_doc_from_cache();
         }
@@ -12633,6 +12634,7 @@ mod tests {
                         app_id: "so.tilo.browser".into(),
                         surface_id: 101,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: ebook_tab,
@@ -12641,6 +12643,7 @@ mod tests {
                         app_id: "so.tilo.ebook".into(),
                         surface_id: 102,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: music_tab,
@@ -12649,6 +12652,7 @@ mod tests {
                         app_id: "so.tilo.music".into(),
                         surface_id: 103,
                     },
+                    app_title: None,
                 },
                 Tab {
                     id: file_tab,
@@ -12657,6 +12661,7 @@ mod tests {
                         kind: AppKind::FileExplorer,
                         label: "A book".into(),
                     },
+                    app_title: None,
                 },
             ],
             active_tab: browser_tab,

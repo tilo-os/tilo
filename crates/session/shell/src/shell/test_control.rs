@@ -2485,6 +2485,7 @@ mod tests {
             id,
             title: title.to_string(),
             tile,
+            app_title: None,
         };
         let group = |id, tabs: Vec<Tab>, active_tab| WindowGroup {
             id,

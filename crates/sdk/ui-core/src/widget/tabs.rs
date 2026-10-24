@@ -23,6 +23,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
+#[path = "tabs_rename.rs"]
+mod rename;
 #[path = "tabs_status_chips.rs"]
 mod status_chips;
 use crate::tokens::{EffectiveMotion, MotionSource};
@@ -488,6 +490,10 @@ pub struct TabBar {
     toolbar_row: super::window_toolbar_row::ToolbarRow,
     /// The motion the person allows, from the last layout's theme.
     motion: EffectiveMotion,
+    /// A tab being named in place ([`TabBar::begin_rename`]).
+    rename: Option<rename::TabRename>,
+    /// A name committed in place, drained by [`TabBar::take_rename`].
+    pending_rename: Option<(u64, String)>,
 }
 
 /// Geometry shared by the tab handle and the window-content preview attached
@@ -636,6 +642,8 @@ impl TabBar {
             location_images: HashMap::new(),
             toolbar_row: super::window_toolbar_row::ToolbarRow::new(),
             motion: EffectiveMotion::default(),
+            rename: None,
+            pending_rename: None,
         }
     }
 
@@ -1392,6 +1400,10 @@ impl TabBar {
                 .get(i)
                 .copied()
                 .unwrap_or_else(|| Reveal::None.reserve());
+        // A tab being named shows its field there instead ([`Self::draw_rename`]).
+        if self.renaming() == Some(t.id) {
+            return;
+        }
         let clip_r = Rect::new(r.x0, r.y0, clip_x1.max(r.x0), r.y1);
         // Backstop only — `visible_titles` already carries the elided form.
         let label = self
@@ -4022,6 +4034,7 @@ impl Widget for TabBar {
         });
 
         self.draw_pills(scene, transform, tr, theme, presence, layout_t, fade_window);
+        self.draw_rename(scene, transform, tr, theme, presence);
         // The tab list's focus ring comes and goes with keyboard focus: a
         // damage part around the active pill, not a repaint of the bar.
         let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
@@ -4070,6 +4083,11 @@ impl Widget for TabBar {
                 self.last_cursor =
                     Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
+            return;
+        }
+        // A tab's name field, while one is edited, has the keyboard and the
+        // presses on it; a press anywhere else commits it and goes on.
+        if self.rename.is_some() && self.rename_event(event, ctx) {
             return;
         }
         // The location field, while edited, has the keyboard and its own

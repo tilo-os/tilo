@@ -311,6 +311,9 @@ pub enum TabActionError {
     OnlyTab,
     /// The replicated document refused the mutation; nothing changed.
     DocumentRefused,
+    /// The tab titles itself (a Tilo app names it from its own resources),
+    /// or its window runs on another device, which names it.
+    NotRenamable,
 }
 
 impl TabActionError {
@@ -321,6 +324,7 @@ impl TabActionError {
             TabActionError::UnknownTab => t("window-tab-action-unknown-tab"),
             TabActionError::OnlyTab => t("window-tab-action-only-tab"),
             TabActionError::DocumentRefused => t("window-tab-action-document-refused"),
+            TabActionError::NotRenamable => t("window-tab-action-not-renamable"),
         }
     }
 }
@@ -807,6 +811,37 @@ pub fn split_active_tab(
     split_tab(st, tab, placement)
 }
 
+/// A person names host window `tab_id` `name`; a blank name clears theirs
+/// and the tab shows its window's own title again. The window menu's
+/// Rename tab, the name field in the tab's pill and the `tab.rename` action
+/// converge here. Returns whether anything changed.
+///
+/// # Errors
+///
+/// [`TabActionError::UnknownTab`] when the tab is not in the tree;
+/// [`TabActionError::NotRenamable`] when it is not a host window this device
+/// names ([`tab_binding::may_rename_tab`]).
+pub fn rename_tab(st: &mut ChromeState, tab_id: TabId, name: &str) -> Result<bool, TabActionError> {
+    let changed = {
+        let mut tree = st.tree_mut();
+        let known = tree
+            .desktop
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.strips.iter())
+            .flat_map(|strip| strip.window_groups.iter())
+            .any(|group| group.tabs.iter().any(|tab| tab.id == tab_id));
+        if !known {
+            return Err(TabActionError::UnknownTab);
+        }
+        tab_binding::rename_host_tab(&mut tree, tab_id, name).ok_or(TabActionError::NotRenamable)?
+    };
+    if changed {
+        st.bump();
+    }
+    Ok(changed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,6 +1208,7 @@ mod tests {
                         app_id: "org.example.thing".into(),
                         surface_id: 7,
                     },
+                    app_title: None,
                 });
                 g.activate_tab(id);
             }

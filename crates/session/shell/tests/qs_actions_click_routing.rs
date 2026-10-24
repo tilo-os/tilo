@@ -120,6 +120,7 @@ fn minimal_tree() -> WorkspaceTree {
                 kind: AppKind::Other("Test".into()),
                 label: "stub".into(),
             },
+            app_title: None,
         }],
         active_tab: tab_id,
         width: WindowWidth::Normal,

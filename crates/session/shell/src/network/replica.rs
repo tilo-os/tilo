@@ -1578,6 +1578,7 @@ mod tests {
                         kind: AppKind::Terminal,
                         label: WITHDRAWN_TITLE.into(),
                     },
+                    app_title: None,
                 }],
                 active_tab: tab,
                 width: WindowWidth::Normal,

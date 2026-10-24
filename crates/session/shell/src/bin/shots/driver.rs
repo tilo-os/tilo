@@ -1116,6 +1116,7 @@ impl ShellDriver {
                         kind,
                         label: label.into(),
                     },
+                    app_title: None,
                 };
                 tabs.push(tab.id);
                 let mut strip = Strip::new(StripId::from(ids.mint_id()), name);
@@ -2063,6 +2064,7 @@ impl ShellDriver {
             "desktop-control-menu" => self.scene_desktop_control_menu(),
             "workspace-menu" => self.scene_workspace_menu(),
             "window-menu" => self.scene_window_menu(),
+            "tab-rename" => self.scene_tab_rename(),
             "profile-card" => self.scene_profile_card(),
             "dictation-consent"
             | "dictation-listening"
@@ -2940,6 +2942,7 @@ impl ShellDriver {
                                 label: label.into(),
                                 note: note.into(),
                             },
+                            app_title: None,
                         };
                         strip.window_groups.push(WindowGroup {
                             id: ids.mint_id(),
@@ -3648,6 +3651,7 @@ impl ShellDriver {
                             kind: shell::shell::state::AppKind::Settings,
                             label: label.to_string(),
                         },
+                        app_title: None,
                     };
                     let group = WindowGroup {
                         id: gid,
@@ -3734,6 +3738,7 @@ impl ShellDriver {
                                     kind: AppKind::Settings,
                                     label: (*name).to_string(),
                                 },
+                                app_title: None,
                             }],
                             active_tab: tid,
                             width: WindowWidth::Normal,

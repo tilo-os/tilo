@@ -625,6 +625,7 @@ fn opening_a_window_ends_a_full_screen_and_a_provisional_one_does_not() {
                 kind: shell::shell::state::AppKind::Other("Notes".into()),
                 label: "Notes".into(),
             },
+            app_title: None,
         };
         shell::shell::tab_binding::place_tab(
             &mut tree,
@@ -673,6 +674,7 @@ fn an_expanded_window_ends_its_full_screen_only_for_a_window_the_person_opened()
             kind: shell::shell::state::AppKind::Other(title.into()),
             label: title.into(),
         },
+        app_title: None,
     };
 
     {
@@ -729,6 +731,7 @@ fn stub_tab(id: u64, title: &str) -> shell::shell::state::Tab {
             kind: shell::shell::state::AppKind::Other(title.into()),
             label: title.into(),
         },
+        app_title: None,
     }
 }
 

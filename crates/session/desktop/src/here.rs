@@ -1042,6 +1042,7 @@ mod tests {
                 label: "Chat".into(),
                 note: String::new(),
             },
+            app_title: None,
         };
         let mut main = Strip::new(StripId(1), "Main");
         main.window_groups.push(WindowGroup {

@@ -111,6 +111,7 @@ pub fn show_install_under_way_for_shots(
                 ),
                 missing: None,
             },
+            app_title: None,
         },
         placement,
     );
@@ -1283,6 +1284,7 @@ mod tests {
                 label: "Legacy App".into(),
                 note: String::new(),
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1343,6 +1345,7 @@ mod tests {
                     label: "Still launching".into(),
                     note: OPENING.into(),
                 },
+                app_title: None,
             });
         tree.remember_local_app_record(live, 8124);
         let records = tree.local_app_records.clone();
@@ -1459,6 +1462,7 @@ mod tests {
                     label: "Second".into(),
                     note: "Interrupted".into(),
                 },
+                app_title: None,
             });
         tree.remember_local_app_record(first, 8191);
         tree.remember_local_app_record(second, 8192);
@@ -1653,6 +1657,7 @@ mod tests {
                     label: "Second saved window".into(),
                     note: String::new(),
                 },
+                app_title: None,
             });
         launcher::set_pending_placement(app, Placement::IntoTab(first));
         launcher::attach_continuity_instance_for_test(app, 42);
@@ -1815,6 +1820,7 @@ mod tests {
                 note: String::new(),
                 missing: None,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -1874,6 +1880,7 @@ mod tests {
                 app_id: SETTINGS.into(),
                 surface_id: 7,
             },
+            app_title: None,
         };
         let tab_id = tab.id;
         let group = WindowGroup {
@@ -2010,6 +2017,7 @@ mod tests {
                     app_id: APP.into(),
                     surface_id: 4711,
                 },
+                app_title: None,
             };
             let tab_id = tab.id;
             let group = WindowGroup {
@@ -2046,6 +2054,7 @@ mod tests {
                     app_id: "so.tilo.terminal".into(),
                     surface_id: 99,
                 },
+                app_title: None,
             };
             let tab_id = tab.id;
             let group = WindowGroup {
