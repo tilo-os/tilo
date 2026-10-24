@@ -812,7 +812,7 @@ pub struct DataTableCore {
     /// What the rows, the bar over them and the chrome painted this frame
     /// and the last: a scroll that only moved the rows is offered to the
     /// host as a copy, and a row that changed repaints alone.
-    paint_damage: crate::widget::paint_damage::PaintDamage,
+    shown: crate::scroll_copy::PaintedFrames,
     /// A scroll or the pointer brought other cells near since the last
     /// rebuild: mounting them is described by the frame's damage
     /// ([`crate::widget::StructureChange::Described`]).
@@ -1256,7 +1256,7 @@ impl DataTableCore {
             motion: crate::tokens::EffectiveMotion::default(),
             fade_drawn: 1.0,
             fade_shown: 1.0,
-            paint_damage: crate::widget::paint_damage::PaintDamage::default(),
+            shown: crate::scroll_copy::PaintedFrames::default(),
             remount: false,
             reduce_motion: false,
             arrivals: crate::widget::ArrivingRows::new(),
@@ -2484,6 +2484,12 @@ impl DataTableCore {
     }
 
     /// Live when an explicit viewport was set and the rows overflow it.
+    /// How far past an end fingers pull the rows, as drawn: negative before
+    /// the start ([`crate::motion::RubberBand`]).
+    fn give(&self) -> f64 {
+        self.momentum.give(crate::motion::frame_now())
+    }
+
     fn internal_scroll(&self) -> bool {
         !self.host_scrolled && self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
@@ -2512,8 +2518,8 @@ impl DataTableCore {
             regions.push(bounds);
             return;
         }
-        if self.paint_damage.is_recorded() {
-            self.paint_damage.collect_scrolled(owner, bounds, regions);
+        if self.shown.drawing().is_some() {
+            self.shown.damage_within(owner, bounds, regions);
         }
         for cell in &self.mounted_cells {
             cell.widget.collect_damage(regions);
@@ -2887,14 +2893,14 @@ impl DataTableCore {
     /// content, windowed to [`Self::visible_row_range`] plus overscan: each
     /// row (and the add row) a part of the scrolled body, drawn where it
     /// stands in the rows as if unscrolled
-    /// ([`crate::widget::paint_damage::PaintPart::scrolling`]), so a row a
-    /// scroll only moved encodes the same and a host copies it.
+    /// ([`crate::scroll_copy::Painted`]), so a row a scroll only moved
+    /// encodes the same and a host copies it.
     fn draw_rows(
         &self,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-    ) -> Vec<crate::widget::paint_damage::PaintPart> {
+    ) -> Vec<crate::scroll_copy::Piece<crate::scroll_copy::Painted>> {
         let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
         let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
@@ -3100,9 +3106,11 @@ impl DataTableCore {
                 || format!("#{ri}"),
                 |id| format!("{}:{}", id.value, id.occurrence),
             );
-            parts.push(crate::widget::paint_damage::PaintPart::scrolling(
-                key, shown, row_scene,
-            ));
+            parts.push(crate::scroll_copy::Piece {
+                key: crate::scroll_copy::piece_key(key),
+                rect: shown,
+                paint: crate::scroll_copy::Painted(row_scene),
+            });
         }
         if let (Some(add), Some(shown)) = (&self.add_row, self.add_row_rect())
             && shown.y0 < body_bottom
@@ -3141,11 +3149,11 @@ impl DataTableCore {
                 None,
                 &style,
             );
-            parts.push(crate::widget::paint_damage::PaintPart::scrolling(
-                "add".to_owned(),
-                shown,
-                add_scene,
-            ));
+            parts.push(crate::scroll_copy::Piece {
+                key: crate::scroll_copy::piece_key("add"),
+                rect: shown,
+                paint: crate::scroll_copy::Painted(add_scene),
+            });
         }
         parts
     }
@@ -3498,9 +3506,8 @@ impl DataTableCore {
                 WheelStep::Scroll(dy) => {
                     let before = self.viewport.offset();
                     self.set_scroll_offset(before + dy);
-                    let moved = self.viewport.offset().to_bits() != before.to_bits();
-                    self.momentum.wheel_applied(dy, moved);
-                    moved
+                    self.momentum
+                        .wheel_applied(dy, self.viewport.offset() - before)
                 }
                 WheelStep::Fling => true,
                 WheelStep::Ignored => false,
@@ -3742,6 +3749,7 @@ impl Widget for DataTableCore {
     fn needs_redraw(&self) -> bool {
         self.fade_drawn < 1.0
             || self.fade_shown < 1.0
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
             || self.moving.rows.is_moving(crate::motion::frame_now())
             || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self
@@ -3752,7 +3760,7 @@ impl Widget for DataTableCore {
 
     /// What the draw changed: the rows that changed, and a scroll offered as
     /// a copy of the rows that only moved
-    /// ([`crate::widget::paint_damage::PaintDamage::collect_scrolled`]);
+    /// ([`crate::scroll_copy::PaintedFrames`]);
     /// the cells say what changed in them.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.collect_damage_of(self, regions);
@@ -3760,14 +3768,14 @@ impl Widget for DataTableCore {
 
     fn mark_drawn(&mut self) {
         self.fade_shown = self.fade_drawn;
-        self.paint_damage.mark_drawn();
+        self.shown.present();
         for cell in &mut self.mounted_cells {
             cell.widget.mark_drawn();
         }
     }
 
     fn release_scene_cache(&mut self) {
-        self.paint_damage.release_scene_cache();
+        self.shown.forget();
         for cell in &mut self.mounted_cells {
             cell.widget.release_scene_cache();
         }
@@ -4192,6 +4200,11 @@ impl Widget for DataTableCore {
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         self.motion = theme.motion();
+        self.momentum.set_view(
+            self.viewport.viewport(),
+            self.internal_scroll(),
+            self.motion,
+        );
         if self.reduce_motion {
             self.momentum.stop();
         }
@@ -4225,7 +4238,7 @@ impl Widget for DataTableCore {
             &body,
         );
         // Each row is drawn unscrolled and lands scrolled.
-        let mut parts = self.draw_moving_rows(scene, transform, text_renderer, theme, presence);
+        let pieces = self.draw_moving_rows(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
 
         let mut chrome = Scene::new();
@@ -4243,31 +4256,31 @@ impl Widget for DataTableCore {
         scene.append(&chrome, None);
         outside.append(&chrome, None);
         // The bar over the rows stands still while they scroll under it.
+        let mut fixed = Vec::new();
         if let Some(track) = self.v_track() {
             let mut bar = Scene::new();
             self.draw_bar(&mut bar, transform, theme, true);
             scene.append(&bar, None);
-            parts.push(crate::widget::paint_damage::PaintPart::placed(
-                "bar".to_owned(),
-                track,
-                bar,
-                vec![track],
-            ));
+            fixed.push(crate::scroll_copy::Piece {
+                key: crate::scroll_copy::piece_key("bar"),
+                rect: track,
+                paint: crate::scroll_copy::Painted(bar),
+            });
         }
-        let offset = self.viewport.offset();
-        let frame = crate::widget::paint_damage::PaintFrame::new(
-            vec![self.rect, body],
-            transform,
-            theme,
-            outside,
-            parts,
-        )
-        .scrolling(crate::widget::paint_damage::ScrolledContent {
-            viewport: body,
-            offset: vello::kurbo::Vec2::new(0.0, offset),
-            on_screen: crate::scroll_copy::on_screen(transform),
-        });
-        self.paint_damage.record(self.paint_bounds(), Some(frame));
+        let offset = self.viewport.offset() + self.give();
+        if let Some(frame) = crate::scroll_copy::Showing::painted(
+            vello::kurbo::Vec2::new(0.0, offset),
+            body,
+            crate::scroll_copy::on_screen(transform),
+            crate::scroll_copy::Around {
+                bounds: self.paint_bounds(),
+                outside: crate::scroll_copy::Painted(outside),
+            },
+            pieces,
+            fixed,
+        ) {
+            self.shown.note(frame);
+        }
         self.refresh_view_anchor();
     }
 
@@ -4375,6 +4388,7 @@ impl Widget for DataTableCore {
 
     fn needs_animation_frame(&self) -> bool {
         self.momentum.is_active()
+            || self.momentum.give_needs_frame(crate::motion::frame_now())
             || self.moving.rows.is_moving(crate::motion::frame_now())
             || self.reveal_in_progress()
             || self.arrivals.is_moving(crate::motion::frame_now())

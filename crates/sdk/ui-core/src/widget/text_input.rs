@@ -1683,10 +1683,6 @@ impl TextInput {
         self.preserve_unfocused_scroll = preserve;
     }
 
-    pub fn scroll_y(&self) -> f64 {
-        self.scroll_y
-    }
-
     pub fn body_line_height(&self) -> f64 {
         self.line_height()
     }
@@ -1757,7 +1753,7 @@ impl TextInput {
     pub(crate) fn first_row_band(&self) -> (f64, f64) {
         if self.multiline {
             (
-                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
                 self.line_height(),
             )
         } else {
@@ -1906,7 +1902,7 @@ impl TextInput {
             if x1 - x0 < 0.5 {
                 continue;
             }
-            let y0 = self.rect.y0 + py + r.y - self.scroll_y;
+            let y0 = self.rect.y0 + py + r.y - self.shown_scroll_y();
             out.push(Rect::new(
                 self.rect.x0 + px + x0,
                 y0,
@@ -2005,7 +2001,7 @@ impl TextInput {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
-        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.scroll_y;
+        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.shown_scroll_y();
         Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
@@ -2015,7 +2011,7 @@ impl TextInput {
             return 0;
         }
         let lh = self.line_height();
-        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.scroll_y;
+        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.shown_scroll_y();
         let max_row = self.lines.len().saturating_sub(1);
         let row = {
             let row_f = (local_y / lh).floor().max(0.0);
@@ -2573,7 +2569,7 @@ impl TextInput {
         self.measure_wrapped_content(width, tr, theme);
         self.single_origin = Point::new(
             self.rect.x0 + self.ml_left(),
-            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
     }
@@ -2869,7 +2865,7 @@ impl TextInput {
         self.update_ml_scroll(caret_top, caret_height, layout_height);
         self.single_origin = Point::new(
             self.rect.x0 + left,
-            self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
         self.lines.clear();
@@ -3030,7 +3026,7 @@ impl TextInput {
             if lor != caret_line {
                 continue;
             }
-            let top = row.y - self.scroll_y;
+            let top = row.y - self.shown_scroll_y();
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
@@ -3071,7 +3067,7 @@ impl TextInput {
             .zip(is_line_start.iter())
             .enumerate()
         {
-            let top = line.y - self.scroll_y;
+            let top = line.y - self.shown_scroll_y();
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
@@ -6303,6 +6299,9 @@ impl Widget for TextInput {
 
     fn needs_animation_frame(&self) -> bool {
         self.wheel_glide.is_active()
+            || self
+                .wheel_glide
+                .give_needs_frame(crate::motion::frame_now())
             || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
     }
 

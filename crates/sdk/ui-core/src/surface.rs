@@ -909,6 +909,23 @@ pub enum ContentEdge {
 /// third of it.
 pub(crate) const CONTENT_FADE_PX: f64 = 24.0;
 
+/// Where [`content_edge_fade`] paints over the viewport `rect` toward
+/// `edge`: what a scroller copies under it is not what the fade shows.
+#[must_use]
+pub fn content_edge_fade_band(rect: Rect, edge: ContentEdge) -> Rect {
+    let along = match edge {
+        ContentEdge::Top | ContentEdge::Bottom => rect.height(),
+        ContentEdge::Leading | ContentEdge::Trailing => rect.width(),
+    };
+    let reach = CONTENT_FADE_PX.min(along / 3.0).max(0.0);
+    match edge {
+        ContentEdge::Top => Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
+        ContentEdge::Bottom => Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
+        ContentEdge::Leading => Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
+        ContentEdge::Trailing => Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
+    }
+}
+
 /// Fade content out toward `edge` of the viewport `rect`: the `ground` the
 /// content is drawn on, opaque at the edge and clear a short way in, eased
 /// so it has no start line. Paint it over the content, and only while
@@ -922,35 +939,15 @@ pub fn content_edge_fade(
     edge: ContentEdge,
     ground: Color,
 ) {
-    let along = match edge {
-        ContentEdge::Top | ContentEdge::Bottom => rect.height(),
-        ContentEdge::Leading | ContentEdge::Trailing => rect.width(),
-    };
-    let reach = CONTENT_FADE_PX.min(along / 3.0);
-    if reach <= 0.0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+    let band = content_edge_fade_band(rect, edge);
+    if band.width() <= 0.0 || band.height() <= 0.0 {
         return;
     }
-    let (band, strong, clear) = match edge {
-        ContentEdge::Top => (
-            Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + reach),
-            (rect.x0, rect.y0),
-            (rect.x0, rect.y0 + reach),
-        ),
-        ContentEdge::Bottom => (
-            Rect::new(rect.x0, rect.y1 - reach, rect.x1, rect.y1),
-            (rect.x0, rect.y1),
-            (rect.x0, rect.y1 - reach),
-        ),
-        ContentEdge::Leading => (
-            Rect::new(rect.x0, rect.y0, rect.x0 + reach, rect.y1),
-            (rect.x0, rect.y0),
-            (rect.x0 + reach, rect.y0),
-        ),
-        ContentEdge::Trailing => (
-            Rect::new(rect.x1 - reach, rect.y0, rect.x1, rect.y1),
-            (rect.x1, rect.y0),
-            (rect.x1 - reach, rect.y0),
-        ),
+    let (strong, clear) = match edge {
+        ContentEdge::Top => ((rect.x0, rect.y0), (rect.x0, band.y1)),
+        ContentEdge::Bottom => ((rect.x0, rect.y1), (rect.x0, band.y0)),
+        ContentEdge::Leading => ((rect.x0, rect.y0), (band.x1, rect.y0)),
+        ContentEdge::Trailing => ((rect.x1, rect.y0), (band.x0, rect.y0)),
     };
     const STOPS: usize = 7;
     let stops: [vello::peniko::ColorStop; STOPS] = std::array::from_fn(|i| {

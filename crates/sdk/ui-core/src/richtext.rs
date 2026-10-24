@@ -222,11 +222,114 @@ pub struct RichTextLayout {
     pub(crate) font_variations: Vec<crate::text_render::FontVariation>,
     pub(crate) hanging_punctuation: crate::text_render::HangingPunctuation,
     fragmentation: crate::text_render::Fragmentation,
+    /// Where each shaped logical line starts down the layout, and the
+    /// tallest visual row: found once per shaped buffer, so a view of a
+    /// long text finds its first visible row by bisection
+    /// ([`Self::rows_within`]) instead of walking every row above it.
+    row_tops: std::cell::OnceCell<RowTops>,
     /// The faces the runs asked for ([`requested_faces`]). The shaped
     /// buffer only records the face each glyph fell back to, so the web,
     /// where the monospace, serif and italic faces load on demand, reads
     /// these to fetch them.
     pub(crate) faces: Vec<crate::text_render::TextStyle>,
+}
+
+/// Where each shaped logical line of a buffer starts, as its rows are laid
+/// out from the top, and the tallest row: up to the first line not shaped
+/// yet, where the buffer's own rows stop too.
+#[derive(Debug, Default)]
+struct RowTops {
+    starts: Vec<f32>,
+    tallest: f32,
+}
+
+impl RowTops {
+    fn of(buffer: &Buffer) -> Self {
+        let default = buffer.metrics().line_height;
+        let mut tops = Self {
+            starts: Vec::with_capacity(buffer.lines.len()),
+            tallest: default,
+        };
+        let mut top = 0.0;
+        for line in &buffer.lines {
+            let (Some(_), Some(layout)) = (line.shape_opt(), line.layout_opt()) else {
+                break;
+            };
+            tops.starts.push(top);
+            for row in layout {
+                let height = row.line_height_opt.unwrap_or(default);
+                tops.tallest = tops.tallest.max(height);
+                top += height;
+            }
+        }
+        tops
+    }
+}
+
+/// The rows of an unscrolled buffer of unbounded height from the start of
+/// line `line_i`, whose top is `line_top`, placed as
+/// [`cosmic_text::LayoutRunIter`] places them from the first: each row's
+/// top is the sum of the heights above it, added in the same order, so it
+/// is the same to the bit.
+struct RowsFrom<'b> {
+    lines: &'b [cosmic_text::BufferLine],
+    line_i: usize,
+    layout_i: usize,
+    line_top: f32,
+    line_height: f32,
+}
+
+impl<'b> Iterator for RowsFrom<'b> {
+    type Item = cosmic_text::LayoutRun<'b>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(line) = self.lines.get(self.line_i) {
+            let shape = line.shape_opt()?;
+            let layout = line.layout_opt()?;
+            while let Some(row) = layout.get(self.layout_i) {
+                self.layout_i = self.layout_i.saturating_add(1);
+                let line_height = row.line_height_opt.unwrap_or(self.line_height);
+                let line_top = self.line_top;
+                let centering = (line_height - (row.max_ascent + row.max_descent)) / 2.0;
+                let line_y = line_top + centering + row.max_ascent;
+                self.line_top += line_height;
+                if line_y + row.max_descent < 0.0 {
+                    continue;
+                }
+                return Some(cosmic_text::LayoutRun {
+                    line_i: self.line_i,
+                    text: line.text(),
+                    rtl: shape.rtl,
+                    glyphs: &row.glyphs,
+                    decorations: &row.decorations,
+                    line_y,
+                    line_top,
+                    line_height,
+                    line_w: row.w,
+                });
+            }
+            self.line_i = self.line_i.saturating_add(1);
+            self.layout_i = 0;
+        }
+        None
+    }
+}
+
+/// [`RowsFrom`] where it applies, else the buffer's own walk.
+enum Rows<'b> {
+    From(RowsFrom<'b>),
+    Walk(cosmic_text::LayoutRunIter<'b>),
+}
+
+impl<'b> Iterator for Rows<'b> {
+    type Item = cosmic_text::LayoutRun<'b>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::From(rows) => rows.next(),
+            Self::Walk(rows) => rows.next(),
+        }
+    }
 }
 
 /// The block style and each span's family, weight, slant and size
@@ -446,6 +549,7 @@ impl RichTextLayout {
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
         }
     }
 
@@ -729,6 +833,7 @@ impl RichTextLayout {
             font_variations: style.resolved_variations(),
             hanging_punctuation: style.hanging_punctuation,
             fragmentation: style.fragmentation,
+            row_tops: std::cell::OnceCell::new(),
         }
     }
 
@@ -1340,9 +1445,30 @@ impl RichTextLayout {
         top: f32,
         bottom: f32,
     ) -> impl Iterator<Item = cosmic_text::LayoutRun<'_>> {
-        self.buffer
-            .layout_runs()
-            .skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
+        // The bisection reads rows from the top of an unscrolled buffer of
+        // unbounded height, as layouts here are shaped; any other walks.
+        let runs = if self.buffer.scroll() == cosmic_text::Scroll::default()
+            && self.buffer.size().1.is_none()
+        {
+            let tops = self.row_tops.get_or_init(|| RowTops::of(&self.buffer));
+            // No row of a line above `start` can reach within three rows of
+            // `top`: each ends where the next line starts, at most the
+            // tallest row above `top - 3 × tallest`.
+            let start = tops
+                .starts
+                .partition_point(|line_top| *line_top <= top - 3.0 * tops.tallest)
+                .saturating_sub(1);
+            Rows::From(RowsFrom {
+                lines: &self.buffer.lines,
+                line_i: start,
+                layout_i: 0,
+                line_top: tops.starts.get(start).copied().unwrap_or(0.0),
+                line_height: self.buffer.metrics().line_height,
+            })
+        } else {
+            Rows::Walk(cosmic_text::LayoutRunIter::new(&self.buffer))
+        };
+        runs.skip_while(move |run| run.line_top + run.line_height * 3.0 < top)
             .take_while(move |run| run.line_top - run.line_height * 2.0 <= bottom)
     }
 
