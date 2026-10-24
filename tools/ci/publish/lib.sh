@@ -87,6 +87,75 @@ pinned_assets() {
   printf '%s' "$repo_root/os/external-assets/cache"
 }
 
+# Credentials of the AWS role $1 in region $2, exported as AWS_ACCESS_KEY_ID,
+# AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN: STS exchanges t's identity token for them
+# (`id_token = ["sts.amazonaws.com"]`), and the role's trust policy decides which references may
+# have them. They last minutes, and no key is stored. The token goes in the request body from a
+# file, never on a command line.
+aws_role() {
+  local role=$1 region=$2 sts
+  sts=$(mktemp -d "$scratch/sts.XXXXXX")
+  (umask 077 && id_token sts.amazonaws.com > "$sts/token")
+  curl --fail-with-body --silent --show-error --proto '=https' "https://sts.$region.amazonaws.com/" \
+    --data-urlencode Action=AssumeRoleWithWebIdentity --data-urlencode Version=2011-06-15 \
+    --data-urlencode "RoleArn=$role" --data-urlencode DurationSeconds=900 \
+    --data-urlencode "RoleSessionName=tilo-t-$(printf '%.12s' "${T_COMMIT:-local}")" \
+    --data-urlencode "WebIdentityToken@$sts/token" > "$sts/reply.xml" \
+    || die "STS refused the identity token: $(sed -n 's:.*<Message>\(.*\)</Message>.*:\1:p' "$sts/reply.xml")"
+  unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SHARED_CREDENTIALS_FILE AWS_SECURITY_TOKEN
+  AWS_ACCESS_KEY_ID=$(tr -d '\n' < "$sts/reply.xml" | sed -n 's:.*<AccessKeyId>\([^<]*\)</AccessKeyId>.*:\1:p')
+  AWS_SECRET_ACCESS_KEY=$(tr -d '\n' < "$sts/reply.xml" | sed -n 's:.*<SecretAccessKey>\([^<]*\)</SecretAccessKey>.*:\1:p')
+  AWS_SESSION_TOKEN=$(tr -d '\n' < "$sts/reply.xml" | sed -n 's:.*<SessionToken>\([^<]*\)</SessionToken>.*:\1:p')
+  rm -rf -- "$sts"
+  [[ -n $AWS_ACCESS_KEY_ID && -n $AWS_SECRET_ACCESS_KEY && -n $AWS_SESSION_TOKEN ]] || die 'STS answered without credentials'
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION=$region
+}
+
+# Log in to the registry $1 into the auth file $2. registry.tilo.so takes an identity token from t
+# (`id_token = ["registry.tilo.so"]`) as the password of the user `oidc`; it lasts minutes, so a
+# long push logs in again. The forge's registry, code.tilo.so, takes no identity token: there a
+# Forgejo token that may write packages (`secrets = ["REGISTRY_TOKEN"]`), as its owner.
+registry_login() {
+  local registry=$1 auth=$2 user password
+  case $registry in
+    code.tilo.so)
+      password=${REGISTRY_TOKEN:-}
+      [[ -n $password ]] || die 'no token for code.tilo.so: the check needs secrets = ["REGISTRY_TOKEN"]'
+      user=$(curl -fsS -H "Authorization: token $password" https://code.tilo.so/api/v1/user \
+        | sed -n 's/.*"login"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') \
+        || die 'code.tilo.so does not accept REGISTRY_TOKEN'
+      [[ -n $user ]] || die 'code.tilo.so names no owner of REGISTRY_TOKEN' ;;
+    *)
+      user=oidc
+      password=$(id_token "$registry") ;;
+  esac
+  printf '%s' "$password" | skopeo login --authfile "$auth" -u "$user" --password-stdin "$registry" >/dev/null
+}
+
+# The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where the image
+# builds take it from: the Lenovo's from its pinned artifact, the Orange Pi's Wi-Fi files from
+# their pinned public copies.
+stage_board_firmware() {
+  case $1 in
+    lenovo-83ed)
+      python3 "$repo_root/os/dev/hardware-firmware-artifact.py" import \
+        --reference "$(publication TILO_LENOVO_FIRMWARE_REF)" \
+        --manifest-sha256 "$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)" \
+        --profile lenovo-83ed --architecture aarch64 --repo "$repo_root" >/dev/null ;;
+    orangepi-3b-v2-1)
+      TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/fetch-orangepi-wifi-firmware.sh" ;;
+    *) die "no firmware source for the board $1" ;;
+  esac
+}
+
+# A value of os/publication.env, the public configuration of OS publication.
+publication() {
+  local value
+  value=$(sed -n "s/^$1=//p" "$repo_root/os/publication.env")
+  [[ -n $value ]] || die "os/publication.env sets no $1"
+  printf '%s' "$value"
+}
+
 # The pinned Cosign (os/external-assets/github-assets.tsv), checksum-verified, on PATH. It comes
 # from the signing-tools check's outputs, which every check that runs this needs.
 use_cosign() {

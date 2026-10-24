@@ -5,8 +5,10 @@
 //!
 //! A host keeps one [`FaceMotions`] beside what it paints, asks it for each
 //! control's pose by a key that names the control (not its place, which
-//! moves with a scroll), and asks for frames while [`FaceMotions::is_moving`]
-//! says so. A click or a finger moves a control; a key, an assistive action
+//! moves with a scroll). Each motion asks the frame pump for its own frames
+//! (`motion::want_frames_until`), so a host that reads the motion clock
+//! paints them with nothing more; [`FaceMotions::is_moving`] says whether
+//! any is on its way. A click or a finger moves a control; a key, an assistive action
 //! or a value nobody just caused lands. The first value a control is seen
 //! with rests. Settled, nothing asks for frames.
 

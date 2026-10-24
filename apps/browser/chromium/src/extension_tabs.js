@@ -3,11 +3,11 @@
 // windows, and Tilo draws every page offscreen. Run in an extension's service
 // worker and its own pages, this answers the tab and window APIs, the toolbar
 // click, keyboard shortcuts, a tab's capture, context menu items,
-// notifications, scripts on a tab and what network rules did in a tab from
-// the host's tabs instead, over a request the host answers itself. A page of
-// the extension is known by its address; its worker, which has none, by a
-// token the Browser wrote with this script into the worker it runs first
-// (extensions.rs).
+// notifications, signing in, scripts on a tab, what network rules did in a
+// tab and downloads from the host's tabs instead, over a request the host
+// answers itself. A page of the extension is known by its address; its
+// worker, which has none, by a token the Browser wrote with this script into
+// the worker it runs first (extensions.rs).
 (() => {
   const runtime = globalThis.chrome && chrome.runtime;
   if (!runtime || !runtime.id || location.protocol !== 'chrome-extension:') return;
@@ -250,17 +250,40 @@
       },
       // The host tells the extension of a tab event: every listener runs.
       dispatch(name, args) {
-        for (const listener of listeners.get(name) || []) {
-          try {
-            listener(...args);
-          } catch (error) {
-            console.error(error);
+        const run = () => {
+          for (const listener of listeners.get(name) || []) {
+            try {
+              listener(...args);
+            } catch (error) {
+              console.error(error);
+            }
           }
-        }
-        return (listeners.get(name) || new Set()).size;
+          return (listeners.get(name) || new Set()).size;
+        };
+        return name === 'webNavigation.onCreatedNavigationTarget' ? sourceFrame(args[0]).then(run) : run();
       },
     }),
   });
+
+  // A page that opened a tab is known to the host by its tab, and by its
+  // frame's address if that was not the main frame: the frame's id and its
+  // process are Chromium's, as is the page's frame list here.
+  const sourceFrame = async (details) => {
+    const frameUrl = details.sourceFrameUrl;
+    delete details.sourceFrameUrl;
+    let frames = null;
+    try {
+      frames = await chrome.webNavigation.getAllFrames({tabId: details.sourceTabId});
+    } catch (error) {
+      // The page is gone: the main frame, process unknown.
+    }
+    const frame = (frames || []).find((each) => (frameUrl === undefined ? each.frameId === 0 : each.url === frameUrl))
+      || (frames || []).find((each) => each.frameId === 0);
+    if (frame) {
+      details.sourceFrameId = frame.frameId;
+      details.sourceProcessId = frame.processId;
+    }
+  };
 
   // The host asks which frame of a page the extension's world there is, by
   // a port from that world: Chromium tells only the extension
@@ -339,8 +362,13 @@
   event(tabs, 'onCreated', 'tabs.onCreated');
   event(tabs, 'onUpdated', 'tabs.onUpdated');
   event(tabs, 'onActivated', 'tabs.onActivated');
+  event(tabs, 'onHighlighted', 'tabs.onHighlighted');
+  event(tabs, 'onZoomChange', 'tabs.onZoomChange');
   event(tabs, 'onRemoved', 'tabs.onRemoved');
   event(windows, 'onFocusChanged', 'windows.onFocusChanged');
+  // Chromium follows a tab's navigations itself and tells of them by the
+  // ids these APIs give; a page opening a tab it cannot see, the host does.
+  event(chrome.webNavigation, 'onCreatedNavigationTarget', 'webNavigation.onCreatedNavigationTarget');
   event(action, 'onClicked', 'action.onClicked');
   event(chrome.browserAction, 'onClicked', 'action.onClicked');
 
@@ -461,6 +489,43 @@
   toolbar(action);
   toolbar(chrome.browserAction);
 
+  // Downloads. Chromium starts an extension's download on none of the
+  // host's pages, and cancels it: the host starts it on the page in front
+  // instead, through the Browser's own downloads (capabilities.h), so the
+  // person is asked as for any download, which also answers `saveAs`. It is
+  // saved under the last part of `filename`, in a folder of its own like
+  // every download here. Everything else (search, pause, resume, cancel,
+  // erase, onCreated and onChanged) is Chromium's own, which sees every
+  // download of the profile; open and show ask the Browser, which opens
+  // files for the person.
+  const downloads = chrome.downloads;
+  if (downloads) {
+    replace(downloads, 'download', async (options) => {
+      const {url, filename, method, headers, body} = options || {};
+      if (typeof url !== 'string' || !url) throw new Error('Invalid URL');
+      // The host starts a download by its address alone.
+      if ((method && String(method).toUpperCase() !== 'GET') || body !== undefined) {
+        throw new Error('Tilo does not support downloads with a request body yet');
+      }
+      if (Array.isArray(headers) && headers.length) {
+        throw new Error('Tilo does not support downloads with headers of their own yet');
+      }
+      let address;
+      try {
+        address = new URL(url, location.href).href;
+      } catch (error) {
+        throw new Error('Invalid URL');
+      }
+      return call('downloads.download', {url: address, filename: typeof filename === 'string' ? filename : ''});
+    });
+    replace(downloads, 'open', (downloadId) => call('downloads.open', {downloadId}));
+    // Chrome answers show() at once, with nothing to wait for.
+    const show = api((downloadId) => call('downloads.show', {downloadId}));
+    downloads.show = (downloadId) => {
+      show(downloadId).catch((error) => console.error(`Unchecked runtime.lastError: ${error.message}`));
+    };
+  }
+
   // Keyboard shortcuts: the host gives each command the key its manifest
   // suggests, as Chrome does, and fires onCommand with the page it was
   // pressed on (extension_commands.h). The toolbar button's own command acts
@@ -528,9 +593,84 @@
     });
   }
 
+  // Access an extension asks for later (`optional_permissions`,
+  // `optional_host_permissions`). Chromium asks the person in its own
+  // window's dialog, which Tilo's pages are in none of: the host asks the
+  // Browser instead, which keeps what the person allowed with the extension
+  // (extension_permissions.h). As in Chrome, a request is made in answer to
+  // something the person did, and the extension's worker and pages hear of
+  // what it gained or gave up.
+  const permissions = chrome.permissions;
+  if (permissions) {
+    const setOf = (given) => ({
+      permissions: [].concat((given && given.permissions) || []),
+      origins: [].concat((given && given.origins) || []),
+    });
+    replace(permissions, 'getAll', () => call('permissions.getAll'));
+    replace(permissions, 'contains', (given) => call('permissions.contains', setOf(given)));
+    replace(permissions, 'request', (given) => {
+      const activation = typeof navigator !== 'undefined' && navigator.userActivation;
+      if (!activation || !activation.isActive) {
+        return Promise.reject(new Error('This function must be called during a user gesture'));
+      }
+      return call('permissions.request', setOf(given));
+    });
+    replace(permissions, 'remove', (given) => call('permissions.remove', setOf(given)));
+    event(permissions, 'onAdded', 'permissions.onAdded');
+    event(permissions, 'onRemoved', 'permissions.onRemoved');
+  }
+
+  // Signing in (`identity`). Chrome shows the page an extension names in a
+  // window of its own and ends the call once that page goes to the
+  // extension's own address; here the Browser shows it in a panel over the
+  // page in front, or loads it out of sight when the extension may not ask
+  // the person, and the host watches where it goes (extension_sign_in.h).
+  // The outcome is asked for in turns the host holds a while, and between
+  // them a call to Chromium keeps a worker awake, as Chrome keeps it awake
+  // while the call is under way. No one signs in to the Browser itself, so
+  // getAuthToken, which asks the Browser's account, says so.
+  if (!chrome.identity && (manifest.permissions || []).includes('identity')) chrome.identity = {};
+  const identity = chrome.identity;
+  if (identity) {
+    if (typeof identity.getRedirectURL !== 'function') {
+      identity.getRedirectURL = (path) => {
+        let own = path === undefined || path === null ? '/' : String(path);
+        if (!own.startsWith('/')) own = '/' + own;
+        return `https://${runtime.id}.chromiumapp.org${own}`;
+      };
+    }
+    const awake = () => {
+      try {
+        runtime.getPlatformInfo(() => void runtime.lastError);
+      } catch (ignored) {
+        // A page needs no keeping awake.
+      }
+    };
+    replace(identity, 'launchWebAuthFlow', async (details) => {
+      if (!details || typeof details.url !== 'string') throw new Error('identity.launchWebAuthFlow needs the url of the page to sign in on');
+      const timeout = details.timeoutMsForNonInteractive;
+      const flow = await call('identity.launchWebAuthFlow', {
+        url: details.url,
+        interactive: details.interactive === true,
+        abortOnLoad: details.abortOnLoadForNonInteractive !== false,
+        timeout: Number.isFinite(timeout) ? Math.max(0, Math.round(timeout)) : null,
+      });
+      for (;;) {
+        const url = await call('identity.wait', {flow});
+        if (typeof url === 'string') return url;
+        awake();
+      }
+    });
+    replace(identity, 'getAuthToken', async () => {
+      throw new Error('The user is not signed in.');
+    });
+  }
+
   // Context menu items: the host keeps them and shows them in the page's
-  // menu (extension_menus.h); a choice comes back as onClicked.
-  if (!chrome.contextMenus && (runtime.getManifest().permissions || []).includes('contextMenus')) {
+  // menu (extension_menus.h); a choice comes back as onClicked. An
+  // extension may ask for them later, too.
+  const declared = (manifest.permissions || []).concat(manifest.optional_permissions || []);
+  if (!chrome.contextMenus && declared.includes('contextMenus')) {
     chrome.contextMenus = {onClicked: {}};
   }
   const menus = chrome.contextMenus;

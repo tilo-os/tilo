@@ -2,8 +2,9 @@
 """Resume a paired CI/WHPX Windows direct install without rebuilding OS media.
 
 `prepare` downloads the exact imager run artifacts, verifies their signed
-identities, runs the generic full-boot and Lenovo install-only WHPX cycles,
-then creates the source receipt. Physical writes require separate `copy` and
+identities and the OS releases t published that they install (signature and
+SLSA provenance), runs the generic full-boot and Lenovo install-only WHPX
+cycles, then creates the source receipt. Physical writes require separate `copy` and
 `bootnext` invocations. See docs/windows-direct-final-install.md.
 """
 
@@ -80,18 +81,17 @@ def command(argv, *, stdin=None, capture=False):
 
 def pinned_config(path):
     data = read_json(path)
-    required = {"schema", "source_revision", "imager_run", "generic_os_run",
-                "lenovo_os_run", "generic_image", "lenovo_image", "realized_plan",
+    required = {"schema", "source_revision", "imager_run", "generic_image",
+                "lenovo_image", "realized_plan",
                 "source_raw", "generic_index_manifest", "generic_child_manifest",
                 "lenovo_child_manifest", "verify_key", "cosign_command_json",
                 "cosign_key_arg", "username", "tilo_vm_exe"}
     require(type(data) is dict and set(data) == required,
             "orchestrator input must contain exactly the documented fields")
-    require(data["schema"] == "tilo.windows-direct-install.v1", "unknown input schema")
+    require(data["schema"] == "tilo.windows-direct-install.v2", "unknown input schema")
     require(type(data["source_revision"]) is str and REV.fullmatch(data["source_revision"]),
             "source_revision must be a full lowercase commit")
-    for key in ("imager_run", "generic_os_run", "lenovo_os_run"):
-        require(type(data[key]) is int and data[key] > 0, f"{key} must be a run number")
+    require(type(data["imager_run"]) is int and data["imager_run"] > 0, "imager_run must be a run number")
     for key, prefix in (("generic_image", PUBLIC), ("lenovo_image", BOARD)):
         require(type(data[key]) is str and data[key].startswith(prefix)
                 and SHA.fullmatch(data[key][len(prefix):]), f"invalid pinned {key}")
@@ -298,7 +298,7 @@ def verify_identity(data, work, profile, imager_id, imager_revision):
     return identity
 
 
-def verify_ci_images(data, identities, os_ids):
+def verify_ci_images(data, identities):
     spec = importlib.util.spec_from_file_location("windows_direct_provenance",
                                                   HERE / "windows-direct-provenance.py")
     provenance = importlib.util.module_from_spec(spec)
@@ -326,21 +326,9 @@ def verify_ci_images(data, identities, os_ids):
     require(all(verified["generic-index"][field] == verified["generic-child"][field]
                 for field in ("generation", "invocation_id")),
             "generic child provenance differs from signed release index")
-    require(verified["generic-index"]["invocation_id"] == str(os_ids["generic_os_run"])
-            and verified["lenovo-83ed"]["invocation_id"] == str(os_ids["lenovo_os_run"]),
-            "signed OCI provenance invocation does not match selected Forgejo OS runs")
 
 
 def fetch(data, work, progress):
-    os_ids = {}
-    for key in ("generic_os_run", "lenovo_os_run"):
-        record = fgj_run(data[key])
-        require(record.get("commit_sha") == data["source_revision"]
-                and record.get("workflow_id") == "build-image.yml",
-                f"{key} does not publish the pinned source")
-        run_id = record.get("id")
-        require(type(run_id) is int and run_id > 0, f"{key} internal run ID is invalid")
-        os_ids[key] = run_id
     record = fgj_run(data["imager_run"])
     require(record.get("workflow_id") == "release-imager.yml", "wrong imager workflow")
     imager_id = record.get("id")
@@ -382,8 +370,8 @@ def fetch(data, work, progress):
         # ZIPs are redundant once the exact qcow2 has a durable checkpoint.
         archive.unlink()
         cycle.unlink()
-    return ({profile: verify_identity(data, work, profile, imager_id, imager_revision)
-             for profile in PROFILES}, os_ids)
+    return {profile: verify_identity(data, work, profile, imager_id, imager_revision)
+            for profile in PROFILES}
 
 
 def backend(data, script, *args):
@@ -489,11 +477,11 @@ def common_evidence(data, work):
 
 
 def prepare(data, work, progress):
-    identities, os_ids = fetch(data, work, progress)
+    identities = fetch(data, work, progress)
     require(identities["generic"]["run_attempt"] == identities["lenovo-83ed"]["run_attempt"]
             and identities["generic"]["target_image"].startswith(PUBLIC),
             "signed media are not one paired imager attempt")
-    verify_ci_images(data, identities, os_ids)
+    verify_ci_images(data, identities)
     generic_source = work / "generic" / "generic-source.raw"
     require(data["source_raw"] != generic_source,
             "physical source raw must differ from disposable generic target")

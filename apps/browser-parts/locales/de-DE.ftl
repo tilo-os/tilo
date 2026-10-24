@@ -132,5 +132,21 @@ browser-extension-no-version = Diese Erweiterung läuft in Chrome nicht mehr. Vi
 browser-extension-update-asks = { $name } möchte seit dem Update mehr Zugriff. Schalten Sie die Erweiterung ein, um ihn zu erlauben.
 browser-extension-notification-progress = { $percent } % erledigt
 browser-extension-notification-from = Von { $name }
+browser-extension-asks = { $name } möchte mehr Zugriff. Wenn Sie es erlauben, kann die Erweiterung
 browser-page-stopped = Diese Seite funktioniert nicht mehr
 browser-popup-close = Dieses Fenster schließen
+
+## A page's own questions (alert, confirm, prompt, leave this page)
+browser-page-dialog-message-title = Nachricht von { $site }
+browser-page-dialog-message-title-page = Nachricht von dieser Seite
+browser-page-dialog-question-title = { $site } fragt
+browser-page-dialog-question-title-page = Diese Seite fragt
+browser-page-dialog-close = Schließen
+browser-page-dialog-allow = Zulassen
+browser-page-dialog-send = Senden
+browser-page-dialog-cancel = Abbrechen
+browser-page-dialog-leave-title = Diese Seite verlassen?
+browser-page-dialog-reload-title = Diese Seite neu laden?
+browser-page-dialog-unsaved = Vorgenommene Änderungen werden eventuell nicht gespeichert.
+browser-page-dialog-leave = Verlassen
+browser-page-dialog-reload = Neu laden

@@ -5,7 +5,7 @@
 #   TILO_DEV_DISK=0 TILO_DEV_BASE_BUILD=auto ./os/dev/build-dev-image.sh
 #                                        (what tilo-vm vm upgrade --from local runs)
 #
-# Pipeline, which CI runs too (.forgejo/workflows/build-image.yml, dev-disk.yml):
+# Pipeline, which CI runs too (t's os-dev-image-{arch}):
 #   0. with TILO_DEV_BASE_BUILD=auto or 1 only: the production base
 #      (os/dev/build-image.sh, TILO_IMAGE_ONLY=1). auto rebuilds it only when its
 #      inputs changed since it was built (see below).

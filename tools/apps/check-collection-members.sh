@@ -7,11 +7,8 @@
 # LABEL names the archive in the message ("unexpected LABEL member: ...").
 # With --require-tapp, a collection without a single tapp is refused too.
 #
-# Both readers of a published collection use this: the OS image build that
-# takes one instead of compiling the apps (.forgejo/workflows/build-image.yml)
-# and the publication that reuses the prior one
-# (tools/reuse_prior_app_collection.sh). They used to carry a copy each, and
-# only one of them learned that font names carry brackets.
+# The publication that reuses the prior collection
+# (tools/reuse_prior_app_collection.sh) reads a published collection with this.
 
 set -euo pipefail
 

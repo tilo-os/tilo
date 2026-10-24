@@ -169,6 +169,33 @@ pub struct VoiceParticipant {
     pub publishes: bool,
     /// What it shows besides its voice.
     pub showing: Showing,
+    /// Set when a bridge holds this participation: for a person on another
+    /// service, whose voice it carries into the call, or for the bridge
+    /// itself, listening to carry the call out. Its person is then the
+    /// bridge's, never the one it shows.
+    pub bridged: Option<Bridged>,
+}
+
+/// Who a bridge's participation stands for. A bridge (a room's Discord bot)
+/// holds one participation per person on the other side, so each is heard,
+/// shown and turned down on their own, and one of its own that hears the
+/// call and carries it out. A participant reading one shows it by `name`,
+/// marked as reached through `service`, and never as the bridge's person.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Bridged {
+    /// The service, lowercase: `discord`.
+    pub service: String,
+    /// The account on that service whose voice this carries; `None` for
+    /// the bridge's own participation, which carries the call out.
+    pub account: Option<String>,
+    /// The shown name: trimmed, NFC-normalized, 1..=80 characters, as an
+    /// appearance's (`tilo_actions::appearance`).
+    pub name: String,
+    /// BLAKE3 hex of the avatar in the room's content store.
+    pub avatar: Option<String>,
+    /// The room member the account is linked to: the participant is shown
+    /// as that member, reached through `service`.
+    pub linked: Option<[u8; 32]>,
 }
 
 /// What a participant shows besides its voice: its pictures are published

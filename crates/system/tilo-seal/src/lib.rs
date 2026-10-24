@@ -7,6 +7,8 @@
 //! * [`envelope`]: at-rest XChaCha20-Poly1305 envelopes under a symmetric
 //!   key or an Argon2id password, with a versioned header, 192-bit random
 //!   nonces, mandatory [`Context`] binding and key wrapping.
+//! * [`discord_voice`]: the `*_rtpsize` AEAD modes (AES-256-GCM,
+//!   XChaCha20-Poly1305) Discord's voice gateway fixes for RTP.
 //! * [`secret_service`]: the Secret Service API's session encryption
 //!   (Diffie-Hellman, AES-128-CBC), fixed by that specification.
 //! * [`web`]: AES-256-GCM under an HKDF-SHA256 key, the wrap a browser
@@ -30,6 +32,7 @@
 )]
 
 pub mod compat;
+pub mod discord_voice;
 pub mod envelope;
 pub mod error;
 pub mod hpke;

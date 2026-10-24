@@ -4,8 +4,9 @@
 //! stdout: ops come in as `Perform`, gateway activity goes out as `Event`.
 //! The worker keeps one gateway session to the bridged guild, makes the REST
 //! calls the ops need, and reaches nothing but Discord's API, gateway and
-//! CDN (see [`egress`]). The bot token and webhook tokens arrive only as
-//! `Secret` messages and stay in memory.
+//! CDN, and Discord's voice servers when it carries a call (see
+//! [`egress`] and [`voice`]). The bot token and webhook tokens arrive only
+//! as `Secret` messages and stay in memory.
 
 pub mod config;
 pub mod egress;
@@ -15,13 +16,14 @@ pub mod perform;
 pub mod ratelimit;
 pub mod rest;
 pub mod secrets;
+pub mod voice;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_connector::framing::{read_frame_async, write_frame_async};
-use tilo_connector::protocol::{FromWorker, PROTOCOL_VERSION, ToWorker};
+use tilo_connector::protocol::{Bytes, FromWorker, PROTOCOL_VERSION, ToWorker};
 use tokio::io::{AsyncBufRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -32,6 +34,7 @@ use crate::gateway::Gateway;
 use crate::perform::Performer;
 use crate::rest::Rest;
 use crate::secrets::Secrets;
+use crate::voice::CallCommand;
 
 /// What the gateway and the performs share.
 pub struct Ctx {
@@ -44,6 +47,9 @@ pub struct Ctx {
     threads: Mutex<BTreeSet<String>>,
     /// Performs not answered yet, by request, with when they arrived.
     in_flight: Mutex<BTreeMap<u64, Instant>>,
+    /// The host's audio for the voice connection, which holds the lock
+    /// while it is up.
+    pub audio: Arc<tokio::sync::Mutex<mpsc::Receiver<(String, Bytes)>>>,
 }
 
 /// How often the host hears how far behind the worker is.
@@ -173,6 +179,8 @@ where
         Arc::clone(&secrets),
         out.clone(),
     )?);
+    let (audio, audio_rx) = mpsc::channel(voice::AUDIO_QUEUE);
+    let (calls, calls_rx) = mpsc::unbounded_channel::<CallCommand>();
     let ctx = Arc::new(Ctx {
         config,
         rest,
@@ -181,9 +189,10 @@ where
         guild: Mutex::new(None),
         threads: Mutex::new(BTreeSet::new()),
         in_flight: Mutex::new(BTreeMap::new()),
+        audio: Arc::new(tokio::sync::Mutex::new(audio_rx)),
     });
     let performer = Arc::new(Performer::new(Arc::clone(&ctx)));
-    let gateway = tokio::spawn(Gateway::new(Arc::clone(&ctx), checkpoint).run());
+    let gateway = tokio::spawn(Gateway::new(Arc::clone(&ctx), checkpoint).run(calls_rx));
     let metrics = {
         let ctx = Arc::clone(&ctx);
         tokio::spawn(async move {
@@ -222,6 +231,13 @@ where
                 item,
                 bytes,
             } => secrets.deliver(&purpose, &item, bytes.as_ref()),
+            ToWorker::Call { call, status } => {
+                let _ = calls.send(CallCommand { call, status });
+            }
+            // Dropped when the queue is full: late audio is worse than a gap.
+            ToWorker::Audio { speaker, opus } => {
+                let _ = audio.try_send((speaker, opus));
+            }
             ToWorker::Stop => break Ok(()),
             ToWorker::Start { .. } => {
                 let _ = out.send(FromWorker::Status {
@@ -233,7 +249,7 @@ where
     };
     gateway.abort();
     metrics.abort();
-    drop((ctx, performer, secrets, out));
+    drop((ctx, performer, secrets, out, calls, audio));
     // In-flight performs still hold senders; give the writer what is
     // queued now and stop.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), writer).await;

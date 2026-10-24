@@ -172,7 +172,7 @@ model, a socket it cannot reach is explained (and how to get one), and
 `unknown_action` / `invalid_arguments` refusals print the next command to try.
 
 `os/tests/installed-admin-actions.sh` proves this on a booted image in
-`build-image.yml`: after first login, over the admin's ssh and with no
+t's `os-acceptance-{arch}` check: after first login, over the admin's ssh and with no
 `TILO_TEST_CONTROL`, it invokes Notes by address, lists it, and reads the window
 back through `tilo-control windows`. It then creates a note through Notes' `new-page` action and reads it back through `read`.
 
@@ -596,6 +596,11 @@ is `Secret`. Use `actions invoke greeter sign-in@greeter --args-stdin` with
 a private JSON object on standard input, rather than placing a credential
 in the command line. An accepted invocation means the attempt started;
 `state-dump` reports authentication progress and the mapped result.
+
+The sign-in screen's own controls are actions too, available even while an
+attempt runs: `suspend@greeter`, `reboot@greeter` and `power-off@greeter`,
+and `larger-text@greeter`, `high-contrast@greeter` and
+`screen-reader@greeter`, each with a required boolean `enabled`.
 
 For a bounded timing measurement, `configure-session-diagnostics@greeter`
 configures this greeter's next ordinary sign-in with four required booleans:

@@ -94,6 +94,31 @@ fn content_of(media: &MediaItem) -> Option<&str> {
     tilo_actions::content_hash(&media.path).map(|_| media.path.as_str())
 }
 
+/// The kind and number a lane's name reads as: `V2` a second video track,
+/// `a1` the first audio track; `None` for any other name.
+fn lane_named(named: &str) -> Option<(TrackKind, u32)> {
+    let mut chars = named.chars();
+    let kind = match chars.next()?.to_ascii_uppercase() {
+        'V' => TrackKind::Video,
+        'A' => TrackKind::Audio,
+        _ => return None,
+    };
+    let index = chars
+        .as_str()
+        .parse::<u32>()
+        .ok()
+        .filter(|n| (1..=99).contains(n))?;
+    Some((kind, index))
+}
+
+/// `kind` as a refusal names a track of it.
+fn a_track(kind: TrackKind) -> &'static str {
+    match kind {
+        TrackKind::Video => "a video track",
+        TrackKind::Audio => "an audio track",
+    }
+}
+
 impl Project {
     /// The bin source `named`, by id or by name (case aside).
     pub(crate) fn source_named(&self, named: &str) -> Result<&MediaItem, Refusal> {
@@ -120,7 +145,9 @@ impl Project {
 
     /// The track `named`, by id or name, which must carry `kind`; with no
     /// name, the lowest unlocked track of `kind` (V1: the cut, under the
-    /// titles and overlays on the tracks above it), made when there is none.
+    /// titles and overlays on the tracks above it). A name no track has
+    /// that reads as a lane, V1 or A2, makes that track, as no name makes
+    /// the first: a new project has none, and its first clip names V1.
     fn lane_for(&mut self, named: Option<&str>, kind: TrackKind) -> Result<TrackId, Refusal> {
         let Some(named) = named.map(str::trim).filter(|named| !named.is_empty()) else {
             let lowest = self
@@ -131,7 +158,7 @@ impl Project {
                 .map(|track| track.id);
             return Ok(lowest.unwrap_or_else(|| self.new_lane(kind)));
         };
-        let track = named
+        let found = named
             .parse::<Uuid>()
             .ok()
             .and_then(|id| self.track(id))
@@ -139,24 +166,36 @@ impl Project {
                 self.tracks
                     .iter()
                     .find(|track| track.name.eq_ignore_ascii_case(named))
-            })
-            .ok_or_else(|| {
+            });
+        let track = match (found, lane_named(named)) {
+            (Some(track), _) => track,
+            (None, Some((lane, index))) if lane == kind => return Ok(self.lane_at(kind, index)),
+            (None, Some((lane, _))) => {
+                return Err(Refusal::new(format!(
+                    "{named} would be {}; this goes on {}",
+                    a_track(lane),
+                    a_track(kind)
+                )));
+            }
+            (None, None) => {
                 let lanes: Vec<&str> = self.tracks.iter().map(|t| t.name.as_str()).collect();
-                Refusal::new(format!(
-                    "no track `{named}`; the tracks are {}",
+                return Err(Refusal::new(format!(
+                    "no track `{named}`; the tracks are {}. Name one like {} to make it",
                     if lanes.is_empty() {
                         "none yet".to_owned()
                     } else {
                         lanes.join(", ")
-                    }
-                ))
-            })?;
+                    },
+                    if kind == TrackKind::Video { "V1" } else { "A1" }
+                )));
+            }
+        };
         if track.kind != kind {
             return Err(Refusal::new(format!(
-                "{} is a {} track; this goes on a {} track",
+                "{} is {}; this goes on {}",
                 track.name,
-                track.kind.as_str(),
-                kind.as_str()
+                a_track(track.kind),
+                a_track(kind)
             )));
         }
         if track.locked {
@@ -166,7 +205,7 @@ impl Project {
     }
 
     /// A new empty track of `kind` above (or below) the others: V2 over V1.
-    fn new_lane(&mut self, kind: TrackKind) -> TrackId {
+    pub(crate) fn new_lane(&mut self, kind: TrackKind) -> TrackId {
         let index = self
             .tracks
             .iter()
@@ -175,6 +214,11 @@ impl Project {
             .max()
             .unwrap_or(0)
             + 1;
+        self.lane_at(kind, index)
+    }
+
+    /// A new empty track of `kind` named for `index`: V3, A1.
+    fn lane_at(&mut self, kind: TrackKind, index: u32) -> TrackId {
         let prefix = if kind == TrackKind::Video { "V" } else { "A" };
         let id = tilo_resource::fresh_uuid();
         self.tracks.push(Track {
@@ -446,7 +490,8 @@ impl Project {
 pub struct ClipPlacement {
     /// The source's id or name in the bin
     pub media: String,
-    /// The track's id or name, e.g. V1; the first of the source's kind when omitted
+    /// The track's id or name, e.g. V1 or A2, made when the project has none of
+    /// that name; the first of the source's kind when omitted
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub track: Option<String>,
     /// Seconds on the timeline where it starts; after the track's last clip when omitted

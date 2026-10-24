@@ -76,12 +76,14 @@ const NETWORK_ALL: &str = "network-all";
 const NETWORK_PAGE: &str = "network-page";
 const NETWORK_VPN: &str = "network-vpn";
 const NETWORK_VPN_PROFILE: &str = "network-vpn-profile";
+/// An `OpenVPN` profile's page: its protocol, its own MTU and name servers.
+const NETWORK_VPN_OPENVPN: &str = "network-vpn-openvpn";
 const NETWORK_VPN_ADD: &str = "network-vpn-add";
 /// The VPN list with the person's devices as exits, in use both ways.
 const NETWORK_VPN_DEVICES: &str = "network-vpn-devices";
 /// Every network capture.
 #[cfg(test)]
-const NETWORK_SCENARIOS: [&str; 14] = [
+const NETWORK_SCENARIOS: [&str; 15] = [
     NETWORK_LIST,
     NETWORK_WIFI_OFF,
     NETWORK_SCANNING,
@@ -94,6 +96,7 @@ const NETWORK_SCENARIOS: [&str; 14] = [
     NETWORK_PAGE,
     NETWORK_VPN,
     NETWORK_VPN_PROFILE,
+    NETWORK_VPN_OPENVPN,
     NETWORK_VPN_ADD,
     NETWORK_VPN_DEVICES,
 ];
@@ -160,6 +163,7 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_PAGE,
                 NETWORK_VPN,
                 NETWORK_VPN_PROFILE,
+                NETWORK_VPN_OPENVPN,
                 NETWORK_VPN_ADD,
                 NETWORK_VPN_DEVICES,
                 DEVICES_REMOVE,
@@ -277,6 +281,8 @@ pub enum NetworkSample {
     VpnDevices,
     /// A `WireGuard` tunnel's page.
     VpnProfile,
+    /// An `OpenVPN` profile's page.
+    PluginVpnProfile,
     /// The kinds of VPN that can be added.
     AddVpn,
 }
@@ -398,6 +404,7 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
             Some(NETWORK_PAGE) => Some(NetworkSample::NetworkPage),
             Some(NETWORK_VPN) => Some(NetworkSample::VpnList),
             Some(NETWORK_VPN_PROFILE) => Some(NetworkSample::VpnProfile),
+            Some(NETWORK_VPN_OPENVPN) => Some(NetworkSample::PluginVpnProfile),
             Some(NETWORK_VPN_ADD) => Some(NetworkSample::AddVpn),
             Some(NETWORK_VPN_DEVICES) => Some(NetworkSample::VpnDevices),
             _ => None,
@@ -690,6 +697,7 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             | NETWORK_PAGE
             | NETWORK_VPN
             | NETWORK_VPN_PROFILE
+            | NETWORK_VPN_OPENVPN
             | NETWORK_VPN_ADD
             | NETWORK_VPN_DEVICES
             | NETWORK_MOBILE
@@ -850,7 +858,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 41 + CODEC_SCENARIOS.len()
+            Category::ALL.len() + 42 + CODEC_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),

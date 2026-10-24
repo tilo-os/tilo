@@ -4076,6 +4076,8 @@ impl FrameHarness {
         }
 
         self.validate_app_activation_frame()?;
+        // Every motion this frame reads is read at this instant or later.
+        let motions_at = crate::motion::frame_now();
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         let draw_phase = tilo_resource::profiling::Phase::start("ui.draw");
         // Logical layout, rasterised at the capture's device scale, as the
@@ -4319,6 +4321,7 @@ impl FrameHarness {
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
+        crate::motion::frame_drawn(motions_at);
         self.settle_frame_owed =
             self.tooltips.schedule().2 || crate::motion::frames_wanted(crate::time::now());
 

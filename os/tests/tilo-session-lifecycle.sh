@@ -20,7 +20,6 @@ selinux_policy="$repo/os/usr/share/tilo/selinux/tilo-base.cil"
 identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
 recipient_unit="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.service"
 recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
-release_workflow="$repo/.forgejo/workflows/build-image.yml"
 shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
 grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
@@ -134,13 +133,6 @@ engine_deps_line=$(grep -n '&& gst-inspect-1.0 aacparse >/dev/null' "$repo/os/Co
 shell_link_check_line=$(grep -n 'missing="$(ldd /usr/bin/shell /usr/bin/xwayland-satellite' "$repo/os/Containerfile" | tail -1 | cut -d: -f1)
 test "$engine_deps_line" -lt "$shell_link_check_line"
 grep -Fq 'the browser engine has unresolved runtime libraries:' "$repo/os/Containerfile"
-grep -Fq 'busctl --user status org.freedesktop.impl.portal.desktop.tilo' "$release_workflow"
-# First-use actions are now driven through the installed AT-SPI endpoint;
-# keeping stale blind-keyboard assertions here made the FUSE lane reject the
-# stronger accessibility release gate before any filesystem test could run.
-grep -Fq './os/dev/vm.sh test native-atspi-smoke.sh oobe-actions' "$release_workflow"
-grep -Fq './os/dev/vm.sh keys tab ret' "$release_workflow"
-grep -Fq 'identity ceremony did not produce the certified chain' "$release_workflow"
 
 tmp_root="${TMPDIR:-/tmp}"
 tmp=$(mktemp -d "$tmp_root/tilo-session-lifecycle.XXXXXX")

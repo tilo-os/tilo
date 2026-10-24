@@ -83,7 +83,7 @@ BUDGETS = {
     # host's GPU, both of which compile every render pipeline on the first frame: a cold
     # launch there is judged against a generous ceiling that still catches a stall of seconds.
     "files_first_frame_s": 3.0, "files_first_frame_hw_s": 0.3,
-    # The installed-desktop gates build-image.yml runs on a KVM guest: kernel and userspace
+    # The installed-desktop gates os-acceptance-{arch} runs on a KVM guest: kernel and userspace
     # to a usable greeter (whole seconds, the boot gate's unit), and the render-path gate's
     # per-frame presentation and main-thread work on a software renderer.
     "boot_to_greeter_s": 20, "render_frame_ms": 1000, "render_frame_work_ms": 100,
