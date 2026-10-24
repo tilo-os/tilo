@@ -98,6 +98,14 @@ pub(crate) fn load_session_tree(enable_peer_sync: bool) -> LoadedSession {
         tree.queue_save();
     }
 
+    let claimed = tree.claim_own_unhosted_rooms(crate::shell::state::local_user_id_for_room);
+    if !claimed.is_empty() {
+        tracing::info!(
+            "capabilities: {} workspace(s) of this device's own belong to their selected identities until their host holds them",
+            claimed.len()
+        );
+    }
+
     // Replay the persisted aggregate on every boot. A previous session may
     // have stopped while the authority socket was unavailable; the
     // background publisher coalesces this with any immediate mutation.

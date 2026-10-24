@@ -1153,21 +1153,11 @@ fn open_channel_encryption(
     ) = match net {
         Some(net) => {
             let changes = Arc::clone(&net);
-            let stewards = Arc::clone(&net);
+            let stewards = crate::shell::network::ShellNetwork::room_stewards(&net);
             (
                 Box::new(move |user| net.authenticated_devices_of(user)),
                 Box::new(move |after| changes.authenticated_devices_next_change(after)),
-                Box::new(move |room| {
-                    stewards
-                        .opened_native_owner()?
-                        .with_current(room, |view| {
-                            Ok((
-                                view.device().device_public_key,
-                                view.governor().device_public_key,
-                            ))
-                        })
-                        .ok()
-                }),
+                stewards,
             )
         }
         None => (

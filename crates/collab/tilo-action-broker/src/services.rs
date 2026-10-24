@@ -227,6 +227,13 @@ pub trait WorkspaceMemberships: Send + Sync {
 
     fn requires_room(&self, room: &str) -> bool;
 
+    /// Why no app opens anything in `room` on this device, when none can: a
+    /// room no host holds has no documents to open. Said to the app as it
+    /// joins, in place of a failure further in.
+    fn room_unavailable(&self, _room: &str) -> Option<String> {
+        None
+    }
+
     /// Whether `room` is held here but governed by the node that stewards
     /// it, where the one membership change this device asks is the
     /// authorship an app opening there needs, committed by that host.

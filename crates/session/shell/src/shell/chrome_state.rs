@@ -1852,12 +1852,16 @@ impl ChromeState {
             .local_user_for_room_prompt(room, &self.local_user_id)
     }
 
-    /// Act as the identity first-login setup just provisioned. The rooms
-    /// this session made before then name their owner as their hosts
-    /// created them, which the projection of each room carries here.
+    /// Act as the identity first-login setup just provisioned. A room a
+    /// host holds names its owner as the host created it, which the
+    /// projection carries here; one no host holds yet is the new
+    /// identity's ([`crate::shell::state::WorkspaceTree::claim_own_unhosted_rooms`]).
     pub fn adopt_provisioned_identity(&mut self) {
         if matches!(self.identity_source, IdentitySource::SessionRegistry) {
             self.local_user_id = crate::shell::state::local_user_id();
+            // The rooms no host holds yet are this identity's now.
+            self.tree_mut()
+                .claim_own_unhosted_rooms(|room| self.local_user_for_room(room));
             self.bump();
         }
     }
@@ -3048,6 +3052,7 @@ impl ChromeState {
         let id = {
             let mut tree = self.tree_mut();
             let id = tree.create_hosted_workspace(&name.into()).0;
+            tree.claim_own_unhosted_rooms(|room| self.local_user_for_room(room));
             tree.set_active(id);
             id
         };

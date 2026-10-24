@@ -324,11 +324,17 @@ impl ShellNetwork {
             .is_ok_and(|route| route.elsewhere())
     }
 
-    /// [`Self::governed_elsewhere`] as `owner`, already open, admits it:
-    /// for the frame loop, which never opens one.
-    pub(crate) fn governed_elsewhere_by(&self, owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
-        self.governor_route_of(owner, room)
-            .is_ok_and(|route| route.elsewhere())
+    /// Whether `owner`, already open, holds `room` governed by a device
+    /// other than the one it enrolled there: for the frame loop, which
+    /// never opens an owner and never reads the disk, so it reads the
+    /// committed enrollment alone. What then goes to the governor goes by
+    /// [`Self::governor_route`], which checks this device's current custody.
+    pub(crate) fn governed_elsewhere_by(owner: &NativeWorkspaceOwner, room: RoomId) -> bool {
+        owner
+            .with_current(room, |view| {
+                Ok(view.governor().device_public_key != view.device().device_public_key)
+            })
+            .unwrap_or(false)
     }
 
     /// Whether `room`'s governor opens the apps launched in it, creating

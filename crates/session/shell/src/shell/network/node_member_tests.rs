@@ -204,6 +204,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         )
         .unwrap()
     };
+    let net = Arc::new(net);
     let (session_key, session_cert) = session_cert.lock().unwrap().clone().unwrap();
     assert!(!session_cert.capabilities.can_act_as_host);
     let _ = net.join_default_workspace();
@@ -213,10 +214,10 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
             vault: channel_crypto::VaultKey::new([9; 32]),
             device_key: session_key.clone(),
         },
-        Box::new(WorkspaceChannelDirectory::new(
-            tree.clone(),
-            Box::new(|_| Vec::new()),
-        )),
+        Box::new(
+            WorkspaceChannelDirectory::new(tree.clone(), Box::new(|_| Vec::new()))
+                .with_stewards(ShellNetwork::room_stewards(&net)),
+        ),
         Arc::new(Mutex::new(BrokerChannels::default())),
     )
     .unwrap();
@@ -266,7 +267,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
         let channel = document_channel_id(NOTES, &acme.room, record);
         until("the steward to admit the session", || {
             net.tick();
-            channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
+            channels.pump(&*net, Instant::now(), tilo_clock::try_unix_now().unwrap());
             match channels.access(room, channel, Instant::now()) {
                 ChannelAccess::Ready(keys) => Some(keys),
                 ChannelAccess::Waiting => None,
@@ -346,7 +347,7 @@ fn a_node_session_shares_sealed_records_with_the_browser() {
     let mut events = Vec::new();
     let seen = until("the reply to reach the browser", || {
         net.tick();
-        channels.pump(&net, Instant::now(), tilo_clock::try_unix_now().unwrap());
+        channels.pump(&*net, Instant::now(), tilo_clock::try_unix_now().unwrap());
         events.extend(ada.drain());
         let index = events.iter().position(|event| {
             matches!(event, PeerEvent::Document(document) if document.route.record == "reply")
