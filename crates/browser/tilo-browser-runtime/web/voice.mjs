@@ -435,8 +435,8 @@ export function createVoiceCall({
     grantTimer = undefined;
   }
 
-  /** `expire` once the page ran `GRANT_DEADLINE_MS` without a grant,
-   * looked at every `GRANT_LOOK_MS`. */
+  /** `expire` once the page ran, online, `GRANT_DEADLINE_MS` without a
+   * grant, looked at every `GRANT_LOOK_MS`. */
   function startGrantDeadline(expire) {
     clearGrantDeadline();
     let ran = 0;
@@ -444,7 +444,10 @@ export function createVoiceCall({
     const look = () => {
       const at = now();
       const late = Math.max(at - last - GRANT_LOOK_MS, 0);
-      ran += Math.max(GRANT_LOOK_MS - late, 0);
+      // Offline, the session cannot reach the host: no grant can come, so
+      // that time is no sign the host will not answer either. The call
+      // waits, reconnecting, for the network.
+      if (environment.navigator?.onLine !== false) ran += Math.max(GRANT_LOOK_MS - late, 0);
       last = at;
       if (ran >= GRANT_DEADLINE_MS) {
         grantTimer = undefined;
