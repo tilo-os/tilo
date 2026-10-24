@@ -454,6 +454,9 @@ pub struct BrowserWidget {
     personal_open: ui::LocalState<std::collections::BTreeMap<String, String>>,
     personal_bookmark_location: crate::personal_bookmark_view::Location,
     person_history: Option<ui::framework::PersonRecord<crate::history::BrowsingHistory>>,
+    /// The page last recorded in [`Self::person_history`] before it had a
+    /// title, to name once its title comes.
+    untitled_visit: Option<String>,
     continuity: Option<crate::continuity_handoff::Controller>,
     /// The person's address book, which new tabs fill forms from too.
     address_book: Option<ui::framework::PersonRecord<crate::autofill::AddressBook>>,
@@ -1268,6 +1271,7 @@ impl BrowserWidget {
             personal_open: ui::LocalState::new(std::collections::BTreeMap::new()),
             personal_bookmark_location: crate::personal_bookmark_view::Location::default(),
             person_history: None,
+            untitled_visit: None,
             continuity: None,
             address_book: None,
             history_revision: None,
@@ -2376,6 +2380,29 @@ impl BrowserWidget {
         Ok(candidate)
     }
 
+    /// Name the visit just recorded without a title, once the page it
+    /// recorded has one.
+    fn name_untitled_visit(&mut self) {
+        if self.title.trim().is_empty()
+            || self.untitled_visit.as_deref() != Some(self.current_uri.as_str())
+        {
+            return;
+        }
+        self.untitled_visit = None;
+        if let Some(record) = &self.person_history {
+            let name = crate::history::BrowsingHistory::NAME_VISIT.with(
+                crate::history::browsing_history::NameVisit {
+                    url: self.current_uri.clone(),
+                    title: self.title.clone(),
+                },
+            );
+            if let Err(error) = record.invoke(&name) {
+                tracing::warn!(%error, "browser visit was not named");
+            }
+            self.follow_history();
+        }
+    }
+
     fn reject_navigation<T>(&mut self, message: &str) -> Result<T, String> {
         self.show_navigation_error(message);
         Err(message.into())
@@ -3171,6 +3198,7 @@ impl BrowserWidget {
                     // The page surface is named after its title.
                     self.structure_dirty |= self.title != title;
                     self.title = title;
+                    self.name_untitled_visit();
                 }
                 WebViewEvent::FaviconChanged {
                     page_url,
@@ -3269,6 +3297,12 @@ impl BrowserWidget {
                         if let Err(error) = record.invoke(&visit) {
                             tracing::warn!(%error, "browser visit was not recorded");
                         }
+                        // A page a web app moves to is named after it loads.
+                        self.untitled_visit = self
+                            .title
+                            .trim()
+                            .is_empty()
+                            .then(|| self.current_uri.clone());
                         self.follow_history();
                         self.follow_personal_bookmarks();
                     }
