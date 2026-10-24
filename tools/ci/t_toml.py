@@ -9,6 +9,8 @@ so t.toml carries both, generated between markers:
 
   * `package_inputs` of the cargo families, so a change to a file a package
     reads through include_str! or a test fixture path runs its checks again;
+  * which packages the `test`, `test-x86_64` and `test-idle` families each run
+    (X86_64_ONLY_TESTS, IDLE_TESTS);
   * one `suite-<group>` check per suite group;
   * the publishing chains of tools/ci/products.toml, one block per family
     (`products-<family>`; docs/publishing-on-t.md, "Products");
@@ -747,6 +749,72 @@ def cargo_check(name: str, spec: dict, manifest: suites.Manifest, packages: dict
 X86_64_ONLY_TESTS = ["launcher", "shell", "store", "tilo-sandbox", "tilo-vmd"]
 
 
+# The packages the test family leaves to main's newest head when t has room (`idle`), as
+# `test-idle`. Nearly every push reaches each of them through its dependencies, so on every
+# push they reran together over a third of CI's jobs, yet from 2026-10-19 to 2026-10-24 none
+# of them failed on a commit of main that t bisected a failure to, and each failed in under one
+# run in twenty. t records their key for every commit, so a failure is still bisected to the
+# commit that broke it and told to that commit's session, and `stable` runs them on every
+# release candidate. A package that catches something should go back to `test`.
+IDLE_TESTS = [
+    "accounts", "agent-provider-config", "block-devices", "bounded-command", "bounded-zip",
+    "browser-continuity", "browser-continuity-core", "cli-shim", "cloud-source",
+    "cloud-source-dav", "cloud-source-dropbox", "cloud-source-gdrive", "cloud-source-icloud",
+    "cloud-source-onedrive", "collab-fixtures", "collab-link", "collab-probe", "compat-catalogue",
+    "console-control", "desktop-policy", "discord-wire", "disks", "disk-usage", "durable-store",
+    "emoji", "example-background-task", "example-bound-controls", "example-counter",
+    "example-data-table", "example-graph-screens", "example-localized", "example-qr-code",
+    "example-shared-checklist", "example-tree-browser", "example-virtual-list", "fake-discord",
+    "format-host", "format-provider-abi", "frame-link", "fs-content", "fs-native", "fs-protocol",
+    "greetd-client", "greeter", "hello", "hex-editor", "host-fs", "host-info",
+    "install-profile-model", "legacy-agent", "legacy-agent-protocol", "legacy-vm",
+    "local-model-service", "logs", "model-providers", "moderation-model", "notes-cli", "osk",
+    "passwords", "pim-lines", "poker", "print-centre", "publisher", "registry-client",
+    "registry-types", "remote", "runtime-bundle", "runtime-collab", "runtime-dylib",
+    "runtime-fs-fuse", "runtime-identity", "runtime-portal", "runtime-update",
+    "rustls-native-certs", "scratchpad", "settings-sections", "shortcuts", "speed-test",
+    "ssh-agent-client", "staging-handoff-model", "system-extension", "tasks", "test-app-registry",
+    "test-http", "threshold-identity", "thumbnails", "tilo-accessibility-settings",
+    "tilo-accounts-engine", "tilo-action-policy", "tilo-actions", "tilo-adblock-engine",
+    "tilo-advisory-lock", "tilo-agent-models", "tilo-appearance", "tilo-app-host-engine",
+    "tilo-app-state", "tilo-archive", "tilo-archive-engine", "tilo-ask-password", "tilo-auth",
+    "tilo-automation", "tilo-automerge-isolate", "tilo-bluez", "tilo-board-successor",
+    "tilo-boot-order", "tilo-boot-signin", "tilo-bot-directory", "tilo-browser-compute",
+    "tilo-browser-import-engine", "tilo-browser-sessions", "tilo-callstream", "tilo-canvas",
+    "tilo-chromium-blocker", "tilo-cli-kit", "tilo-clock", "tilo-cloud-files", "tilo-connector",
+    "tilo-contact-directory", "tilo-contact-directory-engine", "tilo-content",
+    "tilo-content-blocker", "tilo-content-device", "tilo-content-types", "tilo-control",
+    "tilo-copy-lint", "tilo-cpu-raster", "tilo-crypto", "tilo-dav", "tilo-desktop-entry",
+    "tilo-desktop-model", "tilo-device-vpn", "tilo-dialogs", "tilo-doc", "tilo-doc-codecs",
+    "tilo-doc-pdf", "tilo-document", "tilo-documents", "tilo-egress", "tilo-emoji-engine",
+    "tilo-engine-loader", "tilo-environment", "tilo-esp-write", "tilo-extension", "tilo-feedback",
+    "tilo-feedback-review", "tilo-file-provider", "tilo-files", "tilo-font-catalog",
+    "tilo-fuse-engine", "tilo-headless-schema", "tilo-highlight", "tilo-highlight-engine",
+    "tilo-highlight-grammars", "tilo-history", "tilo-host", "tilo-host-search",
+    "tilo-identity-ceremony", "tilo-image-codec", "tilo-image-policy-check", "tilo-innertube",
+    "tilo-input-context", "tilo-installed-apps", "tilo-invidious", "tilo-keyboard-map",
+    "tilo-libvirt-domain", "tilo-location", "tilo-lockdown-policy", "tilo-mail-engine",
+    "tilo-messaging", "tilo-mime", "tilo-moderation", "tilo-moq", "tilo-net", "tilo-net-answers",
+    "tilo-network-secret-agent", "tilo-nm", "tilo-notify", "tilo-ntfs-helper", "tilo-ntfs-mount",
+    "tilo-ntfs-protocol", "tilo-oauth", "tilo-oci-images", "tilo-ocr", "tilo-os-search",
+    "tilo-owner-commit", "tilo-page-raster", "tilo-paint-engine", "tilo-paint-stream",
+    "tilo-paths", "tilo-pc-keyboard-geometry", "tilo-pdf-engine", "tilo-peer-state",
+    "tilo-platform-caps", "tilo-polkit-agent", "tilo-presentation", "tilo-process",
+    "tilo-pycompat", "tilo-reference", "tilo-render-protocol", "tilo-resource",
+    "tilo-resource-macros", "tilo-rich-text", "tilo-rollback", "tilo-runner-native",
+    "tilo-sandbox-core", "tilo-seal", "tilo-search", "tilo-secrets", "tilo-secret-vault",
+    "tilo-segment", "tilo-session-record", "tilo-settings-engine", "tilo-sort", "tilo-spellcheck",
+    "tilo-spotify-engine", "tilo-staging-reclaim", "tilo-subject", "tilo-system-info",
+    "tilo-system-stats", "tilo-test-env", "tilo-thumbnail", "tilo-timezone-engine",
+    "tilo-tray-host", "tilo-tts", "tilo-typst-engine", "tilo-typst-fonts", "tilo-ui-builder",
+    "tilo-ui-graph", "tilo-ui-paint", "tilo-unlock-helper", "tilo-unlock-protocol",
+    "tilo-user-identity", "tilo-vision", "tilo-vm", "tilo-wake", "tilo-wallpapers",
+    "tilo-web-desktop", "tilo-web-search", "tilo-wet-media", "tilo-winit-x11",
+    "tilo-workspace-join", "tilo-youtube-engine", "tinker", "ui-examples", "web-search",
+    "windows-app", "windows-vm", "wire-frame", "word-processor", "workspace-hack",
+]
+
+
 def untested(packages: dict[str, dict]) -> list[str]:
     """Packages with no test target of their own (`test = false` and no integration tests):
     another package's tests compile their code in, and nextest refuses to run them alone."""
@@ -755,8 +823,13 @@ def untested(packages: dict[str, dict]) -> list[str]:
 
 
 def test_families(packages: dict[str, dict]) -> dict[str, str]:
-    return {"test-exclude": f"exclude = {array(sorted({*X86_64_ONLY_TESTS, *untested(packages)}))}\n",
-            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n"}
+    left_out = {*X86_64_ONLY_TESTS, *untested(packages)}
+    wrong = sorted(name for name in IDLE_TESTS if name not in packages or name in left_out)
+    if wrong:
+        raise ValueError(f"IDLE_TESTS: not a workspace package the test family runs: {', '.join(wrong)}")
+    return {"test-exclude": f"exclude = {array(sorted({*left_out, *IDLE_TESTS}))}\n",
+            "test-x86_64-packages": f"packages = {array(X86_64_ONLY_TESTS)}\n",
+            "test-idle-packages": f"packages = {array(sorted(IDLE_TESTS))}\n"}
 
 
 def cargo_checks(manifest: suites.Manifest, metadata: dict | None = None) -> dict[str, str]:
@@ -790,7 +863,8 @@ def generated(manifest: suites.Manifest) -> dict[str, str]:
     metadata = workspace_graph.cargo_metadata(ROOT)
     manifest = with_dependency_inputs(manifest, {p["name"]: p for p in metadata["packages"]}, ROOT)
     inputs = package_inputs(manifest)
-    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "clippy-package-inputs": inputs,
+    return {"test-package-inputs": inputs, "test-x86_64-package-inputs": inputs, "test-idle-package-inputs": inputs,
+            "clippy-package-inputs": inputs,
             "check-package-inputs": inputs, "suites": suite_checks(manifest),
             "goldens": goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),
             "arm64-goldens": arm64_goldens(GOLDENS_IMAGE.read_text(encoding="utf-8").strip()),

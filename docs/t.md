@@ -62,7 +62,9 @@ python3 tools/dev/install-git-hooks.py
 - **Heavy checks on `main`.** The heavy checks that matter for `main`'s health (the SDK builds,
   the web and Android builds, the goldens, FUSE, render counters, examples, the security
   invariants, the OS and VM acceptance suites, the desktop and imager preflights, app lints, the
-  portable toolkit build: `on = [..., "idle"]` in `t.toml`) run on `main`'s newest head whenever t has room left after the default checks and
+  portable toolkit build, and the tests of the packages that nearly every push reaches but that
+  have caught nothing there, `test-idle/<package>`: `on = [..., "idle"]` in `t.toml`) run on
+  `main`'s newest head whenever t has room left after the default checks and
   everyone's own runs, at a priority that never delays either. Each commit's key is recorded, so
   when one fails t bisects it to the commit that broke it and tells that commit's session, as for
   a default check; `t main` and the notice mark it as heavy. The per-app size checks aren't among
