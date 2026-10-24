@@ -39,7 +39,12 @@ python3 tools/dev/install-git-hooks.py
     `codemap`, `sdk-policy`, `workspace-layout`, `lockfile`, `hakari`, `deny`) whose inputs it
     touches; the policy suite's own tests only when it touches `tools/policy/`;
   - `changes`, the diff gates (allow reasons, commit messages, interfaces);
-  - clippy of the packages whose files it changes, not of their dependents.
+  - clippy of the packages whose files it changes, not of their dependents;
+  - the aarch64 size check of each app whose files it changes (`app-size/<app>-aarch64`), about a
+    minute, when t has the commit's shared runtime built (main keeps it built, `idle`). A commit
+    that changes what the runtime is built from (the toolkit, the SDK) skips it, says so and
+    records the skip in `.git/t-gate-size-skips`; main's whole-collection size gate holds it to
+    the budgets.
 
   No tests, VM checks, images, suites or dependents: `main` runs those on every commit, or on
   its newest head (below), and tells the commit that broke one. The hook also prints the
@@ -65,8 +70,9 @@ python3 tools/dev/install-git-hooks.py
   portable toolkit build: `on = [..., "idle"]` in `t.toml`) run on `main`'s newest head whenever t has room left after the default checks and
   everyone's own runs, at a priority that never delays either. Each commit's key is recorded, so
   when one fails t bisects it to the commit that broke it and tells that commit's session, as for
-  a default check; `t main` and the notice mark it as heavy. The per-app size checks aren't among
-  them (there are too many): their aggregate runs on `stable`.
+  a default check; `t main` and the notice mark it as heavy. The size budgets are among them as
+  one check per architecture over the whole collection (`app-sizes-<arch>`); the per-app size
+  checks are not (there are too many).
 - **`stable`** is the release branch. The stabilizer (usually an agent) picks a recent `main`
   commit and runs the heavy checks there too (images, VM and FUSE suites, size budgets, the goldens:
   `on = ["stable"]` in `t.toml`). For each failure it commits a fix (brought back to `main`) or an
@@ -237,7 +243,8 @@ spend most of that waiting for the node's disk: the app's compile reads the shar
 metadata (about 2 GB) from it.
 
 The whole collection's gate, `app-sizes-x86_64` and `app-sizes-aarch64`, runs on each new head
-of `stable` and when dispatched. Budgets and how to raise one:
+of `stable`, when dispatched, and on `main`'s newest head when t has room (`idle`), where t
+bisects a failure to the commit that took an app over its budget. Budgets and how to raise one:
 [app package size](measurements/app-package-size.md), [runtime size](measurements/runtime-size.md).
 
 ## Publishing

@@ -620,12 +620,13 @@ default = false
 
 # The size gate: packages the default collection as apps-build does and holds each tapp and the
 # runtime to its budget (tools/perf/tapp-size-budget/, tools/perf/runtime-size-budget/). It runs
-# on every release candidate (stable) and on demand (`t dispatch app-sizes-x86_64`, or
-# `t test app-sizes-x86_64` for a working tree), not on every push to main: each run builds the
-# whole collection, 10 to 16 minutes on 16 cores, and on main it cost 17 job-hours a day while
-# failing on every run. A candidate over budget is held back, and the commit that took an app
-# over is found among those the candidate adds.
-# Between candidates, a change that concerns an app runs that app's own size check
+# on every release candidate (stable), on demand (`t dispatch app-sizes-x86_64`, or
+# `t test app-sizes-x86_64` for a working tree), and on main's newest head when t has room left
+# (`idle`), where a failure is on `t main` and bisected to the commit that took an app over its
+# budget, before an image build packs that app (os/scripts/pack-apps.sh holds it to the same
+# budget). Not on every push to main: each run builds the whole collection, 10 to 16 minutes on
+# 16 cores, and on every push it cost 17 job-hours a day.
+# A change that concerns an app can run that app's own size check before it lands
 # (`t test app-size/<app>-<arch>`, or `runtime-size-<arch>` for the runtime), keyed by what it is
 # built from; t_toml.py generates them.
 [[matrix.check]]
@@ -636,7 +637,7 @@ requires = ["{node}"]
 requirement = { cores = 16, memory = "32GiB" }
 timeout_secs = 5400
 cost = "heavy"
-on = ["stable", "dispatch"]
+on = ["stable", "dispatch", "idle"]
 default = false
 
 # The default collection with its symbol tables, for reading what makes an app large:
