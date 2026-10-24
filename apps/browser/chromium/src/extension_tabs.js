@@ -240,34 +240,40 @@
   });
 
   // The host asks which frame of a page the extension's world there is, by
-  // a message from that world: Chromium tells only the extension
-  // (`sender.frameId`). It is answered here and never reaches the
-  // extension's own listeners.
-  const onMessage = runtime.onMessage;
-  if (onMessage) {
-    const probe = (message) => message !== null && typeof message === 'object' && message.__tiloFrame === true;
-    const add = onMessage.addListener.bind(onMessage);
-    const remove = onMessage.removeListener.bind(onMessage);
-    add((message, sender, reply) => {
-      if (probe(message) && sender.id === runtime.id && sender.tab && typeof sender.frameId === 'number') reply(sender.frameId);
+  // a port from that world: Chromium tells only the extension
+  // (`sender.frameId`, `sender.documentId`). It is answered here and never
+  // reaches the extension's own listeners.
+  const onConnect = runtime.onConnect;
+  if (onConnect) {
+    const probe = (port) => port !== null && typeof port === 'object' && port.name === '__tiloFrame';
+    const add = onConnect.addListener.bind(onConnect);
+    const remove = onConnect.removeListener.bind(onConnect);
+    add((port) => {
+      const sender = probe(port) && port.sender;
+      if (!sender || sender.id !== runtime.id || !sender.tab || typeof sender.frameId !== 'number') return;
+      try {
+        port.postMessage({frameId: sender.frameId, documentId: sender.documentId ?? null});
+      } catch (error) {
+        // The world that asked is gone.
+      }
     });
     const own = new Map();
-    onMessage.addListener = (listener) => {
+    onConnect.addListener = (listener) => {
       if (typeof listener !== 'function' || own.has(listener)) return;
-      const filtered = function (message, ...rest) {
-        return probe(message) ? undefined : listener.call(this, message, ...rest);
+      const filtered = function (port, ...rest) {
+        return probe(port) ? undefined : listener.call(this, port, ...rest);
       };
       own.set(listener, filtered);
       add(filtered);
     };
-    onMessage.removeListener = (listener) => {
+    onConnect.removeListener = (listener) => {
       const filtered = own.get(listener);
       if (!filtered) return;
       own.delete(listener);
       remove(filtered);
     };
-    onMessage.hasListener = (listener) => own.has(listener);
-    onMessage.hasListeners = () => own.size > 0;
+    onConnect.hasListener = (listener) => own.has(listener);
+    onConnect.hasListeners = () => own.size > 0;
   }
 
   const {tabs, windows, scripting, action} = chrome;
@@ -289,7 +295,7 @@
     return call('tabs.captureVisibleTab', {windowId: windowId ?? null, options: options || {}});
   });
   replace(tabs, 'sendMessage', (tabId, message, options) =>
-    call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId}));
+    call('tabs.sendMessage', {tabId, message, frameId: options && options.frameId, documentId: options && options.documentId}));
   if (tabs) {
     tabs.connect = (tabId, info) => {
       const id = 'x' + crypto.randomUUID();

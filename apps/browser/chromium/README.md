@@ -456,17 +456,26 @@ content scripts (with `sender.tab`) work without help.
   order, batched while a request is under way, and on from the host to the
   worker or page the same way, so a burst wakes the worker once.
 - `scripting.executeScript` reaches the frames an extension names
-  (`frameIds`, `allFrames`) and `tabs.sendMessage` one frame (`frameId`), as
-  Bitwarden injects its form filler into each frame that asks. Chromium
-  knows a frame by an id the inspector does not show, so the host asks the
-  extension's world in the frame with a message only the tab script answers
-  (`sender.frameId`). A frame another site's process renders is a target of
-  its own, which the host attaches to on the pipe for as long as the call
-  takes, and only when the frames named are not all in the page's own
-  process; the pipe carries a script whole, up to 16 MiB. `allFrames`
-  passes over a frame the script cannot run in, as Chrome does: one that
-  went to another site's page the extension's content scripts do not match
-  keeps its id but has no world of the extension in its new process.
+  (`frameIds`, `documentIds`, `allFrames`) and `tabs.sendMessage` one frame
+  (`frameId`, `documentId`), as Bitwarden injects its form filler into each
+  frame that asks. A message reaches the frame's content scripts, or the
+  extension's own page in the frame, as Evernote Web Clipper answers the
+  panel it shows in the page. Chromium knows a frame and its document by
+  ids the inspector does not show, so the host asks the extension's world
+  in the frame (or its page there) over a port only the tab script answers
+  (`sender.frameId`, `sender.documentId`): a port, because an extension
+  page without the tab script that answers every message itself cannot
+  answer it first. A frame's id lasts as long as the frame, its document's
+  as long as the document. A frame another site's process renders is a
+  target of its own, which the host attaches to on the pipe for as long as
+  the call takes, and only when the frames named are not all in the page's
+  own process; a frame named that the host met before on a target of its
+  own is the only one attached to, so each message to an extension's panel
+  costs one session. The pipe carries a script whole, up to 16 MiB.
+  `allFrames` passes over a frame the script cannot run in, as Chrome does:
+  the extension's own page, and one that went to another site's page the
+  extension's content scripts do not match, which keeps its id but has no
+  world of the extension in its new process.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
   tab an extension was told of before the host learnt its id among

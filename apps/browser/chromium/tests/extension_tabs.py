@@ -62,6 +62,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   page does not get the key; its toolbar button's command asks the Browser
   to act as a click on the button does. commands.getAll lists each command
   with its key, none for one the Browser keeps for itself.
+- A worker reaches its panel in the page, a page of its own in a frame, by
+  the frame and the document a message from the panel came from (Evernote
+  Web Clipper answers its panel so), and the page's frames by their
+  documents, while the panel answers every message itself.
 """
 import base64
 import hashlib
@@ -807,6 +811,32 @@ class ExtensionTabs(unittest.TestCase):
             'large': '/outer:1500000',
             'missing': True,
             'moved': True,
+        })
+
+    def test_a_worker_reaches_its_panel_in_the_page_and_frames_by_their_documents(self):
+        host, ids = self.start('clipper', access={'clipper': (['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'])})
+        host.navigate(self.url + '/framed')
+        report = self.report('clipper')
+        tab = report.pop('tab')
+        panel = {'panel': '/panel.html', 'from': ids['clipper']}
+        self.assertEqual(report, {
+            # The panel, a page of the extension in a frame of the page, by
+            # the frame and the document its message came from, as Evernote
+            # Web Clipper answers its panel; again by the frame alone.
+            'byFrame': panel,
+            'byDocument': panel,
+            'again': panel,
+            # A frame and a document that are not one frame's name none.
+            'mismatched': 'error: Could not establish connection. Receiving end does not exist.',
+            # A content script of another site's frame, by its document.
+            'outer': '/outer',
+            'documents': [['/inner', '/inner', True], ['/outer', '/outer', True]],
+            # Every frame but the panel, which takes no script.
+            'all': [['/framed', '/framed'], ['/inner', '/inner'], ['/outer', '/outer']],
+            'intoPanel': 'error: The page could not run the script',
+            'both': "error: Cannot specify both 'allFrames' and 'frameIds'.",
+            'gone': 'error: No document with id 0123456789ABCDEF0123456789ABCDEF in tab with id %d.' % tab,
+            'ids': True,
         })
 
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):
