@@ -397,12 +397,42 @@ fn a_room_waiting_with_no_workspace_is_placed_no_more_after_a_restart() {
     let gone = RoomId::new();
     tree.pending_placements.insert(gone);
     let (_, notes) = tree.create_hosted_workspace("Notes");
+    let (old, archived) = tree.create_hosted_workspace("Old");
+    assert!(tree.archive_workspace(old));
     crate::shell::persist::save_tree_to(&tree, &path).expect("save");
     let loaded = crate::shell::persist::load_tree_from(&path).expect("load");
+    assert!(
+        loaded
+            .pending_placements
+            .is_superset(&BTreeSet::from([notes, archived])),
+        "a room whose workspace is shown or archived still waits"
+    );
+    assert!(
+        !loaded.pending_placements.contains(&gone),
+        "the one with no workspace does not"
+    );
+}
+
+#[test]
+fn a_room_waiting_with_its_workspace_still_waits_after_a_pass() {
+    let plans = RoomId::new();
+    let archived = RoomId::new();
+    let gone = RoomId::new();
+    let mut tree = tree_with(&[("Plans", plans)]);
+    tree.archived_workspaces
+        .push(Workspace::in_room(WorkspaceId(200), archived, "Old"));
+    tree.pending_placements.extend([plans, archived, gone]);
+    let (mut network, _commands) = personal_workspaces_network_for_test(
+        &ed25519_dalek::SigningKey::from_bytes(&[0x65; 32]),
+        &iroh::SecretKey::from_bytes(&[0x66; 32]),
+        tree,
+    );
+    network.embedded_host = State::new(crate::network::local_host::LocalHost::deferred().0);
+    network.place_pending_workspaces();
     assert_eq!(
-        loaded.pending_placements,
-        BTreeSet::from([notes]),
-        "the room with a workspace still waits; the one without does not"
+        network.tree.read().pending_placements,
+        BTreeSet::from([plans, archived]),
+        "only the room with no workspace stops waiting"
     );
 }
 
