@@ -8293,7 +8293,10 @@ fn start_session_peer_sync(
         Ok(runtime) => crate::session_runtime::start_blocking(runtime.handle(), wake, move || {
             let net = Arc::new(
                 crate::shell::network::ShellNetwork::spawn_for_session(tree_handle)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(|error| error.to_string())?
+                    .with_continuation_labels(Box::new(
+                        crate::shell::doc_open::DesktopContinuationLabels,
+                    )),
             );
             // Joining reads the enrolled rooms, this device's identities and
             // the community configuration, and redeems a boot invitation:
@@ -10239,6 +10242,8 @@ pub fn run() {
     // What the broker asks of the person's records the session holds
     // wakes the loop, which runs it.
     crate::shell::settings_records::wake_with(Arc::clone(&session_wake));
+    // So do the reads and writes apps ask of the workspace activity model.
+    crate::shell::activity_provider::wake_with(Arc::clone(&session_wake));
     frame_builder.with_chrome(|chrome| {
         // From here on the loop never waits on the disk to open a tab's
         // record: the record store's thread opens it and wakes the loop.
@@ -10913,7 +10918,6 @@ pub fn run() {
             break;
         }
         let iter_t0 = Instant::now();
-        crate::shell::action_authority::tick(iter_t0);
         let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics::profile::expire(iter_t0);
         metrics.begin_tick(iter_t0);
@@ -11103,6 +11107,10 @@ pub fn run() {
             service.pump_identity_backup(&chrome, || {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
+            let broker = collab_broker
+                .as_ref()
+                .and_then(crate::shell::collab_broker::BrokerHandle::app_action_broker);
+            service.pump_app_opens(&chrome, broker.as_ref());
         }
         input_steps.step("services");
         // A pen goes to a tablet-aware client directly and stands in for the
@@ -12865,19 +12873,25 @@ pub fn run() {
                     crate::compositor::shell_text_input::NativeFieldId::Widget(u64::from(node))
                 })
             };
-            let mut typed = proxy.sync_for_field(&mut state, shell_field, identity);
-            state.shell_field_active = proxy.holds_focus(&state);
-            typed.append(&mut state.shell_field_keys);
-            for event in &typed {
+            let typed = proxy.sync_for_field(&mut state, shell_field, identity);
+            let keys = state.take_shell_field_keys();
+            // Text carries the keyboard's modifiers; a virtual keyboard's key
+            // carries the ones it held for it, so its Ctrl+C is a chord.
+            let delivered = typed
+                .iter()
+                .map(|event| (event, test_control_ctx.modifiers))
+                .chain(keys.iter().map(|(event, modifiers)| (event, *modifiers)))
+                .collect::<Vec<_>>();
+            for (event, modifiers) in &delivered {
                 frame_builder.dispatch_event(
                     event,
-                    &test_control_ctx.modifiers,
+                    modifiers,
                     &mut ui::widget::Edits::lend(&mut test_control_ctx.doc),
                     &test_control_ctx.root_obj,
                     &mut test_control_ctx.focus,
                 );
             }
-            if !typed.is_empty() {
+            if !delivered.is_empty() {
                 injected_redraw_pending = true;
             }
             if state.has_dictation_target() && shell_field.is_some() {
@@ -14135,7 +14149,8 @@ pub fn run() {
                     animation_sources_seen.floating |= animation_demand.floating;
                     animation_sources_seen.transient |= animation_demand.transient;
                     animation_sources_seen.osk |= animation_demand.osk;
-                    if animation_demand.host & (1 << 10) != 0 && animating_content_leaves.is_empty()
+                    if animation_demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0
+                        && animating_content_leaves.is_empty()
                     {
                         animating_content_leaves = frame_builder.content_animating_leaves();
                     }
@@ -15253,10 +15268,6 @@ pub fn run() {
                 ("lock-media", lock_media_deadline),
                 ("run-deadline", run_deadline),
                 ("profile-end", metrics::profile::deadline()),
-                (
-                    "app-action-authority",
-                    crate::shell::action_authority::next_deadline(),
-                ),
                 ("controller-nav", controller_nav.next_deadline(park_now)),
                 ("backend-service", backend.next_service_deadline()),
                 (

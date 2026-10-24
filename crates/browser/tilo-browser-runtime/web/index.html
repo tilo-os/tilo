@@ -78,6 +78,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-waiting h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
     .tilo-waiting h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #e6e6e9; }
     .tilo-waiting ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+    .tilo-waiting ul[hidden] { display: none; }
     .tilo-waiting li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid #2a2c32; }
     .tilo-waiting li:first-child { border-top: 0; }
     .tilo-waiting .tilo-waiting-who { display: grid; flex: 1; min-width: 0; color: #e6e6e9; }

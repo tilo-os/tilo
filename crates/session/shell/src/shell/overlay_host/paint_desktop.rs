@@ -92,7 +92,7 @@ impl ShellOverlayHost {
 
         // Above desktop content, below modal overlays and the permission
         // prompt, so a prompt always wins focus. Top inset keeps toasts
-        // off the clock/tray.
+        // off the clock/tray, and the windows' bars keep them lower still.
         if let Some(chrome) = self.chrome.as_ref() {
             let viewport = Rect::new(
                 area.x0,
@@ -101,6 +101,11 @@ impl ShellOverlayHost {
                 area.y1,
             );
             self.notification_stack.set_viewport(viewport);
+            // Under the top bar is where the windows' bars are: banners
+            // start below the ones under the corner, so an incoming call
+            // never hides a window's History, maximize or close.
+            let bars = self.window_bars_on_screen();
+            self.notification_stack.keep_clear_of(&bars);
             let stack = &mut self.notification_stack;
             part_drawn(scene, PartKey::new("shell.notifications", ()), |scene| {
                 stack.draw(
@@ -486,93 +491,6 @@ impl ShellOverlayHost {
             },
             self.last_cursor,
         );
-    }
-
-    pub(super) fn draw_room_activity_sheet(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        flags: crate::shell::chrome_state::OverlayFlags,
-    ) {
-        self.drain_app_host_intents();
-        let view_request = self
-            .chrome
-            .as_ref()
-            .and_then(|chrome| chrome.borrow_mut().take_workspace_view_request());
-        // The open window reads the pane every frame, and opening, closing
-        // or retargeting it changes what the passive glance shows.
-        let force_awareness = view_request.is_some()
-            || flags.room_activity
-            || self.room_activity_was_open
-            || self.activity_window_rect().is_some();
-        if let Some((previous, request)) = view_request {
-            // Finish against the outgoing admission before awareness refreshes
-            // for the destination. A first open must not acknowledge its feed.
-            if self.room_activity_was_open {
-                self.room_activity.finish_view(previous.raw());
-            }
-            if let tilo_desktop::activity::WorkspaceViewRequest::OpenActivity { view, .. } = request
-            {
-                use crate::shell::room_activity::ActivityView;
-                self.room_activity.set_view(ActivityView::CatchUp);
-                self.room_activity.set_view(view);
-                self.room_activity.invalidate();
-            }
-            self.room_activity_was_open = false;
-        }
-        // Older control/shot clients still express this as an overlay edge;
-        // consume it by opening the typed tiled window once.
-        if flags.room_activity
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            chrome.borrow_mut().open_room_activity(None);
-        }
-        self.refresh_room_activity_awareness(force_awareness);
-        self.room_activity.observe_replay_presence(presence);
-        let visible = self.activity_window_rect().is_some();
-        if visible && !self.room_activity_was_open {
-            self.room_activity.invalidate();
-            if let Some(chrome) = self.chrome.as_ref() {
-                let (workspace, focus) = {
-                    let mut state = chrome.borrow_mut();
-                    let workspace = state.tree().desktop.active.raw();
-                    (workspace, state.take_activity_focus_request())
-                };
-                self.room_activity.begin_view(workspace);
-                if let Some(focus) = focus {
-                    self.room_activity.apply_deep_link(focus);
-                }
-            }
-        } else if visible
-            && let Some(chrome) = self.chrome.as_ref()
-            && let Some(focus) = chrome.borrow_mut().take_activity_focus_request()
-        {
-            // Activity was already showing: a later request to show a task
-            // (a notification's Review, the composer's Edit) still lands.
-            self.room_activity.apply_deep_link(focus);
-        } else if !visible
-            && self.room_activity_was_open
-            && let Some(chrome) = self.chrome.as_ref()
-        {
-            let workspace = chrome.borrow().tree().desktop.active.raw();
-            self.room_activity.finish_view(workspace);
-        }
-        self.room_activity_was_open = visible;
-        if visible {
-            self.refresh_room_activity();
-            self.apply_pending_history_action();
-            // The recap is a tiled window: it has no scrim, entry fade or
-            // floating shadow of its own, and it must open no layer here.
-            // A layer left open leaks past this draw: every later overlay
-            // lands in it, and with several displays the next display's
-            // whole pass nests inside this display's clip and draws nothing.
-            self.room_activity.set_review_clip(self.rect);
-            self.room_activity
-                .draw(scene, transform, text_renderer, theme, presence);
-        }
     }
 }
 

@@ -4591,7 +4591,7 @@ impl FrameBuilder {
             .filter(|label| *label != "content")
             .map(str::to_string)
             .collect();
-        if demand.host & (1 << 10) != 0 {
+        if demand.host & crate::shell::animation_diagnostics::CONTENT_BIT != 0 {
             owners.extend(
                 self.content_animating_leaves()
                     .into_iter()
@@ -6690,6 +6690,9 @@ mod tests {
             crate::shell::test_support::collaborator_renames_active_workspace(
                 &mut frame.chrome().tree_mut(),
             );
+            // A live frame: the tick reads the room, then paint.
+            let mut doc = AutoCommit::new();
+            frame.pump_apps(&mut doc, &automerge::ROOT);
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,

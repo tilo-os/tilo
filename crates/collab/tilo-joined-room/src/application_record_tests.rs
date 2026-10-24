@@ -328,7 +328,7 @@ fn initialization_preserves_unknown_objects_and_refuses_wrong_creator_key() {
     let message = fixture
         .owner
         .with_current(room, |view| {
-            view.peer().clone().publish_document(
+            view.peer().clone().publication_mut().publish_document(
                 "so.tilo.chat",
                 "",
                 original.save(),
@@ -511,7 +511,7 @@ fn existing_authored_record_is_not_overwritten_by_reopening_the_app() {
                 .put(automerge::ROOT, "authored", "keep this user content")
                 .unwrap();
             document.commit_edit("fixture", "authored");
-            view.peer().clone().publish_document(
+            view.peer().clone().publication_mut().publish_document(
                 "so.tilo.chat",
                 "",
                 document.save(),

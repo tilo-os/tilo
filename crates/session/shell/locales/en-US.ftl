@@ -552,6 +552,25 @@ topbar-clocks-notification-body = Time is up
 
 # Workspace activity: what a collaborator is doing right now
 host-activity-working-on = Working on { $target }
+host-activity-workspace-not-shown = Switch to this workspace to change its history.
+host-activity-personal-only = Only the person at this device can do this.
+host-activity-action-feed = Read history
+host-activity-action-summary = Read what's new
+host-activity-action-replay = Replay layout
+host-activity-action-detail = Read changes
+host-activity-action-focus = Read what to show
+host-activity-action-mark-viewed = Mark as viewed
+host-activity-action-focused = Say what was shown
+host-activity-action-name = Name changes
+host-activity-action-split = Split work group
+host-activity-action-merge = Merge work groups
+host-activity-action-move-boundary = Move work session boundary
+host-activity-action-undo = Undo changes
+host-activity-action-restore = Restore to before
+host-activity-action-undo-run = Undo agent task
+host-activity-action-open = Open
+host-activity-action-choose-source = Choose morning source
+host-activity-action-source = Use morning source
 host-activity-working-in = Working in { $app }
 host-activity-editing = Editing shared content
 host-activity-organizing = Organizing shared content
@@ -1115,6 +1134,8 @@ launch-failed-window-lost = Its window stopped without being closed. Open it aga
 launch-window-lost-title = { $app } closed unexpectedly
 launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
+app-open-unavailable-title = No app to open
+app-open-unavailable-body = { $app } asked to open an app that isn't on this computer or offered in the Store.
 launch-failure-title = Couldn't open { $app }
 
 # An app, or a process it started, that the system ended because memory ran out
@@ -1418,8 +1439,7 @@ search-app-job-streaming = streaming
 search-app-job-succeeded = succeeded
 search-app-job-failed = failed
 search-app-job-cancelled = cancelled
-search-app-resource-contains = { $app } · contains resources
-search-app-action-launches = { $resource } · { $app } · launches application
+search-app-resource-contains = contains resources
 
 # Search: session actions
 search-session-logout = Log out of Tilo
@@ -1592,6 +1612,12 @@ search-action-tab-move-to-group-next = Move this tab into the group on the right
 search-action-tab-move-to-group-next-subtitle = Move the focused tab into the neighbouring window group on the right
 search-action-notifications-dnd-toggle = Do Not Disturb
 search-action-notifications-dnd-toggle-subtitle = Hold notification banners until you’re back
+search-action-notifications-open = Show notifications
+search-action-notifications-open-subtitle = Read, answer or clear the notifications you missed
+search-action-notifications-clear = Clear all notifications
+search-action-notifications-clear-subtitle = Empty the notification list; you can bring them back for eight seconds
+search-action-notifications-clear-undo = Bring back cleared notifications
+search-action-notifications-clear-undo-subtitle = Restore the notifications you just cleared, in their order
 search-action-appearance-theme-dark = Dark theme
 search-action-appearance-theme-dark-subtitle = Dark chrome and apps
 search-action-appearance-theme-light = Light theme
@@ -3137,6 +3163,9 @@ search-kw-strip-focus-nth = strip number, go to strip, jump to strip, switch str
 search-kw-group-restore = restore, unmaximize, un-maximize, normal size, shrink window
 search-kw-tab-move-to-new-group = new group, detach, pop out, separate tab
 search-kw-notifications-dnd-toggle = do not disturb, dnd, silence, mute notifications, focus mode, quiet, notifications off
+search-kw-notifications-open = notifications, notification centre, notification center, missed notifications, alerts, messages i missed
+search-kw-notifications-clear = clear notifications, dismiss all, remove notifications, delete notifications, empty notifications
+search-kw-notifications-clear-undo = undo clear, restore notifications, undo clear all, get notifications back
 search-kw-appearance-theme-dark = dark mode, dark theme, night mode, dark, black theme, night
 search-kw-appearance-theme-light = light mode, light theme, day mode, bright, light, white theme
 search-kw-appearance-language = language, locale, translate, german, english, deutsch, switch language

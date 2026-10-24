@@ -1,5 +1,5 @@
 //! What Mail's search finds: the folders, and every message already loaded
-//! in memory (excluding Trash) by its subject, sender or body.
+//! in memory (excluding Trash) by its subject, sender, recipients or body.
 //!
 //! Folders are the mailbox resource's own search entries; loaded messages
 //! are the mail surface's, because their subjects, senders and bodies come
@@ -67,16 +67,45 @@ pub fn message_entries(mailbox: &Mailbox) -> Vec<SearchEntry> {
 /// it whole bodies.
 const BODY_SEARCHED: usize = 4 * 1024;
 
+/// How much of a message's recipients search reads: enough for every name
+/// and address of an ordinary message, bounded for a mailing to hundreds.
+const RECIPIENTS_SEARCHED: usize = 1024;
+
 /// The start of `body`, at most [`BODY_SEARCHED`] bytes, cut on a character.
 fn searched_part(body: &str) -> &str {
-    if body.len() <= BODY_SEARCHED {
-        return body;
+    cut(body, BODY_SEARCHED)
+}
+
+/// The start of `text`, at most `most` bytes, cut on a character.
+fn cut(text: &str, most: usize) -> &str {
+    if text.len() <= most {
+        return text;
     }
-    let mut end = BODY_SEARCHED;
-    while !body.is_char_boundary(end) {
+    let mut end = most;
+    while !text.is_char_boundary(end) {
         end -= 1;
     }
-    body.get(..end).unwrap_or_default()
+    text.get(..end).unwrap_or_default()
+}
+
+/// Who a message went to, by name and address: what finds a sent message
+/// by the person it was sent to.
+fn recipients(message: &Message) -> String {
+    let mut out = String::new();
+    for addr in message.to.iter().chain(&message.cc) {
+        if out.len() >= RECIPIENTS_SEARCHED {
+            break;
+        }
+        if let Some(name) = addr.name.as_deref().filter(|name| !name.is_empty()) {
+            out.push_str(name);
+            out.push(' ');
+        }
+        out.push_str(&addr.email);
+        out.push(' ');
+    }
+    let kept = cut(&out, RECIPIENTS_SEARCHED).trim_end().len();
+    out.truncate(kept);
+    out
 }
 
 fn message_entry(message: &Message) -> SearchEntry {
@@ -86,10 +115,12 @@ fn message_entry(message: &Message) -> SearchEntry {
         message.subject.clone()
     };
     // Ranked as the mailbox ranks them: the subject first, then who sent
-    // it, the address typed verbatim, the labels, and the body last.
+    // it, the address typed verbatim, the labels and recipients, and the
+    // body last.
     SearchEntry::new(title, searched_part(&message.body).to_owned())
         .field(message.from.email.clone(), SearchWeight::Identity)
         .field(message.labels.join(" "), SearchWeight::Metadata)
+        .field(recipients(message), SearchWeight::Metadata)
         .anchored(format!("mail.message:{}", message.id))
         .grouped(MAIL_KIND)
         .subtitled(message.from.display())
@@ -161,6 +192,38 @@ mod tests {
                     .iter()
                     .any(|hit| hit.title == message.subject),
                 "Unicode case folding keeps a mixed-case substring discoverable"
+            );
+        }
+    }
+
+    /// A sent message is found by the person it went to, by name or
+    /// address, though neither is in its subject, sender or body.
+    #[test]
+    fn a_sent_message_is_found_by_its_recipient() {
+        let mut mailbox = sample();
+        let mut sent = mailbox
+            .messages
+            .values()
+            .next()
+            .expect("seeded message")
+            .clone();
+        sent.id = uuid::Uuid::new_v4();
+        sent.folder = Folder::Sent;
+        sent.subject = "Launch plan".into();
+        sent.body = "The plan is attached.".into();
+        sent.to = vec![crate::model::Addr::new(
+            "Grace Hopper",
+            "grace@navy.example",
+        )];
+        sent.cc = vec![crate::model::Addr::bare("ops@navy.example")];
+        mailbox.insert(sent);
+        for query in ["Grace Hopper", "grace@navy.example", "ops@navy"] {
+            assert!(
+                search(&mailbox)
+                    .search(query)
+                    .iter()
+                    .any(|hit| hit.title == "Launch plan"),
+                "`{query}` finds the message sent to them"
             );
         }
     }

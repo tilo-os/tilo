@@ -4,7 +4,7 @@ use ui::framework::EffectReply;
 use ui::tilo_actions::remote::{
     CatalogueQuery, Confirmation, InvokeArgument, application_action_target,
 };
-use ui::{CatalogueCall, InvocationCall, LocalState, RemoteActions, RemoteCall};
+use ui::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
 
 pub(super) const TYPE: &str = "browser-service-session";
 pub(super) const ACTION: &str = "forget-service-session";
@@ -12,8 +12,8 @@ pub(super) const ACTION: &str = "forget-service-session";
 pub(super) struct Removal {
     pub id: String,
     reply: Option<EffectReply>,
-    catalogue: LocalState<CatalogueCall>,
-    invocation: Option<LocalState<InvocationCall>>,
+    catalogue: CatalogueCall,
+    invocation: Option<InvocationCall>,
 }
 
 impl Removal {
@@ -34,7 +34,7 @@ impl Removal {
     pub fn poll(&mut self, remote: &RemoteActions) -> Option<Result<(), String>> {
         if self.reply.as_ref().is_some_and(EffectReply::is_cancelled) {
             if let Some(call) = &self.invocation {
-                if let RemoteCall::Done(update) = call.with(Clone::clone) {
+                if let Arrival::Ready(update) = call.with(Clone::clone) {
                     let _ = remote.cancel(update.invocation());
                 }
             } else {
@@ -44,9 +44,9 @@ impl Removal {
         if self.invocation.is_none() {
             let catalogue = self.catalogue.with(Clone::clone);
             match catalogue {
-                RemoteCall::Pending => return None,
-                RemoteCall::Refused(error) => return self.finish(Err(format!("{error:?}"))),
-                RemoteCall::Done(page) => {
+                Arrival::Pending { .. } => return None,
+                Arrival::Failed(error) => return self.finish(Err(format!("{error:?}"))),
+                Arrival::Ready(page) => {
                     let mut rooms = page
                         .providers
                         .iter()
@@ -76,21 +76,21 @@ impl Removal {
         }
         let call = self.invocation.as_ref()?.with(Clone::clone);
         match call {
-            RemoteCall::Refused(error) => self.finish(Err(format!("{error:?}"))),
-            RemoteCall::Done(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
+            Arrival::Failed(error) => self.finish(Err(format!("{error:?}"))),
+            Arrival::Ready(ui::tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
                 self.reply.take()?.finish(Ok(output));
                 Some(Ok(()))
             }
-            RemoteCall::Done(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+            Arrival::Ready(ui::tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                 let message = error.message.clone();
                 self.reply.take()?.answer(Err(error));
                 Some(Err(message))
             }
-            RemoteCall::Done(ui::tilo_actions::InvocationUpdate::Cancelled { message, .. }) => self
+            Arrival::Ready(ui::tilo_actions::InvocationUpdate::Cancelled { message, .. }) => self
                 .finish(Err(
                     message.unwrap_or_else(|| "Account removal was cancelled".into())
                 )),
-            RemoteCall::Pending | RemoteCall::Done(_) => None,
+            Arrival::Pending { .. } | Arrival::Ready(_) => None,
         }
     }
 

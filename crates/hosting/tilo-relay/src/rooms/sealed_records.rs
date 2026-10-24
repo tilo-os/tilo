@@ -2,7 +2,7 @@
 //!
 //! In a room whose channels this relay stewards, members seal every write
 //! of a record, and the governor's copy keeps those writes as the record's
-//! ciphertext history ([`tilo_peer_state::StatePeer::is_sealed_record`]). As the channels'
+//! ciphertext history ([`tilo_peer_state::PeerPublication::is_sealed_record`]). As the channels'
 //! steward the relay holds their content keys: it reads such a record by
 //! opening that history over the record's cleartext base, writes to it
 //! sealed like any member does, and compacts the history before it reaches
@@ -82,7 +82,7 @@ impl GovernedRoom {
         app: &str,
         record: &str,
     ) -> Result<Option<RecordKeys>, String> {
-        if !self.peer.is_sealed_record(app, record) {
+        if !self.peer.publication().is_sealed_record(app, record) {
             return Ok(None);
         }
         let steward = self
@@ -144,7 +144,11 @@ impl GovernedRoom {
         let Some(keys) = self.record_keys(app, record).await? else {
             return Ok(self.peer.document(app, record));
         };
-        let Some(opened) = self.peer.opened_document(app, record, &mut keys.open())? else {
+        let Some(opened) =
+            self.peer
+                .publication()
+                .opened_document(app, record, &mut keys.open())?
+        else {
             return Ok(None);
         };
         if !opened.unmerged.is_empty() {
@@ -174,8 +178,10 @@ pub(super) fn publish_changes(
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
     match keys {
-        None => candidate.publish_incremental(app, record, changes, key, now),
-        Some(keys) => candidate.publish_sealed_incremental(
+        None => candidate
+            .publication_mut()
+            .publish_incremental(app, record, changes, key, now),
+        Some(keys) => candidate.publication_mut().publish_sealed_incremental(
             app,
             record,
             changes,
@@ -199,7 +205,13 @@ pub(super) fn start_sealed(
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
     if !candidate.holds_document(app, record) {
-        candidate.publish_document(app, record, automerge::AutoCommit::new().save(), key, now)?;
+        candidate.publication_mut().publish_document(
+            app,
+            record,
+            automerge::AutoCommit::new().save(),
+            key,
+            now,
+        )?;
     }
     publish_changes(candidate, Some(keys), (app, record), changes, key, now)
 }
@@ -219,7 +231,7 @@ pub(super) fn publish_changes_for(
     key: &SigningKey,
     now: SystemTime,
 ) -> Result<NeighbourMsg, String> {
-    candidate.publish_sealed_incremental_for(
+    candidate.publication_mut().publish_sealed_incremental_for(
         bot,
         route,
         changes,
@@ -423,8 +435,8 @@ impl Rooms {
         let Some(steward) = room.stewardship.clone() else {
             return room.record_keys(app, record).await;
         };
-        let held_in_the_clear =
-            room.peer().holds_document(app, record) && !room.peer().is_sealed_record(app, record);
+        let held_in_the_clear = room.peer().holds_document(app, record)
+            && !room.peer().publication().is_sealed_record(app, record);
         if held_in_the_clear && !self.resealing() {
             return room.record_keys(app, record).await;
         }
@@ -478,7 +490,7 @@ impl Rooms {
         &self,
         room: &mut GovernedRoom,
     ) -> Result<(), String> {
-        let due = room.peer().sealed_records_to_compact();
+        let due = room.peer().publication().sealed_records_to_compact();
         if due.is_empty() {
             return Ok(());
         }
@@ -491,7 +503,7 @@ impl Rooms {
         let mut compacted = 0usize;
         for (app, record) in &due {
             let compaction = match room.record_keys(app, record).await {
-                Ok(Some(keys)) => candidate.compact_sealed_history(
+                Ok(Some(keys)) => candidate.publication_mut().compact_sealed_history(
                     app,
                     record,
                     &mut keys.open(),

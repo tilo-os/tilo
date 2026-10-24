@@ -136,7 +136,7 @@ impl Rooms {
             });
         }
         let mut candidate = peer.clone();
-        candidate.publish_document(
+        candidate.publication_mut().publish_document(
             &request.app,
             &request.record,
             automerge::AutoCommit::new().save(),

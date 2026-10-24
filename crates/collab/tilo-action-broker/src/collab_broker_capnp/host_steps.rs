@@ -207,12 +207,36 @@ impl CapnpBrokerState {
             )?;
             Ok(policy)
         })?;
-        let started = steps.start(&HostStepRequest {
+        let step = HostStepRequest {
             room,
             actor: &policy,
             address,
             argument: argument.as_deref(),
-        });
+        };
+        if descriptor.contract.is_live() {
+            let view = match steps.watch(&step) {
+                Ok(view) => view,
+                Err(reason) => {
+                    self.complete_host_action(
+                        &admitted,
+                        host_step_failure(request.invocation, "host_step_refused", &reason),
+                    )?;
+                    return Err(ActionHostError::Refused { reason });
+                }
+            };
+            let following = super::live_views::Following {
+                caller: caller.clone(),
+                origin: origin.cloned(),
+                room: room.to_owned(),
+                app_id: steps.app_id().to_owned(),
+                descriptor,
+                witnessed,
+            };
+            self.follow_live_view(admitted, following, view)
+                .map_err(|reason| ActionHostError::Refused { reason })?;
+            return Ok(self.receipt_for(request.invocation, id));
+        }
+        let started = steps.start(&step);
         match started {
             Ok(started) => self.follow_admitted_host_step(admitted, started),
             Err(reason) => {

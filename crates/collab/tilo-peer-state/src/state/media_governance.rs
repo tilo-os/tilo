@@ -192,7 +192,7 @@ impl PeerMediaGovernance<'_> {
                 |app, record| {
                     Ok(
                         super::backend::media::legacy_binding(peer, policy, app, record)?
-                            || peer.is_sealed_record(app, record),
+                            || peer.publication().is_sealed_record(app, record),
                     )
                 },
                 || {

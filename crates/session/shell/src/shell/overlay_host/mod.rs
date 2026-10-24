@@ -11,6 +11,7 @@
 //! event so typing and Enter work without the desktop stealing focus.
 
 mod accessibility;
+mod activity_served;
 mod agent_actions;
 mod agent_markers;
 mod app_chooser;
@@ -952,9 +953,6 @@ pub struct ShellOverlayHost {
     /// Describes apps' changes for their History, with the model on this device.
     history_describer: crate::shell::history_narrative::HistoryDescriber,
     status_narrative_request: Option<ui::NarrativeRequest>,
-    /// Whether the sheet was open last frame, to invalidate derived rows
-    /// on the rising edge.
-    room_activity_was_open: bool,
     /// Workspace whose passive activity was last presented. Entering a
     /// different workspace with unseen work opens Catch up once, so the user
     /// does not have to notice and decode a tiny unread badge after time away.
@@ -964,6 +962,9 @@ pub struct ShellOverlayHost {
     /// lock and record reads) until
     /// [`room_activity::ACTIVITY_AWARENESS_FALLBACK`] passes.
     activity_refresh: ActivityRefreshGate,
+    /// What the activity model served apps when they last read it
+    /// ([`tilo_desktop::activity::RoomActivityPane::served_revision`]).
+    activity_served: Option<u64>,
     /// Unseen work discovered during a workspace transition waits until
     /// Overview/People/another modal releases attention. Cleared as soon as
     /// Catch up is shown or opened manually, so dismissal remains sticky.

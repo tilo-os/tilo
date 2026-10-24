@@ -7,8 +7,8 @@
 //! character), so two people opening different files at once end with one of
 //! the two sets, never a mix. The merged result is a text two people type
 //! into character by character. `resolutions` records the side taken for
-//! each hunk; opening a new merge clears it, since the old hunk indices no
-//! longer correspond.
+//! each hunk and `written` the text a hunk was resolved with instead; opening
+//! a new merge clears both, since the old hunk indices no longer correspond.
 
 use std::collections::BTreeMap;
 
@@ -142,10 +142,16 @@ pub struct Session {
     /// changes it.
     #[model(readonly)]
     pub resolutions: BTreeMap<String, HunkChoice>,
+    /// Texts written for changes
+    ///
+    /// The text a change was resolved with instead of a side, by its hunk
+    /// index. Only resolving a change with text changes it.
+    #[model(readonly)]
+    pub written: BTreeMap<String, String>,
 }
 
 impl Session {
-    /// The merge's hunks, each with the side recorded for it.
+    /// The merge's hunks, each with the side or the text recorded for it.
     pub fn merge_model(&self) -> MergeModel {
         let mut model = self
             .merge
@@ -157,6 +163,17 @@ impl Session {
                 && h.is_change
             {
                 h.resolution = choice.to_resolution();
+            }
+        }
+        for (hunk, text) in &self.written {
+            if let Some(h) = hunk
+                .parse::<usize>()
+                .ok()
+                .and_then(|i| model.hunks.get_mut(i))
+                && h.is_change
+            {
+                h.resolution = Resolution::Written;
+                h.written = text.lines().map(str::to_owned).collect();
             }
         }
         model

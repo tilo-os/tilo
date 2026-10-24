@@ -12,7 +12,7 @@ pub struct MorningPreferences {
     pub room: String,
     pub sources: Vec<MorningSource>,
 }
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct MorningSource {
     pub app: String,
     pub resource: String,

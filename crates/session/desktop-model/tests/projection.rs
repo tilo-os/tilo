@@ -51,18 +51,10 @@ fn group(id: u64, tabs: Vec<Tab>) -> WindowGroup {
 fn strip_of(salt: u16, base: u64) -> Strip {
     let id = |n: u64| compose_id(salt, base + n);
     let mut strip = Strip::new(StripId(id(0)), "Main");
-    strip.window_groups = vec![
-        group(id(1), vec![tab(id(2), "Editor"), tab(id(3), "Terminal")]),
-        group(
-            id(4),
-            vec![Tab {
-                id: id(5),
-                title: "Activity".into(),
-                tile: TileContent::WorkspaceActivity,
-                app_title: None,
-            }],
-        ),
-    ];
+    strip.window_groups = vec![group(
+        id(1),
+        vec![tab(id(2), "Editor"), tab(id(3), "Terminal")],
+    )];
     strip
 }
 
@@ -89,7 +81,6 @@ fn projection_round_trips_owned_contents_once_shared() {
         assert_eq!(read.len(), 1);
         assert_eq!(read[0].id, strip.id.raw());
         assert_eq!(read[0].name.as_deref(), Some("Main"));
-        // The device-local activity group never leaves this machine.
         assert_eq!(read[0].groups.len(), 1);
         let titles: Vec<&str> = read[0].groups[0]
             .tabs

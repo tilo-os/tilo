@@ -42,6 +42,8 @@ pub(crate) mod control_invocation;
 pub(crate) mod control_listing;
 pub mod controller_nav;
 pub mod cursor;
+#[cfg(target_os = "linux")]
+pub mod descriptor_table;
 pub mod dev_env;
 pub mod dev_test_identity;
 #[cfg(target_os = "linux")]

@@ -5,7 +5,13 @@
 //! of the tree publishes through it, the compositor-free runtime host included.
 //! The launcher attaches a launch to it ([`attach_optional`]) and holds the
 //! [`Lease`] for the launch's lifetime.
-use crate::shell::host_runtime::write_runtime_private;
+//!
+//! Nothing here runs on a clock. A projection is current while this host
+//! holds its file (`tilo_files::native::held`), so it ends with the host or a
+//! failed replacement without being renewed. What the judgements read is
+//! judged again when it changes: a publication, a policy announcement
+//! (`tilo_identity_host::policy_change`), the native writer retiring, or the
+//! expiry of a grant a running sandbox captured, at that instant.
 use crate::shell::state::RoomId;
 use collab_types::action_authority::{AppActionAuthorityProjection, MAX_PROJECTION_BYTES};
 use collab_types::caps::CapOverride;
@@ -13,7 +19,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tilo_lock::MutexRecover as _;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -65,6 +71,8 @@ impl RoomPolicy {
 type Binding = (RoomId, String, String);
 struct BindingState {
     projection: AppActionAuthorityProjection,
+    /// This host's hold on the projection's file; `None` once withdrawn.
+    held: Option<tilo_files::native::held::Held>,
     borrowers: u64,
 }
 
@@ -77,7 +85,6 @@ struct Published {
     /// and why it failed. Cleared by a publication that reaches the revision.
     failures: BTreeMap<RoomId, SaveFailure>,
     bindings: BTreeMap<Binding, BindingState>,
-    next_refresh: Option<Instant>,
     #[cfg(target_os = "linux")]
     sandboxes: BTreeMap<u32, sandbox_revocation::Sandbox>,
     /// The exports of this writer's tree that are on their way here.
@@ -103,6 +110,9 @@ pub(crate) struct Authority {
     exporting: Arc<Mutex<Vec<Exporting>>>,
     /// Signalled whenever [`Export::publish`] replaces the published policy.
     changed: std::sync::Condvar,
+    /// Wakes a judgement on the next policy announcement; armed while there
+    /// is a projection or sandbox to judge.
+    watch: std::sync::OnceLock<tilo_identity_host::policy_change::Watch>,
     /// The writer its queued publications and renewals run on when not the
     /// shell's own: a test that holds its writer still then stalls no other
     /// test's saves.
@@ -119,6 +129,7 @@ impl Default for Authority {
             exporting: published.exporting.clone(),
             published: Mutex::new(published),
             changed: std::sync::Condvar::new(),
+            watch: std::sync::OnceLock::new(),
             #[cfg(test)]
             writer: std::sync::OnceLock::new(),
         }
@@ -161,6 +172,69 @@ impl Authority {
     fn job_key(&self, job: &str) -> PathBuf {
         authority_root().join(job).join(self.id.to_string())
     }
+
+    /// The watch that judges again on policy announcements.
+    fn watch(self: &Arc<Self>) -> &tilo_identity_host::policy_change::Watch {
+        self.watch.get_or_init(|| {
+            let authority = Arc::downgrade(self);
+            // Runs on the announcing thread: queue the judgement, no more.
+            tilo_identity_host::policy_change::Watch::new(move || {
+                if let Some(authority) = authority.upgrade() {
+                    authority.judge_again();
+                }
+            })
+        })
+    }
+
+    /// Something the projections or sandboxes are judged by may have
+    /// changed: judge them again on the state writer.
+    pub(crate) fn judge_again(self: &Arc<Self>) {
+        let authority = self.clone();
+        self.writer()
+            .submit(self.job_key("judgement"), move || authority.judge());
+    }
+
+    /// Judge the running sandboxes and every projection again, rewriting a
+    /// projection only when it changed, and wake again only at the next
+    /// instant that changes a judgement by itself.
+    fn judge(self: &Arc<Self>) {
+        let mut published = lock(&self.published);
+        #[cfg(target_os = "linux")]
+        let idle = published.bindings.is_empty() && published.sandboxes.is_empty();
+        #[cfg(not(target_os = "linux"))]
+        let idle = published.bindings.is_empty();
+        if idle {
+            return;
+        }
+        // Armed before reading, so a change made while judging wakes again.
+        let _ = self.watch().arm();
+        #[cfg(target_os = "linux")]
+        sandbox_revocation::reconcile(&mut published);
+        let bindings: Vec<_> = published.bindings.keys().cloned().collect();
+        for binding in bindings {
+            if let Err(error) = write_binding(&mut published, &binding) {
+                withdraw(&mut published, &binding);
+                tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority update failed closed");
+            }
+        }
+        #[cfg(target_os = "linux")]
+        let expiry = sandbox_revocation::next_expiry(&published);
+        drop(published);
+        #[cfg(target_os = "linux")]
+        if let Some(expiry) = expiry {
+            tilo_identity_host::policy_change::wake_at(expiry.saturating_mul(1_000_000_000));
+        }
+    }
+}
+
+/// Stop vouching for `binding`'s projection: a stale accepted policy kept
+/// current would turn a revoke into a grant. Its file is removed, and the
+/// hold is let go even if removal fails, so the app reads it as absent.
+fn withdraw(published: &mut Published, binding: &Binding) {
+    let _ = std::fs::remove_file(binding_path(binding));
+    if let Some(state) = published.bindings.get_mut(binding) {
+        state.held = None;
+    }
 }
 
 /// Every [`Export`] taken and neither published nor dropped yet: its id, the
@@ -178,11 +252,21 @@ pub(crate) struct Export(BTreeMap<RoomId, RoomPolicy>, u64, Pending, Arc<Authori
 
 /// An export's place among its writer's exports on their way, from when it
 /// is taken until it is published or dropped.
-struct Pending(u64, Arc<Mutex<Vec<Exporting>>>);
+struct Pending {
+    id: u64,
+    authority: Arc<Authority>,
+    published: bool,
+}
 
 impl Drop for Pending {
     fn drop(&mut self) {
-        lock(&self.1).retain(|export| export.0 != self.0);
+        lock(&self.authority.exporting).retain(|export| export.0 != self.id);
+        // A record its writer accepted while this export was on its way kept
+        // the published policy current; dropped unpublished, it no longer
+        // does.
+        if !self.published {
+            self.authority.judge_again();
+        }
     }
 }
 
@@ -210,7 +294,11 @@ impl Export {
                 })
                 .collect(),
             tree.policy_revision,
-            Pending(id, state.exporting.clone()),
+            Pending {
+                id,
+                authority: state.clone(),
+                published: false,
+            },
             state,
         )
     }
@@ -226,18 +314,23 @@ impl Export {
         sandbox_revocation::reconcile(&mut published);
         let bindings: Vec<_> = published.bindings.keys().cloned().collect();
         for binding in bindings {
-            if let Err(error) = write_binding(&mut published, &binding, false) {
-                // Remove the previous grant if replacement fails; retaining
-                // stale accepted policy would turn a revoke into a grant.
-                let _ = std::fs::remove_file(binding_path(&binding));
-
+            if let Err(error) = write_binding(&mut published, &binding) {
+                withdraw(&mut published, &binding);
                 tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority update failed closed");
             }
         }
+        #[cfg(target_os = "linux")]
+        let expiry = sandbox_revocation::next_expiry(&published);
         // Only now is this export's record what observers hold.
-        drop(self.2);
+        let mut pending = self.2;
+        pending.published = true;
+        drop(pending);
         drop(published);
         self.3.changed.notify_all();
+        #[cfg(target_os = "linux")]
+        if let Some(expiry) = expiry {
+            tilo_identity_host::policy_change::wake_at(expiry.saturating_mul(1_000_000_000));
+        }
     }
 
     /// What the save of this export reports if its write fails.
@@ -388,22 +481,11 @@ fn projection(published: &Published, binding: &Binding) -> AppActionAuthorityPro
             &tilo_action_policy::Subject::Role(tilo_action_policy::Role::Owner),
         )
     });
-    let issued_at_unix_ms = tilo_clock::unix_now_ms();
-    AppActionAuthorityProjection::project(
-        &policy,
-        &binding.1,
-        &binding.2,
-        false,
-        issued_at_unix_ms,
-        issued_at_unix_ms.saturating_add(3_000),
-    )
+    AppActionAuthorityProjection::project(&policy, &binding.1, &binding.2, false)
 }
 
-fn write_binding(
-    published: &mut Published,
-    binding: &Binding,
-    renew: bool,
-) -> std::io::Result<PathBuf> {
+/// Publish `binding`'s projection unless the one held is the same.
+fn write_binding(published: &mut Published, binding: &Binding) -> std::io::Result<PathBuf> {
     let projection = projection(published, binding);
     projection.validate().map_err(|_| {
         std::io::Error::new(
@@ -424,24 +506,30 @@ fn write_binding(
         ));
     }
     let path = binding_path(binding);
-    if renew
-        || published
-            .bindings
-            .get(binding)
-            .is_none_or(|state| !state.projection.same_policy(&projection))
+    if published
+        .bindings
+        .get(binding)
+        .is_none_or(|state| state.held.is_none() || state.projection != projection)
     {
-        // In the runtime tmpfs and unsynced: `published` is held here, and
-        // the compositor's loop takes it every iteration, so a sync under I/O
-        // pressure would freeze the desktop. The sandbox reads the file
-        // through the page cache, and a crash discards it with the session.
-        write_runtime_private(&path, &bytes)?;
+        // In the runtime tmpfs and unsynced: `published` is held here, so a
+        // sync under I/O pressure would hold up every launch and judgement.
+        // The sandbox reads the file through the page cache, and a crash
+        // discards it with the session (and lets go of it with this host).
+        if let Some(parent) = path.parent() {
+            tilo_files::native::atomic::create_private_directory(parent)?;
+        }
+        let held = tilo_files::native::held::publish(&path, &bytes, 0o600)?;
         match published.bindings.get_mut(binding) {
-            Some(state) => state.projection = projection,
+            Some(state) => {
+                state.projection = projection;
+                state.held = Some(held);
+            }
             None => {
                 published.bindings.insert(
                     binding.clone(),
                     BindingState {
                         projection,
+                        held: Some(held),
                         borrowers: 0,
                     },
                 );
@@ -469,12 +557,13 @@ fn attach_to(
 ) -> std::io::Result<Lease> {
     let person = crate::shell::state::local_user_id_for_room(&room);
     let binding = (room, package_id.to_owned(), person);
+    // Armed before the projection is judged, so a change after it is heard.
+    let _ = authority.watch().arm();
     let mut published = lock(&authority.published);
-    let path = write_binding(&mut published, &binding, true)?;
+    let path = write_binding(&mut published, &binding)?;
     if let Some(state) = published.bindings.get_mut(&binding) {
         state.borrowers = state.borrowers.saturating_add(1);
     }
-    published.next_refresh = Instant::now().checked_add(Duration::from_secs(1));
     drop(published);
     args.push("--action-authority".into());
     args.push(path.display().to_string());
@@ -689,6 +778,7 @@ impl Lease {
         {
             await_published(&self.authority, self.binding.0, revision)?;
         }
+        let _ = self.authority.watch().arm();
         let mut published = lock(&self.authority.published);
         if let Err(reason) = sandbox.authorization_status(&published) {
             // The reason is a static category: no path, peer or grant.
@@ -697,7 +787,11 @@ impl Lease {
             return Err(withdrawn());
         }
         published.sandboxes.insert(pid, sandbox);
+        let expiry = sandbox_revocation::next_expiry(&published);
         drop(published);
+        if let Some(expiry) = expiry {
+            tilo_identity_host::policy_change::wake_at(expiry.saturating_mul(1_000_000_000));
+        }
         self.pid = Some(pid);
         Ok(())
     }
@@ -708,6 +802,10 @@ impl std::fmt::Debug for Lease {
     }
 }
 impl Drop for Lease {
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the file is removed under the lock, so a launch attaching meanwhile never has its new projection removed"
+    )]
     fn drop(&mut self) {
         let mut published = lock(&self.authority.published);
         #[cfg(target_os = "linux")]
@@ -721,52 +819,6 @@ impl Drop for Lease {
                 let _ = std::fs::remove_file(binding_path(&self.binding));
             }
         }
-        if published.bindings.is_empty() {
-            published.next_refresh = None;
-        }
-    }
-}
-
-pub(crate) fn next_deadline() -> Option<Instant> {
-    followed_authority().next_deadline()
-}
-
-/// Renew only while the existing launch supervisor owns a live/held lease.
-/// File work runs on the normal durable writer; no frame or GPU is requested.
-pub(crate) fn tick(now: Instant) {
-    followed_authority().tick(now);
-}
-
-impl Authority {
-    fn next_deadline(&self) -> Option<Instant> {
-        lock(&self.published).next_refresh
-    }
-
-    fn tick(self: Arc<Self>, now: Instant) {
-        let mut published = lock(&self.published);
-        if published.next_refresh.is_none_or(|deadline| now < deadline) {
-            return;
-        }
-        published.next_refresh = now.checked_add(Duration::from_secs(1));
-        drop(published);
-        let authority = self.clone();
-        self.writer()
-            .submit(self.job_key("heartbeat"), move || authority.renew());
-    }
-
-    /// Judge the running sandboxes again and renew every live projection.
-    fn renew(&self) {
-        let mut published = lock(&self.published);
-        #[cfg(target_os = "linux")]
-        sandbox_revocation::reconcile(&mut published);
-        let bindings: Vec<_> = published.bindings.keys().cloned().collect();
-        for binding in bindings {
-            if let Err(error) = write_binding(&mut published, &binding, true) {
-                let _ = std::fs::remove_file(binding_path(&binding));
-                tracing::warn!(room = %binding.0, package_id = %binding.1, %error, "host action authority renewal failed closed");
-            }
-        }
-        drop(published);
     }
 }
 
@@ -956,8 +1008,11 @@ mod tests {
         let removed = projection(&published, &binding);
         assert_eq!(removed.policy.owner, None);
     }
+    /// What the app reads: the projection is replaced when the policy
+    /// changes, stays in place (the same file) while it does not, and is
+    /// current only while this host holds it.
     #[test]
-    fn action_authority_atomic_publication_revokes_live_projection_and_renews_lease() {
+    fn action_authority_publication_revokes_live_projection_held_by_the_host() {
         let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
         let room = RoomId::new();
         tree.desktop.workspaces[0] =
@@ -969,69 +1024,109 @@ mod tests {
             rooms: Export::of(&tree).0,
             ..Published::default()
         };
-        // Written under `published`, which the compositor's loop takes every
-        // iteration: it must never wait for the disk.
+        let read = |path: &std::path::Path| {
+            tilo_files::native::held::read(path, MAX_PROJECTION_BYTES)
+                .unwrap()
+                .map(|bytes| {
+                    serde_json::from_slice::<AppActionAuthorityProjection>(&bytes).unwrap()
+                })
+        };
+        // Written under `published`: it must never wait for the disk.
         #[cfg(target_os = "linux")]
         let path = crate::shell::disk_sync_guard::on_a_thread_that_cannot_sync(|| {
-            write_binding(&mut published, &binding, true)
+            write_binding(&mut published, &binding)
         })
         .unwrap();
         #[cfg(not(target_os = "linux"))]
-        let path = write_binding(&mut published, &binding, true).unwrap();
-        let first: AppActionAuthorityProjection =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(first.policy.owner.as_deref(), Some("person-a"));
-        assert!(first.is_current_at(tilo_clock::unix_now_ms()));
+        let path = write_binding(&mut published, &binding).unwrap();
         assert_eq!(path.file_name().unwrap(), "current.json");
+        let first = read(&path).expect("the host holds its projection");
+        assert_eq!(first.policy.owner.as_deref(), Some("person-a"));
+
+        // Judged again with nothing changed: the same file, not a new one.
+        #[cfg(unix)]
+        let inode = |path: &std::path::Path| {
+            std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(path).unwrap())
+        };
+        #[cfg(unix)]
+        let before = inode(&path);
+        write_binding(&mut published, &binding).unwrap();
+        #[cfg(unix)]
+        assert_eq!(inode(&path), before, "an unchanged policy is not rewritten");
+
         tree.desktop.workspaces[0].policy.owner = None;
         published.rooms = Export::of(&tree).0;
-        write_binding(&mut published, &binding, false).unwrap();
-        let revoked: AppActionAuthorityProjection =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        write_binding(&mut published, &binding).unwrap();
+        let revoked = read(&path).expect("the replacement is held");
         assert_eq!(revoked.policy.owner, None);
-        assert!(!first.same_policy(&revoked));
-        write_binding(&mut published, &binding, true).unwrap();
-        let renewed: AppActionAuthorityProjection =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(revoked.same_policy(&renewed));
-        assert!(renewed.issued_at_unix_ms >= revoked.issued_at_unix_ms);
+        assert_ne!(first, revoked);
+
+        // A replacement that fails lets go of what the app could still read.
+        withdraw(&mut published, &binding);
+        assert_eq!(read(&path), None);
+        // So does the host going away with its projection still in place.
+        write_binding(&mut published, &binding).unwrap();
+        assert!(read(&path).is_some());
+        drop(published);
+        assert!(path.exists());
+        assert_eq!(read(&path), None, "a host that is gone vouches for nothing");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
+
+    /// An idle desktop running an app, blanked or not, has nothing to wake
+    /// for here: the projection stays current with no renewal, nothing is
+    /// queued on the state writer and no instant is registered, until
+    /// something it is judged by changes.
     #[test]
-    fn action_authority_lease_follows_live_supervisor_borrowers_and_idle_renewal() {
+    fn a_running_app_with_no_pending_deadline_schedules_no_wakeups() {
         let package_id = "so.tilo.authority-probe";
         let room = RoomId::new();
         let mut args = Vec::new();
         let authority = Arc::new(Authority::default());
-        // Renewal runs on this authority's own writer, which other tests'
+        // Judgements run on this authority's own writer, which other tests'
         // saves do not queue on.
         let writer = authority.own_writer();
         let first = attach_to(authority.clone(), package_id, room, &mut args).unwrap();
         let binding = first.binding.clone();
         let path = binding_path(&binding);
         assert_eq!(args, vec!["--action-authority", path.to_str().unwrap()]);
-        let before: AppActionAuthorityProjection =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let read = || {
+            tilo_files::native::held::read(&path, MAX_PROJECTION_BYTES)
+                .unwrap()
+                .map(|bytes| {
+                    serde_json::from_slice::<AppActionAuthorityProjection>(&bytes).unwrap()
+                })
+        };
+        let before = read().expect("the projection is current while held");
         assert_eq!(
             before.policy.owner, None,
             "unknown room must have no management authority"
         );
         let second = attach_to(authority.clone(), package_id, room, &mut args).unwrap();
         assert_eq!(lock(&authority.published).bindings[&binding].borrowers, 2);
-        assert!(authority.next_deadline().is_some());
-        authority.clone().tick(
-            Instant::now()
-                .checked_add(Duration::from_secs(2))
-                .unwrap_or_else(Instant::now),
-        );
+
+        // Idle: nothing queued, and no sandbox with a grant that expires.
         writer.flush();
-        let renewed: AppActionAuthorityProjection =
-            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert!(renewed.issued_at_unix_ms >= before.issued_at_unix_ms);
+        let progress = writer.progress();
+        let epoch = tilo_identity_host::policy_change::epoch();
+        #[cfg(target_os = "linux")]
         assert_eq!(
-            renewed.valid_until_unix_ms - renewed.issued_at_unix_ms,
-            3_000
+            sandbox_revocation::next_expiry(&lock(&authority.published)),
+            None
         );
+        std::thread::sleep(Duration::from_millis(1_500));
+        writer.flush();
+        // Another test of this process announcing wakes it, as it should.
+        if tilo_identity_host::policy_change::epoch() == epoch {
+            assert_eq!(writer.progress(), progress, "nothing ran while idle");
+        }
+        assert_eq!(read(), Some(before.clone()), "still current, never renewed");
+
+        // A policy announcement is what wakes it: judged once, unchanged.
+        tilo_identity_host::policy_change::announce();
+        writer.flush();
+        assert_eq!(read(), Some(before));
+
         drop(first);
         assert_eq!(lock(&authority.published).bindings[&binding].borrowers, 1);
         assert!(path.exists());
@@ -1039,9 +1134,46 @@ mod tests {
         let published = lock(&authority.published);
         assert!(published.bindings.is_empty());
         assert!(!path.exists());
-        assert!(published.next_refresh.is_none());
         drop(published);
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    /// A grant a running sandbox captured that expires is the one instant
+    /// judged by itself; a grant without an expiry schedules nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_an_expiring_captured_grant_schedules_a_judgement() {
+        let room = RoomId::new();
+        let lasting = grant("so.tilo.lasting", "/disposable/lasting");
+        let mut expiring = grant("so.tilo.expiring", "/disposable/expiring");
+        expiring.expiry = collab_types::caps::Expiry::AtUnix(4_000_000_000);
+        let mut children = [live_child(), live_child()];
+        let mut published = Published::default();
+        let capture = |child: &std::process::Child, grant: &CapOverride| {
+            sandbox_revocation::Sandbox::capture(
+                child.id(),
+                (room, grant.id.clone(), "person".into()),
+                std::slice::from_ref(grant),
+            )
+            .unwrap()
+        };
+        published
+            .sandboxes
+            .insert(children[0].id(), capture(&children[0], &lasting));
+        assert_eq!(sandbox_revocation::next_expiry(&published), None);
+        published
+            .sandboxes
+            .insert(children[1].id(), capture(&children[1], &expiring));
+        assert_eq!(
+            sandbox_revocation::next_expiry(&published),
+            Some(4_000_000_000)
+        );
+        published.sandboxes.remove(&children[1].id());
+        assert_eq!(sandbox_revocation::next_expiry(&published), None);
+        for child in &mut children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 
     // Sandbox registration (`Lease::register_sandbox`) exists only on Linux,
@@ -1234,7 +1366,7 @@ mod tests {
     /// changes the record the state writer holds but no grant. The writer
     /// accepts the record before the export carrying it is published, and
     /// meanwhile the state writer is still busy with an earlier write. A
-    /// renewal judging the sandboxes in that gap interrupts none of them.
+    /// judgement of the sandboxes in that gap interrupts none of them.
     /// A grant withdrawn afterwards still interrupts its sandbox, and so does
     /// an export of a record the writer has moved past with nothing newer on
     /// the way.
@@ -1290,7 +1422,7 @@ mod tests {
         let (request, _) =
             crate::shell::native_workspace_owner::test_document_edit(&owner, room, &key, now, 1);
         owner.commit_document(request, now).unwrap();
-        authority.renew();
+        authority.judge();
         assert!(
             children.iter().all(running),
             "the accepted record's export is on its way; nothing was withdrawn"

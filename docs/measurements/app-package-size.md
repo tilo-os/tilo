@@ -38,7 +38,9 @@ enforces the budgets in these places:
 - **t's `perf-footprint` check** (nightly) holds every published app to
   its budget. It also holds the apps' median, p90 and max to the fleet
   ceilings: the KPI targets, or an interim ceiling where the fleet does not
-  meet a target yet.
+  meet a target yet. The budgets are those of the commit the newest release
+  was built from, since the registry serves that release until the next one
+  publishes; `app-sizes-<arch>` holds a candidate's apps to its own budgets.
 - **t's `changes` check** runs `check-budget`, a text check. A budget or ceiling
   may only grow by what a raise file new in the same change adds. The budgeted
   apps must be exactly the default collection, so an app added to `apps/`

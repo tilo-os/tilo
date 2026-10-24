@@ -1134,6 +1134,12 @@ impl<R: Resource> Dispatcher<R> {
         );
     }
 
+    /// The client of the session's action door the views' opens and
+    /// reads go through.
+    pub(crate) const fn opener(&self) -> &super::reference::Opener {
+        &self.core.opener
+    }
+
     /// Open `reference`, which `app` keeps in its `record` (`None`: the
     /// app's own record of the workspace), where it lives: its app opens at
     /// it, launched first when no window shows it. The open is an action

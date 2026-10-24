@@ -34,6 +34,7 @@ impl ShellDriver {
         "palette_downloaded_missing",
         "launcher_downloaded",
         "palette_open_app",
+        "palette_record_actions",
         "downloaded_add_appimage",
         "downloaded_add_program",
         "downloaded_add_no_artwork",
@@ -124,8 +125,6 @@ impl ShellDriver {
         "notifications-one",
         "notifications-dnd",
         "notifications-graphics",
-        "room-activity",
-        "room-activity-all",
-        "room-activity-named",
+        "notifications-call",
     ];
 }

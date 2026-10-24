@@ -10,11 +10,8 @@ use crate::width::WindowWidth;
 /// `AppPlaceholder` for native apps, whose concrete widgets are
 /// constructed at shell boot.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "TileRecord", into = "TileRecord")]
 pub enum TileContent {
-    /// Device-local workspace history. It is a normal tiled window for this
-    /// compositor, but it is never projected into the room document: the
-    /// departure frontier and what this person has seen are private state.
-    WorkspaceActivity,
     AppPlaceholder {
         kind: AppKind,
         label: String,
@@ -84,6 +81,136 @@ pub enum TileContent {
     },
 }
 
+/// How a [`TileContent`] is written: every variant it was ever written
+/// with, in its place, so bytes already held keep their meaning.
+#[derive(Clone, Serialize, Deserialize)]
+enum TileRecord {
+    /// The Activity window the shell once drew itself; it reads as a
+    /// window of the Activity app.
+    #[serde(rename = "WorkspaceActivity")]
+    RetiredWorkspaceActivity,
+    AppPlaceholder {
+        kind: AppKind,
+        label: String,
+    },
+    Stub {
+        kind: AppKind,
+        label: String,
+    },
+    Foreign {
+        app_id: String,
+        surface_id: u64,
+    },
+    LocalApp {
+        app_id: String,
+        label: String,
+        #[serde(default)]
+        note: String,
+    },
+    PeerWindow {
+        app_id: String,
+        label: String,
+        #[serde(default)]
+        note: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missing: Option<MissingApp>,
+    },
+    HostedWindow {
+        app_id: String,
+        label: String,
+        host: String,
+        #[serde(default)]
+        host_label: String,
+    },
+}
+
+impl From<TileRecord> for TileContent {
+    fn from(record: TileRecord) -> Self {
+        match record {
+            TileRecord::RetiredWorkspaceActivity => Self::LocalApp {
+                app_id: tilo_actions::remote::workspace_activity::APP_ID.to_owned(),
+                label: "Activity".to_owned(),
+                note: String::new(),
+            },
+            TileRecord::AppPlaceholder { kind, label } => Self::AppPlaceholder { kind, label },
+            TileRecord::Stub { kind, label } => Self::Stub { kind, label },
+            TileRecord::Foreign { app_id, surface_id } => Self::Foreign { app_id, surface_id },
+            TileRecord::LocalApp {
+                app_id,
+                label,
+                note,
+            } => Self::LocalApp {
+                app_id,
+                label,
+                note,
+            },
+            TileRecord::PeerWindow {
+                app_id,
+                label,
+                note,
+                missing,
+            } => Self::PeerWindow {
+                app_id,
+                label,
+                note,
+                missing,
+            },
+            TileRecord::HostedWindow {
+                app_id,
+                label,
+                host,
+                host_label,
+            } => Self::HostedWindow {
+                app_id,
+                label,
+                host,
+                host_label,
+            },
+        }
+    }
+}
+
+impl From<TileContent> for TileRecord {
+    fn from(tile: TileContent) -> Self {
+        match tile {
+            TileContent::AppPlaceholder { kind, label } => Self::AppPlaceholder { kind, label },
+            TileContent::Stub { kind, label } => Self::Stub { kind, label },
+            TileContent::Foreign { app_id, surface_id } => Self::Foreign { app_id, surface_id },
+            TileContent::LocalApp {
+                app_id,
+                label,
+                note,
+            } => Self::LocalApp {
+                app_id,
+                label,
+                note,
+            },
+            TileContent::PeerWindow {
+                app_id,
+                label,
+                note,
+                missing,
+            } => Self::PeerWindow {
+                app_id,
+                label,
+                note,
+                missing,
+            },
+            TileContent::HostedWindow {
+                app_id,
+                label,
+                host,
+                host_label,
+            } => Self::HostedWindow {
+                app_id,
+                label,
+                host,
+                host_label,
+            },
+        }
+    }
+}
+
 /// Why a window another device has open has no instance here yet.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MissingApp {
@@ -95,14 +222,6 @@ pub enum MissingApp {
     },
     /// Not installed, and nothing this device can install provides it.
     Unavailable,
-}
-
-impl TileContent {
-    /// Shell-owned personal surfaces participate in local window management
-    /// without becoming windows on collaborators' desktops.
-    pub fn is_device_local(&self) -> bool {
-        matches!(self, Self::WorkspaceActivity)
-    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -318,5 +437,62 @@ mod tab_name_tests {
             .expect("reads back");
         assert_eq!(back.title, "Build");
         assert_eq!(back.app_title.as_deref(), Some("~/src"));
+    }
+}
+
+#[cfg(test)]
+mod tile_record_tests {
+    use super::*;
+
+    #[test]
+    fn a_tile_written_as_the_shells_activity_window_reads_as_the_activity_apps() {
+        let read: TileContent = serde_json::from_str("\"WorkspaceActivity\"").unwrap();
+        assert_eq!(
+            read,
+            TileContent::LocalApp {
+                app_id: tilo_actions::remote::workspace_activity::APP_ID.into(),
+                label: "Activity".into(),
+                note: String::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn every_tile_reads_back_as_written() {
+        let tiles = [
+            TileContent::Stub {
+                kind: AppKind::Terminal,
+                label: "Shell".into(),
+            },
+            TileContent::Foreign {
+                app_id: "Alacritty".into(),
+                surface_id: 3,
+            },
+            TileContent::LocalApp {
+                app_id: "so.tilo.notes".into(),
+                label: "Notes".into(),
+                note: String::new(),
+            },
+            TileContent::PeerWindow {
+                app_id: "so.tilo.files".into(),
+                label: "Files".into(),
+                note: "opening".into(),
+                missing: Some(MissingApp::Unavailable),
+            },
+            TileContent::HostedWindow {
+                app_id: "xterm".into(),
+                label: "xterm".into(),
+                host: "ab12".into(),
+                host_label: "Desk".into(),
+            },
+        ];
+        for tile in tiles {
+            let written = serde_json::to_string(&tile).unwrap();
+            assert_eq!(
+                serde_json::from_str::<TileContent>(&written).unwrap(),
+                tile,
+                "{written}"
+            );
+        }
     }
 }

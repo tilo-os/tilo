@@ -117,7 +117,9 @@ pub(super) fn wait_words(text: &str) -> impl Iterator<Item = String> + '_ {
 /// there. The names in it (capitalised words: a sender, a company) must
 /// all be, as they say whose message it is (Northwind's code is not
 /// Parcelly's); of its other words more than half must be, or one of its
-/// numbers (a claim, a reference).
+/// numbers (a claim, a reference). A wait that names numbers wants one of
+/// them exactly: "LR-2041 code entered" is not "LR-2042 code entered",
+/// however many other words they share.
 pub(super) fn holds_wanted(said: &str, wanted: &str) -> bool {
     if said.to_lowercase().contains(&wanted.trim().to_lowercase()) {
         return true;
@@ -132,6 +134,10 @@ pub(super) fn holds_wanted(said: &str, wanted: &str) -> bool {
         let (names, rest): (Vec<&WaitWord>, Vec<&WaitWord>) =
             alternative.iter().partition(|word| word.name);
         if !names.iter().all(|word| found(&word.text)) {
+            return false;
+        }
+        let mut numbers = rest.iter().filter(|word| word.number).peekable();
+        if numbers.peek().is_some() && !numbers.any(|word| words.contains(&word.text)) {
             return false;
         }
         let matched = rest.iter().filter(|word| found(&word.text)).count();

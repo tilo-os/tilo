@@ -772,7 +772,7 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             blocks.push(block);
             continue;
         }
-        if let Some(rest) = line.strip_prefix("```") {
+        if let Some((ticks, rest)) = code_fence(line) {
             let lang = if rest.is_empty() {
                 None
             } else {
@@ -780,7 +780,7 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
             };
             let mut body: Vec<&str> = Vec::new();
             for next in lines.by_ref() {
-                if next == "```" {
+                if backticks_only(next).is_some_and(|closing| closing >= ticks) {
                     break;
                 }
                 body.push(next);
@@ -875,6 +875,31 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
         blocks.push(BlockSpec::paragraph(""));
     }
     blocks
+}
+
+/// A code fence's backticks (three or more, as many as it starts with) and
+/// the language after them.
+fn code_fence(line: &str) -> Option<(usize, &str)> {
+    let rest = line.trim_start_matches('`');
+    let ticks = line.len() - rest.len();
+    (ticks >= 3).then_some((ticks, rest))
+}
+
+/// How many backticks `line` is, when it is nothing else (trailing
+/// whitespace aside): such a line closes a fence at least as long.
+fn backticks_only(line: &str) -> Option<usize> {
+    let line = line.trim_end();
+    (!line.is_empty() && line.bytes().all(|byte| byte == b'`')).then_some(line.len())
+}
+
+/// The backticks a code block's fence takes: three, or one more than the
+/// longest line of its text that is only backticks, so a fence the code
+/// shows (Markdown about Markdown) stays code instead of ending the block.
+fn fence_length(text: &str) -> usize {
+    text.split('\n')
+        .filter_map(backticks_only)
+        .max()
+        .map_or(3, |longest| longest.saturating_add(1).max(3))
 }
 
 /// The quoted lines that follow an alert marker, as one text: a line ending
@@ -1102,13 +1127,15 @@ fn serialize_blocks(blocks: &[BlockSpec]) -> String {
                 ));
             }
             BlockSpec::CodeBlock { lang, text } => {
-                out.push_str("```");
+                let fence = "`".repeat(fence_length(text));
+                out.push_str(&fence);
                 if let Some(l) = lang {
                     out.push_str(l);
                 }
                 out.push('\n');
                 out.push_str(text);
-                out.push_str("\n```");
+                out.push('\n');
+                out.push_str(&fence);
             }
             BlockSpec::Table { source } => out.push_str(source),
             BlockSpec::Divider => {
@@ -1801,6 +1828,36 @@ sum_(i=1)^n frac(1, i^2)
             .iter()
             .map(|block| format!("{:?} {:?} {}", block.kind, block.text(), block.nesting))
             .collect()
+    }
+
+    /// Code that shows a fence (Markdown about Markdown) stays one code
+    /// block through export and import: its own fence is longer.
+    #[test]
+    fn a_code_block_showing_a_fence_round_trips() {
+        let specs = vec![
+            BlockSpec::code_block(
+                Some("md".into()),
+                "```rust\nfn main() {}\n```\n\n````\n``` ",
+            ),
+            BlockSpec::paragraph("after"),
+        ];
+        let markdown = serialize(&specs);
+        assert_eq!(parse(&markdown), specs, "markdown {markdown:?}");
+        let blocks = specs_to_blocks(&specs);
+        assert_eq!(shape(&export_import(&blocks)), shape(&blocks));
+        // A longer fence written elsewhere reads as one block too, and a
+        // fence closes on a line of at least its own backticks.
+        assert_eq!(
+            parse("````md\n```\nx\n```\n`````\n\nafter\n"),
+            vec![
+                BlockSpec::code_block(Some("md".into()), "```\nx\n```"),
+                BlockSpec::paragraph("after"),
+            ]
+        );
+        assert_eq!(
+            serialize(&[BlockSpec::code_block(Some("sh".into()), "ls")]),
+            "```sh\nls\n```\n"
+        );
     }
 
     /// Text that reads like markup comes back as the same text, not marks.

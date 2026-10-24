@@ -5330,6 +5330,9 @@ impl Widget for BooksApp {
 
     fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         self.load_toast_deadline()
+            .into_iter()
+            .chain(self.next_query_placeholder_step(ui::time::now()))
+            .min()
     }
 
     fn needs_animation_frame(&self) -> bool {

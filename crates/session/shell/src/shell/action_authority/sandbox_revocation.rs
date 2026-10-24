@@ -1,7 +1,7 @@
 //! Interrupt immutable sandboxes when accepted sandbox authority is withdrawn.
 //! No package-name signals, new grants, or automatic application restarts.
 use super::{Binding, Published};
-use collab_types::caps::{CapOverride, Effect, Scope, Subject, path_covers};
+use collab_types::caps::{CapOverride, Effect, Expiry, Scope, Subject, path_covers};
 use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -167,6 +167,21 @@ fn signal(handle: &OwnedFd, signal: i32) {
             tracing::error!(%error, signal, "sandbox authority interruption failed");
         }
     }
+}
+
+/// The next instant (Unix seconds) at which a grant a running sandbox
+/// captured expires: what judges it again with nothing else changing.
+pub(super) fn next_expiry(published: &Published) -> Option<u64> {
+    published
+        .sandboxes
+        .values()
+        .flat_map(|sandbox| &sandbox.capabilities)
+        .filter(|cap| cap.effect == Effect::Grant)
+        .filter_map(|cap| match cap.expiry {
+            Expiry::AtUnix(at) => Some(at),
+            _ => None,
+        })
+        .min()
 }
 
 pub(super) fn reconcile(published: &mut Published) {

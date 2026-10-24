@@ -83,6 +83,15 @@ mail-deliver-message = Delivered { $subject }
 mail-draft-message = Drafted { $subject }
 mail-draft-reply = Drafted a reply
 
+mail-forward-not-downloaded = { $count ->
+    [one] { $files } is not downloaded yet, so it is not attached
+   *[other] { $files } are not downloaded yet, so they are not attached
+}
+mail-forward-too-large = { $count ->
+    [one] { $files } is more than one message can carry, so it is not attached
+   *[other] { $files } are more than one message can carry, so they are not attached
+}
+
 mail-import-sign-in-required = Imported account settings require authentication. Sign in before connecting.
 
 ## Reader: an HTML message's remote content, links and format

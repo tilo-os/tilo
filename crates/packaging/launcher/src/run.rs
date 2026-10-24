@@ -5951,8 +5951,6 @@ bin = \"store\"
             &manifest.package_id,
             "person-a",
             false,
-            10_000,
-            13_000,
         );
         std::fs::write(&path, serde_json::to_vec(&policy).unwrap()).unwrap();
         let opts = RunOptions {

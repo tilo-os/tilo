@@ -24,9 +24,11 @@ use winit::event::{
 };
 use winit::keyboard::{Key, NamedKey};
 
+use crate::arriving::Arrival;
 use crate::collection_transition::{KeyedRowSnapshot, KeyedTransitionSet, RowGeometry};
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
 use crate::text_render::TextRenderer;
@@ -40,7 +42,10 @@ use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::data_table::{
     RowType, centered_text_top, row_estimate, text_band, type_line_height,
 };
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
+
+/// The shape of a tree row's placeholder: one line where its label goes.
+const ARRIVING_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 1 };
 
 mod access_rows;
 mod affordances;
@@ -63,26 +68,13 @@ pub struct TreeSlot {
     pub index: usize,
 }
 
-/// State returned for a logical child slot. A model can publish its total
-/// child count before all child ids are resident, allowing the tree to retain
-/// correct scrollbar geometry while requesting only visible pages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TreeChildState<'a> {
-    Ready(NodeId),
-    Loading,
-    Error { message: Option<&'a str> },
-}
-
-/// Non-resident row state passed to [`TreeView::with_slot_delegate`].
-///
-/// The slot retains a stable identity while this state changes, so a delegate
-/// can render localized progress, retry, or diagnostic controls without
-/// inventing a placeholder node id.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TreeSlotState<'a> {
-    Loading,
-    Error { message: Option<&'a str> },
-}
+/// Where a logical child slot stands: its node, on its way (saying where it
+/// comes from), or failed (with the reason, when the model has one). A model
+/// can publish its total child count before all child ids are resident, so
+/// the tree keeps correct scrollbar geometry while requesting only visible
+/// pages; a slot on its way keeps its row, with the tree's placeholder in it
+/// ([`crate::widget::ArrivingRows`]).
+pub type TreeChildState<'a> = Arrival<NodeId, Option<&'a str>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TreeLoadReason {
@@ -284,16 +276,11 @@ pub trait TreeModel {
     fn child_id(&self, parent: NodeId, index: usize) -> Option<NodeId>;
 
     /// Resolve a logical child slot. Paged models override this to return
-    /// [`TreeChildState::Loading`] or [`TreeChildState::Error`] for
-    /// non-resident rows; existing fully-resident models need only implement
-    /// [`Self::child_id`].
+    /// [`Arrival::Pending`] or [`Arrival::Failed`] for non-resident rows;
+    /// fully-resident models need only implement [`Self::child_id`].
     fn child_state(&self, parent: NodeId, index: usize) -> TreeChildState<'_> {
-        self.child_id(parent, index).map_or(
-            TreeChildState::Error {
-                message: Some("Row unavailable"),
-            },
-            TreeChildState::Ready,
-        )
+        self.child_id(parent, index)
+            .map_or(Arrival::Failed(Some("Row unavailable")), Arrival::Ready)
     }
 
     /// Start or deduplicate work for one visible/retried child slot. Return
@@ -688,13 +675,11 @@ impl SparseTreeIndex {
             if remaining < plain {
                 let child_index = child_cursor.saturating_add(remaining);
                 let key = match model.child_state(node.id, child_index) {
-                    TreeChildState::Ready(id) => TreeRowKey::Node(id),
-                    TreeChildState::Loading | TreeChildState::Error { .. } => {
-                        TreeRowKey::Slot(TreeSlot {
-                            parent: node.id,
-                            index: child_index,
-                        })
-                    }
+                    Arrival::Ready(id) => TreeRowKey::Node(id),
+                    Arrival::Pending { .. } | Arrival::Failed(_) => TreeRowKey::Slot(TreeSlot {
+                        parent: node.id,
+                        index: child_index,
+                    }),
                 };
                 return Some((key, depth.saturating_add(1)));
             }
@@ -713,13 +698,11 @@ impl SparseTreeIndex {
         let child = child_cursor.saturating_add(remaining);
         (child < node.direct_children).then(|| {
             let key = match model.child_state(node.id, child) {
-                TreeChildState::Ready(id) => TreeRowKey::Node(id),
-                TreeChildState::Loading | TreeChildState::Error { .. } => {
-                    TreeRowKey::Slot(TreeSlot {
-                        parent: node.id,
-                        index: child,
-                    })
-                }
+                Arrival::Ready(id) => TreeRowKey::Node(id),
+                Arrival::Pending { .. } | Arrival::Failed(_) => TreeRowKey::Slot(TreeSlot {
+                    parent: node.id,
+                    index: child,
+                }),
             };
             (key, depth.saturating_add(1))
         })
@@ -783,7 +766,7 @@ impl SparseTreeIndex {
             TreeRowKey::Slot(slot) => {
                 if matches!(
                     model.child_state(slot.parent, slot.index),
-                    TreeChildState::Ready(_)
+                    Arrival::Ready(_)
                 ) {
                     return None;
                 }
@@ -897,7 +880,12 @@ pub struct TreeView<T, M = TreeNode<T>> {
     indent_px: f64,
     requested_slots: HashSet<TreeSlot>,
     row_delegate: Option<TreeRowDelegate<M>>,
-    slot_delegate: Option<TreeSlotDelegate<M>>,
+    /// The placeholders of child slots on their way.
+    arrivals: crate::widget::ArrivingRows<TreeSlot>,
+    /// The slot each node that landed in one came from, while it fades in.
+    landed: HashMap<NodeId, TreeSlot>,
+    /// The motion of the theme last laid out with: how landed rows fade in.
+    arrival_motion: Option<crate::tokens::EffectiveMotion>,
     mounted_rows: Vec<MountedTreeRow>,
     delegate_structure_dirty: bool,
     delegate_layout_dirty: bool,
@@ -1027,8 +1015,6 @@ fn paint_disclosure(
 
 type TreeRowDelegate<M> = Box<dyn FnMut(&M, NodeId, usize) -> Element>;
 type TreeRowDecorator<M> = Box<dyn FnMut(&M, TreeRowInfo, &Theme) -> TreeRowDecoration>;
-type TreeSlotDelegate<M> =
-    Box<dyn for<'a> FnMut(&M, TreeSlot, usize, TreeSlotState<'a>) -> Element>;
 type TreeReorderValidator<M> = Box<dyn FnMut(&M, NodeId, &DropTarget<NodeId>) -> bool>;
 type TreeReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<NodeId>) -> bool>;
 type TreeContextMenu<M> = Box<dyn FnMut(&M, Option<NodeId>) -> Vec<MenuItem>>;
@@ -1148,7 +1134,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             indent_px: DEFAULT_INDENT,
             requested_slots: HashSet::new(),
             row_delegate: None,
-            slot_delegate: None,
+            arrivals: crate::widget::ArrivingRows::new(),
+            landed: HashMap::new(),
+            arrival_motion: None,
             mounted_rows: Vec::new(),
             delegate_structure_dirty: false,
             delegate_layout_dirty: false,
@@ -1500,24 +1488,6 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self
     }
 
-    /// Replace built-in loading and error text with retained widget subtrees.
-    ///
-    /// The delegate is mounted only for unresolved slots in the virtual paint
-    /// window. `TreeView` continues to own stable row identity, busy/invalid
-    /// semantics, focus, activation-to-retry, measurement, and request
-    /// deduplication. This lets apps localize placeholders or add ordinary
-    /// progress and retry controls without turning them into model nodes.
-    #[must_use]
-    pub fn with_slot_delegate<F>(mut self, delegate: F) -> Self
-    where
-        F: for<'a> FnMut(&M, TreeSlot, usize, TreeSlotState<'a>) -> Element + 'static,
-    {
-        self.slot_delegate = Some(Box::new(delegate));
-        self.delegate_structure_dirty = true;
-        self.delegate_layout_dirty = true;
-        self
-    }
-
     /// Rebuild delegated widgets for model nodes whose displayed data changed.
     pub fn invalidate_row_delegates(&mut self, ids: impl IntoIterator<Item = NodeId>) {
         let ids = ids.into_iter().collect::<HashSet<_>>();
@@ -1819,10 +1789,12 @@ impl<T, M: TreeModel> TreeView<T, M> {
                 continue;
             };
             for slot in slots {
-                let TreeChildState::Ready(id) = self.model.child_state(slot.parent, slot.index)
-                else {
+                let Arrival::Ready(id) = self.model.child_state(slot.parent, slot.index) else {
                     continue;
                 };
+                if self.arrivals.contains(slot) {
+                    self.landed.insert(id, *slot);
+                }
                 let old = TreeRowKey::Slot(*slot);
                 let new = TreeRowKey::Node(id);
                 self.viewport.remap_key(&old, new);
@@ -1845,8 +1817,8 @@ impl<T, M: TreeModel> TreeView<T, M> {
             return anchor;
         };
         match self.model.child_state(slot.parent, slot.index) {
-            TreeChildState::Ready(id) => anchor.with_key(TreeRowKey::Node(id)),
-            TreeChildState::Loading | TreeChildState::Error { .. } => anchor,
+            Arrival::Ready(id) => anchor.with_key(TreeRowKey::Node(id)),
+            Arrival::Pending { .. } | Arrival::Failed(_) => anchor,
         }
     }
 
@@ -1904,19 +1876,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
                         TransitionTextTone::Primary,
                     ),
                     TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index) {
-                        TreeChildState::Ready(_) => return None,
-                        TreeChildState::Loading | TreeChildState::Error { .. }
-                            if self.slot_delegate.is_some() =>
-                        {
-                            return None;
-                        }
-                        TreeChildState::Loading => (
-                            "Loading…".to_owned(),
+                        Arrival::Ready(_) => return None,
+                        Arrival::Pending { .. } => (
+                            crate::i18n::I18nManager::lookup_plain("arriving-loading"),
                             false,
                             false,
                             TransitionTextTone::Dim,
                         ),
-                        TreeChildState::Error { message } => (
+                        Arrival::Failed(message) => (
                             message
                                 .unwrap_or("Could not load. Activate to retry")
                                 .to_owned(),
@@ -1983,7 +1950,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 
     fn mark_delegate_window_dirty(&mut self) {
-        if self.row_delegate.is_some() || self.slot_delegate.is_some() {
+        if self.row_delegate.is_some() {
             self.delegate_structure_dirty = true;
             self.delegate_layout_dirty = true;
         }
@@ -2083,10 +2050,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
             .filter_map(|index| self.index.row_at(&self.model, index))
             .filter_map(|(key, _)| match key {
                 TreeRowKey::Slot(slot)
-                    if matches!(
-                        self.model.child_state(slot.parent, slot.index),
-                        TreeChildState::Loading
-                    ) =>
+                    if self.model.child_state(slot.parent, slot.index).is_pending() =>
                 {
                     Some(slot)
                 }
@@ -2471,9 +2435,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             }
             TreeRowKey::Slot(slot) => {
                 let reason = match self.model.child_state(slot.parent, slot.index) {
-                    TreeChildState::Loading => Some(TreeLoadReason::Visible),
-                    TreeChildState::Error { .. } => Some(TreeLoadReason::Retry),
-                    TreeChildState::Ready(_) => None,
+                    Arrival::Pending { .. } => Some(TreeLoadReason::Visible),
+                    Arrival::Failed(_) => Some(TreeLoadReason::Retry),
+                    Arrival::Ready(_) => None,
                 };
                 if let Some(reason) = reason {
                     self.request_slot(slot, reason);
@@ -2747,9 +2711,9 @@ impl<T, M: TreeModel> TreeView<T, M> {
             }
             TreeRowKey::Slot(slot) => {
                 let reason = match self.model.child_state(slot.parent, slot.index) {
-                    TreeChildState::Loading => TreeLoadReason::Visible,
-                    TreeChildState::Error { .. } => TreeLoadReason::Retry,
-                    TreeChildState::Ready(_) => return false,
+                    Arrival::Pending { .. } => TreeLoadReason::Visible,
+                    Arrival::Failed(_) => TreeLoadReason::Retry,
+                    Arrival::Ready(_) => return false,
                 };
                 self.request_slot(slot, reason)
             }
@@ -2830,9 +2794,33 @@ impl<T, M: TreeModel> TreeView<T, M> {
         true
     }
 
+    /// Look at where the visible slots' data stands at `now`: a slot on its
+    /// way starts its placeholder timing, and one that landed shows its
+    /// node once due, fading in.
+    fn observe_arrivals(&mut self, now: Instant) {
+        let motion = self.arrival_motion;
+        let mut seen = HashSet::new();
+        let slots = self
+            .visible_row_range()
+            .filter_map(|index| match self.index.row_at(&self.model, index)? {
+                (TreeRowKey::Slot(slot), _) => Some(slot),
+                (TreeRowKey::Node(_), _) => None,
+            })
+            .chain(self.landed.values().copied())
+            .collect::<Vec<_>>();
+        for slot in slots {
+            let state = self.model.child_state(slot.parent, slot.index);
+            self.arrivals.observe(&slot, &state, motion, now);
+            seen.insert(slot);
+        }
+        self.arrivals.retain(now, |slot| seen.contains(slot));
+        let arrivals = &self.arrivals;
+        self.landed.retain(|_, slot| arrivals.contains(slot));
+    }
+
     fn reconcile_mounted_rows(&mut self) {
         let interaction = self.interaction;
-        if self.row_delegate.is_none() && self.slot_delegate.is_none() {
+        if self.row_delegate.is_none() {
             if !self.mounted_rows.is_empty() {
                 self.mounted_rows.clear();
                 self.delegate_structure_dirty = true;
@@ -2865,25 +2853,14 @@ impl<T, M: TreeModel> TreeView<T, M> {
             let mut row = if let Some(row) = old.remove(&key) {
                 row
             } else {
-                let widget = match key {
-                    TreeRowKey::Node(id) => {
-                        let Some(delegate) = &mut self.row_delegate else {
-                            continue;
-                        };
-                        delegate(&self.model, id, depth)
-                    }
-                    TreeRowKey::Slot(slot) => {
-                        let Some(delegate) = &mut self.slot_delegate else {
-                            continue;
-                        };
-                        let state = match self.model.child_state(slot.parent, slot.index) {
-                            TreeChildState::Loading => TreeSlotState::Loading,
-                            TreeChildState::Error { message } => TreeSlotState::Error { message },
-                            TreeChildState::Ready(_) => continue,
-                        };
-                        delegate(&self.model, slot, depth, state)
-                    }
+                // A slot on its way, or failed, is the tree's own to paint.
+                let TreeRowKey::Node(id) = key else {
+                    continue;
                 };
+                let Some(delegate) = &mut self.row_delegate else {
+                    continue;
+                };
+                let widget = delegate(&self.model, id, depth);
                 MountedTreeRow {
                     key,
                     depth,
@@ -2942,6 +2919,12 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .replace(now)
             .map_or(Duration::ZERO, |last| now.saturating_duration_since(last));
         let mut changed = received_changes;
+        // A row whose content landed shows once its skeleton stood its
+        // minimum: that wake repaints it.
+        if self.arrivals.reveal_due(crate::motion::frame_now()) {
+            self.observe_arrivals(crate::motion::frame_now());
+            self.paint_dirty = true;
+        }
         // A glide moves only the viewport, which the frame it asks for lays
         // out: no change of the model, so it does not report one (as
         // `Scrollable::update`).
@@ -2991,6 +2974,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             self.layout_theme = Some(theme.clone());
             self.paint_dirty = true;
         }
+        self.arrival_motion = Some(theme.motion());
         self.transition_motion = theme.motion();
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
@@ -3096,6 +3080,8 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
     ) {
         let incoming = std::mem::take(scene);
         self.request_visible_rows();
+        self.observe_arrivals(crate::motion::frame_now());
+        self.arrivals.mark_drawn(crate::motion::frame_now());
         let tokens = &theme.tokens;
         let text_style = tokens.typography.style(LABEL_ROLE);
         self.transitions.settle(crate::time::now());
@@ -3227,11 +3213,10 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                     }
                     TreeRowKey::Slot(slot) => match self.model.child_state(slot.parent, slot.index)
                     {
-                        TreeChildState::Ready(_) => break 'row,
-                        TreeChildState::Loading => {
-                            ("Loading\u{2026}", tokens.colors.text_dim, false)
-                        }
-                        TreeChildState::Error { message } => (
+                        Arrival::Ready(_) => break 'row,
+                        // Its placeholder paints in its place.
+                        Arrival::Pending { .. } => ("", tokens.colors.text_dim, false),
+                        Arrival::Failed(message) => (
                             message.unwrap_or("Could not load. Activate to retry"),
                             tokens.colors.semantic.danger,
                             false,
@@ -3270,6 +3255,44 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
                 // body's clip trims a row the edge cuts.
                 let (y0, y1) = (y0 + shift, y1 + shift);
                 let row_rect = Rect::new(self.rect.x0, y0, self.rect.x1, y1);
+                // A slot on its way paints its placeholder where its label
+                // goes; the node that lands in it fades in over it.
+                let arriving = match key {
+                    TreeRowKey::Slot(slot) => Some(slot),
+                    TreeRowKey::Node(id) => self.landed.get(&id).copied(),
+                };
+                let mut opacity = opacity;
+                if let Some(slot) = arriving {
+                    let label_x0 = self.rect.x0
+                        + self.row_inset
+                        + f64_of_usize(depth) * indent_px
+                        + self.disclosure_w;
+                    let face_rect = Rect::new(label_x0, y0, self.rect.x1 - self.row_inset, y1);
+                    if let Some(face) = self.arrivals.face(&slot, ARRIVING_SHAPE, now) {
+                        face.paint(
+                            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                            face_rect,
+                        );
+                        break 'row;
+                    }
+                    if let Some((face, fading)) =
+                        self.arrivals.outgoing_face(&slot, ARRIVING_SHAPE, now)
+                    {
+                        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+                        ctx.scene.push_layer(
+                            vello::peniko::Fill::NonZero,
+                            vello::peniko::BlendMode::default(),
+                            fading,
+                            transform,
+                            &face_rect,
+                        );
+                        face.paint(&mut ctx, face_rect);
+                        ctx.scene.pop_layer();
+                    }
+                    if let Some(fade) = self.arrivals.fade(&slot, now) {
+                        opacity *= fade.incoming;
+                    }
+                }
                 if let TreeRowKey::Node(id) = key
                     && self.is_nav()
                 {
@@ -3838,6 +3861,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
 
     fn needs_redraw(&self) -> bool {
         self.paint_dirty
+            || self.arrivals.needs_redraw(crate::motion::frame_now())
             || self.drawn_signature != Some(self.paint_signature())
             || self.faces.is_moving(crate::motion::frame_now())
             || self.momentum.is_active()
@@ -3903,6 +3927,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             || self.model.needs_poll()
             || self.reorder.is_active()
             || self.transitions.is_active(crate::time::now())
+            || self.arrivals.is_moving(crate::motion::frame_now())
             || self
                 .mounted_rows
                 .iter()
@@ -3914,6 +3939,9 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
             .bar_fade
             .get()
             .fade_deadline_at(crate::motion::frame_now(), self.bar_held.get());
+        if let Some(deadline) = self.arrivals.next_wake_deadline(crate::time::now()) {
+            earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
+        }
         for row in &self.mounted_rows {
             if let Some(deadline) = row.widget.next_wake_deadline() {
                 earliest = Some(earliest.map_or(deadline, |old| old.min(deadline)));
@@ -4955,24 +4983,15 @@ mod tests {
 
         fn child_state(&self, parent: NodeId, index: usize) -> TreeChildState<'_> {
             if parent != 1 {
-                return TreeChildState::Error {
-                    message: Some("Unknown parent"),
-                };
+                return Arrival::Failed(Some("Unknown parent"));
             }
             match self.state(index) {
-                Some(PagedSlotState::Loading) => TreeChildState::Loading,
-                Some(PagedSlotState::Error) => TreeChildState::Error {
-                    message: Some("Network unavailable"),
-                },
-                Some(PagedSlotState::Ready) => Self::id(index).map_or(
-                    TreeChildState::Error {
-                        message: Some("Invalid row id"),
-                    },
-                    TreeChildState::Ready,
-                ),
-                None => TreeChildState::Error {
-                    message: Some("Row out of bounds"),
-                },
+                Some(PagedSlotState::Loading) => Arrival::local(),
+                Some(PagedSlotState::Error) => Arrival::Failed(Some("Network unavailable")),
+                Some(PagedSlotState::Ready) => {
+                    Self::id(index).map_or(Arrival::Failed(Some("Invalid row id")), Arrival::Ready)
+                }
+                None => Arrival::Failed(Some("Row out of bounds")),
             }
         }
 
@@ -6272,7 +6291,11 @@ mod tests {
             assert!(loaded.state.focused);
         }
 
-        {
+        // A slot on its way is the tree's to paint: no delegate is built
+        // for it, its placeholder starts with the ground, and it reads as
+        // busy; a failed slot names why.
+        crate::time::testing::with_monotonic_time(crate::time::now(), || {
+            let t0 = crate::time::now();
             let states = Rc::new(RefCell::new(HashMap::from([
                 (0, PagedSlotState::Loading),
                 (1, PagedSlotState::Error),
@@ -6287,76 +6310,53 @@ mod tests {
                 changes: Vec::new(),
             })
             .with_expanded([1])
-            .with_slot_delegate(move |_, slot, _, state| {
+            .with_row_delegate(move |_, _, _| {
                 captured.set(captured.get().saturating_add(1));
-                let (label, height) = match state {
-                    TreeSlotState::Loading => (format!("Chargement {}", slot.index), 34.0),
-                    TreeSlotState::Error { message } => (
-                        format!("Réessayer {} — {}", slot.index, message.unwrap_or("Erreur")),
-                        48.0,
-                    ),
-                };
                 Box::new(DelegateProbe::new(
-                    label,
-                    height,
+                    "row",
+                    34.0,
                     false,
                     Rc::new(Cell::new(0)),
                 ))
             });
             view.set_viewport(120.0, f32_of_f64(ROW_HEIGHT));
             let _ = lay_out_tree(&mut view, 360.0);
+            view.observe_arrivals(t0);
 
-            assert_eq!(builds.get(), 2);
-            assert_eq!(view.viewport.item_height(1), Some(34.0));
-            assert_eq!(view.viewport.item_height(2), Some(48.0));
+            assert_eq!(builds.get(), 1, "only the resident root is built");
+            let pending = TreeSlot {
+                parent: 1,
+                index: 0,
+            };
+            assert_eq!(
+                view.arrivals
+                    .face(&pending, SkeletonShape::Text { lines: 1 }, t0)
+                    .map(|face| face.step()),
+                Some(crate::arriving::Step::Ground)
+            );
+            assert_eq!(
+                Widget::next_wake_deadline(&view),
+                Some(t0 + crate::arriving::GRACE),
+                "its placeholder's next step is a deadline"
+            );
             let semantics = Widget::accessibility(&view).unwrap();
             let loading = semantics
                 .children
                 .iter()
                 .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
-                .expect("localized loading slot semantics");
-            assert_eq!(loading.name.as_deref(), Some("Chargement 0"));
+                .expect("loading slot semantics");
             assert!(loading.state.busy);
-            assert_eq!(
-                loading
-                    .children
-                    .first()
-                    .expect("delegated child semantics")
-                    .role,
-                crate::a11y::Role::Button
-            );
             let error = semantics
                 .children
                 .iter()
                 .find(|row| row.action_target.as_deref() == Some("slot:1:1"))
-                .expect("localized error slot semantics");
+                .expect("error slot semantics");
             assert_eq!(
                 error.name.as_deref(),
-                Some("Réessayer 1 — Network unavailable")
+                Some("Network unavailable. Activate to retry")
             );
             assert!(error.state.invalid);
-
-            states.borrow_mut().insert(0, PagedSlotState::Error);
-            view.notify_model_changes(&[TreeModelChange::SlotsChanged {
-                slots: vec![TreeSlot {
-                    parent: 1,
-                    index: 0,
-                }],
-            }]);
-            let _ = lay_out_tree(&mut view, 360.0);
-            assert_eq!(builds.get(), 3, "only the changed slot is rebuilt");
-            let changed = Widget::accessibility(&view)
-                .unwrap()
-                .children
-                .into_iter()
-                .find(|row| row.action_target.as_deref() == Some("slot:1:0"))
-                .expect("changed slot semantics");
-            assert_eq!(
-                changed.name.as_deref(),
-                Some("Réessayer 0 — Network unavailable")
-            );
-            assert!(changed.state.invalid);
-        }
+        });
     }
 
     #[test]

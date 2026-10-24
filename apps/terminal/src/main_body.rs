@@ -3294,26 +3294,26 @@ impl Widget for TerminalWidget {
         })
     }
 
+    /// A terminal always declares terminal input, so the on-screen keyboard
+    /// shows its terminal keys, at a native editor prompt too. What dictation
+    /// is offered is separate: see [`Self::ime_requires_deferred_ack`].
     fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        if self.focused
-            && !self.context_menu.is_open()
+        (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
+            .then_some(ui::ime::InputContent::TERMINAL)
+    }
+
+    /// A native editor prompt offers acknowledged edits: the editor confirms
+    /// each one against its own lease, which is what lets dictation write to
+    /// a terminal at all. A bare PTY offers none.
+    fn ime_requires_deferred_ack(&self) -> bool {
+        self.ime_content().is_some()
             && !self.native_read_only
             && !self.alt_active
-            && self.input_unavailable().is_none()
             && self
                 .native_editor
                 .as_ref()
                 .and_then(crate::native_editor::Client::snapshot)
                 .is_some()
-        {
-            return Some(ui::ime::InputContent::TEXT);
-        }
-        (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
-            .then_some(ui::ime::InputContent::TERMINAL)
-    }
-
-    fn ime_requires_deferred_ack(&self) -> bool {
-        self.ime_content() == Some(ui::ime::InputContent::TEXT)
     }
 
     fn start_deferred_text(&mut self) -> Option<ui::text_input::Receipt> {

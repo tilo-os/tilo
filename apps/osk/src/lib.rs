@@ -112,14 +112,17 @@ pub use imclient::{
     ImEvent, ImState, ImTransition, InputMethodClient, purpose_from_wire, try_input_method,
 };
 pub use inject::{
-    NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, build_keymap, default_injector,
+    Keypress, Modifiers, NullInjector, Symbol, TextInjector, VirtualKeyboardInjector, build_keymap,
+    default_injector,
 };
 pub use layout::{InputPurpose, Key, KeyAction, KeyId, KeyboardLayout, ShiftState, key_rects};
 pub use output::{Channel, OrderedRouter, OskOutput, PreeditEmulator, Step, TextMirror};
 pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
-pub use toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
+pub use toolbar::{
+    Latch, ModifierKey, ModifierLatches, OskToolbarAction, OskToolbarItem, toolbar_rects,
+};
 pub use touch_model::{NextKeyDistribution, TouchKey, TouchModel};
 pub use widget::{OskWidget, input_purpose_from_name, input_purpose_name};
 

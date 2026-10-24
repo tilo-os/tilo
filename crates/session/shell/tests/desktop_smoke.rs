@@ -460,6 +460,37 @@ fn idle_log(idle: &crate::support::desktop::Idle) -> String {
     format!("  compositor in the window:\n    {}", lines.join("\n    "))
 }
 
+/// The compositor's soft limit on open descriptors, from its `limits` file.
+fn soft_descriptor_limit(limits: &str) -> Option<u64> {
+    let line = limits.lines().find(|l| l.starts_with("Max open files"))?;
+    line.trim_start_matches("Max open files")
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// Growing a threaded process's descriptor table waits for an RCU grace
+/// period, and every thread that opens a file meanwhile sleeps: under
+/// pressure this smoke once found the main loop asleep in `expand_files` for
+/// 282 ms. The compositor reserves the table at startup
+/// (`compositor::descriptor_table`), so after the whole scenario it still
+/// has exactly that size: nothing the person did had to wait for it to grow.
+fn assert_descriptor_table_never_grew(desktop: &Desktop) {
+    use shell::compositor::descriptor_table::{slots_for, table_slots};
+    let limit = soft_descriptor_limit(&desktop.proc_file("limits"))
+        .expect("the compositor's descriptor limit in /proc/<pid>/limits");
+    let table = table_slots(&desktop.proc_file("status"))
+        .expect("the compositor's descriptor table in /proc/<pid>/status");
+    // The kernel sizes a table to a power of two.
+    assert_eq!(
+        table,
+        slots_for(limit).next_power_of_two(),
+        "the compositor's descriptor table has {table} slots under a limit of {limit}; \
+         it was not reserved at startup, or grew while the person used the desktop"
+    );
+}
+
 /// A shorter pointer pass: the corners, the edges and the top bar.
 fn sweep_edges(desktop: &Desktop) {
     let (w, h) = (f64::from(SCREEN.0), f64::from(SCREEN.1));
@@ -481,6 +512,7 @@ fn sweep_edges(desktop: &Desktop) {
 
 fn run(desktop: &Desktop, pressure: Option<Pressure>) {
     scenario(desktop);
+    assert_descriptor_table_never_grew(desktop);
     // The pressure ends with the scenario: idleness is judged without it.
     drop(pressure);
     assert_idle(desktop);

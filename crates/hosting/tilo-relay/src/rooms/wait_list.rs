@@ -135,7 +135,6 @@ impl WaitList {
             name: entry.contact.clone(),
             role: RoomRole::Editor,
             requested_at_ns: entry.at_ns,
-            contact: Some(entry.contact.clone()),
         })
     }
 }
@@ -158,7 +157,7 @@ mod tests {
         let restored = WaitList::open(&room).unwrap();
         let requests: Vec<_> = restored.requests().collect();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].contact.as_deref(), Some("ada@example.org"));
+        assert_eq!(requests[0].contact(), Some("ada@example.org"));
         assert_eq!(requests[0].requested_at_ns, 1);
         assert_eq!(requests[0].user_public_key, [0; 32]);
         assert_ne!(requests[0].request_id, requests[1].request_id);
@@ -170,7 +169,7 @@ mod tests {
         let kept: Vec<_> = WaitList::open(&room)
             .unwrap()
             .requests()
-            .filter_map(|request| request.contact)
+            .filter_map(|request| request.contact().map(str::to_owned))
             .collect();
         assert_eq!(kept, ["bo@example.org", "cy@example.org"]);
     }

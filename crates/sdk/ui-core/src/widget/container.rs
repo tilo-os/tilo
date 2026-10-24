@@ -72,8 +72,9 @@ pub struct Container {
     /// wrapping flex row this is the difference between filling the
     /// leftover width AFTER siblings are placed (correct) and demanding
     /// the whole line up front, forcing every sibling onto the next line
-    /// even when there was room.
-    flex_grow: bool,
+    /// even when there was room. The weight is the container's share of
+    /// that width against its growing siblings; zero does not grow.
+    flex_grow: f32,
 }
 
 impl Default for Container {
@@ -108,7 +109,7 @@ impl Container {
             inset: None,
             activation: crate::widget::activation::Activation::default(),
             bleed: (0.0, 0.0),
-            flex_grow: false,
+            flex_grow: 0.0,
         }
     }
 
@@ -123,7 +124,17 @@ impl Container {
     /// See the field docs.
     #[must_use]
     pub fn with_flex_grow(mut self) -> Self {
-        self.flex_grow = true;
+        self.flex_grow = 1.0;
+        self
+    }
+
+    /// Grow as [`Self::with_flex_grow`] does, taking `share` of the width
+    /// its growing siblings share, down to none of it: four tenths beside
+    /// six tenths shows a 40:60 split however long either's content is.
+    #[must_use]
+    pub fn with_share(mut self, share: f32) -> Self {
+        self.flex_grow = share.max(0.0);
+        self.min_width = Some(0.0);
         self
     }
 
@@ -440,7 +451,7 @@ impl Widget for Container {
             Some(px) => length(px),
             // `auto` so the basis is zero (the wrap decision ignores it);
             // flex_grow below fills the leftover line width.
-            None if self.flex_grow || self.hug => taffy::Dimension::auto(),
+            None if self.flex_grow > 0.0 || self.hug => taffy::Dimension::auto(),
             None => percent(1.0_f32),
         };
         let height = match self.fixed_height {
@@ -453,8 +464,8 @@ impl Widget for Container {
             flex_shrink: 0.0, // Prevent vertical squashing
             // A pinned width must not grow to fill a flex parent: `flex_basis:
             // auto` lets `size.width` resolve the basis instead.
-            flex_grow: if self.flex_grow { 1.0 } else { 0.0 },
-            flex_basis: if self.flex_grow {
+            flex_grow: self.flex_grow,
+            flex_basis: if self.flex_grow > 0.0 {
                 length(0.0_f32)
             } else {
                 taffy::Dimension::auto()

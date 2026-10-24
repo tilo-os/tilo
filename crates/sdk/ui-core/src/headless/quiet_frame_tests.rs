@@ -342,6 +342,10 @@ fn every_mutable_entry_point_invalidates_local_state() {
             "reads the last frame's pointers; measures name tags through the text renderer's shaping cache",
         ),
         ("take_profile_samples", "drains the profiler"),
+        (
+            "take_collaboration_requests",
+            "drains what the widgets asked of the transport, which no frame reads",
+        ),
         ("clear_profile_samples", "drains the profiler"),
     ];
     let sources = [
