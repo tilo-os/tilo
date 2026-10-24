@@ -142,6 +142,37 @@ impl ShellNetwork {
         })
     }
 
+    /// `channel`'s content keys from the steward of this device's own room
+    /// host, when `room` is hosted here: what this device's broker seals and
+    /// opens the room's records with. `None` for a room hosted elsewhere, or
+    /// while the host is not open. Blocks on the host: call it off the frame
+    /// loop.
+    pub(crate) fn hosted_channel_keys(
+        &self,
+        room: RoomId,
+        channel: collab_types::ChannelId,
+        route: Option<&collab_types::ChannelRoute>,
+        create: bool,
+    ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
+        let own = *self.local_peer_id.as_bytes();
+        if !self.tree.read().native_authority.hosted_on(room, &own) {
+            return None;
+        }
+        let Some(host) = self.room_host() else {
+            return Some(Err("this device's room host is not open".into()));
+        };
+        let runtime = match self.runtime_handle() {
+            Ok(runtime) => runtime,
+            Err(error) => return Some(Err(error)),
+        };
+        runtime.block_on(host.rooms().steward_channel_keys(
+            &room.to_string(),
+            channel,
+            route,
+            create,
+        ))
+    }
+
     /// Where this device's host keeps its rooms.
     fn host_state_root(&self) -> Result<PathBuf, String> {
         let path = self
