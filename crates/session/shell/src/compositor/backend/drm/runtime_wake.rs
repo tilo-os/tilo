@@ -9,6 +9,19 @@ use super::super::wake_check::WakeStage;
 use super::{DrmDispatchState, ScanoutCommand, device_caps};
 
 impl DrmDispatchState {
+    /// Input arrived: the first event after a wake goes into the flight
+    /// record, with how long after the wake it came.
+    pub(super) fn note_input_after_wake(&mut self, event: &InputEvent<LibinputInputBackend>) {
+        if let Some(kind) = libinput_event_kind(event)
+            && let Some((wake, at)) = self.input_wake.take()
+        {
+            eprintln!(
+                "tilo compositor: DRM input: first event after wake={wake} after_ms={} kind={kind}",
+                at.elapsed().as_millis()
+            );
+        }
+    }
+
     /// Light every output that could not be lit again: a wake, the power
     /// key or a resume is the person asking for the displays, as a display
     /// settings change is. Each output is modeset once more, nonblocking;
@@ -73,9 +86,7 @@ impl DrmDispatchState {
 
 /// What a libinput event is, for the flight record; `None` for a device
 /// arriving or leaving, which is no input from the person.
-pub(super) fn libinput_event_kind(
-    event: &InputEvent<LibinputInputBackend>,
-) -> Option<&'static str> {
+fn libinput_event_kind(event: &InputEvent<LibinputInputBackend>) -> Option<&'static str> {
     Some(match event {
         InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } => return None,
         InputEvent::Keyboard { .. } => "keyboard",
@@ -91,4 +102,45 @@ pub(super) fn libinput_event_kind(
         InputEvent::SwitchToggle { .. } => "switch",
         _ => "other",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc::channel;
+
+    use super::super::tests::{DGPU, adopt_on, dispatch_with_channel, edid};
+    use super::super::{ConnectorSnapshot, OutputSignalStatus, SignalReport};
+
+    #[test]
+    fn a_wake_or_the_power_key_lights_an_output_that_could_not_be_lit_again() {
+        let (mut state, _rx) = dispatch_with_channel();
+        let (report_tx, report_rx) = channel();
+        state.signal_reports = Some(report_rx);
+        let panel = adopt_on(&mut state, DGPU, 43, "eDP-1", (2560, 1600), (300, 190));
+        state.connector_probes.insert(
+            DGPU,
+            vec![ConnectorSnapshot::fake(43, "eDP-1", Some(edid("A")))],
+        );
+        report_tx
+            .send(SignalReport {
+                output: panel,
+                status: OutputSignalStatus {
+                    link_failure: Some(settings_store::hardware::OutputUnavailable::LinkDown),
+                    ..OutputSignalStatus::default()
+                },
+            })
+            .expect("report");
+        assert!(state.drain_signal_reports());
+        assert!(state.live.is_empty(), "the failed panel left the desktop");
+
+        assert!(state.retry_failed_outputs("woke from sleep"));
+        assert!(
+            state.link_failures.is_empty(),
+            "the panel is no longer held off the desktop"
+        );
+        assert!(
+            !state.retry_failed_outputs("power key"),
+            "nothing is left to light"
+        );
+    }
 }
