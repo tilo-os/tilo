@@ -84,6 +84,11 @@
 //   wait-list      at that door, a text that is no email address is said so
 //                  beside the field; an address is kept and confirmed as
 //                  normalized, and the same address again is answered alike
+//   wait-list-invite
+//                  the first person, a member, opens "Waiting to join"
+//                  through search and finds that address with when it was
+//                  left (screenshots at 1440x900 and 390x844); Invite makes
+//                  an invite link for it and Remove takes it off the list
 //   invite-admits  the first person, a member, gets in as before, invites
 //                  with the desktop's Invite; that link pasted into the door
 //                  page's field asks to join, the member lets them in from
@@ -833,6 +838,59 @@ async function typeInNewContact(tab, text) {
   return landed ? {value: landed.value} : {value: (await tab.evaluate(WIDGET('contacts.form.first')))?.value ?? null};
 }
 
+/** Press `name` in `tab` as a keyboard does (CDP modifier bits: Ctrl 2). */
+async function key(tab, name, modifiers = 0) {
+  const named = {Enter: 13, Escape: 27};
+  const code = name.length === 1 ? `Key${name.toUpperCase()}` : name;
+  const event = {key: name, code, windowsVirtualKeyCode: named[name] ?? name.toUpperCase().charCodeAt(0), modifiers};
+  await tab.send('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...event, ...(name === 'Enter' ? {text: '\r'} : {})});
+  await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
+  await sleep(300);
+}
+
+/** In `tab`, a member's desktop: open "Waiting to join" through search
+ * (Ctrl+K, its name, Enter), find `contact` on the wait list, invite it
+ * and take it off. `{row: {contact, added}, link, removed}`, or what did
+ * not happen as `error`. */
+async function inviteFromWaitList(tab, contact, shoot) {
+  const card = "document.querySelector('[data-card=waiting]')";
+  const ROW = `[...document.querySelectorAll('[data-card=waiting] [data-list=wait-list] li')]
+    .find(li => li.querySelector('.tilo-waiting-contact')?.textContent === ${JSON.stringify(contact)})`;
+  const opened = await until(async () => {
+    if (await tab.evaluate(`Boolean(${card})`)) return true;
+    await key(tab, 'k', 2);
+    if (!await until(() => tab.evaluate('tiloMount.state()?.searchOpen === true || null'), 5000, 250)) return null;
+    for (const ch of 'Waiting to join') {
+      await tab.send('Input.dispatchKeyEvent', {type: 'keyDown', key: ch, text: ch});
+      await tab.send('Input.dispatchKeyEvent', {type: 'keyUp', key: ch});
+    }
+    await sleep(800);
+    await key(tab, 'Enter');
+    return await until(() => tab.evaluate(`Boolean(${card}) || null`), 5000, 250);
+  }, 60_000, 1000);
+  if (!opened) return {error: 'search did not open Waiting to join'};
+  const row = await until(() => tab.evaluate(`(() => {
+    const row = ${ROW};
+    return row ? {contact: row.querySelector('.tilo-waiting-contact').textContent, added: row.querySelector('time')?.dateTime ?? null} : null;
+  })()`), 30_000);
+  if (!row) return {error: 'the address is not on the wait list', shown: await tab.evaluate(`${card}?.innerText ?? null`).catch(() => null)};
+  for (const [name, width, height, mobile] of [['wait-list-inviter-1440x900', 1440, 900, false], ['wait-list-inviter-390x844', 390, 844, true]]) {
+    await tab.send('Emulation.setDeviceMetricsOverride', {width, height, deviceScaleFactor: 1, mobile});
+    await sleep(500);
+    await shoot(name, tab);
+  }
+  await tab.send('Emulation.clearDeviceMetricsOverride');
+  await tab.evaluate(`[...${ROW}.querySelectorAll('button')].find(b => b.textContent === 'Invite').click()`);
+  const link = await until(() => tab.evaluate("document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000);
+  await tab.evaluate("document.querySelector('[data-card=share] button[type=submit]')?.click()").catch(() => {});
+  if (!link) return {row, error: 'Invite made no link'};
+  await until(() => tab.evaluate(`Boolean(${ROW}) || null`), 10_000);
+  await tab.evaluate(`[...${ROW}.querySelectorAll('button')].find(b => b.textContent === 'Remove').click()`).catch(() => {});
+  const removed = Boolean(await until(() => tab.evaluate(`!${ROW} || null`), 30_000));
+  await tab.evaluate(`${card}?.querySelector('button[type=submit]')?.click()`).catch(() => {});
+  return {row, link, removed};
+}
+
 /** Whether the page shows an entry card (an offer waiting for the person). */
 const offering = tab => tab.evaluate("Boolean(document.querySelector('.tilo-entry-card'))").catch(() => false);
 
@@ -1269,6 +1327,13 @@ async function main() {
     const inviter = await page(browser, person);
     const inviting = await open(inviter, `${web}/`, settleOptions);
     keepLog('inviter', inviter);
+    // wait-list-invite: the member finds the address in "Waiting to join"
+    // (through search, as a person does), with when it was left, invites it
+    // with a link of its own and takes it off the list.
+    const listed = inviting.entry === 'open' ? await inviteFromWaitList(inviter, 'waiting.person@example.org', shoot)
+      : {error: 'the inviter is not in'};
+    check('wait-list-invite', listed.row?.contact === 'waiting.person@example.org' && Boolean(listed.row?.added)
+      && /[?&]invite=/.test(listed.link ?? '') && listed.removed === true, listed);
     const invitePressed = inviting.entry === 'open' && Boolean(await until(() => inviter.evaluate(PRESS_NAMED('Invite')), 60_000));
     const inviteLink = invitePressed ? await until(() => inviter.evaluate(
       "document.querySelector('[data-card=share] input[name=link]')?.value || null"), 30_000) : null;

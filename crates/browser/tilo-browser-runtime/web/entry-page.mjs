@@ -468,6 +468,8 @@ function waitingCard({load, admit, decline, invite}) {
         item.append(who, button('Let in', () => decide(admit, person.requestId)), button('Turn away', () => decide(decline, person.requestId)));
         return item;
       }));
+      // Nobody to let in: said only where there is no wait list to show instead.
+      list.hidden = !people.length && contacts.length > 0;
       if (!people.length) list.replaceChildren(Object.assign(document.createElement('li'), {className: 'tilo-waiting-none', textContent: 'Nobody is waiting to be let in.'}));
       // The wait list: addresses people left at the door, oldest first.
       listed.replaceChildren();
@@ -480,7 +482,7 @@ function waitingCard({load, admit, decline, invite}) {
         const item = document.createElement('li');
         const who = document.createElement('span');
         who.className = 'tilo-waiting-who';
-        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: person.contact}),
+        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: person.contact, title: person.contact}),
           Object.assign(document.createElement('time'), {dateTime: new Date(person.requestedAtMs).toISOString(), textContent: addedAt(person.requestedAtMs)}));
         item.append(who, button('Invite', () => decide(() => invite(person), person.requestId)),
           button('Remove', () => decide(decline, person.requestId)));
@@ -1050,6 +1052,10 @@ export async function startEntryPage({mode}) {
         if (!offered && refused) offerOwnDesktop({...admitting, runtime});
       });
     }
+    // Turned away at the door of a room taking people by invitation: its
+    // answer, shown above, not a failure of this page to report as an
+    // uncaught error (every stranger at such a door would send one).
+    if (error?.code === 'invitation-only') return;
     throw error;
   }
 }
