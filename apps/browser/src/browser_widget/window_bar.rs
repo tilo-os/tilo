@@ -78,9 +78,6 @@ pub(super) struct BarInputs {
     suggestions: Vec<LocationSuggestion>,
 }
 
-/// One omnibox row as the bar lists it: what it says, the line under it,
-/// what choosing it commits (where the row goes: an address, or the search
-/// engine's address for the words) and its kind's icon.
 /// The address field's mark for how the page arrived: a lock over
 /// `https://`, an open lock over `http://` from another machine, which
 /// anyone on the way can read or change. This machine's own pages are
@@ -109,6 +106,9 @@ fn this_machine(url: &url::Url) -> bool {
     }
 }
 
+/// One omnibox row as the bar lists it: what it says, the line under it,
+/// what choosing it commits (where the row goes: an address, or the search
+/// engine's address for the words) and its kind's icon.
 fn suggestion(row: &Row, engine: &str) -> LocationSuggestion {
     let icon = match row.kind {
         RowKind::Go => "globe",
