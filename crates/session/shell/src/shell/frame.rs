@@ -2219,9 +2219,10 @@ impl FrameBuilder {
     /// `Rc<RefCell<_>>`, the tree behind an `Arc<RwLock<_>>`, and
     /// `ui::App::set_frame_tick` requires `Send + Sync`, which an `Rc` can't enter.
     ///
-    /// Cheap on a quiet frame: `RoomRecords::replicate_with` compares a
-    /// generation counter before reading any document, and the chrome only
-    /// bumps when something actually arrived.
+    /// Cheap on a quiet frame: `RoomRecords::replication_due` compares a
+    /// generation counter before reading any document, the tree is written
+    /// only when it is due, and the chrome only bumps when something
+    /// actually arrived.
     fn replicate_room_records(&self) {
         let index = self.host.room_records();
 
@@ -2233,7 +2234,9 @@ impl FrameBuilder {
             let chrome = self.chrome.borrow();
             let mut tree = chrome.tree_mut();
             let mut index = index.borrow_mut();
-            index.replicate_with(&mut tree)
+            // Asked through the guard first: a pump with nothing to exchange
+            // lends the tree no mutable access, so it announces no write.
+            index.replication_due(&tree) && index.replicate_with(&mut tree)
         };
         if arrived {
             self.chrome.borrow_mut().bump();
@@ -6528,45 +6531,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_pump_settles_a_launchpad_request_once() {
-        let mut frame = FrameBuilder::new((1280, 800));
-        let mut doc = AutoCommit::new();
-        doc.put(
-            &automerge::ROOT,
-            tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP,
-            true,
-        )
-        .expect("queued launcher request");
-
-        assert!(
-            frame.pump_apps(&mut doc, &automerge::ROOT),
-            "a settled action requests repaint"
-        );
-        assert!(
-            frame.host.palette_visible(),
-            "the production frame pump opens the launcher"
-        );
-        assert!(
-            matches!(
-                doc.get(&automerge::ROOT, tilo_desktop::launchpad::EMPTY_WORKSPACE_OPEN_APP),
-                Ok(Some((automerge::Value::Scalar(value), _)))
-                    if matches!(value.as_ref(), automerge::ScalarValue::Boolean(false))
-            ),
-            "typed settlement consumes the request"
-        );
-        doc.put(&automerge::ROOT, "pending-observer-witness", "uncommitted")
-            .expect("pending fixture edit");
-        assert!(doc.pending_ops() > 0);
-        let revision = (doc.base_heads(), doc.pending_ops());
-        frame.pump_apps(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            revision,
-            (doc.base_heads(), doc.pending_ops()),
-            "the next pump does not repeat the request"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -10856,6 +10820,10 @@ mod retained_tests;
 #[cfg(test)]
 #[path = "frame_window_bar_keyboard_tests.rs"]
 mod window_bar_keyboard_tests;
+
+#[cfg(test)]
+#[path = "frame_quiet_pump_tests.rs"]
+mod quiet_pump_tests;
 
 /// `regions` without any region another one contains (the first of two
 /// equal ones stays): the same pixels, rasterised once. A changed card's

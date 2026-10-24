@@ -96,7 +96,7 @@ impl Widget for ShellOverlayHost {
             child.settle(edits, path);
         }
         if self.onboarding.is_none() {
-            self.harvest_empty_workspace_launchpad(edits, path);
+            self.settle_launchpad(edits, path);
             self.retry_pending_launchpad_app(edits, path);
         }
     }
@@ -342,9 +342,12 @@ impl Widget for ShellOverlayHost {
             let state = chrome.borrow();
             // Release native document launch data once its tab is gone —
             // covers removals through workspace/peer reconciliation as well
-            // as the explicit close action.
+            // as the explicit close action. Looked for through the guard
+            // first, so a frame with nothing to release writes nothing.
             let mut tree = state.tree_mut();
-            if state.hosted_inputs.prune_documents(&mut tree) {
+            if state.hosted_inputs.documents_to_prune(&tree)
+                && state.hosted_inputs.prune_documents(&mut tree)
+            {
                 tree.queue_save();
             }
             drop(tree);
@@ -375,9 +378,16 @@ impl Widget for ShellOverlayHost {
             false
         };
         // Stamp the wall clock on whatever `doc_*` left open, or automerge
-        // closes it implicitly with a zero timestamp — undatable later.
+        // closes it implicitly with a zero timestamp — undatable later. A
+        // frame that left nothing open has nothing to stamp, and takes no
+        // write that would announce a change.
         if let Some(chrome) = self.chrome.as_ref() {
-            chrome.borrow().tree_mut().commit_room_change();
+            use automerge::transaction::Transactable as _;
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            if tree.doc.pending_ops() > 0 {
+                tree.commit_room_change();
+            }
         }
         let desk_dirty = self.update_desk(ui::time::now());
         // A window bar's tooltip whose dwell ran out shows on this tick: its

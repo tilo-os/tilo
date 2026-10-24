@@ -245,6 +245,7 @@ mod paint_top;
 mod palette_routing;
 mod palette_run;
 mod palette_search;
+use palette_search::LaunchpadMark;
 mod peer_sync;
 mod portal_prompts;
 mod projection;
@@ -562,6 +563,9 @@ pub struct ShellOverlayHost {
     /// A launchpad app card awaiting the Applications index; see
     /// [`Self::retry_pending_launchpad_app`].
     pending_launchpad_app: Option<PendingLaunchpadApp>,
+    /// Where the widget document stood when the launchpad harvest last found
+    /// no request in it; see [`Self::settle_launchpad`].
+    launchpad_quiet_at: Option<LaunchpadMark>,
     /// Launchpad cards' app actions awaiting admission; see
     /// [`Self::poll_pending_launchpad_actions`].
     pending_launchpad_actions: Vec<PendingLaunchpadAction>,

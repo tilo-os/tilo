@@ -363,21 +363,28 @@ impl HostedTileInputs {
         Some(inputs)
     }
 
+    /// Whether [`Self::prune_documents`] would release anything: some
+    /// document's tab has left every workspace. Read through a shared
+    /// reference, so the frame that finds nothing takes no write.
+    pub(crate) fn documents_to_prune(&self, tree: &super::state::WorkspaceTree) -> bool {
+        let documents = self.documents.borrow();
+        if tree.native_document_tabs.is_empty() && documents.is_empty() {
+            return false;
+        }
+        let live = live_tabs(tree);
+        tree.native_document_tabs
+            .keys()
+            .chain(documents.keys())
+            .any(|tab| !live.contains(tab))
+    }
+
     /// Release launch data once its tab leaves any workspace, without rereading files.
     /// Returns whether persisted references changed.
     pub(crate) fn prune_documents(&self, tree: &mut super::state::WorkspaceTree) -> bool {
         if tree.native_document_tabs.is_empty() && self.documents.borrow().is_empty() {
             return false;
         }
-        let live: std::collections::HashSet<_> = tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| tab.id)
-            .collect();
+        let live = live_tabs(tree);
         let before = tree.native_document_tabs.len();
         tree.native_document_tabs
             .retain(|tab, _| live.contains(tab));
@@ -785,4 +792,16 @@ mod document_lifecycle_tests {
         assert!(reopened.tree.read().native_document_tabs.is_empty());
         assert!(restored.document(tabs[0]).is_none());
     }
+}
+
+/// Every tab in any workspace of `tree`.
+fn live_tabs(tree: &super::state::WorkspaceTree) -> std::collections::HashSet<TabId> {
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .map(|tab| tab.id)
+        .collect()
 }

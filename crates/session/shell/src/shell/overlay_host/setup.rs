@@ -425,6 +425,7 @@ impl ShellOverlayHost {
             search_artwork: 0,
             pending_action_admissions: Vec::new(),
             pending_launchpad_app: None,
+            launchpad_quiet_at: None,
             pending_launchpad_actions: Vec::new(),
             last_search_query: String::new(),
             last_search_revision: String::new(),
