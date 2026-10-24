@@ -425,6 +425,9 @@ if [ "$FAULT" = unlock ]; then
     step "boot $attempt: the staged deployment, left at its unlock prompt"
     if new="$(wait_reachable "$current_boot" "$HANG_TIMEOUT" "")"; then
       record_boot "04-boot$attempt"
+      # What became of the prompt, where the check's own log keeps it.
+      as_root 'echo "cmdline: $(cat /proc/cmdline)"; systemctl status --no-pager --all "systemd-cryptsetup@*" 2>&1 | head -40
+               journalctl -b --no-pager -o short-monotonic 2>/dev/null | grep -iE "cryptsetup|unlock-fault|luks|password" | head -80' >&2 || true
       fail "boot $attempt reached userspace on composefs $(booted_digest | cut -c1-16) instead of waiting at its unlock prompt; see $OUT/04-boot$attempt.txt"
     fi
     if [ -n "$SERIAL" ]; then
