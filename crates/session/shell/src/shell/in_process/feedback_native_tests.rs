@@ -147,6 +147,9 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
     drop(network);
     drop(commands);
     drop(owner);
+    // What the first session wrote has landed: only startup's own writes
+    // could change the file from here.
+    crate::shell::persist::wait_for_saves();
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
     let mut tree = crate::shell::persist::load_tree_from(&path).unwrap();
@@ -159,6 +162,7 @@ fn native_producer_uses_committed_selected_custody_and_reopens_without_enrollmen
         "restart cannot restore stale admission"
     );
     admit(&restarted);
+    crate::shell::persist::wait_for_saves();
     assert_eq!(
         std::fs::read(&path).unwrap(),
         before,
