@@ -333,8 +333,26 @@ impl ShellNetwork {
     }
     /// Whether `room` is an enrolled room whose records are sealed
     /// channels its members write themselves (its governor stewards them).
+    ///
+    /// Read from the room's committed enrollment, which names its governor
+    /// from the moment the room is installed, never from the tree's
+    /// projection of it: a joining device is replayed the room's sealed
+    /// writes together with the room's document, and the tree learns the
+    /// room is sealed only once that document is admitted. A sealed write
+    /// taken for a committed one meanwhile waits for a checkpoint of its
+    /// record that the governor never commits.
     pub(super) fn native_room_seals_records(&self, room: RoomId) -> bool {
-        self.tree.read().seals_records(room)
+        self.opened_native_owner().is_some_and(|owner| {
+            owner
+                .with_current(room, |view| {
+                    Ok(view
+                        .peer()
+                        .authority()
+                        .capabilities
+                        .stewards_room_channels())
+                })
+                .unwrap_or(false)
+        })
     }
     /// Whether `input` is admitted together with the inputs of its session
     /// queued right before and after it: an app write the owner commits.
