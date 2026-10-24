@@ -145,9 +145,9 @@ pub enum RoomOperation {
     Environment,
     /// Originating or receiving a remote (directed) action.
     RemoteAction,
-    /// The relay's own room actions taking the content keys of a channel the
-    /// relay stewards (see the module documentation).
-    #[cfg(any(test, feature = "agents"))]
+    /// The device that governs and stewards the room here (the host's own
+    /// session or the relay's own room actions) taking the content keys of
+    /// a channel it stewards (see the module documentation).
     StewardedChannelKeys,
     /// A delegated agent of this relay's user becoming a governed member of
     /// a room this relay governs (see the module documentation).
@@ -195,8 +195,9 @@ impl RoomOperation {
             Self::ChannelReadKeys => OwnerDevice::Refuse,
             Self::ContentDiscovery | Self::Environment => OwnerDevice::Admit,
             Self::State | Self::Publish | Self::Replay | Self::RemoteAction => OwnerDevice::Refuse,
+            Self::StewardedChannelKeys => OwnerDevice::Refuse,
             #[cfg(any(test, feature = "agents"))]
-            Self::StewardedChannelKeys | Self::DelegateMembership => OwnerDevice::Refuse,
+            Self::DelegateMembership => OwnerDevice::Refuse,
         }
     }
 }
@@ -253,7 +254,6 @@ pub enum DenyReason {
     OverTheChannel,
     /// Channel keys asked for by a device other than the one governing and
     /// stewarding the room on this relay.
-    #[cfg(any(test, feature = "agents"))]
     NotTheSteward,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a room this relay does
@@ -284,7 +284,6 @@ impl DenyReason {
             Self::OverTheChannel => {
                 "a member takes a channel's keys from its steward over the channel"
             }
-            #[cfg(any(test, feature = "agents"))]
             Self::NotTheSteward => {
                 "only the device that stewards this room's channels holds their keys"
             }
@@ -497,7 +496,6 @@ impl<'a> Room<'a> {
     /// Whether `device` governs this room on this relay, and so stewards its
     /// channels: governance owns the room's admission and the relay's room
     /// authority, bound to this room, names `device` as its governor.
-    #[cfg(any(test, feature = "agents"))]
     fn governed_by(&self, device: &[u8; 32]) -> bool {
         self.runtime.admission == AdmissionMode::Governed
             && self
@@ -571,7 +569,6 @@ pub(crate) fn decide_in(
     if peer.role == PeerRole::PeerRelay && !own_user {
         return Decision::Deny(DenyReason::CrossUserFederation);
     }
-    #[cfg(any(test, feature = "agents"))]
     if op == RoomOperation::StewardedChannelKeys {
         // Never by membership, enrolment or federation: only the steward.
         return if room.governed_by(&peer.device_public_key) {

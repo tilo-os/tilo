@@ -204,6 +204,9 @@ impl WorkspaceTree {
     /// Forget `room`, a placeholder that held nothing and no workspace is
     /// any more: what the tree kept about it beside its workspace.
     fn drop_placeholder_room(&mut self, room: RoomId) {
+        // A placeholder made here and waiting to be placed is placed no
+        // more: its workspace is the joined room's now.
+        self.pending_placements.remove(&room);
         self.room_docs.remove(&room);
         self.continuation_rooms.remove(&room);
         self.desktop.room_records_held.remove(&room);
