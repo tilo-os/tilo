@@ -314,6 +314,11 @@ pub enum Action {
         app_id: &'static str,
         label: &'static str,
     },
+    /// The launch behind an [`Action::HoldLaunchPlace`] waits for a room
+    /// still being joined, as a launch into one does.
+    HoldLaunchForRoom(&'static str),
+    /// The room [`Action::HoldLaunchForRoom`] waits for is ready.
+    RoomReady,
     /// A peer's window whose app is still being fetched from the
     /// registry here, with no real install behind it.
     HoldInstallPlace {
@@ -1228,6 +1233,13 @@ fn seed_note_history_of_tab(driver: &ShellDriver, room: &str, tab: u64) {
     }
 }
 
+/// The room the launches of [`Action::HoldLaunchForRoom`] wait for.
+fn shots_room() -> shell::shell::state::RoomId {
+    shell::shell::state::RoomId::from(uuid::Uuid::from_u128(
+        0x5107_0000_0000_4000_8000_0000_0000_0001,
+    ))
+}
+
 /// `Action::OpenWindow` — split out of [`apply`] to keep that dispatcher short.
 fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
     match action {
@@ -1244,6 +1256,25 @@ fn apply_open_window(driver: &mut ShellDriver, action: &Action) {
                     label,
                     placement,
                 );
+                st.bump();
+            });
+            return;
+        }
+        Action::HoldLaunchForRoom(app_id) => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.tree_mut().joining_rooms.insert(shots_room());
+                shell::shell::launcher::room_hold::hold_for_shots(
+                    st.tree_handle(),
+                    app_id,
+                    shots_room(),
+                );
+                st.bump();
+            });
+            return;
+        }
+        Action::RoomReady => {
+            driver.with_chrome(|st: &mut ChromeState| {
+                st.tree_mut().joining_rooms.remove(&shots_room());
                 st.bump();
             });
             return;
@@ -3146,6 +3177,33 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::WaitWall(400),
                 Action::Relayout,
                 Action::Snapshot("opening-installing-progress"),
+            ],
+        },
+        Scenario {
+            name: "opening_card_room_wait",
+            description: "An app asked for in a room still being joined holds its place with the \
+                          opening card saying why it waits, then opens once the room is ready.",
+            actions: vec![
+                Action::LoneWindow(0),
+                Action::SelectGroup(None),
+                Action::HoldLaunchPlace {
+                    app_id: "so.tilo.notes",
+                    label: "Notes",
+                },
+                Action::HoldLaunchForRoom("so.tilo.notes"),
+                Action::Wait(1),
+                Action::Relayout,
+                Action::Snapshot("room-wait"),
+                Action::RoomReady,
+                // The room's waiter starts the launch on its own thread.
+                Action::WaitWall(200),
+                Action::OpenWindow {
+                    app_id: "so.tilo.notes",
+                    surface_id: 5107,
+                },
+                Action::WaitSettled,
+                Action::Relayout,
+                Action::Snapshot("room-ready"),
             ],
         },
         Scenario {
