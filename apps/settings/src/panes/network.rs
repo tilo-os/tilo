@@ -1275,6 +1275,9 @@ impl SampleNetwork {
                 service: Some("org.freedesktop.NetworkManager.openvpn".into()),
                 autoconnect: false,
                 all_traffic: false,
+                addresses: vec!["10.20.0.17/24".into()],
+                dns: vec!["10.20.0.53".into(), "10.20.0.54".into()],
+                mtu: Some(1400),
                 endpoint: Some("vpn.example.com:1194".into()),
                 ..VpnProfileSettings::default()
             }),
@@ -1894,6 +1897,13 @@ impl NetworkModel {
                 model.open_page(&vpn::profile_page_key(SAMPLE_VPN_HOME), "Home".into());
                 if let Ok(settings) = SampleNetwork::vpn_settings(SAMPLE_VPN_HOME) {
                     model.adopt_vpn_settings(SAMPLE_VPN_HOME, settings);
+                }
+            }
+            Some(NetworkSample::PluginVpnProfile) => {
+                model.open_page(vpn::PAGE_VPN, t("net-vpn"));
+                model.open_page(&vpn::profile_page_key(SAMPLE_VPN_WORK), "Work".into());
+                if let Ok(settings) = SampleNetwork::vpn_settings(SAMPLE_VPN_WORK) {
+                    model.adopt_vpn_settings(SAMPLE_VPN_WORK, settings);
                 }
             }
             Some(NetworkSample::VpnDevices) => {
