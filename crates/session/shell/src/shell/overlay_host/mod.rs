@@ -249,6 +249,7 @@ mod palette_routing;
 mod palette_run;
 mod palette_search;
 use palette_search::LaunchpadMark;
+mod nested_shortcuts;
 mod peer_sync;
 mod portal_prompts;
 mod projection;
@@ -477,11 +478,11 @@ pub struct ShellOverlayHost {
     shortcut_help_done_width: f64,
     desktop_controls: DesktopControlsSource,
     shortcut_help_drawn_rect: Rect,
-    /// The effective shortcut table for this compositor session.  Input is
-    /// routed to a focused foreign client before it reaches this host, so the
-    /// router must consult this same snapshot rather than reconstructing the
-    /// default chord set on its own.
+    /// Saved preferences, kept separate from windowed-session defaults so
+    /// editing an unrelated binding never writes those defaults to disk.
     shortcut_config: settings_store::hardware::ShortcutConfig,
+    /// Windowed-only effective bindings, shared by routing and shortcut hints.
+    nested_shortcuts: Option<settings_store::hardware::ShortcutConfig>,
     /// What starts saved shortcuts from a chord or on schedule.
     shortcut_triggers: shortcut_triggers::ShortcutTriggerState,
     content: Box<dyn Widget>,
