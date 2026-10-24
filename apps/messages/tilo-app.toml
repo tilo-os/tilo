@@ -26,7 +26,7 @@ landlock = "strict"
 mode = "off"
 
 [sandbox.services]
-collab = "optional@9"
+collab = "optional@10"
 shell-ui = "optional@15"
 
 [entrypoint]

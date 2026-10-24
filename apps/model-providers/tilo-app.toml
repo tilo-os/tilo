@@ -41,7 +41,7 @@ mode = "off"
 [sandbox.portals]
 
 [sandbox.services]
-model-gateway = "optional@9"
+model-gateway = "optional@10"
 
 [entrypoint]
 bin = "bin/model-providers"
