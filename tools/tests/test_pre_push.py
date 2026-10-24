@@ -100,22 +100,29 @@ class SelectTests(unittest.TestCase):
             self.assertIn(name, checks)
         self.assertIn(pre_push.SIZE_RUNTIME, checks)
 
-    def test_a_runtime_t_has_not_built_skips_the_size_checks_says_so_and_records_it(self):
-        checks = ["app-size/notes-aarch64"]
+    def test_each_push_s_size_decision_is_recorded_and_only_checked_ones_run(self):
+        one = ["app-size/notes-aarch64"]
+        many = [f"app-size/app{n}-aarch64" for n in range(pre_push.SIZE_APPS + 1)]
         built = pre_push.runtime_built
+        asked = []
         with tempfile.TemporaryDirectory() as directory:
-            record = Path(directory) / "t-gate-size-skips"
+            record = Path(directory) / "t-gate-sizes"
             try:
-                pre_push.runtime_built = lambda top, rev: True
-                self.assertEqual(pre_push.sizes(".", "a" * 40, checks, record), checks)
-                self.assertFalse(record.exists())
+                pre_push.runtime_built = lambda top, rev: asked.append(rev) or True
+                self.assertEqual(pre_push.sizes(".", "a" * 40, one, record), one)
+                # A change to more apps than SIZE_APPS is a shared one: t is not even asked.
+                self.assertEqual(pre_push.sizes(".", "b" * 40, many, record), [])
                 pre_push.runtime_built = lambda top, rev: False
-                self.assertEqual(pre_push.sizes(".", "a" * 40, checks, record), [])
+                self.assertEqual(pre_push.sizes(".", "c" * 40, one, record), [])
+                self.assertEqual(pre_push.sizes(".", "d" * 40, [], record), [])
             finally:
                 pre_push.runtime_built = built
             lines = record.read_text(encoding="utf-8").splitlines()
-        self.assertEqual(len(lines), 1)
-        self.assertTrue(lines[0].endswith(" aaaaaaaaaa runtime-not-built app-size/notes-aarch64"), lines[0])
+        self.assertEqual(asked, ["a" * 40])
+        self.assertEqual([line.split()[1:3] for line in lines],
+                         [["aaaaaaaaaa", "checked"], ["bbbbbbbbbb", "shared-change"],
+                          ["cccccccccc", "runtime-not-built"]])
+        self.assertTrue(lines[2].endswith(" app-size/notes-aarch64"), lines[2])
 
     def test_only_a_run_with_every_check_cached_counts_as_built(self):
         self.assertTrue(pre_push.all_cached({"type": "planned", "checks": ["thin-runtime-aarch64"], "cached": 1}))

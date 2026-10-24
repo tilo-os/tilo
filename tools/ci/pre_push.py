@@ -118,10 +118,15 @@ def select(scope: dict, changed: list[str], root: Path = ROOT) -> dict[str, list
 # check compiles only the app, on the shared runtime `thin-runtime-aarch64` builds, which main
 # keeps built for its newest head (`idle`); with the runtime built it takes about a minute.
 # A change the runtime is built from (the toolkit, the SDK, the manifests) needs that runtime
-# built afresh, 5 minutes and more, so the check is skipped then, said so and recorded, and
-# main's whole-collection gate (`app-sizes-<arch>`, `idle`) holds the change to the budgets.
+# built afresh, 5 minutes and more, and a change to more than SIZE_APPS apps is a shared one:
+# the check is skipped then, said so, and main's whole-collection gate (`app-sizes-<arch>`,
+# `idle`) holds the change to the budgets. Each push's decision, checked or skipped, is
+# recorded in the clone (.git/t-gate-sizes) to be counted.
 SIZE_ARCH = "aarch64"
 SIZE_RUNTIME = f"thin-runtime-{SIZE_ARCH}"
+# A change to more apps than this is a shared one (a toolkit sweep), left to main's
+# whole-collection gate like a change to the toolkit itself.
+SIZE_APPS = 3
 # How long the hook waits for t to say whether the runtime is built.
 SIZE_PROBE_SECONDS = 60
 
@@ -179,16 +184,28 @@ def runtime_built(top: str, rev: str) -> bool:
 
 
 def sizes(top: str, rev: str, checks: list[str], record: Path) -> list[str]:
-    """The size checks to run before the push: all of them with the runtime built, else none,
-    with the skip said on stderr and appended to `record`, one line each, to be counted."""
-    if not checks or runtime_built(top, rev):
-        return checks
-    print(f"pre-push: skipped {' '.join(checks)}: the shared runtime of this commit is not built "
-          f"yet ({SIZE_RUNTIME}), so main's whole-collection size gate (app-sizes-{SIZE_ARCH}) "
-          "will hold it to the budgets", file=sys.stderr)
+    """The size checks to run before the push, each push's decision appended to `record`, one
+    line each, so how many pushes are checked and how many skip can be counted: all of them
+    when the change touches at most SIZE_APPS apps and t has its shared runtime built, else
+    none, the skip said on stderr."""
+    if not checks:
+        return []
+    if len(checks) > SIZE_APPS:
+        outcome = "shared-change"
+        why = (f"it touches {len(checks)} apps, a shared change like one to the toolkit, which main's "
+               f"whole-collection size gate (app-sizes-{SIZE_ARCH}) holds to the budgets")
+    elif runtime_built(top, rev):
+        outcome, why = "checked", ""
+    else:
+        outcome = "runtime-not-built"
+        why = (f"the shared runtime of this commit is not built yet ({SIZE_RUNTIME}), so main's "
+               f"whole-collection size gate (app-sizes-{SIZE_ARCH}) holds it to the budgets")
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with record.open("a", encoding="utf-8") as handle:
-        handle.write(f"{stamp} {rev[:10]} runtime-not-built {' '.join(checks)}\n")
+        handle.write(f"{stamp} {rev[:10]} {outcome} {' '.join(checks)}\n")
+    if outcome == "checked":
+        return checks
+    print(f"pre-push: skipped {' '.join(checks)}: {why}", file=sys.stderr)
     return []
 
 
