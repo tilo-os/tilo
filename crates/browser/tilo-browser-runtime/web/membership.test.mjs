@@ -41,8 +41,8 @@ test('an invitation names the inviter and comes back as base64url text', async (
 test('the owner lists, admits, declines and removes people', async () => {
   const host = fakeHost({
     List: () => ({Rooms: [room]}),
-    Requests: () => ({Requests: [{request_id: key(9), user_public_key: key(0xcc), device_public_key: key(0xcd), name: 'Cy', role: 'Editor', requested_at_ns: 5e6, contact: null},
-      {request_id: key(8), user_public_key: key(0), device_public_key: key(0), name: 'ed@example.org', role: 'Editor', requested_at_ns: 6e6, contact: 'ed@example.org'}]}),
+    Requests: () => ({Requests: [{request_id: key(9), user_public_key: key(0xcc), device_public_key: key(0xcd), name: 'Cy', role: 'Editor', requested_at_ns: 5e6},
+      {request_id: key(8), user_public_key: key(0), device_public_key: key(0), name: 'ed@example.org', role: 'Editor', requested_at_ns: 6e6}]}),
     Pending: () => ({Pending: [{invite_id: key(4), role: 'Editor', expires_at_ns: 9e9}]}),
     Notices: () => ({Notices: [{PreAdmitted: {user_public_key: key(0xdd), name: 'Di', label: 'di@example.com', role: 'Editor', at_ns: 7e6}}]}),
     Admit: () => ({Room: room}),
