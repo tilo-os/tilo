@@ -899,7 +899,7 @@ impl ExtensionController {
         for event in permissions {
             changed |= self.on_engine_event(event, engine);
         }
-        changed |= self.sync_side_panel();
+        changed |= self.sync_side_panel(engine);
         changed
     }
 

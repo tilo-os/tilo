@@ -197,26 +197,34 @@ impl ExtensionController {
     }
 
     /// What the side panel's page did since the last frame: closed itself
-    /// (`window.close()`), or opened pages, which open beside the window as
-    /// from a popup. Returns whether the panel went.
-    pub(super) fn sync_side_panel(&mut self) -> bool {
+    /// (`window.close()`), asked for more access (`permissions.request`,
+    /// which the host puts to the page that asks), or opened pages, which
+    /// open beside the window as from a popup. Returns whether the window
+    /// changed.
+    pub(super) fn sync_side_panel(&mut self, engine: &SharedEngine) -> bool {
         let Some(panel) = &self.side_panel else {
             return false;
         };
-        let closed = panel
-            .engine
-            .drain_events()
-            .into_iter()
-            .any(|event| matches!(event, WebViewEvent::TabClosed));
-        for (url, background) in panel.engine.take_new_tab_requests() {
-            if url.starts_with("https://") || url.starts_with("http://") {
-                ui::shell_tabs::open_beside(Some(url), background);
+        let mut closed = false;
+        let mut asked = Vec::new();
+        for event in panel.engine.drain_events() {
+            match event {
+                WebViewEvent::TabClosed => closed = true,
+                // Its question is the window's to ask, as a popup's is.
+                event @ (WebViewEvent::ExtensionPermissionRequest { .. }
+                | WebViewEvent::ExtensionPermissions { .. }) => asked.push(event),
+                _ => {}
             }
         }
+        super::open_beside(&panel.engine);
         if closed {
             self.side_panel = None;
         }
-        closed
+        let mut changed = closed;
+        for event in asked {
+            changed |= self.on_engine_event(event, engine);
+        }
+        changed
     }
 
     /// The side panel of an extension turned off or removed closes with it.
