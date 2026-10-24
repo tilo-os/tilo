@@ -533,6 +533,113 @@ async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
     assert!(!relay.is_finished());
 }
 
+/// A member removed while its session's writer is held behind unread
+/// frames, and whose session then ends, is still told: what was queued
+/// when the session ended, the refusal among it, is written before the
+/// stream closes.
+#[tokio::test(start_paused = true)]
+async fn a_refusal_queued_as_a_session_ends_reaches_the_peer() {
+    refusal_queued_as_the_session_ends(16).await;
+}
+
+/// The same with the writer idle when the session ends: it is told, writes
+/// the refusal and closes.
+#[tokio::test(start_paused = true)]
+async fn an_idle_writer_writes_the_refusal_and_closes_as_the_session_ends() {
+    refusal_queued_as_the_session_ends(0).await;
+}
+
+/// Remove the member of a session whose writer `held` unread replies
+/// hold, then end the session from the peer's side.
+async fn refusal_queued_as_the_session_ends(held: usize) {
+    let (root, user) = UserIdentity::generate("alice", 1);
+    let (a, _) = certified_device(&root, user.public_key, "a");
+    let room = uuid::Uuid::from_u128(7);
+    let id = crate::room_workspace_id(&room.to_string()).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    runtime.admit_device(a.device_public_key).unwrap();
+    let runtime = Arc::new(AsyncMutex::new(runtime));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, Arc::clone(&runtime))])));
+    let ctx = PeerContext {
+        workspaces: registry,
+        autobind: None,
+        revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        trust_policy: Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        )),
+        own_user_public_key: user.public_key,
+        own_device_cert: a.cert.clone(),
+        own_device_public_key: a.cert.device_public_key,
+        app_serving: None,
+        metrics: Arc::new(crate::metrics::Metrics::default()),
+        live_bridge: None,
+        agents: crate::peer::AgentRegistry::default(),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+    };
+    // Replies go through a pipe smaller than what is asked of the relay, so
+    // its writer is held mid-write until the client reads.
+    let (mut requests, server_read) = tokio::io::duplex(1 << 20);
+    let (server_write, replies) = tokio::io::duplex(64);
+    let (server_read, _) = tokio::io::split(server_read);
+    let (_, server_write) = tokio::io::split(server_write);
+    let (replies, _) = tokio::io::split(replies);
+    let relay = tokio::spawn(run_peer_stream(
+        a.clone(),
+        server_read,
+        server_write,
+        ctx,
+        std::future::pending::<()>(),
+    ));
+    let mut reader = SessionReader::new(replies);
+    requests
+        .write_all(
+            &tilo_delivery_protocol::transport_v2::encode_state(&Envelope::Subscribe {
+                workspace_id: id,
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready { .. }))
+    ));
+    let enable =
+        tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room }).unwrap();
+    for _ in 0..held {
+        requests.write_all(&enable).await.unwrap();
+    }
+    // The clock is paused: each sleep returns once the relay has nothing
+    // left to do but wait for the client to read.
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    runtime
+        .lock()
+        .await
+        .refuse_removed_live_members(&[a.device_public_key]);
+    drop(requests);
+    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+
+    let mut told = false;
+    while let Some(frame) = reader.read_next().await.unwrap() {
+        told |= matches!(
+            frame,
+            EnvelopeV2::State(Envelope::NotAuthorised { workspace_id, ref reason })
+                if workspace_id == id && reason == "workspace membership changed"
+        );
+    }
+    assert!(told, "the removed member was never told");
+    relay.await.unwrap().unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
     paused_state_private_roundtrip(false, false, false, false, None).await;

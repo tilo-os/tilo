@@ -3,6 +3,7 @@
 //! `Rooms`; this device asks and reads the answer back from the room's
 //! admitted document, as every other member does.
 use super::ShellNetwork;
+use super::relay_rooms::HostAskError;
 use crate::shell::state::{GovernanceRequest, RoomId};
 use tilo_action_policy::Change;
 use tilo_action_policy::roles::{governance, owner_commands as verbs};
@@ -225,8 +226,12 @@ impl ShellNetwork {
     /// to the tree ([`crate::shell::state::WorkspaceTree::refuse_governance`])
     /// for the chrome to say. A request whose governor is out of reach is
     /// kept, saved with the tree, and asked again once a room's state
-    /// changed (a session to a host came up), another request was made, or
-    /// this device's own host was installed.
+    /// changed, a host's session came up ([`NetEvent::HostReady`]), another
+    /// request was made, or this device's own host was installed. So is one
+    /// whose host could not be reached to answer: only a governor's own
+    /// refusal is said.
+    ///
+    /// [`NetEvent::HostReady`]: crate::network::actor::NetEvent::HostReady
     pub(super) fn send_governance_requests(&self, requests: Vec<(RoomId, GovernanceRequest)>) {
         let mut waiting = Vec::new();
         let mut refused = Vec::new();
@@ -259,7 +264,9 @@ impl ShellNetwork {
     }
 
     /// Ask `room`'s governor for `request` when it can be reached now:
-    /// `None` when it cannot, and nothing was asked.
+    /// `None` when it cannot, or its host could not be reached to answer
+    /// ([`HostAskError::Unreachable`]); only the governor's own refusal is
+    /// `Some(Err)`.
     fn ask_governor_if_reachable(
         &self,
         room: RoomId,
@@ -277,7 +284,14 @@ impl ShellNetwork {
         if !self.governor_reachable(room) {
             return None;
         }
-        Some(self.ask_governor_over_network(room, route))
+        match self.ask_governor_over_network(room, route) {
+            Ok(()) => Some(Ok(())),
+            Err(HostAskError::Refused(reason)) => Some(Err(reason)),
+            Err(HostAskError::Unreachable(reason)) => {
+                tracing::debug!(%room, %reason, "the workspace host is out of reach; the governance change waits");
+                None
+            }
+        }
     }
 
     /// Whether `room`'s governor can be asked over the network now: the
@@ -300,17 +314,21 @@ impl ShellNetwork {
             return local.ask(room, route);
         }
         self.ask_governor_over_network(room, route)
+            .map_err(String::from)
     }
 
+    /// Ask `room`'s governor over the network for `route`, answered whenever
+    /// its host answers: while the room's sessions last, never on a clock.
     fn ask_governor_over_network(
         &self,
         room: RoomId,
         route: GovernanceRoute,
-    ) -> Result<(), String> {
-        let held = self
-            .administered_room(room)
-            .ok_or("this device holds no session with the workspace host")?;
-        self.govern(&held, route.action, route.arguments).map(drop)
+    ) -> Result<(), HostAskError> {
+        let held = self.administered_room(room).ok_or_else(|| {
+            HostAskError::Unreachable("this device holds no session with the workspace host".into())
+        })?;
+        self.govern_held(&held, route.action, route.arguments)
+            .map(drop)
     }
 }
 
