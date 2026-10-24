@@ -308,8 +308,15 @@ impl OptionsPanel {
     }
 
     /// Whether it is moving (arriving or leaving).
+    /// Its painted switches ask the motion clock for their own frames.
     pub(super) fn is_moving(&self) -> bool {
-        self.appearing.is_moving() || self.faces.is_moving(crate::motion::frame_now())
+        self.appearing.is_moving()
+    }
+
+    /// Whether it must be painted again: moving, or a switch not yet
+    /// painted at rest.
+    pub(super) fn needs_redraw(&self) -> bool {
+        self.is_moving() || self.faces.needs_redraw(crate::motion::frame_now())
     }
 
     /// Whether anything of it is drawn.
