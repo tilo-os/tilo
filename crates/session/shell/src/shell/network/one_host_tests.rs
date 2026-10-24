@@ -178,6 +178,9 @@ pub(crate) struct Device {
     /// The note's document in each room as the notes app here holds it:
     /// what it wrote and every sealed write it opened.
     notes: Mutex<HashMap<RoomId, automerge::AutoCommit>>,
+    /// Every sealed write to the note in each room this device made or
+    /// opened, in order, as it travelled.
+    note_writes: Mutex<HashMap<RoomId, Vec<collab_types::SignedOp>>>,
 }
 
 /// The session broker's drain, as far as channels go: parked until the
@@ -277,6 +280,7 @@ impl Device {
             joins: Mutex::default(),
             channels: None,
             notes: Mutex::default(),
+            note_writes: Mutex::default(),
         };
         device.go_online();
         device
@@ -649,7 +653,7 @@ impl Device {
     /// documents this device's owner commits.
     fn assert_sealed(&self, room: RoomId) {
         assert!(
-            !self.tree.read().commits_native_documents(room),
+            self.tree.read().seals_records(room),
             "{} holds {room} as a sealed room",
             self.label
         );
@@ -675,6 +679,17 @@ impl Device {
         };
         let route = collab_types::ChannelRoute::new(NOTES, NOTE_RECORD);
         channels.access_record(room, &route).0
+    }
+
+    /// Every sealed write to the note in `room` this device made or opened
+    /// so far, in order.
+    pub(crate) fn note_writes(&self, room: RoomId) -> Vec<collab_types::SignedOp> {
+        self.note_writes
+            .lock()
+            .unwrap()
+            .get(&room)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// Whether this device holds the note's channel in `room`, so the notes
@@ -734,6 +749,12 @@ impl Device {
             metadata,
         );
         collab_types::sign_op(&mut op, &key).unwrap();
+        self.note_writes
+            .lock()
+            .unwrap()
+            .entry(room)
+            .or_default()
+            .push(op.clone());
         self.net()
             .publish_document(NOTES.into(), room_id, NOTE_RECORD, op);
     }
@@ -763,6 +784,12 @@ impl Device {
         let document = notes.entry(room).or_default();
         for entry in arrived {
             let envelope = entry.envelope;
+            self.note_writes
+                .lock()
+                .unwrap()
+                .entry(room)
+                .or_default()
+                .push((*envelope).clone());
             let opened = keys
                 .open_content(
                     envelope.artifact,
@@ -789,10 +816,6 @@ impl Device {
     }
 
     /// The note's text in `room` as the notes app here shows it.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the note is read from this device's network as it holds the room"
-    )]
     pub(crate) fn note(&self, room: RoomId) -> Option<String> {
         self.net.as_ref()?;
         self.assert_sealed(room);
