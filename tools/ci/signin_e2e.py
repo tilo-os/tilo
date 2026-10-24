@@ -243,7 +243,8 @@ class Shell:
     def run(self, command: str, limit: float = 120, quiet: bool = False) -> tuple[int, str]:
         nonce = secrets.token_hex(8)
         self.buffer = b""
-        script = f"{{ {command}\n}} </dev/null 2>&1; printf '\\n%s %d\\n' E2E-DONE-{nonce} $?\n"
+        # A subshell, so a command that exits ends only itself, not the shell on the port.
+        script = f"( {command}\n) </dev/null 2>&1; printf '\\n%s %d\\n' E2E-DONE-{nonce} $?\n"
         self.sock.sendall(script.encode())
         found = self._read_until(re.compile(rf"\nE2E-DONE-{nonce} (\d+)\n".encode()), limit)
         if not found:
@@ -377,11 +378,24 @@ class Run:
             else:
                 raise Failed(f"the installer is on a step this check does not know: {step}")
         started = time.monotonic()
+        seen: list = []
+
+        def finished(state: dict) -> bool:
+            install = state.get("install") or {}
+            for stage in (install.get("stages") or [])[len(seen):]:
+                seen.append(stage)
+                say(f"install stage after {time.monotonic() - started:.0f}s: {SECRETS.redact(str(stage))}")
+            return install.get("state") in ("done", "failed")
+
         try:
-            final = console.poll(c.console, lambda s: (s.get("install") or {}).get("state")
-                                 in ("done", "failed"), 3600, 10)
+            final = console.poll(c.console, finished, 3600, 10)
         except TimeoutError as error:
-            raise Failed("the install did not finish within an hour") from error
+            try:
+                tail = (console.state(c.console, 30).get("install") or {}).get("log_tail", [])[-8:]
+            except Exception as reason:  # the console itself may be the thing that stopped
+                tail = [f"no installer state: {reason}"]
+            raise Failed("the install did not finish within an hour; its last lines: "
+                         + " | ".join(map(str, tail))) from error
         self.save("installer-final-state.json", final)
         if final["install"]["state"] != "done":
             raise Failed("the install failed: " + " | ".join(final["install"].get("log_tail", [])[-5:]))
