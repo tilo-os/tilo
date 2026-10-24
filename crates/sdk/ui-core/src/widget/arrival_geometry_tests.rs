@@ -346,3 +346,101 @@ fn rows_built_after_their_read_failed_show_its_failure_once() {
     boxes(&view, &mut boxes_after);
     assert_eq!(boxes_before, boxes_after, "moving the failure moves no box");
 }
+
+/// The widget named `name` inside `widget`, first in tree order.
+fn find_named<'a>(widget: &'a dyn Widget, name: &str) -> Option<&'a dyn Widget> {
+    if widget.name() == name {
+        return Some(widget);
+    }
+    widget
+        .children()
+        .into_iter()
+        .find_map(|child| find_named(child, name))
+}
+
+/// How far `pixel` is from every blend of `ground` and `fill`: zero for a
+/// pixel that only the two paint, whatever their coverage.
+fn off_blend(pixel: [u8; 4], ground: [u8; 4], fill: [u8; 4]) -> f64 {
+    let (p, g, f) = (
+        pixel.map(f64::from),
+        ground.map(f64::from),
+        fill.map(f64::from),
+    );
+    let axis = [f[0] - g[0], f[1] - g[1], f[2] - g[2]];
+    let along = axis.iter().map(|a| a * a).sum::<f64>();
+    let t = if along > 0.0 {
+        ((0..3).map(|i| (p[i] - g[i]) * axis[i]).sum::<f64>() / along).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (0..3)
+        .map(|i| (p[i] - (g[i] + t * axis[i])).abs())
+        .fold(0.0, f64::max)
+}
+
+#[test]
+fn a_failed_rows_try_again_shows_nothing_under_its_rounded_corners() {
+    for (name, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+        let t0 = crate::time::now();
+        let (width, height) = (720_u32, 560_u32);
+        let mut shot = ShotFrame::new((width, height), theme.clone());
+        let (_read, mut view) = with_monotonic_time(t0, || {
+            let read: Arriving<()> =
+                Arriving::pending(Source::host("Lounge")).on_retry(|_: &Arriving<()>| {});
+            read.stand(Arrival::Failed("Lounge did not answer".into()));
+            let view = page(Box::new(rows_of(std::slice::from_ref(&read), &[0])));
+            (read, view)
+        });
+        let scene = with_monotonic_time(t0 + Duration::from_secs(1), || {
+            shot.sync(&mut view);
+            shot.layout(&mut view).expect("layout solves");
+            shot.draw(&mut view)
+        });
+        let button = find_named(&view, "Button")
+            .expect("the failure offers Try again")
+            .get_rect();
+        let ground = theme.tokens.colors.surfaces.content;
+        let mut pixels = vec![0u8; (width * height * 4) as usize];
+        let mut target =
+            tilo_cpu_raster::Target::new(&mut pixels, width, height, width as usize * 4)
+                .expect("a raster target");
+        tilo_cpu_raster::CpuRasterizer::new(tilo_cpu_raster::Options::default()).render(
+            scene.encoding(),
+            &mut target,
+            None,
+            ground,
+        );
+        let ground = ground.to_rgba8().to_u8_array();
+        let pixel = |x: u32, y: u32| -> [u8; 4] {
+            let at = ((y * width + x) * 4) as usize;
+            [pixels[at], pixels[at + 1], pixels[at + 2], pixels[at + 3]]
+        };
+        // The face's own fill, on its top edge clear of the label.
+        let fill = pixel(button.center().x as u32, button.y0.ceil() as u32 + 1);
+        let radius = f64::from(theme.tokens.radii.control);
+        // In each corner square only the face and the ground paint: the
+        // face's antialiased edge blends the two and nothing else.
+        let mut checked = 0;
+        let mut stray = Vec::new();
+        for y in button.y0.floor() as u32..button.y1.ceil() as u32 {
+            for x in button.x0.floor() as u32..button.x1.ceil() as u32 {
+                let (cx, cy) = (f64::from(x) + 0.5, f64::from(y) + 0.5);
+                let in_corner = (cx < button.x0 + radius || cx > button.x1 - radius)
+                    && (cy < button.y0 + radius || cy > button.y1 - radius);
+                if !in_corner {
+                    continue;
+                }
+                checked += 1;
+                let seen = pixel(x, y);
+                if off_blend(seen, ground, fill) > 3.0 {
+                    stray.push((x, y, seen));
+                }
+            }
+        }
+        assert!(checked > 0, "the button {button:?} has corners to check");
+        assert!(
+            stray.is_empty(),
+            "{name}: paint other than the Try again face and the ground in its corners {button:?} (fill {fill:?}): {stray:?}"
+        );
+    }
+}

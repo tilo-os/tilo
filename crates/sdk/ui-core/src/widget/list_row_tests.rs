@@ -619,6 +619,61 @@ fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
 }
 
 #[test]
+fn a_trailing_control_stands_beside_the_status_dot_not_over_it() {
+    let theme = Theme::light();
+    let row = ListRow::new("failed", "Couldn't load this")
+        .secondary("Lounge did not answer")
+        .error()
+        .trailing(Box::new(
+            crate::widget::Button::new("retry", "Try again")
+                .control_size(crate::widget::ControlSize::Small),
+        ));
+    let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
+    let row = h.root::<ListRow>();
+    let button = row.trailing.as_ref().unwrap().element.get_rect();
+    let band = row.text_band();
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let dot = row
+        .with_face(|face| face.dot_centre(band, &mut text, &theme))
+        .unwrap();
+    let m = RowMetrics::new(&theme);
+    assert!(
+        button.x1 + m.column_gap <= dot.x - m.dot / 2.0 + 0.5,
+        "the control ends a column gap before the dot: {button:?}, dot at {dot:?}"
+    );
+    assert!(
+        dot.x + m.dot / 2.0 <= row.get_rect().x1 + 0.5,
+        "the dot keeps the row's edge: {dot:?} in {:?}",
+        row.get_rect()
+    );
+}
+
+#[test]
+fn a_trailing_control_stands_before_the_disclosure_chevron_not_over_it() {
+    let theme = Theme::light();
+    let row = ListRow::new("vpn", "Office")
+        .secondary("Connected")
+        .trailing(Box::new(crate::widget::Toggle::new("vpn-toggle", "vpn")))
+        .disclosure();
+    let h = FrameHarness::for_root(crate::State::new(), row, (720, 120), theme.clone());
+    let row = h.root::<ListRow>();
+    let toggle = row.trailing.as_ref().unwrap().element.get_rect();
+    let band = row.text_band();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let chevron = row
+        .with_face(|face| face.geometry(band, &m, &mut text, &theme))
+        .disclosure
+        .unwrap();
+    assert!(
+        toggle.x1 + m.column_gap <= chevron.x0 + 0.5,
+        "the control ends a column gap before the chevron: {toggle:?}, chevron {chevron:?}"
+    );
+}
+
+#[test]
 fn a_trailing_control_reserves_its_width_and_wraps_under_narrow_text() {
     let layout = |width: u32| {
         let row = ListRow::new("wifi", "Wi-Fi")
