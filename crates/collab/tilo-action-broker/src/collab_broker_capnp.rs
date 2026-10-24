@@ -1525,7 +1525,7 @@ enum ContextEnvelope {
     /// An encoded `ui::collaboration::handoff::HandoffRequest`.
     Handoff(Vec<u8>),
     /// The room's delegated agents the session verified, for history.
-    HistoryAgents(Vec<ui::history_source::RosterAgent>),
+    HistoryAgents(Vec<collab_types::history::RosterAgent>),
     /// Records of the application's trees a peer wrote and no window holds.
     RecordsArrived(Vec<String>),
 }
@@ -3435,7 +3435,7 @@ struct ContextSub {
     /// Shares the original receiver; membership refresh belongs to its document row.
     private_alias: bool,
     /// The room's verified agents this receiver was last told.
-    history_agents: Vec<ui::history_source::RosterAgent>,
+    history_agents: Vec<collab_types::history::RosterAgent>,
 }
 
 #[derive(Clone)]
@@ -8033,7 +8033,7 @@ impl CapnpBrokerState {
     /// root signed the delegation for exactly that device, as the host's
     /// authority verified them. Presentation only: history names who wrote
     /// from it, and nothing is admitted by it.
-    fn history_agents_of(&self, channel: &str) -> Vec<ui::history_source::RosterAgent> {
+    fn history_agents_of(&self, channel: &str) -> Vec<collab_types::history::RosterAgent> {
         let room = CrdtRoute::from_channel_key(channel).cluster_id;
         self.membership
             .as_ref()
@@ -9681,7 +9681,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         let command = match request.get_command_json() {
-            Ok(bytes) if bytes.len() <= ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES => bytes,
+            Ok(bytes) if bytes.len() <= collab_types::realtime::MAX_REALTIME_WIRE_BYTES => bytes,
             Ok(_) => {
                 return Promise::err(capnp::Error::failed(
                     "realtime command exceeds local protocol bound".into(),
@@ -9690,7 +9690,7 @@ impl channel_handle::Server for CapnpChannelHandle {
             Err(error) => return Promise::err(error),
         };
         match delegate_realtime_command(&self.state.services, &context, claimed_app, command) {
-            Ok(reply) if reply.len() <= ui::realtime_continuity::MAX_REALTIME_WIRE_BYTES => {
+            Ok(reply) if reply.len() <= collab_types::realtime::MAX_REALTIME_WIRE_BYTES => {
                 results.get().set_reply_json(&reply);
                 Promise::ok(())
             }
@@ -13563,7 +13563,7 @@ impl context_stream::Server for ContextStreamServer {
 /// leave the roster untouched and replace the room's agents with these.
 fn encode_history_agents(
     ctx: &mut runtime_collab::raw::channel_context::Builder<'_>,
-    agents: &[ui::history_source::RosterAgent],
+    agents: &[collab_types::history::RosterAgent],
 ) -> Result<(), capnp::Error> {
     let count = u32::try_from(agents.len())
         .map_err(|_| capnp::Error::failed("context: too many history agents to encode".into()))?;
