@@ -420,11 +420,23 @@ content scripts (with `sender.tab`) work without help.
   list (`extensions.rs` `policy_with_bridge`), and stays turned on. A failed
   call's callback finds `runtime.lastError` set, as in Chrome.
 - Tabs carry the id Chromium's extension APIs know them by, the one in
-  `sender.tab.id`. The Browser's own extension (`extension-manager`, with a
-  content script in every page) asks it for each page on first use.
+  `sender.tab.id`, from their first page on: a blank page, an extension's
+  own page in a tab and an internal one have it too, and keep it once they
+  show a web page. Chromium lists it with each tab's DevTools target to an
+  extension that may debug; the Browser's own extension (`extension-manager`)
+  may, and the host asks its worker for every tab not yet known at once,
+  before an extension is told of one. An extension's own page is listed
+  with no tab: it sends that extension a word only the host made, and
+  Chromium tells the worker the tab the message came from. An id another
+  tab has already is not taken.
 - What a tab shows an extension follows Chrome: its address and title with
-  `tabs`, access to the site, or a click on the extension's button over it
-  (`activeTab`), which also lets it script the page until the page navigates.
+  `tabs`, a host permission for the site, or a click on the extension's
+  button over it (`activeTab`), which also lets it script the page until the
+  page navigates. A click gives an extension without `activeTab` nothing.
+  The Browser sends an extension's host permissions apart from the sites its
+  content scripts run on (`extension_access`, `hosts` and `scriptable`), and
+  no tab API counts the second: as in Chrome, content scripts on every page
+  let an extension see no tab's address, script no page and capture none.
 - `tabs.detectLanguage` answers the language the page declares, and
   `tabs.getZoom` the page's zoom.
 - The toolbar button's look for every tab is Chromium's, and so are its
@@ -451,21 +463,31 @@ content scripts (with `sender.tab`) work without help.
   order, batched while a request is under way, and on from the host to the
   worker or page the same way, so a burst wakes the worker once.
 - `scripting.executeScript` reaches the frames an extension names
-  (`frameIds`, `allFrames`) and `tabs.sendMessage` one frame (`frameId`), as
-  Bitwarden injects its form filler into each frame that asks. Chromium
-  knows a frame by an id the inspector does not show, so the host asks the
-  extension's world in the frame with a message only the tab script answers
-  (`sender.frameId`). A frame another site's process renders is a target of
-  its own, which the host attaches to on the pipe for as long as the call
-  takes, and only when the frames named are not all in the page's own
-  process; the pipe carries a script whole, up to 16 MiB. `allFrames`
-  passes over a frame the script cannot run in, as Chrome does: one that
-  went to another site's page the extension's content scripts do not match
-  keeps its id but has no world of the extension in its new process.
+  (`frameIds`, `documentIds`, `allFrames`) and `tabs.sendMessage` one frame
+  (`frameId`, `documentId`), as Bitwarden injects its form filler into each
+  frame that asks. A message reaches the frame's content scripts, or the
+  extension's own page in the frame, as Evernote Web Clipper answers the
+  panel it shows in the page. Chromium knows a frame and its document by
+  ids the inspector does not show, so the host asks the extension's world
+  in the frame (or its page there) over a port only the tab script answers
+  (`sender.frameId`, `sender.documentId`): a port, because an extension
+  page without the tab script that answers every message itself cannot
+  answer it first. A frame's id lasts as long as the frame, its document's
+  as long as the document. A frame another site's process renders is a
+  target of its own, which the host attaches to on the pipe for as long as
+  the call takes, and only when the frames named are not all in the page's
+  own process; a frame named that the host met before on a target of its
+  own is the only one attached to, so each message to an extension's panel
+  costs one session. The pipe carries a script whole, up to 16 MiB.
+  `allFrames` passes over a frame the script cannot run in, as Chrome does:
+  the extension's own page, and one that went to another site's page the
+  extension's content scripts do not match, which keeps its id but has no
+  world of the extension in its new process.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
-  tab an extension was told of before the host learnt its id among
-  Chromium's keeps answering to the id it was told.
+  tab an extension was told of while the host could not learn its id among
+  Chromium's (the Browser's own extension did not start) keeps answering to
+  the id it was told.
 - `tabs.connect` also reaches an extension's declared content scripts,
   which Chromium cannot find by a tab it does not know: the host gives their
   world what a port needs, through the same binding.
@@ -480,16 +502,39 @@ content scripts (with `sender.tab`) work without help.
 - `tabs.captureVisibleTab` encodes the frame the host last painted of the
   tab, PNG or JPEG at the quality asked for (90 by default), off the UI
   thread. As in Chrome it needs a click on the extension's button over the
-  tab (`activeTab`) or access to every site (`<all_urls>`), and answers each
+  tab (`activeTab`) or a host permission for every site (`<all_urls>`), and answers each
   extension at most twice a second. A hidden tab has no frame to capture.
 - `contextMenus` items are kept by the host (`src/extension_menus.h`) and
   shown in the page's menu where their contexts (page, selection, link,
   image, video, audio, editable, frame) and URL patterns say, after the
-  page's own items. Tilo's page menu has no submenus: an item with items
-  under it gives way to them. Choosing one fires `contextMenus.onClicked`
-  with Chrome's info and the tab, and grants `activeTab`. The items and their
-  checked state are kept in the profile (`Extension Menus.json`, never for a
-  private window), since an extension makes them once, when installed.
+  page's own items, each extension's set apart: checkbox and radio items
+  with their check marks, an item with items under it as a submenu, a
+  disabled one greyed. Items for the toolbar button (`action`, `all`) go to
+  the Browser as `extension_menu` events whenever they change, and to each
+  tab as it opens; the Browser shows them in the button's menu and names a
+  choice with `extension_menu_action`. Choosing one fires
+  `contextMenus.onClicked` with Chrome's info and the tab, and grants
+  `activeTab`. The items and their checked state are kept in the profile
+  (`Extension Menus.json`, never for a private window), since an extension
+  makes them once, when installed. Unlike Chrome, the page menu does not
+  gather an extension's items under its name.
+- Keyboard shortcuts (`commands`): the Browser tells the host each
+  extension's manifest `commands` with its access, in the order the
+  extensions were installed, and `src/extension_commands.h` gives each
+  command the key suggested for the platform as Chrome does: Ctrl or Alt
+  (Command or MacCtrl on macOS), maybe Shift, and one key, never Ctrl with
+  Alt; at most four an extension; a key two extensions suggest stays with the
+  first; and none the Browser keeps for itself (Find, bookmark, reload, the
+  address, its tab keys), which it answers before a page sees them. A key
+  the Browser forwards into a page is looked up first: a command's runs it
+  and the page gets neither its press nor its release. A named command fires
+  `commands.onCommand` with the tab, waking the worker, and grants
+  `activeTab`; the button's own (`_execute_action`, or MV2's
+  `_execute_browser_action`) asks the Browser to act as a click on the
+  button (`extension_execute_action`), which opens its popup or fires
+  `action.onClicked`. `commands.getAll` lists the button's command first,
+  then the rest by name, each with its key as Chrome shows it ("Ctrl+Shift+Y"
+  on Linux) or none, and its description localized.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -501,9 +546,12 @@ content scripts (with `sender.tab`) work without help.
 
 ## Remaining integration work
 
-- Extensions' keyboard shortcuts (`commands`) and side panels are not
-  offered. Their context menu items show no checkmark and no submenu, and
-  appear only in a page's menu, not the toolbar button's.
+- Extensions' side panels are not offered. Their keyboard shortcuts run while
+  a page has the keyboard, not while the address bar or a popup has it; the
+  suggested keys are the ones given (there is no page to change them), and
+  `global` shortcuts work only in the Browser. Their context menu items show
+  no checkmark and no submenu, and appear only in a page's menu, not the
+  toolbar button's.
 - `tabs.setZoom` is not offered: the Browser owns a page's zoom.
 - CPU BGRA transport is implemented; shared GPU texture import is not.
 - `clear_data` currently clears cookies, HTTP cache and HTTP authentication.

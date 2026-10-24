@@ -5,6 +5,7 @@ use std::time::Duration;
 use super::ShellDriver;
 
 mod open_app_scene;
+mod record_actions_scene;
 // The launcher's states build on the search sources staged here.
 mod launcher_seed;
 

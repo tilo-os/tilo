@@ -918,6 +918,8 @@ pub struct ChromeState {
     /// Happening now offers to join ([`Self::publish_live_calls`]).
     pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     activity_focus_request: Option<ActivityFocus>,
+    /// Activity was asked to open; the overlay host launches its app.
+    activity_open_request: bool,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
     /// The portal D-Bus backend's prompt queue drains onto the back
@@ -1269,6 +1271,7 @@ impl ChromeState {
             wave_notice: None,
             live_calls: Vec::new(),
             activity_focus_request: None,
+            activity_open_request: false,
             workspace_view_request: None,
             history_action_request: None,
             pending_grants: VecDeque::new(),
@@ -2346,21 +2349,23 @@ impl ChromeState {
         self.workspace_view_request.take()
     }
 
+    /// Open the Activity app, showing `focus` when one is named. The
+    /// overlay host launches it, or brings its window forward, on its next
+    /// frame ([`Self::take_activity_open_request`]).
     pub fn open_room_activity(&mut self, focus: Option<ActivityFocus>) {
-        self.activity_focus_request = focus;
-        {
-            let mut tree = self.tree_mut();
-            crate::shell::tab_binding::open_workspace_activity(&mut tree);
+        if focus.is_some() {
+            self.activity_focus_request = focus;
         }
-        // Kept as a request edge for compatibility with older control/state
-        // clients; Activity itself is no longer a modal overlay.
+        self.activity_open_request = true;
         self.overlays.room_activity = false;
         self.overlays.collaborators = false;
         self.bump();
     }
 
-    pub fn take_activity_focus_request(&mut self) -> Option<ActivityFocus> {
-        self.activity_focus_request.take()
+    /// Whether Activity was asked to open since last taken, and what it
+    /// was asked to show.
+    pub fn take_activity_open_request(&mut self) -> Option<Option<ActivityFocus>> {
+        std::mem::take(&mut self.activity_open_request).then(|| self.activity_focus_request.take())
     }
 
     /// Open Activity and run a selected-row history action (`history.compare`,

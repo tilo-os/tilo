@@ -18,8 +18,14 @@ fn governor_creates_empty_record(joined: &Enrolled) {
         .with_current(joined.room, |view| {
             let before = view.peer().clone();
             let mut candidate = before.clone();
-            candidate.publish_document(APP, FRESH, AutoCommit::new().save(), &key, joined.now)?;
-            let messages = candidate.durable_mutation_messages(
+            candidate.publication_mut().publish_document(
+                APP,
+                FRESH,
+                AutoCommit::new().save(),
+                &key,
+                joined.now,
+            )?;
+            let messages = candidate.publication_mut().durable_mutation_messages(
                 &before,
                 &key,
                 joined.now,

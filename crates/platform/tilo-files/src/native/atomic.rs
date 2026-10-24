@@ -438,7 +438,7 @@ pub fn write_regenerable_with_mode(path: &Path, bytes: &[u8], mode: u32) -> io::
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Publish {
+pub(super) enum Publish {
     /// Rename over whatever `path` currently names.
     Replace,
     /// Hard-link into place only while `path` is still absent.
@@ -447,7 +447,7 @@ enum Publish {
     ReplaceUnsynced,
 }
 
-fn publish(
+pub(super) fn publish(
     path: &Path,
     bytes: &[u8],
     open: impl FnMut(&Path) -> io::Result<File>,

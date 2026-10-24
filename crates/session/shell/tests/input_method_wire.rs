@@ -36,6 +36,9 @@ use wayland_protocols_misc::zwp_input_method_v2::client::{
     zwp_input_method_keyboard_grab_v2, zwp_input_method_manager_v2, zwp_input_method_v2,
     zwp_input_popup_surface_v2,
 };
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1, zwp_virtual_keyboard_v1,
+};
 
 use crate::support::wayland::{Globals as _, foreign_id};
 
@@ -181,6 +184,8 @@ delegate_noop!(Peer: ignore wl_callback::WlCallback);
 delegate_noop!(Peer: ignore xdg_toplevel::XdgToplevel);
 delegate_noop!(Peer: ignore zwp_text_input_manager_v3::ZwpTextInputManagerV3);
 delegate_noop!(Peer: ignore zwp_input_method_manager_v2::ZwpInputMethodManagerV2);
+delegate_noop!(Peer: ignore zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1);
+delegate_noop!(Peer: ignore zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1);
 
 struct Connected {
     /// The compositor's handle for this connection.
@@ -584,6 +589,130 @@ fn chrome_field_activates_the_input_method_and_receives_its_commit() {
     h.pump();
     assert!(!proxy.holds_focus(&h.state));
     assert!(!h.state.text_input_active());
+}
+
+/// The on-screen keyboard's terminal keys reach one of the shell's own
+/// fields as real keys: Ctrl+C arrives as the C key with Control held, and an
+/// arrow with nothing held.
+#[test]
+fn a_virtual_keyboard_chord_reaches_a_chrome_terminal_with_its_modifiers() {
+    use osk::inject::{Modifiers, Symbol};
+    use winit::event::{ElementState, WindowEvent};
+    use winit::keyboard::{Key, NamedKey};
+    let mut h = Harness::new();
+    h.state
+        .set_input_method_owner(Some(TrustedInputMethod::OnScreenKeyboard));
+    let keyboard = h.connect(Some(TrustedInputMethod::OnScreenKeyboard));
+    let (_input_method, virtual_keyboard) = {
+        let client = &h.clients[keyboard];
+        let qh = client.queue.handle();
+        let seat = client.bind::<wl_seat::WlSeat>("wl_seat", 1).expect("seat");
+        let input_method = client
+            .bind::<zwp_input_method_manager_v2::ZwpInputMethodManagerV2>(INPUT_METHOD_MANAGER, 1)
+            .expect("trusted keyboard may bind")
+            .get_input_method(&seat, &qh, ());
+        let virtual_keyboard = client
+            .bind::<zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1>(
+                VIRTUAL_KEYBOARD_MANAGER,
+                1,
+            )
+            .expect("trusted keyboard may bind")
+            .create_virtual_keyboard(&seat, &qh, ());
+        (input_method, virtual_keyboard)
+    };
+    h.pump();
+    let mut proxy = shell::compositor::shell_text_input::ShellTextInput::connect(&mut h.state)
+        .expect("chrome stand-in");
+    let field = shell::compositor::shell_text_input::FieldRequest {
+        content: ui::ime::InputContent::TERMINAL,
+        x: 420,
+        y: 100,
+        width: 1,
+        height: 24,
+    };
+    let deadline = tilo_test_env::hang_deadline();
+    while !proxy.holds_focus(&h.state) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "chrome terminal never focused"
+        );
+        proxy.sync(&mut h.state, Some(field));
+        h.pump();
+    }
+
+    let codes = upload_keymap(&virtual_keyboard, &[Symbol::Unicode('c'), Symbol::Up]);
+    let ctrl = Modifiers {
+        ctrl: true,
+        alt: false,
+    };
+    let (c, up) = (codes[0], codes[1]);
+    virtual_keyboard.modifiers(ctrl.xkb_mask(), 0, 0, 0);
+    virtual_keyboard.key(0, c, 1);
+    virtual_keyboard.key(1, c, 0);
+    virtual_keyboard.modifiers(0, 0, 0, 0);
+    virtual_keyboard.key(2, up, 1);
+    virtual_keyboard.key(3, up, 0);
+
+    let mut keys = Vec::new();
+    while keys.len() < 4 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the keys never reached the chrome field: {keys:?}"
+        );
+        h.pump();
+        proxy.sync(&mut h.state, Some(field));
+        keys.extend(h.state.take_shell_field_keys());
+    }
+    let presses: Vec<(Key, bool, bool)> = keys
+        .iter()
+        .filter_map(|(event, modifiers)| match event {
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                Some((
+                    event.logical_key.clone(),
+                    modifiers.state().control_key(),
+                    modifiers.state().alt_key(),
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        presses,
+        [
+            (Key::Character("c".into()), true, false),
+            (Key::Named(NamedKey::ArrowUp), false, false),
+        ]
+    );
+}
+
+/// Hand `virtual_keyboard` the keymap the on-screen keyboard builds for
+/// `symbols`, returning each symbol's wire keycode.
+fn upload_keymap(
+    virtual_keyboard: &zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+    symbols: &[osk::inject::Symbol],
+) -> Vec<u32> {
+    use std::os::fd::AsFd as _;
+    let (keymap, codes) = osk::inject::build_keymap(symbols);
+    let mut bytes = keymap.into_bytes();
+    bytes.push(0);
+    // SAFETY: a null-terminated name and a valid flag word are the whole
+    // contract of `memfd_create`.
+    let raw = unsafe { libc::memfd_create(c"tilo-osk-keymap".as_ptr(), 0) };
+    assert!(
+        raw >= 0,
+        "memfd_create: {}",
+        std::io::Error::last_os_error()
+    );
+    // SAFETY: `memfd_create` just handed us this descriptor.
+    let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(raw) });
+    std::io::Write::write_all(&mut &file, &bytes).expect("write the keymap");
+    virtual_keyboard.keymap(
+        1,
+        file.as_fd(),
+        u32::try_from(bytes.len()).expect("keymap size"),
+    );
+    // The wire carries evdev codes: XKB's minus 8.
+    codes.into_iter().map(|(_, code)| code - 8).collect()
 }
 
 /// The content type a focused field of an app asks for, as the toolkit

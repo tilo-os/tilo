@@ -116,6 +116,8 @@ files-replica-counts = Auf { $durable } { $durable ->
    *[other] anderen Geräten
 } gespeichert
 files-transfer-state = Übertragung: { $state }
+files-unavailable = Nicht verfügbar
+files-unavailable-offline = Nicht verfügbar, bis ein Gerät mit dieser Datei online ist
 files-transfer-idle = inaktiv
 files-transfer-queued = eingereiht
 files-transfer-downloading = wird heruntergeladen
@@ -294,6 +296,7 @@ files-history-current-version-label = Aktuelle Version
 
 ## Barrierefreier kollaborativer Status
 files-a11y-transfer-failed = Übertragung fehlgeschlagen
+files-a11y-unavailable = Nicht verfügbar, bis ein Gerät mit dieser Datei online ist
 files-a11y-transfer-queued = Übertragung eingereiht
 files-a11y-downloading = Wird heruntergeladen
 files-a11y-uploading = Wird hochgeladen

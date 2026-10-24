@@ -3,6 +3,7 @@ use super::morning::{
 };
 use tilo_sort::CompactSort as _;
 mod morning_sources;
+mod serve;
 
 // Room activity — everything that has happened to this workspace, by
 // everyone, in one filterable pane.
@@ -549,7 +550,7 @@ impl Period {
 
 /// Which workspaces' changes the pane is showing. A genuine scope
 /// decision, not a filter — a row outside it is not this room's history.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum RoomScope {
     /// Changes touching the active workspace, plus ones belonging to no
     /// single workspace — those can't carry another room into this view.
@@ -755,6 +756,9 @@ pub struct RoomActivityPane {
     cold_agent_runs: HashMap<RecordId, ColdAgentRuns>,
     agent_undo_notice: Option<(String, String)>,
     open_agent_records: HashSet<RecordId>,
+    /// What a deep link last asked the feed to show, and how many it asked.
+    focus: Option<tilo_actions::remote::workspace_activity::Focus>,
+    focus_serial: u64,
 }
 
 impl Default for RoomActivityPane {
@@ -954,6 +958,8 @@ impl RoomActivityPane {
             cold_agent_runs: HashMap::new(),
             agent_undo_notice: None,
             open_agent_records: HashSet::new(),
+            focus: None,
+            focus_serial: 0,
         }
     }
 

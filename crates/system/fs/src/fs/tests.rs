@@ -497,6 +497,98 @@ mod availability_control_tests {
         endpoint.close().await;
     }
 
+    /// "Keep offline" holds a file's bytes against the cache budget exactly
+    /// while a pin covers it: a file already read in full is kept from the
+    /// pass that sees the pin, its bytes go back to the cache once no pin
+    /// covers it, and a file only this device holds is never made
+    /// evictable by either.
+    #[tokio::test]
+    async fn keep_offline_holds_bytes_against_the_cache_budget_only_while_pinned() {
+        use crate::store::area::Retention;
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let store = Arc::new(ContentStore::memory());
+        let size = crate::content::FILE_BACKED_MIN + 1;
+        let bytes = |byte: u8| vec![byte; usize::try_from(size).unwrap()];
+        let read = store.write_content(&bytes(1)).await.unwrap().unwrap();
+        let authored = store.write_content(&bytes(2)).await.unwrap().unwrap();
+        // `read` came from a peer and was read in full: a cached copy.
+        store
+            .files()
+            .set_retention(read.as_bytes(), Retention::Cached)
+            .unwrap();
+        let hydrator = Arc::new(Hydrator::new(endpoint.clone(), Arc::clone(&store)));
+        let namespace = Arc::new(Mutex::new(Namespace::new("keep-offline").unwrap()));
+        let (read_ino, authored_ino) = {
+            let mut namespace = namespace.lock().unwrap();
+            (
+                namespace
+                    .create_file(ROOT_INO, "read.bin", Some(&read), size, 1)
+                    .unwrap(),
+                namespace
+                    .create_file(ROOT_INO, "authored.bin", Some(&authored), size, 1)
+                    .unwrap(),
+            )
+        };
+        let registry = Arc::new(Mutex::new(
+            AvailabilityRegistry::open(dir.path().join("availability.json")).unwrap(),
+        ));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), Arc::clone(&hydrator), heuristics)
+            .with_availability(Arc::clone(&registry));
+        let (_wake, wakes) = tokio::sync::watch::channel(0_u64);
+        let pass = || {
+            reconcile_pinned_hydration(
+                &namespace,
+                Arc::clone(&hydrator),
+                Arc::clone(&registry),
+                None,
+                wakes.clone(),
+            )
+        };
+        let files = store.files();
+        let retention = |hash: Hash| files.entry(hash.as_bytes()).map(|entry| entry.retention);
+        files.set_budget(0);
+
+        for ino in [read_ino, authored_ino] {
+            fs.set_pin_policy(ino, AvailabilityPolicy::Pinned).unwrap();
+        }
+        let _ = pass().await;
+        assert_eq!(
+            retention(read),
+            Some(Retention::Pinned),
+            "a file already here is kept once it is pinned"
+        );
+        assert_eq!(retention(authored), Some(Retention::LocalOnly));
+        files.evict_to_budget(&[]);
+        assert!(
+            files.entry(read.as_bytes()).is_some(),
+            "the cache budget never takes a file kept offline"
+        );
+
+        for ino in [read_ino, authored_ino] {
+            fs.set_pin_policy(ino, AvailabilityPolicy::Automatic)
+                .unwrap();
+        }
+        let _ = pass().await;
+        assert_eq!(
+            retention(read),
+            Some(Retention::Cached),
+            "a file no pin covers is cache again"
+        );
+        assert_eq!(
+            retention(authored),
+            Some(Retention::LocalOnly),
+            "a file only this device holds stays unevictable after its pin goes"
+        );
+        files.evict_to_budget(&[]);
+        assert!(files.entry(read.as_bytes()).is_none());
+        assert!(files.entry(authored.as_bytes()).is_some());
+
+        drop(fs);
+        endpoint.close().await;
+    }
+
     /// How many times the mount's pin worker has come back to wait.
     fn worker_turns(fs: &QuickFS) -> u64 {
         fs.pinned_hydration

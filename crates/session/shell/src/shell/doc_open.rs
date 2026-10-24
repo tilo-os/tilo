@@ -851,6 +851,27 @@ pub fn continuity_file_reference_label(
     .unwrap_or_else(|| crate::shell::i18n::t("doc-open-unnamed-file"))
 }
 
+/// The desktop's names for continuation placeholder tabs: installed apps as
+/// the launcher last enumerated them, and files by their name in the
+/// workspace's record roots ([`continuity_file_reference_label`]).
+pub(crate) struct DesktopContinuationLabels;
+
+impl crate::shell::state::ContinuationLabels for DesktopContinuationLabels {
+    fn app_name(&self, app_id: &str) -> Option<String> {
+        crate::shell::launcher::installed_apps_without_waiting()
+            .into_iter()
+            .find(|installed| installed.package_id == app_id)
+            .map(|installed| installed.display_name)
+    }
+
+    fn file_reference_label(
+        &self,
+        reference: &crate::shell::personal_continuity::LaunchIntent,
+    ) -> String {
+        continuity_file_reference_label(reference)
+    }
+}
+
 /// Production activation for a synchronized file-reference tab.  Resolution
 /// stays record-id based, then the ordinary document launcher grants the
 /// projected path and chooses the registered app exactly as for a local open.

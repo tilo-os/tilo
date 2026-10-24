@@ -22,6 +22,7 @@ mod execution_activity;
 #[cfg(test)]
 mod execution_activity_tests;
 mod observed_launch;
+pub use observed_launch::AppOpen;
 mod offload_door;
 use execution_activity::{ActivityBus, ActivityTarget, ExecutionScope};
 pub use execution_activity::{ExecutionActivity, ExecutionStatus};
@@ -2177,9 +2178,11 @@ impl PendingInvocation {
 mod action_host;
 mod admission_memo;
 mod app_consent;
+mod app_open_door;
 mod host_action_admission;
 mod host_steps;
 mod launchable;
+mod live_views;
 mod local_action_host;
 mod remaining_workspace_actions;
 mod run_question;
@@ -3515,6 +3518,8 @@ pub struct CapnpBrokerState {
     /// Broker-owned governed membership surface per native room.
     workspace_membership_peers: Mutex<HashMap<String, u64>>,
     completed_invocations: Mutex<HashMap<u64, (InvocationOwner, tilo_actions::InvocationUpdate)>>,
+    /// Host steps whose result stays current, while they are open.
+    live_views: live_views::LiveViews,
     // Retain result authorization even when the host has no durable journal.
     // Entries share the completed invocation cache's bounded lifetime.
     checkpoint_jobs: Mutex<HashMap<u64, (String, String, tilo_actions::ActionContract)>>,
@@ -4262,6 +4267,7 @@ impl CapnpBrokerState {
                 stable_invocation_subscribers: Mutex::new(std::collections::HashSet::new()),
                 workspace_membership_peers: Mutex::new(HashMap::new()),
                 completed_invocations: Mutex::new(HashMap::new()),
+                live_views: live_views::LiveViews::default(),
                 checkpoint_jobs: Mutex::new(HashMap::new()),
                 untrusted_jobs: Mutex::default(),
                 confirmation_grants: Mutex::new(HashMap::new()),
@@ -6288,14 +6294,7 @@ impl CapnpBrokerState {
                 prepared_effect: Arc::default(),
                 last_sequence: 0,
                 actor: actor.id.clone(),
-                cancellable: matches!(
-                    offered.1.contract.execution,
-                    tilo_actions::ExecutionMode::Background { cancellable: true }
-                        | tilo_actions::ExecutionMode::Streaming {
-                            cancellable: true,
-                            ..
-                        }
-                ),
+                cancellable: offered.1.contract.execution.cancellable(),
                 retryable_on_disconnect: matches!(
                     offered.1.contract.retry,
                     tilo_actions::RetryPolicy::Idempotent
@@ -6361,6 +6360,7 @@ impl CapnpBrokerState {
     /// Retire only this run's transient presence, preserving its pending jobs.
     pub fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         caller.retire_execution();
+        self.live_views.retire(caller);
         if let Ok(mut pending) = self.pending_invocations.lock() {
             for invocation in pending.values_mut() {
                 if invocation
@@ -6654,6 +6654,9 @@ impl CapnpBrokerState {
 
     pub fn invocation_status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
+        if let Some(update) = self.live_views.status(id, None) {
+            return Some(update);
+        }
         self.pending_invocations
             .lock()
             .ok()
@@ -6672,6 +6675,9 @@ impl CapnpBrokerState {
         owner: &InvocationOwner,
     ) -> Option<tilo_actions::InvocationUpdate> {
         self.expire_stale_invocations();
+        if let Some(update) = self.live_views.status(id, Some(owner)) {
+            return Some(update);
+        }
         self.pending_invocations
             .lock()
             .ok()
@@ -6743,6 +6749,9 @@ impl CapnpBrokerState {
         owner: &InvocationOwner,
     ) -> Result<(), String> {
         self.expire_stale_invocations();
+        if let Some(cancelled) = self.live_views.cancel(id, Some(owner)) {
+            return cancelled;
+        }
         let mut pending = self
             .pending_invocations
             .lock()
@@ -9284,24 +9293,38 @@ impl channel_handle::Server for CapnpChannelHandle {
         };
         let route = self.route();
         let person = current.caller(&route.cluster_id);
-        // An edit an effect submits while running for someone is theirs.
-        let caller =
-            if let Some(continued) = self.state.continued_caller(self.peer_id, &request.message) {
-                match continued {
-                    Ok(caller) => caller,
-                    Err(refused) => return reply_frame(*refused, results),
-                }
-            } else if current.agent_id.is_some() {
-                person.clone()
-            } else {
-                match self
-                    .state
-                    .app_door(&person, &route.app_id, &request.message)
-                {
-                    Ok(caller) => caller,
-                    Err(refusal) => return reply_frame(*refusal, results),
-                }
-            };
+        // An app's open of an application is decided as the caller of the
+        // invocation it continues, under that invocation's custody, else as
+        // the person whose press it follows; an edit an effect submits while
+        // running for someone is theirs.
+        let (decided, continued_origin) = match current
+            .agent_id
+            .is_none()
+            .then(|| {
+                self.state
+                    .app_open_caller(self.peer_id, &route.app_id, &person, &request.message)
+            })
+            .flatten()
+        {
+            Some(Ok((caller, origin))) => (Some(Ok(caller)), origin),
+            Some(Err(refused)) => (Some(Err(refused)), None),
+            None => (
+                self.state.continued_caller(self.peer_id, &request.message),
+                None,
+            ),
+        };
+        let caller = match decided {
+            Some(Ok(caller)) => caller,
+            Some(Err(refused)) => return reply_frame(*refused, results),
+            None if current.agent_id.is_some() => person.clone(),
+            None => match self
+                .state
+                .app_door(&person, &route.app_id, &request.message)
+            {
+                Ok(caller) => caller,
+                Err(refusal) => return reply_frame(*refusal, results),
+            },
+        };
         if let tilo_actions::remote::RemoteActionMessage::CatalogueRequest { correlation, query } =
             &request.message
             && query.view_resource.is_some()
@@ -9360,11 +9383,11 @@ impl channel_handle::Server for CapnpChannelHandle {
         let host = action_host::ConnectionActionHost {
             state: Arc::clone(&self.state),
             own_peer: self.peer_id,
-            origin: InvocationCaller::Local {
+            origin: continued_origin.unwrap_or_else(|| InvocationCaller::Local {
                 route,
                 time: original_time,
                 admitted: Box::new(current),
-            },
+            }),
         };
         if let Some(question) = question {
             return run_question::serve_answered(
@@ -11782,6 +11805,19 @@ impl channel_handle::Server for CapnpChannelHandle {
             Ok(root) => root,
             Err(error) => return Promise::err(error),
         };
+        // An app opens another only for the person's press in it or an
+        // invocation delivered to it ([`app_open_door`]); an agent's own
+        // connection, by its own grants.
+        if self.verified_identity.agent_id.is_none()
+            && self
+                .state
+                .app_open_authority(self.peer_id, &self.route().app_id, parent)
+                .is_none()
+        {
+            return Promise::err(capnp::Error::failed(
+                "nothing the person or an invocation asked for is behind this launch".into(),
+            ));
+        }
         if let Err(error) = self.current_launch_authority(&app_id, parent) {
             return Promise::err(capnp::Error::failed(error));
         }
@@ -20835,7 +20871,7 @@ fn validate_invocation_update(
         sequence, value, ..
     } = update
     {
-        let tilo_actions::ExecutionMode::Streaming { item_schema, .. } = &pending.execution else {
+        let Some(item_schema) = pending.execution.item_schema() else {
             return Err(capnp::Error::failed(
                 "non-streaming action reported a streamed item".into(),
             ));

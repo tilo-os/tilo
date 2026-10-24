@@ -585,8 +585,7 @@ impl DeviceContinuationSnapshot {
                             .get(&tab.id)
                             .cloned()
                             .or_else(|| match &tab.tile {
-                                TileContent::WorkspaceActivity
-                                | TileContent::HostedWindow { .. } => None,
+                                TileContent::HostedWindow { .. } => None,
                                 TileContent::AppPlaceholder { kind, .. }
                                 | TileContent::Stub { kind, .. } => {
                                     LaunchIntent::app(kind.app_id()).ok()

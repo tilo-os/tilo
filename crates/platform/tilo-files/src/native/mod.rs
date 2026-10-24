@@ -29,6 +29,7 @@ mod watched;
 pub use watched::Watched;
 pub mod bounded;
 pub mod checked;
+pub mod held;
 pub mod identity;
 pub mod lock;
 pub mod mapped;

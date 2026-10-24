@@ -551,6 +551,25 @@ topbar-clocks-notification-body = Die Zeit ist abgelaufen
 
 # Arbeitsbereichsaktivität: woran eine mitarbeitende Person gerade arbeitet
 host-activity-working-on = Arbeitet an { $target }
+host-activity-workspace-not-shown = Wechsle zu diesem Arbeitsbereich, um seinen Verlauf zu ändern.
+host-activity-personal-only = Das kann nur die Person an diesem Gerät.
+host-activity-action-feed = Verlauf lesen
+host-activity-action-summary = Neues lesen
+host-activity-action-replay = Layout abspielen
+host-activity-action-detail = Änderungen lesen
+host-activity-action-focus = Lesen, was gezeigt werden soll
+host-activity-action-mark-viewed = Als gesehen markieren
+host-activity-action-focused = Melden, was gezeigt wurde
+host-activity-action-name = Änderungen benennen
+host-activity-action-split = Arbeitsgruppe teilen
+host-activity-action-merge = Arbeitsgruppen zusammenführen
+host-activity-action-move-boundary = Grenze der Arbeitssitzung verschieben
+host-activity-action-undo = Änderungen rückgängig machen
+host-activity-action-restore = Auf den Stand davor zurücksetzen
+host-activity-action-undo-run = Agentenaufgabe rückgängig machen
+host-activity-action-open = Öffnen
+host-activity-action-choose-source = Morgenquelle wählen
+host-activity-action-source = Morgenquelle verwenden
 host-activity-working-in = Arbeitet in { $app }
 host-activity-editing = Bearbeitet gemeinsame Inhalte
 host-activity-organizing = Ordnet gemeinsame Inhalte
@@ -1114,6 +1133,8 @@ launch-failed-window-lost = Ihr Fenster wurde beendet, ohne geschlossen zu werde
 launch-window-lost-title = { $app } wurde unerwartet geschlossen
 launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
+app-open-unavailable-title = Keine App zum Öffnen
+app-open-unavailable-body = { $app } wollte eine App öffnen, die weder auf diesem Computer noch im Store ist.
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
 # An app, or a process it started, that the system ended because memory ran out
@@ -1398,8 +1419,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = { $app } · enthält Ressourcen
-search-app-action-launches = { $resource } · { $app } · startet die Anwendung
+search-app-resource-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden
@@ -1572,6 +1592,12 @@ search-action-tab-move-to-group-next = Diesen Tab in die rechte Gruppe verschieb
 search-action-tab-move-to-group-next-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe rechts verschieben
 search-action-notifications-dnd-toggle = Bitte nicht stören
 search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner zurückhalten, bis du wieder da bist
+search-action-notifications-open = Benachrichtigungen anzeigen
+search-action-notifications-open-subtitle = Verpasste Benachrichtigungen lesen, beantworten oder löschen
+search-action-notifications-clear = Alle Benachrichtigungen löschen
+search-action-notifications-clear-subtitle = Die Benachrichtigungsliste leeren; acht Sekunden lang kannst du sie zurückholen
+search-action-notifications-clear-undo = Gelöschte Benachrichtigungen zurückholen
+search-action-notifications-clear-undo-subtitle = Die eben gelöschten Benachrichtigungen in ihrer Reihenfolge wiederherstellen
 search-action-appearance-theme-dark = Dunkles Design
 search-action-appearance-theme-dark-subtitle = Dunkle Oberfläche und Apps
 search-action-appearance-theme-light = Helles Design
@@ -3092,6 +3118,9 @@ search-kw-strip-focus-nth = leiste nummer, gehe zu leiste, zu leiste springen, l
 search-kw-group-restore = wiederherstellen, verkleinern, normale größe, maximierung aufheben
 search-kw-tab-move-to-new-group = neue gruppe, lösen, abtrennen, tab abtrennen
 search-kw-notifications-dnd-toggle = nicht stören, bitte nicht stören, ruhemodus, benachrichtigungen aus, benachrichtigungen stumm, fokus, ruhig
+search-kw-notifications-open = benachrichtigungen, mitteilungen, benachrichtigungszentrale, verpasst, hinweise
+search-kw-notifications-clear = benachrichtigungen löschen, alle löschen, alle verwerfen, mitteilungen entfernen, benachrichtigungen leeren
+search-kw-notifications-clear-undo = löschen rückgängig, benachrichtigungen wiederherstellen, benachrichtigungen zurückholen
 search-kw-appearance-theme-dark = dunkelmodus, dunkles design, nachtmodus, dunkel, nachtdesign, dark mode
 search-kw-appearance-theme-light = hellmodus, helles design, tagmodus, hell, tagdesign, light mode
 search-kw-appearance-language = sprache, sprache wechseln, lokalisierung, deutsch, englisch, spracheinstellung

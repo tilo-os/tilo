@@ -715,6 +715,23 @@ impl TubeModel {
         self.videos.iter().find(|v| v.id == id)
     }
 
+    /// The end (seconds) of the show-mode `SponsorBlock` segment the playhead
+    /// is inside on the open watch page: what Skip jumps to. `None` off the
+    /// watch route, with `SponsorBlock` off, or outside every such segment.
+    pub fn show_skip_end(&self) -> Option<f64> {
+        if !self.settings.sponsorblock_enabled {
+            return None;
+        }
+        let Route::Watch(id) = &self.route else {
+            return None;
+        };
+        self.video(id)?
+            .sponsor
+            .iter()
+            .find(|s| self.settings.should_show_skip(s.category) && s.contains(self.playhead))
+            .map(|s| s.end)
+    }
+
     pub fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
     }

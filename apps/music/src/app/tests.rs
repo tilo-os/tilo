@@ -4796,3 +4796,5 @@ mod query_view_tests;
 
 #[path = "handoff_tests.rs"]
 mod handoff_tests;
+#[path = "shuffle_tests.rs"]
+mod shuffle_tests;

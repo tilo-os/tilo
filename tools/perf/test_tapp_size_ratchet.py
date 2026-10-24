@@ -162,6 +162,16 @@ class Fleet(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("error: aarch64: the registry lists none of the budgeted apps", lines)
 
+    def test_the_release_commit_is_the_newest_versions_source(self):
+        old, new = "a" * 40, "b" * 40
+        versions = [{"version": f"0.1.1+g{old}", "released_at_unix": 1},
+                    {"version": f"0.1.2+g{new}", "released_at_unix": 2}]
+        self.assertEqual(ratchet.release_commit(versions), new)
+
+    def test_a_version_without_its_source_commit_fails(self):
+        with self.assertRaises(ValueError):
+            ratchet.release_commit([{"version": "0.1.2", "released_at_unix": 2}])
+
     def test_an_unpublished_app_is_named_not_counted(self):
         sizes = {key: size for key, size in self.SIZES.items() if key != ("so.tilo.b", "aarch64")}
         status, lines = ratchet.fleet(entries(sizes), budget())

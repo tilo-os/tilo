@@ -166,6 +166,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "activity"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-app",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "adblock"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -21865,6 +21878,7 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clock",
  "tilo-doc",
  "tilo-resource",
  "tilo-ui",

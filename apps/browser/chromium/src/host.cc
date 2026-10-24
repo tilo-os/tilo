@@ -316,23 +316,71 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       case CM_MEDIATYPE_AUDIO: menu_context_.media="audio";break;
       default: break;
     }
-    menu_offers_=extension_tabs->MenuOffers(menu_context_);
-    if(menu_offers_.size()>kMaxMenuOffers) menu_offers_.resize(kMaxMenuOffers);
-    if(!menu_offers_.empty() && model->GetCount()) model->AddSeparator();
-    for(size_t i=0;i<menu_offers_.size();++i) model->AddItem(kFirstMenuOffer+static_cast<int>(i),menu_offers_[i].label);
+    const auto offers=extension_tabs->MenuOffers(menu_context_);
+    if(!offers.empty() && model->GetCount()) model->AddSeparator();
+    int group=0;
+    AddMenuOffers(model,offers,group);
+  }
+  // Extensions' items into `model`, each chosen by its command from
+  // kFirstMenuOffer: checkbox and radio items with their state, a run of
+  // radio items as one group, and an item with items under it as a submenu.
+  void AddMenuOffers(CefRefPtr<CefMenuModel> model,const std::vector<tilo::MenuOffer>& offers,int& group) {
+    bool radio=false;
+    for(const auto& offer:offers) {
+      if(offer.type=="separator") { model->AddSeparator();radio=false;continue; }
+      if(menu_offers_.size()>=kMaxMenuOffers) return;
+      const int command=kFirstMenuOffer+static_cast<int>(menu_offers_.size());
+      // The page menu reads `&` as marking a key; `&&` is one.
+      std::string label;
+      for(char c:offer.label) { label+=c;if(c=='&') label+='&'; }
+      tilo::MenuOffer chosen=offer;chosen.children.clear();menu_offers_.push_back(std::move(chosen));
+      if(!offer.children.empty()) AddMenuOffers(model->AddSubMenu(command,label),offer.children,group);
+      else if(offer.type=="checkbox") model->AddCheckItem(command,label);
+      else if(offer.type=="radio") { if(!radio) ++group;model->AddRadioItem(command,label,group); }
+      else model->AddItem(command,label);
+      radio=offer.type=="radio";
+      if(offer.type=="checkbox" || offer.type=="radio") model->SetChecked(command,offer.checked);
+      if(!offer.enabled) model->SetEnabled(command,false);
+    }
+  }
+  // The menu's items as the Browser shows them: at most 24 at each level,
+  // four levels deep and 200 in all, the page's own disabled items left out.
+  CefRefPtr<CefListValue> MenuItems(CefRefPtr<CefMenuModel> model,int depth,size_t& left) {
+    auto items=CefListValue::Create();
+    for(size_t i=0;i<model->GetCount() && items->GetSize()<24 && left>0;++i) {
+      const auto type=model->GetTypeAt(i);
+      if(type==MENUITEMTYPE_SEPARATOR) {
+        const size_t last=items->GetSize();
+        if(last && !items->GetDictionary(last-1)->HasKey("separator")) { auto item=CefDictionaryValue::Create();item->SetBool("separator",true);items->SetDictionary(last,item);--left; }
+        continue;
+      }
+      const int command=model->GetCommandIdAt(i);
+      const bool extension=command>=kFirstMenuOffer && command<kFirstMenuOffer+static_cast<int>(kMaxMenuOffers);
+      if(command<=0 || (!model->IsEnabledAt(i) && !extension)) continue;
+      if(model->GetLabelAt(i).ToString().size()>4096) continue;
+      auto item=CefDictionaryValue::Create();item->SetInt("id",command);item->SetString("label",model->GetLabelAt(i));
+      if(!model->IsEnabledAt(i)) item->SetBool("enabled",false);
+      --left;
+      if(type==MENUITEMTYPE_SUBMENU) {
+        auto children=depth<4 && model->GetSubMenuAt(i) ? MenuItems(model->GetSubMenuAt(i),depth+1,left) : CefListValue::Create();
+        if(!children->GetSize()) { ++left;continue; }
+        item->SetList("items",children);
+      } else {
+        if(type==MENUITEMTYPE_CHECK || type==MENUITEMTYPE_RADIO) item->SetBool("checked",model->IsCheckedAt(i));
+        if(model->IsEnabledAt(i)) context_commands_.insert(command);
+      }
+      items->SetDictionary(items->GetSize(),item);
+    }
+    const size_t last=items->GetSize();
+    if(last && items->GetDictionary(last-1)->HasKey("separator")) { items->Remove(last-1);++left; }
+    return items;
   }
   bool RunContextMenu(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,CefRefPtr<CefMenuModel> model,CefRefPtr<CefRunContextMenuCallback> callback) override {
     if(context_callback_) context_callback_->Cancel();
     if(params->GetLinkUrl().ToString().size()>8192) { callback->Cancel();return true; }
     context_callback_=callback;context_id_=context_id_%2147483647+1;context_commands_.clear();
     auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);d->SetInt("x",params->GetXCoord());d->SetInt("y",params->GetYCoord());d->SetString("link",params->GetLinkUrl());
-    auto items=CefListValue::Create();
-    for(size_t i=0;i<model->GetCount() && items->GetSize()<24;++i) {
-      int command=model->GetCommandIdAt(i);if(command<=0 || !model->IsEnabledAt(i) || model->GetTypeAt(i)==MENUITEMTYPE_SUBMENU) continue;
-      if(model->GetLabelAt(i).ToString().size()>4096) continue;
-      auto item=CefDictionaryValue::Create();item->SetInt("id",command);item->SetString("label",model->GetLabelAt(i));items->SetDictionary(items->GetSize(),item);context_commands_.insert(command);
-    }
-    d->SetList("items",items);Event("context_menu",d);return true;
+    size_t left=200;d->SetList("items",MenuItems(model,1,left));Event("context_menu",d);return true;
   }
   bool OnContextMenuCommand(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefContextMenuParams> params,int command,EventFlags) override {
     if(command==26501) { OpenTab(params->GetLinkUrl(),false);return true; }
@@ -342,6 +390,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     return false;
   }
+  // Answer a page menu still open: Chromium closing the browser with it
+  // pending crashes.
+  void CancelMenu() { if(context_callback_){auto callback=context_callback_;context_callback_=nullptr;callback->Cancel();} }
   void OnContextMenuDismissed(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>) override { context_callback_=nullptr;context_commands_.clear();auto d=CefDictionaryValue::Create();d->SetInt("id",context_id_);Event("context_closed",d); }
   CefRefPtr<CefFindHandler> GetFindHandler() override { return this; }
   void OnFindResult(CefRefPtr<CefBrowser>,int identifier,int count,const CefRect& selection,int active,bool final_update) override {
@@ -933,6 +984,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     // A click on an extension's toolbar button over this page.
     else if(op=="extension_click") {if(extension_tabs)extension_tabs->Clicked(d->GetString("id"),id_);}
+    // An item of an extension's toolbar button menu, chosen over this page.
+    else if(op=="extension_menu_action") {if(extension_tabs)extension_tabs->ActionMenuChosen(id_,d->GetString("id"),d->GetString("key"));}
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -993,6 +1046,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.modifiers=(d->GetBool("ctrl")?EVENTFLAG_CONTROL_DOWN:0)|(d->GetBool("shift")?EVENTFLAG_SHIFT_DOWN:0)|(d->GetBool("alt")?EVENTFLAG_ALT_DOWN:0)|(d->GetBool("meta")?EVENTFLAG_COMMAND_DOWN:0);
     key_modifiers_=e.modifiers;
     std::string key=d->GetString("key");
+    // An extension's keyboard shortcut runs its command, and the page gets
+    // neither its press nor its release (extension_commands.h). A release
+    // is known by the key's name: it may read otherwise ("y" once Shift is up).
+    if(auto shortcut=tilo::KeyShortcut(key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
+      if(!d->GetBool("down")) { if(commanded_keys_.erase(shortcut->key)) return; }
+      else if(!extension_panel_ && extension_tabs && extension_tabs->Key(id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
+    }
 #if defined(OS_MAC)
     // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
     // Execute against the focused frame, preserving native clipboard semantics.
@@ -1048,7 +1108,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // This tab as extensions are told of it.
   tilo::ExtensionTab ExtensionState() const {
     tilo::ExtensionTab tab;tab.tab=id_;
-    if(browser_) {tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
+    if(browser_) {tab.browser=tab.id=browser_->GetIdentifier();tab.url=browser_->GetMainFrame()->GetURL().ToString();tab.loading=browser_->IsLoading();tab.zoom=std::pow(1.2,browser_->GetHost()->GetZoomLevel());}
     tab.title=title_;tab.favicon=favicon_;tab.width=geometry_.logical_width();tab.height=geometry_.logical_height();
     tab.panel=extension_panel_;tab.opener=panel_opener_;return tab;
   }
@@ -1393,9 +1453,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The pointer shape the page last asked for, by its CSS name.
   std::string cursor_;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
+  // Keys pressed for an extension's command, whose release is the command's too.
+  std::set<std::string> commanded_keys_;
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
-  static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=24;
+  static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
   std::vector<tilo::MenuOffer> menu_offers_;tilo::MenuContext menu_context_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
   tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::shared_ptr<const std::string> frame_;std::string popup_;std::vector<CefString> scripts_,blocking_scripts_;
@@ -1434,10 +1496,13 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
   if(op=="create_tab") {CreateTab(id);return;}
   if(op=="devtools_call") {DevToolsCall(d,id);return;}
   if(op=="extension_access") {
-    std::set<std::string> permissions;std::vector<std::string> hosts;
+    std::set<std::string> permissions;std::vector<std::string> hosts,scriptable;
     auto list=d->GetList("permissions");for(size_t i=0;i<list->GetSize();++i)permissions.insert(list->GetString(i));
     list=d->GetList("hosts");for(size_t i=0;i<list->GetSize();++i)hosts.push_back(list->GetString(i));
-    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),d->HasKey("token")?d->GetString("token").ToString():std::string());
+    // Where its content scripts run, apart from its host permissions.
+    list=d->GetList("scriptable");for(size_t i=0;list && i<list->GetSize();++i)scriptable.push_back(list->GetString(i));
+    if(extension_tabs)extension_tabs->SetAccess(d->GetString("id"),std::move(permissions),std::move(hosts),std::move(scriptable),d->HasKey("token")?d->GetString("token").ToString():std::string(),
+      d->GetType("commands")==VTYPE_DICTIONARY?d->GetDictionary("commands"):nullptr);
     return;
   }
   if(op=="extension_forget") {if(extension_tabs)extension_tabs->Forget(d->GetString("id"));return;}
@@ -1755,6 +1820,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
   }
   if(op=="extension_click" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
+  if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;
   if(op=="extension_access") {
     auto strings=[&](const char* key){
       if(!type(key,VTYPE_LIST))return false;auto list=d->GetList(key);if(list->GetSize()>512)return false;
@@ -1763,7 +1829,9 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     };
     // The token the extension's worker shows the bridge (extension_tabs.h).
     const bool token=!d->HasKey("token") || (type("token",VTYPE_STRING) && d->GetString("token").length()>=32 && d->GetString("token").length()<=128);
-    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && token;
+    // Its keyboard shortcuts, as its manifest declares them (extension_commands.h).
+    const bool commands=!d->HasKey("commands") || type("commands",VTYPE_DICTIONARY);
+    return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && strings("permissions") && strings("hosts") && (!d->HasKey("scriptable") || strings("scriptable")) && token && commands;
   }
   if(op=="document_size") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
@@ -1909,7 +1977,7 @@ void CloseHost() {
   closing=true;
   if(downloads) downloads->Close();
   if(clients.empty()) {CefQuitMessageLoop();return;}
-  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
+  const auto live=clients;for(const auto& [id,client]:live) if(client->browser_) {client->CancelMenu();client->browser_->GetHost()->CloseDevTools();client->browser_->GetHost()->CloseBrowser(true);}
 }
 int RunHost(int argc,char** argv) {
   signal(SIGPIPE,SIG_IGN);

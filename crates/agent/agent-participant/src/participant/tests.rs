@@ -794,6 +794,25 @@ fn a_wait_matches_its_words_in_any_order_and_by_who_sent_it() {
         "Parcelly: your parcel is out",
         "Parcelly sign-in"
     ));
+    assert!(
+        !holds_wanted("Rae: LR-2042 code entered", "Rae LR-2041 code entered"),
+        "another request's number is another message"
+    );
+    assert!(holds_wanted(
+        "Rae: LR-2041 code entered",
+        "Rae LR-2041 code entered"
+    ));
+    assert!(
+        holds_wanted(
+            "Rae: LR-2041 code entered",
+            "LR-2041 or LR-2042 code entered"
+        ),
+        "either number of the alternatives"
+    );
+    assert!(
+        !holds_wanted("Ticket 20410 closed", "ticket 2041 closed"),
+        "a number is matched whole, not by its start"
+    );
 
     let mut running = Running::new("t1".into(), "x".into(), Vec::new(), Vec::new());
     running.begin_wait(

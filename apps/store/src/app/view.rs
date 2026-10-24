@@ -24,7 +24,7 @@ use ui::widget::media_card::{MediaAspect, MediaCard, MediaSource};
 use ui::widget::{
     Actions, Badge, Banner, Button, ButtonRole, CardGrid, ChipStyle, Column, Container,
     ControlSize, EmptyState, Field, Form, FormSection, ListRow, Property, PropertyList, Row,
-    ScrollAxis, Scrollable, Section, SectionHeader, Spinner, Text, TextInput, Widget,
+    ScrollAxis, Scrollable, Section, SectionHeader, Spacer, Spinner, Text, TextInput, Widget,
 };
 
 use super::{
@@ -596,18 +596,16 @@ impl StoreApp {
         self.page(theme, Measure::Catalogue, true, children)
     }
 
-    /// The catalogue has nothing to show: loading, offline or empty. One
+    /// The catalogue has nothing to show: on its way, offline or empty. One
     /// sentence and at most one action.
     fn empty_catalogue(&self) -> Element {
         if self.worker_busy && self.items.is_empty() {
+            // The catalogue on its way: the framework's placeholder, in the
+            // shape of the cards it brings.
             return Box::new(
-                Row::new()
-                    .with_rhythm(ui::tokens::Rhythm::Sibling)
-                    .with_align_items(taffy::AlignItems::Center)
-                    .push(Box::new(Spinner::new()))
-                    .push(Box::new(
-                        Text::new(&ui::i18n!("store-loading")).with_role(TextRole::Body),
-                    )),
+                self.catalogue_read
+                    .view(|()| -> Element { Box::new(Spacer::new()) })
+                    .shaped(ui::widget::SkeletonShape::Media(MediaAspect::Square)),
             );
         }
         let empty = self

@@ -320,7 +320,7 @@ fn remote_rows_come_in_their_own_section_below_the_local_ones() {
     );
     engine.set_query(QuerySpec::text("aurora"));
     let local_before = engine.results().local.clone();
-    assert_eq!(engine.results().remote[0].state, RemoteState::Waiting);
+    assert!(engine.results().remote[0].is_waiting());
     assert!(engine.results().pending(), "the loading line shows");
     engine.poll();
     pumped.run_pending();
@@ -331,7 +331,7 @@ fn remote_rows_come_in_their_own_section_below_the_local_ones() {
         "an answer never touches a local row"
     );
     assert_eq!(remote_ids(results), ["r1"], "s1 is local already");
-    assert_eq!(results.remote[0].state, RemoteState::Loaded);
+    assert!(results.remote[0].is_answered());
     assert!(!results.pending());
     assert!(engine.timings().remote_first[0].is_some());
 }
@@ -386,10 +386,10 @@ fn a_refined_query_shows_what_the_earlier_answer_still_matches_at_once() {
         ["r1"],
         "shown before anything is asked"
     );
-    assert_eq!(engine.results().remote[0].state, RemoteState::Waiting);
+    assert!(engine.results().remote[0].is_waiting());
     // Going back to a query answered before shows its answer at once.
     engine.set_query(QuerySpec::text("auro"));
-    assert_eq!(engine.results().remote[0].state, RemoteState::Loaded);
+    assert!(engine.results().remote[0].is_answered());
     assert_eq!(remote_ids(engine.results()), ["r1", "r2"]);
     assert_eq!(engine.timings().remote_first[0], Some(Duration::ZERO));
 }
@@ -480,10 +480,42 @@ fn an_unreachable_source_says_so_in_its_section() {
     pumped.run_pending();
     engine.poll();
     assert_eq!(
-        engine.results().remote[0].state,
-        RemoteState::Unreachable("No connection".into())
+        engine.results().remote[0].failure(),
+        Some(&RemoteError("No connection".into()))
     );
     assert!(!engine.results().pending());
+}
+
+#[test]
+fn a_waiting_section_says_where_its_answer_comes_from_and_when_it_was_asked() {
+    use ui_core::arriving::{Arrival, Source};
+    let (mut engine, source, pumped) = remote_engine();
+    source.answer(
+        "aurora",
+        vec![vec![song("r1", "Cure For Me", "Aurora", false)]],
+    );
+    engine.set_query(QuerySpec::text("aurora"));
+    let section = &engine.results().remote[0];
+    assert_eq!(
+        section.state,
+        Some(Arrival::Pending {
+            from: Source::host("Catalogue")
+        })
+    );
+    let clock = section.clock.clone().expect("timed from when it was asked");
+    assert!(!clock.has_arrived());
+    engine.poll();
+    pumped.run_pending();
+    engine.poll();
+    let section = &engine.results().remote[0];
+    assert!(section.is_answered());
+    assert!(
+        section
+            .clock
+            .as_ref()
+            .is_some_and(ui_core::arriving::ArrivalClock::has_arrived),
+        "its placeholder knows the answer landed"
+    );
 }
 
 #[test]
@@ -502,7 +534,7 @@ fn a_query_a_source_does_not_answer_leaves_its_section_idle() {
     engine.set_query(QuerySpec::text("").toggled(&Chip::toggle("liked")));
     engine.poll();
     pumped.run_pending();
-    assert_eq!(engine.results().remote[0].state, RemoteState::Idle);
+    assert_eq!(engine.results().remote[0].state, None);
     assert!(source.asked().is_empty());
     engine.close();
     assert!(!engine.is_open());

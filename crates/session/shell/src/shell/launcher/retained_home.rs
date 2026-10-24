@@ -775,7 +775,7 @@ mod tests {
                 candidate
                     .governance_mut()
                     .put_governed_grants(&[cap], &key, now)?;
-                candidate.durable_mutation_messages(
+                candidate.publication_mut().durable_mutation_messages(
                     &before,
                     &key,
                     now,
@@ -863,7 +863,7 @@ mod tests {
                         now
                     )?
                 );
-                candidate.durable_mutation_messages(
+                candidate.publication_mut().durable_mutation_messages(
                     &before,
                     &key,
                     now,

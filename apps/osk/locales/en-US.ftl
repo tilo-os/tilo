@@ -41,7 +41,18 @@ osk-toolbar-left = Move caret left
 osk-toolbar-right = Move caret right
 osk-toolbar-hide = Hide keyboard
 
-osk-toolbar-indent = Indent
+osk-key-esc = Esc
+osk-key-tab = Tab
+osk-key-ctrl = Ctrl
+osk-key-alt = Alt
+osk-key-left = Left
+osk-key-down = Down
+osk-key-up = Up
+osk-key-right = Right
+osk-key-ctrl-latched = Ctrl, held for the next key
+osk-key-ctrl-locked = Ctrl, locked
+osk-key-alt-latched = Alt, held for the next key
+osk-key-alt-locked = Alt, locked
 osk-toolbar-dismiss = Hide keyboard
 
 osk-context-unavailable = The focused field action is unavailable.

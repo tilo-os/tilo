@@ -635,7 +635,7 @@ impl PdfApp {
             self.raster_render_batch = batch;
         } else if !batch.is_empty() {
             self.status_note
-                .show("PDF render worker is unavailable".to_string());
+                .show(crate::t("pdf-note-pages-unavailable"));
         }
     }
 
@@ -722,7 +722,7 @@ impl PdfApp {
                 self.raster_tile_batch = batch;
             } else if !batch.is_empty() {
                 self.status_note
-                    .show("PDF render worker is unavailable".to_string());
+                    .show(crate::t("pdf-note-pages-unavailable"));
             }
         }
     }
@@ -786,8 +786,7 @@ impl PdfApp {
                 })
             {
                 self.raster_text_pending.remove(&i);
-                self.status_note
-                    .show("PDF text worker is unavailable".to_string());
+                self.status_note.show(crate::t("pdf-note-text-unavailable"));
             }
         }
     }

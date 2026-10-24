@@ -13,6 +13,9 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
   a message comes from is one the tab APIs know.
 - A popup can open a tab, which the Browser is asked to open, and is given
   the tab once it opens.
+- A tab keeps the id an extension was told of it by on a blank page or the
+  extension's own page, once it shows a web page: the one Chromium gives
+  that page's messages.
 - A worker hears of a page that finished loading.
 - A click reaches a worker that went to sleep, which wakes for it.
 - A script a click injects where the extension has no content script of its
@@ -25,6 +28,10 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A tab is captured as it shows, as PNG or JPEG at the quality asked for, by
   an extension given it by a click (activeTab) or with access to every site,
   and by no other; at most twice a second, as Chrome allows.
+- Content scripts on every site are no host permission, as in Chrome: such
+  an extension, clicked without activeTab, sees no tab's address or title,
+  finds none by its address, and may neither script nor capture the page,
+  while its content script runs there.
 - An extension's context menu items show in the page's menu where their
   contexts say (page, selection, link, image); choosing one tells the
   extension with the tab, which it may then script (activeTab), and the
@@ -53,6 +60,15 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - A script reaches the frame of a page an extension names (Bitwarden injects
   its form filler into each frame that asks), one of another site too, or
   every frame, and a message reaches one frame's content script.
+- A keyboard shortcut an extension's manifest suggests runs its command with
+  the page it was pressed on, which it may then script (activeTab), and the
+  page does not get the key; its toolbar button's command asks the Browser
+  to act as a click on the button does. commands.getAll lists each command
+  with its key, none for one the Browser keeps for itself.
+- A worker reaches its panel in the page, a page of its own in a frame, by
+  the frame and the document a message from the panel came from (Evernote
+  Web Clipper answers its panel so), and the page's frames by their
+  documents, while the panel answers every message itself.
 """
 import base64
 import hashlib
@@ -296,6 +312,9 @@ MENU_PAGE = """<!doctype html><title>menus</title><body style="margin:0">
 <p id="words" style="position:absolute;left:10px;top:160px;margin:0;font-size:24px">selected words</p>
 <script>if (location.search === '?select') getSelection().selectAllChildren(document.getElementById('words'));</script>
 </body>"""
+# A page that shows each key it gets in its title.
+KEYS_PAGE = (b'<!doctype html><title>keys</title><body>keys'
+             b"<script>addEventListener('keydown', (e) => { document.title = 'key:' + e.key; });</script>")
 IMAGE = b'<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><rect width="80" height="80" fill="teal"/></svg>'
 
 
@@ -327,6 +346,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = MENU_PAGE.encode()
         elif self.path == '/image.svg':
             body, kind = IMAGE, 'image/svg+xml'
+        elif self.path == '/keys':
+            body = KEYS_PAGE
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
@@ -365,7 +386,7 @@ class ExtensionTabs(unittest.TestCase):
     def start(self, *names, access, installed=None, profile=None, files=None, focus=True):
         """A host with the fixtures `names` loaded, each granted what the
         Browser grants an installed extension (`access`: name -> (permissions,
-        hosts)), with `files` (name -> {file: bytes}) written into its copy. A
+        hosts[, scriptable])), with `files` (name -> {file: bytes}) written into its copy. A
         host started again with the `installed` directory and the `profile` of
         an earlier one finds the same extensions there. With `focus`, the
         person has focused the first page."""
@@ -389,10 +410,16 @@ class ExtensionTabs(unittest.TestCase):
         ids = {}
         for name, (path, token) in zip(names, prepared):
             ids[name] = extension_id(path)
-            permissions, hosts = access.get(name, ([], []))
-            command = {'id': ids[name], 'permissions': permissions, 'hosts': hosts}
+            permissions, hosts, *scriptable = access.get(name, ([], []))
+            command = {'id': ids[name], 'permissions': permissions, 'hosts': hosts,
+                       'scriptable': scriptable[0] if scriptable else []}
             if token:
                 command['token'] = token
+            # Its keyboard shortcuts, as its manifest declares them
+            # (extension_toolbar.rs, access).
+            commands = json.loads((path / 'manifest.json').read_text()).get('commands')
+            if isinstance(commands, dict):
+                command['commands'] = commands
             host.send(op='extension_access', **command)
         host.send(op='resize', width=800, height=600, scale_factor=1.0)
         if focus:
@@ -469,6 +496,45 @@ class ExtensionTabs(unittest.TestCase):
         # Its second script sees what its first returned.
         self.title(host, 1, 'clicked:true|clicked:true')
 
+    def test_a_keyboard_shortcut_runs_the_extensions_command_on_the_page(self):
+        host, ids = self.start('commander', access={'commander': (['activeTab', 'scripting'], [])})
+        page = self.url + '/keys'
+        host.navigate(page)
+        host.settle(1.0)
+        mac = sys.platform == 'darwin'
+
+        def press(key, ctrl=False, alt=False, shift=False):
+            # On macOS a manifest's "Ctrl" is Command, which arrives as meta.
+            modifiers = {'ctrl': ctrl and not mac, 'meta': ctrl and mac, 'alt': alt, 'shift': shift}
+            host.send(op='key', key=key, down=True, **modifiers)
+            host.send(op='key', key=key, down=False, **modifiers)
+
+        press('K', alt=True, shift=True)
+        seen = json.loads(self.title(host, 1, 'command:')[len('command:'):])
+        self.assertEqual({key: seen[key] for key in ('command', 'url')}, {'command': 'mark', 'url': True})
+        self.assertEqual(seen['all'], [
+            {'name': '_execute_action', 'description': '', 'shortcut': '\u21e7\u2318Y' if mac else 'Ctrl+Shift+Y'},
+            # The Browser keeps it for Find.
+            {'name': 'find', 'description': 'Find on the page', 'shortcut': ''},
+            {'name': 'mark', 'description': 'Mark the page', 'shortcut': '\u2325\u21e7K' if mac else 'Alt+Shift+K'},
+            {'name': 'quiet', 'description': 'No key of its own', 'shortcut': ''},
+        ])
+        # The page got neither the command's key nor its release; the next
+        # key is its own.
+        press('a')
+        self.title(host, 1, 'key:a')
+        self.assertEqual([e['title'] for e in host.seen if e['event'] == 'title' and e['title'].startswith('key:')],
+                         ['key:a'])
+
+        # The button's own command: the Browser is asked to act as a click
+        # on the button would, over this page.
+        press('Y', ctrl=True, shift=True)
+        asked = host.until(lambda e: e['event'] == 'extension_execute_action')
+        self.assertEqual((asked.get('tab', 1), asked['id']), (1, ids['commander']))
+        # A key no command has reaches the page, with the same modifiers.
+        press('U', ctrl=True, shift=True)
+        self.title(host, 1, 'key:U')
+
     def test_a_worker_keeps_its_own_address(self):
         host, ids = self.start('located', access={'located': (['activeTab', 'scripting'], [])})
         host.navigate(self.url + '/located')
@@ -524,8 +590,30 @@ class ExtensionTabs(unittest.TestCase):
         plain = json.loads(self.title(host, 3, 'plain:')[len('plain:'):])
         self.assertEqual(plain, {'found': True, 'url': True})
 
+    def test_a_tab_keeps_its_id_from_a_blank_or_extension_page_to_a_web_page(self):
+        host, ids = self.start('keeper', access={'keeper': (['tabs', 'storage'], ['http://127.0.0.1/*'])})
+        host.navigate(self.url + '/first')
+        # A new tab, still blank, and the extension's welcome page in a tab of
+        # its own, as one opens on install: it keeps both tabs' ids.
+        for tab in (3, 4):
+            host.send(op='create_tab', tab=tab)
+            host.until(lambda e, tab=tab: e['event'] == 'tab_ready' and e.get('tab') == tab)
+        host.send(op='navigate', tab=4, url=f'chrome-extension://{ids["keeper"]}/welcome.html')
+        welcome = json.loads(self.title(host, 4, 'welcome:')[len('welcome:'):])
+        self.assertEqual(welcome, {'own': True, 'blank': True, 'distinct': True})
+        # Both go on to web pages, whose messages carry the id Chromium gives
+        # the tab: the one kept, which the tab APIs still know it by.
+        host.send(op='navigate', tab=3, url=self.url + '/was-blank')
+        host.send(op='navigate', tab=4, url=self.url + '/was-welcome')
+        blank = json.loads(self.title(host, 3, 'kept:')[len('kept:'):])
+        self.assertEqual(blank, {'welcome': False, 'blank': True, 'found': self.url + '/was-blank', 'listed': 1})
+        welcomed = json.loads(self.title(host, 4, 'kept:')[len('kept:'):])
+        self.assertEqual(welcomed, {'welcome': True, 'blank': False, 'found': self.url + '/was-welcome', 'listed': 1})
+
     def test_a_worker_and_its_content_script_talk_both_ways_by_tab(self):
-        host, ids = self.start('messenger', access={'messenger': ([], ['http://127.0.0.1/*'])})
+        # Its content script's site is no host permission (the Browser sends
+        # it apart), and the two talk all the same.
+        host, ids = self.start('messenger', access={'messenger': ([], [], ['http://127.0.0.1/*'])})
         host.navigate(self.url + '/talk')
         answer = json.loads(self.title(host, 1, 'messenger:')[len('messenger:'):])
         self.assertEqual(answer, {'known': True, 'pong': 'pong:/talk:true', 'ported': 'ping:declared:true'})
@@ -594,6 +682,24 @@ class ExtensionTabs(unittest.TestCase):
             self.assertEqual(jpeg_size(image(url, 'jpeg')), (800, 600))
         self.assertEqual([entry['value'] for entry in burst if not entry['ok']],
                          ['This request exceeds the MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota.'])
+
+    def test_content_scripts_on_every_site_give_no_access_to_the_tabs(self):
+        # As the Browser reads its manifest: content scripts on <all_urls>,
+        # `scripting`, and neither a host permission nor activeTab.
+        host, ids = self.start('reacher', access={'reacher': (['scripting'], [], ['<all_urls>'])})
+        host.navigate(self.url + '/reached')
+        host.settle(1.0)
+        host.send(op='extension_click', id=ids['reacher'])
+        self.assertEqual(self.report('reacher'), {
+            # Its content script runs in the page all the same.
+            'content': '/reached', 'found': True,
+            # The tab it was clicked over, and every tab, without an address
+            # or a title, and none found by its address.
+            'clicked': [], 'shown': [], 'by_url': 0,
+            'script': {'ok': False, 'value': 'Cannot access contents of the page. Extension manifest '
+                                             'must request permission to access the respective host.'},
+            'capture': {'ok': False, 'value': "Either the '<all_urls>' or 'activeTab' permission is required."},
+        })
 
     def test_a_script_injected_on_a_click_and_the_worker_talk_over_ports(self):
         host, ids = self.start('porter', access={'porter': (['activeTab', 'scripting', 'storage'], [])})
@@ -730,6 +836,32 @@ class ExtensionTabs(unittest.TestCase):
             'moved': True,
         })
 
+    def test_a_worker_reaches_its_panel_in_the_page_and_frames_by_their_documents(self):
+        host, ids = self.start('clipper', access={'clipper': (['scripting'], ['http://127.0.0.1/*', 'http://localhost/*'])})
+        host.navigate(self.url + '/framed')
+        report = self.report('clipper')
+        tab = report.pop('tab')
+        panel = {'panel': '/panel.html', 'from': ids['clipper']}
+        self.assertEqual(report, {
+            # The panel, a page of the extension in a frame of the page, by
+            # the frame and the document its message came from, as Evernote
+            # Web Clipper answers its panel; again by the frame alone.
+            'byFrame': panel,
+            'byDocument': panel,
+            'again': panel,
+            # A frame and a document that are not one frame's name none.
+            'mismatched': 'error: Could not establish connection. Receiving end does not exist.',
+            # A content script of another site's frame, by its document.
+            'outer': '/outer',
+            'documents': [['/inner', '/inner', True], ['/outer', '/outer', True]],
+            # Every frame but the panel, which takes no script.
+            'all': [['/framed', '/framed'], ['/inner', '/inner'], ['/outer', '/outer']],
+            'intoPanel': 'error: The page could not run the script',
+            'both': "error: Cannot specify both 'allFrames' and 'frameIds'.",
+            'gone': 'error: No document with id 0123456789ABCDEF0123456789ABCDEF in tab with id %d.' % tab,
+            'ids': True,
+        })
+
     def test_a_click_wakes_a_worker_that_went_to_sleep(self):
         host, ids = self.start('clicker', access={'clicker': (['activeTab', 'scripting'], [])})
         host.navigate(self.url + '/later')
@@ -759,7 +891,7 @@ class ExtensionTabs(unittest.TestCase):
         host.send(op='mouse_button', button='right', down=True, x=x, y=y)
         host.send(op='mouse_button', button='right', down=False, x=x, y=y)
         menu = host.until(lambda e: e['event'] == 'context_menu')
-        return menu, {item['label']: item['id'] for item in menu['items']}
+        return menu, labelled(menu['items'])
 
     def close_menu(self, host, menu):
         host.send(op='context_action', id=menu['id'], command=0)
@@ -840,6 +972,75 @@ class ExtensionTabs(unittest.TestCase):
         chosen = self.choose(host, menu, items, 'Remember the page')
         self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (True, False))
 
+    def test_check_marks_radio_groups_submenus_and_the_buttons_menu(self):
+        access = {'menus': (['contextMenus', 'activeTab', 'scripting'], [])}
+        host, ids = self.start('menus', access=access)
+        page = self.url + '/menus'
+        host.navigate(page)
+        menu, items = self.page_menu(host, 400, 400, 'Save && share')
+        rows = {item['label']: item for item in walk(menu['items']) if 'label' in item}
+        # A checkbox and a radio group with their state, set apart from the
+        # items around them; a submenu; a disabled item greyed; an ampersand
+        # kept, not read as marking a key.
+        self.assertIs(rows['Remember the page']['checked'], False)
+        self.assertEqual((rows['Light']['checked'], rows['Dark']['checked']), (False, True))
+        labels = [item.get('label', '-') for item in menu['items']]
+        light = labels.index('Light')
+        self.assertEqual(labels[light - 1:light + 3], ['-', 'Light', 'Dark', '-'], labels)
+        self.assertEqual([item['label'] for item in rows['Translate']['items']], ['To German'])
+        self.assertNotIn(rows['Translate']['id'], items.values(), 'a submenu is no command')
+        self.assertIs(rows['Not here']['enabled'], False)
+        self.assertNotIn('Sort', rows, "the button's items stay out of the page's menu")
+
+        # A radio item chosen: it is checked and its group's other is not.
+        chosen = self.choose(host, menu, items, 'Light')
+        self.assertEqual((chosen['info']['wasChecked'], chosen['info']['checked']), (False, True))
+        menu, items = self.menu(host, 400, 400)
+        rows = {item['label']: item for item in walk(menu['items']) if 'label' in item}
+        self.assertEqual((rows['Light']['checked'], rows['Dark']['checked']), (True, False))
+        # An item in a submenu.
+        chosen = self.choose(host, menu, items, 'To German')
+        self.assertEqual((chosen['info']['menuItemId'], chosen['info']['parentMenuItemId']), ('german', 'translate'))
+
+        # The button's menu reaches the Browser: the items made for it and
+        # those for every context, which Chrome shows there too, whatever
+        # the page.
+        def button_menu(since, checked):
+            match = lambda e: (e['event'] == 'extension_menu' and e.get('tab', 1) == 1 and e['id'] == ids['menus']
+                               and any(item.get('label') == 'Sort' and item.get('items', [{}])[0].get('checked') == checked
+                                       for item in e['items']))
+            return next((e for e in host.seen[since:] if match(e)), None) or host.until(match)
+        told = button_menu(0, True)
+        self.assertEqual(told['items'], [
+            {'type': 'normal', 'key': '"elsewhere"', 'label': 'Elsewhere', 'enabled': True},
+            {'type': 'normal', 'key': '"renamed"', 'label': 'Everywhere', 'enabled': True},
+            {'type': 'normal', 'key': '"sort"', 'label': 'Sort', 'enabled': True, 'items': [
+                {'type': 'checkbox', 'key': '"by-name"', 'label': 'By name', 'enabled': True, 'checked': True}]},
+        ])
+        # Chosen over the page: the extension hears of it with the tab, with
+        # no page context, and may script the page.
+        before = len(host.seen)
+        host.send(op='extension_menu_action', id=ids['menus'], key='"by-name"')
+        match = lambda e: e['event'] == 'title' and e.get('tab', 1) == 1 and e['title'].startswith('chosen:')
+        seen = next((e for e in host.seen[before:] if match(e)), None) or host.until(match)
+        chosen = json.loads(seen['title'][len('chosen:'):])
+        self.assertEqual(chosen['url'], page)
+        self.assertEqual(chosen['info'], {'menuItemId': 'by-name', 'parentMenuItemId': 'sort', 'editable': False,
+                                          'wasChecked': True, 'checked': False})
+        button_menu(before, False)
+        # A page item is not the button's to choose.
+        before = len(host.seen)
+        host.send(op='extension_menu_action', id=ids['menus'], key='"page"')
+        host.settle(1.0)
+        self.assertFalse([e for e in host.seen[before:] if match(e)], 'a page item chosen as the button\'s')
+
+        # A tab opened later is told what the button's menu holds.
+        before = len(host.seen)
+        host.send(op='create_tab', tab=2)
+        told = host.until(lambda e: e['event'] == 'extension_menu' and e.get('tab') == 2)
+        self.assertEqual(told['id'], ids['menus'])
+        self.assertEqual([item['label'] for item in told['items']], ['Elsewhere', 'Everywhere', 'Sort'])
+
     def test_a_button_shows_what_its_extension_set_for_each_page(self):
         host, ids = self.start('counter', access={'counter': (['scripting'], ['http://127.0.0.1/*'])},
                                files={'counter': {'on.png': png(16, 16)}})
@@ -900,6 +1101,18 @@ class ExtensionTabs(unittest.TestCase):
         opened, _ = seek(mark, lambda e: e['event'] == 'extension_open_popup')
         self.assertEqual((opened.get('tab'), opened['id'], opened['url']),
                          (1, counter, f'chrome-extension://{counter}/popup.html'))
+
+
+def walk(items):
+    """Every row of a menu the host sent, its submenus' rows after it."""
+    for item in items:
+        yield item
+        yield from walk(item.get('items', []))
+
+
+def labelled(items):
+    """A menu's commands, at any depth, by label."""
+    return {item['label']: item['id'] for item in walk(items) if 'label' in item and 'items' not in item}
 
 
 def png(width, height):

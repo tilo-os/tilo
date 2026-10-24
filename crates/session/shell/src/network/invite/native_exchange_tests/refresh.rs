@@ -57,7 +57,7 @@ pub(super) async fn restart_after_offline_snapshot(
                 .unwrap();
             doc.commit_edit("fixture", "real-clock-offline-edit");
             let expected = doc.get_heads();
-            let mut message = view.peer().clone().publish_incremental(
+            let mut message = view.peer().clone().publication_mut().publish_incremental(
                 "so.tilo.chat",
                 "",
                 doc.save_after(&heads),

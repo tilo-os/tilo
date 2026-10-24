@@ -1,7 +1,8 @@
 //! One app window holding two records, through the production broker: a
 //! launcher-attested connection joins both and publishes on each. Search
-//! shows each record's actions once, under that record's title, and a record
-//! the window drops is no longer offered as open in it.
+//! shows each record's actions once, under that record's title and the app's
+//! name and icon. A record the window drops leaves the window, and its
+//! actions read exactly as before: only opening them now opens the app.
 use std::sync::{Arc, Mutex};
 
 use automerge::AutoCommit;
@@ -178,8 +179,9 @@ impl Broker {
     }
 }
 
-/// What search shows for the fixture app now, as (title, subtitle) pairs.
-fn shown(broker: &Broker, provider: &LiveAppActionsProvider) -> Vec<(String, Option<String>)> {
+/// What search shows for the fixture app now: each row's title, secondary
+/// line and whether it wears the app's icon.
+fn shown(broker: &Broker, provider: &LiveAppActionsProvider) -> Vec<(String, Shown)> {
     let chrome = ChromeState::new_with_handle(broker.tree.clone());
     let chrome = chrome.borrow();
     let doc = AutoCommit::new();
@@ -203,10 +205,41 @@ fn shown(broker: &Broker, provider: &LiveAppActionsProvider) -> Vec<(String, Opt
         .results
         .into_iter()
         .filter(|row| row.provider_id == PROVIDER_ID && row.id.starts_with(APP))
-        .map(|row| (row.title, row.subtitle))
+        .map(|row| {
+            let icon = provider.row_icon(&row) == Some(ui::icons::app_glyph(APP, None));
+            (
+                row.title,
+                Shown {
+                    subtitle: row.subtitle,
+                    facts: row.facts,
+                    icon,
+                },
+            )
+        })
         .collect();
     shown.sort();
     shown
+}
+
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Shown {
+    subtitle: Option<String>,
+    facts: Vec<String>,
+    icon: bool,
+}
+
+/// A record's row as a person reads it: its action, which names the
+/// record, over the app's name, under the app's icon. No package id, no
+/// mechanism, and the record not named twice.
+fn record_row(action: &str) -> (String, Shown) {
+    (
+        action.to_owned(),
+        Shown {
+            subtitle: None,
+            facts: vec!["Notes".to_owned()],
+            icon: true,
+        },
+    )
 }
 
 #[test]
@@ -223,13 +256,13 @@ fn a_window_holding_two_records_shows_each_once_and_withdraws_the_one_it_closes(
         let groceries = broker.open(&window, "groceries", "Groceries").await;
         let trip = broker.open(&window, "trip", "Trip plan").await;
 
-        let subtitle = |title: &str| Some(format!("{title} · {APP}"));
+        let both = vec![
+            record_row("Rename Groceries"),
+            record_row("Rename Trip plan"),
+        ];
         assert_eq!(
             shown(&broker, &provider),
-            vec![
-                ("Rename Groceries".to_owned(), subtitle("Groceries")),
-                ("Rename Trip plan".to_owned(), subtitle("Trip plan")),
-            ],
+            both,
             "each record the window holds is shown once, under its own title"
         );
 
@@ -251,25 +284,15 @@ fn a_window_holding_two_records_shows_each_once_and_withdraws_the_one_it_closes(
         let after = shown(&broker, &provider);
         drop(provider);
         assert!(
-            after.contains(&("Rename Groceries".to_owned(), subtitle("Groceries"))),
-            "the record the window keeps stays in search: {after:?}"
+            app.surfaces()
+                .iter()
+                .any(|surface| surface.live && surface.route.record_id == "groceries"),
+            "the record the window keeps stays open in it"
         );
-        assert!(
-            !after.contains(&("Rename Trip plan".to_owned(), subtitle("Trip plan"))),
-            "the closed record is no longer offered as open in the window: {after:?}"
-        );
-        // Like a closed window's, a closed record's actions stay findable as
-        // ones that open it again, never as acting on the open window.
-        assert_eq!(
-            after,
-            vec![
-                ("Rename Groceries".to_owned(), subtitle("Groceries")),
-                (
-                    "Rename Trip plan".to_owned(),
-                    Some(format!("Trip plan · {APP} · launches application")),
-                ),
-            ]
-        );
+        drop(app);
+        // The closed record still exists, so it stays findable, and reads
+        // the same as an open one: opening it reopens the app on it.
+        assert_eq!(after, both, "a closed record's row reads as an open one's");
         drop((groceries, window));
         driver.abort();
     });

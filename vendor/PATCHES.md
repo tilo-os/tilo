@@ -631,6 +631,9 @@ those compiles before encoding and install the finished ones. A render can't
 wait for a promise, so a deferred pipeline it dispatches whose compile is not
 in yet is created synchronously, and the GPU process compiles it before the
 dispatch. This works on every target; native windows keep the threads.
+`new_async_deferring_reporting` takes a callback that runs each time one of
+the awaited pipelines is compiled, so the browser can bound a stalled compile
+without failing one that is slow but still finishing pipelines.
 
 ## zlink-macros
 
