@@ -1977,6 +1977,7 @@ impl ShellDriver {
             "palette_github" => self.scene_seeded_query("github"),
             "palette_workbook" => self.scene_seeded_query("workbook"),
             "palette_open_app" => self.scene_palette_open_app(),
+            "palette_record_actions" => self.scene_palette_record_actions(),
             "palette_downloaded" => self.scene_downloaded_query("imager"),
             "palette_downloaded_missing" => self.scene_downloaded_query("ardour"),
             "launcher_downloaded" => self.scene_downloaded_launcher(),

@@ -1419,8 +1419,7 @@ search-app-job-streaming = liefert Ergebnisse
 search-app-job-succeeded = abgeschlossen
 search-app-job-failed = fehlgeschlagen
 search-app-job-cancelled = abgebrochen
-search-app-resource-contains = { $app } · enthält Ressourcen
-search-app-action-launches = { $resource } · { $app } · startet die Anwendung
+search-app-resource-contains = enthält Ressourcen
 
 # Suche: Sitzungsaktionen
 search-session-logout = Von Tilo abmelden
