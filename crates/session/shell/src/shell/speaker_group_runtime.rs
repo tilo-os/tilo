@@ -35,7 +35,10 @@ use crate::shell::speaker_group::{
     SpeakerRole, SpeakerTrim,
 };
 
+mod endpoints;
 mod listening;
+
+use endpoints::local_endpoints;
 pub use listening::{ListenerCandidate, ListenerState};
 
 /// How long an unanswered join prompt stays on the member device.
@@ -46,9 +49,6 @@ const INVITE_RETRY: Duration = Duration::from_secs(30);
 const ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 /// Upper bound on concurrent sessions in either direction.
 pub const MAX_SPEAKER_SESSIONS: usize = 4;
-/// How stale the published endpoint list may get before it is re-enumerated
-/// off the calling thread.
-const ENDPOINT_REFRESH: Duration = Duration::from_secs(5);
 
 /// One fabric action to send to one exact device.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2515,49 +2515,6 @@ pub fn endpoints_from_graph(
         .filter(|endpoint| !endpoint.label.is_empty() && seen.insert(endpoint.selector))
         .take(crate::shell::speaker_group::MAX_AUDIO_ENDPOINTS)
         .collect()
-}
-
-#[derive(Default)]
-struct EndpointCache {
-    endpoints: Option<(Instant, Vec<AudioEndpoint>)>,
-    refreshing: bool,
-}
-
-fn endpoint_cache() -> &'static Mutex<EndpointCache> {
-    static CACHE: OnceLock<Mutex<EndpointCache>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(EndpointCache::default()))
-}
-
-/// The cached endpoint list; a stale list is refreshed on a worker thread so
-/// the compositor never waits on the audio graph.
-fn local_endpoints(local: &DeviceId, now: Instant) -> Vec<AudioEndpoint> {
-    let Ok(mut cache) = endpoint_cache().lock() else {
-        return Vec::new();
-    };
-    let stale = cache
-        .endpoints
-        .as_ref()
-        .is_none_or(|(updated, _)| now.saturating_duration_since(*updated) >= ENDPOINT_REFRESH);
-    if stale && !cache.refreshing {
-        cache.refreshing = true;
-        let local = local.clone();
-        let spawned = std::thread::Builder::new()
-            .name("speaker-endpoints".into())
-            .spawn(move || {
-                let endpoints = endpoints_from_graph(&local, &media::audio::enumerate());
-                if let Ok(mut cache) = endpoint_cache().lock() {
-                    cache.endpoints = Some((Instant::now(), endpoints));
-                    cache.refreshing = false;
-                }
-            });
-        if spawned.is_err() {
-            cache.refreshing = false;
-        }
-    }
-    cache
-        .endpoints
-        .as_ref()
-        .map_or_else(Vec::new, |(_, endpoints)| endpoints.clone())
 }
 
 #[cfg(test)]
