@@ -110,6 +110,7 @@ browser-extension-add = Add to Tilo Browser
 browser-extension-adding = Adding extension
 browser-extension-side-panel-close = Close side panel
 browser-extension-side-panel = { $name } side panel
+browser-extension-side-panel-width = Side panel width
 browser-extension-can = It can
 browser-extension-access-all-sites = Read and change all your data on all websites
 browser-extension-access-site = Read and change your data on { $site }

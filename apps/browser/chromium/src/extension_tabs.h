@@ -319,6 +319,7 @@ class ExtensionTabs {
     permissions_.SetRequired(id, permissions, hosts);
     access_[id] = Access{std::move(permissions), std::move(hosts), std::move(scriptable)};
     commands_.Set(id, CommandsOf(commands));
+    TellShortcuts();
     // The items its button's menu kept from an earlier run.
     TellActionMenus();
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
@@ -371,6 +372,7 @@ class ExtensionTabs {
       it = asking_.erase(it);
     }
     commands_.Forget(id);
+    TellShortcuts();
     for (auto it = tokens_.begin(); it != tokens_.end();) it = it->second == id ? tokens_.erase(it) : std::next(it);
     listening_.erase(id);
     gestures_.erase(id);
@@ -931,6 +933,39 @@ class ExtensionTabs {
       if (values->GetSize()) TellButton(tab, extension, true, values);
     }
     for (const auto& [extension, items] : action_menus_) TellActionMenu(tab, extension, items);
+    if (!shortcuts_told_.empty() && hooks_.event) hooks_.event(tab, "extension_shortcuts", ShortcutsEvent(shortcuts_told_));
+  }
+
+  // The tab `tab` shows `extension`'s side panel beside the page of the tab
+  // `opener`, and its page went to `url`. The first of the extension's pages
+  // it shows opens the panel: the extension hears of it
+  // (`sidePanel.onOpened`) with the window, the tab and the page, as in
+  // Chrome; each tab here is a window of its own. Another page in the open
+  // panel keeps it open.
+  void SidePanelShows(int tab, int opener, const std::string& extension, const std::string& url) {
+    const std::string prefix = "chrome-extension://" + extension + "/";
+    if (url.rfind(prefix, 0) != 0 || url.size() > 2048) return;
+    const auto path = url.substr(prefix.size());
+    if (auto shown = side_panels_.find(tab); shown != side_panels_.end()) { shown->second.path = path; return; }
+    side_panels_[tab] = ShownSidePanel{extension, 0, path};
+    Ensure([this, tab, opener] {
+      auto shown = side_panels_.find(tab);
+      if (shown == side_panels_.end() || shown->second.window) return;
+      const auto tabs = Tabs();
+      const auto* page = Find(tabs, opener);
+      if (!page || page->panel) { side_panels_.erase(shown); return; }
+      shown->second.window = page->id;
+      SidePanelEvent("sidePanel.onOpened", shown->second);
+    });
+  }
+  // That side panel closed: the extension hears of it (`sidePanel.onClosed`)
+  // with the page it showed last.
+  void SidePanelClosed(int tab) {
+    auto shown = side_panels_.find(tab);
+    if (shown == side_panels_.end()) return;
+    const auto panel = std::move(shown->second);
+    side_panels_.erase(shown);
+    if (panel.window) SidePanelEvent("sidePanel.onClosed", panel);
   }
 
   // A tab's page changed: `status`, `url` or `title`.
@@ -1141,6 +1176,47 @@ class ExtensionTabs {
   }
 
  private:
+  // A side panel that opened, beside the page of the tab Chromium knows as
+  // `window` (0 until known), showing the extension's page at `path`.
+  struct ShownSidePanel { std::string extension; int window = 0; std::string path; };
+  void SidePanelEvent(const std::string& name, const ShownSidePanel& panel) {
+    if (!access_.count(panel.extension) || !Has(panel.extension, "sidePanel")) return;
+    auto info = CefDictionaryValue::Create();
+    info->SetInt("windowId", panel.window);
+    info->SetInt("tabId", panel.window);
+    info->SetString("path", panel.path);
+    auto args = CefListValue::Create();
+    args->SetDictionary(0, info);
+    Push(panel.extension, name, args, false);
+  }
+  // The keys extensions' commands hold, told to the Browser's tabs when they
+  // change: it runs them while its own field has the keyboard.
+  void TellShortcuts() {
+    auto keys = commands_.Assigned();
+    if (keys == shortcuts_told_) return;
+    shortcuts_told_ = std::move(keys);
+    if (!hooks_.event) return;
+    const auto fields = ShortcutsEvent(shortcuts_told_);
+    for (const auto& tab : hooks_.tabs()) if (!tab.panel) hooks_.event(tab.tab, "extension_shortcuts", fields->Copy(false));
+  }
+  static CefRefPtr<CefDictionaryValue> ShortcutsEvent(const std::vector<Shortcut>& keys) {
+    auto list = CefListValue::Create();
+    for (const auto& key : keys) {
+      auto entry = CefDictionaryValue::Create();
+      entry->SetString("key", key.key);
+      entry->SetBool("ctrl", key.ctrl);
+      entry->SetBool("alt", key.alt);
+      entry->SetBool("shift", key.shift);
+      entry->SetBool("meta", key.meta);
+      list->SetDictionary(list->GetSize(), entry);
+    }
+    auto fields = CefDictionaryValue::Create();
+    fields->SetList("shortcuts", list);
+    return fields;
+  }
+  std::vector<Shortcut> shortcuts_told_;
+  std::map<int, ShownSidePanel> side_panels_;
+
   // `scriptable` is kept apart from `hosts` so that no tab API counts it:
   // Chromium runs the declared content scripts itself.
   struct Access { std::set<std::string> permissions; std::vector<std::string> hosts; std::vector<std::string> scriptable; };
@@ -1538,7 +1614,7 @@ class ExtensionTabs {
     static const std::set<std::string> names{"action.onClicked", "commands.onCommand", "contextMenus.onClicked", "tabs.onCreated", "tabs.onUpdated", "tabs.onActivated",
                                              "tabs.onHighlighted", "tabs.onZoomChange", "tabs.onRemoved", "windows.onFocusChanged", "webNavigation.onCreatedNavigationTarget",
                                              "notifications.onClicked", "notifications.onButtonClicked", "notifications.onClosed",
-                                             "permissions.onAdded", "permissions.onRemoved",
+                                             "permissions.onAdded", "permissions.onRemoved", "sidePanel.onOpened", "sidePanel.onClosed",
                                              "omnibox.onInputStarted", "omnibox.onInputChanged", "omnibox.onInputEntered", "omnibox.onInputCancelled"};
     return names.count(name) > 0;
   }

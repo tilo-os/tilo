@@ -627,6 +627,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     page_automation_=nullptr;
     if(agent_log_)agent_log_->Detach();
     agent_log_=nullptr;
+    if(extension_tabs && !side_panel_.empty())extension_tabs->SidePanelClosed(id_);
     if(extension_tabs)extension_tabs->Removed(id_);
     if(inspector_)inspector_->Detach();
     inspector_=nullptr;
@@ -685,7 +686,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     OpenTab(url,disposition==CEF_WOD_NEW_BACKGROUND_TAB);return true;
   }
   void OnAddressChange(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,const CefString& url) override { if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || url==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(url.ToString()); } main_navigation_finished_=false;++favicon_generation_;std::optional<std::pair<std::string,std::pair<uint64_t,bool>>> pending;if(pending_main_media_token_){const auto key=frame->GetIdentifier().ToString();auto found=media_frames_.find(key);if(found!=media_frames_.end() && found->second.first==*pending_main_media_token_)pending=std::make_pair(key,std::make_pair(found->second.first,false));}media_frames_.clear();if(pending)media_frames_.insert(*pending);pending_main_media_token_.reset();media_limit_reported_=false;last_media_playing_.reset();navigation_history_->Invalidate();StringEvent("uri","url",url);PublishMediaState(false);favicon_.clear();
-      if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("url",url);extension_tabs->Updated(id_,change);extension_tabs->Opened(id_,url.ToString());} } }
+      if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("url",url);extension_tabs->Updated(id_,change);extension_tabs->Opened(id_,url.ToString());}
+      if(extension_tabs && !side_panel_.empty())extension_tabs->SidePanelShows(id_,panel_opener_,side_panel_,url.ToString()); } }
   void OnTitleChange(CefRefPtr<CefBrowser>,const CefString& title) override {
     StringEvent("title","title",title);title_=title.ToString();
     if(extension_tabs) {auto change=CefDictionaryValue::Create();change->SetString("title",title);extension_tabs->Updated(id_,change);}
@@ -1116,6 +1118,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       extension_panel_=true;panel_opener_=last_focused_tab;
       // Opened by its toolbar button: like a click, it may script the page.
       if(d->HasKey("action") && extension_tabs)extension_tabs->Grant(d->GetString("action"),panel_opener_);
+      // An extension's side panel: it hears of the panel opening and
+      // closing (extension_tabs.h, SidePanelShows).
+      if(d->HasKey("side_panel"))side_panel_=d->GetString("side_panel").ToString();
     }
     // The page an extension asked the person to sign in on, shown in a
     // panel over the page used last or loaded out of sight: the host
@@ -1138,6 +1143,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     // The person opened an extension's side panel beside this page.
     else if(op=="extension_side_panel") {if(extension_tabs)extension_tabs->OpenSidePanel(d->GetString("id"),id_);}
+    // One of extensions' keyboard shortcuts, pressed while the Browser's own
+    // field had the keyboard: its command runs over this page, which sees
+    // nothing of the key.
+    else if(op=="extension_command_key") {
+      if(auto shortcut=tilo::KeyShortcut(d->GetString("key"),d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta")))
+        if(extension_tabs)extension_tabs->Key(extension_panel_?panel_opener_:id_,*shortcut);
+    }
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
       if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
@@ -1300,7 +1312,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // is known by the key's name: it may read otherwise ("y" once Shift is up).
     if(auto shortcut=tilo::KeyShortcut(key,d->GetBool("ctrl"),d->GetBool("alt"),d->GetBool("shift"),d->GetBool("meta"))) {
       if(!d->GetBool("down")) { if(commanded_keys_.erase(shortcut->key)) return; }
-      else if(!extension_panel_ && extension_tabs && extension_tabs->Key(id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
+      // In an extension's popup or side panel it runs over the page the
+      // panel shows for, as in Chrome, whose shortcuts belong to the window.
+      else if(extension_tabs && extension_tabs->Key(extension_panel_?panel_opener_:id_,*shortcut)) { commanded_keys_.insert(shortcut->key);return; }
     }
 #if defined(OS_MAC)
     // Offscreen CEF has no Cocoa Edit menu to translate Command shortcuts.
@@ -1664,6 +1678,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   int id_;bool visible_=true,transfer_owner_=false,native_closing_=false,popups_=false;int opener_=0,key_modifiers_=0;uint64_t favicon_generation_=0;
   std::string title_,favicon_;bool extension_panel_=false;int panel_opener_=0;
+  // The extension whose side panel this tab shows, if it shows one.
+  std::string side_panel_;
   std::optional<std::chrono::steady_clock::time_point> activated_;
   // The paste a key is waiting on the system clipboard for, and the keys
   // pressed since (KeyCommand).
@@ -2174,8 +2190,18 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   }
   if(op=="extension_panel") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);
-    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action")return false;
-    return !d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")));
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="action" && key!="side_panel")return false;
+    // Opened by its button, or a side panel; not both.
+    if(d->HasKey("action") && d->HasKey("side_panel"))return false;
+    return (!d->HasKey("action") || (type("action",VTYPE_STRING) && tilo::ExtensionId(d->GetString("action")))) &&
+           (!d->HasKey("side_panel") || (type("side_panel",VTYPE_STRING) && tilo::ExtensionId(d->GetString("side_panel"))));
+  }
+  if(op=="extension_command_key") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    for(const auto& key:keys)if(key!="op" && key!="tab" && key!="key" && key!="ctrl" && key!="shift" && key!="alt" && key!="meta")return false;
+    if(!type("key",VTYPE_STRING) || d->GetString("key").empty() || d->GetString("key").length()>16)return false;
+    for(const char* flag:{"ctrl","shift","alt","meta"})if(!type(flag,VTYPE_BOOL))return false;
+    return true;
   }
   if(op=="extension_click" || op=="extension_side_panel" || op=="extension_forget" || op=="extension_identity") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id"));
   if(op=="extension_menu_action") return type("id",VTYPE_STRING) && tilo::ExtensionId(d->GetString("id")) && type("key",VTYPE_STRING) && !d->GetString("key").empty() && d->GetString("key").length()<=tilo::ExtensionMenus::kMaxId;

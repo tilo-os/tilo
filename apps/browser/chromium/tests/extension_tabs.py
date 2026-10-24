@@ -2353,6 +2353,93 @@ class ExtensionTabs(unittest.TestCase):
         opened = self.side_panel_event(host, mark, 'open')
         self.assertEqual((opened.get('tab'), opened['url']), (1, f'chrome-extension://{paneler}/tab.html'))
 
+    def worker_noted(self, host, extension, prefix):
+        """What the fixture's worker noted after `prefix` in its `seen`,
+        read as JSON, once it has: the first such note."""
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            seen = json.loads(self.in_worker(host, extension, 'JSON.stringify(globalThis.seen || [])') or '[]')
+            noted = [entry[len(prefix):] for entry in seen if entry.startswith(prefix)]
+            if noted:
+                return json.loads(noted[0]), seen
+            self.assertGreater(deadline - time.monotonic(), 0, f'the worker never noted {prefix}: {seen}')
+            host.settle(0.2)
+
+    def test_the_extension_hears_its_side_panel_open_and_close(self):
+        host, ids = self.start('paneler', access={'paneler': (['sidePanel', 'tabs'], [])})
+        host.navigate(self.url + '/notes')
+        host.settle(1.0)
+        paneler = ids['paneler']
+        own = lambda path: f'chrome-extension://{paneler}/{path}'
+        tab = self.in_worker(host, paneler, 'chrome.tabs.query({}).then((tabs) => tabs[0].id)')
+
+        # The Browser shows its panel beside the page, in a tab of its own:
+        # the extension hears it opened, with the page's window and tab and
+        # the page it shows, as in Chrome.
+        host.send(op='create_tab', tab=2)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
+        host.send(op='extension_panel', tab=2, side_panel=paneler)
+        host.send(op='resize', tab=2, width=360, height=600, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=own('panel.html'))
+        opened, _ = self.worker_noted(host, paneler, 'panel-opened:')
+        self.assertEqual(opened, {'windowId': tab, 'tabId': tab, 'path': 'panel.html'})
+
+        # Another of its pages in the open panel keeps it open; closed, the
+        # panel names the page it showed last.
+        host.send(op='navigate', tab=2, url=own('tab.html'))
+        self.title(host, 2, 'tab panel')
+        host.send(op='close_tab', tab=2)
+        closed, seen = self.worker_noted(host, paneler, 'panel-closed:')
+        self.assertEqual(closed, {'windowId': tab, 'tabId': tab, 'path': 'tab.html'})
+        self.assertEqual(len([entry for entry in seen if entry.startswith('panel-opened:')]), 1, seen)
+
+        # A popup is no side panel: its extension hears nothing of it.
+        self.panel(host, 3, own('panel.html'))
+        self.title(host, 3, 'panel:')
+        host.send(op='close_tab', tab=3)
+        host.settle(1.0)
+        seen = json.loads(self.in_worker(host, paneler, 'JSON.stringify(globalThis.seen)'))
+        self.assertEqual(len([entry for entry in seen if entry.startswith('panel-')]), 2, seen)
+
+    def test_a_shortcut_runs_while_the_address_or_a_popup_has_the_keyboard(self):
+        host, ids = self.start('commander', access={'commander': (['activeTab', 'scripting'], [])})
+        commander = ids['commander']
+        host.navigate(self.url + '/keys')
+        host.settle(1.0)
+        mac = sys.platform == 'darwin'
+
+        # The Browser is told which keys the commands hold, as Chrome names
+        # them, so it can run them while its address has the keyboard.
+        match = lambda e: e['event'] == 'extension_shortcuts' and e.get('tab', 1) == 1
+        told = [e for e in host.seen if match(e)] or [host.until(match)]
+        held = {(entry['key'], entry['ctrl'], entry['alt'], entry['shift'], entry['meta']) for entry in told[-1]['shortcuts']}
+        self.assertEqual(held, {('Y', not mac, False, True, mac), ('K', False, True, True, False)})
+
+        # Pressed while the address has the keyboard: the command runs on
+        # the page, which sees nothing of the key.
+        host.send(op='extension_command_key', key='K', ctrl=False, alt=True, shift=True, meta=False)
+        seen = json.loads(self.title(host, 1, 'command:')[len('command:'):])
+        self.assertEqual({key: seen[key] for key in ('command', 'url')}, {'command': 'mark', 'url': True})
+        # A key no command holds does nothing at all.
+        host.send(op='extension_command_key', key='U', ctrl=not mac, alt=False, shift=True, meta=mac)
+        host.send(op='key', key='a', down=True, ctrl=False, alt=False, shift=False, meta=False)
+        host.send(op='key', key='a', down=False, ctrl=False, alt=False, shift=False, meta=False)
+        self.title(host, 1, 'key:a')
+        self.assertEqual([e['title'] for e in host.seen if e['event'] == 'title' and e['title'].startswith('key:')], ['key:a'])
+
+        # In the extension's popup the button's own key acts on the page the
+        # popup is over: the Browser is asked to act as a click on the
+        # button, which closes the popup that shows, as in Chrome.
+        self.panel(host, 2, f'chrome-extension://{commander}/manifest.json')
+        host.settle(1.0)
+        mark = len(host.seen)
+        modifiers = {'ctrl': not mac, 'meta': mac, 'alt': False, 'shift': True}
+        host.send(op='key', tab=2, key='Y', down=True, **modifiers)
+        host.send(op='key', tab=2, key='Y', down=False, **modifiers)
+        asked = next((e for e in host.seen[mark:] if e['event'] == 'extension_execute_action'), None) \
+            or host.until(lambda e: e['event'] == 'extension_execute_action')
+        self.assertEqual((asked.get('tab', 1), asked['id']), (1, commander))
+
 
 def walk(items):
     """Every row of a menu the host sent, its submenus' rows after it."""

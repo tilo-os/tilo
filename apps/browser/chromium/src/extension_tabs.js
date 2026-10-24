@@ -504,6 +504,20 @@
   event(chrome.webNavigation, 'onCreatedNavigationTarget', 'webNavigation.onCreatedNavigationTarget');
   event(action, 'onClicked', 'action.onClicked');
   event(chrome.browserAction, 'onClicked', 'action.onClicked');
+  // The side panel opening and closing beside a page: the host tells of
+  // both, as Chromium shows no panel of its own to tell of.
+  if (sidePanel) {
+    for (const key of ['onOpened', 'onClosed']) {
+      if (!chrome.sidePanel[key]) {
+        try {
+          chrome.sidePanel[key] = {};
+        } catch (ignored) {
+          // Read-only here: the extension cannot listen for it either.
+        }
+      }
+      event(chrome.sidePanel, key, 'sidePanel.' + key);
+    }
+  }
 
   // The toolbar button's look, which the Browser draws. For every tab
   // Chromium keeps it and answers for it; each change it accepted is told to

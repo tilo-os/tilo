@@ -176,6 +176,14 @@ impl SplitHandle {
         self
     }
 
+    /// Give the divider a stable identity: assistive technology and agents
+    /// address it by it ([`Widget::perform_semantic_action`]).
+    #[must_use]
+    pub fn with_test_id(mut self, id: impl Into<String>) -> Self {
+        self.test_id = Some(id.into());
+        self
+    }
+
     #[must_use]
     pub fn ratio(&self) -> SplitRatio {
         self.ratio

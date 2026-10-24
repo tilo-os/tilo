@@ -110,6 +110,7 @@ browser-extension-add = Zu Tilo Browser hinzufügen
 browser-extension-adding = Erweiterung wird hinzugefügt
 browser-extension-side-panel-close = Seitenleiste schließen
 browser-extension-side-panel = Seitenleiste von { $name }
+browser-extension-side-panel-width = Breite der Seitenleiste
 browser-extension-can = Sie kann
 browser-extension-access-all-sites = Alle Ihre Daten auf allen Websites lesen und ändern
 browser-extension-access-site = Ihre Daten auf { $site } lesen und ändern

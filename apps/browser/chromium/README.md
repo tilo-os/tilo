@@ -680,7 +680,16 @@ content scripts (with `sender.tab`) work without help.
   button (`extension_execute_action`), which opens its popup or fires
   `action.onClicked`. `commands.getAll` lists the button's command first,
   then the rest by name, each with its key as Chrome shows it ("Ctrl+Shift+Y"
-  on Linux) or none, and its description localized.
+  on Linux) or none, and its description localized. The list of keys the
+  Browser keeps is `src/browser_keeps.inc`, and the Browser's own test
+  (`browser_window.rs`) presses every key a command could hold through its
+  key handling and fails when what it answers and the list differ. In an
+  extension's popup or side panel a command's key runs it over the page the
+  panel is for, as Chrome's keys belong to the window: the button's own key
+  pressed in its open popup closes it. The host tells the Browser which keys
+  the commands hold (`extension_shortcuts`), so while its address has the
+  keyboard the Browser hands such a key to the host (`extension_command_key`)
+  after its own keys and before the field sees it.
 - `notifications` are kept by the host (`src/extension_notifications.h`),
   which checks them as Chrome does (a type, an icon, a title and a message;
   a progress from 0 to 100 only for a progress notification; at most two
@@ -769,7 +778,16 @@ content scripts (with `sender.tab`) work without help.
   once turned off for the tab) and `sidePanel.close` closes it. The person
   opens a panel from the Browser too (`extension_side_panel`, the page the
   extension names for the tab). The panel is a panel tab, as a popup is: no
-  tab to the extension, its window the page beside it.
+  tab to the extension, its window the page beside it. The Browser marks it
+  as the extension's side panel (`extension_panel` with `side_panel`), and the
+  first of the extension's pages it shows fires `sidePanel.onOpened`, its
+  closing `sidePanel.onClosed`, each with Chrome's `windowId`, `tabId` (both
+  the page's tab, each tab being a window of its own here) and the `path` of
+  the page it showed; another page in the open panel keeps it open. The
+  person drags the edge between the page and the panel, or steps it from the
+  keyboard or assistive technology, between a utility panel's width and a
+  readable column's, leaving the page a readable column, and each
+  extension's panel keeps its width on the device.
 - A call from an extension's page is a request the page cancels as it
   closes, where Chrome has sent it already. A popup that acts and closes at
   once (`tabs.reload(id); window.close()`, as Privacy Badger's "Disable for
@@ -851,11 +869,13 @@ content scripts (with `sender.tab`) work without help.
 ## Remaining integration work
 
 - Extensions' side panels show beside the page they were opened for, one at a
-  time per window; `sidePanel.onOpened` and `onClosed` are not fired, and the
-  panel cannot be widened. Extensions' keyboard shortcuts run while
-  a page has the keyboard, not while the address bar or a popup has it; the
-  suggested keys are the ones given (there is no page to change them), and
-  `global` shortcuts work only in the Browser. On macOS a shortcut with
+  time per window; `sidePanel.onOpened` and `onClosed` always name the tab,
+  also for a panel the extension opened for the whole window. Extensions'
+  keyboard shortcuts run while a page, a popup, a side panel or the Browser's
+  address has the keyboard, but not while the address is the Tilo window
+  bar's location, which the desktop draws; the suggested keys are the ones
+  given (there is no page to change them), and `global` shortcuts work only
+  in the Browser. On macOS a shortcut with
   Option (Alt) and no Command or Control does not run: the Browser forwards
   the character Option types ("˚" for Option+K), not the key. A keyword's
   Enter always goes to the current tab (no Alt+Enter for a new one), and its

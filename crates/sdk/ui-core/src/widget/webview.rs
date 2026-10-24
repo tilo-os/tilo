@@ -658,7 +658,10 @@ impl WebView {
     /// Map a winit logical key to the engine's key model. Pure so tests can
     /// pin the table without synthesising `winit::KeyEvent`s (whose
     /// platform fields aren't portably constructible).
-    fn map_key(key: &WKey) -> Option<KeyInput> {
+    /// The key a page is forwarded for `key`, if a page takes it: a
+    /// character, or one of the named keys it knows.
+    #[must_use]
+    pub fn map_key(key: &WKey) -> Option<KeyInput> {
         match key {
             WKey::Character(c) => Some(KeyInput::Character(c.to_string())),
             WKey::Named(WNamedKey::Space) => Some(KeyInput::Character(" ".to_string())),
