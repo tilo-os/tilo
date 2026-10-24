@@ -5506,6 +5506,14 @@ impl FrameBuilder {
         unsafe { &**widget }.ime_requires_deferred_ack()
     }
 
+    /// The focused field takes text only through deferred receipts.
+    pub(crate) fn focused_ime_refuses_ordinary_commits(&self, focus: Option<NodeId>) -> bool {
+        let widget = focus.and_then(|focus| self.node_map.get(&focus));
+        // SAFETY: the same live host/pointer map and read lifetime as focused_ime_field.
+        !self.host.palette_visible()
+            && widget.is_some_and(|widget| unsafe { &**widget }.ime_refuses_ordinary_commits())
+    }
+
     pub(crate) fn start_deferred_text(
         &mut self,
         focus: Option<NodeId>,

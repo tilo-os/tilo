@@ -12655,13 +12655,17 @@ pub fn run() {
         // is served to the seat's input method like an application field.
         let deferred_field =
             frame_builder.focused_ime_requires_deferred_ack(test_control_ctx.focus);
+        // A field that takes text only through deferred receipts (a browser
+        // page field) is served to the input method only for dictation.
+        let receipts_only =
+            frame_builder.focused_ime_refuses_ordinary_commits(test_control_ctx.focus);
         let speech_field_needed = frame_builder
             .host_mut()
             .dictation_surface_mut()
             .needs_original_field();
         let shell_field = (!session.is_locked()
             && state.client_input.keyboard_focus().is_none()
-            && (!deferred_field || speech_field_needed))
+            && (!receipts_only || speech_field_needed))
             .then(|| frame_builder.focused_ime_field(test_control_ctx.focus))
             .flatten();
         if shell_field.is_some() && shell_text_input.is_none() {
@@ -12705,7 +12709,7 @@ pub fn run() {
             state.osk_surface,
             state.client_input.keyboard_focus(),
             state.shell_field_active.then_some(shell_field).flatten(),
-            state.text_input_active() && input_methods.osk_shown() && !deferred_field,
+            state.text_input_active() && input_methods.osk_shown() && !receipts_only,
         );
         dictation_vocabulary.refresh(&mut state);
         state.set_native_dictation_deferred(deferred_field && state.shell_field_active);

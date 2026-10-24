@@ -2027,6 +2027,18 @@ pub trait Widget {
         })
     }
 
+    /// Ordinary input-method commits (a composing keyboard IME, the on-screen
+    /// keyboard) cannot reach this field: its text arrives only through
+    /// deferred receipts (a browser page field), so hosts keep standard text
+    /// input closed outside a dictation session. A field that needs deferred
+    /// receipts for dictation but turns an ordinary commit into its own
+    /// acknowledged edit (Terminal's native editor) does not refuse them.
+    fn ime_refuses_ordinary_commits(&self) -> bool {
+        defaults::ime_refuses_ordinary_commits(self.ime_cursor_rect(), &|visit| {
+            self.for_each_child(visit);
+        })
+    }
+
     /// Begin one bounded deferred session after explicit host consent, preserving
     /// the existing original-field fingerprint. This grants no microphone access.
     fn start_deferred_text(&mut self) -> Option<crate::webview::text_input::Receipt> {
