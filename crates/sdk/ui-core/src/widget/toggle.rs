@@ -37,6 +37,17 @@ pub struct Toggle {
     /// paints: the switch needs a redraw only when they differ.
     painted: Option<Painted>,
     drawing: Option<Painted>,
+    /// A view that builds the switch anew on each change: the one built in
+    /// its place goes on from its knob (`motion::keep`).
+    hand_on: crate::motion::HandOn<KeptSwitch>,
+}
+
+/// What a switch leaves for the one a rebuild puts in its place: its knob,
+/// and the value it held, so a successor showing another switch's value
+/// (another page, a row that moved) does not slide.
+struct KeptSwitch {
+    switch: SwitchMotion,
+    on: bool,
 }
 
 /// What a switch's paint depends on besides its place and the theme:
@@ -107,6 +118,26 @@ impl Toggle {
             motion: None,
             painted: None,
             drawing: None,
+            hand_on: crate::motion::HandOn::default(),
+        }
+    }
+
+    /// What names the switch across rebuilds: an id it was given, else
+    /// nothing (it is known by its place).
+    fn identity(&self) -> Option<&str> {
+        self.control
+            .id_override
+            .as_deref()
+            .or((self.semantic_id != "toggle").then_some(self.semantic_id.as_str()))
+    }
+
+    /// Go on from the switch a rebuild dropped: its knob, on its way or at
+    /// rest. Showing what it showed, a change since moves from there, as
+    /// the input that made it asks; showing something else, it rests.
+    fn take_up(&mut self, kept: KeptSwitch) {
+        self.switch = kept.switch;
+        if kept.on != self.control.is_checked {
+            self.switch.snap(self.control.is_checked);
         }
     }
 
@@ -202,10 +233,10 @@ impl Toggle {
     /// synchronization pass. Use [`Self::on_change`] only to observe user
     /// changes, not to keep the model in sync.
     pub fn from_state(state: &crate::LocalState<bool>) -> Self {
-        Self {
-            control: BoolControl::local(state, Some(crate::widget::humanize_control_id("toggle"))),
-            ..Self::new("toggle", "")
-        }
+        let mut toggle = Self::new("toggle", "");
+        toggle.control =
+            BoolControl::local(state, Some(crate::widget::humanize_control_id("toggle")));
+        toggle
     }
 
     bool_control_api!();
@@ -732,11 +763,18 @@ impl Widget for Toggle {
             flex_shrink: 0.0,
             ..Default::default()
         };
+        let identity = self.identity().map(str::to_owned);
+        if let Some(kept) = self.hand_on.build(identity.as_deref()) {
+            self.take_up(kept);
+        }
         taffy.widget_leaf(style, node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        if let Some(kept) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept);
+        }
     }
 
     fn draw(
@@ -883,6 +921,15 @@ impl Widget for Toggle {
 }
 
 bool_control_capabilities!(Toggle, "toggle");
+
+/// A switch a rebuild drops leaves its knob for the one put in its place.
+impl Drop for Toggle {
+    fn drop(&mut self) {
+        let switch = std::mem::take(&mut self.switch);
+        let on = self.control.is_checked;
+        self.hand_on.leave(KeptSwitch { switch, on });
+    }
+}
 
 #[cfg(test)]
 mod tests {

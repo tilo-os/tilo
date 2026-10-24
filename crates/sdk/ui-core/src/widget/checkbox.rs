@@ -281,6 +281,17 @@ pub struct Checkbox {
     radio: bool,
     /// How far the fill and the mark have come.
     motion: CheckMotion,
+    /// A view that builds the box anew on each change: the one built in its
+    /// place goes on from its mark (`motion::keep`).
+    hand_on: crate::motion::HandOn<KeptCheck>,
+}
+
+/// What a box leaves for the one a rebuild puts in its place: its mark,
+/// and what it held, so a successor showing another box's value (another
+/// page, a row that moved) does not fade.
+struct KeptCheck {
+    motion: CheckMotion,
+    shown: (bool, CheckGlyph),
 }
 
 /// What a checkbox's paint depends on besides its place and the theme:
@@ -323,6 +334,35 @@ impl Checkbox {
             drawing: None,
             radio: false,
             motion: CheckMotion::default(),
+            hand_on: crate::motion::HandOn::default(),
+        }
+    }
+
+    /// What the box shows: marked, and with which glyph.
+    fn shown(&self) -> (bool, CheckGlyph) {
+        (
+            self.control.is_checked || self.indeterminate,
+            CheckGlyph::of(self.indeterminate),
+        )
+    }
+
+    /// What names the box across rebuilds: an id it was given, else its
+    /// label, else nothing (it is known by its place).
+    fn identity(&self) -> Option<String> {
+        self.control
+            .id_override
+            .clone()
+            .or_else(|| self.label.as_ref().map(|label| format!("label:{label}")))
+    }
+
+    /// Go on from the box a rebuild dropped: its mark, on its way or at
+    /// rest. Showing what it showed, a change since moves from there, as
+    /// the input that made it asks; showing something else, it rests.
+    fn take_up(&mut self, kept: KeptCheck) {
+        self.motion = kept.motion;
+        let shown = self.shown();
+        if kept.shown != shown {
+            self.motion.snap(shown.0, shown.1);
         }
     }
 
@@ -605,6 +645,9 @@ impl Widget for Checkbox {
             flex_shrink: 1.0,
             ..Default::default()
         };
+        if let Some(kept) = self.hand_on.build(self.identity().as_deref()) {
+            self.take_up(kept);
+        }
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -652,6 +695,9 @@ impl Widget for Checkbox {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.control.rect = crate::widget::layout_rect(taffy, node, origin);
+        if let Some(kept) = self.hand_on.place(self.control.rect) {
+            self.take_up(kept);
+        }
     }
 
     #[allow(
@@ -667,12 +713,8 @@ impl Widget for Checkbox {
         presence: &crate::presence::PresenceCtx,
     ) {
         let now = crate::motion::frame_now();
-        self.motion.follow_input(
-            self.control.is_checked || self.indeterminate,
-            CheckGlyph::of(self.indeterminate),
-            theme.motion(),
-            now,
-        );
+        let (marked, glyph) = self.shown();
+        self.motion.follow_input(marked, glyph, theme.motion(), now);
         self.drawing = Some(self.painted_now());
         let target = f64::from(self.control.interaction.minimum_target());
         let visual_center = if self.label.is_some() {
@@ -792,6 +834,15 @@ bool_control_capabilities!(Checkbox, "checkbox");
 fn square_box(rect: Rect) -> Rect {
     let side = rect.width().min(rect.height());
     Rect::from_center_size(rect.center(), (side, side))
+}
+
+/// A box a rebuild drops leaves its mark for the one put in its place.
+impl Drop for Checkbox {
+    fn drop(&mut self) {
+        let motion = std::mem::take(&mut self.motion);
+        let shown = self.shown();
+        self.hand_on.leave(KeptCheck { motion, shown });
+    }
 }
 
 #[cfg(test)]
