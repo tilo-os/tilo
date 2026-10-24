@@ -1494,7 +1494,7 @@ fn content_blocks() -> Vec<Block> {
                 Box::new(StatTile::new("Uptime", "99.9").unit("%")),
             ]))
         }),
-        block("Media", 600.0, 340.0, |_| {
+        block("Media", 600.0, 700.0, |_| {
             Box::new(MediaGrid::new(vec![
                 MediaCard::new("a", MediaSource::Image(art().clone()))
                     .title("Coastline")
@@ -1535,7 +1535,7 @@ fn content_blocks() -> Vec<Block> {
         block("Error", 380.0, 220.0, |_| {
             Box::new(EmptyState::error(
                 "Could not load messages",
-                "The server did not answer.",
+                "The server did not answer. Check the connection and try again in a moment.",
             ))
         }),
         block("Loading", 380.0, 220.0, |_| {
