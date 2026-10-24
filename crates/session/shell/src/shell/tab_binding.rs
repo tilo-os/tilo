@@ -392,7 +392,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
                         .any(|candidate| candidate.id == group)
                         .then_some((
                             strip.id,
-                            ui::widget::TabDropTarget::ExistingGroup {
+                            tilo_desktop_model::DropTarget::ExistingGroup {
                                 group_id: group,
                                 tab_index: index,
                             },
@@ -405,7 +405,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
                 strip.window_groups.iter().find_map(|candidate| {
                     (candidate.id == group).then_some((
                         strip.id,
-                        ui::widget::TabDropTarget::ExistingGroup {
+                        tilo_desktop_model::DropTarget::ExistingGroup {
                             group_id: group,
                             tab_index: candidate.tabs.len(),
                         },
@@ -415,7 +415,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         }),
         Placement::GroupAt(strip, index) => Some((
             strip,
-            ui::widget::TabDropTarget::GroupGap { gap_index: index },
+            tilo_desktop_model::DropTarget::GroupGap { gap_index: index },
         )),
         Placement::NewGroup
         | Placement::RightOf(_)
@@ -454,23 +454,23 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
     };
     let source_group_len = source_group_state.tabs.len();
     match &mut target {
-        ui::widget::TabDropTarget::ExistingGroup {
+        tilo_desktop_model::DropTarget::ExistingGroup {
             group_id,
             tab_index,
         } if *group_id == source_group && source_index < *tab_index => {
             *tab_index = tab_index.saturating_sub(1);
         }
-        ui::widget::TabDropTarget::GroupGap { gap_index }
+        tilo_desktop_model::DropTarget::GroupGap { gap_index }
             if source_group_len == 1 && source_group_index < *gap_index =>
         {
             *gap_index = gap_index.saturating_sub(1);
         }
         _ => {}
     }
-    let mut topology: Vec<ui::widget::GroupTopology> = strip
+    let mut topology: Vec<tilo_desktop_model::GroupShape> = strip
         .window_groups
         .iter()
-        .map(|group| ui::widget::GroupTopology {
+        .map(|group| tilo_desktop_model::GroupShape {
             id: group.id,
             tab_ids: group.tabs.iter().map(|tab| tab.id).collect(),
             active_tab: group.active_tab,
@@ -499,7 +499,7 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
         topology.remove(source_group_index);
     }
     match target {
-        ui::widget::TabDropTarget::ExistingGroup {
+        tilo_desktop_model::DropTarget::ExistingGroup {
             group_id,
             tab_index,
         } => {
@@ -511,13 +511,13 @@ pub fn relocate_tab(tree: &mut WorkspaceTree, tab_id: TabId, placement: Placemen
                 .insert(tab_index.min(group.tab_ids.len()), tab_id);
             group.active_tab = tab_id;
         }
-        ui::widget::TabDropTarget::GroupGap { gap_index } => topology.insert(
+        tilo_desktop_model::DropTarget::GroupGap { gap_index } => topology.insert(
             gap_index.min(topology.len()),
-            ui::widget::GroupTopology {
+            tilo_desktop_model::GroupShape {
                 id: next_id(),
                 tab_ids: vec![tab_id],
                 active_tab: tab_id,
-                width: ui::widget::WindowWidth::Normal,
+                width: tilo_desktop_model::WindowWidth::Normal,
             },
         ),
     }

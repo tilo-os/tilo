@@ -362,13 +362,7 @@ pub struct CrossStripDetach {
 /// Tile content remains owned by the shell's `WorkspaceTree`; the UI only
 /// reports identities and presentation state, avoiding a second copy of app
 /// data at the widget boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GroupTopology {
-    pub id: u64,
-    pub tab_ids: Vec<u64>,
-    pub active_tab: u64,
-    pub width: WindowWidth,
-}
+pub use tilo_desktop_model::GroupShape as GroupTopology;
 
 #[allow(
     clippy::struct_excessive_bools,
