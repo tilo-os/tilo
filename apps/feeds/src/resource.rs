@@ -37,6 +37,7 @@ pub const MAX_TAG_PLACES: usize = 32;
     kind = "feeds.library",
     label = "Feeds",
     children = Library::places,
+    search = crate::search::entries,
     version = 2,
     migrate = crate::model::upgrade
 )]
