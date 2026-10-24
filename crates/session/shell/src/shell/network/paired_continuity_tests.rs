@@ -883,6 +883,19 @@ fn claim_editor(
     });
 }
 
+/// A continuation registry that knows `tab` as the same app instance on both sides.
+fn registry_bound_to(
+    tab: u64,
+) -> Arc<Mutex<crate::shell::personal_continuity_registry::ContinuationRegistry>> {
+    let registry = crate::shell::personal_continuity_registry::ContinuationRegistry::default();
+    let registry = Arc::new(Mutex::new(registry));
+    registry.lock().unwrap().bind_tab(
+        crate::shell::personal_continuity::AppInstanceId(tab),
+        crate::shell::personal_continuity::AppInstanceId(tab),
+    );
+    registry
+}
+
 impl NativeEditorPair {
     fn new() -> OwnerFixtureFuture<'static, Self> {
         Box::pin(async move {
@@ -938,18 +951,8 @@ impl NativeEditorPair {
                 Some(home.data().join("left-continuity.bin"));
             right.network_mut().personal_continuity_path =
                 Some(home.data().join("right-continuity.bin"));
-            let left_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            let right_registry = Arc::new(Mutex::new(
-                crate::shell::personal_continuity_registry::ContinuationRegistry::default(),
-            ));
-            for registry in [&left_registry, &right_registry] {
-                registry.lock().unwrap().bind_tab(
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                    crate::shell::personal_continuity::AppInstanceId(tab),
-                );
-            }
+            let left_registry = registry_bound_to(tab);
+            let right_registry = registry_bound_to(tab);
             let target_document = target.peer_document();
             let target_semantic = target
                 .surface_mut::<code_editor::CodeApp>()
