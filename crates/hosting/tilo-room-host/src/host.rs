@@ -261,6 +261,7 @@ impl HostSessions {
                 cert: identity.device_cert.clone(),
                 key: identity.device_signing_key.clone(),
                 revocations,
+                metrics: metrics.clone(),
                 max_pre_admissions: cfg
                     .max_room_grants
                     .unwrap_or(crate::rooms::DEFAULT_MAX_PRE_ADMISSIONS),
@@ -601,6 +602,12 @@ impl RoomHost {
     /// Whether this host counts `device` as subscribed to `workspace_id`.
     pub async fn is_subscribed(&self, workspace_id: u64, device: &[u8; 32]) -> bool {
         self.sessions.is_subscribed(workspace_id, device).await
+    }
+
+    /// Every counter of this host's sessions now.
+    #[must_use]
+    pub fn metrics(&self) -> crate::metrics::MetricsSnapshot {
+        self.sessions.metrics.snapshot()
     }
 
     /// End the in-process sessions and stop the host's work. The embedder

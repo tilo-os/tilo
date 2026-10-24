@@ -196,7 +196,7 @@ impl CapnpBrokerState {
         &self,
         consent: &PendingConsent,
         answer: AppActionConsent,
-    ) -> Option<String> {
+    ) -> Option<crate::services::GrantRecording> {
         let lifetime = answer.grant_lifetime()?;
         let request = &consent.request;
         let grants = self.services.app_action_grants.as_ref()?;
@@ -223,12 +223,13 @@ impl CapnpBrokerState {
             Subject::Person(request.person.clone()),
         )
         .with_lifetime(lifetime);
-        grants.record(request, grant, answer)
+        Some(grants.record(request, grant, answer))
     }
 }
 
 /// Answer an application's invocation once the person has answered whether
-/// it may: denied, refused; allowed, recorded and served. A grant given once
+/// it may: denied, refused; allowed, served once the grant is in force, and
+/// refused with the reason when it could not be put in force. A grant given once
 /// is spent by the admission it lets through.
 pub(super) fn serve_after_consent(
     state: Arc<CapnpBrokerState>,
@@ -245,8 +246,16 @@ pub(super) fn serve_after_consent(
             .await
             .unwrap_or(AppActionConsent::Deny);
         state.finish_app_action_consent(&consent);
-        let reply = if state.record_app_action_grant(&consent, answer).is_none() {
-            refuse(&message, ActionHostError::NotPermitted)
+        // The grant is in force before the call it was given for goes on:
+        // a call held while it is recorded, refused when it is not.
+        let recorded = match state.record_app_action_grant(&consent, answer) {
+            None => Err(ActionHostError::NotPermitted),
+            Some(recording) => recording
+                .await
+                .map_err(|reason| ActionHostError::Refused { reason }),
+        };
+        let reply = if let Err(error) = recorded {
+            refuse(&message, error)
         } else {
             // Answered at admission, as before waits existed: a grant
             // given for this call is spent by that admission, never held
