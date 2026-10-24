@@ -17633,6 +17633,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-device-vpn"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "iroh",
+ "libc",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-seat-peer",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-dialogs"
 version = "0.1.0"
 dependencies = [
@@ -18796,6 +18813,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-sandbox-core",
+ "tilo-seat-peer",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -19756,6 +19774,15 @@ dependencies = [
  "tilo-test-env",
  "tracing",
  "unicode-normalization",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-seat-peer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
  "workspace-hack",
 ]
 
