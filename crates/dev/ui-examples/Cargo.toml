@@ -30,6 +30,9 @@ taffy = { workspace = true, features = ["content_size"] }
 tempfile.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge.workspace = true
+# The dashboard benchmark runs the tree on a clock of its own events
+# (`tilo_clock::testing`), so its redraw counters do not follow node load.
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-ui = { path = "../../sdk/ui-core", default-features = false }
 vello.workspace = true
