@@ -471,6 +471,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             body = OPENER_FRAME
         elif self.path == '/openers':
             body = OPENERS_PAGE
+        elif self.path.startswith('/download-framed/'):
+            # A page that shows the extension named last in its address in
+            # a frame at its top left, with room of its own beside it.
+            extension = self.path.rsplit('/', 1)[-1]
+            body = (f'<!doctype html><title>framed</title><body style="margin:0;height:100vh">'
+                    f'<iframe src="chrome-extension://{extension}/frame.html" '
+                    f'style="position:absolute;left:0;top:0;width:300px;height:150px;border:0"></iframe>').encode()
         else:
             # A page under /de says it is in Austrian German.
             lang = ' lang="de-AT"' if self.path.startswith('/de') else ''
@@ -867,9 +874,13 @@ class ExtensionTabs(unittest.TestCase):
         return event
 
     def click_panel(self, host, tab):
-        host.send(op='mouse_move', tab=tab, x=50, y=50)
-        host.send(op='mouse_button', tab=tab, button='left', down=True, x=50, y=50)
-        host.send(op='mouse_button', tab=tab, button='left', down=False, x=50, y=50)
+        self.click(host, tab, 50, 50)
+
+    def click(self, host, tab, x, y):
+        """The person's click at (`x`, `y`) of the tab."""
+        host.send(op='mouse_move', tab=tab, x=x, y=y)
+        host.send(op='mouse_button', tab=tab, button='left', down=True, x=x, y=y)
+        host.send(op='mouse_button', tab=tab, button='left', down=False, x=x, y=y)
 
     def test_an_extension_asks_for_more_access_and_the_person_decides(self):
         host, ids = self.start('permit', access={'permit': (['storage', 'scripting'], [])})
@@ -1975,6 +1986,22 @@ class ExtensionTabs(unittest.TestCase):
         saved = first(lambda e: e['event'] == 'download' and e['id'] == exported['id'] and e['state'] != 'progress')
         self.assertEqual(saved['state'], 'complete', saved)
         self.assertEqual(Path(saved['path']).read_bytes(), b'setting,on\n')
+
+        # Its page in a frame of a web page opens a download on the person's
+        # click in that frame, as in Chrome, not on one elsewhere on the page,
+        # which the host counts for the page's tab.
+        host.navigate(f'{self.url}/download-framed/{ids["downloader"]}')
+        self.worker_value(host, ids['downloader'], 'outcome(chrome.runtime.sendMessage({ping: true}))',
+                          lambda value: value == {'value': 'ready'})
+        in_frame = lambda: self.in_worker(host, ids['downloader'], f'outcome(chrome.runtime.sendMessage({{open: {download}}}))')
+        self.click(host, 1, 600, 400)
+        host.settle(0.5)
+        self.assertEqual(in_frame(), {'value': 'User gesture required'})
+        self.click(host, 1, 50, 50)
+        host.settle(0.5)
+        self.assertEqual(in_frame(), {'value': 'opened'})
+        opened = first(lambda e: e['event'] == 'extension_download_open' and not e['reveal'])
+        self.assertEqual((opened.get('tab', 1), opened['id']), (1, download))
 
     def test_an_extension_signs_in_on_a_page_shown_over_the_window(self):
         host, ids = self.start('signer', access={'signer': (['identity'], [])})

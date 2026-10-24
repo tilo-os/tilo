@@ -287,8 +287,10 @@ class ExtensionTabs {
     // it in its folder: why it cannot, or empty.
     std::function<std::string(int, int, bool)> open_download;
     // Whether the person clicked in the tab or pressed a key there within
-    // the last few seconds.
-    std::function<bool(int)> activated;
+    // the last few seconds, in a page of the extension or a frame within
+    // one, as Chrome counts a gesture for that page: a click elsewhere on a
+    // web page that shows the extension in a frame is not.
+    std::function<bool(int, const std::string&)> activated;
     bool private_mode = false;
   };
   explicit ExtensionTabs(Hooks hooks) : hooks_(std::move(hooks)) {}
@@ -603,7 +605,7 @@ class ExtensionTabs {
       // As in Chrome, a download opens on the person's click or key: in the
       // extension's page, or on its button, menu item or shortcut for its
       // worker.
-      if (open && !(from ? hooks_.activated && hooks_.activated(from->tab) : Gestured(extension))) { Fail(reply, "User gesture required"); return; }
+      if (open && !(from ? hooks_.activated && hooks_.activated(from->tab, extension) : Gestured(extension))) { Fail(reply, "User gesture required"); return; }
       const auto id = IntOf(args, "downloadId");
       const auto* tab = Current(tabs, from);
       const auto error = !id ? std::string("Invalid downloadId")
@@ -701,7 +703,7 @@ class ExtensionTabs {
     if ((mode == "open" || mode == "toggle") && !own) { Fail(reply, "No active side panel for tabId: " + std::to_string(tab->id)); return; }
     if (mode == "options" && !url.empty() && !own) { Fail(reply, "Malformed request"); return; }
     const auto* from = Find(tabs, caller);
-    if ((mode == "open" || mode == "toggle") && !(from ? hooks_.activated && hooks_.activated(from->tab) : Gestured(extension))) {
+    if ((mode == "open" || mode == "toggle") && !(from ? hooks_.activated && hooks_.activated(from->tab, extension) : Gestured(extension))) {
       Fail(reply, "`sidePanel.open()` may only be called in response to a user gesture.");
       return;
     }

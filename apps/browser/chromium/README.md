@@ -629,7 +629,10 @@ content scripts (with `sender.tab`) work without help.
   shows it in its folder, as its own Open and Show in Files do; `open`
   needs `downloads.open` and, as in Chrome, the person's click or key in
   the extension's page, or on its button, menu item or shortcut, in the
-  last five seconds.
+  last five seconds. A page of the extension in a frame of a web page
+  counts a click or key in that frame, not one elsewhere on the page (the
+  focused frame, or one it is in, is the extension's), and so does
+  `sidePanel.open`.
 - The address's keyword (`omnibox`): the Browser reads each extension's
   manifest `omnibox.keyword`, and what the person types after it and a
   space, in the window's bar or the window's own address field, is the
