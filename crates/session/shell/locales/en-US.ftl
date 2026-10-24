@@ -435,6 +435,7 @@ portal-shortcut-duplicate = Already assigned in this request. Choose another sho
 portal-shortcut-taken = Already used by { $app }. Choose another shortcut.
 portal-shortcut-another-app = another application
 portal-auth-heading = Administrator access
+portal-auth-as = As { $user }
 portal-auth-ended = Authentication ended unexpectedly.
 portal-auth-rejected = That password was not accepted.
 portal-grant-title = { $app } wants to use { $target }

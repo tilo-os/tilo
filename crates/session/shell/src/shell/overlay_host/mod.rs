@@ -122,7 +122,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
     Button, ButtonFace, CrossStripDetach, FloatingWindow, GroupRow, OutputSpan, PROMPT_HEIGHT,
-    PermissionPrompt, PromptChoice, TextInput, Widget, WindowGroup as UiWindowGroup,
+    PermissionPrompt, PromptChoice, SecretPrompt, TextInput, Widget, WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
 
@@ -1050,10 +1050,10 @@ pub struct ShellOverlayHost {
     /// The Super+P display sheet, including controller, editor, animation,
     /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
-    /// The Wi-Fi join prompt's passphrase field — the only place the
+    /// The Wi-Fi join prompt — its passphrase field is the only place the
     /// passphrase lives — and the prompt (`WifiPasswordPrompt::id`) it is
     /// typed for.
-    wifi_password_input: TextInput,
+    wifi_prompt: SecretPrompt,
     wifi_password_prompt: Option<u64>,
     /// Numbered cards painted on every display when Settings asks which
     /// screen is which.

@@ -350,15 +350,17 @@ impl ShellOverlayHost {
                     .filter(|prompt| prompt.ssid == ssid)
                 {
                     prompt.connecting = false;
-                    // Selected, so the next keystroke replaces it.
-                    if self.wifi_password_prompt == Some(prompt.id) {
-                        self.wifi_password_input.select_all();
-                    }
-                    prompt.error = Some(if shared_credential {
+                    let error = if shared_credential {
                         t("host-wifi-saved-password-stale")
                     } else {
                         t("host-wifi-join-check-password")
-                    });
+                    };
+                    // Said in the prompt, the password selected so the next
+                    // keystroke replaces it.
+                    if self.wifi_password_prompt == Some(prompt.id) {
+                        self.wifi_prompt.reject(error.clone());
+                    }
+                    prompt.error = Some(error);
                 } else if st
                     .quick_settings
                     .wifi_networks

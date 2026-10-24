@@ -434,6 +434,7 @@ portal-shortcut-duplicate = In dieser Anfrage bereits vergeben. Wähle ein ander
 portal-shortcut-taken = Bereits von { $app } verwendet. Wähle ein anderes Tastenkürzel.
 portal-shortcut-another-app = einer anderen App
 portal-auth-heading = Administratorzugriff
+portal-auth-as = Als { $user }
 portal-auth-ended = Die Authentifizierung wurde unerwartet beendet.
 portal-auth-rejected = Dieses Passwort wurde nicht akzeptiert.
 portal-grant-title = { $app } möchte { $target } verwenden

@@ -126,6 +126,9 @@ pub struct WifiPasswordPrompt {
     /// True while `nmcli` is associating, so the prompt stays inert
     /// instead of looking unresponsive.
     pub connecting: bool,
+    /// How tall the host's prompt is, in logical pixels, as it last laid
+    /// it out; 0 until it has. The section leaves this much room.
+    pub height: u32,
 }
 
 impl WifiPasswordPrompt {
@@ -136,6 +139,7 @@ impl WifiPasswordPrompt {
             id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             error: None,
             connecting: false,
+            height: 0,
         }
     }
 
