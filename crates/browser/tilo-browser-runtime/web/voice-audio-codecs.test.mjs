@@ -696,4 +696,33 @@ for (const adaptive of [true, false]) {
     advanceTo(resumed + 52 * 960);
     assert.ok(heard >= resumed + 40 * 960, `the publisher is heard again and stays heard after its clock fell behind (last heard at ${heard}, resumed at ${resumed})`);
   });
+
+  test(`${adaptive ? 'adaptive' : 'fixed'} worklet playout drops a stalled sender's backlog instead of starting over from it`, async t => {
+    const Processor = await worklet(t, `stalled-sender-${adaptive}`);
+    const jitter = adaptive ? {adaptive: true, initial: 1920, min: 960, max: 7680} : {};
+    const processor = new Processor({processorOptions: {muted: true, jitter}});
+    const tone = () => Float32Array.from({length: 960}, (_, index) => 0.5 * Math.sin(2 * Math.PI * 1000 * index / 48_000));
+    let quanta = 0;
+    const loud = [];
+    const advanceTo = sample => {
+      while (quanta * 128 < sample) {
+        const block = new Float32Array(128);
+        processor.process([], [[block]]);
+        if (block.some(value => Math.abs(value) > 0.1)) loud.push(quanta * 128);
+        quanta++;
+      }
+    };
+    const play = index => processor.port.receive({type: 'play', publisherId: PUB_A, generation: 1, samples: tone().buffer, timestamp: BigInt(index * 960), duration: 960, reservedSamples: 960});
+    for (let index = 0; index < 50; index++) { advanceTo(index * 960); play(index); }
+    // The sender stalled 1.5 s, then sent the 75 frames it held at once.
+    advanceTo(125 * 960);
+    for (let index = 50; index < 125; index++) play(index);
+    // Then on time again.
+    for (let index = 125; index < 175; index++) { advanceTo(index * 960); play(index); }
+    advanceTo(180 * 960);
+    const expired = processor.port.sent.filter(message => message.stage === 'playback-expired').length;
+    assert.ok(expired >= 50, `the backlog is dropped (${expired} frames)`);
+    const first = loud.find(at => at >= 125 * 960);
+    assert.ok(first !== undefined && first < 140 * 960, `the frames after it are heard (first at frame ${first / 960})`);
+  });
 }
