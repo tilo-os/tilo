@@ -1708,7 +1708,7 @@ mod tests {
 
     #[test]
     fn media_key_readout_paints_over_the_lock_scene_and_schedules_its_fade() {
-        use crate::shell::osd::{OSD_FADE, OSD_FADE_IN, OSD_HOLD, Osd};
+        use crate::shell::osd::{OSD_HOLD, Osd, osd_fade, osd_fade_in};
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let outputs = single(1600.0, 900.0);
@@ -1716,7 +1716,7 @@ mod tests {
         let before = scene.encoding().n_paths;
         let osd = Osd::volume(0.4, false);
         let raised = osd.raised_at;
-        let held = raised + OSD_FADE_IN;
+        let held = raised + osd_fade_in();
         draw_lock_osd(&mut scene, &outputs, &theme, &mut text, osd, held);
         assert!(
             scene.encoding().n_paths > before,
@@ -1734,7 +1734,7 @@ mod tests {
         );
         assert!(lock_osd_frame_due(
             Some(osd),
-            raised + OSD_HOLD.saturating_sub(OSD_FADE) + std::time::Duration::from_millis(1)
+            raised + OSD_HOLD.saturating_sub(osd_fade()) + std::time::Duration::from_millis(1)
         ));
         assert!(
             lock_osd_frame_due(Some(osd), raised + OSD_HOLD),
