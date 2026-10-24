@@ -517,7 +517,7 @@ pub(crate) struct ToolbarRow {
     menu_slot: Option<Slot>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
-    views_size: Option<((Vec<String>, u32), ViewsMeasure)>,
+    views_size: Option<((Vec<String>, u32), ViewsMeasure, Vec<f64>)>,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -726,26 +726,28 @@ impl ToolbarRow {
         if self
             .views_size
             .as_ref()
-            .is_some_and(|(measured, _)| *measured == key)
+            .is_some_and(|(measured, _, _)| *measured == key)
         {
             return false;
         }
-        let size = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+        let (size, tabs) = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             let labels: Vec<&str> = key.0.iter().map(String::as_str).collect();
+            let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
             let style = theme.text(TextRole::Body);
             let widest = labels
                 .iter()
                 .map(|label| f64::from(text.measure_style(label, None, &style).0))
                 .fold(0.0, f64::max);
-            ViewsMeasure {
+            let measure = ViewsMeasure {
                 strip: (
-                    SegmentedFace::intrinsic_width(&labels, VIEWS_SIZE, text, theme),
+                    tabs.iter().sum::<f64>().ceil(),
                     SegmentedFace::height(VIEWS_SIZE, theme).min(CONTROL_PX),
                 ),
                 menu: picker_width(widest, theme),
-            }
+            };
+            (measure, tabs)
         });
-        self.views_size = Some((key, size));
+        self.views_size = Some((key, size, tabs));
         self.lay_out(self.row);
         true
     }
@@ -757,11 +759,23 @@ impl ToolbarRow {
     /// Lay the slots out across `row`.
     pub(crate) fn lay_out(&mut self, row: Rect) {
         self.row = row;
-        let views = self.views_size.as_ref().map(|(_, size)| *size);
+        let views = self.views_size.as_ref().map(|(_, size, _)| *size);
         self.slots = self
             .toolbar()
             .map(|toolbar| Slots::lay_out(toolbar, row, views))
             .unwrap_or_default();
+        // The views are tabs, each as wide as its label (as `ViewTabs`
+        // packs them), across the strip measured to hold them.
+        if let Some((_, _, tabs)) = self.views_size.as_ref()
+            && let Some(strip_x0) = self.slots.views.first().map(|tab| tab.x0)
+            && tabs.len() == self.slots.views.len()
+        {
+            let mut x = strip_x0;
+            for (tab, width) in self.slots.views.iter_mut().zip(tabs) {
+                *tab = Rect::new(x, tab.y0, x + width, tab.y1);
+                x = tab.x1;
+            }
+        }
         let location = self.slots.location;
         if let Some(field) = self.field.as_mut() {
             if location.area() > 0.0 {
@@ -1877,7 +1891,7 @@ impl ToolbarRow {
                 ));
             }
         }
-        // The views the row shows, the chosen one checked; without room
+        // The views the row shows as tabs, the chosen one selected; without room
         // they are the overflow menu's.
         if let Some(views) = toolbar.views.as_ref() {
             for (view, rect) in views.choices.iter().zip(&self.slots.views) {
@@ -1887,8 +1901,8 @@ impl ToolbarRow {
                     *rect,
                     true,
                 );
-                node.role = Role::RadioButton;
-                node.state.checked = Some(view.id == views.chosen);
+                node.role = Role::Tab;
+                node.state.selected = view.id == views.chosen;
                 if !views.name.is_empty() {
                     node = node.with_description(views.name.clone());
                 }
@@ -2377,6 +2391,9 @@ fn paint_slots(
                 .chosen_index()
                 .unwrap_or(super::toggle_group::NONE_CHOSEN),
         )
+        // Switching the window's view is tabs, the look of every view
+        // switcher (`ViewTabs`), never a segmented control.
+        .style(super::toggle_group::SegmentedStyle::Tabs)
         .control_size(VIEWS_SIZE)
         .hovered(hovered);
         ToggleGroup::paint(scene, transform, tr, theme, &face);

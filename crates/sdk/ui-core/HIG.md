@@ -759,7 +759,8 @@ This generalises §3 (text editing) to **all** interactive primitives. Concretel
   built in; it is presented in the window's top layer, §7c). Never paint your
   own overlay + scrim rect.
 - Select / choice → `Dropdown`; on/off → `Toggle` / `Checkbox`; range →
-  `Slider` / `NumberInput`; peer views → `TabBar` / `ToggleGroup`; right-click →
+  `Slider` / `NumberInput`; switching a window's view → `ViewTabs` (§9.11a);
+  choosing a value → `ToggleGroup`; right-click →
   `ContextMenu`; hover help → `tooltip`; anchored transient → `Popover`.
 - Sidebar, master/detail, drawer, push screens, column headers → `NavShell`;
   a list of destinations → `NavList` (a painted app: `SidebarDrawer` +
@@ -1213,7 +1214,7 @@ edge kept at full strength, so rest and disabled never look the same.
 | Dropdown list, ContextMenu, SlashMenu, Autocomplete, LinkPopover, CommandPalette, FilePicker, PermissionPrompt | `panel_ground` (or `surfaces.overlay` where already used) | `panel_border`, `floating_edge` on dark; separators `separator(.., s3, ..)`, never full-bleed. The dropdown list and context menu take `radii.panel`, rows `metrics.menu_row_height`, content inset `spacing.s3`, and a separator only between two rows |
 | Banner | `surfaces.raised` | `edge_on(raised)`; the severity is the icon's colour, never a tinted wash |
 | Tooltip | the blurred material (`surface::panel`) at `radii.control`, ink measured on the panel ground | `panel_border`, `floating_edge` on dark |
-| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a selector thumb (`selector_tier(raised)`, §9.3) inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs`: no track; the chosen tab is a selector on the window ground, as an in-app `TabBar`'s. `Quiet`: no track, a bare lift of the ground |
+| Segmented / ToggleGroup track (`SegmentedStyle::Segmented`) | `surfaces.raised`, `radii.control` | `edge_on(track)`; the chosen segment is a selector thumb (`selector_tier(raised)`, §9.3) inset concentrically (`radii.item`); separators only between two unchosen segments. `Tabs` (what `ViewTabs` and the window bar's views draw, §9.11a): no track; the chosen tab is a selector on the window ground, as the window tab bar's. `Quiet`: no track, a bare lift of the ground |
 | Chip / Badge `Neutral` | `surfaces.raised`, `radii.full` | `edge_on(raised)`; selected is a lift, no edge |
 | Chip / Badge `Tinted(tone)` | the tone washed 15 % into the ground | the tone at 38 %; label neutral ink measured on the wash |
 | Chip / Badge `Live` | `semantic.danger` | none; label measured on it |
@@ -1525,6 +1526,27 @@ decides where a new window lands and what the keyboard is aimed at, and which
 had no representation on screen at all. It idles quiet enough to ignore and is
 never absent, so a second strip is discoverable by looking rather than by being
 told.
+
+### 9.11a Views are tabs; values are segments
+
+Switching what a window's content shows — a request's Params, Headers, Auth
+and Body; a container's Logs, Stats, Inspect and Terminal; a library's Queue,
+Recent and Shared; a calendar's Month, Week and Day in the window bar's views
+slot — is always tabs, with one look everywhere: no track, each tab as wide
+as its label, the chosen one a selector lifted off the ground it stands on,
+the window tab bar's look. In a retained tree that is `ViewTabs`; the window
+bar's views slot paints the same tabs. Assistive technology meets a tab list
+whose chosen tab is selected.
+
+A segmented control (`ToggleGroup`) is only for choosing a **value**: an
+alignment, a density, a unit, a fill kind, list or grid. It has a track and a
+thumb, and assistive technology meets a group of toggles, one checked.
+
+How to tell: if choosing replaces the content below with another view of the
+thing, it is tabs. If it sets a property of the thing (and the content stays
+the same thing, shown differently or configured differently), it is a
+segmented control. A view switcher drawn as a segmented control, or a value
+chooser drawn as tabs, is a defect.
 
 ### 9.12 Collaboration chrome is chrome
 

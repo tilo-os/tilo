@@ -28,7 +28,7 @@
 //! - **leading actions:** icon buttons that act on where the window is,
 //!   standing right after the navigation (a calendar's previous, next and
 //!   today), at most [`MAX_LEADING`] of them;
-//! - **views:** a segmented switcher between the app's views of the same
+//! - **views:** tabs switching between the app's views of the same
 //!   thing (Month, Week, Day), trailing the location; where the row has no
 //!   room for it, it folds into a views menu that names the chosen view and
 //!   lists them all, the chosen one checked (only a row too narrow even for
@@ -145,7 +145,7 @@ pub struct WindowToolbar {
     pub views: Option<ToolbarViews>,
 }
 
-/// A segmented switcher between an app's views (Month, Week, Day).
+/// Tabs switching between an app's views (Month, Week, Day).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolbarViews {
     /// The switcher's accessible name ("View").
