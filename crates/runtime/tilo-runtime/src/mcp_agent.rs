@@ -40,6 +40,13 @@ const LS_LINES: usize = 40;
 const FIND_HITS: usize = 15;
 /// Characters of a read answered before the rest is cut.
 const READ_CHARS: usize = 12_000;
+/// What a cursor `tilo_read` issued for the rest of a cut read starts with:
+/// `read+<characters already answered>`, then `+<the app's cursor>` when the
+/// cut answer was a page the app's own cursor asked for.
+const READ_CURSOR: &str = "read+";
+/// The longest pause between two reads of a directory level that keeps
+/// changing while it is read.
+const RESTART_PAUSE_MAX: std::time::Duration = std::time::Duration::from_millis(200);
 /// Longest label shown whole in a listing line.
 const LABEL_CHARS: usize = 60;
 /// Longest first sentence of an action's description in an action's page.
@@ -75,7 +82,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_read",
-            "Read a resource as compact text. `notes/Todo` answers the note as markdown, each block ending in its id (`^c01e`), the id block actions take. Long reads end with a cursor line; pass it back as cursor.",
+            "Read a resource as compact text. `notes/Todo` answers the note as markdown, each block ending in its id (`^c01e`; a document's `{#c01e}`); block actions take the id alone: `c01e`. A long read ends with a cursor line; pass it back as cursor for the rest.",
             json!({"path":string,"cursor":string,"max_chars":integer}),
             json!(["path"]),
             read.clone(),
@@ -89,7 +96,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_find",
-            "Search apps, resources and actions by words, best first: `{query: \"checklist add\"}`, optionally app: \"notes\". One line per hit, path#action(params) and its label, ready for tilo_do. Files are not searched.",
+            "Search apps, resources and actions by words, best first: `{query: \"checklist add\"}`, optionally app: \"notes\" (or its id). One line per hit, path#action(params) and its label, ready for tilo_do. Files are not searched.",
             json!({"query":string,"app":string,"limit":integer}),
             json!(["query"]),
             read,
@@ -526,6 +533,90 @@ fn cut_at_line(text: &mut String, chars: usize) -> Option<usize> {
     Some(total.saturating_sub(text.chars().count()))
 }
 
+/// The cursor for the rest of a read cut after `answered` characters of the
+/// page `app_cursor` asked for (the first page when `None`).
+fn read_cursor(answered: usize, app_cursor: Option<&str>) -> String {
+    match app_cursor {
+        Some(app_cursor) => format!("{READ_CURSOR}{answered}+{app_cursor}"),
+        None => format!("{READ_CURSOR}{answered}"),
+    }
+}
+
+/// A cursor [`read_cursor`] issued, taken apart: the characters already
+/// answered and the app's cursor for the page they are in. `None` for a
+/// cursor of the app's own.
+fn parse_read_cursor(cursor: &str) -> Option<(usize, Option<String>)> {
+    let rest = cursor.strip_prefix(READ_CURSOR)?;
+    let (answered, app_cursor) = match rest.split_once('+') {
+        Some((answered, app_cursor)) => (
+            answered,
+            Some(app_cursor.to_owned()).filter(|cursor| !cursor.is_empty()),
+        ),
+        None => (rest, None),
+    };
+    Some((answered.parse().ok()?, app_cursor))
+}
+
+/// Drop the first `answered` characters of `text`, and the line break the
+/// cut before them stopped at. How many characters went.
+fn skip_answered(text: &mut String, answered: usize) -> usize {
+    if answered == 0 {
+        return 0;
+    }
+    let mut end = text
+        .char_indices()
+        .nth(answered)
+        .map_or(text.len(), |(at, _)| at);
+    let mut skipped = text.get(..end).map_or(0, |head| head.chars().count());
+    if text.get(end..).is_some_and(|rest| rest.starts_with('\n')) {
+        end = end.saturating_add(1);
+        skipped = skipped.saturating_add(1);
+    }
+    text.replace_range(..end, "");
+    skipped
+}
+
+/// What a read of `output` answers: its text from character `already` on,
+/// cut at `max_chars` with the cursor for the rest, else ending in the app's
+/// cursor for its next page when it gave one. `app_cursor` is the app's
+/// cursor that asked for `output`.
+fn read_answer(
+    output: &Value,
+    already: usize,
+    app_cursor: Option<&str>,
+    max_chars: Option<usize>,
+) -> String {
+    let mut text = render_value(output);
+    let skipped = skip_answered(&mut text, already);
+    let limit = max_chars.unwrap_or(READ_CHARS).clamp(200, 200_000);
+    let cut = cut_at_line(&mut text, limit);
+    if let Some(left) = cut {
+        let cursor = read_cursor(skipped.saturating_add(text.chars().count()), app_cursor);
+        let _ = write!(text, "\n… {left} more characters: cursor \"{cursor}\"");
+    }
+    if let Some(cursor) = next_cursor(output).filter(|_| cut.is_none()) {
+        let _ = write!(text, "\n… more: cursor \"{cursor}\"");
+    }
+    if text.is_empty() {
+        text.push_str("(empty)");
+    }
+    text
+}
+
+/// How long to wait before a directory level's `read`th read (0 the first)
+/// while it keeps changing: not at all for the first read or the first
+/// read again (one change, as an invocation's refresh makes, is read past
+/// at once), then from 5 ms, twice as long each time, up to
+/// [`RESTART_PAUSE_MAX`].
+fn restart_pause(read: u32) -> std::time::Duration {
+    let Some(doublings) = read.checked_sub(2) else {
+        return std::time::Duration::ZERO;
+    };
+    std::time::Duration::from_millis(5)
+        .checked_mul(1_u32.checked_shl(doublings).unwrap_or(u32::MAX))
+        .map_or(RESTART_PAUSE_MAX, |pause| pause.min(RESTART_PAUSE_MAX))
+}
+
 fn first_sentence(text: &str) -> String {
     let text = text.trim();
     let sentence = text
@@ -874,11 +965,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // app's directory moves on between pages (its document changed, or an
         // invocation refreshed it), what was read belongs to the old revision
         // and the read starts again from the first page at the new one, for
-        // as long as an action is waited for.
-        let deadline = std::time::Instant::now()
+        // as long as an action is waited for, pausing longer each time a
+        // directory that keeps changing is read again.
+        let deadline = tokio::time::Instant::now()
             .checked_add(std::time::Duration::from_millis(DEFAULT_WAIT_MS));
         let mut rows = Vec::new();
+        let mut reads: u32 = 0;
         'snapshot: loop {
+            let pause = restart_pause(reads);
+            if !pause.is_zero()
+                && let Some(deadline) = deadline
+            {
+                let until = tokio::time::Instant::now()
+                    .checked_add(pause)
+                    .map_or(deadline, |until| until.min(deadline));
+                tokio::time::sleep_until(until).await;
+            }
+            reads = reads.saturating_add(1);
             rows.clear();
             let mut cursor = Vec::new();
             let mut revision = None;
@@ -899,7 +1002,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     })
                     .await?;
                 if page.stale_cursor {
-                    if deadline.is_some_and(|deadline| std::time::Instant::now() < deadline) {
+                    if deadline.is_some_and(|deadline| tokio::time::Instant::now() < deadline) {
                         continue 'snapshot;
                     }
                     return Err(
@@ -1212,6 +1315,40 @@ fn path_in(node: &Node, pool: &[Node]) -> String {
     }
 }
 
+/// The ids of the apps `name` names among those `running` and `installed`:
+/// its whole id or the name `tilo_ls` lists it by, any case. An error naming
+/// the apps there are when it names none, so a search narrowed to an app
+/// that is not there does not answer that nothing matches.
+fn searched_apps(
+    name: &str,
+    running: &[String],
+    installed: &[(String, String)],
+) -> Result<Vec<String>, String> {
+    let known = running
+        .iter()
+        .chain(installed.iter().map(|(app_id, _)| app_id));
+    let mut meant: Vec<String> = Vec::new();
+    let mut all: Vec<String> = Vec::new();
+    for app_id in known {
+        all.push(app_id.clone());
+        let short = app_names(std::slice::from_ref(app_id)).join("");
+        if (app_id.eq_ignore_ascii_case(name) || short.eq_ignore_ascii_case(name))
+            && !meant.contains(app_id)
+        {
+            meant.push(app_id.clone());
+        }
+    }
+    if !meant.is_empty() {
+        return Ok(meant);
+    }
+    let listed = app_names(&all);
+    Err(if listed.is_empty() {
+        format!("no app {name}: no app is running or installed")
+    } else {
+        format!("no app {name}; the apps: {}", list_names(&listed))
+    })
+}
+
 fn app_names(ids: &[String]) -> Vec<String> {
     let mut names: Vec<String> = ids
         .iter()
@@ -1410,7 +1547,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         {
             arguments.insert("item".into(), node.key.clone().into());
         }
-        if let Some(cursor) = args.cursor.filter(|cursor| !cursor.is_empty()) {
+        // A cursor this tool issued for the rest of a cut answer reads the
+        // same page again and answers from where the cut was; any other is
+        // the app's own.
+        let (already, app_cursor) = match args.cursor.filter(|cursor| !cursor.is_empty()) {
+            None => (0, None),
+            Some(cursor) => parse_read_cursor(&cursor).unwrap_or((0, Some(cursor))),
+        };
+        if let Some(cursor) = app_cursor.clone() {
             if has("cursor") {
                 arguments.insert("cursor".into(), cursor.into());
             } else {
@@ -1454,22 +1598,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .pointer("/update/output/value")
             .cloned()
             .unwrap_or_default();
-        let mut text = render_value(&output);
-        let limit = args.max_chars.unwrap_or(READ_CHARS).clamp(200, 200_000);
-        let cut = cut_at_line(&mut text, limit);
-        if let Some(left) = cut {
-            let _ = write!(
-                text,
-                "\n… {left} more characters; pass max_chars to read further"
-            );
-        }
-        if let Some(cursor) = next_cursor(&output).filter(|_| cut.is_none()) {
-            let _ = write!(text, "\n… more: cursor \"{cursor}\"");
-        }
-        if text.is_empty() {
-            text.push_str("(empty)");
-        }
-        Ok(Reply::ok(text))
+        Ok(Reply::ok(read_answer(
+            &output,
+            already,
+            app_cursor.as_deref(),
+            args.max_chars,
+        )))
     }
 
     /// The action that reads `resolved`, and the id of the resource that
@@ -1685,7 +1819,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let (_, running) = self.instances().await?;
         let installed = self.installed().await.unwrap_or_default();
         let mut hits: Vec<Hit> = Vec::new();
-        let wanted = args.app.as_deref().map(str::to_lowercase);
         // Apps by name.
         let mut seen: Vec<String> = Vec::new();
         for (_, app) in &running {
@@ -1695,12 +1828,21 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 seen.push(app_id.to_owned());
             }
         }
+        let wanted = match args
+            .app
+            .as_deref()
+            .map(str::trim)
+            .filter(|app| !app.is_empty())
+        {
+            Some(app) => Some(searched_apps(app, &seen, &installed)?),
+            None => None,
+        };
         for (app_id, label) in &installed {
             let name = app_names(std::slice::from_ref(app_id)).join("");
             let matches = words.iter().all(|word| {
                 name.starts_with(word.as_str()) || label.to_lowercase().starts_with(word.as_str())
             });
-            if matches && wanted.as_ref().is_none_or(|wanted| *wanted == name) {
+            if matches && wanted.as_ref().is_none_or(|wanted| wanted.contains(app_id)) {
                 let state = if seen.contains(app_id) {
                     "running"
                 } else {
@@ -1768,15 +1910,15 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         &self,
         seen: &[String],
         running: &[(u64, Value)],
-        wanted: Option<&str>,
+        wanted: Option<&[String]>,
         words: &[String],
     ) -> (Vec<Hit>, Vec<String>, usize) {
         let mut searched: Vec<(String, String)> = Vec::new();
         for app_id in seen {
-            let name = app_names(std::slice::from_ref(app_id)).join("");
-            if wanted.is_some_and(|wanted| wanted != name) {
+            if wanted.is_some_and(|wanted| !wanted.contains(app_id)) {
                 continue;
             }
+            let name = app_names(std::slice::from_ref(app_id)).join("");
             if let Some(provider) = running
                 .iter()
                 .rev()
