@@ -37,6 +37,9 @@ struct Notes {
     /// read: while it is above zero the app's top level comes in two pages,
     /// and asking for the second finds the revision changed.
     moves: Arc<Mutex<u32>>,
+    /// Rows a search's page holds, when set: more come in a second page,
+    /// which finds the revision changed, as a busy app's directory does.
+    search_page: Arc<Mutex<Option<usize>>>,
     /// What the directory was asked, in order: `apps` for which apps run,
     /// else the provider and the parent a listing is under.
     asked: Arc<Mutex<Vec<String>>>,
@@ -55,6 +58,7 @@ impl Notes {
             publication: "2a4120d7-2f63-4578-aed8-11cb91ed3628",
             invoked: Arc::default(),
             moves: Arc::default(),
+            search_page: Arc::default(),
             asked: Arc::default(),
             silent: Arc::default(),
         }
@@ -390,6 +394,25 @@ impl ActionHost for Notes {
             }
         } else {
             rows.retain(|row| host_matches(row, &query.needle));
+            let search_page = *self.search_page.lock().unwrap();
+            if let Some(page) = search_page {
+                if !query.cursor.is_empty() {
+                    return Pending::ready(Ok(CataloguePage {
+                        revision: "v2".into(),
+                        stale_cursor: true,
+                        ..CataloguePage::default()
+                    }));
+                }
+                if rows.len() > page {
+                    rows.truncate(page);
+                    return Pending::ready(Ok(CataloguePage {
+                        revision: "v1".into(),
+                        rows,
+                        next_cursor: b"more".to_vec(),
+                        ..CataloguePage::default()
+                    }));
+                }
+            }
         }
         Pending::ready(Ok(CataloguePage {
             revision: "v1".into(),
@@ -1010,6 +1033,31 @@ fn a_search_ranks_apps_then_resources_then_actions_and_lists_ready_paths() {
         )
         .await;
         assert!(text.starts_with("nothing matches"), "{text}");
+    });
+}
+
+/// A name searched whole is found even where its longest word fills more
+/// pages than a search reads: "paragraph" names both bodies' append and
+/// insert, and the second page is gone by the time it is asked for.
+#[test]
+fn a_search_finds_a_name_whose_longest_word_many_rows_share() {
+    let host = Notes::new(true);
+    *host.search_page.lock().unwrap() = Some(2);
+    run(async {
+        let (text, failed) = tool(
+            &agent(&host),
+            "tilo_find",
+            json!({"query": "insert paragraph"}),
+        )
+        .await;
+        assert!(!failed, "{text}");
+        for page in ["Todo", "Groceries"] {
+            assert!(
+                text.lines()
+                    .any(|line| line.starts_with(&format!("notes/{page}/body#insert-block"))),
+                "{page}'s insert is missing: {text}"
+            );
+        }
     });
 }
 

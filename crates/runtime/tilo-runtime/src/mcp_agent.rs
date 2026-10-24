@@ -1817,34 +1817,24 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .max_by_key(|word| word.len())
             .cloned()
             .unwrap_or_default();
-        let mut rows = Vec::new();
-        let mut cursor = Vec::new();
-        let mut revision = None;
-        for _ in 0..SEARCH_PAGES {
-            let page = self
-                .ask(CatalogueQuery {
-                    provider: Some(provider.to_owned()),
-                    needle: longest.clone(),
-                    cursor: std::mem::take(&mut cursor),
-                    revision: revision.take(),
-                    max_results: PAGE_ROWS,
-                    limits: Some(CatalogueLimits {
-                        max_bytes: Some(65536),
-                        max_work: Some(512),
-                        max_depth: Some(16),
-                    }),
-                    ..CatalogueQuery::default()
-                })
-                .await?;
-            if page.stale_cursor {
-                break;
+        // The words as one phrase first: a name searched whole (a note's
+        // title) is then found in the few rows that carry it, even when its
+        // longest word is shared by more rows than the pages below hold, as
+        // in a notebook of notes titled alike.
+        let mut rows = if words.len() > 1 {
+            self.needle_rows(provider, &words.join(" ")).await?
+        } else {
+            Vec::new()
+        };
+        for row in self.needle_rows(provider, &longest).await? {
+            let same = |seen: &CatalogueRow| {
+                seen.resource.id == row.resource.id
+                    && seen.action.as_ref().map(|action| &action.address)
+                        == row.action.as_ref().map(|action| &action.address)
+            };
+            if !rows.iter().any(same) {
+                rows.push(row);
             }
-            rows.extend(page.rows);
-            if page.exhausted || page.next_cursor.is_empty() {
-                break;
-            }
-            revision = Some(page.revision);
-            cursor = page.next_cursor;
         }
         let nodes = level_of(&rows, "").children;
         let mut levels = Levels::new();
@@ -1889,6 +1879,41 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             }
         }
         Ok(hits)
+    }
+
+    /// The rows of `provider` whose names hold `needle`, as many pages as a
+    /// search reads.
+    async fn needle_rows(&self, provider: &str, needle: &str) -> Result<Vec<CatalogueRow>, String> {
+        let mut rows = Vec::new();
+        let mut cursor = Vec::new();
+        let mut revision = None;
+        for _ in 0..SEARCH_PAGES {
+            let page = self
+                .ask(CatalogueQuery {
+                    provider: Some(provider.to_owned()),
+                    needle: needle.to_owned(),
+                    cursor: std::mem::take(&mut cursor),
+                    revision: revision.take(),
+                    max_results: PAGE_ROWS,
+                    limits: Some(CatalogueLimits {
+                        max_bytes: Some(65536),
+                        max_work: Some(512),
+                        max_depth: Some(16),
+                    }),
+                    ..CatalogueQuery::default()
+                })
+                .await?;
+            if page.stale_cursor {
+                break;
+            }
+            rows.extend(page.rows);
+            if page.exhausted || page.next_cursor.is_empty() {
+                break;
+            }
+            revision = Some(page.revision);
+            cursor = page.next_cursor;
+        }
+        Ok(rows)
     }
 }
 
