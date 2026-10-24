@@ -625,6 +625,9 @@ pub struct PdfApp {
     interaction: ui::interaction::InteractionEnvironment,
     /// A live image-region marquee (Shift + Select drag), if any.
     region: Option<RegionSelect>,
+    /// A released marquee whose crop waits for its page's render, with the
+    /// document it was drawn on: copied when the render arrives.
+    region_waiting: Option<(u64, RegionSelect)>,
     /// Whether Shift is currently held (drives the region-copy marquee).
     shift_down: bool,
 
@@ -1112,6 +1115,7 @@ impl PdfApp {
             glide: ui::ScrollMomentum::new(),
             interaction: ui::interaction::InteractionEnvironment::default(),
             region: None,
+            region_waiting: None,
             shift_down: false,
             source_path: None,
             status_note: Transient::new(),
@@ -2404,18 +2408,17 @@ impl PdfApp {
         self.dirty = true;
     }
 
-    /// Crop the active image-region marquee out of its page bitmap and copy it
-    /// to the clipboard as an image. Raster backend only. Returns true when a
-    /// region of usable size was cropped (the clipboard push itself is
-    /// best-effort — it silently no-ops in a headless session).
-    fn copy_region(&mut self) -> bool {
-        let Some(region) = self.region else {
-            return false;
-        };
-        let rect = region.rect();
-        if rect.w < 3.0 || rect.h < 3.0 {
-            return false;
-        }
+    /// End the image-region marquee: crop it and copy it to the clipboard,
+    /// now or, when its page is still being rendered for the crop, as soon
+    /// as the render arrives. Whether it was copied now.
+    fn release_region(&mut self) -> bool {
+        self.region
+            .take()
+            .is_some_and(|region| self.copy_region(region))
+    }
+
+    /// The page bitmap a crop of `region` is cut from, and the page's size.
+    fn region_source(&self, region: RegionSelect) -> ((usize, u32), (f64, f64)) {
         let page_idx = region.page.saturating_sub(1);
         let (pgw, pgh) = self
             .raster_document
@@ -2423,24 +2426,48 @@ impl PdfApp {
             .and_then(|document| document.page_sizes.get(page_idx).copied())
             .unwrap_or_else(|| (self.pw(), self.ph()));
         let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
-        let image_key = (page_idx, crate::source::RasterBackend::bucket_for(bucket));
+        (
+            (page_idx, crate::source::RasterBackend::bucket_for(bucket)),
+            (pgw, pgh),
+        )
+    }
+
+    /// Crop `region` out of its page bitmap and copy it to the clipboard as
+    /// an image. Raster backend only. Returns true when a region of usable
+    /// size was cropped (the clipboard push itself is best-effort — it
+    /// silently no-ops in a headless session). A page not rendered for the
+    /// crop yet is asked for, and the copy waits for it
+    /// ([`Self::copy_waiting_region`]).
+    fn copy_region(&mut self, region: RegionSelect) -> bool {
+        let rect = region.rect();
+        if rect.w < 3.0 || rect.h < 3.0 {
+            return false;
+        }
+        let (image_key, (pgw, pgh)) = self.region_source(region);
         let Some(image) = self.raster_images.get(&image_key) else {
-            if let Some(document) = self.raster_document.as_ref()
-                && self.raster_render_pending.insert(image_key)
-                && !self.raster_handle.as_ref().is_some_and(|handle| {
-                    handle
-                        .request_render(RenderRequest {
-                            document_id: document.id,
-                            page: page_idx,
-                            target_width: bucket,
-                        })
-                        .is_ok()
-                })
-            {
-                self.raster_render_pending.remove(&image_key);
+            let Some(document) = self.raster_document.as_ref() else {
+                return false;
+            };
+            let document_id = document.id;
+            // Asked for on its own, outside the frame's render batch, so a
+            // batch that moves on with the view never cancels it.
+            let asked = self.raster_handle.as_ref().is_some_and(|handle| {
+                handle
+                    .request_render(RenderRequest {
+                        document_id,
+                        page: image_key.0,
+                        target_width: image_key.1,
+                    })
+                    .is_ok()
+            });
+            if asked {
+                self.region_waiting = Some((document_id, region));
+                self.status_note
+                    .show_progress("Rendering selected region…".to_string());
+            } else {
+                self.status_note
+                    .show("PDF render worker is unavailable".to_string());
             }
-            self.status_note
-                .show("Rendering selected region…".to_string());
             self.dirty = true;
             return false;
         };
@@ -2457,6 +2484,30 @@ impl PdfApp {
         });
         self.dirty = true;
         true
+    }
+
+    /// Copy a released marquee whose page render has arrived. One whose
+    /// document was replaced is dropped; one whose render failed was
+    /// dropped with the failure, which says so itself.
+    fn copy_waiting_region(&mut self) {
+        let Some((document_id, region)) = self.region_waiting else {
+            return;
+        };
+        if self
+            .raster_document
+            .as_ref()
+            .is_none_or(|document| document.id != document_id)
+        {
+            // Its progress note goes on the next sync (`keep_while`).
+            self.region_waiting = None;
+            self.dirty = true;
+        } else if self
+            .raster_images
+            .contains_key(&self.region_source(region).0)
+        {
+            self.region_waiting = None;
+            self.copy_region(region);
+        }
     }
 
     // ---- save-back (flatten markup onto a real .pdf) ----------------
@@ -4183,6 +4234,13 @@ impl PdfApp {
                         crate::source::RasterBackend::bucket_for(request.target_width),
                     );
                     self.raster_render_pending.remove(&key);
+                    // A marquee waiting for this render is not copied.
+                    if self
+                        .region_waiting
+                        .is_some_and(|(_, region)| self.region_source(region).0 == key)
+                    {
+                        self.region_waiting = None;
+                    }
                     self.status_note.show(format!(
                         "Couldn’t render page {}: {error}",
                         request.page + 1
@@ -4515,7 +4573,8 @@ impl Widget for PdfApp {
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         // A progress note stays while its copy or import is under way.
-        let working = self.pending_copy || self.pending_import.is_some();
+        let working =
+            self.pending_copy || self.pending_import.is_some() || self.region_waiting.is_some();
         if self.status_note.keep_while(working) | self.status_note.expire() {
             self.dirty = true;
         }
@@ -4536,6 +4595,7 @@ impl Widget for PdfApp {
         // is non-blocking and is the sole route by which production PDFium
         // results enter widget state.
         self.drain_raster_events(state);
+        self.copy_waiting_region();
         self.drain_opens();
         self.follow_cancellation();
         // A selection drag held at the canvas's edge scrolls on its own,

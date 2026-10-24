@@ -342,19 +342,31 @@ fn imported_images_and_pdfs_add_pages_and_regions_crop_the_bitmap() {
             start: (40.0, 40.0),
             cur: (pw * 0.6, ph * 0.5),
         });
-        // The page is rendered for the crop first; the copy follows once
-        // the worker delivers it.
-        assert!(!app.copy_region(), "the crop waits for its page render");
+        // Releasing the marquee asks for the page rendered for the crop,
+        // and the marquee itself is gone: the copy follows on its own once
+        // the worker delivers the render, with nothing more from the person.
         let bucket = ((pw * 2.0).round() as u32).clamp(96, 4096);
         let key = (0, crate::source::RasterBackend::bucket_for(bucket));
-        settle_until(&mut app, &mut st, |app| {
-            app.raster_images.contains_key(&key)
-        });
         assert!(
-            app.copy_region(),
-            "a usable region is cropped: {:?}",
+            !app.raster_images.contains_key(&key),
+            "the crop's render is not here before the release"
+        );
+        assert!(!app.release_region(), "the crop waits for its page render");
+        assert!(app.region.is_none(), "the release ends the marquee");
+        assert!(
+            app.status_note.is_progress(),
+            "the wait reads as work under way: {:?}",
             app.status_note
         );
+        settle_until(&mut app, &mut st, |app| {
+            app.raster_images.contains_key(&key) && app.region_waiting.is_none()
+        });
+        let note = app.status_note.as_deref().unwrap_or_default().to_owned();
+        assert!(
+            note.starts_with("Copied") || note.contains("clipboard"),
+            "the arrived render is cropped and copied, and the note says so: {note:?}"
+        );
+        assert!(!app.status_note.is_progress(), "{note:?}");
 
         let img = app.raster_images.get(&key).expect("the render arrived");
         let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
