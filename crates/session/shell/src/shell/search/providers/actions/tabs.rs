@@ -28,17 +28,15 @@ pub(super) fn rename_focused_tab(
     let Some(tab) = active_tab_id(state) else {
         return Err(refuse(state, TabActionError::NoActiveTab));
     };
-    match args.text("name") {
-        Some(name) => rename_tab(state, tab, name)
+    if let Some(name) = args.text("name") {
+        return rename_tab(state, tab, name)
             .map(|_| ())
-            .map_err(|err| refuse(state, err)),
-        None => {
-            if !crate::shell::tab_binding::may_rename_tab(&state.tree(), tab) {
-                return Err(refuse(state, TabActionError::NotRenamable));
-            }
-            state.tab_rename_request = Some(tab);
-            state.bump();
-            Ok(())
-        }
+            .map_err(|err| refuse(state, err));
     }
+    if !crate::shell::tab_binding::may_rename_tab(&state.tree(), tab) {
+        return Err(refuse(state, TabActionError::NotRenamable));
+    }
+    state.tab_rename_request = Some(tab);
+    state.bump();
+    Ok(())
 }

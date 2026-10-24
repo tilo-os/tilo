@@ -822,20 +822,19 @@ pub fn split_active_tab(
 /// [`TabActionError::NotRenamable`] when it is not a host window this device
 /// names ([`tab_binding::may_rename_tab`]).
 pub fn rename_tab(st: &mut ChromeState, tab_id: TabId, name: &str) -> Result<bool, TabActionError> {
-    let changed = {
-        let mut tree = st.tree_mut();
-        let known = tree
-            .desktop
-            .workspaces
-            .iter()
-            .flat_map(|workspace| workspace.strips.iter())
-            .flat_map(|strip| strip.window_groups.iter())
-            .any(|group| group.tabs.iter().any(|tab| tab.id == tab_id));
-        if !known {
-            return Err(TabActionError::UnknownTab);
-        }
-        tab_binding::rename_host_tab(&mut tree, tab_id, name).ok_or(TabActionError::NotRenamable)?
-    };
+    let mut tree = st.tree_mut();
+    let known = tree
+        .desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .any(|group| group.tabs.iter().any(|tab| tab.id == tab_id));
+    let renamed = known.then(|| tab_binding::rename_host_tab(&mut tree, tab_id, name));
+    drop(tree);
+    let changed = renamed
+        .ok_or(TabActionError::UnknownTab)?
+        .ok_or(TabActionError::NotRenamable)?;
     if changed {
         st.bump();
     }
