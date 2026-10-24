@@ -1348,10 +1348,6 @@ fn short_pairing_link(link: &str) -> String {
         .unwrap_or_else(|| "…".to_owned())
 }
 
-fn parse_invite(token: &str) -> Option<crate::network::invite::PeerInviteToken> {
-    crate::network::invite::validate_invite_token(token.trim()).ok()
-}
-
 fn peer_fingerprint(peer_id: &str) -> String {
     let chars: Vec<char> = peer_id.chars().collect();
     let tail = chars.get(chars.len().saturating_sub(8)..).unwrap_or(&[]);

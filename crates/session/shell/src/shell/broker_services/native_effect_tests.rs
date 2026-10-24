@@ -939,10 +939,7 @@ fn native_files_home_consent_survives_authorship_and_revocation_does_not_resurre
         Access::Read
     ));
     let person = crate::shell::state::local_user_id_for_room(&fixture.room);
-    assert!(
-        tree.write()
-            .revoke_sandbox_in_workspace(workspace, &person, &saved.id)
-    );
+    assert!(tree.write().narrow_sandbox(workspace, &person, &saved.id));
     assert!(!grants.permits(&caller, &resource, Access::Read));
     publish("so.tilo.chat");
     assert!(

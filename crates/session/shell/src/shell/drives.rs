@@ -178,7 +178,7 @@ fn reveal(chrome: &Chrome, path: &Path) -> Result<(), String> {
             .map(|workspace| workspace.id)
             .ok_or_else(|| t("drives-no-workspace"))?;
         grant_file_manager_path(&mut tree, active, path.to_path_buf());
-        let workspace = tree.workspace_after_opening_app(SYSTEM_FILE_MANAGER);
+        let workspace = tree.desktop.active_workspace().cloned();
         tree.queue_save();
         workspace
     };

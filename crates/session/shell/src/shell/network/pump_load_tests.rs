@@ -62,15 +62,7 @@ fn turn(selection: &SharedSelection) -> FabricTurn {
 /// A turn's local change: the first group with tabs to spare rotates them,
 /// so the desktop keeps its size while its layout keeps changing.
 fn move_a_tab(network: &ShellNetwork) {
-    let Some(tree) = network
-        .replica
-        .lock()
-        .ok()
-        .map(|replica| replica.tree.clone())
-    else {
-        return;
-    };
-    let mut tree = tree.write();
+    let mut tree = network.tree.write();
     let Some(group) = tree
         .desktop
         .workspaces

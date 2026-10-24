@@ -345,13 +345,8 @@ pub(crate) struct DurableTree {
 pub(crate) struct DurableRest {
     #[serde(flatten)]
     desktop: crate::shell::state::DesktopTree,
-    room_authority: std::collections::HashMap<RoomId, crate::shell::state::RoomAuthority>,
-    room_peer_names: std::collections::HashMap<RoomId, std::collections::BTreeMap<String, String>>,
-    room_peer_identities: std::collections::HashMap<
-        RoomId,
-        std::collections::BTreeMap<String, crate::shell::state::GovernedPeerIdentity>,
-    >,
-    room_share_floor: std::collections::HashMap<RoomId, u64>,
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pending_placements: std::collections::BTreeSet<RoomId>,
     #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     strips_to_retain: std::collections::BTreeSet<crate::shell::state::StripId>,
     continuation_tabs: std::collections::BTreeSet<TabId>,
@@ -372,6 +367,10 @@ pub(crate) struct DurableRest {
     joining_rooms: std::collections::BTreeSet<RoomId>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     archived_workspaces: Vec<crate::shell::state::Workspace>,
+    /// What an older file held that the tree no longer reads, written back
+    /// as it was read.
+    #[serde(flatten)]
+    retired_fields: serde_json::Map<String, serde_json::Value>,
 }
 
 impl DurableTree {
@@ -413,10 +412,6 @@ impl DurableTree {
             native_authority: tree.native_authority.clone(),
             rest: DurableRest {
                 desktop,
-                room_authority: tree.room_authority.clone(),
-                room_peer_names: tree.room_peer_names.clone(),
-                room_peer_identities: tree.room_peer_identities.clone(),
-                room_share_floor: tree.room_share_floor.clone(),
                 strips_to_retain: tree.strips_to_retain.clone(),
                 continuation_tabs: tree.continuation_tabs.clone(),
                 continuation_rooms: tree.continuation_rooms.clone(),
@@ -429,6 +424,8 @@ impl DurableTree {
                 workspace_aliases: tree.workspace_aliases.clone(),
                 joining_rooms: tree.joining_rooms.clone(),
                 archived_workspaces: archived.workspaces,
+                pending_placements: tree.pending_placements.clone(),
+                retired_fields: tree.retired_fields.clone(),
             },
         }
     }
@@ -1119,8 +1116,8 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_default();
         let home = tree.desktop.workspaces[0].id;
         let home_main = tree.desktop.workspaces[0].strips[0].id;
-        let used = tree.append_empty_workspace("Used");
-        let alone = tree.append_empty_workspace("Alone");
+        let used = tree.create_hosted_workspace("Used").0;
+        let alone = tree.create_hosted_workspace("Alone").0;
         let salt = 0x1234;
         let (home_lounge, used_lounge) = {
             let ws = |tree: &mut WorkspaceTree, id| {
@@ -2046,7 +2043,7 @@ mod tests {
         fn two_workspaces(path: &Path) -> (WorkspaceTree, [crate::shell::state::WorkspaceId; 2]) {
             let mut tree = WorkspaceTree::bootstrap_default();
             let first = tree.desktop.workspaces[0].id;
-            let second = tree.append_empty_workspace("Second");
+            let second = tree.create_hosted_workspace("Second").0;
             tree.desktop.active = first;
             tree.seed_doc_from_cache();
             tree.persist_path = Some(path.to_path_buf());
@@ -2108,7 +2105,7 @@ mod tests {
             let mut names = Vec::new();
             for index in 0..40 {
                 let name = format!("Burst {index}");
-                tree.append_empty_workspace(&name);
+                tree.create_hosted_workspace(&name);
                 tree.queue_save();
                 names.push(name);
             }
@@ -2144,7 +2141,7 @@ mod tests {
                 })
             };
             for index in 0..30 {
-                tree.append_empty_workspace(&format!("Racing {index}"));
+                tree.create_hosted_workspace(&format!("Racing {index}"));
                 tree.queue_save();
                 if index % 5 == 0 {
                     wait_for_saves();
@@ -2186,8 +2183,8 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn durable_tree_serialises_exactly_like_workspace_tree() {
         use crate::shell::state::{
-            Access, CapOverride, Expiry, LocalAppRecord, NativeDocumentReference, RoomAuthority,
-            Scope, Subject, Tab, TileContent,
+            Access, CapOverride, Expiry, LocalAppRecord, NativeDocumentReference, Scope, Subject,
+            Tab, TileContent,
         };
 
         let mut tree = WorkspaceTree::bootstrap_demo();
@@ -2228,12 +2225,10 @@ mod tests {
             .with_id("session-only")
             .expiring(Expiry::EndOfSession),
         );
-        tree.room_authority.insert(room, RoomAuthority::Local);
-        tree.room_peer_names
-            .entry(room)
-            .or_default()
-            .insert("peer".into(), "Ada".into());
-        tree.room_share_floor.insert(room, 41);
+        tree.retired_fields.insert(
+            "room_share_floor".into(),
+            serde_json::json!({ room.to_string(): 41 }),
+        );
         tree.strips_to_retain
             .insert(crate::shell::state::StripId(93_010));
         tree.continuation_tabs.insert(93_003);
@@ -2287,12 +2282,51 @@ mod tests {
         );
     }
 
+    /// A state file written while the shell ran its own room engine loads
+    /// as it is, and saving it again leaves what that engine kept (and its
+    /// workspaces) exactly as they were: nothing is migrated or dropped.
+    #[test]
+    fn a_shell_engine_state_file_loads_and_saves_its_old_fields_unchanged() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let tree = WorkspaceTree::bootstrap_default();
+        let room = tree.desktop.workspaces[0].room().to_string();
+        save_tree_to(&tree, &path).expect("save");
+        let mut file: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("json");
+        let old = serde_json::json!({
+            "room_authority": { room.clone(): "Unpinned" },
+            "room_peer_names": { room.clone(): { "iroh:ab": "Ada" } },
+            "room_peer_identities": { room.clone(): {} },
+            "room_share_floor": { room: 41 },
+        });
+        for (key, value) in old.as_object().expect("object") {
+            file[key] = value.clone();
+        }
+        std::fs::write(&path, serde_json::to_vec_pretty(&file).expect("json")).expect("write");
+
+        let loaded = load_tree_from(&path).expect("an old file loads");
+        assert_eq!(
+            loaded.desktop.workspaces.len(),
+            tree.desktop.workspaces.len(),
+            "every workspace stays"
+        );
+        let again_path = dir.path().join("again.json");
+        save_tree_to(&loaded, &again_path).expect("save again");
+        let again: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&again_path).expect("read")).expect("json");
+        for key in old.as_object().expect("object").keys() {
+            assert_eq!(again[key], file[key], "{key} is written back as it was");
+        }
+        assert_eq!(again["workspaces"], file["workspaces"]);
+    }
+
     #[test]
     fn a_save_hands_the_writer_only_what_changed_and_restores_the_live_history() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
         let mut tree = WorkspaceTree::bootstrap_default();
-        let second = tree.append_empty_workspace("Second");
+        let second = tree.create_hosted_workspace("Second").0;
         // No `persist_path`: the saves below are this test's own, not the
         // writer thread's racing them.
         for index in 0..400 {
@@ -2340,7 +2374,7 @@ mod tests {
         let first = tree.desktop.workspaces[0].id;
         save_tree_to(&tree, &path).expect("baseline save");
         for name in ["One", "Two", "Three"] {
-            tree.append_empty_workspace(name);
+            tree.create_hosted_workspace(name);
             tree.commit_room_change();
             save_tree_to(&tree, &path).expect("save");
         }

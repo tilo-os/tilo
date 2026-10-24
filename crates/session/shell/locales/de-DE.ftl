@@ -26,8 +26,6 @@ continuity-other-device = deinem anderen Gerät
 tab-closed-toast = { $title } geschlossen
 tab-closed-group-toast = { $count } Tabs geschlossen
 tab-closed-undo = Rückgängig
-workspace-deleted-toast = { $name } gelöscht
-workspace-deleted-undo = Rückgängig
 workspace-left-toast = { $name } verlassen
 workspace-joined-name = Geteilter Arbeitsbereich
 workspace-needs-join-again = Erneut beitreten, um teilzunehmen
@@ -2057,8 +2055,6 @@ peer-sync-link-note-anyone = Wer den Link öffnet, kann beitreten. Er funktionie
 peer-sync-copy-invite = Einladung kopieren
 peer-sync-revoke = Widerrufen
 peer-sync-done = Fertig
-peer-sync-code-hint = Diesen Code sieht die Person, wenn sie die Einladung öffnet
-peer-sync-code-check = Prüfe, ob die Person, die dich eingeladen hat, denselben Code sieht
 peer-sync-paste-link = Link einfügen
 peer-sync-join-field-label = Link oder Seite
 peer-sync-who-heading = Wer
@@ -2105,25 +2101,6 @@ peer-sync-role-expires = { $role }, { $unit ->
        *[other] { $count } Tagen
     } ab
 }
-peer-sync-received-role-expires = Zugriff als { $role }, { $unit ->
-    [now] läuft gleich ab
-    [seconds] läuft in { $count ->
-        [one] 1 Sekunde
-       *[other] { $count } Sekunden
-    } ab
-    [minutes] läuft in { $count ->
-        [one] 1 Minute
-       *[other] { $count } Minuten
-    } ab
-    [hours] läuft in { $count ->
-        [one] 1 Stunde
-       *[other] { $count } Stunden
-    } ab
-   *[days] läuft in { $count ->
-        [one] 1 Tag
-       *[other] { $count } Tagen
-    } ab
-}
 peer-sync-role-viewer = Betrachter
 peer-sync-role-commenter = Kommentator
 peer-sync-role-editor = Bearbeiter
@@ -2134,7 +2111,6 @@ peer-sync-copy-identity = Meine Identität kopieren
 peer-sync-role-heading = Zugriff
 peer-sync-recipient-hint = Wähle jemanden, den du kennst, oder füge die Tilo-Identität ein, die dir die Person geschickt hat.
 peer-sync-invite-anyone = Jeder mit dieser Einladung
-peer-sync-invite-received = Einladung erhalten
 peer-sync-paste-invite-hint = Etwa tilo.coffee oder einen Link, den man dir geschickt hat.
 peer-sync-join-site = Tritt dem Arbeitsbereich auf { $host } bei
 peer-sync-join-invitation-link = Eine Einladung in einen Arbeitsbereich auf { $host }

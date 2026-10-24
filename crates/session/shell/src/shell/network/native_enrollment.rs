@@ -55,20 +55,11 @@ impl NativeOwnerStatus {
 }
 
 impl ShellNetwork {
-    fn native_tree(&self) -> Result<WorkspaceTreeHandle, String> {
-        Ok(self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?
-            .tree
-            .clone())
-    }
-
     /// The native owner, opened here if it is not yet: binding its writer
     /// and publishing its reopened generation, which can wait for the disk.
     /// The frame loop asks [`Self::native_owner_status`] instead.
     pub(crate) fn native_owner(&self) -> Result<NativeWorkspaceOwner, String> {
-        let tree = self.native_tree()?;
+        let tree = self.tree.clone();
         let retained = self
             .native_enrollment
             .owner
@@ -106,10 +97,8 @@ impl ShellNetwork {
     /// [`REOPEN_AFTER`] after a failure), the loop is woken once that open
     /// ends, and this answers [`NativeOwnerStatus::Opening`].
     pub(crate) fn native_owner_status(&self) -> NativeOwnerStatus {
-        // The replica before the owner, in the order `native_owner` takes them.
-        let Ok(tree) = self.native_tree() else {
-            return NativeOwnerStatus::Unavailable;
-        };
+        // The tree before the owner, in the order `native_owner` takes them.
+        let tree = self.tree.clone();
         // Held only by a caller opening the owner itself.
         let retained = match self.native_enrollment.owner.try_lock() {
             Ok(retained) => retained,
@@ -224,18 +213,12 @@ impl ShellNetwork {
     }
 
     /// [`Self::accept_peer_invitation`], reaching the issuing host `via` its
-    /// iroh endpoint or its HTTPS routes. A direct invitation of the shell's
-    /// own engine joins through it ([`Self::accept_invite`]).
+    /// iroh endpoint or its HTTPS routes.
     pub(crate) fn join_by_invitation(
         &self,
         token: &str,
         via: enrollment_driver::Via,
     ) -> Result<PeerSyncResponse, String> {
-        if crate::network::invite::validate_invite_token(token).is_ok() {
-            return self
-                .accept_invite(token)
-                .map(|room| PeerSyncResponse::Message(room.to_string()));
-        }
         let now = tilo_clock::try_unix_now_ns()
             .ok_or_else(|| "the system clock is before the Unix epoch".to_owned())?;
         let join = tilo_peer_state::join::decode_and_verify_invitation_text(
@@ -245,12 +228,7 @@ impl ShellNetwork {
             now,
         )?;
         let room = RoomId::parse(&join.grant().room).ok_or("invitation names an invalid room")?;
-        let tree = self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?
-            .tree
-            .clone();
+        let tree = self.tree.clone();
         if tree.read().holds_room(room) {
             return Ok(PeerSyncResponse::Message(room.to_string()));
         }
@@ -272,9 +250,6 @@ impl ShellNetwork {
     ) -> Result<PeerSyncResponse, String> {
         let owner = self.native_owner()?;
         let room = self
-            .replica
-            .lock()
-            .map_err(|_| "native replica unavailable")?
             .tree
             .read()
             .desktop

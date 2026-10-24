@@ -1378,7 +1378,7 @@ mod tests {
     impl Device {
         fn new(name: &str, online: &[&str], clock: &Arc<ManualClock>) -> Self {
             let mut tree = crate::shell::state::WorkspaceTree::default();
-            let workspace = tree.append_empty_workspace("Personal");
+            let workspace = tree.create_hosted_workspace("Personal").0;
             assert!(tree.stand_in_room(workspace, personal_room()));
             let mut triggers = TriggerHost::new(Arc::clone(clock) as Arc<dyn Clock>, None);
             triggers.set_devices(Arc::new(FixedDevices::new(PersonalDevices {
@@ -1408,19 +1408,14 @@ mod tests {
         }
     }
 
-    /// Carry `from`'s copy of the personal room to `to`.
-    fn sync(from: &mut Device, to: &mut Device) {
-        let changes = from
-            .tree
-            .export_room_changes_since(personal_room(), &[])
-            .expect("the device is in the room");
-        to.tree
-            .apply_room_changes(
-                personal_room(),
-                &changes,
-                &crate::shell::state::PeerOrigin::hub(1),
-            )
-            .expect("the room's changes apply");
+    /// Carry `from`'s copy of the personal room to `to`: its shortcuts and
+    /// schedule claims, as the room's host serves them to every member.
+    fn sync(from: &Device, to: &mut Device) {
+        let source = &from.tree.desktop.workspaces[0];
+        let (shortcuts, claims) = (source.shortcuts.clone(), source.schedule_claims.clone());
+        let target = &mut to.tree.desktop.workspaces[0];
+        target.shortcuts = shortcuts;
+        target.schedule_claims = claims;
     }
 
     fn laptop_and_desktop(clock: &Arc<ManualClock>) -> (Device, Device) {
@@ -1435,7 +1430,7 @@ mod tests {
                 catch_up: CatchUp::Skip,
             })
         ));
-        sync(&mut laptop, &mut desktop);
+        sync(&laptop, &mut desktop);
         assert_eq!(
             desktop.tree.desktop.workspaces[0].shortcuts.len(),
             1,
@@ -1472,9 +1467,9 @@ mod tests {
             clock.set(due - ChronoDuration::seconds(15));
             for _ in 0..21 {
                 laptop.tick();
-                sync(&mut laptop, &mut desktop);
+                sync(&laptop, &mut desktop);
                 desktop.tick();
-                sync(&mut desktop, &mut laptop);
+                sync(&desktop, &mut laptop);
                 clock.advance(ChronoDuration::seconds(15));
             }
             let runs: Vec<&Firing> = laptop.ran.iter().chain(&desktop.ran).collect();
