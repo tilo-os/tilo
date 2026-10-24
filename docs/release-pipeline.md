@@ -205,8 +205,9 @@ OCI layout, without credentials.
 
 ## Dev VM disks
 
-`t dispatch publish-os-dev-<arch> --ref main` publishes main's dev image and its disk
-for one architecture once `os-acceptance-<arch>` passed on them: the dev image
+`publish-os-dev-<arch>` publishes main's dev image and its disk for one architecture every
+night (and when dispatched: `t dispatch publish-os-dev-<arch> --ref main`) once
+`os-acceptance-<arch>` passed on them: the dev image
 (os/Containerfile.dev) on the OS image of the same commit, installed onto a 64 GiB
 sparse disk with `os/dev/build-image.sh`, never booted itself (the gates boot overlays
 of it). The OS image goes to `registry.tilo.so/tilo/tilo-ci:main-<sha7>-<arch>`, a
