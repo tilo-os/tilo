@@ -1158,6 +1158,10 @@ impl From<tilo_relay_protocol::voice::Directions> for JsDirections {
 
 /// One call participant: device and person as hex.
 #[derive(Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each bool is its own field the page reads: publishes, camera, screen, muted"
+)]
 struct JsVoiceParticipant {
     device: String,
     user: String,
@@ -1166,6 +1170,8 @@ struct JsVoiceParticipant {
     camera: bool,
     /// It shares a screen.
     screen: bool,
+    /// Its microphone is off, or it may not publish.
+    muted: bool,
 }
 
 fn voice_participants(
@@ -1180,6 +1186,7 @@ fn voice_participants(
             publishes: participant.publishes,
             camera: participant.showing.camera,
             screen: participant.showing.screen,
+            muted: participant.showing.muted,
         })
         .collect()
 }
@@ -1948,18 +1955,29 @@ impl WasmPeer {
     }
 
     /// Show this session's camera (`camera`) or a shared screen (`screen`)
-    /// besides its voice in the call of `room`, or stop: everyone in the
-    /// call learns it from the room.
+    /// besides its voice in the call of `room`, or stop, and whether its
+    /// microphone is off (`muted`): everyone in the call learns it from the
+    /// room.
     ///
     /// # Errors
     ///
     /// Throws for a malformed room or a closed session.
     #[wasm_bindgen(js_name = voiceShow)]
-    pub fn voice_show(&self, room: &str, camera: bool, screen: bool) -> Result<(), JsError> {
+    pub fn voice_show(
+        &self,
+        room: &str,
+        camera: bool,
+        screen: bool,
+        muted: bool,
+    ) -> Result<(), JsError> {
         self.handle
             .voice_show(
                 workspace(room)?,
-                tilo_relay_protocol::voice::Showing { camera, screen },
+                tilo_relay_protocol::voice::Showing {
+                    camera,
+                    screen,
+                    muted,
+                },
             )
             .map_err(js_error)
     }

@@ -762,6 +762,37 @@ fn in_a_call_the_window_bar_names_the_call_and_offers_leave() {
 }
 
 #[test]
+fn everyone_sees_who_is_muted_and_this_person_their_own_mute_at_once() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 2);
+    let (first, second) = (format!("{:064x}", 1), format!("{:064x}", 2));
+    let me = app.me.id.clone();
+    let roster = &mut app.native_voice.snapshot.rosters[0];
+    roster.people.push(me.clone());
+    roster.people.sort();
+    roster.muted = vec![second.clone()];
+    app.refresh_native_streams();
+    let muted = |app: &ChatApp, person: &str| {
+        app.voice_in("c_huddle")
+            .iter()
+            .find(|member| member.user == person)
+            .expect("in the call")
+            .muted
+    };
+    assert!(muted(&app, &second), "the room says they are muted");
+    assert!(!muted(&app, &first));
+    // The room has not heard this person's mute yet: their own word holds.
+    app.call.muted = true;
+    app.refresh_native_streams();
+    assert!(muted(&app, &me));
+    app.call.muted = false;
+    app.refresh_native_streams();
+    assert!(!muted(&app, &me));
+    render_frame(&mut app, 1280.0, 800.0);
+}
+
+#[test]
 fn whoever_the_call_hears_rings_and_a_quiet_face_settles() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 2);
@@ -876,6 +907,40 @@ fn a_muted_microphone_on_a_device_without_one_says_so() {
         mute_name(&mut app).as_deref(),
         Some("No microphone"),
         "the window bar's microphone names why"
+    );
+}
+
+#[test]
+fn a_browser_that_cannot_join_calls_says_so_plainly() {
+    let (mut app, mut doc) = app_with_doc();
+    app.on_hit(
+        Hit::Channel("c_standup".into()),
+        &mut ui::widget::Edits::lend(&mut doc),
+    );
+    let mut refused = ui::native_media::Snapshot::unavailable();
+    refused.state = ui::native_media::State::Ended;
+    refused.issue = Some(ui::native_media::Issue::Unsupported);
+    answer_voice(&mut app, &refused);
+    render_frame(&mut app, 1280.0, 720.0);
+    let said = crate::i18n::t("chat-call-issue-unsupported");
+    assert!(said.contains("browser"), "{said}");
+    assert_eq!(app.media_error.as_deref(), Some(said.as_str()));
+    let root = app.accessibility().expect("chat semantics");
+    let status = root
+        .children
+        .iter()
+        .find(|node| {
+            matches!(node.role, ui::a11y::Role::StaticText)
+                && node
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with("in call"))
+        })
+        .and_then(|node| node.description.clone());
+    assert_eq!(
+        status.as_deref(),
+        Some(said.as_str()),
+        "the call panel says why, not a call that never connects"
     );
 }
 

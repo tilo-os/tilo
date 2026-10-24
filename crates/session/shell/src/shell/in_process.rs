@@ -1473,7 +1473,11 @@ mod tests {
     }
 
     /// Frames of `shown` until `done`, bounded.
-    fn until(shown: &mut [&mut Shown], what: &str, mut done: impl FnMut() -> bool) {
+    fn until(
+        shown: &mut [&mut Shown],
+        what: impl std::fmt::Display,
+        mut done: impl FnMut() -> bool,
+    ) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             for app in shown.iter_mut() {

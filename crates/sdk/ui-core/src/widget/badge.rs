@@ -312,6 +312,19 @@ pub struct Badge {
     laid_out_leaving: bool,
     /// The motion the person allows, as last drawn.
     motion: Option<crate::tokens::EffectiveMotion>,
+    /// A view that builds the badge anew on each change: the one built in
+    /// its place goes on from it (`motion::keep`), as if its count had
+    /// been set.
+    hand_on: crate::motion::HandOn<KeptBadge>,
+}
+
+/// What a badge leaves for the one a rebuild puts in its place.
+struct KeptBadge {
+    content: BadgeContent,
+    label: crate::motion::CrossFade<Option<String>>,
+    leaving: Option<BadgeContent>,
+    presence: crate::motion::Presence,
+    on_screen: bool,
 }
 
 impl Badge {
@@ -339,7 +352,21 @@ impl Badge {
             layout_dirty: false,
             laid_out_leaving: false,
             motion: None,
+            hand_on: crate::motion::HandOn::default(),
         }
+    }
+
+    /// Go on from the badge a rebuild dropped, as that badge would have
+    /// gone on had its content been set to this one's: a count changed on
+    /// screen cross-fades, one from or to nothing appears or leaves.
+    fn take_up(&mut self, kept: KeptBadge) {
+        let content = std::mem::replace(&mut self.content, kept.content);
+        self.label = kept.label;
+        self.leaving = kept.leaving;
+        self.presence = kept.presence;
+        self.on_screen = kept.on_screen;
+        self.set_content(content);
+        self.dirty = true;
     }
 
     /// Show `n` new things. On screen, a changed count cross-fades the old
@@ -530,6 +557,7 @@ impl Widget for Badge {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let metrics = BadgeMetrics::of(theme);
+        self.hand_on.build(None);
         self.layout_dirty = false;
         self.laid_out_leaving = self.leaving.is_some();
         let (width, height) = match self.drawn_content() {
@@ -614,6 +642,20 @@ impl Widget for Badge {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        // A badge has no name of its own: it goes on from the one that stood
+        // where it stands, its box centred on the same line and starting,
+        // ending or centred where that one's did (a count's width changes).
+        let at = self.rect;
+        let left = self.hand_on.place_by(at, |was| {
+            let near = |a: f64, b: f64| (a - b).abs() < 0.5;
+            near(was.center().y, at.center().y)
+                && (near(was.x0, at.x0)
+                    || near(was.x1, at.x1)
+                    || near(was.center().x, at.center().x))
+        });
+        if let Some(kept) = left {
+            self.take_up(kept);
+        }
         // Exact equality is the point — this is change detection for the
         // paint cache, not a numerical comparison that needs a tolerance.
         #[allow(
@@ -736,6 +778,20 @@ impl Widget for Badge {
             _ => self.display_text(),
         };
         Some(AccessNode::new(Role::StaticText).with_optional_value(value))
+    }
+}
+
+/// A badge a rebuild drops leaves itself for the one put in its place.
+impl Drop for Badge {
+    fn drop(&mut self) {
+        let kept = KeptBadge {
+            content: std::mem::replace(&mut self.content, BadgeContent::Count(0)),
+            label: std::mem::replace(&mut self.label, crate::motion::CrossFade::new(None)),
+            leaving: self.leaving.take(),
+            presence: self.presence,
+            on_screen: self.on_screen,
+        };
+        self.hand_on.leave(kept);
     }
 }
 

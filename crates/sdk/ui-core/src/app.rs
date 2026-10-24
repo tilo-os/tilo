@@ -2535,6 +2535,7 @@ impl App {
 
     /// The root's structure flag, and framework History's: it is composed
     /// as a separate root, so its replaced controls are not the app's.
+    #[track_caller]
     pub(crate) fn take_composition_dirty(&mut self) -> bool {
         let root = self.take_root_structure_dirty();
         let history = self
@@ -2551,10 +2552,15 @@ impl App {
     /// call; a change they do not describe
     /// ([`crate::widget::StructureChange::Rebuild`]) leaves the rebuild that
     /// follows undescribed.
+    #[track_caller]
     pub(crate) fn take_root_structure_dirty(&mut self) -> bool {
         let change = self.root_widget.take_structure_change();
         if change == crate::widget::StructureChange::Rebuild {
             self.layout.rebuild_described = false;
+            #[cfg(test)]
+            {
+                self.layout.undescribed_by = Some(std::panic::Location::caller());
+            }
         }
         // A widget that replaced children without saying so is found here.
         let stale = self.layout_maps_stale();
@@ -3082,6 +3088,10 @@ mod participant_invocation_tests;
 #[cfg(test)]
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
+
+#[cfg(all(test, feature = "native"))]
+#[path = "app/scroll_cost_tests.rs"]
+mod scroll_cost_tests;
 
 #[cfg(test)]
 mod render_retry_tests {

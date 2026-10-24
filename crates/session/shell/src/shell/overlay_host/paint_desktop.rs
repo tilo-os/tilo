@@ -291,10 +291,11 @@ impl ShellOverlayHost {
         self.strip_navigation_bounds(flags.quick_settings || quick_settings_transition_visible)
     }
 
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
-    )]
+    /// Who is here, as the bar's faces open it: it arrives from them and
+    /// goes back to them on the standard motion (`motion::Appear`), as the
+    /// bar's workspace menu and profile card do; a key lands it at once.
+    /// Closed, it takes no input and offers no target at once, and what it
+    /// last showed is drawn leaving until it has gone.
     pub(super) fn draw_collaborators_dropdown(
         &mut self,
         scene: &mut Scene,
@@ -304,10 +305,56 @@ impl ShellOverlayHost {
         presence: &PresenceCtx,
         flags: crate::shell::chrome_state::OverlayFlags,
     ) {
-        if !flags.collaborators {
+        self.collaborators_appearing
+            .follow(flags.collaborators, theme.motion());
+        if flags.collaborators {
+            let mut painted = std::mem::take(&mut self.collaborators_painted);
+            painted.reset();
+            self.paint_collaborators_roster(&mut painted, text_renderer, theme, presence);
+            self.collaborators_painted = painted;
+            self.collaborators_painted_panel = self.collaborators_overlay.panel_rect();
+        } else {
             self.collaborators_overlay.clear();
-            return;
+            if !self.collaborators_appearing.is_drawn() {
+                self.collaborators_painted.reset();
+                self.collaborators_painted_panel = Rect::ZERO;
+                return;
+            }
         }
+        let panel = self.collaborators_painted_panel;
+        // From the faces that opened it; from the bar above it when they
+        // are not shown.
+        let faces = self.main_bar_rect(tilo_desktop::topbar::TopBarChrome::collaborators_rect);
+        let anchor = if faces.is_zero_area() {
+            Point::new(panel.center().x, panel.y0)
+        } else {
+            faces.center()
+        };
+        let pose = self.collaborators_appearing.pose(panel, anchor);
+        if flags.collaborators {
+            self.collaborators_overlay.set_drawn_pose(pose);
+        }
+        let bounds = ui::widget::floating_surface::painted_bounds(panel, theme);
+        if let Some(placed) = pose.begin(scene, transform, bounds) {
+            scene.append(&self.collaborators_painted, Some(placed));
+            pose.end(scene);
+        }
+    }
+
+    /// Paint the roster at rest, in the host's coordinates, and lay out its
+    /// targets.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the single paint pass keeps roster decoration, action geometry, and overlay rendering synchronized"
+    )]
+    fn paint_collaborators_roster(
+        &mut self,
+        scene: &mut Scene,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let transform = Affine::IDENTITY;
         // The name this person goes by, numbered like anyone else's when
         // someone here shares it; never "You", never their key.
         let own_name = ui::local_identity::load()

@@ -78,6 +78,24 @@ impl Widget for PhotosApp {
                     .places_camera_feedback
                     .is_some_and(|feedback| feedback.is_moving(now))
                     || self.people_detail_transition.is_moving(now)))
+            || self
+                .directory_import_details_scroll
+                .needs_animation_frame(&self.layout_theme)
+            || self
+                .selection_album_scroll
+                .needs_animation_frame(&self.layout_theme)
+    }
+
+    /// The modal lists glide on after a flick, as the wheel scrolls them;
+    /// that changes no model.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.directory_import_details_scroll.advance();
+        self.selection_album_scroll.advance();
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
     }
 
     fn take_structure_dirty(&mut self) -> bool {

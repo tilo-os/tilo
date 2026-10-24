@@ -1376,6 +1376,17 @@ impl Widget for MusicApp {
         !self.images.is_idle()
     }
 
+    /// A glide after a flick scrolls the body as the wheel does; it
+    /// changes no model, so it asks for no sync.
+    fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
+        self.dirty |= self.body_scroll.advance();
+        let mut changed = false;
+        for child in self.children_mut() {
+            changed |= child.update(state, path);
+        }
+        changed
+    }
+
     fn needs_redraw(&self) -> bool {
         // `render_frame` clears this after painting.  Returning `true` here
         // used to wake an otherwise paused, settled library at display rate,

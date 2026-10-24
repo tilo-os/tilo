@@ -19,6 +19,8 @@ use winit::keyboard::{Key, NamedKey};
 
 #[path = "notification_header_tests.rs"]
 mod notification_header_tests;
+#[path = "overlay_event_absorb_tests/palette_click_tests.rs"]
+mod palette_click_tests;
 #[path = "overlay_event_absorb_tests/picker_scroll_tests.rs"]
 mod picker_scroll_tests;
 #[path = "overlay_event_absorb_tests/quick_settings_controls_tests.rs"]

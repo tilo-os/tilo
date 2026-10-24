@@ -691,6 +691,11 @@ pub struct Banner {
     /// Its layout must be built again: it took up a banner on its way, or
     /// arrived, after its first layout.
     structure_dirty: bool,
+    /// Its last paint at rest: what its column draws leaving when its view
+    /// stops building it (`widget::Disclosing`).
+    painted: Scene,
+    /// Where it stands in its column.
+    placement: Option<crate::widget::Placement>,
 }
 
 /// How far a banner is in taking up the motion of the banner a rebuild
@@ -704,12 +709,6 @@ enum Carry {
     Placing,
     /// Settled: it leaves its motion when dropped.
     Bound,
-}
-
-/// What a banner leaves for the one a rebuild puts in its place.
-struct KeptBanner {
-    disclosure: crate::motion::Disclosure,
-    laid_rect: Rect,
 }
 
 impl Banner {
@@ -781,6 +780,8 @@ impl Banner {
             carry: Carry::Fresh,
             unplaced: false,
             structure_dirty: false,
+            painted: Scene::new(),
+            placement: None,
         }
     }
 
@@ -943,7 +944,7 @@ impl Banner {
     /// Go on from where the banner a rebuild dropped was: shown at rest
     /// stays at rest, opening goes on opening, and a change of shown
     /// against it moves from there.
-    fn take_up(&mut self, kept: KeptBanner) {
+    fn take_up(&mut self, kept: crate::widget::KeptBand) {
         self.disclosure = kept.disclosure;
         self.laid_rect = kept.laid_rect;
         if self.disclosure.is_open() != self.visible() {
@@ -1125,7 +1126,9 @@ impl Widget for Banner {
         self.motion = theme.motion();
         if self.carry == Carry::Fresh {
             // Built again by its view: go on from the banner it replaces.
-            if let Some(kept) = crate::motion::take_kept::<KeptBanner>(&self.carry_key()) {
+            if let Some(kept) =
+                crate::motion::take_kept::<crate::widget::KeptBand>(&self.carry_key())
+            {
                 self.take_up(kept);
                 self.carry = Carry::Bound;
             } else {
@@ -1196,7 +1199,7 @@ impl Widget for Banner {
             self.carry = Carry::Bound;
             match self
                 .laid_in_flow
-                .then(|| crate::motion::take_kept_at::<KeptBanner>(self.rect))
+                .then(|| crate::motion::take_kept_at::<crate::widget::KeptBand>(self.rect))
                 .flatten()
             {
                 Some(kept) => self.take_up(kept),
@@ -1232,7 +1235,13 @@ impl Widget for Banner {
             if !self.visible() || self.rect.width() <= 0.0 {
                 return;
             }
-            self.draw_contents(scene, transform, text, theme, presence);
+            // Kept, so its column can draw it leaving when its view stops
+            // building it.
+            let mut painted = std::mem::take(&mut self.painted);
+            painted.reset();
+            self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+            scene.append(&painted, Some(transform));
+            self.painted = painted;
             return;
         }
         if self.unplaced && !self.laid_in_flow {
@@ -1252,19 +1261,27 @@ impl Widget for Banner {
         // The box opens or closes from the top over its contents, which
         // fade in over the second half.
         let band = self.laid_rect;
-        let reveal = self.disclosure.reveal(band.height());
-        if band.width() <= 0.0 || reveal.height <= 0.0 || reveal.opacity <= 0.0 {
+        if band.width() <= 0.0 {
             return;
         }
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            reveal.opacity,
-            transform,
-            &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
-        );
-        self.draw_contents(scene, transform, text, theme, presence);
-        scene.pop_layer();
+        // Its contents at their full height, kept: dropped on its way, it
+        // leaves from where it is drawn with this paint, never blank.
+        let mut painted = std::mem::take(&mut self.painted);
+        painted.reset();
+        self.draw_contents(&mut painted, Affine::IDENTITY, text, theme, presence);
+        let reveal = self.disclosure.reveal(band.height());
+        if reveal.height > 0.0 && reveal.opacity > 0.0 {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                reveal.opacity,
+                transform,
+                &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
+            );
+            scene.append(&painted, Some(transform));
+            scene.pop_layer();
+        }
+        self.painted = painted;
     }
 
     /// Frames while it moves, and one more to take it into the layout at
@@ -1281,6 +1298,14 @@ impl Widget for Banner {
         } else if self.needs_redraw() {
             regions.push(self.rect);
         }
+    }
+
+    fn is_band(&self) -> bool {
+        true
+    }
+
+    fn note_placement(&mut self, placement: crate::widget::Placement) {
+        self.placement = Some(placement);
     }
 
     /// Its slot, where its container puts it while it is out of the
@@ -1432,9 +1457,16 @@ impl Drop for Banner {
         crate::motion::keep(
             self.carry_key(),
             Some(at),
-            KeptBanner {
+            crate::widget::KeptBand {
                 disclosure: self.disclosure,
-                laid_rect: self.laid_rect,
+                laid_rect: if self.laid_in_flow {
+                    self.rect
+                } else {
+                    self.laid_rect
+                },
+                placement: self.placement,
+                painted: std::mem::take(&mut self.painted),
+                shown: self.visible(),
             },
         );
     }

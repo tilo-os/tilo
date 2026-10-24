@@ -30,6 +30,16 @@
 //!   - `[label](https://example.test)` → external link
 //! - Any other non-empty line is a paragraph.
 //! - Blank lines are block separators (consecutive blanks collapse).
+//! - A paragraph line that is exactly `&nbsp;` is an empty paragraph.
+//!
+//! ## Escapes
+//!
+//! A backslash makes the next character literal, as in CommonMark: ASCII
+//! punctuation, and also a space, tab or line break. The serialiser escapes
+//! every character of a text that would otherwise read back as markup (inline
+//! markers, a paragraph start that looks like another block, whitespace a
+//! text starts or ends with), so export then import gives back the same text.
+//! Code and link text is verbatim and never escaped.
 //!
 //! ## Marks model
 //!
@@ -292,7 +302,9 @@ fn push_indent(out: &mut String, indent: u8) {
 /// 5. Italic (`*...*`).
 ///
 /// Unmatched markers fall through to the plain text — `*not closed`
-/// stays `*not closed` so the round-trip stays byte-stable.
+/// stays `*not closed` so the round-trip stays byte-stable. Outside code
+/// and links a backslash before an [`escapable`] character yields that
+/// character; [`serialize_inline`] writes those escapes.
 pub fn parse_inline(line: &str) -> InlineText {
     let bytes = line.as_bytes();
     let mut plain = String::with_capacity(line.len());
@@ -417,8 +429,9 @@ pub fn parse_inline(line: &str) -> InlineText {
         let Some(c) = line.get(i..).and_then(|rest| rest.chars().next()) else {
             break;
         };
-        plain.push(c);
-        i += c.len_utf8();
+        let (literal, width) = unescaped(c, line.get(i + c.len_utf8()..).unwrap_or_default());
+        plain.push(literal);
+        i += width;
     }
     marks.sort_by_key(|m| m.range.start);
     InlineText { text: plain, marks }
@@ -648,6 +661,10 @@ pub fn serialize_inline(text: &InlineText) -> String {
             let Some(c) = text.text.get(i..).and_then(|rest| rest.chars().next()) else {
                 break;
             };
+            let literal = open.iter().any(|span| literal_mark(&span.mark));
+            if !literal && needs_escape(c, &out, text, i + c.len_utf8()) {
+                out.push('\\');
+            }
             out.push(c);
             i += c.len_utf8();
         } else {
@@ -655,6 +672,48 @@ pub fn serialize_inline(text: &InlineText) -> String {
         }
     }
     out
+}
+
+/// Marks whose text the parser takes verbatim, so nothing inside is escaped.
+fn literal_mark(mark: &Mark) -> bool {
+    matches!(mark, Mark::Code | Mark::Link(_) | Mark::Transclusion(_))
+}
+
+/// Whether plain text character `c`, written after `out` and followed by
+/// the text from byte `next`, would read back as markup.
+fn needs_escape(c: char, out: &str, text: &InlineText, next: usize) -> bool {
+    let doubled = |mark: Mark| {
+        out.ends_with(c)
+            || text
+                .text
+                .get(next..)
+                .is_some_and(|rest| rest.starts_with(c))
+            || text.marks.iter().any(|span| {
+                span.mark == mark && (span.range.start == next || span.range.end == next)
+            })
+    };
+    match c {
+        '\\' | '*' | '`' | '[' | ']' => true,
+        '_' => doubled(Mark::Underline),
+        '~' => doubled(Mark::Strikethrough),
+        _ => false,
+    }
+}
+
+/// The plain character at `c`, followed by `rest`, and the bytes it takes:
+/// a backslash before an [`escapable`] character is that character.
+fn unescaped(c: char, rest: &str) -> (char, usize) {
+    match rest.chars().next() {
+        Some(next) if c == '\\' && escapable(next) => (next, 1 + next.len_utf8()),
+        _ => (c, c.len_utf8()),
+    }
+}
+
+/// The characters a backslash makes literal: ASCII punctuation, as in
+/// CommonMark, the space and tab a text may start with, and a line break
+/// (CommonMark's backslash hard break), which a text may start with too.
+fn escapable(c: char) -> bool {
+    c.is_ascii_punctuation() || matches!(c, ' ' | '\t' | '\n')
 }
 
 /// Parse a markdown string into a flat list of [`BlockSpec`]s.
@@ -703,6 +762,10 @@ pub fn parse(md: &str) -> Vec<BlockSpec> {
                     .into_iter()
                     .map(|block| block.indented(depth)),
             );
+            continue;
+        }
+        if line == EMPTY_PARAGRAPH {
+            blocks.push(BlockSpec::paragraph(""));
             continue;
         }
         if let Some(block) = take_rich_block(line, &mut lines) {
@@ -874,9 +937,64 @@ fn join_hard_breaks<'a>(
     joined
 }
 
+/// A text's source with its line breaks as hard breaks. Whitespace the text
+/// starts with is escaped, since the parser takes leading whitespace as
+/// indentation and a first line with nothing on it as a blank line, and so
+/// are two trailing spaces, which would read back as a hard break into the
+/// next line.
 fn serialize_hard_breaks(text: &InlineText, continuation: &str) -> String {
-    serialize_inline(text).replace('\n', &format!("  \n{continuation}"))
+    let mut inline = serialize_inline(text);
+    if inline.ends_with("  ") {
+        inline.insert(inline.len() - 1, '\\');
+    }
+    // A table separator after a hard break would make the first line a header.
+    if let Some((first, rest)) = inline.split_once('\n')
+        && first.contains('|')
+        && let Some(separator) = rest
+            .split('\n')
+            .next()
+            .filter(|line| table_separator_line(line))
+    {
+        let at = first.len() + 1 + (separator.len() - separator.trim_start().len());
+        inline.insert(at, '\\');
+    }
+    if inline.starts_with([' ', '\t', '\n']) {
+        inline.insert(0, '\\');
+    }
+    inline.replace('\n', &format!("  \n{continuation}"))
 }
+
+/// A paragraph's source line: its text, escaped where its start would read
+/// back as another kind of block. An empty paragraph is [`EMPTY_PARAGRAPH`],
+/// so it stays a block of its own.
+fn serialize_paragraph(text: &InlineText) -> String {
+    if text.marks.is_empty()
+        && !text.text.starts_with(char::is_whitespace)
+        && !text.text.contains('\n')
+        && standalone_image_syntax(&text.text)
+    {
+        return text.text.clone();
+    }
+    if text.text.is_empty() {
+        return EMPTY_PARAGRAPH.to_owned();
+    }
+    let mut out = serialize_hard_breaks(text, "");
+    let block_marker = ["# ", "## ", "### ", "> ", "- "]
+        .iter()
+        .any(|marker| out.starts_with(marker));
+    if block_marker || out == "---" || out == EMPTY_PARAGRAPH {
+        out.insert(0, '\\');
+    } else if let Some(rest) = strip_ordered_prefix(&out) {
+        let marker = out.len() - rest.len() - 2;
+        out.insert(marker, '\\');
+    }
+    out
+}
+
+/// The source of an empty paragraph that is not the whole document: a
+/// non-breaking space, which other Markdown readers show as an empty
+/// paragraph too.
+const EMPTY_PARAGRAPH: &str = "&nbsp;";
 
 /// A callout as a GitHub alert: its marker line, then its quoted text.
 fn serialize_callout(out: &mut String, kind: ui::widget::CalloutKind, text: &InlineText) {
@@ -890,6 +1008,15 @@ fn serialize_callout(out: &mut String, kind: ui::widget::CalloutKind, text: &Inl
 
 /// Inverse of [`parse`]. Always emits a trailing newline.
 pub fn serialize(blocks: &[BlockSpec]) -> String {
+    if let [BlockSpec::Paragraph(text)] = blocks
+        && text.text.is_empty()
+    {
+        return "\n".to_owned();
+    }
+    serialize_blocks(blocks)
+}
+
+fn serialize_blocks(blocks: &[BlockSpec]) -> String {
     let mut out = String::new();
     // Ordinal counters per indent level for numbered lists, mirroring the
     // renderer's `numbered_ordinals`: a numbered item increments its
@@ -921,7 +1048,7 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
         }
         match b {
             BlockSpec::Nested { depth, block } => {
-                let source = serialize(std::slice::from_ref(block.as_ref()));
+                let source = serialize_blocks(std::slice::from_ref(block.as_ref()));
                 let source = source.strip_suffix('\n').unwrap_or(&source);
                 for (index, line) in source.split('\n').enumerate() {
                     if index > 0 {
@@ -931,7 +1058,7 @@ pub fn serialize(blocks: &[BlockSpec]) -> String {
                     out.push_str(line);
                 }
             }
-            BlockSpec::Paragraph(t) => out.push_str(&serialize_hard_breaks(t, "")),
+            BlockSpec::Paragraph(t) => out.push_str(&serialize_paragraph(t)),
             BlockSpec::Quote(t) => {
                 out.push_str("> ");
                 out.push_str(&serialize_hard_breaks(t, "> "));
@@ -1264,7 +1391,7 @@ mod tests {
             ("heading with italic", "# A *taste* of\n"),
             ("bullet with code", "- run `cargo build` first\n"),
             ("paragraph with link", "See [[Welcome]] for details.\n"),
-            ("nested bold italic", "**bold *italic***\n"),
+            ("nested bold italic", "***italic* bold**\n"),
             (
                 "mixed corpus",
                 "\
@@ -1476,7 +1603,7 @@ Last paragraph.
             "hello [[Page]] there",
             "[guide](https://example.test/guide)",
             "![[Page]]",
-            "**bold *italic***",
+            "***italic* bold**",
             "a `b` c **d** e",
         ] {
             assert_eq!(
@@ -1485,6 +1612,12 @@ Last paragraph.
                 "round-trip failed for {md:?}"
             );
         }
+        // The first `**` closes the bold, so the stars left over are text,
+        // and they come back as text.
+        let ambiguous = parse_inline("**bold *italic***");
+        assert_eq!(ambiguous.text, "bold *italic*");
+        assert_eq!(serialize_inline(&ambiguous), "**bold \\*italic**\\*");
+        assert_eq!(parse_inline(&serialize_inline(&ambiguous)), ambiguous);
     }
 
     #[test]
@@ -1657,5 +1790,170 @@ sum_(i=1)^n frac(1, i^2)
             BlockKind::Table { visual: true }
         ));
         assert_eq!(through_blocks(md), md);
+    }
+
+    fn export_import(blocks: &[ui::widget::Block]) -> Vec<ui::widget::Block> {
+        specs_to_blocks(&parse(&serialize(&blocks_to_specs(blocks))))
+    }
+
+    fn shape(blocks: &[ui::widget::Block]) -> Vec<String> {
+        blocks
+            .iter()
+            .map(|block| format!("{:?} {:?} {}", block.kind, block.text(), block.nesting))
+            .collect()
+    }
+
+    /// Text that reads like markup comes back as the same text, not marks.
+    #[test]
+    fn literal_markup_characters_round_trip_as_text() {
+        use ui::widget::Block;
+        let texts = [
+            "*x*",
+            "**x**",
+            "a * b * c",
+            "\\",
+            "C:\\path\\",
+            "ends with a backslash \\",
+            "__x__",
+            "~~x~~",
+            "snake_case and a~b",
+            "`code`",
+            "[[Page]]",
+            "[label](https://example.test)",
+            "![[Page]]",
+            "&nbsp;",
+            "# not a heading",
+            "> not a quote",
+            "- not a bullet",
+            "- [ ] not a task",
+            "1. not a list",
+            "2) not a list",
+            "---",
+            "```",
+            "a | b\n--- | ---",
+        ];
+        for text in texts {
+            let blocks = vec![
+                Block::paragraph(text),
+                Block::bullet(0, text),
+                Block::heading(2, text),
+            ];
+            assert_eq!(
+                shape(&export_import(&blocks)),
+                shape(&blocks),
+                "text {text:?}"
+            );
+        }
+        assert_eq!(serialize(&[BlockSpec::paragraph("*x*")]), "\\*x\\*\n");
+        assert_eq!(serialize(&[BlockSpec::paragraph("a\\b")]), "a\\\\b\n");
+        // Markup that is meant as markup is left alone.
+        assert_eq!(
+            serialize(&parse("**bold** and `a*b`\n")),
+            "**bold** and `a*b`\n"
+        );
+        // A backslash before a letter is not an escape.
+        assert_eq!(parse_inline("a\\b").text, "a\\b");
+    }
+
+    /// A nested line keeps the space its text starts with, and an empty
+    /// paragraph between others stays a paragraph.
+    #[test]
+    fn leading_space_and_empty_paragraphs_round_trip() {
+        use ui::widget::Block;
+        let mut nested = Block::paragraph(" indented by a space");
+        nested.nesting = 1;
+        let mut deeper = Block::paragraph("   three spaces");
+        deeper.nesting = 2;
+        let blocks = vec![
+            Block::bullet(0, "item"),
+            nested,
+            deeper,
+            Block::paragraph(""),
+            Block::paragraph(" top level"),
+            Block::paragraph("\tleading tab"),
+            Block::paragraph("trailing spaces  "),
+            Block::paragraph("\nstarts with a break"),
+            Block::paragraph("ends with a break\n"),
+            Block::paragraph(""),
+            Block::paragraph("last"),
+        ];
+        assert_eq!(shape(&export_import(&blocks)), shape(&blocks));
+        assert_eq!(serialize(&[BlockSpec::paragraph("")]), "\n");
+        assert_eq!(
+            serialize(&[
+                BlockSpec::paragraph("a"),
+                BlockSpec::paragraph(""),
+                BlockSpec::paragraph("b")
+            ]),
+            "a\n\n&nbsp;\n\nb\n"
+        );
+    }
+
+    /// A deterministic generator, so a failure names its seed.
+    struct Rng(u64);
+
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: usize) -> usize {
+            usize::try_from(self.next() % u64::try_from(n).unwrap_or(1)).unwrap_or(0)
+        }
+
+        fn text(&mut self) -> String {
+            const CHARS: &[char] = &[
+                'a', 'b', 'k', 'Z', '0', '7', ' ', ' ', ' ', '*', '_', '~', '`', '\\', '[', ']',
+                '(', ')', '!', '#', '-', '>', '|', '.', ':', '&', ';', '\n', '\t', 'é', '—',
+            ];
+            let len = self.below(20);
+            (0..len)
+                .map(|_| CHARS.get(self.below(CHARS.len())).copied().unwrap_or('a'))
+                .collect()
+        }
+    }
+
+    /// Export then import is the identity on what a note holds: every
+    /// block's kind, text and nesting, over notes-like content full of
+    /// characters Markdown gives meaning to.
+    #[test]
+    fn export_then_import_keeps_every_block() {
+        use ui::widget::Block;
+        for seed in 1..=3000u64 {
+            let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let count = 1 + rng.below(10);
+            let blocks: Vec<Block> = (0..count)
+                .map(|_| {
+                    let text = rng.text();
+                    let indent = u8::try_from(rng.below(3)).unwrap_or(0);
+                    match rng.below(8) {
+                        0 => Block::heading(u8::try_from(1 + rng.below(3)).unwrap_or(1), &text),
+                        1 => Block::bullet(indent, &text),
+                        2 => Block::numbered(indent, &text),
+                        3 => Block::checklist(indent, rng.below(2) == 1, &text),
+                        4 => {
+                            let mut quote = Block::quote(&text);
+                            quote.nesting = indent.min(1);
+                            quote
+                        }
+                        5 if text.is_empty() => Block::divider(),
+                        _ => {
+                            let mut paragraph = Block::paragraph(&text);
+                            paragraph.nesting = indent;
+                            paragraph
+                        }
+                    }
+                })
+                .collect();
+            let markdown = serialize(&blocks_to_specs(&blocks));
+            assert_eq!(
+                shape(&export_import(&blocks)),
+                shape(&blocks),
+                "seed {seed}, markdown {markdown:?}"
+            );
+        }
     }
 }

@@ -410,6 +410,11 @@ pub struct ToolbarAction {
     /// destructive button does.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub destructive: bool,
+    /// Where the row has room it is a text button saying its name, as a
+    /// calendar's Today; narrower it is its icon, and then an overflow
+    /// row, in the row's fold order.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub labelled: bool,
 }
 
 fn enabled() -> bool {
@@ -433,6 +438,7 @@ impl ToolbarAction {
             navigates: false,
             toggles: false,
             destructive: false,
+            labelled: false,
         }
     }
 
@@ -476,6 +482,14 @@ impl ToolbarAction {
     #[must_use]
     pub fn navigating(mut self) -> Self {
         self.navigates = true;
+        self
+    }
+
+    /// Its name as a text button where the row has room
+    /// ([`Self::labelled`]).
+    #[must_use]
+    pub fn labelled(mut self) -> Self {
+        self.labelled = true;
         self
     }
 }
@@ -1082,6 +1096,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             }],
             ..WindowToolbar::default()
         }
@@ -1163,6 +1178,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             });
         }
         many.actions.push(ToolbarAction {
@@ -1176,6 +1192,7 @@ mod tests {
             navigates: false,
             toggles: false,
             destructive: false,
+            labelled: false,
         });
         for n in 6..20 {
             many.actions.push(ToolbarAction {
@@ -1189,6 +1206,7 @@ mod tests {
                 navigates: false,
                 toggles: false,
                 destructive: false,
+                labelled: false,
             });
         }
         let bounded = many.clone().bounded();

@@ -426,8 +426,8 @@ pub use view::{
 };
 pub use virtual_viewport::{
     DragScrollFinish, DragScrollUpdate, DragScroller, KineticSampler, ReconcileError,
-    ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
-    WheelStep,
+    ScrollAlignment, ScrollGlide, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+    VirtualViewport, WheelStep,
 };
 
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid

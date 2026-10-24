@@ -10,7 +10,8 @@
  *
  * The camera and a shared screen work as on a Tilo device: the person turns
  * them on in the call (the browser asks for them), everyone learns who shows
- * what from the room's call list (`cameras`, `screens` in each roster), the
+ * what and who is muted from the room's call list (`cameras`, `screens`,
+ * `muted` in each roster), the
  * app says which pictures it shows (`show`) and collects them (`pictures`),
  * coded, to decode itself.
  */
@@ -25,10 +26,25 @@ const PICTURES_HOLD_MS = 5000;
 
 /** The issue a call that ended reports: a call the host never granted was
  * refused, for not being a member or by its denials (`denied`), or because
- * the room cannot hold calls (`unavailable`); one it granted just ended. */
-export function endedIssue({admitted, reason}) {
+ * the room cannot hold calls (`unavailable`); one it granted just ended;
+ * one this browser cannot carry never started (`unsupported`). */
+export function endedIssue({admitted, reason, unsupported}) {
+  if (unsupported) return 'unsupported';
   if (admitted) return 'session_ended';
   return /not a member|denied|not permitted|not allowed/i.test(String(reason ?? '')) ? 'denied' : 'unavailable';
+}
+
+const PERSON = /^[0-9a-f]{64}$/;
+
+/** The people the call hears talking now, as the status names them: each
+ * person once, sorted, this person among them while their microphone is
+ * heard. What the app's speaking rings follow. */
+export function speakingOf(participants) {
+  const people = new Set();
+  for (const participant of participants ?? []) {
+    if (participant.speaking && PERSON.test(participant.user ?? '')) people.add(participant.user);
+  }
+  return [...people].sort();
 }
 
 /** The revision of a status's content (FNV-1a over its JSON): it changes
@@ -44,17 +60,20 @@ export function revisionOf(status) {
 }
 
 /** Who is in each active call of `app`'s `record`, one roster per voice
- * channel with anyone in it, sorted by channel; each person once. */
+ * channel with anyone in it, sorted by channel; each person once, muted
+ * when muted on every device they are in the call on. */
 export function rostersOf(calls, app, record) {
   const channels = new Map();
   for (const call of calls ?? []) {
     if (!call.active || call.app !== app || call.record !== record) continue;
-    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set()};
+    const roster = channels.get(call.channel) ?? {people: new Set(), cameras: new Set(), screens: new Set(), unmuted: new Set()};
     for (const participant of call.participants ?? []) {
       if (!participant.user) continue;
       roster.people.add(participant.user);
       if (participant.camera) roster.cameras.add(participant.user);
       if (participant.screen) roster.screens.add(participant.user);
+      // Heard on any of their devices: not muted.
+      if (!participant.muted) roster.unmuted.add(participant.user);
     }
     channels.set(call.channel, roster);
   }
@@ -66,6 +85,8 @@ export function rostersOf(calls, app, record) {
       // Written only when someone shows something, as the native service does.
       if (roster.cameras.size) out.cameras = sorted(roster.cameras);
       if (roster.screens.size) out.screens = sorted(roster.screens);
+      const muted = [...roster.people].filter(person => !roster.unmuted.has(person));
+      if (muted.length) out.muted = muted.sort();
       return out;
     });
 }
@@ -98,7 +119,7 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
       muted: state.muted || !live, capture_active: live && !state.muted && voice.call.stats().captureActive === true,
       input_id: live ? input : null, inputs,
       issue: state.phase === 'ended' ? endedIssue(state) : null,
-      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: [], revision: 0};
+      inventory_revision: live ? revision : null, publication, publishers, rosters: [], speaking: live ? speakingOf(state.participants) : [], revision: 0};
     if (live && state.camera) status.camera = true;
     if (live && state.screen) status.screen = true;
     if (live && state.micIssue) status.issue = state.micIssue;
@@ -154,6 +175,12 @@ export function createVoiceControls({voice, room, gesture = () => globalThis.nav
         if (owner && owner !== route) voice.call.leave();
         owner = route;
         refusal = undefined;
+        // A browser that cannot carry a call says so before it opens one.
+        if (voice.call.unsupported?.()) {
+          if (voice.call.state.phase !== 'idle' && voice.call.state.phase !== 'ended') voice.call.leave();
+          refusal = {route, issue: 'unsupported'};
+          return status();
+        }
         // Joining a voice channel opens its call: the host starts it when
         // the channel has none yet. A host that cannot is a refusal the
         // app shows, with the reason's kind, not a failed command.
