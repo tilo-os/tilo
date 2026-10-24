@@ -31,12 +31,13 @@ use crate::shell::state::{
     WorkspaceTree, WorkspaceTreeHandle,
 };
 
-mod channels;
-mod home_relay;
+// `home_relay` and `live_frames` add a relay to a room's hosting members
+// and take it away again, which the network has no call for yet, and
+// `channels` reads a relay's retained state through `home_relay`: they join
+// the suite with that call.
 #[cfg(target_os = "linux")]
 mod idle_host;
 mod invite_join;
-mod live_frames;
 mod old_rooms;
 mod own_devices;
 
@@ -111,6 +112,10 @@ impl Person {
     }
 
     /// A certificate from this person's root for `key`.
+    #[allow(
+        dead_code,
+        reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
+    )]
     pub(crate) fn certify(
         &self,
         key: &SigningKey,
@@ -217,7 +222,7 @@ impl Device {
     fn go_online(&mut self) {
         assert!(self.net.is_none(), "{} is already online", self.label);
         let root = self.root.clone();
-        let capabilities = self.capabilities;
+        let capabilities = self.capabilities.clone();
         let label = self.label.clone();
         let custody = Arc::clone(&self.custody);
         let net = ShellNetwork::spawn_with(
@@ -284,6 +289,10 @@ impl Device {
 
     /// Hold `keys` for every channel of this device's rooms, as its channel
     /// membership would give them, so it seals and opens live frames.
+    #[allow(
+        dead_code,
+        reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
+    )]
     pub(crate) fn hold_live_keys(
         &mut self,
         keys: fn(collab_types::ChannelId) -> channel_crypto::ChannelContentKeys,
@@ -372,7 +381,7 @@ impl Device {
 
     /// When this device's loop next has to run though nothing wakes it.
     fn next_deadline(&self) -> Option<Instant> {
-        let net = self.net.as_ref()?;
+        self.net.as_ref()?;
         let state = self.state.lock().unwrap();
         let layout = state.layout.and_then(|(seen, at)| {
             (seen != self.tree.generation()).then(|| at.checked_add(LAYOUT_CHECK).unwrap_or(at))
@@ -382,10 +391,7 @@ impl Device {
                 at.checked_add(ENROLLMENT_POLL).unwrap_or(at)
             })
         });
-        [net.next_deadline(), layout, poll]
-            .into_iter()
-            .flatten()
-            .min()
+        [layout, poll].into_iter().flatten().min()
     }
 
     // What the person does.
@@ -472,6 +478,7 @@ impl Device {
             tabs: vec![Tab {
                 id: tab,
                 title: title.into(),
+                app_title: None,
                 tile: TileContent::AppPlaceholder {
                     kind: AppKind::Other(NOTES.into()),
                     label: title.into(),
@@ -580,7 +587,7 @@ impl Device {
             .ok()??;
         let document = automerge::AutoCommit::load(&bytes).ok()?;
         let (value, _) = document.get(automerge::ROOT, NOTE_TEXT).ok()??;
-        value.to_str().map(str::to_owned)
+        value.as_str().map(str::to_owned)
     }
 
     // What the person sees.
@@ -728,12 +735,13 @@ impl Device {
     }
 
     /// Where this device's own host keeps what it retains of its rooms.
+    #[allow(
+        dead_code,
+        reason = "the home-relay, live-frame and channel scenarios use it; they join the suite with the network's hosting-member call"
+    )]
     pub(crate) fn host_state_root(&self) -> PathBuf {
-        self.net()
-            .room_host()
-            .expect("the device runs its host")
-            .state_root()
-            .to_path_buf()
+        assert!(self.net().room_host().is_some(), "the device runs its host");
+        super::embedded_host::host_state_root(&self.dir.join("state.json"))
     }
 
     /// Open a connection to `other`, as two of a person's devices that find
