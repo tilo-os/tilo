@@ -159,14 +159,19 @@ pub struct JoinRequest {
     pub role: RoomRole,
     /// When they asked.
     pub requested_at_ns: u64,
+}
+
+impl JoinRequest {
     /// For a request left at the door without an invitation, the address
     /// ([`contact_address`]) its answer goes to: someone who may invite
-    /// sends an invitation of their own there, or declines the request. It
-    /// has no person or device yet (both all zero), it is named by the
-    /// address, and its role is the one an invitation gives. The room keeps
-    /// it until it is declined.
-    #[serde(default)]
-    pub contact: Option<String>,
+    /// sends an invitation of their own there, or declines the request.
+    /// Such a request has no person or device yet (both all zero) and is
+    /// named by the address; its role is the one an invitation gives. The
+    /// room keeps it until it is declined.
+    pub fn contact(&self) -> Option<&str> {
+        (self.user_public_key == [0; 32] && self.device_public_key == [0; 32])
+            .then_some(self.name.as_str())
+    }
 }
 
 /// The person who sent an invitation, as the host signed it into the
