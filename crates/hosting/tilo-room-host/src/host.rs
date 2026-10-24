@@ -573,7 +573,7 @@ impl RoomHost {
     }
 
     /// The compactor of the workspaces hosted here.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "agents"))]
     pub(crate) const fn compactor(&self) -> &crate::compaction::Compactor {
         &self.sessions.handler.compactor
     }
