@@ -163,6 +163,26 @@ impl ToolbarRow {
                 action.enabled,
             ));
         }
+        // A compact window's notice, in its strip under the row: read out
+        // as it arrives, its button after it.
+        if let Some((notice, text, _, at)) = self.strip_notice() {
+            nodes.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(notice.text.clone())
+                    .with_bounds(text)
+                    .with_live(crate::a11y::Politeness::Polite),
+            );
+            if let Some(action) = notice.action.as_ref()
+                && at.area() > 0.0
+            {
+                nodes.push(button(
+                    action.name.clone(),
+                    NOTICE_TARGET.into(),
+                    at,
+                    action.enabled,
+                ));
+            }
+        }
         // The views the row shows as tabs, the chosen one selected; without room
         // they are the overflow menu's.
         if let Some(views) = toolbar.views.as_ref() {

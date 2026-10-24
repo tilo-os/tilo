@@ -62,6 +62,7 @@ mod layout;
 #[path = "window_toolbar_location_label.rs"]
 mod location_label;
 mod paint;
+mod strip;
 use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
 use location_label::{LocationLabel, edited_word};
 #[cfg(test)]
@@ -181,6 +182,10 @@ pub(crate) struct ToolbarRow {
     /// What the edited field holds, for the app's suggestions: drafts, not
     /// things the person did, so they go out apart from [`Self::events`].
     drafts: Vec<(u64, ToolbarEvent)>,
+    /// The window is compact: a notice says itself in its own strip under
+    /// the row ([`strip::NoticeStrip`]), not in the location's place.
+    compact: bool,
+    strip: strip::NoticeStrip,
 }
 
 impl Default for ToolbarRow {
@@ -215,6 +220,8 @@ impl ToolbarRow {
             popup_area: Rect::ZERO,
             events: Vec::new(),
             drafts: Vec::new(),
+            compact: false,
+            strip: strip::NoticeStrip::default(),
         }
     }
 
@@ -227,11 +234,20 @@ impl ToolbarRow {
         now: Instant,
     ) {
         // A notice stands in the location's place, unless the location is
-        // being edited: the field keeps what the person is typing.
+        // being edited: the field keeps what the person is typing. In a
+        // compact window it has a strip of its own under the row, and the
+        // row stands as it does without one.
         let editing =
             self.field.is_some() && self.shown.as_ref().map(|(shown, _)| *shown) == Some(tab);
+        let compact = self.compact;
+        self.strip.offer(
+            toolbar
+                .and_then(|toolbar| toolbar.notice.as_ref())
+                .filter(|_| compact),
+            theme_motion,
+        );
         let next = toolbar.map(|toolbar| {
-            if editing {
+            if editing || compact {
                 (
                     tab,
                     WindowToolbar {
@@ -644,6 +660,55 @@ impl ToolbarRow {
         &self.slots
     }
 
+    /// Say a notice in a strip of its own under the row (`compact`), or in
+    /// the location's place. Takes hold at the next [`Self::show`].
+    pub(crate) fn set_compact(&mut self, compact: bool) {
+        self.compact = compact;
+    }
+
+    /// How tall the notice's strip stands under the row (none: no strip).
+    pub(crate) fn strip_height(&self) -> f64 {
+        self.strip.height()
+    }
+
+    /// Measure the notice's strip as `theme` draws it across `width`.
+    /// Returns whether its height changed.
+    pub(crate) fn measure_strip(&mut self, theme: &Theme, width: f64) -> bool {
+        self.strip.measure(theme, width)
+    }
+
+    /// Stand the notice's strip at `rect`, the room the bar keeps for it.
+    pub(crate) fn place_strip(&mut self, rect: Rect) {
+        self.strip.place(rect);
+    }
+
+    /// Where the notice's strip stands (`Rect::ZERO`: none).
+    pub(crate) fn strip_rect(&self) -> Rect {
+        self.strip.rect()
+    }
+
+    /// The notice up in the strip, where its text stands, whether whole,
+    /// and its button (none: no strip).
+    pub(crate) fn strip_notice(
+        &self,
+    ) -> Option<(&crate::window_toolbar::ToolbarNotice, Rect, bool, Rect)> {
+        let notice = self.strip.notice()?;
+        Some((
+            notice,
+            self.strip.text_rect(),
+            self.strip.whole(),
+            self.strip.button(),
+        ))
+    }
+
+    /// The slot at `p`: the strip's button, else one of the row's.
+    fn hit_slot(&self, p: Point) -> Option<Slot> {
+        if self.strip.button().contains(p) {
+            return Some(Slot::Notice);
+        }
+        self.slots.hit(p)
+    }
+
     /// Whether the notice up stands whole in the location, as measured
     /// (none: no notice is up, or it is not measured yet).
     pub(crate) fn notice_whole(&self) -> Option<bool> {
@@ -1006,7 +1071,9 @@ impl ToolbarRow {
 
     /// The notice's button, while a notice with one is up.
     fn notice_action(&self) -> Option<&crate::window_toolbar::ToolbarAction> {
-        self.toolbar()?.notice.as_ref()?.action.as_ref()
+        self.strip
+            .action()
+            .or_else(|| self.toolbar()?.notice.as_ref()?.action.as_ref())
     }
 
     /// Run leading action `index`.
@@ -1085,7 +1152,7 @@ impl ToolbarRow {
 
     /// The pointer moved to `p`. Returns whether what shows changed.
     pub(crate) fn pointer_moved(&mut self, p: Point) -> bool {
-        let hover = self.slots.hit(p);
+        let hover = self.hit_slot(p);
         let changed = hover != self.hover;
         self.hover = hover;
         let on_location = self.field.is_none() && self.slots.location.contains(p);
@@ -1110,7 +1177,7 @@ impl ToolbarRow {
     pub(crate) fn tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
         let toolbar = self.toolbar()?;
         let lookup = crate::i18n::I18nManager::lookup_plain;
-        match self.slots.hit(p)? {
+        match self.hit_slot(p)? {
             Slot::Sidebar => Some((self.slots.sidebar, lookup(sidebar_key(toolbar)))),
             Slot::Back => Some((self.slots.back, lookup("window-toolbar-back"))),
             Slot::Forward => Some((self.slots.forward, lookup("window-toolbar-forward"))),
@@ -1123,7 +1190,14 @@ impl ToolbarRow {
                 let action = toolbar.actions.get(i)?;
                 Some((*self.slots.actions.get(i)?, action.name.clone()))
             }
-            Slot::Notice => Some((self.slots.notice, self.notice_action()?.name.clone())),
+            Slot::Notice => {
+                let rect = if self.slots.notice.area() > 0.0 {
+                    self.slots.notice
+                } else {
+                    self.strip.button()
+                };
+                Some((rect, self.notice_action()?.name.clone()))
+            }
             Slot::Overflow => Some((self.slots.overflow, lookup("window-toolbar-more"))),
             // A segment, the views menu and the location say what they are.
             Slot::View(_) | Slot::ViewsMenu | Slot::Location => None,
@@ -1296,13 +1370,13 @@ impl ToolbarRow {
     }
 
     pub(crate) fn hit(&self, p: Point) -> bool {
-        self.slots.hit(p).is_some()
+        self.hit_slot(p).is_some()
     }
 
     /// A left press at `p`. Returns whether a slot took it. A press
     /// outside the field while it is edited puts the location back.
     pub(crate) fn press(&mut self, p: Point) -> bool {
-        let slot = self.slots.hit(p);
+        let slot = self.hit_slot(p);
         if self.field.is_some() && slot != Some(Slot::Location) {
             self.abandon_edit();
         }
@@ -1354,7 +1428,7 @@ impl ToolbarRow {
         let Some(pressed) = self.pressed.take() else {
             return false;
         };
-        if self.slots.hit(p).as_ref() == Some(&pressed) {
+        if self.hit_slot(p).as_ref() == Some(&pressed) {
             self.activate(&pressed);
         }
         true
@@ -1434,6 +1508,7 @@ impl ToolbarRow {
     /// a menu arriving or leaving.
     pub(crate) fn needs_animation_frame(&self, now: Instant) -> bool {
         self.fade.is_moving(now)
+            || self.strip.needs_frame()
             || self
                 .field
                 .as_ref()

@@ -85,6 +85,15 @@ impl ToolbarRow {
         if let Some(trigger) = trigger {
             self.choice_trigger = trigger;
         }
+        self.strip.paint(
+            scene,
+            transform,
+            (tr, theme),
+            (
+                interaction.hover == Some(Slot::Notice),
+                interaction.pressed == Some(Slot::Notice),
+            ),
+        );
     }
 }
 

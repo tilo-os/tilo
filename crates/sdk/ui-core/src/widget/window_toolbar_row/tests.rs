@@ -1241,3 +1241,77 @@ fn a_notice_stands_whole_before_the_actions_and_its_button_stays_in_the_row() {
         );
     }
 }
+
+/// In a compact window a notice says itself in a strip of its own under
+/// the row: its whole text, read out as it arrives, and its action a button
+/// that names itself and runs by pointer and by its semantic action alike.
+/// The row stands as it does without a notice.
+#[test]
+fn a_compact_windows_notice_has_a_strip_whose_button_runs_by_pointer_and_semantics() {
+    use crate::widget::toast::ToastKind;
+    use crate::window_toolbar::ToolbarNotice;
+    let theme = Theme::dark();
+    let text = "Save failed: your disk is full, so the note was not written";
+    for (name, id) in [("Try again", "save-status-retry"), ("Undo", "notice-undo")] {
+        let noticed = WindowToolbar {
+            notice: Some(
+                ToolbarNotice::new(text, ToastKind::Error).action(ToolbarAction::new(
+                    id,
+                    "rotate-cw",
+                    name,
+                )),
+            ),
+            ..file_toolbar(3)
+        };
+        let mut quiet = ToolbarRow::new();
+        quiet.show(
+            3,
+            Some(&file_toolbar(3)),
+            theme.motion(),
+            crate::motion::frame_now(),
+        );
+        quiet.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
+        let mut row = ToolbarRow::new();
+        row.set_compact(true);
+        row.show(
+            3,
+            Some(&noticed),
+            theme.motion(),
+            crate::motion::frame_now(),
+        );
+        row.lay_out(Rect::new(0.0, 0.0, 220.0, 40.0));
+        assert_eq!(
+            row.slots(),
+            quiet.slots(),
+            "the row stands as it does without a notice"
+        );
+        assert!(row.measure_strip(&theme, 404.0), "the strip is measured");
+        let height = row.strip_height();
+        assert!(height >= CONTROL_PX, "{height}");
+        row.place_strip(Rect::new(8.0, 44.0, 412.0, 44.0 + height));
+        let (shown, text_at, whole, button) = row.strip_notice().expect("the strip says it");
+        assert_eq!(shown.text, text);
+        assert!(whole, "the whole text stands, on up to two lines");
+        assert!(
+            button.width() > CONTROL_PX && text_at.x1 <= button.x0,
+            "{name} names itself after the text: {text_at:?} {button:?}"
+        );
+        let nodes = row.accessibility();
+        let said = nodes
+            .iter()
+            .find(|node| node.name.as_deref() == Some(text))
+            .expect("the strip's text is a node");
+        assert_eq!(said.live, Some(crate::a11y::Politeness::Polite));
+        assert!(
+            nodes.iter().any(|node| node.name.as_deref() == Some(name)
+                && node.action_target.as_deref() == Some(NOTICE_TARGET)),
+            "{name} is the notice's button"
+        );
+        let pressed = vec![(3, ToolbarEvent::Action { id: id.into() })];
+        assert!(row.press(button.center()));
+        assert!(row.release(button.center()));
+        assert_eq!(row.take_events(), pressed, "{name} runs by pointer");
+        assert!(row.perform(NOTICE_TARGET));
+        assert_eq!(row.take_events(), pressed, "{name} runs by its action");
+    }
+}
