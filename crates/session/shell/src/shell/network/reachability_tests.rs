@@ -251,6 +251,11 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         .try_send(NetCmd::Connect { addr: first_addr })
         .unwrap();
     let invitation = first.issue_invite(home_workspace, 3600).unwrap();
+    assert_eq!(
+        first.pending_invitations(room).len(),
+        1,
+        "the invitation waits to be redeemed"
+    );
     // The collaborator's enrollment finishes when it is asked about, as the
     // join sheet asks.
     let PeerSyncResponse::EnrollmentPending { id } =
@@ -279,6 +284,12 @@ fn after_the_last_collaborator_leaves_the_relays_rest_and_the_desktop_sleeps() {
         first.tick();
         second.tick();
         first.hosts_other_members().then_some(())
+    });
+    // Redeemed, as the room's document records, the invitation is no longer
+    // pending: nobody is still to come with it.
+    until("the redeemed invitation to leave the pending list", || {
+        first.tick();
+        first.pending_invitations(room).is_empty().then_some(())
     });
     until("the two desktops to converge with their relays up", || {
         first.tick();

@@ -1055,8 +1055,7 @@ fn spawn_background_tasks(
     let metrics_task = spawn_metrics_persist_task(cfg.state_root.clone(), metrics.clone());
     push_peer_relay_task(&peer_relay_tasks, metrics_task);
 
-    let membership_task = crate::membership_watch::spawn_membership_watch(&cfg.state_root);
-    push_peer_relay_task(&peer_relay_tasks, membership_task);
+    // The host's sessions watch the membership files themselves.
 
     for peer_cfg in cfg.peer_relays.iter().cloned() {
         let task = spawn_peer_relay_dial(

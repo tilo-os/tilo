@@ -1147,7 +1147,10 @@ impl WorkspaceTree {
     /// Whether `room`'s workspace is waiting for its replica: a join through
     /// a host started, under way or failed, and not installed yet.
     pub fn is_joining(&self, room: RoomId) -> bool {
+        // A room being placed on its host is this person's own, enrolling
+        // its native owner on the way: not a join.
         !self.native_authority.holds(room)
+            && !self.pending_placements.contains(&room)
             && (self.joining_rooms.contains(&room)
                 || self
                     .native_authority
@@ -1204,10 +1207,13 @@ impl WorkspaceTree {
         } else {
             self.stewarded_rooms.remove(&room);
         }
-        // The room's replica is here: its join is over, and the room has its
-        // workspace, the one made for the join or, for a room held without
-        // one, a new one.
+        // The room's replica is here: its join, or its placement on its
+        // host, is over, and the room has its workspace, the one made for
+        // the join or, for a room held without one, a new one.
         self.joining_rooms.remove(&room);
+        if self.pending_placements.remove(&room) {
+            self.queue_save();
+        }
         if !self.has_workspace(room) {
             let name = crate::shell::i18n::t("workspace-joined-name");
             self.append_workspace_for_room(&name, room);
@@ -2589,15 +2595,16 @@ impl WorkspaceTree {
 
     /// Make a new workspace named `name`: the one way a workspace is made
     /// here. Its room is minted now, so a workspace that exists is a room
-    /// that exists, and that room is its room for good. The workspace is
-    /// joining ([`Self::join_native_room`]) and its room waits among
+    /// that exists, and that room is its room for good. Its room waits among
     /// [`Self::pending_placements`] until the network creates it on the host
     /// it is placed on (this device's own by default) and enrolls this
-    /// device's native owner in it. Answers the workspace's id and its room.
+    /// device's native owner in it. The workspace is in use from the start:
+    /// it is this person's own room becoming hosted, never a join, so it
+    /// neither says Joining… nor hides its windows meanwhile. Answers the
+    /// workspace's id and its room.
     pub fn create_hosted_workspace(&mut self, name: &str) -> (WorkspaceId, RoomId) {
         let room = RoomId::new();
         self.pending_placements.insert(room);
-        self.joining_rooms.insert(room);
         (self.append_workspace_for_room(name, room), room)
     }
 
@@ -3279,7 +3286,10 @@ impl WorkspaceTree {
             .iter()
             .find(|workspace| workspace.id == id)?
             .room();
-        if self.native_authority.requires(room) || self.joining_rooms.contains(&room) {
+        if self.native_authority.requires(room)
+            || self.joining_rooms.contains(&room)
+            || self.pending_placements.contains(&room)
+        {
             return None;
         }
         let removed = self.forget_personal_room(room);
@@ -5626,8 +5636,8 @@ mod hosted_workspace_tests {
             "exactly one placement waits"
         );
         assert!(
-            tree.is_joining(room),
-            "the workspace is joining until placed"
+            !tree.is_joining(room),
+            "the person's own new workspace is never a join"
         );
         assert!(!tree.holds_room(room));
 
@@ -5639,8 +5649,8 @@ mod hosted_workspace_tests {
         );
         assert!(tree.take_pending_placements().is_empty(), "taken once");
         assert!(
-            tree.is_joining(room),
-            "still joining until its replica installs"
+            !tree.is_joining(room),
+            "nor a join once its placement is taken"
         );
     }
 
