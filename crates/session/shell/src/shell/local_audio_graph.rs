@@ -52,17 +52,66 @@ impl LocalAudioBackend for SystemLocalAudio {
 
     fn apply(&mut self, edit: LocalAudioEdit) -> Result<(), String> {
         match edit {
-            LocalAudioEdit::RouteOutput(node_id) => {
-                crate::shell::device_fabric_runtime::route_local_audio(node_id)
-            }
-            LocalAudioEdit::SelectInput(node_id) => {
-                crate::shell::device_fabric_runtime::select_local_input(node_id)
-            }
+            LocalAudioEdit::RouteOutput(node_id) => route_output(
+                &media::audio::enumerate(),
+                media::audio::real_control().as_ref(),
+                node_id,
+            ),
+            LocalAudioEdit::SelectInput(node_id) => select_input(
+                &media::audio::enumerate(),
+                media::audio::real_control().as_ref(),
+                node_id,
+            ),
             LocalAudioEdit::StepInput { node_id, raise } => {
                 crate::shell::device_fabric_runtime::step_input_level(node_id, raise)
             }
         }
     }
+}
+
+/// Play everything on one output from now on, including a connected
+/// Bluetooth sink: make it the default and let every playback stream follow
+/// the default. The node is resolved against `graph`, read just before.
+///
+/// Streams are released to the default, never pinned to the chosen device:
+/// a stream with an explicit target stays on it whatever the default does
+/// later, and `WirePlumber` remembers that target for the app's next stream.
+/// Pinned, every app playing when an output was chosen here kept playing
+/// there after a headset was plugged in or another output was chosen in
+/// Sound, and kept going back to it when it next played.
+fn route_output(
+    graph: &AudioGraph,
+    control: &dyn media::audio::GraphControl,
+    node_id: u32,
+) -> Result<(), String> {
+    graph
+        .sink_by_id(node_id)
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-output-gone"))?;
+    control.set_default_sink(node_id)?;
+    for stream in &graph.playback_streams {
+        control.unroute_stream(stream.id)?;
+    }
+    Ok(())
+}
+
+/// Record from one input from now on: make it the default source and let
+/// every capture stream follow the default, as [`route_output`] releases
+/// playback.
+fn select_input(
+    graph: &AudioGraph,
+    control: &dyn media::audio::GraphControl,
+    node_id: u32,
+) -> Result<(), String> {
+    graph
+        .sources
+        .iter()
+        .find(|source| source.id == node_id)
+        .ok_or_else(|| crate::shell::i18n::t("device-fabric-error-input-gone"))?;
+    control.set_default_source(node_id)?;
+    for stream in &graph.record_streams {
+        control.unroute_stream(stream.id)?;
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -331,5 +380,126 @@ mod tests {
         tilo_test_env::wait_until("the graph to be read again after the edit", || {
             reads.load(Ordering::SeqCst) > before
         });
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::{route_output, select_input};
+    use media::audio::{AudioDevice, AudioGraph, AudioStream, GraphControl};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Recorded(Mutex<Vec<String>>);
+
+    impl Recorded {
+        fn push(&self, call: String) {
+            self.0.lock().unwrap().push(call);
+        }
+        fn calls(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    impl GraphControl for Recorded {
+        fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
+            self.push(format!("default-sink {node_id}"));
+            Ok(())
+        }
+        fn set_default_source(&self, node_id: u32) -> Result<(), String> {
+            self.push(format!("default-source {node_id}"));
+            Ok(())
+        }
+        fn route_stream(&self, stream_id: u32, target_serial: u32) -> Result<(), String> {
+            self.push(format!("pin {stream_id} to {target_serial}"));
+            Ok(())
+        }
+        fn unroute_stream(&self, stream_id: u32) -> Result<(), String> {
+            self.push(format!("follow-default {stream_id}"));
+            Ok(())
+        }
+        fn set_node_volume(&self, node_id: u32, _: f32) -> Result<(), String> {
+            self.push(format!("volume {node_id}"));
+            Ok(())
+        }
+        fn set_node_mute(&self, node_id: u32, _: bool) -> Result<(), String> {
+            self.push(format!("mute {node_id}"));
+            Ok(())
+        }
+        fn set_device_profile(&self, device_id: u32, _: u32) -> Result<(), String> {
+            self.push(format!("profile {device_id}"));
+            Ok(())
+        }
+    }
+
+    fn device(id: u32, name: &str, is_default: bool) -> AudioDevice {
+        AudioDevice {
+            id,
+            serial: id.saturating_add(1000),
+            name: name.into(),
+            description: name.into(),
+            is_default,
+            volume: None,
+            muted: None,
+            channels: 2,
+            codec: None,
+        }
+    }
+
+    fn stream(id: u32, app: &str, playback: bool, target_id: u32) -> AudioStream {
+        AudioStream {
+            id,
+            serial: id.saturating_add(1000),
+            app: app.into(),
+            media_name: None,
+            playback,
+            target_id: Some(target_id),
+            volume: None,
+            muted: None,
+        }
+    }
+
+    fn graph() -> AudioGraph {
+        AudioGraph {
+            sinks: vec![
+                device(40, "alsa_output.speakers", true),
+                device(41, "bluez_output.AA_BB.1", false),
+            ],
+            sources: vec![
+                device(50, "alsa_input.internal-mic", true),
+                device(51, "alsa_input.usb-headset", false),
+            ],
+            playback_streams: vec![stream(70, "Music", true, 40), stream(71, "Web", true, 40)],
+            record_streams: vec![stream(80, "Call", false, 50)],
+            hardware: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn choosing_an_output_or_input_leaves_every_stream_following_the_default() {
+        let control = Recorded::default();
+        route_output(&graph(), &control, 41).expect("a listed output");
+        assert_eq!(
+            control.calls(),
+            ["default-sink 41", "follow-default 70", "follow-default 71"],
+            "a stream pinned to the chosen output would stay there when a headset is \
+             plugged in or another output is chosen, and the app would go back to it next time"
+        );
+
+        let control = Recorded::default();
+        select_input(&graph(), &control, 51).expect("a listed input");
+        assert_eq!(control.calls(), ["default-source 51", "follow-default 80"]);
+    }
+
+    #[test]
+    fn a_device_that_left_is_not_chosen() {
+        let control = Recorded::default();
+        assert!(route_output(&graph(), &control, 7).is_err());
+        assert!(select_input(&graph(), &control, 7).is_err());
+        assert!(
+            control.calls().is_empty(),
+            "nothing moved: {:?}",
+            control.calls()
+        );
     }
 }
