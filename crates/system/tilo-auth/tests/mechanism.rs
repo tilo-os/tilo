@@ -652,54 +652,64 @@ fn the_boot_unlock_command_speaks_the_contracts_exit_codes() {
     let _ = handoff::take(&handoff);
 }
 
-fn keyring() -> Result<(), String> {
-    // Probe with a key nobody else uses, so a refusing seccomp profile shows
-    // up as a skip rather than a failure of the code under test.
-    let probe = format!("tilo-auth-probe-{}", std::process::id());
-    let handoff = Handoff {
-        uid: 1,
-        key: UserKey::from_bytes([0; 32]),
-    };
-    handoff::add(&handoff, &probe).map_err(|e| e.to_string())?;
-    handoff::take(&probe).map_err(|e| e.to_string())?;
-    Ok(())
-}
+/// The tests that need the kernel keyring, which t's job sandbox refuses: there
+/// they skip, and the `tilo-auth-keyring` check runs every test under
+/// `keyring::` in a micro-VM, where the keyring is required.
+mod keyring {
+    use super::*;
 
-#[test]
-fn the_handoff_survives_one_read_and_no_more() {
-    require_capability!(
-        KernelKeyring,
-        keyring(),
-        "the kernel keyring refused add_key"
-    );
-    let description = format!("tilo-signin-test-{}", std::process::id());
-    let key = UserKey::generate().unwrap();
-    handoff::add(
-        &Handoff {
-            uid: UID,
-            key: key.clone(),
-        },
-        &description,
-    )
-    .unwrap();
-    let taken = handoff::take(&description).unwrap().expect("the handoff");
-    assert_eq!(taken.uid, UID);
-    assert_eq!(taken.key.expose(), key.expose());
-    assert!(handoff::take(&description).unwrap().is_none());
+    /// Where a skipped test runs after all.
+    const COVERED: &str = "the tilo-auth-keyring check runs it in a micro-VM";
 
-    // A second handoff replaces the first instead of sitting beside it.
-    for byte in [1, 2] {
+    fn keyring_usable() -> Result<(), String> {
+        // Probe with a key nobody else uses, so a refusing seccomp profile shows
+        // up as a skip rather than a failure of the code under test.
+        let probe = format!("tilo-auth-probe-{}", std::process::id());
+        let handoff = Handoff {
+            uid: 1,
+            key: UserKey::from_bytes([0; 32]),
+        };
+        handoff::add(&handoff, &probe).map_err(|e| e.to_string())?;
+        handoff::take(&probe).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_handoff_survives_one_read_and_no_more() {
+        require_capability!(
+            KernelKeyring,
+            keyring_usable(),
+            "the kernel keyring refused add_key; {COVERED}"
+        );
+        let description = format!("tilo-signin-test-{}", std::process::id());
+        let key = UserKey::generate().unwrap();
         handoff::add(
             &Handoff {
                 uid: UID,
-                key: UserKey::from_bytes([byte; 32]),
+                key: key.clone(),
             },
             &description,
         )
         .unwrap();
+        let taken = handoff::take(&description).unwrap().expect("the handoff");
+        assert_eq!(taken.uid, UID);
+        assert_eq!(taken.key.expose(), key.expose());
+        assert!(handoff::take(&description).unwrap().is_none());
+
+        // A second handoff replaces the first instead of sitting beside it.
+        for byte in [1, 2] {
+            handoff::add(
+                &Handoff {
+                    uid: UID,
+                    key: UserKey::from_bytes([byte; 32]),
+                },
+                &description,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            handoff::take(&description).unwrap().unwrap().key.expose(),
+            &[2; 32]
+        );
     }
-    assert_eq!(
-        handoff::take(&description).unwrap().unwrap().key.expose(),
-        &[2; 32]
-    );
 }

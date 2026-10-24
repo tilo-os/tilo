@@ -2448,6 +2448,56 @@ inputs = []
 on = ["stable", "dispatch"]
 default = false
 
+# tilo-auth's tests that need the kernel keyring (the boot sign-in handoff and
+# the volume key the initrd links): the job sandbox's seccomp filter refuses the
+# keyrings, so in the test family they skip and name this check. Every test in a
+# `keyring` module of the daemon and mechanism tests is built here and run in a
+# micro-VM, with the keyring and the emulated TPM required.
+[[check]]
+name = "tilo-auth-keyring-build"
+requires = ["arch=x86_64"]
+run = """
+set -eu
+mkdir -p "$CARGO_TARGET_DIR/vm"
+# Read every message before selecting: closing cargo's pipe early makes it
+# fail with a broken pipe while it is still writing build messages.
+test_binary() {
+  python3 -c 'import json, sys; messages = list(map(json.loads, sys.stdin)); print(next(m["executable"] for m in messages if m.get("reason") == "compiler-artifact" and m.get("executable") and m["target"]["name"] == sys.argv[1] and m["profile"]["test"]))' "$1"
+}
+for test in daemon mechanism; do
+  cp "$(cargo test --locked -p tilo-auth --all-features --test "$test" --no-run --message-format json | test_binary "$test")" \\
+    "$CARGO_TARGET_DIR/vm/tilo-auth-$test"
+done
+"""
+outputs = ["/target/vm/tilo-auth-daemon", "/target/vm/tilo-auth-mechanism"]
+cargo_packages = ["tilo-auth"]
+inputs = []
+on = ["stable", "dispatch", "idle"]
+default = false
+
+[[check]]
+name = "tilo-auth-keyring"
+requires = ["arch=x86_64"]
+isolation = "vm"
+needs = ["tilo-auth-keyring-build"]
+env = { TILO_REQUIRE_KEYRING = "1", TILO_REQUIRE_SWTPM = "1" }
+run = """
+set -eu
+# A filter that matches nothing still exits 0: each binary must pass at least one.
+for test in daemon mechanism; do
+  output=$(/target/vm/tilo-auth-$test keyring:: --test-threads=1 2>&1) || { status=$?; printf '%s\\n' "$output"; exit "$status"; }
+  printf '%s\\n' "$output"
+  passed=$(printf '%s\\n' "$output" | sed -n 's/^test result: ok\\. \\([0-9][0-9]*\\) passed.*/\\1/p' | tail -n 1)
+  if [ "${passed:-0}" -lt 1 ]; then
+    echo "tilo-auth-keyring: no keyring test of $test ran" >&2
+    exit 1
+  fi
+done
+"""
+inputs = []
+on = ["stable", "dispatch", "idle"]
+default = false
+
 [[check]]
 name = "launcher-root-build"
 requires = ["arch=x86_64"]
