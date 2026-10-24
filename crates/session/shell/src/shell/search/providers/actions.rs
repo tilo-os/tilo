@@ -6776,7 +6776,7 @@ mod tests {
         chrome.borrow_mut().act_as(governor);
         assert_eq!(
             route(),
-            Some(InviteRoute::Relay),
+            Some(InviteRoute::Host),
             "the person governing the room's host may invite"
         );
         assert!(offers("peer.invite"), "so the palette offers the composer");
