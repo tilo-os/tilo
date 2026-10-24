@@ -1,388 +1,99 @@
-# Agent instructions
-
-## Project Scope
-
-Tilo is a collaborative Linux OS and desktop environment on **Fedora Bootc**: Niri-like
-strips of non-overlapping windows, inside workspaces that carry their own collaborators,
-permissions and host. It is a stack, not a single app:
-
-- An immutable container-based OS image
-- A Wayland compositor
-- A P2P FUSE filesystem that projects remote files and hydrates on demand
-- A CRDT-native UI toolkit used by system apps
-- ~40 native system apps
-
-Treat these as deeply interrelated — a change in `ui` or `fs` can break the OS image build;
-changes to the compositor affect sandboxing and collaboration semantics.
-
-Collaboration lives *below* applications rather than inside them — it has to work in the
-ebook reader, the file manager and the terminal, not only in the document editor.
-**Applications own neither their pixels nor their storage.** An app declares its UI through
-`ui`, which the compositor draws, and exports **resources** — hierarchical and typed (an
-ebook; the highlights and annotations inside it) — each carrying its own **actions**. The
-state behind a resource is a CRDT the system owns.
-
-Most user-facing design questions reduce to that one decision:
-
-- **Accessibility and automation are the same door.** A screen-reader user, a script and an
-  agent browse resources and invoke actions; none touch the UI. A capability reachable only
-  by clicking is not finished.
-- **Search is a system service.** Apps register a search provider per resource type and
-  say what each hit is (a message, a video, a file match — `ui::search::SearchRow`); they
-  never draw a search field. A hit opens the app at that position through the resource's
-  `open` view action with the hit's anchor (`ViewCx::on_open` in a framework app), so a
-  person's click and an agent's call land in the same place. Inside a window the only search
-  entry is the window bar's field: typing turns the window's view into a query view of the
-  app's resources (`tilo_app::framework::views`), narrows its list or finds in its document.
-  Apps draw no search or filter field of their own (`tools/policy/check_app_toolbars.py`).
-- **Undo, history, device sync and theming are system services**, not forty implementations.
-- **Collaboration reduces to transport.** Invite someone to a workspace, give them a role per
-  app; each machine draws natively and state syncs as a CRDT. Agents are ordinary
-  collaborators — same presence, same cursor colour, same attributed history.
-- **A workspace is a unit of collaboration** — its own collaborators, permissions and host —
-  not a region of screen space.
-- **Apps are ~2 MB and are not installed.** Search, press enter, it downloads and opens;
-  unused copies are evicted; keeping one is opt-in. Sandboxing (Landlock + Wayland + portals)
-  is what makes that safe, and it is the security boundary — never weaken it for convenience.
-- **The filesystem is collaborative and versioned.** Apps register (de)serialisation for
-  legacy formats, so `fs` understands both native resources and `.docx`; history, diff and
-  undo look the same in the file manager and inside the app.
-- **Rendering and state are decoupled**, which is why a workspace can be hosted on another
-  machine and still render locally at full speed.
-- **The OS owns window chrome**; apps must not draw their own title bar. Windows never
-  overlap — reject designs that reintroduce floating.
-
-## Policies
-
-Every standing project rule, why it exists, and the check that enforces it (or that it is
-review-only) is in [`docs/policies.md`](docs/policies.md), with the exception path for each.
-This file keeps what an agent needs to operate; where the two differ, the policy page and its
-checks win.
-
-## Repository Layout
-
-Single Cargo workspace, no submodules: apps in `apps/`, libraries in `crates/<domain>/`, the OS
-image in `os/`. For "where is X", start at `docs/codemap.md`: every crate and what it owns, one
-line each. Prefer explicit paths over `git add -A`.
-
-## Build & Test
-
-Run plain `cargo`. The toolchain is pinned in `rust-toolchain.toml` and the whole workspace is
-edition 2024 — don't add a crate on an older edition. `tools/ci/check-build-env.sh` names any
-missing native library, which Rust otherwise reports as `pkg-config exited with status code 1`
-inside a `-sys` crate. How those libraries get there is per-machine and `DEVELOPMENT.md`'s
-business, not this file's.
-
-Functions take usually ≤5 params, never more than 8: clippy denies it and no `allow` may excuse it.
-
-**Never set `CARGO_TARGET_DIR`, and never point two worktrees at one target directory.** The
-first is hashed into sccache's cache key, so it costs every hit even when set to the path
-cargo would have picked anyway; the second collides silently and hands you the other
-worktree's binary. Delete a landed worktree's `target/` — those bytes serve one worktree, the
-same bytes in the cache serve all of them. `docs/measurements/build-speed.md` carries the measurements.
-
-Scope tests to what you are proving — the compile dominates, and a whole-crate run is minutes:
-
-```bash
-cargo test -p shell --lib room_activity
-cargo test --locked -p shell --test it interaction_test::   # headless Wayland state, no GPU
-```
-
-Shell integration files are modules of the single `it` target, not individual
-Cargo targets. Use `--test it MODULE::` to select a module, or its full
-`MODULE::TEST` path with `-- --exact` for one case. For remote native execution,
-and CI's exact Clippy gate on crates your host cannot build (operation `clippy`),
-see [focused native tests](DEVELOPMENT.md#fast-checks-before-assembly).
-
-Run `cargo check -p shell --tests` before finishing. A `--lib` run never compiles integration
-targets, which is how test files have silently stopped building for days at a time.
-
-While working, test what your change touches: `t test $(t scope --names)` ([docs/t.md](docs/t.md)),
-or the one test you changed (`t test test/<package> --test <name>`). The push gate runs no tests:
-main is unstable by design, and `stable`, which continuous deployment ships, moves only on green.
-Browser code compiles only for wasm32: `check/<crate>` and `clippy/<crate>` of a browser crate
-(`python3 tools/ci/package_sets.py wasm`: tilo-browser-runtime, tilo-browser-peer,
-tilo-web-desktop, …) also build its library for wasm32 as the web build does, so run those for a
-change there. A browser crate's `test/<crate>` and any check of another crate compile only for
-the host; `wasm` lints the whole page runtime with every web app linked in.
-Then:
-
-1. Commit (once per clone, `python3 tools/dev/install-git-hooks.py` turns on the hooks).
-2. `git push origin HEAD:main`, in the background: the pre-push hook runs t's push gate on the
-   commit as committed, in about a minute: rustfmt of the changed files, the policy steps and
-   generated-file checks the change touches, `changes`, and clippy of the changed packages. What
-   is red on main runs too and passes only with no lint or policy finding main doesn't have; it
-   names the opt-in checks the change touches (`t test <check>` runs one); main runs the tests
-   and the rest.
-3. If it refuses, fix and commit (it says when `t fix` already fixed files for you to commit),
-   or `git fetch origin && git rebase origin/main` when main moved, then push again: a change
-   that passed and rebased as the same patch passes again at once.
-4. Watch `t inbox`; fix forward what your commit broke on main.
-
-Full image: `./os/build.sh`; boot it with `./os/test-vm.sh`. VM login `tester` /
-`tilo`.
-
-## Architecture Essentials
-
-### `ui` — five passes per frame
-
-Every widget implements `Widget` (`crates/sdk/ui-core/src/widget/mod.rs`):
-
-1. `sync(state, path)` — pull visual state from the Automerge document
-2. `build_layout(taffy, theme, node_map)` — build the Taffy tree; self-sizing widgets
-   implement `measure`
-3. `apply_layout(taffy, node, origin)` — computed layout → the widget's `Rect`
-4. `draw(scene, transform, text_renderer, theme)` — render into a Vello scene
-5. `handle_event(...)` — winit events, which **mutate the CRDT directly**
-
-There is no message-passing layer. Consequences:
-
-- Widget structs hold render and layout caches **only**. State lives in `State::doc`, an
-  `AutoCommit`.
-- Undo/redo snapshot the whole document (`State::commit_action`). Widgets mark undo points
-  with `needs_commit()`/`on_commit()` and restore ephemeral state (caret, selection) via
-  `get_state`/`set_state`.
-- Focus is 2D and directional — `App::focusable_order` in `crates/sdk/ui-core/src/app.rs`, not tab order.
-- **Theming is OS-controlled.** Read every colour and spacing value from the `Theme` passed
-  to `draw`; never hard-code. Same for strings: pass `fluent` keys, never literals. Every
-  appearance setting (high contrast, text size and scale, theme and preset, accent, reduced
-  motion, fonts and density) applies instantly and everywhere: the shell chrome and every
-  running app re-theme and re-lay out on the next frame, with no restart and no reopen.
-- **Copy says state, outcome or next step**, in the person's words: no narration ("Tilo
-  checks…", "X appears here"), no implementation ("compositor", "certified", a job or surface
-  number, `{:?}` output), no all caps, no facts joined with a separator glyph ("·", "•", "|", dashes, " / ") and no unicode symbols as icons, buttons named by outcome, and one
-  name per thing (`tools/policy/copy_glossary.toml`). See HIG §4;
-  `tools/policy/check_copy_language.py` checks every catalogue.
-- **Never hand-roll a text input, button, dialog or control.** Extend the shared widget — it
-  carries correctness, accessibility and theming that a local copy will not. Build surfaces,
-  rows, facts, bar controls and icon buttons from the design system's primitives
-  (`ui::widget::primitives`, docs/design-language.md "Primitives");
-  `tools/policy/check_primitives.py` refuses hand-painted ones, glyph joins and raw colours.
-- **Apps start empty.** No seeded feeds, messages, events or documents on the live path.
-  Sample data belongs behind `--shots` or a demo flag, never in the app a user opens.
-- Rewriting a whole CRDT `Text` or list on every keystroke blows up tombstones. Diff and
-  splice.
-
-### `shell` — `Workspace → Strip → WindowGroup → Tab`
-
-Tabs tile within a group; groups scroll horizontally within a strip; strips stack vertically;
-strips and workspaces switch via the strip switcher (right-edge ribbon, Super+S). Tabs are a **frame** primitive grouping arbitrary apps —
-not per-app tabs.
-
-Each workspace is a bubblewrap sandbox with its own file-access policy; a path outside it
-prompts the user, and approval can be scoped to the workspace. The Wayland state is decoupled
-from the vello/wgpu paint layer so it runs headless.
-
-### `fs`
-
-Iroh content addressing, `blake3` hashes, `moka` cache. Metadata arrives immediately over
-gossip; content hydrates on first read — so `open()` does not mean the bytes are local.
-
-### Actions and resources
-
-`crates/collab/actions` (`tilo-actions`) is the app-facing registry: `resource.rs`,
-`action.rs`, `registry.rs`, `executor.rs`, `envelope.rs`. An app registers its resources and
-the actions on them; the shell serves them into search, the palette and the control socket.
-
-**This is the app's public surface.** Automation, accessibility and agents use it and nothing
-else. When you add a capability to an app, add the action — a feature that exists only as a
-click handler is invisible to every one of them.
-
-## Driving a running desktop
-
-**There is one story. Do not build a second one.**
-
-Every command is `tilo <noun> <verb>`: `tilo --help` lists the nouns (app, action, device, agent,
-package) that work where it runs. Old `tilo-<name>` commands still work as aliases.
-
-`tilo action` (`tilo actions`, `tilo do`) is what this desktop can do, and doing it. Underneath is
-`tilo-control`, the CLI over the compositor's control sockets (never in `/tmp`: anyone could bind a
-shared name first); from a checkout run `cargo run -q --bin tilo-control --`. It has two halves;
-reach for the first.
-
-The semantic half needs no development build and no environment variable: every compositor
-serves `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` in the **device admin's** session (the
-`wheel` account whose identity owns the device) once first login is complete, to that account's
-own unconfined processes — its login or ssh — and never to an app. On a real device, ssh in as
-the admin and run `tilo actions`. A development session started with
-`$TILO_TEST_CONTROL` serves both halves there, and a set `$TILO_TEST_CONTROL` routes every
-subcommand to it.
-
-Semantic — how a collaborator, an agent or a script drives an app:
-
-```bash
-cargo run -q --bin tilo-control -- actions list                 # what this desktop can do
-cargo run -q --bin tilo-control -- actions invoke PROVIDER ID   # do it: no coordinates
-cargo run -q --bin tilo-control -- windows                      # which windows are open, in View terms
-cargo run -q --bin tilo-control -- state-dump --pretty          # what it believes is on screen
-```
-
-Input — for when the thing under test *is* the pointer, hit-testing or painting (development
-sessions only):
-
-```bash
-cargo run -q --bin tilo-control -- list-targets      # named rects, via Widget::test_id
-cargo run -q --bin tilo-control -- click NAME        # also click-at X Y | drag | key | type
-cargo run -q --bin tilo-control -- snapshot PATH     # PNG of the live scene
-```
-
-Prefer the semantic half: it is the surface real users and agents depend on, so exercising it
-is worth more than a synthetic click that proves only geometry.
-
-An agent in a terminal inside a Tilo login (Claude Code, Codex) reaches the same actions once
-`tilo agent connect claude` (or `codex`) has registered the session's agent door with it, with
-path-addressed tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`), e.g.
-`notes/Todo/body#append-paragraph`. It never starts a standalone runtime inside the login, whatever
-environment a multiplexer or ssh left it (docs/runtime-mcp.md).
-
-The installer and the greeter run before any compositor exists; they answer the same semantic
-ops on their own console socket, so it is still `tilo-control --socket <path> actions list`
-(docs/agent-action-api.md). In a VM that socket is `os/dev/vm.sh console`. Add `fn test_id(&self) ->
-Option<&str>` to a widget to make it addressable by name; `Parent/Child[index]` paths work
-without opting in.
-
-Stills and video with no compositor and no display:
-
-```bash
-cargo run --bin shots -- --list-scenarios
-cargo run --bin shots -- --mode offscreen --out target/<dir>
-cargo run --bin shots -- --mode recording --scenario <name> --out target/<file>.h264
-```
-
-Output is identical to the live binary except for live-surface-only bugs.
-`TILO_SHOTS_THEME=light|dark|high-contrast` — check more than one; single-theme blind spots
-have shipped repeatedly.
-
-`scripts/headless-examples/` is the worked-example index: `spawn-headless.sh` starts a
-headless compositor and prints `READY <socket>`; `_control.py` is the socket client to inline
-rather than rewrite; `full-loop.py` goes from nothing to a PNG in about five seconds.
-
-**Never** screenshot the user's real desktop.
-Debug overlays need `TILO_UI_DEBUG` **and** `debug_assertions`.
-
-## Dev VMs
-
-To run your build in the real Tilo OS image (a headful session, real DRM and input, VM-wide
-services), use `tilo device`'s development verbs. Start here:
-
-```bash
-tilo device guide quickstart
-```
-
-(From a checkout, `cargo build -p tilo-vm && target/debug/tilo-vm guide quickstart` runs this
-worktree's build of the same program; `tilo-vm <verb>` is `tilo device <verb>`.)
-
-You get a **slot** in a shared dev VM: your own user, session and layer stack, swapped with
-`tilo device swap <component>` and undone with `tilo-vm rollback` (a slot's generations, not the
-device's system). Driving stays the one story above: `tilo device control …` runs the VM's
-`tilo-control` against your slot, and `tilo device shot` is its snapshot. `tilo device doctor`
-checks the host and prints each fix. Never deploy into a VM with raw `ssh`/`scp`. Image-level
-changes (Containerfiles, units, `/etc`, packages) go through `tilo device vm upgrade --from local`:
-it rebuilds only what changed, moves the running VM onto the new image with bootc and reboots it;
-`tilo device vm rollback-image` goes back (`tilo device guide images`). Kernel changes
-(`os/kernel/config-fragments/`, `os/kernel/patches/`) go through `tilo device swap kernel`: it
-builds incrementally from the release build's inputs, installs the kernel VM-wide and reboots
-(`tilo device guide kernel`). Installer changes go through `tilo device scenario install`: a
-throwaway VM installs from your medium through the installer's actions and cold-boots the result
-(`tilo device guide scenarios`).
-
-## Cargo.lock is committed — do not regenerate it
-
-Move one crate at a time with `cargo update -p <crate> --precise <version>`. A fresh resolve
-moves hundreds of transitive versions at once, and a break surfaces inside a dependency rather
-than where you touched. Treat a lock change as a real change: read the diff and rebuild before
-pushing. `--locked` in CI. Commit a lock-only update with the command declared,
-`TILO_CARGO_UPDATE='-p <crate> --precise <version>' git commit`. The relock `t fix lockfile`
-writes after a rebase needs no declaration: it moves no version. The pre-commit hook refuses any
-other lock change without a manifest beside it (DEVELOPMENT.md, "Pre-commit hook").
-
-Tilo's own crates use one RustCrypto generation, the one iroh uses; the versions are in
-[`docs/policies.md`](docs/policies.md#dependencies-and-runtime) and
-`tools/policy/check_crypto_generation.py` refuses a direct dependency on the previous one. Take
-OS randomness from `getrandom::SysRng`, wrapped as `UnwrapErr(SysRng)` where an infallible
-`CryptoRng` is required. frost's `rand_core` 0.6 is reached only through `threshold-identity`'s
-RNG bridge, and tilo-crypto keeps authenticode's stack (`authenticode-sha2`, `x509-cert`/`cms`
-0.2 on `der` 0.7), because the newest releases of those dependencies still require it.
-
-## Traps that have cost real time
-
-- **Adding a field to `Workspace`/`WorkspaceTree`/`Strip` in `crates/session/shell/src/shell/state.rs`
-  ripples to every by-field test fixture.** Symptom `E0063: missing field`;
-  `crates/session/shell/tests/concept_parity_spec.rs` is 2200+ lines.
-- **`git worktree remove --force` permanently deletes untracked files.** `git status --short`
-  and commit before removing.
-- **`git stash` is unsafe here** — the stash stack is shared across worktrees and concurrent
-  sessions. Commit WIP instead.
-- **Never write a `pkill`/`pgrep -f` pattern that matches your own command line.**
-- **Clean up compositors and runtime dirs you spawn.** Leaked compositors hold DRM
-  descriptors and starve the GPU for every session on the machine.
-- **Verify a "known-red" test list at your own base commit.** A handed-down one is usually
-  from a different tree.
-- **A check that cannot observe its subject must fail, not skip.**
-
-## Verification covenant
-
-Never `#[ignore]` a failing test, never weaken an assertion, always assert on the production
-path rather than a tautological helper. It applies to **all** tests; the rest of the testing
-rules are in [`docs/policies.md`](docs/policies.md#testing-and-verification).
-
-## Comments
-
-Code says what it does; names, types and tests carry the meaning. Write a comment only to
-explain **why**, and only when the code can't be made to say it without costing brevity,
-performance or correctness. Before writing one, try a better name, a smaller function or a
-type instead.
-
-- No comments that restate a name or signature ("Returns the width." on `fn width`) or
-  narrate the next line.
-- No history: nothing about what code used to do, what changed, what was fixed, or "now".
-  That belongs in the commit message.
-- No comments on tests that their names and assertions already say. No file or module
-  headers that summarise what follows.
-- No `# Errors` / `# Panics` sections unless they say something the signature doesn't.
-- Doc comments on public API only where a caller needs something the name and types don't
-  give them (a precondition, a unit, a surprising cost).
-
-When you touch code with a comment that breaks these rules, delete it.
-
-## Self-contained repository
-
-This is an open-source repository; everything in it must stand on its own. Never reference
-internal documents, trackers or private links (issue-tracker ids, internal docs or wikis, chat
-threads) in code, comments, docs, tests, scripts, commit messages and bodies, PR titles and
-descriptions, branch names or fixture strings. State the reason itself where it is needed.
-Hooks and CI reject them ([`docs/policies.md`](docs/policies.md#process) names the checks).
-
-## Where to read first
-
-`docs/architecture/{README,overview,collaboration,compositor,security}.md`,
-`docs/headless-testing.md`, and `crates/sdk/ui-core/HIG.md` before non-trivial changes in
-those subsystems. `DEVELOPMENT.md` for the build environment.
-
-## CI
-
-Push straight to `main` as in "Before pushing" above: no pull requests, nothing reverts.
-Keep each push a small, coherent, tested increment. `t main` shows what fails on main and who
-is on it; `t claim` someone else's failure before you work on it. `stable` is
-moved by the stabilizer alone. The workflow and using t are in `docs/t.md`. A change that reaches the shell also
-runs the desktop smoke (`desktop_smoke::` in the shell `it` target): a frozen
-compositor fails it within half a second with every thread's backtrace, so treat that
-failure as a freeze, never as a timeout to retry (docs/headless-testing.md, "Desktop
-smoke gate").
-
-Keep check/lint results for every main commit. Affected Tilo/Linux apps package
-after relevant main changes; unchanged collection members are reused. Full OS
-and desktop distribution builds remain explicit or scheduled; do not restore
-broad per-push full builds to obtain a development artifact. Use the existing workflow's
-manual dispatch and the smallest applicable app/architecture inputs instead.
-
-The existing CI scheduler owns runner slots, admission and queue order. Submit
-work normally; do not negotiate build slots with other agents, reserve workers,
-or repeatedly poll a queued job. Use automatic completion notifications and
-investigate concrete failures. Infrastructure maintenance coordination is a
-bounded operator task, never a prerequisite for ordinary development.
-
-After pushing, use `t inbox` for failures traced to your commits and `t main` for the
-main failure board. Inspect a check with `t log <check>` or follow a run with
-`t follow <run>`. Fix regressions you caused forward and rerun the affected checks;
-unrelated failures on `main` do not gate your next push. See `docs/t.md`.
+# Coding agents
+
+## Scope and navigation
+
+- Tilo's collaborative desktop/OS, apps, SDK and filesystem share a workspace.
+- Use the [code map](docs/codemap.md); avoid repository-wide scans.
+- Read only the relevant sections of [docs/policies.md](docs/policies.md).
+- Development: [choose a task](docs/development/README.md); prefer a tool's
+  `--help` or guide.
+
+| Work                  | Read first                                                           |
+| --------------------- | -------------------------------------------------------------------- |
+| Architecture/security | `docs/architecture/overview.md`, `docs/architecture/security.md`     |
+| Collaboration         | `docs/architecture/collaboration.md`                                 |
+| Compositor            | `docs/architecture/compositor.md`, `docs/headless-testing.md`        |
+| Apps/UI               | `crates/sdk/ui-core/HIG.md`, `docs/design-language.md`               |
+| Builds/integration    | `docs/t.md`                                                          |
+| Dev VM/device         | `tilo device guide quickstart` (source: `crates/dev/tilo-vm/guide/`) |
+
+## Make the change
+
+- Read production code and tests first; inspect history for regressions.
+- Preserve existing capabilities; ask when intent is unclear.
+- State: owned resource/CRDT. Widgets: presentation/cache, not a second state
+  store.
+- Bind app edits to typed resource/actions; do not add click-only mutations.
+- Use shared controls, theme tokens, localisation and platform services.
+- Search, window chrome, undo, history and collaboration belong to the system.
+- Do not add floating windows, app title bars or private app search fields.
+- Apply appearance changes live; use the shared motion primitives and
+  reduced-motion policy.
+- Start apps empty; fixtures belong in tests, shots or explicit demos.
+- Diff/splice CRDT text and lists; do not replace them on every edit.
+- Never weaken sandboxing, capability grants or cross-workspace isolation.
+- Never bypass denials with ambient credentials or unconfined fallbacks.
+- Public code/docs/messages must not reference private trackers or discussions.
+- Explain non-obvious decisions, not code, names or historical commentary.
+
+## Build and test
+
+- Use the pinned toolchain, edition 2024 and `--locked`; select affected crates.
+- Do not set `CARGO_TARGET_DIR` or share target directories between worktrees.
+- Do not regenerate `Cargo.lock`; use `cargo update -p NAME --precise VERSION`.
+- Follow `docs/policies.md` for lock-only changes, generated files and
+  dependency exceptions.
+- Run the affected checks: `t scope`, then `t test <checks>`; `t suggest` lists
+  extensive checks.
+- Rerun failures, not whole suites; distinguish inherited failures from new
+  ones.
+- Shell integration tests: `cargo test --locked -p shell --test it MODULE::`.
+- Shell changes also need `cargo check --locked -p shell --tests` and desktop
+  smoke coverage.
+- Browser changes need wasm checks; native tests cannot compile wasm-only code.
+- Use `check/<crate>`/`clippy/<crate>` for browser crates and `wasm` for the
+  complete web runtime.
+- Never ignore a failure, weaken an assertion or test only a tautological
+  helper.
+- A check unable to observe its subject must fail, not silently skip.
+- Test through production interfaces; include cancellation, denial and reconnect
+  where relevant.
+- Inject paths/stores; use `tilo-test-env` only when the environment itself is
+  the interface.
+- Report the exact checks run and remaining gaps; do not equate implementation
+  with verification.
+
+## Run and inspect
+
+- Prefer `tilo action`/`tilo-control` resources and actions over pointer
+  automation.
+- Use input injection only for input, hit-testing or painting tests.
+- Use `shots` or a disposable headless session for images; never capture the
+  user's desktop.
+- Check visual changes in multiple themes; do not assume headless proof covers
+  hardware.
+- Clean up every compositor, runtime directory, container and VM you start.
+- Do not use `pkill`/`pgrep -f` patterns that match your own command.
+- Use `tilo device` for dev VM lifecycle/swaps; do not invent an SSH/SCP
+  deployment path.
+- Use `tilo device guide images|kernel|scenarios` for the corresponding change.
+
+## Git and delivery
+
+- Preserve concurrent edits; stage explicit paths, not `git add -A`.
+- Do not use the shared stash; never remove a worktree containing uncommitted
+  work.
+- Install hooks with `python3 tools/dev/install-git-hooks.py`; run
+  `.githooks/pre-commit`.
+- Follow the user's review/commit/push instructions; otherwise use `docs/t.md`'s
+  workflow.
+- Keep unstable `main` and release-qualified `stable` distinct; do not introduce
+  PR auto-merge.
+- Leave runner admission and queue order to the scheduler; do not reserve slots
+  or poll queues.
+- After integration, inspect `t inbox`; fix regressions you caused and claim
+  others before work.
+- App packaging is affected-only; full image/distribution builds stay explicit
+  or scheduled.
+- Get development artifacts through the existing smallest applicable
+  build/dispatch.

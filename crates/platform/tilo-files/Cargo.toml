@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "Files inside capability-scoped roots on Linux, macOS and the web: crash-safe replacement, no-clobber creation and renames, advisory locks, and the browser's origin-private file system."

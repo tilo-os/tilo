@@ -12,15 +12,15 @@ version_const = "crates/runtime/runtime-portal/src/lib.rs:RUNTIME_INTERFACE_VERS
 encoding = "postcard"
 served_to_apps = true
 sources = [
-    "crates/runtime/runtime-identity/src/lib.rs",
-    "crates/runtime/runtime-identity/src/profile.rs",
+    "crates/runtime/tilo-identity-client/src/lib.rs",
+    "crates/runtime/tilo-identity-client/src/profile.rs",
     "crates/runtime/runtime-portal/src/tools.rs",
 ]
 roots = ["Request", "Response", "ToolRequest", "ToolReply"]
 capnp = [
     "crates/runtime/runtime-collab/schema/collab.capnp",
-    "crates/runtime/runtime-fs/schema/fs.capnp",
-    "crates/runtime/runtime-fs/schema/blobs.capnp",
+    "crates/runtime/tilo-fs-client/schema/fs.capnp",
+    "crates/runtime/tilo-fs-client/schema/blobs.capnp",
 ]
 
 [opaque]

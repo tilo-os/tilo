@@ -8,7 +8,7 @@
 #
 # Arguments before `--` select what to build (packages, features); arguments
 # after it go to `nextest run` (test-name filters, --no-capture, ...). Tests
-# run with the `ci` nextest profile (one retry, JUnit report in
+# run with the `ci` nextest profile (no retries, JUnit report in
 # target/nextest/ci/junit.xml) in a cleared environment built by
 # tools/with-test-environment.sh: LANG=C.UTF-8, TZ=UTC, fresh HOME/XDG
 # directories and no desktop session. GPU tests use Mesa's llvmpipe software
@@ -20,6 +20,20 @@
 # (CARGO=my-cargo scripts/test-local.sh -p tilo-fs). The test run then reuses those
 # binaries through nextest's build metadata and never invokes Cargo.
 set -euo pipefail
+
+for argument in "$@"; do
+    case "$argument" in
+        --) break ;;
+        -h|--help)
+            printf '%s\n' \
+                'Usage: scripts/test-local.sh [--goldens] [CARGO BUILD OPTIONS] [-- NEXTEST RUN OPTIONS]' \
+                'Build selected test binaries, then run them in an isolated local environment.' \
+                'Default: the workspace, excluding visual goldens. Use -p PACKAGE to narrow it.' \
+                '--goldens selects only visual goldens; arguments after -- go to nextest run.' \
+                'Set CARGO to an alternative Cargo executable. --help does not build or run anything.'
+            exit 0 ;;
+    esac
+done
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$repo"

@@ -30,10 +30,8 @@ path = "tests/socket_activation.rs"
 required-features = ["server"]
 
 [features]
-# App builds carry only the protocol and authenticated client transports.
 default = []
-# Bind authenticated native clients to the app I/O runtime, without a server.
-runtime-client = ["dep:tilo-rt"]
+runtime-client = ["tilo-model-client/runtime-client"]
 # Hosted-provider relay and HTTP adapter, without in-process inference.
 server = [
     "dep:tilo-clock",
@@ -59,26 +57,21 @@ host-backend = ["server"]
 local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
 
 [dependencies]
-tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
-# The authenticated fetch client is portable; native provider plumbing is gated below.
+tilo-model-client = { version = "0.1.0", path = "../model-client", default-features = false }
+libc.workspace = true
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
+tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 hex.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-thiserror.workspace = true
 zeroize.workspace = true
 wire-frame = { path = "../../system/wire-frame" }
-libc.workspace = true
 tilo-files = { optional = true, path = "../../platform/tilo-files" }
-# Loopback admission of device-local models is shared with apps discovering them.
 url.workspace = true
-# The provider protocol names travel in the client's requests too.
 agent-provider-config = { path = "../provider-config" }
 
-# Native descriptor transport is available to clients; server dependencies
-# below are activated only by explicit feature selection.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 tilo-clock = { path = "../../platform/tilo-clock", optional = true }
 accounts = { path = "../../system/accounts", optional = true }

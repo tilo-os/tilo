@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 # Published: the SDK's platform layer (tools/sdk/publish_check.py).
 publish = true
-license.workspace = true
+license = "MIT"
 repository.workspace = true
 homepage.workspace = true
 description = "Stable slice sorting compiled once for every call site, instead of a copy of std's sort for every comparator."
