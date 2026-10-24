@@ -33,7 +33,7 @@ use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::widget::tree_view::{
-    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeModel, TreeView,
+    NavItemSpec, NavPresentation, NavRowSpec, NavStatus, NodeId, TreeImpl, TreeModel,
 };
 use crate::widget::{AppModel, FilterCount, Filterable, ModelPath, RowStatus, Tone, TreeRowAction};
 
@@ -1091,7 +1091,7 @@ struct NavShared {
 
 /// The navigation list. See the module docs.
 pub struct NavList {
-    tree: TreeView<(), NavModel>,
+    tree: TreeImpl<(), NavModel>,
     shared: Rc<RefCell<NavShared>>,
     keys: NavKeys,
     /// The sections as the app handed them, before any filter.
@@ -1134,7 +1134,7 @@ impl NavList {
         let action_shared = Rc::clone(&shared);
         let rename_shared = Rc::clone(&shared);
         let expand_shared = Rc::clone(&shared);
-        let tree = TreeView::from_model(model)
+        let tree = TreeImpl::from_model(model)
             .hide_root()
             .fill()
             .with_expanded(openings.expanded)
@@ -1796,7 +1796,7 @@ impl NavList {
 
     /// The list's tree, for tests reading its engine state.
     #[cfg(test)]
-    pub(crate) fn tree(&self) -> &TreeView<(), NavModel> {
+    pub(crate) fn tree(&self) -> &TreeImpl<(), NavModel> {
         &self.tree
     }
 }
@@ -2056,7 +2056,7 @@ fn has_unavailable(node: &crate::a11y::AccessNode, shared: &NavShared) -> bool {
 // methods (with the tree view they forward to) are compiled once, here
 // (`concrete_decorator_widget!` in decorator.rs).
 impl crate::widget::decorator::concrete::Decorator for NavList {
-    type Inner = TreeView<(), NavModel>;
+    type Inner = TreeImpl<(), NavModel>;
 
     fn inner(&self) -> &Self::Inner {
         &self.tree

@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use vello::kurbo::Rect;
 
-use super::{NodeId, TreeModel, TreeMove, TreeRowKey, TreeView};
+use super::{NodeId, TreeImpl, TreeModel, TreeMove, TreeRowKey};
 use crate::a11y::{AccessNode, AccessState, Role};
 use crate::arriving::Arrival;
 use crate::widget::Widget;
@@ -133,7 +133,7 @@ impl AccessRowInputs<'_> {
     }
 }
 
-impl<T, M: TreeModel> TreeView<T, M> {
+impl<T, M: TreeModel> TreeImpl<T, M> {
     /// The affordance holding the tree's focus, while the tree has it.
     pub(super) fn focused_affordance_target(&self) -> Option<&str> {
         self.focused_affordance
@@ -142,7 +142,7 @@ impl<T, M: TreeModel> TreeView<T, M> {
     }
 }
 
-impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
+impl<T: 'static, M: TreeModel + 'static> TreeImpl<T, M> {
     /// The tree's own node, without its rows: what focus capture and focus
     /// order read of it on every frame ([`Widget::accessibility_root`]).
     pub(super) fn access_root(&self) -> AccessNode {
