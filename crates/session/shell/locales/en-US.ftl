@@ -1400,6 +1400,8 @@ search-answer-bad-address = That address can’t be opened.
 search-people-invited = Invited
 search-action-emoji-picker = Choose an emoji
 search-action-emoji-picker-subtitle = Insert it where you’re typing
+search-action-next-input-source-subtitle = Type with the next layout in your list
+input-source-next-none = Add another keyboard layout in Settings to switch between them
 search-provider-host-apps = Host apps
 search-provider-app-actions = Application resources and actions
 

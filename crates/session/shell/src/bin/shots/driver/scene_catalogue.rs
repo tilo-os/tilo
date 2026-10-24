@@ -24,6 +24,7 @@ impl ShellDriver {
         "palette_rechner",
         "palette_sum",
         "palette_move",
+        "palette_keyboard_layout",
         "palette_files",
         "palette_finder",
         "palette_spotify",

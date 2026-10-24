@@ -413,7 +413,6 @@ impl ShellOverlayHost {
             strip_navigator: tilo_desktop::strip_navigator::StripNavigator::default(),
             strip_switcher_revision: None,
             outputs: Vec::new(),
-            keyboard_scope: settings_store::keyboard_sources::ALL.into(),
             palette,
             app_actions: None,
             palette_visible: false,
