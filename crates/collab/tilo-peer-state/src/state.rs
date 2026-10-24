@@ -855,6 +855,17 @@ impl StatePeer {
     pub fn room(&self) -> &str {
         &self.core.room
     }
+    /// Whether the certificate the room holds for `source` has run out:
+    /// the device is certified here, by a certificate past its expiry.
+    #[must_use]
+    pub fn certificate_expired(&self, source: &[u8; 32], now: SystemTime) -> bool {
+        matches!(
+            self.core.certificate_typed(source, now),
+            Err(backend::CertificateLookupError::Validity(
+                tilo_user_identity::DeviceCertError::Expired
+            ))
+        )
+    }
     /// The current authority of the device `source`: its person, role, the
     /// room's policy and whether it is held to the foreign-device bound.
     pub fn permissions(
