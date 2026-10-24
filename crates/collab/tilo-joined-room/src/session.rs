@@ -71,6 +71,34 @@ impl Connect {
             ))
         })
     }
+    /// The hosts the room's governor named besides itself
+    /// ([`tilo_peer_state::room_hosts_of`]), in the order governance holds
+    /// them: where a member's session goes while the governor is out of
+    /// reach. A host the room revoked, or one naming this device, is left
+    /// out.
+    ///
+    /// # Errors
+    /// The room is not held here.
+    pub fn hosts(&self, own: &[u8; 32]) -> Result<Vec<TransportHint>, String> {
+        self.owner.with_current(self.room, |view| {
+            let governor = view.transport_hint()?.host.device_public_key;
+            let revocations = view.peer().revocations();
+            Ok(view
+                .peer()
+                .governance()
+                .room_hosts()
+                .into_iter()
+                .filter(|hint| {
+                    let device = hint.host.device_public_key;
+                    device != governor
+                        && &device != own
+                        && !revocations
+                            .iter()
+                            .any(|entry| entry.revoked_device_public_key == device)
+                })
+                .collect())
+        })
+    }
     /// The renewal of the certificate the room's record holds, when this
     /// device's custody holds one: the device proves its membership with it
     /// ([`crate::enroll::renew_membership`]) before its sessions dial again,
@@ -100,6 +128,9 @@ impl Connect {
 pub struct Scope {
     connect: Connect,
     hint: TransportHint,
+    /// The host the session reached: the governor `hint` names, or a host
+    /// the room's governance names while the governor is out of reach.
+    via: TransportHint,
     device: DeviceCert,
     /// The owner continuity the session last validated against.
     continuity: std::sync::atomic::AtomicU64,
@@ -110,9 +141,22 @@ pub struct Scope {
 impl Scope {
     #[must_use]
     pub fn new(connect: Connect, hint: TransportHint, device: DeviceCert, continuity: u64) -> Self {
+        Self::via(connect, hint.clone(), hint, device, continuity)
+    }
+    /// A session pinned to the room's governor `hint` that reached the host
+    /// `via` instead.
+    #[must_use]
+    pub fn via(
+        connect: Connect,
+        hint: TransportHint,
+        via: TransportHint,
+        device: DeviceCert,
+        continuity: u64,
+    ) -> Self {
         Self {
             connect,
             hint,
+            via,
             device,
             continuity: std::sync::atomic::AtomicU64::new(continuity),
             live: Mutex::new(true),
@@ -137,6 +181,16 @@ impl Scope {
                 .store(continuity, std::sync::atomic::Ordering::SeqCst);
         }
         pinned
+    }
+    /// The host this session reached.
+    #[must_use]
+    pub fn host(&self) -> &TransportHint {
+        &self.via
+    }
+    /// Whether this session reached the room's governor itself.
+    #[must_use]
+    pub fn reaches_governor(&self) -> bool {
+        self.via == self.hint
     }
     /// The owner continuity this session last validated against.
     fn continuity(&self) -> u64 {

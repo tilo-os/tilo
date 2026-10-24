@@ -324,13 +324,11 @@ impl Rooms {
     /// shared layout: in a room whose layout is personal a member's change
     /// to the room's topology or shared desktop is refused, and a desktop
     /// write anywhere is decided by what it does to what others made
-    /// ([`Self::decide_desktop_write`]). Anything else passes untouched.
-    ///
-    /// Every write a door decides came over a session, so it is a member's:
-    /// the relay commits its own writes to the room without a door. A
-    /// session that presents this relay's own certificate (the device the
-    /// relay runs on, as a member, or what it relays for members) is decided
-    /// as that device's, like any other member's.
+    /// ([`Self::decide_desktop_write`]). Anything else passes untouched,
+    /// and so does what the room's governor, this host's own device, writes:
+    /// it writes as the room's governance writer, whose batches the room's
+    /// admission takes whatever the layout (`personal_layout_kept`). A
+    /// device hosting its person's room writes its own windows so.
     ///
     /// # Errors
     /// Why the room refuses it.
@@ -340,6 +338,9 @@ impl Rooms {
         author: [u8; 32],
         body: &[u8],
     ) -> Result<(), String> {
+        if author == self.inner.host.cert.device_public_key {
+            return Ok(());
+        }
         let Some(write) = layout_write(room, body) else {
             return Ok(());
         };

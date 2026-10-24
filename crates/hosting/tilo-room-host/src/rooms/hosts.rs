@@ -1,15 +1,14 @@
 //! The hosts of a room this host governs: itself first, then each host of
 //! its person it asked to serve the room as well ([`crate::hosted`]).
 //!
-//! Each host signs its own address; the governor keeps the list beside the
-//! room (`<room>.hosts`, its own record, not the room's governance) and the
-//! room's join answers carry it, governor first, so a member reaches the room
-//! wherever it is served. A hosting member is a device of the governor's own
-//! person that may act as a host; attaching it admits that device to the
-//! room as one of the owner's, which is how the room's governance tells every
-//! member it may hold the room.
-
-use std::path::PathBuf;
+//! Each host signs its own address. The room's governance names the hosts
+//! serving it beside the governor ([`tilo_peer_state::ROOM_HOSTS_KEY`]), so
+//! every member learns of each as it learns any change to the room, and the
+//! room's join answers carry them all, governor first: a member reaches the
+//! room wherever it is served. A hosting member is a device of the
+//! governor's own person that may act as a host; attaching it admits that
+//! device to the room as one of the owner's, which is how the room's
+//! governance tells every member it may hold the room.
 
 use iroh_base::EndpointAddr;
 use serde_json::{Map, Value, json};
@@ -27,54 +26,12 @@ use tilo_relay_session::rooms::{
 use tilo_user_identity::DeviceCert;
 
 use super::authority::RoomOp;
-use super::{CollaborationError, GovernedRoom, Rooms};
+use super::{CollaborationError, Rooms};
 use crate::federation::{PeerRelayDialer, Upstream};
 use crate::handshake::LiveIdentity;
 use crate::host_authority::HostOperation;
 use crate::transport::{Envelope, REMOTE_ACTION_ENVELOPE_VERSION};
 use tilo_lock::RwLockRecover as _;
-
-/// Where the hosts serving `room` beside the governor are recorded.
-pub(super) fn hosts_path(room: &std::path::Path) -> PathBuf {
-    room.with_extension("hosts")
-}
-
-/// The hosts a room's governor recorded beside it, each its own signed
-/// address; none when it recorded none.
-pub(super) fn load_hosts(room: &std::path::Path) -> Result<Vec<TransportHint>, String> {
-    let path = hosts_path(room);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.to_string()),
-    };
-    let encoded: Vec<String> = serde_json::from_str(&text).map_err(|error| error.to_string())?;
-    encoded
-        .iter()
-        .map(|hint| crate::hosted::decode_hex(hint))
-        .collect()
-}
-
-fn save_hosts(room: &std::path::Path, hosts: &[TransportHint]) -> Result<(), String> {
-    use std::io::Write as _;
-    let encoded = hosts
-        .iter()
-        .map(hex_postcard)
-        .collect::<Result<Vec<_>, _>>()?;
-    let bytes = serde_json::to_vec_pretty(&encoded).map_err(|error| error.to_string())?;
-    let path = hosts_path(room);
-    let staged = path.with_extension("hosts.tmp");
-    let mut file = std::fs::File::create(&staged).map_err(|error| error.to_string())?;
-    file.write_all(&bytes).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())?;
-    std::fs::rename(&staged, &path).map_err(|error| error.to_string())?;
-    if let Some(dir) = path.parent() {
-        std::fs::File::open(dir)
-            .and_then(|dir| dir.sync_all())
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
 
 /// This host's answer to the session a host serving one of its rooms opened
 /// here ([`Rooms::answer_host`]).
@@ -105,17 +62,39 @@ impl Rooms {
     /// signed.
     pub async fn hosts(&self, room: &str) -> Result<Vec<TransportHint>, CollaborationError> {
         let governed = self.room(room).await?;
-        let mut governed = governed.lock().await;
-        self.refresh_hosts(&mut governed)?;
-        Ok(governed.hosts.clone())
+        let governed = governed.lock().await;
+        let own = self.transport_hint(&governed)?;
+        Ok(std::iter::once(own)
+            .chain(governed.peer().governance().room_hosts())
+            .collect())
     }
 
-    /// Bring `room`'s list of hosts up to date with this host's own address.
-    pub(super) fn refresh_hosts(&self, room: &mut GovernedRoom) -> Result<(), CollaborationError> {
-        let own = self.transport_hint(room)?;
-        room.hosts = std::iter::once(own)
-            .chain(room.member_hosts.iter().cloned())
-            .collect();
+    /// Change which hosts `room`'s governance names with `change`, as its
+    /// governor.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the room stays locked until its decision is committed and settled"
+    )]
+    async fn name_host(
+        &self,
+        room: &str,
+        change: impl FnOnce(
+            tilo_peer_state::PeerGovernanceMut<'_>,
+            &ed25519_dalek::SigningKey,
+            std::time::SystemTime,
+        ) -> Result<bool, String>,
+    ) -> Result<(), String> {
+        let host = &self.inner.host;
+        let state = self.room(room).await.map_err(|error| error.to_string())?;
+        let mut governed = state.lock().await;
+        let now = std::time::SystemTime::now();
+        let mut candidate = governed.peer().clone();
+        if change(candidate.governance_mut(), &host.key, now)? {
+            governed.commit(candidate, &host.key, now, |record, _| {
+                Ok(record.collaboration.clone())
+            })?;
+            self.settle(&mut governed).await?;
+        }
         Ok(())
     }
 
@@ -181,7 +160,7 @@ impl Rooms {
             Value::String(hex_postcard(&governor_hint)?),
         );
         arguments.insert("bootstrap".into(), Value::String(hex_postcard(&bootstrap)?));
-        let answer = ask_host(&client, device, workspace_id, HOST_ROOM, arguments).await?;
+        let answer = ask_host(&client, device, HOST_ROOM, arguments).await?;
         let hosted: HostedRoom =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
         let hint: TransportHint = crate::hosted::decode_hex(&hosted.host_hint)?;
@@ -195,16 +174,10 @@ impl Rooms {
         {
             return Err("the host answered an address that is not its own for the room".into());
         }
-        let governed = self.room(room).await.map_err(|error| error.to_string())?;
-        let mut governed = governed.lock().await;
-        let mut member_hosts = governed.member_hosts.clone();
-        member_hosts.retain(|known| host_device(known) != device);
-        member_hosts.push(hint.clone());
-        save_hosts(&governed.path, &member_hosts)?;
-        governed.member_hosts = member_hosts;
-        self.refresh_hosts(&mut governed)
-            .map_err(|error| error.to_string())?;
-        drop(governed);
+        self.name_host(room, |governance, key, now| {
+            governance.author_room_host(&hint, key, now)
+        })
+        .await?;
         // The host dials this device as it takes the room up, perhaps before
         // its address was recorded above: a session it opened already is
         // answered here, one it opens later when it says hello.
@@ -236,11 +209,13 @@ impl Rooms {
         let now = tilo_clock::unix_now_ns();
         self.authorize(caller, None, RoomOp::Host(HostOperation::DetachHost), now)
             .map_err(|error| error.to_string())?;
-        let (workspace_id, known) = {
+        let known = {
             let governed = self.room(room).await.map_err(|error| error.to_string())?;
             let mut governed = governed.lock().await;
-            let mut member_hosts = governed.member_hosts.clone();
-            let known = member_hosts
+            let known = governed
+                .peer()
+                .governance()
+                .room_hosts()
                 .iter()
                 .find(|known| host_device(known) == device)
                 .map(|known| {
@@ -248,14 +223,13 @@ impl Rooms {
                         .map(|address| address.endpoint_addr)
                 })
                 .and_then(Result::ok);
-            member_hosts.retain(|known| host_device(known) != device);
-            save_hosts(&governed.path, &member_hosts)?;
-            governed.member_hosts = member_hosts;
             governed.answered.remove(&device);
-            self.refresh_hosts(&mut governed)
-                .map_err(|error| error.to_string())?;
-            (governed.workspace_id(), known)
+            known
         };
+        self.name_host(room, |governance, key, now| {
+            governance.author_room_host_removed(&device, key, now)
+        })
+        .await?;
         let _ = self.inner.changes.send(room.to_owned());
         let Some(addr) = addr.or(known) else {
             return Ok(false);
@@ -264,7 +238,7 @@ impl Rooms {
             let client = self.dial_host(device, addr).await?;
             let mut arguments = Map::new();
             arguments.insert("room".into(), Value::String(room.to_owned()));
-            ask_host(&client, device, workspace_id, UNHOST_ROOM, arguments).await
+            ask_host(&client, device, UNHOST_ROOM, arguments).await
         }
         .await;
         match stopped {
@@ -299,7 +273,9 @@ impl Rooms {
             return;
         }
         let Some(addr) = governed
-            .member_hosts
+            .peer()
+            .governance()
+            .room_hosts()
             .iter()
             .find(|known| host_device(known) == device)
             .and_then(|known| IrohWorkspaceHostHintV1::from_transport_hint(known).ok())
@@ -392,14 +368,18 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
 }
 
 /// Ask `client`'s host, the device `host`, the host operation `action` with
-/// `arguments`, on `workspace_id`, and answer what it produced.
+/// `arguments`, and answer what it produced. Host operations are asked on
+/// the person's continuity workspace, never on the room's: a host that
+/// stopped serving a room admits nobody to it, its own person included.
 async fn ask_host(
     client: &RelayClient,
     host: [u8; 32],
-    workspace_id: u64,
     action: &str,
     arguments: Map<String, Value>,
 ) -> Result<Value, String> {
+    let workspace_id = tilo_relay_protocol::personal_continuity_workspace_id(
+        &client.relay_peer.cert.user_public_key,
+    );
     client
         .send(Envelope::Subscribe { workspace_id })
         .map_err(|_| "the host's session closed".to_string())?;

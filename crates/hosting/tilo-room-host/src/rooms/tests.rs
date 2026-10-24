@@ -2124,16 +2124,11 @@ async fn in_a_public_room_b_never_sees_the_windows_a_opens() {
     relay.shutdown().await;
 }
 
-/// A session that presents the relay's own certificate writes as a member:
-/// the windows it relays into a public room are refused at the door as
-/// anyone's are, and the governor commits nothing of them. Only what the
-/// relay commits itself bypasses the door.
-#[expect(
-    clippy::significant_drop_tightening,
-    reason = "the room and the relay stay held through the assertions; Relay::shutdown consumes the relay"
-)]
+/// The room's governor writes as its governance writer: in a room whose
+/// layout is personal its own windows pass the door that refuses a
+/// member's.
 #[tokio::test]
-async fn windows_relayed_under_the_hosts_own_key_are_a_members_in_a_public_room() {
+async fn the_governors_own_windows_pass_the_door_of_a_personal_room() {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -2144,35 +2139,18 @@ async fn windows_relayed_under_the_hosts_own_key_are_a_members_in_a_public_room(
         .await
         .unwrap();
     let (a, a_salt) = member_with_namespace(&rooms, &room, &key, &cert, 3).await;
-    let generation = rooms
-        .room(&room)
-        .await
-        .unwrap()
-        .lock()
-        .await
-        .record
-        .generation;
-
     let body = terminals_opened(&rooms, &room, &a, a_salt).await;
-    let refused = rooms
+    assert_eq!(
+        rooms
+            .decide_layout_write(&room, a.device_public_key, &body)
+            .await
+            .unwrap_err(),
+        LAYOUT_REFUSAL
+    );
+    rooms
         .decide_layout_write(&room, cert.device_public_key, &body)
         .await
-        .unwrap_err();
-    assert_eq!(refused, LAYOUT_REFUSAL);
-
-    rooms
-        .absorb(&room, cert.device_public_key, &body)
-        .await
         .unwrap();
-    {
-        let state = rooms.room(&room).await.unwrap();
-        let governed = state.lock().await;
-        assert_eq!(
-            governed.record.generation, generation,
-            "the governor committed nothing of the relayed windows"
-        );
-    }
-    assert!(titles_shared(&rooms, &room).await.is_empty());
     drop(rooms);
     relay.shutdown().await;
 }
