@@ -963,6 +963,7 @@ fn shots_theme_requested() -> bool {
     SHOTS_THEME.get().is_some()
         || std::env::var_os("TILO_SHOTS_THEME").is_some()
         || std::env::var_os("TILO_SHOTS_TEXT_SCALE").is_some()
+        || std::env::var_os("TILO_SHOTS_DENSITY").is_some()
 }
 
 /// Whether `app` may write `workspace`'s room for `person` at `now`: the
@@ -1005,8 +1006,8 @@ impl FrameBuilder {
 
     /// Optional presentation overrides for offscreen `shots` capture:
     /// `TILO_SHOTS_THEME=<preset>` (any name `Theme::named` finds) and
-    /// `TILO_SHOTS_TEXT_SCALE=<factor>`. Unset keeps the dark default — lets
-    /// a theme-driven chrome change be proven in high contrast and at large
+    /// `TILO_SHOTS_TEXT_SCALE=<factor>` and `TILO_SHOTS_DENSITY=compact`.
+    /// Unset keeps the dark default — lets a theme-driven chrome change be proven in high contrast and at large
     /// text, not just its comfortable default density.
     fn shots_theme_override() -> Option<Theme> {
         let requested_theme = SHOTS_THEME
@@ -1017,18 +1018,20 @@ impl FrameBuilder {
             .ok()
             .and_then(|value| value.parse::<f32>().ok())
             .filter(|value| value.is_finite());
-        if requested_theme.is_none() && requested_scale.is_none() {
+        if requested_theme.is_none()
+            && requested_scale.is_none()
+            && std::env::var_os("TILO_SHOTS_DENSITY").is_none()
+        {
             return None;
         }
         let theme = requested_theme
             .as_deref()
             .and_then(|name| Theme::named(name.trim()))
             .unwrap_or_else(Theme::dark);
-        Some(if let Some(scale) = requested_scale {
-            theme.with_text_scale(scale)
-        } else {
-            theme
-        })
+        Some(ui::launch::with_shot_density(match requested_scale {
+            Some(scale) => theme.with_text_scale(scale),
+            None => theme,
+        }))
     }
 
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with

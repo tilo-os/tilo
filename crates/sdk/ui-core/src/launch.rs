@@ -1418,7 +1418,20 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
     // Screenshot review must use the same motion policy as a real app.  The
     // headless harness does not construct `ui::App`, where this environment
     // preference is normally read, so thread it onto the shot theme here.
-    theme.with_reduce_motion(shot_motion_reduced())
+    with_shot_density(theme.with_reduce_motion(shot_motion_reduced()))
+}
+
+/// `theme` at the density the capture asked for:
+/// `TILO_SHOTS_DENSITY=compact` or `comfortable` ([`Density::named`]).
+///
+/// [`Density::named`]: crate::tokens::Density::named
+#[must_use]
+pub fn with_shot_density(theme: Theme) -> Theme {
+    let density = std::env::var("TILO_SHOTS_DENSITY").ok();
+    match density.as_deref().and_then(crate::tokens::Density::named) {
+        Some(density) => theme.with_density(density),
+        None => theme,
+    }
 }
 
 /// The screenshot theme for capture frontends that have no [`LaunchArgs`]
@@ -1434,9 +1447,11 @@ pub fn shot_theme_from_env() -> Result<Theme, String> {
         Err(_) => Theme::dark(),
     };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
-    Ok(with_capture_letters(theme, None)
-        .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
-        .with_reduce_motion(shot_motion_reduced()))
+    Ok(with_shot_density(
+        with_capture_letters(theme, None)
+            .with_text_scale(shot_text_scale(None, environment_scale.as_deref()))
+            .with_reduce_motion(shot_motion_reduced()),
+    ))
 }
 
 /// Resolve screenshot text-scale precedence without reading process-global

@@ -32,6 +32,17 @@ pub struct RowHeights {
 }
 
 impl Density {
+    /// The density a name asks for (`compact`, `comfortable`), as a
+    /// capture's `TILO_SHOTS_DENSITY` names it.
+    #[must_use]
+    pub fn named(name: &str) -> Option<Self> {
+        match name.trim() {
+            "compact" => Some(Self::Compact),
+            "comfortable" => Some(Self::Comfortable),
+            _ => None,
+        }
+    }
+
     /// How much compact scales the spacing rhythm by.
     pub const COMPACT_RHYTHM: f32 = 0.75;
 
@@ -65,6 +76,13 @@ impl Density {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_density_is_found_by_its_name() {
+        assert_eq!(Density::named("compact"), Some(Density::Compact));
+        assert_eq!(Density::named(" comfortable "), Some(Density::Comfortable));
+        assert_eq!(Density::named("tight"), None);
+    }
 
     #[test]
     fn compact_tightens_rows_and_rhythm_and_keeps_controls() {
