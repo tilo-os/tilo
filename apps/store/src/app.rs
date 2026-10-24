@@ -3694,6 +3694,15 @@ mod tests {
         .unwrap();
         app.harness().resize((520, 820)).unwrap();
         app.harness().set_theme(Theme::light());
+        // Opening the page discloses its banner over a few frames. Compare
+        // paints from the page at rest, as a person sees it a moment after
+        // it opened, so the comparisons below measure the theme and the text
+        // setting rather than how far that entrance has run.
+        assert!(
+            app.harness()
+                .settle_for_capture(tilo_test_env::hang_bound()),
+            "the opened page comes to rest"
+        );
         let mut previous = app.harness().scene().encoding().draw_data.clone();
         assert!(!previous.is_empty(), "the actual Store must paint");
         let input_height = app.harness().targets()["store.remote.name"].height();
