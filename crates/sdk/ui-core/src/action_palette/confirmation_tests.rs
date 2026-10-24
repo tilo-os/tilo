@@ -79,7 +79,7 @@ fn confirmation_refreshes_never_turn_the_question_back_into_search() {
         ] {
             let presence = PresenceCtx::default();
             let previous = presence.push_viewport(window);
-            let (origin, width) = placement(window);
+            let (origin, width) = placement(window, &theme);
             palette.layout(&theme, origin, width);
             palette.draw(
                 &mut Scene::new(),
@@ -612,7 +612,7 @@ fn a_typed_confirmation_names_what_is_lost_and_its_verb_waits_for_the_exact_name
         ] {
             let presence = PresenceCtx::default();
             let previous = presence.push_viewport(window);
-            let (origin, width) = placement(window);
+            let (origin, width) = placement(window, &theme);
             palette.layout(&theme, origin, width);
             palette.draw(
                 &mut Scene::new(),
