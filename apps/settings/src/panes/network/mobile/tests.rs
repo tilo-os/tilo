@@ -168,7 +168,7 @@ fn a_registered_modem_shows_operator_technology_signal_and_data() {
     let said = said(&model);
     for expected in [
         "Telekom.de",
-        "LTE · good signal · connected",
+        "LTE, good signal, connected",
         "Data roaming",
         "Data used",
     ] {
@@ -402,7 +402,7 @@ fn the_network_type_is_chosen_by_its_key_or_its_words() {
     run(
         &mut model,
         MobileEffect::SetPreferredNetwork {
-            network: "4G / 3G / 2G, 4G preferred".into(),
+            network: "2G to 4G, 4G preferred".into(),
         },
     )
     .unwrap();
