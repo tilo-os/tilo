@@ -431,3 +431,121 @@ fn a_banner_its_view_builds_again_goes_on_from_the_one_it_replaces() {
         "a banner that says something new in the same place does not arrive again"
     );
 }
+
+/// The column's offsets: how far its first child is drawn below its place.
+fn first_offset(d: &FrameHarness) -> f64 {
+    d.root::<Column>()
+        .drawn_offsets()
+        .and_then(|offsets| offsets.first().copied())
+        .unwrap_or(0.0)
+}
+
+fn offline_view() -> Column {
+    let dismissed = Rc::new(Cell::new(0));
+    let seen = dismissed.clone();
+    Column::new()
+        .push(Box::new(
+            Banner::warning("Offline")
+                .with_id("offline")
+                .dismissible()
+                .on_dismiss(move || seen.set(seen.get() + 1)),
+        ))
+        .push(Box::new(crate::widget::Text::new("Below").with_id("below")))
+}
+
+#[test]
+fn a_banner_its_view_stops_building_collapses_and_what_follows_moves_up() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(offline_view()));
+    let shown_y = d.targets()["below"].y0;
+    let dismiss = d.targets()["offline.dismiss"];
+
+    // Back online: the view builds no banner.
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        rebuild(&mut d, None);
+    });
+    let empty_y = d.targets()["below"].y0;
+    assert!(
+        empty_y < shown_y - 30.0,
+        "what follows is laid out once where it rests"
+    );
+    assert!(
+        (empty_y + with_monotonic_time(start, || first_offset(&d)) - shown_y).abs() < 0.5,
+        "and is drawn where it stood"
+    );
+    // It moves up continuously, by transform, with the ghost's edge.
+    let mut last = shown_y - empty_y;
+    for ms in [40, 80, 120, 160] {
+        let at = start + crate::time::Duration::from_millis(ms);
+        let offset = with_monotonic_time(at, || first_offset(&d));
+        assert!(offset < last + 0.01, "at {ms} ms it only moves up");
+        last = offset;
+        assert!(with_monotonic_time(at, || d
+            .root_widget()
+            .needs_animation_frame()));
+    }
+    assert!(last < shown_y - empty_y - 1.0, "it has moved");
+
+    // The ghost takes no input: its close button is gone with it.
+    with_monotonic_time(start, || {
+        d.click_at(dismiss.center().x, dismiss.center().y);
+    });
+    assert!(!d.targets().contains_key("offline.dismiss"));
+
+    // Gone, it asks for one frame to draw it gone, then nothing.
+    let later = start + crate::time::Duration::from_secs(2);
+    with_monotonic_time(later, || {
+        assert!(first_offset(&d).abs() < 0.01);
+        d.relayout();
+        assert!(d.root::<Column>().drawn_offsets().is_none());
+        assert!(!d.root_widget().needs_animation_frame());
+    });
+}
+
+#[test]
+fn a_banner_leaving_lands_by_key_and_fades_under_reduced_motion() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(offline_view()));
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+        rebuild(&mut d, None);
+        assert!(
+            d.root::<Column>().drawn_offsets().is_none(),
+            "a key's result lands"
+        );
+    });
+
+    let mut d = with_monotonic_time(start, || rooted(offline_view()));
+    d.set_theme(Theme::dark().with_reduce_motion(true));
+    with_monotonic_time(start, || {
+        d.relayout();
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        rebuild(&mut d, None);
+        assert!(first_offset(&d).abs() < 0.01, "the height lands");
+        assert!(
+            d.root_widget().needs_animation_frame(),
+            "and the paint fades"
+        );
+    });
+}
+
+#[test]
+fn nothing_leaves_when_the_whole_view_is_replaced() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(offline_view()));
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        d.root_mut::<Column>().set_children(vec![
+            Box::new(crate::widget::Spacer::new()),
+            Box::new(crate::widget::Text::new("Another page")),
+            Box::new(crate::widget::Text::new("Below").with_id("below")),
+        ]);
+        d.relayout();
+        assert!(d.root::<Column>().drawn_offsets().is_none());
+        assert!(!d.root_widget().needs_animation_frame());
+    });
+}
