@@ -2728,14 +2728,14 @@ impl GroupRow {
         self.pan_of_lane_mut(self.focus_lane).absolute = true;
     }
 
-    /// A group focused the same frame it was spliced in hasn't been
-    /// through a layout pass yet, so its rect is degenerate and any pan
-    /// on it is a no-op.
+    /// Whether a layout pass has given `group_id` its place. A group
+    /// focused the same frame it was spliced in has none yet, so a pan to
+    /// it has nothing to aim at. A window opening has its place from its
+    /// first layout, while its slot still grows from nothing: a reveal aims
+    /// at where it will be once grown ([`Self::scroll_target_for`]), so the
+    /// strip pans as the window opens rather than once it has some width.
     pub fn group_is_laid_out(&self, group_id: u64) -> bool {
-        self.groups
-            .iter()
-            .find(|g| g.id == group_id)
-            .is_some_and(|g| g.get_rect().width() > 0.0)
+        self.laid_group_ids.contains(&group_id) && self.groups.iter().any(|g| g.id == group_id)
     }
 
     /// Pan `group_id`'s run (the row, or its display's lane) so the group
