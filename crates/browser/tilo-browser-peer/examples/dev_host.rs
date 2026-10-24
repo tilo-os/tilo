@@ -72,7 +72,6 @@ async fn main() {
     let (host_key, host_cert) = enrol(&root, "dev host", DeviceCapabilities::host());
     let (approver_key, approver_cert) = enrol(&root, "dev approver", DeviceCapabilities::primary());
 
-    let workspace = tilo_relay_protocol::room_workspace_id(ROOM).expect("room id");
     let cfg = tilo_relay::RelayConfig {
         state_root: state.path().to_path_buf(),
         ..Default::default()
