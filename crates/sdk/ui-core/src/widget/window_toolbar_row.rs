@@ -128,6 +128,9 @@ pub(crate) struct Slots {
     pub actions: Vec<Rect>,
     /// The overflow button (`Rect::ZERO`: every action is in the row).
     pub overflow: Rect,
+    /// Which form of its label the location shows
+    /// ([`crate::window_toolbar::ToolbarLocation::form`]).
+    pub form: usize,
 }
 
 /// What the row lays out beside the toolbar: the view switcher's size and
@@ -143,10 +146,78 @@ pub(crate) struct ViewsMeasure {
     /// The views menu's width: as wide as its widest label needs, so
     /// choosing another view never moves the row.
     pub menu: f64,
-    /// The least width of the location as the views' picker: its narrowest
-    /// form whole, beside the picker's chevron (none: the location cannot
-    /// pick the views, [`picks_views`]).
+    /// What the location as the views' picker stands beside its label:
+    /// its face's padding and chevron (none: the location cannot pick the
+    /// views, [`picks_views`]). Laid out, the least width of the picker:
+    /// that beside the form the location shows.
     pub location: Option<f64>,
+}
+
+/// The location's label and its narrower forms as the theme draws them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct LocationForms {
+    /// Each form's text width, the label's first.
+    pub text: Vec<f64>,
+    /// What stands beside the text in the location at rest: its icon, a
+    /// field's frame.
+    pub chrome: f64,
+}
+
+impl LocationForms {
+    /// The widest form that stands whole at rest in `room`, else the
+    /// narrowest.
+    fn fitting(&self, room: f64) -> usize {
+        self.text
+            .iter()
+            .position(|width| width + self.chrome <= room)
+            .unwrap_or_else(|| self.text.len().saturating_sub(1))
+    }
+
+    /// The room the location at rest keeps for `form` to stand whole: none
+    /// where it has no narrower form to choose, or `form` is cut short in
+    /// `room` all the same.
+    fn least(&self, form: usize, room: f64) -> f64 {
+        match self.text.get(form) {
+            Some(width) if self.text.len() > 1 && width + self.chrome <= room => {
+                width + self.chrome
+            }
+            _ => 0.0,
+        }
+    }
+
+    /// The text width of `form` (nothing measured: none).
+    fn width(&self, form: usize) -> f64 {
+        self.text.get(form).copied().unwrap_or(0.0)
+    }
+}
+
+/// What the views and the location's forms were measured for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MeasureKey {
+    labels: Vec<String>,
+    forms: Vec<String>,
+    editable: bool,
+    picker: bool,
+    icon: bool,
+    text_scale: u32,
+}
+
+/// What stands beside the label's text in the location at rest
+/// ([`paint_location`]): a picker's face and chevron where it chooses
+/// among places, a field's frame where it is edited, its icon.
+fn location_chrome((editable, picker, icon): (bool, bool, bool), theme: &Theme) -> f64 {
+    if picker {
+        return picker_width(0.0, theme);
+    }
+    let mut chrome = 0.0;
+    if editable {
+        let rect = Rect::new(0.0, 0.0, COMFORTABLE_LOCATION_PX, CONTROL_PX);
+        chrome += rect.width() - FieldFace::new(rect, "").text_rect(theme).width();
+    }
+    if icon {
+        chrome += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
+    }
+    chrome
 }
 
 /// Where the views stand in one layout of the row.
@@ -240,10 +311,46 @@ impl Slots {
     /// overflow menu in [`Slots::yielding`]'s order, so the location stays
     /// in the row, elided. One action never goes into the menu alone: the
     /// menu's button would take its place and hide it.
-    pub(crate) fn lay_out(toolbar: &WindowToolbar, row: Rect, views: ViewsSize) -> Self {
+    ///
+    /// The location shows the widest form of its label that stands whole
+    /// beside the navigation, with everything that yields before it in the
+    /// menu, and that yields only where that form would not stand whole:
+    /// a wider row never shows a narrower form. The location is the views'
+    /// picker only where that same form stands whole beside its chevron.
+    pub(crate) fn lay_out(
+        toolbar: &WindowToolbar,
+        row: Rect,
+        views: ViewsSize,
+        forms: &LocationForms,
+    ) -> Self {
         if row.width() <= 0.0 || row.height() <= 0.0 {
             return Self::default();
         }
+        // The room the location has beside the navigation alone, everything
+        // that yields before it ([`Self::yielding`]) in the menu.
+        let navigation = Kept {
+            plain: 0,
+            inline: 0,
+            ..Kept::all(toolbar, 0)
+        };
+        let room = Self::with_inline(toolbar, row, navigation, ViewsPlace::Overflow)
+            .location
+            .width();
+        let form = forms.fitting(room);
+        let least = forms.least(form, room);
+        let mut slots = Self::arranged(toolbar, row, views, (forms.width(form), least));
+        slots.form = form;
+        slots
+    }
+
+    /// [`Self::lay_out`] for a location showing a form `form_w` wide, which
+    /// at rest stands whole in a location `least` wide.
+    fn arranged(
+        toolbar: &WindowToolbar,
+        row: Rect,
+        views: ViewsSize,
+        (form_w, least): (f64, f64),
+    ) -> Self {
         let row_actions = toolbar
             .row_actions()
             .min(crate::window_toolbar::MAX_ACTIONS);
@@ -255,7 +362,10 @@ impl Slots {
                     .is_some_and(|views| !views.choices.is_empty())
             })
             .map(|m| ViewsMeasure {
-                location: m.location.filter(|_| picks_views(toolbar)),
+                location: m
+                    .location
+                    .filter(|_| picks_views(toolbar))
+                    .map(|chrome| form_w.ceil() + chrome),
                 ..m
             });
         // A menu holding one action alone saves no width: its button takes
@@ -275,7 +385,7 @@ impl Slots {
             loop {
                 let slots = Self::with_inline(toolbar, row, Kept { inline, ..all }, place);
                 let room = if toolbar.location.is_some() {
-                    slots.location.width() >= COMFORTABLE_LOCATION_PX
+                    slots.location.width() >= COMFORTABLE_LOCATION_PX.max(least)
                 } else {
                     slots.fits(row)
                 };
@@ -301,7 +411,10 @@ impl Slots {
             let slots = Self::with_inline(toolbar, row, Kept { inline, ..kept }, place);
             let located = match place {
                 ViewsPlace::InLocation(least) => slots.location.width() >= least,
-                _ => toolbar.location.is_none() || slots.location.area() > 0.0,
+                _ => {
+                    toolbar.location.is_none()
+                        || (slots.location.area() > 0.0 && slots.location.width() >= least)
+                }
             };
             if slots.fits(row) && located {
                 return slots;
@@ -565,7 +678,7 @@ pub(crate) struct ToolbarRow {
     menu_slot: Option<Slot>,
     /// The views' sizes as the theme draws them, and the labels and text
     /// scale they were measured for.
-    views_size: Option<((Vec<String>, Vec<String>, u32), ViewsMeasure, Vec<f64>)>,
+    views_size: Option<(MeasureKey, ViewsSize, LocationForms, Vec<f64>)>,
     /// The suggestions under the edited field, and what each commits.
     suggestions: SuggestionList,
     suggestion_values: Vec<String>,
@@ -755,57 +868,71 @@ impl ToolbarRow {
         self.place_suggestions();
     }
 
-    /// Measure the view switcher as `theme` draws its labels, and lay the
-    /// row out again when its size changed. Returns whether it did.
+    /// Measure the view switcher and the location's forms as `theme` draws
+    /// them, and lay the row out again when a size changed. Returns whether
+    /// it did.
     pub(crate) fn measure_views(&mut self, theme: &Theme) -> bool {
         let labels: Vec<String> = self
             .toolbar()
             .and_then(|toolbar| toolbar.views.as_ref())
             .map(|views| views.choices.iter().map(|v| v.label.clone()).collect())
             .unwrap_or_default();
-        if labels.is_empty() {
-            let had = self.views_size.take().is_some();
-            if had {
-                self.lay_out(self.row);
-            }
-            return had;
-        }
-        let forms: Vec<String> = self
-            .toolbar()
-            .filter(|toolbar| picks_views(toolbar))
-            .and_then(|toolbar| toolbar.location.as_ref())
+        let location = self.toolbar().and_then(|toolbar| toolbar.location.as_ref());
+        let forms: Vec<String> = location
+            .filter(|location| !location.label.is_empty() && location.segments.is_empty())
             .map(|location| {
                 std::iter::once(location.label.clone())
                     .chain(location.shorter.iter().cloned())
                     .collect()
             })
             .unwrap_or_default();
-        let key = (labels, forms, theme.text_scale.to_bits());
+        let key = MeasureKey {
+            labels,
+            forms,
+            editable: location.is_some_and(|location| location.editable),
+            picker: location
+                .is_some_and(|location| !location.editable && !location.choices.is_empty()),
+            icon: location.is_some_and(|location| {
+                location.icon.as_deref().and_then(Icon::from_name).is_some()
+            }),
+            text_scale: theme.text_scale.to_bits(),
+        };
+        if key.labels.is_empty() && key.forms.is_empty() {
+            let had = self.views_size.take().is_some();
+            if had {
+                self.lay_out(self.row);
+            }
+            return had;
+        }
         if self
             .views_size
             .as_ref()
-            .is_some_and(|(measured, _, _)| *measured == key)
+            .is_some_and(|(measured, ..)| *measured == key)
         {
             return false;
         }
-        let (size, tabs) = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
-            let labels: Vec<&str> = key.0.iter().map(String::as_str).collect();
+        let measured = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
+            let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
             let style = theme.text(TextRole::Body);
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
+            let forms = LocationForms {
+                text: key.forms.iter().map(|form| width(form)).collect(),
+                chrome: location_chrome((key.editable, key.picker, key.icon), theme),
+            };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
-            let narrowest = key.1.last().map(|form| width(form));
-            let measure = ViewsMeasure {
+            let views = (!labels.is_empty()).then_some(ViewsMeasure {
                 strip: (
                     tabs.iter().sum::<f64>().ceil(),
                     SegmentedFace::height(VIEWS_SIZE, theme).min(CONTROL_PX),
                 ),
                 menu: picker_width(widest, theme),
-                location: narrowest.map(|form| picker_width(form, theme)),
-            };
-            (measure, tabs)
+                location: Some(picker_width(0.0, theme)),
+            });
+            (views, forms, tabs)
         });
-        self.views_size = Some((key, size, tabs));
+        let (views, forms, tabs) = measured;
+        self.views_size = Some((key, views, forms, tabs));
         self.lay_out(self.row);
         true
     }
@@ -817,14 +944,18 @@ impl ToolbarRow {
     /// Lay the slots out across `row`.
     pub(crate) fn lay_out(&mut self, row: Rect) {
         self.row = row;
-        let views = self.views_size.as_ref().map(|(_, size, _)| *size);
+        let (views, forms) = self
+            .views_size
+            .as_ref()
+            .map_or((None, None), |(_, views, forms, _)| (*views, Some(forms)));
+        let unmeasured = LocationForms::default();
         self.slots = self
             .toolbar()
-            .map(|toolbar| Slots::lay_out(toolbar, row, views))
+            .map(|toolbar| Slots::lay_out(toolbar, row, views, forms.unwrap_or(&unmeasured)))
             .unwrap_or_default();
         // The views are tabs, each as wide as its label (as `ViewTabs`
         // packs them), across the strip measured to hold them.
-        if let Some((_, _, tabs)) = self.views_size.as_ref()
+        if let Some((.., tabs)) = self.views_size.as_ref()
             && let Some(strip_x0) = self.slots.views.first().map(|tab| tab.x0)
             && tabs.len() == self.slots.views.len()
         {
@@ -2492,8 +2623,7 @@ fn paint_slots(
         // As the views' picker the location names its period, not the view.
         let picker = match toolbar.location.as_ref() {
             Some(location) if slots.views_in_location() => {
-                let room = slots.views_menu.width() - picker_width(0.0, theme);
-                let (shown, ink) = location_shown(location, (tr, theme), room);
+                let (shown, ink) = location_shown(location, slots.form, theme);
                 PickerText::new(shown, ink).edited(location.edited)
             }
             _ => {
@@ -2502,7 +2632,14 @@ fn paint_slots(
                 PickerText::new(label, theme.tokens.colors.text_primary)
             }
         };
-        paint_picker(scene, transform, (tr, theme), picker, slots.views_menu, lift);
+        paint_picker(
+            scene,
+            transform,
+            (tr, theme),
+            picker,
+            slots.views_menu,
+            lift,
+        );
     }
     for (i, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
         let Some(icon) = Icon::from_name(&action.icon) else {
@@ -2548,7 +2685,7 @@ fn paint_slots(
         transform,
         (tr, theme, presence),
         (location, crumbs),
-        slots.location,
+        (slots.location, slots.form),
         lifted,
     )
 }
@@ -2563,7 +2700,8 @@ pub(crate) struct LocationLift {
     pub(crate) focused: bool,
 }
 
-/// The location at rest: its icon, then its label, elided at the end. An
+/// The location at rest: its icon, then its label in form `form`
+/// ([`Slots::form`]), elided at the end. An
 /// editable one stands in a field's frame, so it reads as one to click; one
 /// with choices reads as a picker, its label and a chevron on the bar's
 /// plain button face, and returns where it painted that.
@@ -2575,12 +2713,11 @@ fn paint_location(
         &crate::window_toolbar::ToolbarLocation,
         Option<&mut Breadcrumb>,
     ),
-    rect: Rect,
+    (rect, form): (Rect, usize),
     lift: LocationLift,
 ) -> Option<Rect> {
     if !location.editable && !location.choices.is_empty() {
-        let chrome = picker_width(0.0, theme);
-        let (shown, ink) = location_shown(location, (tr, theme), rect.width() - chrome);
+        let (shown, ink) = location_shown(location, form, theme);
         return Some(paint_picker(
             scene,
             transform,
@@ -2618,7 +2755,7 @@ fn paint_location(
         }
         return None;
     }
-    let (shown, ink) = location_shown(location, (tr, theme), text_rect.width());
+    let (shown, ink) = location_shown(location, form, theme);
     if shown.is_empty() || text_rect.width() <= 0.0 {
         return None;
     }
@@ -2628,13 +2765,13 @@ fn paint_location(
     None
 }
 
-/// What the location says in `room`, in its ink: the widest form of its
-/// label that fits ([`crate::window_toolbar::ToolbarLocation::fitting`]),
-/// else its placeholder.
+/// What the location says, in its ink: form `form` of its label
+/// ([`crate::window_toolbar::ToolbarLocation::form`]), else its
+/// placeholder.
 pub(crate) fn location_shown<'a>(
     location: &'a crate::window_toolbar::ToolbarLocation,
-    (tr, theme): (&mut TextRenderer, &Theme),
-    room: f64,
+    form: usize,
+    theme: &Theme,
 ) -> (&'a str, vello::peniko::Color) {
     if location.label.is_empty() {
         return (
@@ -2642,9 +2779,7 @@ pub(crate) fn location_shown<'a>(
             theme.tokens.colors.text_tertiary,
         );
     }
-    let style = theme.text(TextRole::Body);
-    let shown = location.fitting(|form| f64::from(tr.measure_style(form, None, &style).0) <= room);
-    (shown, theme.tokens.colors.text_primary)
+    (location.form(form), theme.tokens.colors.text_primary)
 }
 
 /// How wide a picker ([`paint_picker`]) whose label is `label_w` wide

@@ -891,8 +891,8 @@ mod tests {
         );
         let (shown, _) = crate::widget::window_toolbar_row::location_shown(
             declared,
-            (&mut harness.text, &harness.theme),
-            location.width(),
+            bar.toolbar_row().slots().form,
+            &harness.theme,
         );
         assert_eq!(
             shown, forms[1],

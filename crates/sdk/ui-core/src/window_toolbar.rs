@@ -188,8 +188,10 @@ pub struct ToolbarLocation {
     pub label: String,
     /// Narrower forms of the label, widest first, each saying the same (a
     /// period's `Jun 29 – Jul 5` for `Mon, Jun 29 – Sun, Jul 5`): where the
-    /// label does not fit, the bar shows the widest of them that does, and
-    /// elides only the last.
+    /// label does not fit, the bar shows the widest of them that fits the
+    /// room the location has once everything else it can fold is in the
+    /// menu, and keeps that room for it, so a wider window never shows a
+    /// narrower form. Only the last is ever elided.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shorter: Vec<String>,
     /// What an edit starts from: the whole address. Empty means the label.
@@ -348,15 +350,15 @@ impl ToolbarLocation {
         }
     }
 
-    /// The widest of the label and its narrower forms that `fits`, else
-    /// the narrowest, to be elided.
+    /// The label (`0`) or its narrower form `form`, the narrowest past the
+    /// last.
     #[must_use]
-    pub fn fitting(&self, mut fits: impl FnMut(&str) -> bool) -> &str {
-        std::iter::once(&self.label)
-            .chain(&self.shorter)
-            .find(|form| fits(form))
-            .or_else(|| self.shorter.last())
-            .unwrap_or(&self.label)
+    pub fn form(&self, form: usize) -> &str {
+        form.checked_sub(1)
+            .map_or(Some(&self.label), |shorter| {
+                self.shorter.get(shorter).or_else(|| self.shorter.last())
+            })
+            .map_or(self.label.as_str(), String::as_str)
     }
 
     /// The text an edit starts from.
