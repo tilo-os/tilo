@@ -234,6 +234,36 @@ pub(crate) fn room_wait(package_id: &str) -> Option<String> {
     }
 }
 
+/// Visual review: a launch of `package_id` waits for `room` as a real one
+/// does, against `tree`'s rooms, and starts nothing once it may.
+pub fn hold_for_shots(
+    tree: crate::shell::state::WorkspaceTreeHandle,
+    package_id: &str,
+    room: RoomId,
+) {
+    fn started(_: HeldLaunch, _: &LaunchSession) -> Result<(), String> {
+        Ok(())
+    }
+    set_source(RoomStatusSource::new(tree, None));
+    let launch = HeldLaunch {
+        authority: None,
+        #[cfg(target_os = "linux")]
+        retained: None,
+        package_id: package_id.into(),
+        display_name: package_id.into(),
+        command: super::LaunchCommand {
+            program: std::path::PathBuf::new(),
+            args: vec!["--workspace-id".into(), room.to_string()],
+            env: Vec::new(),
+            service_identity: None,
+            portal_workspace_id: None,
+            managed_agent_id: None,
+            x11_workspace: None,
+        },
+    };
+    let _ = admit(&LaunchSession::current(), launch, started);
+}
+
 /// The person closed the window `package_id` was to open in `room`: its
 /// launch, if it waits for the room, goes, and nothing starts later.
 pub(crate) fn cancel(package_id: &str, room: RoomId) {
