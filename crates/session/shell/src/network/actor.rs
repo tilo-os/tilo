@@ -81,6 +81,12 @@ const IDENTITY_ANSWER_INTERVAL: Duration = Duration::from_secs(10);
 /// Personal fabric frames kept for a peer while it is being dialled; older
 /// ones give way, as each snapshot supersedes the one before.
 const PERSONAL_FABRIC_FRAMES_WAITING: usize = 16;
+/// How long a personal fabric connection is kept with no frame either way.
+/// The fabric speaks in bursts (a request, the snapshots answering it, an
+/// action); between them the devices' gossip link keeps them in touch, and
+/// a second connection held open would cost both ends its keep-alives for
+/// nothing. The next frame dials again.
+const PERSONAL_FABRIC_IDLE: Duration = PEER_TIMEOUT;
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -997,6 +1003,12 @@ impl ProtocolHandler for PersonalFabricProtocol {
     }
 }
 
+/// A personal fabric connection and when it last carried a frame.
+struct PersonalFabricLink {
+    connection: iroh::endpoint::Connection,
+    used: Instant,
+}
+
 /// Read the personal fabric frames `connection` brings, whichever side
 /// opened it, into the actor, until it closes.
 fn read_personal_fabric(
@@ -1258,7 +1270,11 @@ struct ActorState {
     /// Windows streamed to named viewers only: their frames go to exactly
     /// these devices and never fall back to the workspace's gossip topic.
     surface_fanout_viewers: HashMap<(WorkspaceId, SurfaceId), Vec<EndpointId>>,
-    personal_fabric_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
+    /// Each of the person's devices' fabric connection, while it carries
+    /// frames ([`PERSONAL_FABRIC_IDLE`]).
+    personal_fabric_connections: HashMap<EndpointId, PersonalFabricLink>,
+    /// Fabric connections a newer one replaced, kept until idle too.
+    personal_fabric_replaced: Vec<PersonalFabricLink>,
     /// Frames for a peer whose dial is under way, newest last, sent once it
     /// connects ([`PERSONAL_FABRIC_FRAMES_WAITING`] at most).
     personal_fabric_dials: HashMap<EndpointId, std::collections::VecDeque<(WorkspaceId, Vec<u8>)>>,
@@ -1565,8 +1581,8 @@ impl ActorState {
         self.peers_seen.remove(&(ws, peer));
         self.cancel_personal_transfer_route(ws, peer);
         revoke_personal_fabric_ingress(&mut self.personal_fabric_ingress, ws, epoch);
-        if let Some(connection) = self.personal_fabric_connections.remove(&peer) {
-            connection.close(0_u32.into(), b"membership departed");
+        if let Some(link) = self.personal_fabric_connections.remove(&peer) {
+            link.connection.close(0_u32.into(), b"membership departed");
         }
         true
     }
@@ -2113,7 +2129,12 @@ impl ActorState {
             .map(|(_, peer)| *peer)
             .collect();
         for peer in targets {
-            if let Some(connection) = self.personal_fabric_connections.get(&peer).cloned() {
+            // A connection either side let go of since is dialled afresh.
+            self.personal_fabric_connections
+                .retain(|_, link| link.connection.close_reason().is_none());
+            if let Some(link) = self.personal_fabric_connections.get_mut(&peer) {
+                link.used = Instant::now();
+                let connection = link.connection.clone();
                 self.send_personal_fabric_frame(ws, peer, &connection, &bytes)
                     .await;
                 continue;
@@ -2166,8 +2187,20 @@ impl ActorState {
             tracing::debug!(peer = %peer, "personal fabric peer did not answer");
             return;
         };
-        self.personal_fabric_connections
-            .insert(peer, connection.clone());
+        let replaced = self.personal_fabric_connections.insert(
+            peer,
+            PersonalFabricLink {
+                connection: connection.clone(),
+                used: Instant::now(),
+            },
+        );
+        // The connection it replaces may still bring frames the peer sent on
+        // it: it goes once idle, as any other.
+        if let Some(replaced) =
+            replaced.filter(|link| link.connection.stable_id() != connection.stable_id())
+        {
+            self.personal_fabric_replaced.push(replaced);
+        }
         for (ws, bytes) in waiting {
             self.send_personal_fabric_frame(ws, peer, &connection, &bytes)
                 .await;
@@ -3084,6 +3117,9 @@ impl ActorState {
         payload: PersonalFabricPayload,
     ) {
         self.tally.note("PersonalFabric");
+        if let Some(link) = self.personal_fabric_connections.get_mut(&peer) {
+            link.used = Instant::now();
+        }
         // Topic membership establishes reachability only. ShellNetwork
         // still binds the frame to the peer's certified person/device.
         let Some(membership_epoch) = self.touch_existing_membership(ws, peer) else {
@@ -3648,6 +3684,8 @@ impl ActorState {
     /// none of these, so its runtime sleeps until one appears ([`run`]).
     fn needs_upkeep(&self) -> bool {
         !self.peers.is_empty()
+            || !self.personal_fabric_connections.is_empty()
+            || !self.personal_fabric_replaced.is_empty()
             || !self.peers_seen.is_empty()
             || !self.hosts.is_empty()
             || !self.host_sessions.is_empty()
@@ -3700,6 +3738,7 @@ impl ActorState {
     /// changed.
     /// Runs every [`HEARTBEAT_INTERVAL`] while [`Self::needs_upkeep`].
     async fn run_heartbeat_tick(&mut self) {
+        self.close_idle_personal_fabric(Instant::now());
         for (ws, peer) in self.pending_remote_actions.targets() {
             if self.peers_seen.contains_key(&(ws, peer)) {
                 self.flush_pending_remote_actions(ws, peer).await;
@@ -3747,6 +3786,24 @@ impl ActorState {
             self.announce_identity_if_changed(ws).await;
         }
         self.announce_media_caps_if_changed().await;
+    }
+
+    /// Let go of the personal fabric connections that carried no frame for
+    /// [`PERSONAL_FABRIC_IDLE`] as of `now`, and of those already closed.
+    fn close_idle_personal_fabric(&mut self, now: Instant) {
+        let keep = |link: &PersonalFabricLink| {
+            if link.connection.close_reason().is_some() {
+                return false;
+            }
+            if now.saturating_duration_since(link.used) < PERSONAL_FABRIC_IDLE {
+                return true;
+            }
+            link.connection.close(0_u32.into(), b"idle");
+            false
+        };
+        self.personal_fabric_connections
+            .retain(|_, link| keep(link));
+        self.personal_fabric_replaced.retain(keep);
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
@@ -4268,6 +4325,7 @@ async fn run(
         surface_fanout_viewers: HashMap::new(),
         pending_surface_frames: HashMap::new(),
         personal_fabric_connections: HashMap::new(),
+        personal_fabric_replaced: Vec::new(),
         personal_fabric_dials: HashMap::new(),
         personal_fabric_incarnations,
         active_personal_transfers: HashMap::new(),
