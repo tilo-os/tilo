@@ -579,9 +579,14 @@ pub struct PresenceCtx {
     pointer_moved: HashMap<(PresenceKey, UserId), Instant>,
     /// What people are saying beside their pointers, and their reactions.
     pub chats: CursorChats,
-    /// How available each person says they are, and the voice channel
-    /// they are in.
-    availability: HashMap<UserId, (crate::Availability, Option<String>)>,
+    /// How available each person says they are in each workspace, and the
+    /// voice channel they are in there, keyed by the workspace's room and
+    /// the person: one person says it to each workspace on their own terms.
+    availability: HashMap<(String, UserId), (crate::Availability, Option<String>)>,
+    /// The room of the workspace in front, which [`Self::availability_of`]
+    /// and [`Self::call_of`] read. A context that hears one room needs
+    /// none: what it heard is that room's.
+    room_in_front: Option<String>,
     /// Faces that bounce because their person waved at this one.
     bounces: HashMap<UserId, crate::motion::Attention>,
     pub selections: HashMap<PresenceKey, Vec<(UserId, SelectionRange)>>,
@@ -1126,24 +1131,64 @@ impl PresenceCtx {
             .min()
     }
 
-    /// How available `user` says they are; available until they said.
-    pub fn availability_of(&self, user: &UserId) -> crate::Availability {
-        self.availability
-            .get(user)
+    /// Name the room of the workspace in front: the one
+    /// [`Self::availability_of`] and [`Self::call_of`] answer for.
+    pub fn set_room_in_front(&mut self, room: Option<String>) {
+        self.room_in_front = room;
+    }
+
+    /// What `user` said in `room`, or, with no room named, in the room in
+    /// front ([`Self::set_room_in_front`]), else in the one room this
+    /// context hears.
+    fn said(
+        &self,
+        room: Option<&str>,
+        user: &UserId,
+    ) -> Option<&(crate::Availability, Option<String>)> {
+        match room.or(self.room_in_front.as_deref()) {
+            Some(room) => self.availability.get(&(room.to_owned(), user.clone())),
+            None => self
+                .availability
+                .iter()
+                .find_map(|((_, who), said)| (who == user).then_some(said)),
+        }
+    }
+
+    /// How available `user` says they are in `room`; available until they
+    /// said.
+    pub fn availability_in(&self, room: &str, user: &UserId) -> crate::Availability {
+        self.said(Some(room), user)
             .map_or(crate::Availability::Available, |(state, _)| *state)
     }
 
-    /// Whether `user` has said how available they are.
-    #[must_use]
-    pub fn has_availability(&self, user: &UserId) -> bool {
-        self.availability.contains_key(user)
+    /// The voice channel `user` says they are in, in `room`.
+    pub fn call_in(&self, room: &str, user: &UserId) -> Option<&str> {
+        self.said(Some(room), user)
+            .and_then(|(_, call)| call.as_deref())
     }
 
-    /// The voice channel `user` is in, if any.
+    /// Whether `user` has said how available they are in `room`.
+    #[must_use]
+    pub fn has_availability_in(&self, room: &str, user: &UserId) -> bool {
+        self.said(Some(room), user).is_some()
+    }
+
+    /// How available `user` says they are in the workspace in front.
+    pub fn availability_of(&self, user: &UserId) -> crate::Availability {
+        self.said(None, user)
+            .map_or(crate::Availability::Available, |(state, _)| *state)
+    }
+
+    /// Whether `user` has said how available they are in the workspace in
+    /// front.
+    #[must_use]
+    pub fn has_availability(&self, user: &UserId) -> bool {
+        self.said(None, user).is_some()
+    }
+
+    /// The voice channel `user` is in, in the workspace in front.
     pub fn call_of(&self, user: &UserId) -> Option<&str> {
-        self.availability
-            .get(user)
-            .and_then(|(_, call)| call.as_deref())
+        self.said(None, user).and_then(|(_, call)| call.as_deref())
     }
 
     /// Bounce `user`'s face once: they just waved at this person.
@@ -1998,10 +2043,11 @@ impl PresenceCtx {
                 }
             }
             Availability { state, call } => {
-                // Room presence, like a status.
-                if matches!(key, PresenceKey::Workspace { .. }) {
+                // Room presence, like a status, said to that room.
+                if let PresenceKey::Workspace { id: room } = key {
                     let call = call.filter(|call| !call.trim().is_empty());
-                    self.availability.insert(UserId(user_id), (state, call));
+                    self.availability
+                        .insert((room, UserId(user_id)), (state, call));
                 }
             }
             Following { target } => {
@@ -2070,7 +2116,7 @@ impl PresenceCtx {
 
     pub fn unregister_peer(&mut self, user_id: &str) {
         let uid = UserId(user_id.to_owned());
-        self.availability.remove(&uid);
+        self.availability.retain(|(_, who), _| *who != uid);
         self.participant_kinds.remove(&uid);
         self.acting_for.remove(&uid);
         self.persons.remove(&uid);

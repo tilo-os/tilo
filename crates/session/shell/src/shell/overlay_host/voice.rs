@@ -95,6 +95,61 @@ pub(crate) fn decorate_rows(
     }
 }
 
+/// Each workspace with its room and the others in it, people before
+/// agents: who could be in a call there.
+fn people_by_workspace(
+    desktop: &tilo_desktop_model::DesktopTree,
+    local_user: &str,
+    own: &str,
+) -> Vec<(tilo_desktop_model::WorkspaceId, String, Vec<RosterRow>)> {
+    desktop
+        .workspaces
+        .iter()
+        .map(|workspace| {
+            let rows = if workspace.id == desktop.active {
+                tilo_desktop::collaborators::collaborator_roster_rows(desktop, local_user)
+            } else {
+                tilo_desktop::collaborators::workspace_roster_rows(workspace, local_user)
+            };
+            let mut rows: Vec<RosterRow> = rows
+                .into_iter()
+                .filter(|row| {
+                    !row.invited && !row.own_device && row.id != own && row.id != local_user
+                })
+                .collect();
+            rows.sort_by_key(|row| row.is_agent);
+            (workspace.id, workspace.room().to_string(), rows)
+        })
+        .collect()
+}
+
+/// Gather `rows` of `workspace` someone could join into its calls, by
+/// channel, onto `calls`.
+fn gather_calls(
+    workspace: tilo_desktop_model::WorkspaceId,
+    rows: Vec<RosterRow>,
+    calls: &mut Vec<crate::shell::search::providers::happening_now::LiveCall>,
+) {
+    use crate::shell::search::providers::happening_now::LiveCall;
+    for row in rows {
+        let (Some(join), Some(name)) = (row.join.clone(), row.call.clone()) else {
+            continue;
+        };
+        match calls
+            .iter_mut()
+            .find(|call| call.workspace == workspace && call.channel.channel == join.channel)
+        {
+            Some(call) => call.people.push(row),
+            None => calls.push(LiveCall {
+                workspace,
+                channel: join,
+                name,
+                people: vec![row],
+            }),
+        }
+    }
+}
+
 impl super::ShellOverlayHost {
     /// Install the session's calls, once its broker has bound.
     pub(crate) fn set_native_media(
@@ -132,56 +187,55 @@ impl super::ShellOverlayHost {
         decorate_rows(
             rows,
             |row| {
-                let id = crate::shell::desk_widgets::team::presence_id(presence, row)?;
+                let id = crate::shell::desk_widgets::team::presence_id(presence, None, row)?;
                 ui::CallPresence::decode(presence.call_of(&id)?)
             },
             own.as_deref(),
         );
     }
 
-    /// The calls in progress in the workspace in front that this device is
-    /// not in, each with who is in it: the Join the people panel offers on
-    /// their rows, gathered by call, for search's Happening now.
-    pub(super) fn calls_here(
+    /// The calls in progress in each workspace that this device is not in,
+    /// each with who is in it, as the people of that workspace say there:
+    /// the Join the people panel offers on their rows, gathered by call, for
+    /// search's Happening now.
+    pub(super) fn live_calls(
         &self,
         presence: &ui::presence::PresenceCtx,
     ) -> Vec<crate::shell::search::providers::happening_now::LiveCall> {
-        use crate::shell::search::providers::happening_now::LiveCall;
         let Some(chrome) = self.chrome.as_ref() else {
             return Vec::new();
         };
-        let mut rows: Vec<RosterRow> = {
+        let workspaces = {
             let state = chrome.borrow();
             let local_user = state.active_local_user();
             let own = state.local_user_id.clone();
-            crate::shell::desk_widgets::team::members(
-                &state.tree().desktop,
-                &local_user,
-                &own,
-                presence,
-                std::time::SystemTime::now(),
-            )
-            .into_iter()
-            .map(|member| member.row)
-            .collect()
+            let tree = state.tree();
+            people_by_workspace(&tree.desktop, &local_user, &own)
         };
-        self.decorate_calls(&mut rows, presence);
-        let mut calls: Vec<LiveCall> = Vec::new();
-        for row in rows {
-            let (Some(join), Some(name)) = (row.join.clone(), row.call.clone()) else {
-                continue;
-            };
-            match calls
-                .iter_mut()
-                .find(|call| call.channel.channel == join.channel)
-            {
-                Some(call) => call.people.push(row),
-                None => calls.push(LiveCall {
-                    channel: join,
-                    name,
-                    people: vec![row],
-                }),
+        let mut calls = Vec::new();
+        for (workspace, room, mut rows) in workspaces {
+            let own = self
+                .native_media
+                .as_ref()
+                .and_then(|media| media.own_call(&room))
+                .map(|(_, _, channel)| channel);
+            for row in &mut rows {
+                if let Some(id) =
+                    crate::shell::desk_widgets::team::presence_id(presence, Some(&room), row)
+                {
+                    row.availability = presence.availability_in(&room, &id);
+                }
             }
+            decorate_rows(
+                &mut rows,
+                |row| {
+                    let id =
+                        crate::shell::desk_widgets::team::presence_id(presence, Some(&room), row)?;
+                    ui::CallPresence::decode(presence.call_in(&room, &id)?)
+                },
+                own.as_deref(),
+            );
+            gather_calls(workspace, rows, &mut calls);
         }
         calls
     }
@@ -298,6 +352,90 @@ mod tests {
         let mut rows = vec![row("ada")];
         decorate_rows(&mut rows, |_| None, None);
         assert_eq!((rows[0].call.clone(), rows[0].join.clone()), (None, None));
+    }
+
+    /// A call in a workspace that is not in front is happening now in that
+    /// workspace, from what its people say there; what someone says in one
+    /// workspace is not their word in the one in front.
+    #[test]
+    fn a_call_in_a_background_workspace_is_happening_now_there() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::providers::happening_now;
+        use ui::permissions::UserId;
+        use ui::presence::PresenceKey;
+
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_demo();
+        let front = tree.desktop.active;
+        let front_room = tree
+            .desktop
+            .active_workspace()
+            .expect("the demo has a workspace in front")
+            .room()
+            .to_string();
+        let back = tree.append_empty_workspace("Design review");
+        tree.desktop.active = front;
+        let back_room = tree.room_of(back).expect("a fresh workspace has a room");
+        tree.desktop
+            .workspaces
+            .iter_mut()
+            .find(|workspace| workspace.id == back)
+            .expect("the background workspace")
+            .collaborators
+            .push(crate::shell::state::Collaborator::new("bo", "Bo"));
+        let (host, chrome) = crate::shell::build_tilo_overlay_host_with_chrome(&tree);
+
+        let mut presence = ui::presence::PresenceCtx::default();
+        presence.set_room_in_front(Some(front_room.clone()));
+        presence.apply_remote_presence(
+            "bo".into(),
+            PresenceKey::Workspace {
+                id: back_room.to_string(),
+            },
+            ui::collaboration::PresencePayload::Availability {
+                state: ui::Availability::Available,
+                call: Some(voice().encode()),
+            },
+        );
+        let bo = UserId("bo".into());
+        assert_eq!(
+            presence.call_in(&back_room.to_string(), &bo),
+            Some(voice().encode().as_str()),
+            "Bo said it in the background workspace"
+        );
+        assert_eq!(presence.call_of(&bo), None, "and not in the one in front");
+
+        let calls = host.live_calls(&presence);
+        let found: Vec<_> = calls
+            .iter()
+            .map(|call| {
+                (
+                    call.workspace,
+                    call.channel.channel.as_str(),
+                    call.people
+                        .iter()
+                        .map(|row| row.id.as_str())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        assert_eq!(found, [(back, "c_voice", vec!["bo"])]);
+
+        let state = chrome.borrow();
+        let ids = |scope| {
+            happening_now::rows(&state, scope, &calls)
+                .into_iter()
+                .map(|(row, _)| row.id)
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            ids(SearchScope::All).contains(&"call:c_voice".to_owned()),
+            "widened, Happening now offers to join it: {:?}",
+            ids(SearchScope::All)
+        );
+        assert!(
+            !ids(SearchScope::Workspace).contains(&"call:c_voice".to_owned()),
+            "the workspace in front has no call"
+        );
     }
 
     /// Join asks Chat for `join-call` on the channel's call row, in this

@@ -913,10 +913,10 @@ pub struct ChromeState {
     pub activity_glance: ActivityGlance,
     /// The last wave at this person, which the top bar says for a moment.
     pub(crate) wave_notice: Option<tilo_desktop::chrome::WaveNotice>,
-    /// The calls in progress in the workspace in front that this device is
-    /// not in, as the people panel reads them from presence: what search's
-    /// Happening now offers to join ([`Self::publish_calls_here`]).
-    pub calls_here: Vec<crate::shell::search::providers::happening_now::LiveCall>,
+    /// The calls in progress in each workspace that this device is not in,
+    /// as the people panel reads them from presence: what search's
+    /// Happening now offers to join ([`Self::publish_live_calls`]).
+    pub live_calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     activity_focus_request: Option<ActivityFocus>,
     workspace_view_request: Option<(WorkspaceId, tilo_desktop::activity::WorkspaceViewRequest)>,
     history_action_request: Option<String>,
@@ -1265,7 +1265,7 @@ impl ChromeState {
             observed_external_tree_revision: 0,
             activity_glance: ActivityGlance::default(),
             wave_notice: None,
-            calls_here: Vec::new(),
+            live_calls: Vec::new(),
             activity_focus_request: None,
             workspace_view_request: None,
             history_action_request: None,
@@ -2280,14 +2280,14 @@ impl ChromeState {
         }
     }
 
-    /// Publish the calls of the workspace in front ([`Self::calls_here`]).
-    /// The same calls again change nothing, so a resting frame stays cached.
-    pub fn publish_calls_here(
+    /// Publish the calls of every workspace ([`Self::live_calls`]). The
+    /// same calls again change nothing, so a resting frame stays cached.
+    pub fn publish_live_calls(
         &mut self,
         calls: Vec<crate::shell::search::providers::happening_now::LiveCall>,
     ) {
-        if self.calls_here != calls {
-            self.calls_here = calls;
+        if self.live_calls != calls {
+            self.live_calls = calls;
             self.bump();
         }
     }
