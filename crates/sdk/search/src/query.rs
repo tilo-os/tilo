@@ -109,22 +109,20 @@ pub(crate) fn infix_allowed(query: &[char]) -> bool {
     letters >= MIN_INFIX_SCALARS || query.iter().copied().any(unspaced_script)
 }
 
-/// Fewest letters a query needs before it matches, on a names-first
-/// surface ([`Matching::names_first`]), anything besides a name begun: a
-/// keyword, an identity or a description begun with "pi" ("ping",
+/// Fewest letters a query needs before it matches anything besides a name
+/// begun: a keyword, an identity or a description begun with "pi" ("ping",
 /// "take a picture") is not what a person typing two letters is after.
 pub const MIN_ALIAS_SCALARS: usize = 3;
 
-/// Whether `query` on a surface matching with `matching` is still only the
-/// start of a name: names-first, shorter than [`MIN_ALIAS_SCALARS`] letters,
-/// and in a script with word spaces (two Han characters are a whole word).
-pub(crate) fn names_only(matching: Matching, query: &[char]) -> bool {
-    matching.names_first
-        && query
-            .iter()
-            .filter(|scalar| scalar.is_alphanumeric())
-            .count()
-            < MIN_ALIAS_SCALARS
+/// Whether `query` is still only the start of a name: shorter than
+/// [`MIN_ALIAS_SCALARS`] letters, in a script with word spaces (two Han
+/// characters are a whole word).
+pub(crate) fn names_only(query: &[char]) -> bool {
+    query
+        .iter()
+        .filter(|scalar| scalar.is_alphanumeric())
+        .count()
+        < MIN_ALIAS_SCALARS
         && !query.iter().copied().any(unspaced_script)
 }
 
@@ -292,11 +290,6 @@ pub struct Matching {
     /// [`MatchTier::Typo`]: every word of the query matches a title word
     /// within a small edit distance, the last one as a prefix.
     pub typos: bool,
-    /// A query shorter than [`MIN_ALIAS_SCALARS`] letters is the start of
-    /// a name: it matches names, and other fields only typed whole. For
-    /// surfaces listing things by name (apps), where two letters begin a
-    /// keyword or a description of nearly everything.
-    pub names_first: bool,
 }
 
 impl Matching {
@@ -304,14 +297,6 @@ impl Matching {
     pub const LOOSE: Self = Self {
         spanning: true,
         typos: true,
-        names_first: false,
-    };
-
-    /// [`Self::LOOSE`], with a short query matching names first
-    /// ([`Self::names_first`]): how apps are found.
-    pub const NAMES: Self = Self {
-        names_first: true,
-        ..Self::LOOSE
     };
 }
 
@@ -433,7 +418,7 @@ pub(crate) fn compile(
         .enumerate()
         .filter_map(|(slot, used)| used.then_some(slot))
         .collect();
-    let names_only = names_only(matching, &query);
+    let names_only = names_only(&query);
     let mut ranked = Vec::new();
     for &slot in &slots {
         let (Some(field), Some(weight)) = (fields.grams.get(slot), INDEXED_WEIGHTS.get(slot))

@@ -212,7 +212,7 @@ impl<'a> Typed<'a> {
         if marked_query.is_empty() {
             return None;
         }
-        let names_only = names_only(matching, &marked_query);
+        let names_only = names_only(&marked_query);
         let tiers = MatchTier::FIELD
             .into_iter()
             .filter_map(|tier| {

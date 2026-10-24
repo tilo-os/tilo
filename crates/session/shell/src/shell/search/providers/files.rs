@@ -124,7 +124,6 @@ impl NameIndex {
         let mut index = SearchIndex::new(Matching {
             spanning: false,
             typos: true,
-            names_first: false,
         })
         .with_ranks(name_rank);
         index.replace_all(

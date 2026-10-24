@@ -460,7 +460,7 @@ fn keywords_find_a_record_below_its_name_and_by_typo() {
 }
 
 #[test]
-fn on_a_names_first_surface_two_letters_begin_a_name_not_a_keyword() {
+fn two_letters_begin_a_name_and_match_other_fields_only_typed_whole() {
     let documents = || {
         [
             Document::new(0)
@@ -477,24 +477,21 @@ fn on_a_names_first_surface_two_letters_begin_a_name_not_a_keyword() {
                 .field("pi is about three", FieldWeight::BODY),
         ]
     };
-    for index in [committed(Matching::NAMES, documents()), {
-        let mut index = SearchIndex::new(Matching::NAMES).through_tantivy();
-        index.replace_all(documents());
-        index.commit().unwrap();
-        index
-    }] {
-        assert_eq!(keys(&index, "pi"), [2], "only a name begun");
-        assert_eq!(keys(&index, "p"), [2]);
-        assert_eq!(keys(&index, "st"), [0], "initials typed whole");
-        assert_eq!(keys(&index, "pin"), [0], "three letters begin a keyword");
-        assert_eq!(keys(&index, "pic"), [1]);
-        assert_eq!(keys(&index, "pho"), [1]);
+    for matching in [Matching::LOOSE, Matching::default()] {
+        for index in [committed(matching, documents()), {
+            let mut index = SearchIndex::new(matching).through_tantivy();
+            index.replace_all(documents());
+            index.commit().unwrap();
+            index
+        }] {
+            assert_eq!(keys(&index, "pi"), [2], "only a name begun");
+            assert_eq!(keys(&index, "p"), [2]);
+            assert_eq!(keys(&index, "st"), [0], "initials typed whole");
+            assert_eq!(keys(&index, "pin"), [0], "three letters begin a keyword");
+            assert_eq!(keys(&index, "pic"), [1]);
+            assert_eq!(keys(&index, "pho"), [1]);
+        }
     }
-    let loose = keys(&committed(Matching::LOOSE, documents()), "pi");
-    assert!(
-        [0, 1, 2, 3].iter().all(|key| loose.contains(key)),
-        "elsewhere two letters still begin any word: {loose:?}"
-    );
 }
 
 /// Records of every weight, some repeating a text, for comparing the
@@ -597,7 +594,7 @@ fn direct_and_tantivy_answer_alike() {
         "dar",
         "zzz",
     ];
-    for matching in [Matching::LOOSE, Matching::NAMES, Matching::default()] {
+    for matching in [Matching::LOOSE, Matching::default()] {
         let direct = committed(matching, documents.clone());
         let tantivy = {
             let mut index = SearchIndex::new(matching).through_tantivy();
@@ -627,6 +624,49 @@ fn direct_and_tantivy_answer_alike() {
                 tantivy.search_scored(query, Page::first(64), score),
                 "{query:?} {matching:?} scored"
             );
+        }
+    }
+}
+
+#[test]
+fn a_highlight_marks_exactly_what_the_index_matched() {
+    let texts = [
+        "Choose an emoji",
+        "Insert it where you're typing",
+        "Pixel Editor",
+        "Speed Test",
+        "redundant dune",
+        "pi",
+        "Le Café Crème",
+    ];
+    let queries = [
+        "pi", "p", "ty", "typi", "dun", "dune", "edit", "crème", "cafe", "afé",
+    ];
+    let weights = [
+        FieldWeight::TITLE,
+        FieldWeight::KEYWORD,
+        FieldWeight::SUBTITLE,
+        FieldWeight::BODY,
+    ];
+    for text in texts {
+        for weight in weights {
+            let index = committed(Matching::default(), [Document::new(0).field(text, weight)]);
+            for query in queries {
+                let matched = !keys(&index, query).is_empty();
+                let marked = crate::locate(query, text, weight);
+                assert_eq!(
+                    marked.is_some(),
+                    matched,
+                    "{query:?} in {text:?} at {weight:?}: marked {marked:?}"
+                );
+                if let Some(range) = marked {
+                    assert_eq!(
+                        crate::fold(&text[range]),
+                        crate::fold(query),
+                        "{query:?} in {text:?}: the mark is the query"
+                    );
+                }
+            }
         }
     }
 }

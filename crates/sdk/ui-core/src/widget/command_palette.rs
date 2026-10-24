@@ -2541,13 +2541,18 @@ impl CommandPalette {
             .or_else(|| entry.alternates.first())
     }
 
-    /// Where `text` shows the query's words, merged and in order: the
+    /// Where `text`, a row's line searched as a field of `weight`, shows
+    /// the query's words as search matched them, merged and in order: the
     /// part of a row a person reads to see why it matched.
-    fn match_ranges(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+    fn match_ranges(
+        &self,
+        text: &str,
+        weight: tilo_search::FieldWeight,
+    ) -> Vec<std::ops::Range<usize>> {
         let mut ranges: Vec<std::ops::Range<usize>> = self
             .query
             .split_whitespace()
-            .filter_map(|word| tilo_search::locate(word, text))
+            .filter_map(|word| tilo_search::locate(word, text, weight))
             .collect();
         ranges.compact_sort_by_key(|range| range.start);
         let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
@@ -2670,7 +2675,7 @@ impl CommandPalette {
 
         let label =
             text_renderer.elide_to_width_style(&entry.label, f32_of_f64(avail), &label_style);
-        let label_marks = self.match_ranges(&label);
+        let label_marks = self.match_ranges(&label, tilo_search::FieldWeight::TITLE);
         if let Some(desc) = &entry.description {
             // A path keeps both ends; prose keeps its beginning, where the
             // meaning is.
@@ -2687,7 +2692,7 @@ impl CommandPalette {
             // Only one line is set off: the title when it shows the query,
             // else the subtitle, so a row never shouts twice.
             let desc_marks = if label_marks.is_empty() {
-                self.match_ranges(&sub)
+                self.match_ranges(&sub, tilo_search::FieldWeight::SUBTITLE)
             } else {
                 Vec::new()
             };
@@ -2717,7 +2722,7 @@ impl CommandPalette {
                         .elide_to_width_style(fact, f32_of_f64(room), &desc_style);
                     let (w, _) = ctx.text.measure_style(&shown, None, &desc_style);
                     let marks = if label_marks.is_empty() {
-                        self.match_ranges(&shown)
+                        self.match_ranges(&shown, tilo_search::FieldWeight::SUBTITLE)
                     } else {
                         Vec::new()
                     };
@@ -4247,12 +4252,23 @@ mod keyboard_flow_tests {
     fn matched_words_are_located_in_the_row_and_prose_is_cut_at_its_end() {
         let mut p = grouped(&[("Files", 1)]);
         p.query = "dark the".into();
+        let title = tilo_search::FieldWeight::TITLE;
         assert_eq!(
-            p.match_ranges("Use the dark theme"),
+            p.match_ranges("Use the dark theme", title),
             vec![4..7, 8..12],
             "each query word, merged and in order"
         );
-        assert!(p.match_ranges("Brightness").is_empty());
+        assert!(p.match_ranges("Brightness", title).is_empty());
+        p.query = "pi".into();
+        assert!(
+            p.match_ranges(
+                "Insert it where you're typing",
+                tilo_search::FieldWeight::SUBTITLE
+            )
+            .is_empty(),
+            "two letters inside a word of a description are no match"
+        );
+        assert_eq!(p.match_ranges("Pixel Editor", title), vec![0..2]);
 
         let theme = Theme::dark();
         let style = theme.text(TextRole::Caption);
