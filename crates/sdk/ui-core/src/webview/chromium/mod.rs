@@ -1907,187 +1907,6 @@ fn valid_id(value: &Value) -> bool {
         .is_some_and(|id| id > 0 && i32::try_from(id).is_ok())
 }
 
-fn valid_site_event(value: &Value, event: &str) -> bool {
-    let header = value["request_id"]
-        .as_u64()
-        .is_some_and(|n| n > 0 && i32::try_from(n).is_ok())
-        && value["origin"].as_str().is_some_and(|s| s.len() <= 8192)
-        && value["generation"].as_f64().is_some_and(|n| {
-            n.is_finite() && (0.0..=9_007_199_254_740_991.0).contains(&n) && n.fract() == 0.0
-        });
-    header
-        && if event == "site_result" {
-            value["success"].is_boolean()
-                && value["action"].as_str().is_some_and(|s| {
-                    matches!(
-                        s,
-                        "status" | "clear" | "revoke" | "reset" | "enable" | "disable" | "reload"
-                    )
-                })
-                && value["message"].as_str().is_some_and(|s| s.len() <= 1024)
-        } else {
-            ["global_enabled", "excepted", "effective"]
-                .iter()
-                .all(|k| value[*k].is_boolean())
-                && value["blocked"].as_f64().is_some_and(|n| {
-                    n.is_finite()
-                        && (0.0..=9_007_199_254_740_991.0).contains(&n)
-                        && n.fract() == 0.0
-                })
-                && matches!(
-                    value["security"].as_str(),
-                    Some("insecure" | "secure" | "unverified")
-                )
-                && ["subject", "issuer"]
-                    .iter()
-                    .all(|k| value[*k].as_str().is_some_and(|s| s.len() <= 512))
-                && ["certificate_status", "tls_version", "content_status"]
-                    .iter()
-                    .all(|k| value[*k].as_u64().is_some_and(|n| u32::try_from(n).is_ok()))
-                && value["expires"].as_f64().is_some_and(f64::is_finite)
-                && value["permissions"].as_object().is_some_and(|p| {
-                    p.len() == 4
-                        && ["camera", "microphone", "location", "notifications"]
-                            .iter()
-                            .all(|k| {
-                                matches!(
-                                    p.get(*k).and_then(Value::as_str),
-                                    Some("allowed" | "blocked" | "ask")
-                                )
-                            })
-                })
-        }
-}
-
-/// An `extension_action`, `extension_open_popup`, `extension_execute_action`,
-/// `extension_notification` or `extension_sign_in` event, when every part of
-/// it is what the host sends: the extension's id, its own pages or a web page
-/// to sign in on, bounded text and an icon of at most 128 pixels a side.
-fn decode_extension_event(value: &Value) -> Option<WebViewEvent> {
-    // Absent: unchanged. Null: taken back. Otherwise a value `read` accepts,
-    // or the event is refused.
-    macro_rules! field {
-        ($change:ident, $key:literal, $read:expr) => {
-            match $change.get($key) {
-                None => None,
-                Some(Value::Null) => Some(None),
-                Some(value) => Some(Some($read(value)?)),
-            }
-        };
-    }
-    let id = value["id"].as_str().filter(|id| extension_id(id))?;
-    let own = |url: &str| {
-        url.len() <= 2048
-            && url
-                .strip_prefix("chrome-extension://")
-                .and_then(|rest| rest.strip_prefix(id))
-                .is_some_and(|rest| rest.starts_with('/'))
-    };
-    if value["event"] == "extension_execute_action" {
-        return Some(WebViewEvent::ExtensionExecuteAction { id: id.into() });
-    }
-    if value["event"] == "extension_notification" {
-        return extension_notification::decode(id, value);
-    }
-    if value["event"] == "extension_sign_in" {
-        return extension_sign_in::decode(id, value);
-    }
-    if value["event"] == "extension_open_popup" {
-        let url = value["url"].as_str().filter(|url| own(url))?;
-        return Some(WebViewEvent::ExtensionOpenPopup {
-            id: id.into(),
-            url: url.into(),
-        });
-    }
-    let change = value["change"].as_object()?;
-    let text = |value: &Value| {
-        value
-            .as_str()
-            .filter(|text| text.len() <= 1024)
-            .map(str::to_owned)
-    };
-    let icon = |value: &Value| {
-        if let Some(path) = value["path"].as_str() {
-            return (path.starts_with('/') && path.len() <= 2048)
-                .then(|| super::ExtensionActionIcon::Path(path.into()));
-        }
-        let side = |key: &str| {
-            u32::try_from(value[key].as_u64()?)
-                .ok()
-                .filter(|side| (1..=128).contains(side))
-        };
-        let (width, height) = (side("width")?, side("height")?);
-        let length = usize::try_from(width.checked_mul(height)?.checked_mul(4)?).ok()?;
-        let rgba = decode_base64_bounded(value["data"].as_str()?, length)?;
-        (rgba.len() == length).then_some(super::ExtensionActionIcon::Pixels {
-            width,
-            height,
-            rgba,
-        })
-    };
-    let popup = |value: &Value| {
-        value
-            .as_str()
-            .filter(|url| url.is_empty() || own(url))
-            .map(str::to_owned)
-    };
-    if change.keys().any(|key| {
-        !matches!(
-            key.as_str(),
-            "badge" | "title" | "popup" | "enabled" | "icon"
-        )
-    }) {
-        return None;
-    }
-    Some(WebViewEvent::ExtensionAction {
-        id: id.into(),
-        global: value["global"].as_bool()?,
-        change: super::ExtensionActionChange {
-            badge: field!(change, "badge", text),
-            title: field!(change, "title", text),
-            popup: field!(change, "popup", popup),
-            enabled: field!(change, "enabled", Value::as_bool),
-            icon: field!(change, "icon", icon),
-        },
-    })
-}
-
-fn decode_site_event(value: &Value, event: &str) -> Option<WebViewEvent> {
-    Some(match event {
-        "site_status" => WebViewEvent::SiteStatus(super::SiteStatus {
-            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
-            origin: value["origin"].as_str()?.into(),
-            generation: wire_u64(&value["generation"])?,
-            blocked: wire_u64(&value["blocked"])?,
-            global_enabled: value["global_enabled"].as_bool()?,
-            excepted: value["excepted"].as_bool()?,
-            effective: value["effective"].as_bool()?,
-            security: value["security"].as_str()?.into(),
-            certificate_status: u32::try_from(value["certificate_status"].as_u64()?).ok()?,
-            tls_version: u32::try_from(value["tls_version"].as_u64()?).ok()?,
-            content_status: u32::try_from(value["content_status"].as_u64()?).ok()?,
-            subject: value["subject"].as_str()?.into(),
-            issuer: value["issuer"].as_str()?.into(),
-            expires: value["expires"].as_f64()?,
-            permissions: value["permissions"]
-                .as_object()?
-                .iter()
-                .map(|(k, v)| Some((k.clone(), v.as_str()?.into())))
-                .collect::<Option<Vec<_>>>()?,
-            can_reset: value["can_reset"].as_bool().unwrap_or(false),
-        }),
-        "site_result" => WebViewEvent::SiteResult {
-            request_id: u32::try_from(value["request_id"].as_u64()?).ok()?,
-            origin: value["origin"].as_str()?.into(),
-            generation: wire_u64(&value["generation"])?,
-            action: value["action"].as_str()?.into(),
-            success: value["success"].as_bool()?,
-            message: value["message"].as_str()?.into(),
-        },
-        _ => return None,
-    })
-}
-
 fn decode_favicon(value: &Value) -> Option<WebViewEvent> {
     let width = u32::try_from(value["width"].as_u64()?).ok()?;
     let height = u32::try_from(value["height"].as_u64()?).ok()?;
@@ -2146,41 +1965,6 @@ fn open_popup(
 /// An extension's id as Chromium makes it: 32 letters `a` to `p`.
 fn extension_id(id: &str) -> bool {
     id.len() == 32 && id.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
-}
-
-/// The longest text of a page's question the host sends, in bytes.
-const MAX_PAGE_DIALOG_TEXT: usize = 16 * 1024;
-
-/// A `js_dialog` event: the page's question, its texts within the host's
-/// bounds.
-fn decode_page_dialog(value: &Value) -> Option<super::PageDialog> {
-    let text = |key: &str| {
-        value[key]
-            .as_str()
-            .filter(|text| text.len() <= MAX_PAGE_DIALOG_TEXT)
-            .map(str::to_owned)
-    };
-    let kind = match value["kind"].as_str()? {
-        "alert" => super::PageDialogKind::Alert,
-        "confirm" => super::PageDialogKind::Confirm,
-        "prompt" => super::PageDialogKind::Prompt,
-        "beforeunload" => super::PageDialogKind::Leave {
-            reload: value["reload"].as_bool()?,
-        },
-        _ => return None,
-    };
-    Some(super::PageDialog {
-        id: u32::try_from(value["id"].as_u64()?)
-            .ok()
-            .filter(|_| valid_id(value))?,
-        kind,
-        origin: value["origin"]
-            .as_str()
-            .filter(|origin| origin.len() <= 8192)?
-            .to_owned(),
-        message: text("message")?,
-        default_text: text("default_text")?,
-    })
 }
 
 fn validate_event(value: &Value) -> Result<(), &'static str> {
@@ -3078,6 +2862,10 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
     })
 }
 
+mod event_decoding;
+use event_decoding::{
+    decode_extension_event, decode_page_dialog, decode_site_event, valid_site_event,
+};
 #[cfg(test)]
 mod extension_tests;
 #[cfg(test)]
