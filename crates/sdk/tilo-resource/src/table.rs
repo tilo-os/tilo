@@ -1512,7 +1512,16 @@ pub fn edit_fields(
     match path.split_first() {
         Some((Segment::Field(key), rest)) => {
             let Some(field) = record.fields.iter().find(|field| field.key == key) else {
-                return Err(ModelError::invalid(format!("no field `{key}`")));
+                let editable: Vec<&str> = record
+                    .fields
+                    .iter()
+                    .filter(|field| !field.readonly)
+                    .map(|field| field.key)
+                    .collect();
+                return Err(ModelError::invalid(format!(
+                    "no field `{key}`; the fields here are {}",
+                    editable.join(", ")
+                )));
             };
             // The outside settling an outbox entry, or forgetting a settled
             // one, is no edit of the field's content: a read-only outbox
