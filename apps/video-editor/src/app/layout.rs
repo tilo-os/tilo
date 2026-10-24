@@ -31,6 +31,40 @@ pub(super) struct Regions {
 }
 
 impl VideoEditorApp {
+    /// Where the preview starts and ends across the editor: after the
+    /// docked bin's shown width and before the docked inspector's, or the
+    /// whole width where either floats over it.
+    fn preview_span(&self) -> (f64, f64) {
+        let r = self.rect;
+        let x0 = if self.bin_layout() == SplitLayout::Overlay {
+            r.x0
+        } else {
+            r.x0 + self.bin_width() * self.bin_flap.reveal()
+        };
+        let x1 = if self.inspector_split() == SplitLayout::Overlay {
+            r.x1
+        } else {
+            r.x1 - self.inspector_width() * self.inspector_flap.reveal()
+        };
+        (x0, x1.max(x0))
+    }
+
+    /// The room around the picture inside the preview.
+    pub(super) fn preview_inset(&self) -> f64 {
+        S2 * self.chrome_scale()
+    }
+
+    /// The tallest the preview can use: the picture as wide as the preview
+    /// allows, its inset around it, and the transport under it. Taller
+    /// would only add empty bands above and below the picture.
+    pub(super) fn preview_fill_height(&self) -> f64 {
+        let (x0, x1) = self.preview_span();
+        let inset = self.preview_inset();
+        let picture_w = (x1 - x0 - 2.0 * inset).max(0.0);
+        let aspect = f64::from(self.project.height.max(9)) / f64::from(self.project.width.max(16));
+        2.0 * inset + picture_w * aspect + self.transport_height()
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the coupled editor pane geometry must remain in one coordinate calculation to prevent gaps and overlaps"
@@ -51,25 +85,24 @@ impl VideoEditorApp {
         // room for its five buttons and its timecode on a narrow window.
         let inspector_overlay = self.inspector_split() == SplitLayout::Overlay;
         let inspector_w = self.inspector_width();
-        let (inspector, preview_x1) = if inspector_overlay {
+        let (preview_x0, preview_x1) = self.preview_span();
+        let inspector = if inspector_overlay {
             // Summoned, it floats a step inside the window on the floating
             // material, and slides in by the eased reveal.
             let reveal = self.inspector_flap.reveal();
             let w = inspector_w.min((r.width() - 2.0 * S2).max(0.0));
             let x1 = r.x1 - S2 + (w + S2) * (1.0 - reveal);
-            (Rect::new(x1 - w, mid_top + S2, x1, r.y1 - S2), r.x1)
+            Rect::new(x1 - w, mid_top + S2, x1, r.y1 - S2)
         } else {
             // Docked, it holds its column while shown and gives it back to
             // the preview as it is hidden.
-            let w = inspector_w * self.inspector_flap.reveal();
-            let i = Rect::new(r.x1 - w, mid_top, r.x1, mid_bot);
-            (i, i.x0)
+            Rect::new(preview_x1, mid_top, r.x1, mid_bot)
         };
         // Docked: the bin occupies its column and the preview starts after it.
         // Overlay: the preview reclaims the bin's column (full editor width)
         // and the bin slides in from the left over a scrim by the eased
         // reveal — exactly the flap kernel's overlay geometry.
-        let (bin, preview_x0, scrim) = if overlay {
+        let (bin, scrim) = if overlay {
             // A drawer: the floating material a step inside the window,
             // sliding in from the leading edge by the eased reveal.
             let reveal = self.bin_flap.reveal();
@@ -81,11 +114,9 @@ impl VideoEditorApp {
             } else {
                 Rect::ZERO
             };
-            (bin, r.x0, scrim)
+            (bin, scrim)
         } else {
-            let w = self.bin_width() * self.bin_flap.reveal();
-            let bin = Rect::new(r.x0, mid_top, r.x0 + w, mid_bot);
-            (bin, bin.x1, Rect::ZERO)
+            (Rect::new(r.x0, mid_top, preview_x0, mid_bot), Rect::ZERO)
         };
         let preview = Rect::new(preview_x0, mid_top, preview_x1, mid_bot);
         let transport = Rect::new(
@@ -94,7 +125,7 @@ impl VideoEditorApp {
             preview.x1,
             preview.y1,
         );
-        let inset = S2 * self.chrome_scale();
+        let inset = self.preview_inset();
         let canvas_area = Rect::new(
             preview.x0 + inset,
             preview.y0 + inset,

@@ -466,3 +466,37 @@ fn an_opens_undo_brings_the_timeline_back() {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[test]
+fn a_compact_preview_starts_right_under_the_window_bar() {
+    let app = sample(420.0);
+    let r = app.regions();
+    let inset = app.preview_inset();
+    assert!(
+        (r.canvas.y0 - (r.preview.y0 + inset)).abs() < 1.0,
+        "the picture starts right under the bar, not below an empty band ({:?} in {:?})",
+        r.canvas,
+        r.preview
+    );
+    assert!(
+        (r.canvas.x0 - (r.preview.x0 + inset)).abs() < 1.0
+            && (r.canvas.x1 - (r.preview.x1 - inset)).abs() < 1.0,
+        "the picture fills the preview's width"
+    );
+    assert!(
+        (r.transport.y0 - (r.canvas.y1 + inset)).abs() < 1.0,
+        "the transport sits right under the picture"
+    );
+    assert!(
+        (app.timeline_split.ratio().position() - super::PREVIEW_SHARE).abs() < 1e-6,
+        "the chosen split is kept for a wider window"
+    );
+
+    let wide = sample(1280.0);
+    let r = wide.regions();
+    let chosen = wide.timeline_split.ratio().first_extent(wide.rect.height());
+    assert!(
+        (r.timeline.y0 - (wide.rect.y0 + chosen).round()).abs() < 1e-9,
+        "wide, the timeline starts where the split puts it"
+    );
+}
