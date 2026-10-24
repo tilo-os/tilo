@@ -1393,3 +1393,133 @@ fn a_compact_windows_notice_has_a_strip_whose_buttons_run_by_pointer_and_semanti
         }
     }
 }
+
+/// The browser's row once the app changed its slots to `toolbar` in the
+/// same tab, laid out and started as the next paint starts it.
+fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
+    let rect = row.row;
+    row.show(7, Some(toolbar), theme.motion(), crate::motion::frame_now());
+    row.lay_out(rect);
+    row.start_slot_change(theme);
+}
+
+/// Long after any motion of the bar has settled.
+fn later(t0: crate::time::Instant) -> crate::time::Instant {
+    t0.checked_add(crate::time::Duration::from_secs(2))
+        .unwrap_or(t0)
+}
+
+#[test]
+fn a_slot_the_app_adds_fades_in_and_the_slots_it_pushes_glide() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let back_before = row.slots().back;
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    with_monotonic_time(t0, || {
+        changed_to(&mut row, &with_sidebar, &theme);
+        let back = row.slots().back;
+        assert!(back.x0 > back_before.x0, "the sidebar pushed back along");
+        assert!(row.needs_animation_frame(t0), "the change moves");
+        let poses = row.slot_changes.poses(t0);
+        let (opacity, _) = poses[&slot_change::SlotKey::Sidebar];
+        assert!(opacity < 0.05, "the sidebar fades in from clear: {opacity}");
+        let (_, offset) = poses[&slot_change::SlotKey::Back];
+        assert!(
+            (back.x0 + offset.x - back_before.x0).abs() < 0.5,
+            "back starts where it stood"
+        );
+        assert_eq!(
+            row.slot_at(back_before.center()),
+            Some(Slot::Back),
+            "back is pressed where it is drawn"
+        );
+    });
+    let end = later(t0);
+    with_monotonic_time(end, || {
+        assert!(!row.needs_animation_frame(end), "and settles");
+        row.start_slot_change(&theme);
+        assert!(row.slot_changes.poses(end).is_empty());
+        assert_eq!(row.slot_at(row.slots().back.center()), Some(Slot::Back));
+        assert_eq!(
+            row.slot_at(row.slots().sidebar.center()),
+            Some(Slot::Sidebar)
+        );
+    });
+}
+
+#[test]
+fn a_slot_the_app_takes_away_fades_out_where_it_stood() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let reload = row.slots().actions[0];
+    let mut without_reload = browser();
+    without_reload.actions.clear();
+    with_monotonic_time(t0, || {
+        changed_to(&mut row, &without_reload, &theme);
+        let leaving = row.slot_changes.leaving();
+        assert_eq!(leaving.len(), 1, "reload fades out");
+        assert_eq!(leaving[0].rect, reload, "where it stood");
+        assert!(leaving[0].opacity(t0) > 0.95, "from whole");
+        assert_ne!(
+            row.slot_at(reload.center()),
+            Some(Slot::Action(0)),
+            "a slot that left takes no press"
+        );
+    });
+    let end = later(t0);
+    with_monotonic_time(end, || {
+        row.start_slot_change(&theme);
+        assert!(row.slot_changes.leaving().is_empty(), "and is gone");
+        assert!(!row.needs_animation_frame(end));
+    });
+}
+
+#[test]
+fn reduced_motion_lands_the_slots_and_still_fades_what_arrives() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark().with_reduce_motion(true);
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    with_monotonic_time(t0, || {
+        changed_to(&mut row, &with_sidebar, &theme);
+        let poses = row.slot_changes.poses(t0);
+        assert!(
+            !poses.contains_key(&slot_change::SlotKey::Back),
+            "back lands in its new place"
+        );
+        assert!(
+            poses[&slot_change::SlotKey::Sidebar].0 < 0.05,
+            "the sidebar fades in"
+        );
+    });
+}
+
+#[test]
+fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let mut row = with_monotonic_time(t0, row);
+    let mut with_sidebar = browser();
+    with_sidebar.sidebar = Some(false);
+    with_monotonic_time(t0, || {
+        crate::motion::note_source(MotionSource::Keyboard);
+        changed_to(&mut row, &with_sidebar, &theme);
+        assert!(!row.needs_animation_frame(t0), "a key's change lands");
+        crate::motion::note_source(MotionSource::Pointer);
+        let mut opened = with_sidebar.clone();
+        opened.sidebar = Some(true);
+        changed_to(&mut row, &opened, &theme);
+        assert!(
+            !row.needs_animation_frame(t0),
+            "the sidebar opening moves no slot"
+        );
+    });
+}
