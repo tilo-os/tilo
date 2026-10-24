@@ -302,13 +302,14 @@ fn the_marker_colour_recolours_the_selected_mark_through_the_record() {
     );
 }
 
-/// Invoke the document's action `id` by its address, as a headless drive's
+/// Invoke `effect` on the document by its address, as a headless drive's
 /// `invoke` step does: no coordinates, no shortcut.
-fn drive_invoke(app: &mut TestApp<PdfViewerShell>, id: &str) {
-    let address = ui::tilo_actions::ActionAddress::new("pdf.document", id);
+fn drive_invoke(app: &mut TestApp<PdfViewerShell>, effect: &PdfEffect) {
+    use ui::tilo_resource::{Effect as _, Resource as _};
+    let address = effect.address_on(PdfMarkup::KIND);
     app.harness()
-        .invoke_action(&address, &serde_json::Map::new(), false, None)
-        .unwrap_or_else(|error| panic!("{id}: {error}"));
+        .invoke_action(&address, &effect.arguments(), false, None)
+        .unwrap_or_else(|error| panic!("{effect:?}: {error}"));
     app.settle();
 }
 
@@ -317,14 +318,14 @@ fn drive_invoke(app: &mut TestApp<PdfViewerShell>, id: &str) {
 fn a_drive_of_a_scenario_zooms_and_fits_by_address() {
     let mut app = TestApp::<PdfViewerShell>::drive("search").expect("the sample opens");
     let zoom = reader_state(&mut app, |pdf| pdf.zoom());
-    drive_invoke(&mut app, "zoom-in");
+    drive_invoke(&mut app, &PdfEffect::ZoomIn);
     let zoomed = reader_state(&mut app, |pdf| pdf.zoom());
     assert!(zoomed > zoom, "Zoom in zooms in: {zoom} to {zoomed}");
-    drive_invoke(&mut app, "zoom-out");
+    drive_invoke(&mut app, &PdfEffect::ZoomOut);
     assert!((reader_state(&mut app, |pdf| pdf.zoom()) - zoom).abs() < 1e-9);
-    drive_invoke(&mut app, "fit-page");
+    drive_invoke(&mut app, &PdfEffect::FitPage);
     assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Page));
-    drive_invoke(&mut app, "fit-width");
+    drive_invoke(&mut app, &PdfEffect::FitWidth);
     assert!(reader_state(&mut app, |pdf| pdf.fit == super::FitMode::Width));
 }
 
