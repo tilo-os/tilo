@@ -33,12 +33,13 @@
 //! one that does not exist.
 //!
 //! Removing or banning a member and ending a call are destructive: they run
-//! only on a confirmation the person gave on their own device, which this
-//! host cannot yet ask for. They are left out of the catalogue, and a caller
-//! the room would let take one is refused with
-//! [`ActionHostError::ConfirmationRequired`]; a caller's own `confirm` is
-//! never taken for the person's. Until then removing a member stays on
-//! `tilo-room-admin/1` and the `/rooms` pages.
+//! only on a confirmation the person gave on their own device. The room's
+//! owner removes and bans by asking from a device of their own: their
+//! request is that confirmation. For anyone else this host cannot ask yet:
+//! the action is left out of their catalogue, and a caller the room would
+//! let take one is refused with [`ActionHostError::ConfirmationRequired`]; a
+//! caller's own `confirm` is never taken for the person's. Ending a call
+//! waits for everyone.
 //!
 //! What the host does for its embedder is unchanged: [`GovernedPlane`]
 //! answers this provider and hands every other request to the app-serving
@@ -261,9 +262,25 @@ const VERBS: [Verb; 17] = [
     },
 ];
 
-/// Destructive governance this provider names but does not run until the
-/// person's own confirmation can be asked for.
-const UNCONFIRMED: [&str; 2] = [governance::REMOVE_MEMBER, governance::BAN];
+/// Destructive governance: run for the room's owner, whose own request is
+/// their confirmation, and for nobody else until the person's own
+/// confirmation can be asked for.
+const OWNER_CONFIRMED: [Verb; 2] = [
+    Verb {
+        id: governance::REMOVE_MEMBER,
+        label: "Remove member",
+        gate: governance::REMOVE_MEMBER,
+        kind: roles::GOVERNANCE_KIND,
+        params: person_params,
+    },
+    Verb {
+        id: governance::BAN,
+        label: "Ban",
+        gate: governance::BAN,
+        kind: roles::GOVERNANCE_KIND,
+        params: person_params,
+    },
+];
 
 fn person_param() -> ActionParam {
     ActionParam::required(
@@ -524,14 +541,16 @@ impl Verb {
 fn gate_of(action: &str) -> Option<&'static str> {
     VERBS
         .iter()
+        .chain(&OWNER_CONFIRMED)
         .find(|verb| verb.id == action)
         .map(|verb| verb.gate)
-        .or_else(|| UNCONFIRMED.into_iter().find(|verb| *verb == action))
 }
 
-/// Whether `action` with `args` needs the person's own confirmation.
-fn destructive(action: &str, args: &Args) -> bool {
-    UNCONFIRMED.contains(&action)
+/// Whether `action` with `args` by a device of `owner`'s person or not needs
+/// the person's own confirmation, which this host cannot ask for yet. The
+/// room's owner confirms removing and banning by asking.
+fn unconfirmed(action: &str, args: &Args, owner: bool) -> bool {
+    (OWNER_CONFIRMED.iter().any(|verb| verb.id == action) && !owner)
         || (action == governance::CALL && args.text("operation").ok().flatten() == Some(END_CALL))
 }
 
@@ -858,8 +877,11 @@ impl Rooms {
             if wants(ROOM_GOVERNANCE_PROVIDER) {
                 let now = tilo_clock::unix_now_ns();
                 let resource = room_governance_resource(room.room());
+                let owner = device.user_public_key == self.inner.host.cert.user_public_key;
+                let confirmed: &[Verb] = if owner { &OWNER_CONFIRMED } else { &[] };
                 let rows = VERBS
                     .iter()
+                    .chain(confirmed)
                     .filter(|verb| {
                         self.permits(&device, Some(&room), RoomOp::Govern(verb.gate), now)
                     })
@@ -936,7 +958,8 @@ impl Rooms {
             room.room().to_owned()
         };
         let args = Args::of(&request.argument)?;
-        if destructive(&address.action, &args) {
+        let owner = device.user_public_key == self.inner.host.cert.user_public_key;
+        if unconfirmed(&address.action, &args, owner) {
             return Err(ActionHostError::ConfirmationRequired);
         }
         let call = GovernanceCall {
@@ -1178,6 +1201,14 @@ impl Rooms {
             governance::UNBAN => {
                 let person = member(args.required_key("person")?);
                 generation(self.unban_member(room, device, person).await)
+            }
+            governance::REMOVE_MEMBER => {
+                let person = member(args.required_key("person")?);
+                generation(self.remove_member(room, device, person).await)
+            }
+            governance::BAN => {
+                let person = member(args.required_key("person")?);
+                generation(self.ban_member(room, device, person).await)
             }
             governance::CALL => {
                 let state = self
