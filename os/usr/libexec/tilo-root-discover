@@ -114,14 +114,24 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
   # system: it goes once the volume is open or the attempt is over.
   forget_key() { rm -f -- "$runtime/cryptsetup-keys.d/root.key"; }
   trap 'stop_sibling; forget_key' EXIT
+  # Until someone has a sign-in on this root, the booted system needs the
+  # volume key once, to add the first person's keyslot when they sign in;
+  # tilo-authd takes it from uid 0's user keyring and unlinks it.
+  attach_options='tpm2-device=auto,fido2-device=auto,tries=0,timeout=0,password-cache=no'
+  if ! "$cryptsetup_probe" luksDump "$root" 2>/dev/null | awk '
+      /^Tokens:/ { tokens = 1; next }
+      /^[^ \t]/ { tokens = 0 }
+      tokens && $2 == "tilo-signin" { found = 1 }
+      END { exit !found }'; then
+    attach_options="$attach_options,link-volume-key=@u::%user:tilo-auth:volume-key"
+  fi
   # Keep the graphical prompt available after a typo. Do not recycle a failed
   # passphrase from the agent cache into the remaining attempts. TPM/FIDO
   # enrollments and recovery keys remain available on functioning platforms.
   # systemd-cryptsetup sends rejection details to its log, not to the
   # graphical password agent. Preserve those logs and forward only an opaque
   # retry event to Plymouth; no password is read or retained by this wrapper.
-  LC_ALL=C SYSTEMD_LOG_TARGET=console "$cryptsetup_bin" attach root "$root" - \
-    'tpm2-device=auto,fido2-device=auto,tries=0,timeout=0,password-cache=no' 2>&1 | \
+  LC_ALL=C SYSTEMD_LOG_TARGET=console "$cryptsetup_bin" attach root "$root" - "$attach_options" 2>&1 | \
     while IFS= read -r message; do
       printf '%s\n' "$message" >&2
       case "$message" in

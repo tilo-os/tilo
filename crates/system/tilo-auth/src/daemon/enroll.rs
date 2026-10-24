@@ -172,8 +172,14 @@ impl Daemon {
                 return Ok(Some(slot));
             }
         }
-        let Some(held) =
-            volume::held_credential(&work.runner, &work.ws, volume, &self.cfg.proof_file, typed)?
+        let Some(held) = volume::held_credential(
+            &work.runner,
+            &work.ws,
+            volume,
+            &self.cfg.proof_file,
+            self.cfg.volume_key.as_deref(),
+            typed,
+        )?
         else {
             eprintln!(
                 "tilo-authd: nothing this boot holds opens {}; uid {uid}'s keyslot waits for a \

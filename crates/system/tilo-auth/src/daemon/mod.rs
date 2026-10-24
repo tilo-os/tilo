@@ -10,6 +10,7 @@ pub mod volume;
 use crate::accounts::{Account, Accounts, Legacy};
 use crate::guard::Guard;
 use crate::handoff;
+use crate::keyring;
 use crate::lockout_store::{self, LockoutStore, Opener};
 use crate::luks;
 use crate::protocol::{PendingSignIn, Refusal, Reply, Request};
@@ -52,6 +53,8 @@ pub struct Config {
     pub volume: Locate,
     /// The boot handoff key's description; `None` takes none.
     pub handoff: Option<String>,
+    /// The linked volume key's description; `None` uses none.
+    pub volume_key: Option<String>,
 }
 
 impl Default for Config {
@@ -70,6 +73,7 @@ impl Default for Config {
             passphrase_params: wrapper::PASSPHRASE_PARAMS,
             volume: Locate::Root,
             handoff: Some(handoff::DESCRIPTION.into()),
+            volume_key: Some(volume::LINKED_VOLUME_KEY.into()),
         }
     }
 }
@@ -265,6 +269,36 @@ impl Daemon {
         }
     }
 
+    /// The linked volume key is for adding the first person's keyslot; a
+    /// volume that already has a sign-in, or none at all, never needs it.
+    pub fn settle_volume_key(&self) {
+        if self.cfg.volume_key.is_none() {
+            return;
+        }
+        let needed = self.work().and_then(|work| {
+            let Some(volume) = self.cfg.volume.find(&work.runner) else {
+                return Ok(false);
+            };
+            Ok(luks::tokens(&work.runner, &volume.device)?.is_empty())
+        });
+        match needed {
+            Ok(true) => {}
+            Ok(false) => self.forget_volume_key(),
+            Err(e) => {
+                eprintln!("tilo-authd: {e:#}");
+                self.forget_volume_key();
+            }
+        }
+    }
+
+    fn forget_volume_key(&self) {
+        if let Some(description) = &self.cfg.volume_key
+            && let Err(e) = keyring::forget(description)
+        {
+            eprintln!("tilo-authd: could not unlink the linked volume key: {e}");
+        }
+    }
+
     fn boot_key_is_genuine(&self, uid: u32, key: &UserKey) -> Result<Option<String>> {
         let Some(record) = self.store.load(uid)? else {
             return Ok(None);
@@ -405,7 +439,15 @@ impl Daemon {
         self.verify_locked(&mut state, &account, typed)
     }
 
+    /// Whatever it answers, the first sign-in attempt of the boot is the last
+    /// that may use the linked volume key.
     fn verify_locked(&self, state: &mut State, account: &Account, typed: &str) -> Result<Reply> {
+        let reply = self.verify_once(state, account, typed);
+        self.forget_volume_key();
+        reply
+    }
+
+    fn verify_once(&self, state: &mut State, account: &Account, typed: &str) -> Result<Reply> {
         let secret = Secret::new(typed);
         let work = self.work()?;
         match self.store.load(account.uid)? {

@@ -17,6 +17,10 @@ RuntimeDirectoryMode=0755
 StateDirectory=tilo/auth
 StateDirectoryMode=0700
 UMask=0077
+# The volume key the initrd links into root's user keyring for the first
+# sign-in is readable only by a possessor: the user keyring must hang off this
+# service's session keyring.
+KeyringMode=shared
 # Moving someone off their old password locks their shadow entry (usermod,
 # which rewrites /etc/shadow and /etc/passwd) and reads the old hash through
 # pam_unix; adding the admin's keyslot writes the LUKS2 header of the system

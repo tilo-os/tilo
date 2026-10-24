@@ -32,6 +32,7 @@ fn run() -> Result<()> {
         Box::new(SystemLegacy::default()),
     )?);
     daemon.take_boot_handoff();
+    daemon.settle_volume_key();
     let listener = server::bind(&daemon)?;
     server::serve(&daemon, &listener);
     Ok(())
