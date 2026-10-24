@@ -31,6 +31,7 @@ cryptsetup_bin="${TILO_ROOT_CRYPTSETUP:-systemd-cryptsetup}"
 cryptsetup_probe="${TILO_ROOT_CRYPTSETUP_PROBE:-cryptsetup}"
 plymouth_bin="${TILO_ROOT_PLYMOUTH:-plymouth}"
 unlock_bin="${TILO_ROOT_UNLOCK:-/usr/libexec/tilo-rollback-initrd-unlock}"
+signin_bin="${TILO_ROOT_SIGNIN:-/usr/libexec/tilo/tilo-boot-signin}"
 sibling_bin="${TILO_ROOT_SIBLING_UNLOCK:-tilo-sibling-unlock}"
 systemctl_bin="${TILO_ROOT_SYSTEMCTL:-systemctl}"
 
@@ -87,20 +88,32 @@ root="${roots[0]}"
 
 install -d -m 0700 "$runtime/tilo-root" "$runtime/cryptsetup-keys.d"
 if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
-  "$unlock_bin" "$root" root || true
+  # A root that people sign in to (tilo-signin tokens) asks for a person's own
+  # PIN or password first, and that sign-in carries on into their session. It
+  # leaves the volume's key file when it succeeds; otherwise (nobody to sign
+  # in, or "Can't sign in") everything below runs as on any other root.
+  signed_in=0
+  if [ -x "$signin_bin" ] && "$signin_bin" --device "$root" --volume root; then
+    signed_in=1
+  else
+    "$unlock_bin" "$root" root || true
+  fi
   # A root enrolled for unlocking with another of the owner's devices asks
   # them while the prompt below is up; the person can still type the
   # passphrase meanwhile, and whichever answers first opens the volume. The
   # attempt is stopped, and everything it held wiped, once the volume is open.
   sibling_unit=""
-  if "$sibling_bin" probe "$root" >/dev/null 2>&1; then
+  if [ "$signed_in" -eq 0 ] && "$sibling_bin" probe "$root" >/dev/null 2>&1; then
     sibling_unit="tilo-sibling-unlock@$(systemd-escape --path "$root").service"
     "$systemctl_bin" start --no-block "$sibling_unit" || sibling_unit=""
   fi
   stop_sibling() {
     [ -z "$sibling_unit" ] || "$systemctl_bin" stop "$sibling_unit" 2>/dev/null || true
   }
-  trap stop_sibling EXIT
+  # The key file opens the volume, and /run is carried into the booted
+  # system: it goes once the volume is open or the attempt is over.
+  forget_key() { rm -f -- "$runtime/cryptsetup-keys.d/root.key"; }
+  trap 'stop_sibling; forget_key' EXIT
   # Keep the graphical prompt available after a typo. Do not recycle a failed
   # passphrase from the agent cache into the remaining attempts. TPM/FIDO
   # enrollments and recovery keys remain available on functioning platforms.
@@ -118,6 +131,7 @@ if "$cryptsetup_probe" isLuks "$root" >/dev/null 2>&1; then
       esac
     done || die "encrypted Tilo root did not unlock"
   stop_sibling
+  forget_key
   "$plymouth_bin" display-message --text=tilo-unlock-success 2>/dev/null || true
   target="$devroot/mapper/root"
 else

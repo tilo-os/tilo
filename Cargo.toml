@@ -398,6 +398,7 @@ members = [
     "crates/system/block-devices",
     "crates/system/board-successor",
     "crates/system/boot-order",
+    "crates/system/boot-signin",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -1013,6 +1014,8 @@ incremental = false
 [profile.release.package.tilo-rollback]
 strip = "symbols"
 [profile.release.package.tilo-sibling-unlock]
+strip = "symbols"
+[profile.release.package.tilo-boot-signin]
 strip = "symbols"
 
 # The browser bundles' release build (`build.sh --profile release`), measured
