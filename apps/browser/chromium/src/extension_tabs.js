@@ -293,6 +293,20 @@
     return {native, pageOf, read, opensOnClick: () => opensOnClick};
   })();
 
+  // An offscreen document copies for the extension (Chromium gives a worker
+  // no clipboard), and where the engine has no clipboard of its own the
+  // copy stays in it. Once the document is made, the host gives it what
+  // carries a copy to the Browser, for an extension that may write the
+  // clipboard (page_clipboard.h).
+  const offscreen = globalThis.chrome.offscreen;
+  if (offscreen && typeof offscreen.createDocument === 'function' && (manifest.permissions || []).includes('clipboardWrite')) {
+    const createDocument = offscreen.createDocument.bind(offscreen);
+    replace(offscreen, 'createDocument', async (parameters) => {
+      await createDocument(parameters);
+      await call('offscreen.clipboard').catch(() => {});
+    });
+  }
+
   // The worker's first script has run once this task ends: its listeners
   // are registered, and an event may reach them.
   let ready = false;

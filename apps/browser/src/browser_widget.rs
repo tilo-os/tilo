@@ -65,6 +65,7 @@ mod continuity;
 mod http_fallback;
 mod library;
 mod load_failure;
+mod page_clipboard;
 pub(crate) mod personal;
 #[cfg(test)]
 mod regression_tests;
@@ -507,6 +508,7 @@ pub struct BrowserWidget {
     bookmarks: Bookmarks,
     downloads: Downloads,
     download_picker: Option<(String, ui::portal::PortalChannel)>,
+    page_clipboard: page_clipboard::PageClipboard,
     download_picker_queue: std::collections::VecDeque<(String, String)>,
     download_save_due: Option<ui::time::Instant>,
     /// This window's engine session, which keys its downloads in the saved
@@ -1328,6 +1330,7 @@ impl BrowserWidget {
             bookmarks,
             downloads,
             download_picker: None,
+            page_clipboard: page_clipboard::PageClipboard::default(),
             download_picker_queue: std::collections::VecDeque::new(),
             download_save_due: None,
             download_session: crate::downloads::new_session(),
@@ -2863,6 +2866,7 @@ impl BrowserWidget {
             self.download_save_due = None;
         }
         self.poll_download_picker();
+        self.page_clipboard.answer_ready(&*self.engine);
         if let Some(view) = self.service_view.as_mut()
             && view.poll_timeout()
         {
@@ -3081,6 +3085,13 @@ impl BrowserWidget {
                         self.media_playing = playing;
                         self.structure_dirty = true;
                     }
+                }
+                WebViewEvent::ClipboardWrite { text, html, secret } => {
+                    page_clipboard::PageClipboard::copied(&text, html.as_deref(), secret);
+                }
+                WebViewEvent::ClipboardRead { request_id } => {
+                    self.page_clipboard.read(request_id);
+                    self.page_clipboard.answer_ready(&*self.engine);
                 }
                 WebViewEvent::FullscreenChanged(active) => {
                     if self.content_fullscreen != active {
@@ -5672,6 +5683,8 @@ impl BrowserWidget {
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.page_popups.sync(&self.engine);
         self.structure_dirty |= self.page_dialogs.sync(&self.engine);
+        // Whichever engine shows the page now copies to the system clipboard.
+        self.engine.share_clipboard();
         self.structure_dirty |= self.page_dialogs.poll(&self.engine);
         self.structure_dirty |= self.daily.sync(&self.engine);
         let site_was_open = self.site.open;

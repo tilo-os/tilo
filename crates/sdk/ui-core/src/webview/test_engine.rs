@@ -659,7 +659,8 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::ReportDocumentSize(_)
             | WebViewCommand::CancelNativeDownload { .. }
             | WebViewCommand::RetryDownload { .. }
-            | WebViewCommand::CancelAllDownloads => {}
+            | WebViewCommand::CancelAllDownloads
+            | WebViewCommand::AnswerClipboardRead { .. } => {}
             WebViewCommand::CopySelection { request_id } => {
                 let text = inner.selection.clone();
                 inner
