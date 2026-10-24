@@ -967,6 +967,10 @@ impl NetworkModel {
     /// The published row of `vpn`.
     fn vpn_live(&self, vpn: &VpnInfo) -> LiveRow {
         let offer = |effect: VpnEffect| SettingsEffect::from(effect).bound();
+        // A setting is offered with its value to give; the connection is
+        // the row's own.
+        let asking =
+            |effect: VpnEffect, asking: &[&str]| SettingsEffect::from(effect).bound_asking(asking);
         let connection = vpn.uuid.clone();
         let mut row = LiveRow::new(
             format!("vpn.connection:{}", vpn.uuid),
@@ -976,10 +980,13 @@ impl NetworkModel {
         .operation(offer(VpnEffect::ShowVpnProfile {
             connection: connection.clone(),
         }))
-        .operation(offer(VpnEffect::SetVpnConnected {
-            connection: connection.clone(),
-            on: !vpn.active,
-        }))
+        .operation(asking(
+            VpnEffect::SetVpnConnected {
+                connection: connection.clone(),
+                on: !vpn.active,
+            },
+            &["on"],
+        ))
         .operation(offer(if vpn.active {
             VpnEffect::Disconnect {
                 connection: connection.clone(),
@@ -997,40 +1004,64 @@ impl NetworkModel {
         }));
         if let Some(settings) = self.vpn.settings.get(&vpn.uuid) {
             row = row
-                .operation(offer(VpnEffect::SetVpnName {
-                    connection: connection.clone(),
-                    name: settings.name.clone(),
-                }))
-                .operation(offer(VpnEffect::SetVpnAutoconnect {
-                    connection: connection.clone(),
-                    on: !settings.autoconnect,
-                }))
-                .operation(offer(VpnEffect::SetVpnAllTraffic {
-                    connection: connection.clone(),
-                    on: !settings.all_traffic,
-                }))
-                .operation(offer(VpnEffect::SetVpnDns {
-                    connection: connection.clone(),
-                    servers: settings.dns.join(", "),
-                }))
-                .operation(offer(VpnEffect::SetVpnMtu {
-                    connection: connection.clone(),
-                    mtu: settings.mtu.unwrap_or(0),
-                }));
+                .operation(asking(
+                    VpnEffect::SetVpnName {
+                        connection: connection.clone(),
+                        name: settings.name.clone(),
+                    },
+                    &["name"],
+                ))
+                .operation(asking(
+                    VpnEffect::SetVpnAutoconnect {
+                        connection: connection.clone(),
+                        on: !settings.autoconnect,
+                    },
+                    &["on"],
+                ))
+                .operation(asking(
+                    VpnEffect::SetVpnAllTraffic {
+                        connection: connection.clone(),
+                        on: !settings.all_traffic,
+                    },
+                    &["on"],
+                ))
+                .operation(asking(
+                    VpnEffect::SetVpnDns {
+                        connection: connection.clone(),
+                        servers: settings.dns.join(", "),
+                    },
+                    &["servers"],
+                ))
+                .operation(asking(
+                    VpnEffect::SetVpnMtu {
+                        connection: connection.clone(),
+                        mtu: settings.mtu.unwrap_or(0),
+                    },
+                    &["mtu"],
+                ));
             if settings.kind == "wireguard" {
                 row = row
-                    .operation(offer(VpnEffect::SetVpnServer {
-                        connection: connection.clone(),
-                        endpoint: settings.endpoint.clone().unwrap_or_default(),
-                    }))
-                    .operation(offer(VpnEffect::SetVpnAllowedIps {
-                        connection: connection.clone(),
-                        addresses: settings.allowed_ips.join(", "),
-                    }))
-                    .operation(offer(VpnEffect::SetVpnKeepalive {
-                        connection,
-                        seconds: settings.keepalive.unwrap_or(0),
-                    }));
+                    .operation(asking(
+                        VpnEffect::SetVpnServer {
+                            connection: connection.clone(),
+                            endpoint: settings.endpoint.clone().unwrap_or_default(),
+                        },
+                        &["endpoint"],
+                    ))
+                    .operation(asking(
+                        VpnEffect::SetVpnAllowedIps {
+                            connection: connection.clone(),
+                            addresses: settings.allowed_ips.join(", "),
+                        },
+                        &["addresses"],
+                    ))
+                    .operation(asking(
+                        VpnEffect::SetVpnKeepalive {
+                            connection,
+                            seconds: settings.keepalive.unwrap_or(0),
+                        },
+                        &["seconds"],
+                    ));
             }
         }
         row
@@ -1063,14 +1094,18 @@ impl NetworkModel {
         let toggle = Toggle::from_state(&LocalState::new(vpn.active))
             .with_id(&format!("settings.network.vpn.switch.{}", vpn.uuid))
             .with_accessible_name(&vpn.name);
-        let toggle = match self.cx.row_binding(
+        let toggle = self.cx.bind_on_row(
             live,
+            toggle,
             effect(VpnEffect::SET_VPN_CONNECTED).map(move |on: bool| (connection.clone(), on)),
-        ) {
-            Some(binding) => ui::framework::ActionControl::bind_action(toggle, binding),
-            None => toggle.with_enabled(false),
-        };
-        toggle.with_enabled(!self.vpn.changing.contains(&vpn.uuid))
+        );
+        // While it changes the switch waits; it never turns back on a
+        // switch its row does not offer.
+        if self.vpn.changing.contains(&vpn.uuid) {
+            toggle.with_enabled(false)
+        } else {
+            toggle
+        }
     }
 
     fn vpn_state(&self, vpn: &VpnInfo) -> String {
@@ -1127,7 +1162,8 @@ impl NetworkModel {
                     vpn.name.clone(),
                 )
                 .icon(Icon::Shield)
-                .secondary(format!("{} · {}", self.vpn_kind(vpn), self.vpn_state(vpn)))
+                .secondary(self.vpn_state(vpn))
+                .meta(self.vpn_kind(vpn))
                 .trailing(Box::new(self.vpn_switch_control(vpn, &resource)))
                 .disclosure();
                 let open = VpnEffect::ShowVpnProfile {
@@ -1432,6 +1468,8 @@ impl NetworkModel {
 
     /// The editable settings of `vpn`, each its own action.
     fn vpn_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
+        // Every setting here acts on the VPN's own row.
+        let live = self.vpn_live(vpn).into_resource();
         let uuid = vpn.uuid.clone();
         let text = |id: &str, value: String, placeholder: String| {
             TextInput::from_state(&LocalState::new(value))
@@ -1442,7 +1480,8 @@ impl NetworkModel {
         let mut out = vec![
             field_row(
                 &t("net-vpn-name"),
-                Box::new(self.cx.bind(
+                Box::new(self.cx.bind_on_row(
+                    &live,
                     text("name", settings.name.clone(), t("net-vpn-name")),
                     effect(VpnEffect::SET_VPN_NAME).map({
                         let uuid = keyed(&uuid);
@@ -1453,7 +1492,8 @@ impl NetworkModel {
             setting_row(
                 &t("net-autoconnect"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_on_row(
+                        &live,
                         Toggle::from_state(&LocalState::new(settings.autoconnect))
                             .with_id(&format!("network.vpn.autoconnect.{uuid}")),
                         effect(VpnEffect::SET_VPN_AUTOCONNECT).map({
@@ -1467,7 +1507,8 @@ impl NetworkModel {
                 &t("net-vpn-all-traffic"),
                 &t("net-vpn-all-traffic-caption"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_on_row(
+                        &live,
                         Toggle::from_state(&LocalState::new(settings.all_traffic))
                             .with_id(&format!("network.vpn.all-traffic.{uuid}")),
                         effect(VpnEffect::SET_VPN_ALL_TRAFFIC).map({
@@ -1479,7 +1520,8 @@ impl NetworkModel {
             ),
             field_row(
                 &t("net-dns-servers"),
-                Box::new(self.cx.bind(
+                Box::new(self.cx.bind_on_row(
+                    &live,
                     text("dns", settings.dns.join(", "), t("net-dns-automatic")),
                     effect(VpnEffect::SET_VPN_DNS).map({
                         let uuid = keyed(&uuid);
@@ -1491,7 +1533,8 @@ impl NetworkModel {
                 "MTU",
                 &t("net-vpn-mtu-caption"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_on_row(
+                        &live,
                         NumberInput::new(f64::from(settings.mtu.unwrap_or(0)))
                             .with_range(0.0, 9000.0)
                             .with_step(1.0)
@@ -1518,12 +1561,15 @@ impl NetworkModel {
             }
             return out;
         }
-        out.extend(self.wireguard_settings_rows(&uuid, settings));
+        out.extend(self.wireguard_settings_rows(vpn, settings));
         out
     }
 
     /// A `WireGuard` tunnel's own settings: its server and what it carries.
-    fn wireguard_settings_rows(&self, uuid: &str, settings: &VpnProfileSettings) -> Vec<Item> {
+    fn wireguard_settings_rows(&self, vpn: &VpnInfo, settings: &VpnProfileSettings) -> Vec<Item> {
+        // Every setting here acts on the VPN's own row.
+        let live = self.vpn_live(vpn).into_resource();
+        let uuid = vpn.uuid.as_str();
         let text = |id: &str, value: String, placeholder: String| {
             TextInput::from_state(&LocalState::new(value))
                 .with_id(&format!("network.vpn.{id}.{uuid}"))
@@ -1537,7 +1583,8 @@ impl NetworkModel {
         out.extend([
             field_row(
                 &t("net-vpn-server"),
-                Box::new(self.cx.bind(
+                Box::new(self.cx.bind_on_row(
+                    &live,
                     text(
                         "endpoint",
                         settings.endpoint.clone().unwrap_or_default(),
@@ -1551,7 +1598,8 @@ impl NetworkModel {
             ),
             field_row(
                 &t("net-vpn-allowed"),
-                Box::new(self.cx.bind(
+                Box::new(self.cx.bind_on_row(
+                    &live,
                     text(
                         "allowed",
                         settings.allowed_ips.join(", "),
@@ -1567,7 +1615,8 @@ impl NetworkModel {
                 &t("net-vpn-keepalive"),
                 &t("net-vpn-keepalive-caption"),
                 Box::new(
-                    self.cx.bind(
+                    self.cx.bind_on_row(
+                        &live,
                         NumberInput::new(f64::from(settings.keepalive.unwrap_or(0)))
                             .with_range(0.0, 3600.0)
                             .with_step(1.0)

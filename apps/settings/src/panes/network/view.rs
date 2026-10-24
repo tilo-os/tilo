@@ -76,6 +76,25 @@ impl NetworkModel {
         ))
     }
 
+    /// `button_row` acting on the live row `on`, which offers `effect`.
+    pub(super) fn row_button_row(
+        &self,
+        on: &ui::tilo_actions::Resource,
+        id: &str,
+        label: &str,
+        effect: impl Into<crate::effects::SettingsEffect>,
+    ) -> Item {
+        row(Box::new(
+            Row::new()
+                .push(Box::new(self.cx.bind_row(
+                    Button::new(id, label),
+                    on,
+                    effect,
+                )))
+                .push(Box::new(Spacer::new())),
+        ))
+    }
+
     /// A switch showing `on`, invoking `set`.
     pub(super) fn switch_control(
         &self,
@@ -110,11 +129,12 @@ impl NetworkModel {
 
     /// The first page: Wi-Fi, the wired connection, and the controls.
     fn first_page(&self) -> Vec<SettingsSection> {
-        let mut cards = vec![self.wifi_card()];
+        // The controls follow the list at once, so they stay in view on a
+        // normal window; the wired connection comes after them.
+        let mut cards = vec![self.wifi_card(), self.controls_card()];
         if self.wired.device.is_some() || self.read_errors.wired.is_some() {
             cards.push(self.wired_card());
         }
-        cards.push(self.controls_card());
         cards
     }
 
@@ -129,7 +149,13 @@ impl NetworkModel {
         let usable = self.read_errors.wifi_enabled.is_none()
             && !self.wifi_absent()
             && !self.radios.wifi_hardware_blocked;
-        let wifi_toggle: El = Box::new(wifi_toggle.with_enabled(usable));
+        // Only ever turned off here: the binding already turned off a switch
+        // whose action is not offered.
+        let wifi_toggle: El = if usable {
+            Box::new(wifi_toggle)
+        } else {
+            Box::new(wifi_toggle.with_enabled(false))
+        };
         let mut wifi_rows = self.wifi_status_rows();
         if self.wifi_enabled && !self.wifi_absent() {
             let arranged = order::arranged(&self.networks, |net| self.knows(net));
@@ -240,7 +266,7 @@ impl NetworkModel {
         )
         .signal(level)
         .secondary(detail)
-        .trailing(Box::new(page));
+        .trailing_disclosure(Box::new(page));
         if net.secure {
             line = line.mark(Icon::Lock);
         }
@@ -381,14 +407,19 @@ impl NetworkModel {
             ListRow::new("settings.network.airplane", t("net-airplane"))
                 .icon(Icon::Plane)
                 .secondary(t("net-airplane-caption"))
-                .trailing(Box::new(
-                    self.switch_control(
+                .trailing(Box::new({
+                    let toggle = self.switch_control(
                         "network.airplane",
                         self.radios.airplane_mode,
                         NetworkEffect::SET_AIRPLANE_MODE,
-                    )
-                    .with_enabled(self.read_errors.radios.is_none()),
-                )),
+                    );
+                    // An unread radio state is not offered as a position.
+                    if self.read_errors.radios.is_none() {
+                        toggle
+                    } else {
+                        toggle.with_enabled(false)
+                    }
+                })),
         ));
         lines.push(Box::new(self.drill_row(
             "settings.network.advanced",
@@ -544,7 +575,9 @@ impl NetworkModel {
         match self.wake_settings.get(&profile.uuid) {
             Some(Ok(status)) => {
                 let uuid = profile.uuid.clone();
-                let toggle = self.cx.bind(
+                let live = self.profile_live(profile).into_resource();
+                let toggle = self.cx.bind_on_row(
+                    &live,
                     Toggle::from_state(&LocalState::new(status.configured))
                         .with_id(&format!("network.profile.wake.{}", profile.uuid))
                         .with_accessible_name(&label)

@@ -1601,27 +1601,12 @@ impl NetworkArea {
             .iter()
             .map(|ssid| model.wifi_live(ssid))
             .collect();
-        let offer = |effect: NetworkEffect| SettingsEffect::from(effect).bound();
         rows.extend(
             model
                 .profiles
                 .iter()
                 .filter(|profile| profile.kind != "802-11-wireless")
-                .map(|profile| {
-                    let row = LiveRow::new(
-                        format!("settings.network-profile:{}", profile.uuid),
-                        "settings.network-profile",
-                        profile.name.clone(),
-                    )
-                    .operation(offer(NetworkEffect::SetAutoconnect {
-                        profile: profile.uuid.clone(),
-                        on: !profile.autoconnect,
-                    }))
-                    .operation(offer(NetworkEffect::ForgetNetwork {
-                        profile: profile.uuid.clone(),
-                    }));
-                    model.with_wake(row, profile)
-                }),
+                .map(|profile| model.profile_live(profile)),
         );
         rows.extend(model.vpn_rows());
         rows
@@ -1860,7 +1845,7 @@ impl NetworkModel {
                 model.open_page(vpn::PAGE_VPN, t("net-vpn"));
                 model.open_page(vpn::PAGE_ADD, t("net-vpn-add"));
             }
-            None => {}
+            Some(NetworkSample::List) | None => {}
         }
         model
     }
@@ -2264,6 +2249,33 @@ impl NetworkModel {
         self.with_wake(row, profile)
     }
 
+    /// The live row a saved profile's settings act on: a Wi-Fi network's
+    /// row, or the profile's own (a wired connection's).
+    pub(crate) fn profile_live(&self, profile: &SavedNetworkProfile) -> LiveRow {
+        if profile.kind == "802-11-wireless" {
+            return self.wifi_live(&profile.name);
+        }
+        let row = LiveRow::new(
+            format!("settings.network-profile:{}", profile.uuid),
+            "settings.network-profile",
+            profile.name.clone(),
+        )
+        .operation(
+            SettingsEffect::from(NetworkEffect::SetAutoconnect {
+                profile: profile.uuid.clone(),
+                on: !profile.autoconnect,
+            })
+            .bound_asking(&["on"]),
+        )
+        .operation(
+            SettingsEffect::from(NetworkEffect::ForgetNetwork {
+                profile: profile.uuid.clone(),
+            })
+            .bound(),
+        );
+        self.with_wake(row, profile)
+    }
+
     /// `row`, saying how `profile` wakes this machine and offering to
     /// change it where it can.
     fn with_wake(&self, mut row: LiveRow, profile: &SavedNetworkProfile) -> LiveRow {
@@ -2279,7 +2291,7 @@ impl NetworkModel {
                         profile: profile.uuid.clone(),
                         on: !wake.configured,
                     })
-                    .bound(),
+                    .bound_asking(&["on"]),
                 );
             }
         }
