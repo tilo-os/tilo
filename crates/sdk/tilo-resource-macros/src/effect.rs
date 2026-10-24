@@ -502,7 +502,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             quote! {
                 ::std::option::Option::Some(
                     (|args: &#krate::__private::ActionArgs| -> #krate::__private::RiskLevel {
-                        match <#name as #krate::Effect>::decode(#id, &args.to_json()) {
+                        match <Self as #krate::Effect>::decode(#id, &args.to_json()) {
                             ::std::result::Result::Ok(effect) => #classify(&effect),
                             ::std::result::Result::Err(_) => #krate::__private::RiskLevel::Destructive,
                         }
@@ -707,6 +707,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
         quote!(_arguments)
     };
     let row_count = decls.len();
+    let rows = decls.into_iter().map(|row| name_self(row, name));
     Ok(quote! {
         impl #krate::Effect for #name {
             const OPERATION: &'static str = #operation;
@@ -755,9 +756,31 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<Tokens> {
             /// rows outgrow what may sit on the stack.
             #[doc(hidden)]
             pub fn __effect_rows() -> &'static [#krate::effect::EffectRow] {
-                static ROWS: [#krate::effect::EffectRow; #row_count] = [#(#decls),*];
+                static ROWS: [#krate::effect::EffectRow; #row_count] = [#(#rows),*];
                 &ROWS
             }
         }
     })
+}
+
+/// The rows live in a `static` inside a function, which cannot see the
+/// impl's `Self`: every `Self` in a row (the derive's own or one an app wrote
+/// in an attribute expression) names the enum instead. The derive rejects
+/// generic enums, so the bare name is the whole type.
+fn name_self(tokens: Tokens, name: &syn::Ident) -> Tokens {
+    use proc_macro2::{Group, TokenTree};
+    tokens
+        .into_iter()
+        .map(|tree| match tree {
+            TokenTree::Ident(ident) if ident == "Self" => {
+                TokenTree::Ident(syn::Ident::new(&name.to_string(), ident.span()))
+            }
+            TokenTree::Group(group) => {
+                let mut renamed = Group::new(group.delimiter(), name_self(group.stream(), name));
+                renamed.set_span(group.span());
+                TokenTree::Group(renamed)
+            }
+            other => other,
+        })
+        .collect()
 }

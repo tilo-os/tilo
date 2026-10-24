@@ -1129,6 +1129,7 @@ fn open_followed(st: &mut ChromeState, follower: Follower, instance: u64) -> Opt
                 label: follower.title,
                 note: String::new(),
             },
+            app_title: None,
         },
     );
     // Its launch opens this instance, which reopens on the record brought.
@@ -1631,6 +1632,7 @@ fn open_fresh(st: &mut ChromeState, plan: &Plan) {
                 label: plan.title.clone(),
                 note: String::new(),
             },
+            app_title: None,
         },
     );
 }
@@ -2012,6 +2014,7 @@ fn opening_card(st: &mut ChromeState, plan: &Plan) -> Option<TabId> {
                 label: plan.title.clone(),
                 note: crate::shell::peer_windows::OPENING.to_string(),
             },
+            app_title: None,
         },
     ))
 }

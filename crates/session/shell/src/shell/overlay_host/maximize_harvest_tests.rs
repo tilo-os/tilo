@@ -28,6 +28,7 @@ fn one_group_tree(maximized: bool) -> (WorkspaceTree, StripId, GroupId) {
                     kind: AppKind::Other("Test".into()),
                     label: "solo".into(),
                 },
+                app_title: None,
             }],
             active_tab: tab_id,
             width: StateWidth::Normal,

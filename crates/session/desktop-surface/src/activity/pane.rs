@@ -3071,7 +3071,7 @@ impl RoomActivityPane {
             .map(|pane| (pane, pane.label()))
             .collect();
         let selected = self.explorer_pane;
-        self.explorer_pane_rects = draw_chip_row(
+        self.explorer_pane_rects = draw_view_tabs_row(
             scene,
             transform,
             tr,
@@ -3812,34 +3812,37 @@ impl RoomActivityPane {
     ) {
         // One pointer target tall, centred in the 34 px view band.
         let y = self.sheet.y0 + self.header_h() + (VIEW_ROW_H - MIN_TARGET) / 2.0;
-        // The views, then the link that opens the Tasks app.
-        let items: Vec<(Option<ActivityView>, String)> = ActivityView::ALL
+        // The views are tabs (HIG: views are tabs); the link that opens the
+        // Tasks app follows them as a pill of its own.
+        let items: Vec<(ActivityView, String)> = ActivityView::ALL
             .iter()
-            .map(|view| (Some(*view), view.label()))
-            .chain([(None, t("activity-view-tasks"))])
+            .map(|view| (*view, view.label()))
             .collect();
         let selected = self.view;
-        let rects = draw_chip_row(
+        let row = Rect::new(
+            self.sheet.x0 + 12.0,
+            y,
+            self.sheet.x1 - 12.0,
+            y + MIN_TARGET,
+        );
+        self.view_rects = draw_view_tabs_row(scene, transform, tr, theme, row, &items, |view| {
+            *view == selected
+        });
+        let tabs_end = self
+            .view_rects
+            .last()
+            .map_or(row.x0, |(_, rect)| rect.x1 + 6.0);
+        self.tasks_link_rect = draw_chip_row(
             scene,
             transform,
             tr,
             theme,
-            Rect::new(
-                self.sheet.x0 + 12.0,
-                y,
-                self.sheet.x1 - 12.0,
-                y + MIN_TARGET,
-            ),
-            &items,
-            |view| *view == Some(selected),
-        );
-        self.tasks_link_rect = rects
-            .iter()
-            .find_map(|(view, rect)| view.is_none().then_some(*rect));
-        self.view_rects = rects
-            .into_iter()
-            .filter_map(|(view, rect)| Some((view?, rect)))
-            .collect();
+            Rect::new(tabs_end, row.y0, row.x1, row.y1),
+            &[((), t("activity-view-tasks"))],
+            |()| false,
+        )
+        .first()
+        .map(|((), rect)| *rect);
     }
 
     #[allow(
@@ -6984,6 +6987,64 @@ fn draw_filter_axis_label(
         &style,
     );
     row.x0 + f64::from(lw) + 8.0
+}
+
+/// Tabs that switch the sheet's view, in the toolkit's tab look (each tab as
+/// wide as its label, the chosen one a selector lifted off the ground).
+/// Tabs that would overflow the row are neither painted nor returned, so a
+/// click cannot select one the person cannot see; each returned hit rect is
+/// the row's full height.
+fn draw_view_tabs_row<T: Clone>(
+    scene: &mut Scene,
+    transform: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    row: Rect,
+    items: &[(T, String)],
+    is_active: impl Fn(&T) -> bool,
+) -> Vec<(T, Rect)> {
+    use ui::widget::{ControlSize, Segment, SegmentedFace, SegmentedStyle, ToggleGroup};
+    let segments: Vec<Segment> = items
+        .iter()
+        .map(|(_, label)| Segment::new(label.clone()))
+        .collect();
+    let height = SegmentedFace::height(ControlSize::Small, theme).min(row.height());
+    let strip = Rect::new(
+        row.x0,
+        row.center().y - height / 2.0,
+        row.x1,
+        row.center().y + height / 2.0,
+    );
+    let rects = SegmentedFace::partition_segments(
+        strip,
+        &segments,
+        SegmentedStyle::Tabs,
+        ControlSize::Small,
+        tr,
+        theme,
+    );
+    let fits = |rect: &Rect| rect.x1 <= row.x1 + 0.5;
+    let rects: Vec<Rect> = rects.into_iter().take_while(fits).collect();
+    let items: Vec<&(T, String)> = items.iter().take(rects.len()).collect();
+    let labels: Vec<&str> = items.iter().map(|(_, label)| label.as_str()).collect();
+    let selected = items
+        .iter()
+        .position(|(value, _)| is_active(value))
+        .unwrap_or(usize::MAX);
+    ToggleGroup::paint(
+        scene,
+        transform,
+        tr,
+        theme,
+        &SegmentedFace::new(&rects, &labels, selected)
+            .style(SegmentedStyle::Tabs)
+            .control_size(ControlSize::Small),
+    );
+    items
+        .into_iter()
+        .zip(rects)
+        .map(|((value, _), rect)| (value.clone(), Rect::new(rect.x0, row.y0, rect.x1, row.y1)))
+        .collect()
 }
 
 /// Chips that would overflow the row are neither painted nor returned,

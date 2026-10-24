@@ -53,6 +53,9 @@ bounded-command = { path = "../../crates/system/bounded-command", optional = tru
 # the ring provider `tilo_net::install_crypto_provider` installs and the system
 # trust bundle, like the workspace's reqwest.
 rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
+# Its queries, compiled once beside it (in the YouTube engine library in a
+# release) rather than in this executable.
+tilo-innertube = { path = "../../crates/platform/tilo-innertube", optional = true }
 
 # Grayjay device sync uses the Noise protocol over TCP. `snow`, `flate2`, and
 # `base64` are gated behind `grayjay-sync`.
@@ -88,7 +91,7 @@ runtime-engine = ["thin", "live", "tilo-youtube-engine/thin"]
 # also fails closed if the system secret store is unavailable.
 default = ["live", "media", "grayjay-sync"]
 # YouTube data via yt-dlp with rustypipe as a fallback source.
-live = ["dep:rustypipe", "dep:bounded-command"]
+live = ["dep:rustypipe", "dep:tilo-innertube", "dep:bounded-command"]
 # Video decode, playback, and audio through the shared GStreamer media engine.
 # The watch-page player publishes now-playing and accepts media keys through
 # the toolkit's MPRIS service, which `ui` always provides.

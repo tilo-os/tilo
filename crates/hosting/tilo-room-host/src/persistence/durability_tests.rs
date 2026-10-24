@@ -339,11 +339,30 @@ fn cost_per_edit(stored: u32, count: u32) -> (u64, u64) {
 /// Reports what an edit costs the committing thread as the document's
 /// retained history grows. Timing is never asserted; the listing
 /// it grew with is.
+///
+/// Each history length runs on its own thread, whose CPU clock counts
+/// only its own commits. A commit's wall time is its two barriers, which
+/// on a busy CI disk take a tenth of a second each: 200 commits per
+/// length, one length after another, outran the suite's 8-minute hang
+/// bound while every commit still cost the same 1.2 ms of CPU, which 32
+/// commits per length measure as well.
 #[test]
 fn delta_commit_cpu_per_stored_records() {
-    for stored in [1, 256, 1_000, 5_000] {
-        let (cpu_ns, listed) = cost_per_edit(stored, 200);
+    let costs = std::thread::scope(|scope| {
+        let runs: Vec<_> = [1, 256, 1_000, 5_000]
+            .map(|stored| scope.spawn(move || (stored, cost_per_edit(stored, 32))))
+            .into_iter()
+            .collect();
+        runs.into_iter()
+            .map(|run| run.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    for (stored, (cpu_ns, listed)) in costs {
         println!("RETAIN_COST stored={stored} cpu_ns_per_edit={cpu_ns} listed_per_edit={listed}");
+        assert_eq!(
+            listed, 0,
+            "an edit after {stored} stored records listed its lineage's history"
+        );
     }
 }
 

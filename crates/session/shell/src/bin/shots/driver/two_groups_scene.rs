@@ -31,6 +31,7 @@ impl ShellDriver {
                             kind: shell::shell::state::AppKind::Settings,
                             label: "Settings".to_string(),
                         },
+                        app_title: None,
                     }],
                     active_tab: tid,
                     width: half,

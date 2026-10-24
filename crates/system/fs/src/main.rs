@@ -14,7 +14,7 @@ mod workspace_startup;
 use anyhow::{Context, Result, bail};
 use clap::{Args, Parser, Subcommand};
 use collab_types::Principal;
-use fs::clock::{unix_now_ms, unix_now_ns};
+use fs::clock::unix_now_ms;
 use fs::full_replica::{
     HomePeerBundle, HomePeerSet, aggregate_status, hydrate_full_workspace,
     prune_obsolete_workspace_content, save_status, validate_home_peer_set,
@@ -39,7 +39,7 @@ use fs::{
     RecordProtocolSnapshotV1, RecordPublisher, RecordRepository, RecordServices,
     RecordSubscriptionFailureCode, RecordSubscriptionKey, RecordSubscriptionStore, ShareAuthority,
     ShareControlServer, ShareManagement, Ticket, Workspace, identity_paths,
-    load_certified_mount_identity, load_revocation_list, load_workspace_share_issuer,
+    load_certified_mount_identity_once_valid, load_revocation_list, load_workspace_share_issuer,
 };
 use fuser::{Config, MountOption, SessionACL};
 use std::io::Read;
@@ -1528,7 +1528,7 @@ async fn replica_workspace(
 
     let (transport_gate, _transport_gate_task) = fs::transport_gate::spawn_from_env()?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -1837,7 +1837,7 @@ async fn serve(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let share_issuer = load_workspace_share_issuer(&paths, &credentials)?;
@@ -2443,7 +2443,7 @@ async fn mount(
     }
     let history = open_history(cache_dir.as_deref())?;
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let transport_identity = FsTransportIdentity::new(credentials.clone(), revocations)
@@ -2625,7 +2625,7 @@ async fn mount_share(
         SharedCredential::Named(_) => None,
     };
     let paths = identity_paths();
-    let certified = load_certified_mount_identity(&paths, unix_now_ns())?;
+    let certified = load_certified_mount_identity_once_valid(&paths).await?;
     let revocations = Arc::new(RwLock::new(load_revocation_list(&paths)?));
     let (device, credentials) = certified.into_parts();
     let actor = fs_protocol::FileActor {
@@ -2788,7 +2788,7 @@ async fn recipient_service(
     let listener = recipient_service_listener(&socket)?;
     std::fs::create_dir_all(&cache_root)?;
     let paths = identity_paths();
-    let certified = match load_certified_mount_identity(&paths, unix_now_ns()) {
+    let certified = match load_certified_mount_identity_once_valid(&paths).await {
         Ok(certified) => certified,
         Err(error) => {
             // Unconfigured session: keep the activation socket and wait for
@@ -3753,6 +3753,8 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
     let durable_namespace = Arc::clone(&namespace);
+    #[cfg(target_os = "linux")]
+    let signalled_namespace = Arc::clone(&namespace);
     let fs = QuickFS::new(namespace, hydrator, heuristics)
         .with_checked_history_workspace(checked_history_workspace)
         .with_document_content(tilo_content_device::for_app());
@@ -3940,6 +3942,26 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
         Some(root) => fs.with_passthrough(root.join("passthrough")),
         None => fs,
     };
+    // Watchers on the mount hear of the changes the kernel did not make
+    // (a peer's edit) instead of polling for them. A read-only mount cannot
+    // take the signal, so its watchers keep polling.
+    #[cfg(target_os = "linux")]
+    let change_signal = if read_only {
+        None
+    } else {
+        match fs::change_signal::ChangeSignal::new() {
+            Ok(signal) => Some(Arc::new(signal)),
+            Err(error) => {
+                eprintln!("folders on the mount will not signal their changes: {error}");
+                None
+            }
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let fs = match &change_signal {
+        Some(signal) => fs.with_change_signal(Arc::clone(signal)),
+        None => fs,
+    };
 
     let mut config = Config::default();
     config.mount_options = vec![MountOption::FSName("quickfs".to_string())];
@@ -3971,6 +3993,24 @@ async fn run_mount(config: MountConfig, services: MountServices) -> Result<Mount
     // supervisor sleeps until one of the two happens.
     let mut mount_task = tokio::task::spawn_blocking(move || {
         let session = fuser::spawn_mount(fs, &mp, &config)?;
+        // Held until the session ends: dropping it stops the signals.
+        #[cfg(target_os = "linux")]
+        let _signals = change_signal.and_then(|signal| {
+            signal
+                .start(
+                    signalled_namespace,
+                    &mp,
+                    session.notifier(),
+                    &tokio::runtime::Handle::current(),
+                )
+                .map_err(|error| {
+                    eprintln!(
+                        "folders on {} will not signal their changes; watchers poll: {error}",
+                        mp.display()
+                    );
+                })
+                .ok()
+        });
         if signal_recipient_ready {
             use std::io::Write;
             println!("{}", fs::recipient_mount::RECIPIENT_MOUNT_READY_LINE);

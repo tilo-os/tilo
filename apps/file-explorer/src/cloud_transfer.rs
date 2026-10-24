@@ -134,14 +134,20 @@ pub(crate) fn retain_uncommitted(
 
 #[cfg(test)]
 mod tests {
+    //! Importing publishes through a private stage reached by descriptor-relative
+    //! paths, which only Linux provides today; elsewhere every import entry is
+    //! refused before any provider read. Tests that need a published copy run
+    //! on Linux only, and the refusal itself is checked everywhere else.
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::net::UnixListener;
+    #[cfg(target_os = "linux")]
     use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
-    use tilo_cloud_files::cloud::{
-        CLOUD_FRAMING, CloudRequest, CloudResponse, ImportError, ImportErrorKind,
-    };
+    use tilo_cloud_files::cloud::{CLOUD_FRAMING, CloudRequest, CloudResponse};
+    #[cfg(target_os = "linux")]
+    use tilo_cloud_files::cloud::{ImportError, ImportErrorKind};
     use tilo_cloud_files::cloud::{ImportKind, ImportReadState, ImportReply, ImportRequest};
 
     fn entry(name: &str, kind: ImportKind) -> ImportEntry {
@@ -227,6 +233,33 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn import_without_safe_staging_refuses_before_any_read_and_writes_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let closed = Arc::new(Mutex::new(Vec::new()));
+        let observed = closed.clone();
+        let (socket, server) = server(move |request| bytes_reply(request, &observed));
+        let outcome = execute_at(
+            &socket,
+            "account",
+            &[entry("file", ImportKind::File)],
+            temp.path().to_str().unwrap(),
+            &pin_destination(temp.path().to_str().unwrap(), std::iter::empty()).unwrap(),
+            &AtomicBool::new(false),
+            |_| {},
+        );
+        server.join().unwrap();
+        let Settled::Failed { reason, partial } = outcome else {
+            panic!("import without safe staging was accepted");
+        };
+        assert!(reason.contains("staging is unavailable"), "{reason}");
+        assert!(partial.is_empty());
+        assert!(closed.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn native_bytes_and_files_are_independent_copies_with_collision_receipts() {
         let temp = tempfile::tempdir().unwrap();
@@ -303,6 +336,7 @@ mod tests {
         assert_eq!(std::fs::read(dest.join("report.pdf")).unwrap(), b"original");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn native_docx_collision_preserves_extension_and_office_payload() {
         use std::io::{Read as _, Write as _};
@@ -367,6 +401,7 @@ mod tests {
         assert_eq!(std::fs::read(dest.join("Essay.docx")).unwrap(), b"original");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn full_length_unicode_collisions_create_fresh_names_with_extensions() {
         for (name, expected, kind) in [
@@ -440,6 +475,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn compensation_refuses_replaced_outputs_and_renamed_or_replaced_destinations() {
         for replacement in ["output", "destination", "renamed", "symlink"] {
@@ -501,6 +537,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn compensation_preserves_user_edits_to_the_imported_inode() {
         let temp = tempfile::tempdir().unwrap();
@@ -536,6 +573,7 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"independent user edits");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cancellation_removes_partial_bytes_and_closes_the_session() {
         let temp = tempfile::tempdir().unwrap();
@@ -563,6 +601,7 @@ mod tests {
         assert_eq!(*closed.lock().unwrap(), ["partial"]);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn provider_failure_keeps_previous_copy_but_cleans_failed_entry() {
         let temp = tempfile::tempdir().unwrap();
@@ -598,6 +637,7 @@ mod tests {
         assert_eq!(outcome.reason(), Some("bad: source changed"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn folders_are_paginated_and_recursive() {
         let temp = tempfile::tempdir().unwrap();
@@ -698,6 +738,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn provider_failure_never_deletes_a_public_name_created_during_io() {
         let temp = tempfile::tempdir().unwrap();
@@ -736,6 +777,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 1);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn failed_descendant_keeps_whole_root_private_and_prior_receipts_committed() {
         let temp = tempfile::tempdir().unwrap();
@@ -815,6 +857,7 @@ mod tests {
         assert!(!dest.join("good (1)").exists());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn public_replacements_during_copy_are_never_cleaned_or_overwritten() {
         for cancel_copy in [false, true] {
@@ -856,6 +899,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn tampered_private_stages_are_retained_without_deleting_user_objects() {
         for tamper in ["container", "file", "folder-child"] {
@@ -955,6 +999,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn path_alias_introduced_during_io_cannot_receive_output_or_cleanup() {
         let temp = tempfile::tempdir().unwrap();

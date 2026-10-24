@@ -7,7 +7,7 @@ static ASKED: Mutex<Vec<ToolIntent>> = Mutex::new(Vec::new());
     clippy::unnecessary_wraps,
     reason = "it stands in for the shell's tool service, which can refuse"
 )]
-fn record(intent: ToolIntent) -> Result<(), String> {
+fn record(intent: ToolIntent, _: Option<[u8; 16]>) -> Result<(), String> {
     ASKED.lock().unwrap().push(intent);
     Ok(())
 }

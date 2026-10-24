@@ -10,7 +10,7 @@
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
-use crate::{ModelDescriptor, ProviderProfile, ProviderProtocol, SignInIssuer};
+use crate::{ModelDescriptor, OpenAiApi, ProviderProfile, ProviderProtocol, SignInIssuer};
 
 /// The Anthropic Messages API version every request names.
 pub const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -185,15 +185,55 @@ pub fn speaks_responses(profile: &ProviderProfile) -> bool {
     profile.sign_in_issuer() == Some(SignInIssuer::ChatGpt)
 }
 
+/// The `OpenAI` API an OpenAI-compatible `profile`'s agent turns take;
+/// `None` for an Anthropic one. A `ChatGPT` sign-in takes Responses, its
+/// backend's only API; otherwise the profile's own choice, or Responses at
+/// `OpenAI`'s own API and chat completions at any other endpoint. Single-shot
+/// asks ([`profile_body`]) keep the dialect of [`speaks_responses`].
+pub fn openai_api(profile: &ProviderProfile) -> Option<OpenAiApi> {
+    if profile.protocol != ProviderProtocol::OpenAiCompatible {
+        return None;
+    }
+    if speaks_responses(profile) {
+        return Some(OpenAiApi::Responses);
+    }
+    Some(profile.openai_api.unwrap_or_else(|| {
+        if is_openai_endpoint(&profile.endpoint) {
+            OpenAiApi::Responses
+        } else {
+            OpenAiApi::ChatCompletions
+        }
+    }))
+}
+
+/// Whether `endpoint` is `OpenAI`'s own API.
+fn is_openai_endpoint(endpoint: &str) -> bool {
+    endpoint
+        .trim()
+        .strip_prefix("https://")
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+        .is_some_and(|host| {
+            let host = host.strip_suffix(":443").unwrap_or(host);
+            host.eq_ignore_ascii_case("api.openai.com")
+        })
+}
+
+/// The Responses route of `profile`'s endpoint, which may already name it
+/// or name chat completions.
+pub fn responses_url(profile: &ProviderProfile) -> String {
+    let base = profile.endpoint.trim_end_matches('/');
+    let base = base.strip_suffix("/chat/completions").unwrap_or(base);
+    if base.ends_with("/responses") {
+        base.into()
+    } else {
+        format!("{base}/responses")
+    }
+}
+
 /// The request URL for `profile`: [`url`], or its Responses route.
 pub fn profile_url(profile: &ProviderProfile) -> String {
     if speaks_responses(profile) {
-        let base = profile.endpoint.trim_end_matches('/');
-        if base.ends_with("/responses") {
-            base.into()
-        } else {
-            format!("{base}/responses")
-        }
+        responses_url(profile)
     } else {
         url(profile.protocol, &profile.endpoint)
     }
@@ -655,6 +695,61 @@ mod tests {
         let refused = r#"{"status":"completed","output":[{"type":"message","content":[{"type":"refusal","refusal":"no"}]}]}"#;
         assert!(profile_answer(&chatgpt, refused, 64).is_err());
         assert!(profile_answer(&chatgpt, "event: ping\n\n", 64).is_err());
+    }
+
+    #[test]
+    fn openai_s_own_api_takes_responses_and_other_endpoints_chat_unless_told() {
+        use crate::presets::Preset;
+        let openai = Preset::OpenAi.profile();
+        assert_eq!(openai_api(&openai), Some(OpenAiApi::Responses));
+        assert!(!speaks_responses(&openai));
+        assert_eq!(
+            profile_url(&openai),
+            "https://api.openai.com/v1/chat/completions"
+        );
+        assert_eq!(
+            responses_url(&openai),
+            "https://api.openai.com/v1/responses"
+        );
+        let mut typed = Preset::Compatible.profile();
+        assert_eq!(typed.openai_api, None);
+        for endpoint in [
+            "https://api.openai.com/v1",
+            "https://API.openai.com:443/v1/chat/completions",
+        ] {
+            typed.endpoint = endpoint.into();
+            assert_eq!(openai_api(&typed), Some(OpenAiApi::Responses), "{endpoint}");
+            assert_eq!(responses_url(&typed).rsplit('/').next(), Some("responses"));
+        }
+        for endpoint in [
+            "http://api.openai.com/v1",
+            "https://api.openai.com.example.test/v1",
+            "http://127.0.0.1:8000/v1",
+            "https://openrouter.ai/api/v1",
+        ] {
+            typed.endpoint = endpoint.into();
+            assert_eq!(
+                openai_api(&typed),
+                Some(OpenAiApi::ChatCompletions),
+                "{endpoint}"
+            );
+        }
+        typed.endpoint = "http://127.0.0.1:8787/v1/chat/completions".into();
+        typed.openai_api = Some(OpenAiApi::Responses);
+        assert_eq!(openai_api(&typed), Some(OpenAiApi::Responses));
+        assert_eq!(responses_url(&typed), "http://127.0.0.1:8787/v1/responses");
+        let mut chat = Preset::OpenAi.profile();
+        chat.openai_api = Some(OpenAiApi::ChatCompletions);
+        assert_eq!(openai_api(&chat), Some(OpenAiApi::ChatCompletions));
+        assert_eq!(
+            openai_api(&Preset::ChatGpt.profile()),
+            Some(OpenAiApi::Responses)
+        );
+        assert_eq!(
+            openai_api(&Preset::Groq.profile()),
+            Some(OpenAiApi::ChatCompletions)
+        );
+        assert_eq!(openai_api(&Preset::Anthropic.profile()), None);
     }
 
     #[test]

@@ -906,13 +906,7 @@ fn bound_to(decl: &Declaration, values: Vec<(String, serde_json::Value)>) -> Act
     if decl.kind == crate::ActionKind::Undoable {
         spec = spec.reversible();
     }
-    finish_bound(
-        spec,
-        decl.field,
-        decl.description.as_ref(),
-        decl.destructive,
-        decl.result.as_ref(),
-    )
+    finish_bound(spec, decl)
 }
 
 /// The parameters of `params` that `values` leaves to the caller.
@@ -928,25 +922,27 @@ fn unbound_params(
 }
 
 /// What a bound spec carries over from its declaration.
-fn finish_bound(
-    mut spec: ActionSpec,
-    field: Option<&'static str>,
-    description: Option<&String>,
-    destructive: bool,
-    result: Option<&tilo_actions::ResultSpec>,
-) -> ActionSpec {
-    if let Some(field) = field {
+fn finish_bound(mut spec: ActionSpec, decl: &Declaration) -> ActionSpec {
+    if let Some(field) = decl.field {
         spec = spec.below_field(field);
     }
-    if let Some(description) = description {
+    if let Some(description) = &decl.description {
         spec = spec.with_description(description.clone());
     }
-    if destructive {
+    if decl.destructive {
         spec = spec.destructive();
     }
     // An item verb that answers answers on its item too.
-    if let Some(result) = result {
+    if let Some(result) = &decl.result {
         spec.contract.result = result.clone();
+    }
+    // And is offered to whom it is declared for, housekept and undone as
+    // declared: `#[action(audience = "people", item = ...)]` is no
+    // agent's on its item either.
+    for tag in &decl.tags {
+        if !spec.contract.tags.contains(tag) {
+            spec.contract.tags.push(tag.clone());
+        }
     }
     spec
 }

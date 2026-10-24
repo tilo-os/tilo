@@ -15,7 +15,10 @@ COPY \
     /usr/lib/systemd/system-generators/
 COPY os/usr/lib/dracut/modules.d/91tilo-rollback /usr/lib/dracut/modules.d/91tilo-rollback
 COPY os/usr/lib/dracut/modules.d/92tilo-sibling-unlock /usr/lib/dracut/modules.d/92tilo-sibling-unlock
+# tilo-authd, which owns every person's record and does every unwrap, sits
+# with the rollback units: both hold the machine's TPM and LUKS2 secrets.
 COPY \
+    os/usr/lib/systemd/system/tilo-authd.service \
     os/usr/lib/systemd/system/tilo-rollback-confirm.service \
     os/usr/lib/systemd/system/tilo-rollback-confirm.timer \
     os/usr/lib/systemd/system/tilo-rollback-harden.service \

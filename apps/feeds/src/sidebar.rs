@@ -63,6 +63,11 @@ impl Counted for NavItem {
     }
 }
 
+/// The sidebar's section of subscriptions and folders.
+const FEEDS_SECTION: &str = "feeds";
+/// Its heading's action, which opens the New folder dialog.
+const NEW_FOLDER: &str = "new-folder";
+
 fn feed_icon(kind: FeedKind) -> Icon {
     match kind {
         // A Gemini capsule is a page of gemtext.
@@ -125,9 +130,15 @@ impl Core {
                 .into_iter()
                 .map(|f| feed_item(f.id, &f.shown_title(), f.kind)),
         );
-        if !feeds.is_empty() {
-            sections.push(NavSection::new("feeds", "Feeds", feeds));
-        }
+        // The subscriptions are always a section: its heading holds New
+        // folder, before there is anything to file too.
+        sections.push(
+            NavSection::new(FEEDS_SECTION, "Feeds", feeds).trailing_action(NavAction::new(
+                NEW_FOLDER,
+                Icon::FolderPlus,
+                "New folder",
+            )),
+        );
 
         let tags: Vec<NavItem> = store
             .tags_limited(crate::resource::MAX_TAG_PLACES)
@@ -160,9 +171,18 @@ impl SidebarNav {
             let menu = Rc::clone(requests);
             let fold = Rc::clone(requests);
             let follow = Rc::clone(core);
+            let section_action = Rc::clone(requests);
             NavList::new(Vec::new())
                 .with_id("feeds.sidebar")
                 .with_accessible_name("Subscriptions")
+                // Headings and a New folder are what a growing library
+                // needs: the sidebar is a list from the start, never a rail.
+                .with_headings()
+                .on_section_action(move |section, action| {
+                    if section == FEEDS_SECTION && action == NEW_FOLDER {
+                        section_action.borrow_mut().push(Request::NewFolder);
+                    }
+                })
                 .on_select(move |id| {
                     if let Some(filter) = filter_of(&id) {
                         show.borrow_mut().push(Request::Show(filter));

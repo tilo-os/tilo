@@ -87,12 +87,20 @@ pub fn watch_entries(dir: &std::path::Path) -> Result<crate::Watch, crate::FsErr
     crate::disk_watch::watch_entries(dir)
 }
 
+/// The extended attribute a FUSE filesystem answers on its directories when
+/// it tells this kernel of every change it did not receive through it (a
+/// peer's edit, say), so that inotify sees those too: Tilo's collaborative
+/// filesystem does. Its daemon also sets it, with a value only it knows, to
+/// raise the inotify event on a directory whose entries changed.
+pub const CHANGE_SIGNAL_XATTR: &str = "user.tilo.change-signal";
+
 /// Whether a watch on the native directory `dir` ([`watch_entries`]) sees
-/// every change to its entries. Not on a FUSE or network mount (a projected
-/// collaborative filesystem, virtiofs, NFS, SMB, 9P, Ceph, AFS), whose
-/// entries can change without passing through this kernel, and not where
-/// the filesystem's type cannot be told: there a watch reports local edits
-/// only, and whoever lists `dir` must still read it again for the rest.
+/// every change to its entries. Not on a FUSE or network mount (virtiofs,
+/// NFS, SMB, 9P, Ceph, AFS), whose entries can change without passing
+/// through this kernel, unless it is a FUSE mount answering
+/// [`CHANGE_SIGNAL_XATTR`]; and not where the filesystem's type cannot be
+/// told: there a watch reports local edits only, and whoever lists `dir`
+/// must still read it again for the rest.
 #[cfg(all(
     feature = "watch",
     not(all(target_arch = "wasm32", target_os = "unknown"))

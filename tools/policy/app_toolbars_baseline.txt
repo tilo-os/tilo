@@ -1,17 +1,9 @@
 # Apps that still draw a toolbar row of their own under the window bar
 # (tools/policy/check_app_toolbars.py). Counts only shrink.
-header-row 1 apps/git-client/src/app.rs
-header-row 1 apps/video-editor/src/app/layout.rs
-history-in-row 4 apps/git-client/src/app.rs
 history-in-row 2 apps/maps/src/app.rs
 history-in-row 2 apps/typst-editor/src/chrome.rs
-history-in-row 2 apps/video-editor/src/app.rs
-history-in-row 1 apps/video-editor/src/app/layout.rs
-history-in-row 2 apps/video-player/src/app.rs
-nav-header-actions 1 apps/feeds/src/app.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/cloud_browse.rs
 nav-header-actions 1 apps/file-explorer/src/files_app/window_bar.rs
-nav-header-actions 2 apps/logs/src/app.rs
 nav-header-actions 1 apps/notes/src/app/window_bar.rs
 nav-header-actions 1 apps/passwords/src/window.rs
 # A column header holding what the bar has no slot for keeps the shell's
@@ -20,16 +12,9 @@ nav-header-leading 1 apps/canvas/src/lib.rs
 # Search and find entries of an app's own, and a subpage Back of its own; the
 # window bar's search and navigation take them over batch by batch.
 own-back 1 apps/print-centre/src/surface/views.rs
-own-search 1 apps/api-tester/src/app.rs
 own-search 1 apps/browser/src/browser_widget/library.rs
 own-search 1 apps/browser/src/browser_widget/toolbar.rs
 own-search 1 apps/browser/src/daily_controls.rs
-own-search 1 apps/chip-design/src/view.rs
-own-search 1 apps/clocks/src/app.rs
-own-search 2 apps/containers/src/view.rs
-own-search 2 apps/db-client/src/app.rs
-own-search 1 apps/feeds/src/app.rs
-own-search 1 apps/logs/src/app.rs
 own-search 1 apps/maps/src/offline_panel.rs
 own-search 1 apps/notes/src/app.rs
 own-search 1 apps/passwords/src/window.rs
@@ -37,7 +22,6 @@ own-search 2 apps/sheets/src/app.rs
 own-search 1 apps/store/src/app.rs
 own-search 1 apps/terminal/src/view.rs
 own-search 2 apps/word-processor/src/find_bar.rs
-toolbar-row 1 apps/git-client/src/app.rs
 # The composer's formatting strip, inside the New message sheet over the mailbox.
 toolbar-row 1 apps/mail/src/compose.rs
 toolbar-row 1 apps/typst-editor/src/chrome.rs
@@ -45,7 +29,6 @@ toolbar-row 1 apps/typst-editor/src/chrome.rs
 # its own; sort and Hide finished become the window bar's views and menu items.
 toolbar-band 1 apps/ebook/src/app.rs
 toolbar-band 1 apps/typst-editor/src/app.rs
-toolbar-band 1 apps/video-editor/src/app.rs
 # The browser's address row; the hairline under it is the page's edge.
 toolbar-band 1 apps/browser/src/browser_widget.rs
 # Not toolbar rows, only the band's hairline borrowed: a panel's heading
@@ -54,8 +37,5 @@ toolbar-band 1 apps/browser/src/browser_widget.rs
 toolbar-band 1 apps/notes/src/main_panel.rs
 toolbar-band 1 apps/photos/src/app/chrome.rs
 toolbar-band 1 apps/word-processor/src/ruler.rs
-window-header 1 apps/git-client/src/app.rs
 window-header 1 apps/maps/src/app.rs
 window-header 1 apps/typst-editor/src/app.rs
-window-header 1 apps/video-editor/src/app.rs
-window-header 1 apps/video-player/src/app.rs

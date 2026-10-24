@@ -58,7 +58,7 @@ p90 = 4521984   # 4,447,232 (osk)
 # furthest (x86_64 5,505,024 -> 1,179,648 and 5,963,776 -> 1,572,864 B).
 
 [apps."so.tilo.agent"]
-x86_64 = 1179648
+x86_64 = 1114112
 aarch64 = 1048576
 
 [apps."so.tilo.api-tester"]
@@ -66,12 +66,12 @@ x86_64 = 1638400
 aarch64 = 1572864
 
 [apps."so.tilo.backups"]
-x86_64 = 1376256
-aarch64 = 1310720
+x86_64 = 1310720
+aarch64 = 1245184
 
 [apps."so.tilo.browser"]
-x86_64 = 1966080
-aarch64 = 1835008
+x86_64 = 2031616
+aarch64 = 1900544
 
 [apps."so.tilo.calculator"]
 x86_64 = 786432
@@ -86,36 +86,36 @@ x86_64 = 1966080
 aarch64 = 1835008
 
 [apps."so.tilo.canvas"]
-x86_64 = 4784128
-aarch64 = 4259840
+x86_64 = 4653056
+aarch64 = 4194304
 
 [apps."so.tilo.chat"]
-x86_64 = 3670016
-aarch64 = 3342336
+x86_64 = 3473408
+aarch64 = 3145728
 
 [apps."so.tilo.chip-design"]
-x86_64 = 1966080
+x86_64 = 1900544
 aarch64 = 1769472
 
 [apps."so.tilo.clocks"]
-x86_64 = 1441792
-aarch64 = 1376256
+x86_64 = 1310720
+aarch64 = 1245184
 
 [apps."so.tilo.code-editor"]
 x86_64 = 2686976
 aarch64 = 2490368
 
 [apps."so.tilo.contacts"]
-x86_64 = 2031616
-aarch64 = 1835008
+x86_64 = 1769472
+aarch64 = 1638400
 
 [apps."so.tilo.containers"]
-x86_64 = 1703936
-aarch64 = 1572864
+x86_64 = 1310720
+aarch64 = 1310720
 
 [apps."so.tilo.db-client"]
-x86_64 = 4653056
-aarch64 = 4325376
+x86_64 = 4259840
+aarch64 = 4063232
 
 [apps."so.tilo.diffmerge"]
 x86_64 = 1048576
@@ -138,36 +138,36 @@ x86_64 = 1966080
 aarch64 = 1769472
 
 [apps."so.tilo.feeds"]
-x86_64 = 1769472
-aarch64 = 1638400
+x86_64 = 1638400
+aarch64 = 1572864
 
 [apps."so.tilo.file-explorer"]
-x86_64 = 4194304
-aarch64 = 3932160
+x86_64 = 3211264
+aarch64 = 2949120
 
 [apps."so.tilo.firewall"]
-x86_64 = 1441792
-aarch64 = 1376256
+x86_64 = 1179648
+aarch64 = 1114112
 
 [apps."so.tilo.git-client"]
-x86_64 = 4063232
-aarch64 = 3735552
+x86_64 = 3997696
+aarch64 = 3670016
 
 [apps."so.tilo.hex-editor"]
 x86_64 = 851968
 aarch64 = 786432
 
 [apps."so.tilo.imager"]
-x86_64 = 4259840
-aarch64 = 3866624
+x86_64 = 2686976
+aarch64 = 2555904
 
 [apps."so.tilo.logs"]
-x86_64 = 983040
-aarch64 = 917504
+x86_64 = 851968
+aarch64 = 851968
 
 [apps."so.tilo.mail"]
-x86_64 = 3276800
-aarch64 = 3014656
+x86_64 = 2818048
+aarch64 = 2621440
 
 [apps."so.tilo.maps"]
 x86_64 = 1441792
@@ -177,33 +177,29 @@ aarch64 = 1310720
 x86_64 = 1310720
 aarch64 = 1245184
 
-# Initial ceiling uses web-search: both are portable, host-backed SDK UIs
-# packaged as thin apps against the shared runtime, without a bundled service.
-# Provider administration has no search engine payload. Measure its first
-# release packages on both architectures and ratchet these ceilings down.
 [apps."so.tilo.model-providers"]
-x86_64 = 2097152
-aarch64 = 1966080
+x86_64 = 917504
+aarch64 = 917504
 
 [apps."so.tilo.monitor"]
 x86_64 = 1245184
 aarch64 = 1179648
 
 [apps."so.tilo.music"]
-x86_64 = 4587520
-aarch64 = 4128768
+x86_64 = 3145728
+aarch64 = 2883584
 
 [apps."so.tilo.notes"]
-x86_64 = 2293760
-aarch64 = 2097152
+x86_64 = 2162688
+aarch64 = 2031616
 
 [apps."so.tilo.osk"]
-x86_64 = 4259840
-aarch64 = 4194304
+x86_64 = 3801088
+aarch64 = 3735552
 
 [apps."so.tilo.passwords"]
-x86_64 = 1376256
-aarch64 = 1310720
+x86_64 = 1245184
+aarch64 = 1179648
 
 [apps."so.tilo.pdf-viewer"]
 x86_64 = 2293760
@@ -213,22 +209,21 @@ aarch64 = 2097152
 x86_64 = 2490368
 aarch64 = 2228224
 
-# New, not measured yet: the KPI's max target until the first measurement.
 [apps."so.tilo.poker"]
-x86_64 = 6000000
-aarch64 = 6000000
+x86_64 = 786432
+aarch64 = 720896
 
 [apps."so.tilo.print-centre"]
-x86_64 = 1245184
-aarch64 = 1179648
+x86_64 = 1114112
+aarch64 = 1048576
 
 [apps."so.tilo.publisher"]
-x86_64 = 851968
+x86_64 = 786432
 aarch64 = 786432
 
 [apps."so.tilo.remote"]
-x86_64 = 3145728
-aarch64 = 2818048
+x86_64 = 2883584
+aarch64 = 2555904
 
 [apps."so.tilo.scratchpad"]
 x86_64 = 524288
@@ -243,29 +238,28 @@ x86_64 = 1638400
 aarch64 = 1507328
 
 [apps."so.tilo.shortcuts"]
-x86_64 = 2097152
-aarch64 = 1900544
+x86_64 = 1966080
+aarch64 = 1835008
 
 [apps."so.tilo.slides"]
-x86_64 = 2031616
-aarch64 = 1900544
+x86_64 = 1966080
+aarch64 = 1835008
 
 [apps."so.tilo.snippets"]
-x86_64 = 1245184
-aarch64 = 1179648
+x86_64 = 1114112
+aarch64 = 1048576
 
 [apps."so.tilo.speed-test"]
 x86_64 = 786432
 aarch64 = 720896
 
 [apps."so.tilo.store"]
-x86_64 = 3145728
-aarch64 = 2883584
+x86_64 = 2883584
+aarch64 = 2686976
 
-# New, not measured yet: the KPI's max target until the first measurement.
 [apps."so.tilo.tasks"]
-x86_64 = 6000000
-aarch64 = 6000000
+x86_64 = 1769472
+aarch64 = 1638400
 
 [apps."so.tilo.terminal"]
 x86_64 = 1507328
@@ -273,19 +267,19 @@ aarch64 = 1310720
 
 [apps."so.tilo.themes"]
 x86_64 = 1048576
-aarch64 = 1048576
+aarch64 = 983040
 
 [apps."so.tilo.thumbnails"]
 x86_64 = 65536
 aarch64 = 65536
 
 [apps."so.tilo.totp"]
-x86_64 = 1638400
-aarch64 = 1572864
+x86_64 = 1245184
+aarch64 = 1245184
 
 [apps."so.tilo.tube"]
-x86_64 = 3473408
-aarch64 = 3211264
+x86_64 = 2097152
+aarch64 = 1900544
 
 [apps."so.tilo.typst-editor"]
 x86_64 = 983040
@@ -301,20 +295,20 @@ aarch64 = 917504
 
 [apps."so.tilo.vpn"]
 x86_64 = 1048576
-aarch64 = 1048576
+aarch64 = 983040
 
 [apps."so.tilo.weather"]
-x86_64 = 1179648
-aarch64 = 1114112
+x86_64 = 1048576
+aarch64 = 983040
 
 [apps."so.tilo.web-search"]
-x86_64 = 2097152
-aarch64 = 1966080
+x86_64 = 983040
+aarch64 = 851968
 
 [apps."so.tilo.windows"]
 x86_64 = 1376256
 aarch64 = 1310720
 
 [apps."so.tilo.word-processor"]
-x86_64 = 2293760
-aarch64 = 2031616
+x86_64 = 2097152
+aarch64 = 1900544

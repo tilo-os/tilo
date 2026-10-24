@@ -854,12 +854,15 @@ mod tests {
         Paint {
             #[param("The colour", choices = ["red", "green"])]
             colour: String,
-            #[param(choices = SHADES)]
+            // `Self` in an attribute reaches the rows' static as the enum.
+            #[param(choices = Self::SHADES)]
             shade: Option<String>,
         },
     }
 
-    const SHADES: [&str; 2] = ["light", "dark"];
+    impl Sample {
+        const SHADES: [&str; 2] = ["light", "dark"];
+    }
 
     /// A content transform declared offloadable.
     #[derive(Clone, Debug, PartialEq, Effect)]

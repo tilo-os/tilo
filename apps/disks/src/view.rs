@@ -14,13 +14,14 @@ use ui::icons::Icon;
 use ui::text_render::TextKind;
 use ui::tokens::{Rhythm, TextRole};
 use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use ui::widget::toggle_group::Segment;
 use ui::widget::{
     Chip, ChipStyle, ContextMenuArea, Element, EmptyState, ListRow, MenuEntry, NavItem, NavList,
-    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, SegmentedStyle,
-    Skeleton, StatGroup, StatTile, Text, ToggleGroup, Tone,
+    NavSection, Property, PropertyList, Row, RowStatus, Scrollable, Section, Skeleton, StatGroup,
+    StatTile, Text, Tone,
 };
-use ui::window_toolbar::{LocationSegment, ToolbarAction, ToolbarLocation, WindowToolbar};
+use ui::window_toolbar::{
+    LocationSegment, ToolbarAction, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
+};
 
 use crate::app::{ActionKind, Tab};
 use crate::map::{MapEntry, PartitionMap};
@@ -37,7 +38,6 @@ pub(crate) enum Intent {
     SelectDrive(usize),
     /// A partition of the selected drive, or `None` for the whole disk.
     SelectPartition(Option<usize>),
-    SetTab(Tab),
     /// An operation on partition `partition` of the selected drive (`None`:
     /// the whole drive), from that row's context menu.
     RunOn {
@@ -92,8 +92,17 @@ fn action_icon(action: ActionKind) -> Icon {
 fn action_name(action: ActionKind, offer: Offer) -> String {
     match offer {
         Offer::Unavailable(reason) => format!("{}: unavailable. {reason}", action.title()),
-        Offer::Available | Offer::Hidden => action.describe().to_owned(),
+        // A glyph in the row is named by what it does; a menu entry by its
+        // verb.
+        Offer::Available | Offer::Hidden if in_row(action) => action.describe().to_owned(),
+        Offer::Available | Offer::Hidden => action.label().to_owned(),
     }
+}
+
+/// Ejecting a removable drive is the one operation a glyph says plainly;
+/// the others are named in the window bar's menu.
+fn in_row(action: ActionKind) -> bool {
+    action == ActionKind::Eject
 }
 
 /// The window bar's slots: the shell's own (`shell`), where the window is
@@ -102,6 +111,7 @@ fn action_name(action: ActionKind, offer: Offer) -> String {
 pub(crate) fn window_toolbar(
     mut shell: WindowToolbar,
     selection: Option<(Location, Vec<(ActionKind, Offer)>)>,
+    tab: Tab,
 ) -> WindowToolbar {
     let (location, offers) = selection.unwrap_or_default();
     let mut actions: Vec<ToolbarAction> = offers
@@ -111,6 +121,7 @@ pub(crate) fn window_toolbar(
             icon: action_icon(action).name().to_owned(),
             name: action_name(action, offer),
             enabled: offer.is_available(),
+            menu: !in_row(action),
             ..ToolbarAction::default()
         })
         .collect();
@@ -120,11 +131,26 @@ pub(crate) fn window_toolbar(
         "Rescan drives",
     ));
     ui::widget::NavShell::push_window_actions(&mut shell, actions);
+    shell.views = (!location.drive.is_empty()).then(|| ToolbarViews {
+        name: "View".to_owned(),
+        choices: Tab::all()
+            .into_iter()
+            .map(|tab| ToolbarView {
+                id: tab.view_id().to_owned(),
+                label: tab.title().to_owned(),
+            })
+            .collect(),
+        chosen: tab.view_id().to_owned(),
+    });
+    // Where the shell's Back stands, it is the one way back: the location
+    // names where the window is and offers no second path up.
+    // The shell's slots lead with nothing but its Back.
+    let backs = !shell.leading.is_empty();
     shell.location = (!location.drive.is_empty()).then(|| ToolbarLocation {
         label: location.title().to_owned(),
         // A partition is a level under its drive: the path goes back up.
         segments: match &location.partition {
-            Some(partition) => vec![
+            Some(partition) if !backs => vec![
                 LocationSegment {
                     label: location.drive.clone(),
                     value: WHOLE_DRIVE.to_owned(),
@@ -134,7 +160,7 @@ pub(crate) fn window_toolbar(
                     value: "partition".to_owned(),
                 },
             ],
-            None => Vec::new(),
+            _ => Vec::new(),
         },
         ..ToolbarLocation::default()
     });
@@ -247,7 +273,7 @@ pub(crate) fn empty_state(unreadable: Option<&str>, intents: &Intents) -> Elemen
 /// The page while this machine's storage is being read: the detail page's
 /// own layout, with the drive's state saying so and the sections' contents
 /// standing in, so nothing moves when the drives arrive.
-pub(crate) fn loading(tab: Tab, intents: &Intents, offset: &Rc<Cell<(f32, f32)>>) -> Element {
+pub(crate) fn loading(offset: &Rc<Cell<(f32, f32)>>) -> Element {
     let sections = ui::widget::Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -266,15 +292,13 @@ pub(crate) fn loading(tab: Tab, intents: &Intents, offset: &Rc<Cell<(f32, f32)>>
         )));
     page(
         Row::new().push(Box::new(Chip::new("Reading drives…"))),
-        tab,
         Box::new(sections),
-        intents,
         offset,
     )
 }
 
-/// The detail of the selected drive: its state at a glance and one tab of
-/// detail. Its operations are in the window bar (or the content header) and
+/// The detail of the selected drive: its state at a glance and the view
+/// the window bar chose. Its operations are in the window bar (or the content header) and
 /// each row's context menu.
 pub(crate) fn detail(
     model: &DetailModel<'_>,
@@ -287,29 +311,17 @@ pub(crate) fn detail(
         Tab::Smart => health(drive),
         Tab::Partitions => partitions(model, intents),
     };
-    page(badges(drive), model.tab, content, intents, offset)
+    page(badges(drive), content, offset)
 }
 
-/// The detail page's layout: the drive's state at a glance, then the tabs
-/// over `content`. The drive's state and the tabbed detail are groups of the
-/// page, a group apart; a tab sits a sibling step over its content.
-fn page(
-    state: Row,
-    tab: Tab,
-    content: Element,
-    intents: &Intents,
-    offset: &Rc<Cell<(f32, f32)>>,
-) -> Element {
-    let tabbed = ui::widget::Column::new()
-        .with_intrinsic_height()
-        .with_no_padding()
-        .push(Box::new(tabs(tab, intents)))
-        .push(content);
+/// The detail page's layout: the drive's state at a glance, then the view
+/// the window bar chose (`content`), a group apart.
+fn page(state: Row, content: Element, offset: &Rc<Cell<(f32, f32)>>) -> Element {
     let page = ui::widget::Column::new()
         .with_intrinsic_height()
         .with_rhythm(Rhythm::Group)
         .push(Box::new(state))
-        .push(Box::new(tabbed));
+        .push(content);
     Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
@@ -344,22 +356,6 @@ fn badges(drive: &Drive) -> Row {
         row = row.push(Box::new(Chip::new("Removable")));
     }
     row
-}
-
-fn tabs(selected: Tab, intents: &Intents) -> ToggleGroup {
-    let intents = intents.clone();
-    let all = Tab::all();
-    let index = all.iter().position(|tab| *tab == selected).unwrap_or(0);
-    ToggleGroup::new(
-        all.iter().map(|tab| Segment::new(tab.title())).collect(),
-        index,
-    )
-    .with_style(SegmentedStyle::Tabs)
-    .on_view("disks-tabs", move |i| {
-        if let Some(tab) = Tab::all().get(i) {
-            intents.push(Intent::SetTab(*tab));
-        }
-    })
 }
 
 fn overview(model: &DetailModel<'_>, intents: &Intents) -> Element {
@@ -769,6 +765,7 @@ mod tests {
         let bar = window_toolbar(
             WindowToolbar::default(),
             Some((location, offer::shown(&drive, None))),
+            Tab::Overview,
         );
         let format = bar
             .actions
@@ -776,6 +773,10 @@ mod tests {
             .find(|action| action.id == ActionKind::Format.key())
             .expect("Format is shown");
         assert!(!format.enabled);
+        assert!(
+            format.menu,
+            "formatting is named in the bar's menu, not a glyph"
+        );
         assert!(
             format.name.contains(crate::model::HOLDS_SYSTEM),
             "{}",
@@ -794,12 +795,37 @@ mod tests {
             drive: "SAMSUNG".into(),
             partition: Some("home".into()),
         };
-        let bar = window_toolbar(WindowToolbar::default(), Some((location, Vec::new())));
+        let bar = window_toolbar(
+            WindowToolbar::default(),
+            Some((location, Vec::new())),
+            Tab::Overview,
+        );
         let location = bar.location.expect("a location");
         assert_eq!(location.label, "home");
         let levels: Vec<_> = location.segments.iter().map(|s| s.label.as_str()).collect();
         assert_eq!(levels, ["SAMSUNG", "home"]);
         assert_eq!(location.segments[0].value, WHOLE_DRIVE);
+
+        // Where the shell shows Back (a narrow window), that is the one way
+        // back: the location names the partition alone.
+        let mut shell = WindowToolbar::default();
+        shell
+            .leading
+            .push(ToolbarAction::new("back", "arrow-left", "Back"));
+        let bar = window_toolbar(
+            shell,
+            Some((
+                Location {
+                    drive: "SAMSUNG".into(),
+                    partition: Some("home".into()),
+                },
+                Vec::new(),
+            )),
+            Tab::Overview,
+        );
+        let location = bar.location.expect("a location");
+        assert_eq!(location.label, "home");
+        assert!(location.segments.is_empty(), "{:?}", location.segments);
     }
 
     /// A partition row says what the partition is for and its state, in

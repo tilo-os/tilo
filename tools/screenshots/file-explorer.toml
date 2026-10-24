@@ -1,56 +1,17 @@
-# Files: a home folder with documents, through the folder's actions (in the
-# run's own scratch home).
+# Files: the made-up home of the app's own scenarios (never the home of the
+# machine the shots run on).
 
 [[situation]]
 name = "home-folder"
-title = "A home folder with folders and notes"
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "new-folder-here", args = { name = "Projects" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "new-folder-here", args = { name = "Receipts 2026" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "new-folder-here", args = { name = "Travel" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Shopping list.md", text = "- Oat milk\n- Sourdough loaf\n- Lemons\n" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Garden plan.txt", text = "Bed 1: tomatoes, basil\nBed 2: beans, courgettes\nBed 3: lettuce, radishes\n" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Budget.csv", text = "Category,Planned,Spent\nRent,1250,1250\nGroceries,420,386.40\n" } }
+title = "A home folder with its places"
+scenario = "places"
 
 [[situation]]
 name = "grid"
-title = "The same folder as a grid"
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "new-folder-here", args = { name = "Photos from Lisbon" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "new-folder-here", args = { name = "Recipes" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Packing list.md", text = "- Passport\n- Light jacket\n- Charger\n" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Itinerary.txt", text = "Fri 18:40 land\nSat Alfama, LX Factory\nSun Belém\n" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "grid" }
+title = "A folder as a grid"
+scenario = "grid"
 
 [[situation]]
-name = "hidden-files"
-title = "Hidden files shown"
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = ".profile", text = "export EDITOR=nano\n" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "write-file-here", args = { name = "Notes.md", text = "# Notes\n" } }
-
-[[situation.steps]]
-invoke = { resource = "files.folder", action = "toggle-hidden" }
+name = "selection"
+title = "Files selected, with their actions"
+scenario = "selection-actions"

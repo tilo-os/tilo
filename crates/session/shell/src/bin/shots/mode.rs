@@ -85,6 +85,40 @@ pub mod offscreen {
             }
             println!("  wrote {}", path.display());
         }
+
+        fn film(
+            &mut self,
+            _driver: &mut ShellDriver,
+            prefix: &str,
+            frames: Vec<scenario::film::FilmFrame>,
+        ) {
+            let mut described = Vec::with_capacity(frames.len());
+            for frame in frames {
+                let name = frame
+                    .index
+                    .map_or_else(|| "before".to_owned(), |i| format!("{i:03}"));
+                let path = self.dir.join(format!("{prefix}-{name}.png"));
+                self.renderer.set_backdrop(frame.backdrop);
+                self.renderer
+                    .render_png(&frame.scene, Color::TRANSPARENT, &path);
+                described.push(serde_json::json!({
+                    "index": frame.index,
+                    "ms": frame.index.map(|_| frame.at.as_secs_f64() * 1000.0),
+                    "late_ms": frame.late.as_secs_f64() * 1000.0,
+                    "animation_owners": frame.owners,
+                }));
+            }
+            let count = described.len();
+            let path = self.dir.join(format!("{prefix}.json"));
+            let json = serde_json::json!({ "hz": 60, "frames": described });
+            match serde_json::to_vec_pretty(&json) {
+                Ok(bytes) => match std::fs::write(&path, bytes) {
+                    Ok(()) => println!("  wrote {} ({count} frames)", path.display()),
+                    Err(error) => eprintln!("shots: write {}: {error}", path.display()),
+                },
+                Err(error) => eprintln!("shots: film {prefix}: {error}"),
+            }
+        }
     }
 
     /// Run a scenario through the offscreen renderer. When `per_frame`

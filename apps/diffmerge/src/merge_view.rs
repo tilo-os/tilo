@@ -716,7 +716,7 @@ impl MergeView {
                 ctx.text,
                 theme,
                 &SegmentedFace::new(&rects, &labels, selected)
-                    .style(SegmentedStyle::Segmented)
+                    .style(SegmentedStyle::Tabs)
                     .control_size(ControlSize::Small)
                     .hovered(rects.iter().position(|rect| rect.contains(self.cursor))),
             );

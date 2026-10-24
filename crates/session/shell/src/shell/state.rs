@@ -2551,6 +2551,7 @@ impl WorkspaceTree {
                                 kind: AppKind::Other("Notes".into()),
                                 label: "Notes".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: tab_files,
@@ -2559,6 +2560,7 @@ impl WorkspaceTree {
                                 kind: AppKind::FileExplorer,
                                 label: "Files".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: tab_terminal,
@@ -2567,6 +2569,7 @@ impl WorkspaceTree {
                                 kind: AppKind::Terminal,
                                 label: "Terminal".into(),
                             },
+                            app_title: None,
                         },
                         Tab {
                             id: tab_word,
@@ -2575,6 +2578,7 @@ impl WorkspaceTree {
                                 kind: AppKind::Other("Word".into()),
                                 label: "Document".into(),
                             },
+                            app_title: None,
                         },
                     ],
                     active_tab: tab_notes,
@@ -3608,6 +3612,7 @@ impl WorkspaceTree {
                     id: app.id.0,
                     title,
                     tile: tile_content,
+                    app_title: None,
                 };
                 if !existing_continuation_tabs.contains(&app.id.0) {
                     inserted_continuation_tabs.push(app.id.0);
@@ -5071,6 +5076,7 @@ mod active_group_tests {
                     kind: AppKind::Terminal,
                     label: title.into(),
                 },
+                app_title: None,
             };
             tree.desktop.workspaces[0].strips[0].window_groups[0].tabs = vec![
                 make_tab(10, "Notes"),
@@ -5152,6 +5158,7 @@ mod active_group_tests {
                     kind: AppKind::Terminal,
                     label: "Notes".into(),
                 },
+                app_title: None,
             });
             group.active_tab = before;
             let invalid = [ui::widget::GroupTopology {
@@ -5191,6 +5198,7 @@ mod active_group_tests {
                     kind: AppKind::Terminal,
                     label: name.into(),
                 },
+                app_title: None,
             };
             {
                 let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
@@ -5306,6 +5314,7 @@ mod active_group_tests {
                         kind: AppKind::Terminal,
                         label: format!("Group {}", group.id),
                     },
+                    app_title: None,
                 });
                 group.active_tab = tab_id;
             }
@@ -5358,6 +5367,7 @@ mod active_group_tests {
                         kind: AppKind::Terminal,
                         label: format!("Group {}", group.id),
                     },
+                    app_title: None,
                 });
                 group.active_tab = tab_id;
             }

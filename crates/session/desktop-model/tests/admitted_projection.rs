@@ -45,6 +45,7 @@ fn strip(salt: u64, counter: u64, label: &str) -> Strip {
                     kind: AppKind::Other("so.tilo.notes".into()),
                     label: label.into(),
                 },
+                app_title: None,
             }],
         }],
     }
@@ -65,6 +66,7 @@ fn admitted_projection_keeps_local_view_and_unpublished_content_but_removes_fore
         id: (2 << 48) | 0xd,
         title: "Second".into(),
         tile,
+        app_title: None,
     });
     let mut doc = AutoCommit::new();
     project(&mut doc, &[remote], 2, None);

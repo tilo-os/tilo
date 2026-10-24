@@ -1982,15 +1982,11 @@ impl PdfApp {
             match ev {
                 PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
                 PageSidebarEvent::Reorder { from, to } => {
-                    let Some(id) = self.resource_page_ids.get(from).cloned() else {
+                    let Some(action) =
+                        crate::actions::reorder_page_plan_action(&self.resource_page_ids, from, to)
+                    else {
                         continue;
                     };
-                    let after = if to == 0 {
-                        None
-                    } else {
-                        self.resource_page_ids.get(to - 1).map(String::as_str)
-                    };
-                    let action = crate::actions::move_page_plan_action(&id, after);
                     self.perform_action(state, action);
                 }
                 PageSidebarEvent::Duplicate(i) => {
@@ -5770,15 +5766,26 @@ mod tests {
     fn settled(
         mut app: ui::framework::testing::TestApp<crate::PdfViewerShell>,
     ) -> ui::framework::testing::TestApp<crate::PdfViewerShell> {
+        settle_document(&mut app);
+        app
+    }
+
+    /// Run `app`'s frames until the document it shows has loaded and its
+    /// record holds what opening it adds: the PDF worker answers an open on
+    /// its own time, and a further open waits for it.
+    fn settle_document(app: &mut ui::framework::testing::TestApp<crate::PdfViewerShell>) {
         let deadline = tilo_test_env::hang_deadline();
         loop {
             let shown = app
                 .with_surface::<PdfApp, _>(|pdf| {
-                    pdf.has_document && pdf.pending_open.is_none() && !pdf.seed_pending
+                    pdf.has_document
+                        && pdf.pending_open.is_none()
+                        && pdf.pending_reopen.is_none()
+                        && !pdf.seed_pending
                 })
                 .unwrap_or(false);
             if shown && app.state().imported_source().is_some() {
-                return app;
+                return;
             }
             assert!(
                 ui::time::now() < deadline,
@@ -6017,6 +6024,7 @@ mod tests {
 
             app.effect_confirmed(&open(&b))
                 .expect("the app opens another document");
+            settle_document(&mut app);
             app.harness().relayout();
             assert_ne!(
                 app.record(),
@@ -6031,6 +6039,7 @@ mod tests {
             let b_record = app.record().clone();
 
             app.effect_confirmed(&open(&a)).expect("and back");
+            settle_document(&mut app);
             app.harness().relayout();
             assert_eq!(app.record(), &a_record);
             assert_eq!(app.state().annotations.len(), 1, "a.pdf kept its markup");

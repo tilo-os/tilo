@@ -28,6 +28,7 @@ fn tab(id: u64, title: &str, app_id: &str) -> Tab {
             label: title.into(),
             note: String::new(),
         },
+        app_title: None,
     }
 }
 

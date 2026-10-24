@@ -7,7 +7,7 @@
 //! |---|---|
 //! | [`Appear`] / [`Appearing`] | popovers, menus, dropdowns, tooltips, sheets, dialogs coming from their origin and going back |
 //! | [`Drill`] / [`DrillDepth`] | drill-in and back inside a panel; whole-column pushes |
-//! | [`Disclose`] / [`Extent`] | expand and collapse; a panel's height following its content |
+//! | [`Disclose`] / [`Extent`] / [`Disclosure`] | expand and collapse; a panel's height following its content; a find bar or banner coming and going |
 //! | [`PanelSlide`] | sidebars, drawers, the inspector |
 //! | [`CrossFade`] | swapping content in place |
 //! | [`ListChange`] | rows arriving, leaving and changing places |
@@ -44,6 +44,7 @@
 
 mod appearing;
 mod clock;
+mod disclosure;
 mod named;
 mod pose;
 mod presence;
@@ -58,6 +59,7 @@ mod tests;
 pub use appearing::Appearing;
 pub(crate) use clock::pin_frame;
 pub use clock::{frame_now, frames_until, frames_wanted, testing, want_frames_until};
+pub use disclosure::Disclosure;
 pub use named::{
     Ambient, Appear, Attention, Breathe, CROSS_FADE, CrossFade, Disclose, Drill, DrillDepth,
     Extent, Feedback, Float, Follow, ListChange, PanelSlide, Reveal, Snap, Speaking, Transient,

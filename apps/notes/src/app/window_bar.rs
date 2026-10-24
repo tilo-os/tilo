@@ -35,18 +35,14 @@ impl NotesApp {
                     icon: "plus".into(),
                     name: ui::i18n!("notes-affordance-new-note"),
                     enabled: true,
-                    on: false,
-                    menu: false,
-                    items: Vec::new(),
+                    ..ToolbarAction::default()
                 },
                 ToolbarAction {
                     id: NOTE_ACTIONS.into(),
                     icon: "more-horizontal".into(),
                     name: ui::i18n!("notes-affordance-note-actions"),
                     enabled: title.is_some(),
-                    on: false,
-                    menu: false,
-                    items: Vec::new(),
+                    ..ToolbarAction::default()
                 },
             ],
             ..WindowToolbar::default()

@@ -733,6 +733,10 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
     if fb.host().window_location_editing() {
         return true;
     }
+    // A tab is being named in its pill: the same, until Enter or Esc.
+    if fb.host().tab_renaming() {
+        return true;
+    }
     // Cursor chat is typed beside the pointer: every key is the message's
     // until Enter or Escape.
     if fb.host().cursor_chat_open() {
@@ -814,6 +818,7 @@ pub(crate) fn insert_foreign_group(
             app_id: resolved,
             surface_id,
         },
+        app_title: None,
     };
     let tab_id = tab.id;
     let group = WindowGroup {
@@ -1298,6 +1303,7 @@ mod tests {
                 kind: AppKind::Terminal,
                 label: "Terminal".into(),
             },
+            app_title: None,
         };
         let stub_tab_id = stub_tab.id;
         let stub = WindowGroup {
@@ -1315,6 +1321,7 @@ mod tests {
                 app_id: "org.example.client".into(),
                 surface_id,
             },
+            app_title: None,
         };
         let foreign_tab_id = foreign_tab.id;
         let foreign = WindowGroup {
@@ -1781,6 +1788,7 @@ mod tests {
                         kind: AppKind::Other((*name).into()),
                         label: (*name).into(),
                     },
+                    app_title: None,
                 })
                 .collect();
             let ids: Vec<u64> = tabs.iter().map(|t| t.id).collect();

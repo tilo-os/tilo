@@ -174,6 +174,8 @@ members = [
     "crates/sdk/tilo-resource-macros",
     "crates/sdk/tilo-rich-text",
     "crates/sdk/tilo-page-raster",
+    "crates/sdk/ui-paint",
+    "crates/sdk/canvas",
     "crates/sdk/winit-x11",
     "crates/sdk/search",
 
@@ -311,6 +313,7 @@ members = [
     "crates/platform/tilo-spotify",
     "crates/platform/tilo-browser-sessions",
     "crates/platform/tilo-invidious",
+    "crates/platform/tilo-innertube",
     "crates/platform/tilo-web-search",
     "crates/platform/tilo-net",
     "crates/platform/tilo-net-p2p",
@@ -393,9 +396,11 @@ members = [
     "crates/system/accounts",
     "crates/system/advisory-lock",
     "crates/system/app-state",
+    "crates/system/ask-password",
     "crates/system/block-devices",
     "crates/system/board-successor",
     "crates/system/boot-order",
+    "crates/system/boot-signin",
     "crates/system/bounded-command",
     "crates/system/cloud-source",
     "crates/system/cloud-source-dav",
@@ -429,6 +434,7 @@ members = [
     "crates/system/net-answers",
     "crates/system/ntfs-mount",
     "crates/system/os-actions",
+    "crates/system/pam-tilo",
     "crates/system/power",
     "crates/system/projector",
     "crates/system/sandbox-core",
@@ -447,6 +453,7 @@ members = [
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
     "crates/system/tilo-nm",
+    "crates/system/tilo-auth",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-sibling-unlock",
@@ -1011,6 +1018,8 @@ incremental = false
 [profile.release.package.tilo-rollback]
 strip = "symbols"
 [profile.release.package.tilo-sibling-unlock]
+strip = "symbols"
+[profile.release.package.tilo-boot-signin]
 strip = "symbols"
 
 # The browser bundles' release build (`build.sh --profile release`), measured
