@@ -1,4 +1,4 @@
 {"manifest_version": 3, "name": "Capturer", "version": "1.0",
  "action": {"default_title": "Capture this page"},
- "permissions": ["activeTab"],
+ "permissions": ["activeTab", "scripting"],
  "background": {"service_worker": "worker.js"}}

@@ -22,8 +22,8 @@ their tab APIs itself (src/extension_tabs.h). With real Chromium:
 - Such a script's message and port reach the extension's open popup when
   its worker answers neither.
 - A tab is captured as it shows, as PNG or JPEG at the quality asked for, by
-  an extension given it by a click or with access to every site, and by no
-  other; at most twice a second, as Chrome allows.
+  an extension given it by a click (activeTab) or with access to every site,
+  and by no other; at most twice a second, as Chrome allows.
 - An extension's context menu items show in the page's menu where their
   contexts say (page, selection, link, image); choosing one tells the
   extension with the tab, which it may then script (activeTab), and the
@@ -342,25 +342,33 @@ class ExtensionTabs(unittest.TestCase):
 
     def test_a_tab_is_captured_as_it_shows_by_an_extension_chrome_lets(self):
         host, ids = self.start('capturer', 'sweeper', 'peeker', access={
-            'capturer': (['activeTab'], []),
-            'sweeper': ([], ['<all_urls>']),
-            'peeker': (['tabs'], ['http://127.0.0.1/*']),
+            'capturer': (['activeTab', 'scripting'], []),
+            'sweeper': (['scripting'], ['<all_urls>']),
+            'peeker': (['tabs', 'scripting'], ['http://127.0.0.1/*']),
         })
-        host.settle(1.0)
+        # Another page, in a tab of its own, which no click gives anyone.
+        host.send(op='create_tab', tab=2)
+        host.until(lambda e: e['event'] == 'tab_ready' and e.get('tab') == 2)
+        host.send(op='resize', tab=2, width=800, height=600, scale_factor=1.0)
+        host.send(op='navigate', tab=2, url=self.url + '/other')
         host.navigate(self.url + '/shot')
+        self.title(host, 2, 'page /other')
+        host.settle(1.0)
         refused = "Either the '<all_urls>' or 'activeTab' permission is required."
-        # Access to one site and every tab's address is not enough.
+        # Access to one site, every tab's address and a click are not enough
+        # without activeTab.
+        host.send(op='extension_click', id=ids['peeker'])
         self.assertEqual(self.report('peeker'), {'ok': False, 'value': refused})
-        # Access to every site is, without a click.
+        # Access to every site is.
+        host.send(op='extension_click', id=ids['sweeper'])
         swept = self.report('sweeper')
         self.assertTrue(swept['ok'], swept['value'])
         width, height, rows = png_pixels(image(swept['value'], 'png'))
         self.assertEqual((width, height), (800, 600))
-        host.settle(1.0)
         host.send(op='extension_click', id=ids['capturer'])
         captured = self.report('capturer')
-        # Before the click, activeTab gives nothing.
-        self.assertEqual(captured['before'], {'ok': False, 'value': refused})
+        # activeTab gives the page clicked over, and no other.
+        self.assertEqual(captured['other'], {'ok': False, 'value': refused})
         for name in ('png', 'low', 'high'):
             self.assertTrue(captured[name]['ok'], f"{name}: {captured[name]['value']}")
         width, height, rows = png_pixels(image(captured['png']['value'], 'png'))
