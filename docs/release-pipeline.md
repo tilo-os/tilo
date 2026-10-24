@@ -284,20 +284,21 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 
 ## Lenovo board successors
 
-A Lenovo board release, which t does not build yet (the board images on t are
-development images, `os-board-<board>`), publishes a separate signed dense board series.
-Its fixed repository is `code.tilo.so/tilo/tilo`: each release retains both
-`lenovo-83ed-<source>` and `lenovo-83ed-gen<N>`. `lenovo-83ed-latest` is a
-registry discovery hint, never permission to install an image. A consumer must
-verify the exact image signature, profile/architecture/source/generation-bound
-SLSA provenance and repository/digest-bound release-freshness attestation, then
-complete the existing owner image-trust and measured-boot checks.
+A Lenovo board release (`publish-os-release-lenovo-83ed` on t, dispatched on stable or a
+release tag; the board images `os-board-<board>` are development images) publishes a separate
+signed dense board series. Its fixed repository is `code.tilo.so/tilo/tilo`: each release retains
+both `lenovo-83ed-<source>`, the update origin its image names, and `lenovo-83ed-gen<N>`.
+`lenovo-83ed-latest` is a registry discovery hint, never permission to install an image. A
+consumer must verify the exact image signature, profile/architecture/source/generation-bound
+SLSA provenance and repository/digest-bound release-freshness attestation, then complete the
+existing owner image-trust and measured-boot checks.
 
-Initializing this series requires the `board_series_seed` dispatch input: an
-operator-reviewed immutable historical Lenovo image reference ending in
-`@sha256:<digest>`, verified as the existing signed generation 1. There is no
-fallback to tag order, commit counts or timestamps. Missing or conflicting
-history refuses allocation; the next successful release is generation 2.
+The Lenovo images published before the series existed all carry generation 1. An empty series
+starts from one of them, pinned by digest as `TILO_LENOVO_SERIES_SEED` in
+`os/publication.env` and verified as this board's signed generation 1
+(`os/dev/board-generation.sh`): the build allocates generation 2, and the publication tags the
+seed as `lenovo-83ed-gen1` and `-latest` before it publishes. There is no fallback to tag order,
+commit counts or timestamps. Missing or conflicting history refuses allocation.
 Generic OS generation allocation and Orange Pi one-off publication are unchanged.
 
 This publication prerequisite does not change an installed immutable board

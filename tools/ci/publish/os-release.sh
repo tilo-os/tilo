@@ -2,25 +2,31 @@
 # The OS release (the os-release family in tools/ci/products.toml): the release image
 # os-release-image-ARCH composed (os/image/build-layer.sh, TILO_OS_FLAVOUR=release), sealed and
 # checked, its boot artifacts signed with the EFI and PCR keys in KMS, signed with the release key,
-# attested and published as registry.tilo.so/tilo/tilo:gen<N>, <version> and latest.
+# attested and published as registry.tilo.so/tilo/tilo:gen<N>, <version> and latest. A board of
+# release_boards in os/image/layers.toml has a release of its own, os-release-image-BOARD
+# (TILO_OS_BOARD): the same steps, with the board for ARCH, published to code.tilo.so/tilo/tilo,
+# the repository the board's update origin names, as <board>-<commit>, <board>-gen<N> in the
+# board's own series (os/dev/board-generation.sh) and <board>-latest.
 #
-#   os-release.sh seal ARCH IMAGE OUT        no secrets, as root in a micro-VM step with KVM: the
+#   os-release.sh seal TARGET IMAGE OUT      no secrets, as root in a micro-VM step with KVM: the
 #                                            image IMAGE/oci checked inside, installed onto a disk
 #                                            as a device installs it (which seals its UKI with the
 #                                            composefs digest the install computes) and booted
-#                                            until the greeter accepts input with no unit failed;
-#                                            the sealed image into OUT (image.oci.tar, digest,
-#                                            generation) with what its boot signing signs (OUT/boot)
+#                                            until the greeter accepts input with no unit failed
+#                                            (a board's is not booted: see cmd_seal); the sealed
+#                                            image into OUT (image.oci.tar, digest, generation)
+#                                            with what its boot signing signs (OUT/boot)
 #   os-release.sh sign-boot SEALED OUT       the EFI and PCR signatures of SEALED/boot, into
 #                                            OUT/boot, with the keys in KMS (tools/signing/
 #                                            boot-signer.sh); runs nothing of the image
-#   os-release.sh apply ARCH SEALED SIGNED OUT
+#   os-release.sh apply TARGET SEALED SIGNED OUT
 #                                            no secrets: the signatures verified against the
 #                                            pinned keys and added under /boot, the image installed
 #                                            once more to prove the seal still holds, then
 #                                            OUT/image.oci.tar, digest and generation, its SPDX
 #                                            SBOM (sbom.spdx.json) and SLSA provenance
-#                                            (provenance.json, the commit left as {commit})
+#                                            (provenance.json, the commit left as {commit}); a
+#                                            board's binds its hardware definition and firmware
 #   os-release.sh index DIR                  the index of DIR/x86_64 and DIR/aarch64 into DIR/index,
 #                                            with its provenance
 #   os-release.sh sign DIR                   with the release key in KMS: each image and the
@@ -29,19 +35,46 @@
 #   os-release.sh publish DIR                the images as gen<N>-ARCH, the index as gen<N>, on a
 #                                            final version tag <version>, and latest, each gen
 #                                            tag once
-#   os-release.sh reproduce ARCH COMPILED OUT
+#   os-release.sh sign-board BOARD DIR       the board's image in DIR signed, attested and stated
+#                                            fresh as `sign` does an architecture's
+#   os-release.sh publish-board BOARD DIR    the board's image as <board>-<commit> and
+#                                            <board>-gen<N>, each once, then <board>-latest; an
+#                                            empty series gets its seed as gen1 first
+#   os-release.sh reproduce TARGET COMPILED OUT
 #                                            no secrets: the release image built again, every
 #                                            action in this one step from the tree COMPILED (an
 #                                            independent compile), and compared with the one
 #                                            os-release-image-ARCH composed; a difference fails,
 #                                            with a report of it in OUT
-#   os-release.sh rehearse ARCH SEALED OUT   sign-boot, apply, sign and publish with throwaway
+#   os-release.sh rehearse TARGET SEALED OUT sign-boot, apply, sign and publish with throwaway
 #                                            keys into the OCI layout OUT/registry, as a release of
 #                                            this tree from stable would, with no credentials
+#
+# TARGET is an architecture, x86_64 or aarch64, or a board of release_boards.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
 cd "$repo_root"
 repository=registry.tilo.so/tilo/tilo
+board=
+
+# TARGET (above) as $arch, and for a board $board and its repository.
+target() {
+  case $1 in
+    x86_64 | aarch64) arch=$1 ;;
+    *)
+      grep -Eq "^release_boards = \[.*\"$1\"" os/image/layers.toml \
+        || die "$1 is neither an architecture nor among release_boards in os/image/layers.toml"
+      board=$1
+      arch=$(sed -n 's/^ *"architecture": *"\([^"]*\)".*/\1/p' "os/hardware/profiles/$board.json")
+      repository=code.tilo.so/tilo/tilo
+      export TILO_OS_REPOSITORY=$repository ;;
+  esac
+}
+
+# The release image's directory under /target/os/ARCH.
+image_dir() {
+  printf 'release-image%s' "${board:+-$board}"
+}
 
 oci_arch() {
   case $1 in
@@ -90,14 +123,19 @@ install_disk() {
 }
 
 cmd_seal() {
-  local image=$1 out=$2 status=0 qemu
+  local image=$1 out=$2 status=0 qemu=()
   case $arch in
     x86_64) qemu=(edk2-ovmf qemu-system-x86-core qemu-device-display-virtio-vga) ;;
     aarch64) qemu=(edk2-aarch64 qemu-system-aarch64-core qemu-device-display-virtio-gpu-pci) ;;
   esac
   [[ -f $image/oci/index.json ]] || die "$image holds no OS image layout (oci/)"
-  [[ -c /dev/kvm ]] || die 'no /dev/kvm: the check needs requires = ["/dev/kvm"]'
-  guest_tools ipxe-roms-qemu "${qemu[@]}"
+  if [[ -n $board ]]; then
+    qemu=()
+  else
+    [[ -c /dev/kvm ]] || die 'no /dev/kvm: the check needs requires = ["/dev/kvm"]'
+    qemu+=(ipxe-roms-qemu)
+  fi
+  guest_tools "${qemu[@]}"
   local id
   id=$(podman pull -q "oci:$image/oci")
   [[ $(podman image inspect --format '{{.Digest}}' "$id") == "$(cat "$image/digest")" ]] || die "$image/oci is not the image $image/digest names"
@@ -111,6 +149,14 @@ cmd_seal() {
   podman run --rm --network=none --security-opt label=disable \
     -v "$repo_root/tools/ci/image_smoke.py:/run/image-smoke.py:ro" localhost/tilo:release \
     python3 -I -B /run/image-smoke.py 2>&1 | tee "$out/image-smoke.log" || status=1
+
+  if [[ -n $board ]]; then
+    seal_board "$out" || status=1
+    ((status == 0)) || exit "$status"
+    save_archive localhost/tilo:release "$out"
+    bash os/dev/sign-target-prediction.sh prepare localhost/tilo:release "$out/boot"
+    return
+  fi
 
   # Installed and booted with the repository's VM harness (os/dev/vm.sh) until the greeter
   # accepts input on its console channel. A unit that fails on the way prints `[FAILED]` on the
@@ -142,6 +188,30 @@ cmd_seal() {
   ((status == 0)) || exit "$status"
   save_archive localhost/tilo:release "$out"
   bash os/dev/sign-target-prediction.sh prepare localhost/tilo:release "$out/boot"
+}
+
+# A board's image, as a board gets it: its profile and update origin, the Lenovo's sound stack, and
+# installed onto a disk, which seals its UKI. It is not booted: its UKI carries the board's device
+# tree, which systemd-stub hands the kernel in place of the one QEMU's virt machine describes
+# itself with, so the kernel would look for the board's controllers, console and storage and
+# find none of QEMU's. It boots only on the board.
+seal_board() {
+  local out=$1 origin
+  origin=code.tilo.so/tilo/tilo:$board-$(git rev-parse --verify HEAD) || die 'the seal names its commit: git = true'
+  podman run --rm --network=none --entrypoint /bin/cat localhost/tilo:release /usr/lib/tilo/hardware-profile.json \
+    | jq -e --arg board "$board" --arg arch "$arch" --arg origin "$origin" \
+      '.id == $board and .architecture == $arch and .target_update_ref == $origin' >/dev/null \
+    || { echo "FAIL  the image is not $board's release of this commit, following $origin"; return 1; }
+  echo "ok    the image is $board's, following $origin"
+  if [[ $board == lenovo-83ed ]]; then
+    podman run --rm --network=none --entrypoint bash \
+      -v "$repo_root/os/tests/board_audio_contract.sh:/run/board_audio_contract.sh:ro" \
+      localhost/tilo:release /run/board_audio_contract.sh --root / 2>&1 | tee "$out/audio.log" \
+      || { echo 'FAIL  the sound stack is incomplete'; return 1; }
+  fi
+  install_disk localhost/tilo:release > "$out/install.log" 2>&1 \
+    || { tail -n 80 "$out/install.log"; echo 'FAIL  the image does not install onto a disk'; return 1; }
+  echo 'ok    the image installs onto a disk, which sealed its UKI'
 }
 
 # jsign (the pinned jar, os/external-assets) on PATH, for tools/signing/boot-signer.sh, with the
@@ -222,9 +292,24 @@ cmd_apply() {
     select(.spdxVersion == "SPDX-2.3" and (.packages | type == "array"))
     | .documentNamespace = ("https://tilo.sh/spdx/os/" + ($digest | sub(":"; "-")))
     | .creationInfo.created = $created' "$scratch/sbom.json" > "$out/sbom.spdx.json"
+  board_provenance
   provenance "$out" TILO_SBOM_SHA256="$(sha256sum < "$out/sbom.spdx.json" | cut -d' ' -f1)" \
-    TILO_RELEASE_ARCHITECTURE="$arch" KERNEL_RPMS_REF="$(kernel_ref "$arch")"
-  printf 'release image %s: %s, generation %s\n' "$arch" "$digest" "$(cat "$out/generation")"
+    TILO_RELEASE_ARCHITECTURE="$arch" KERNEL_RPMS_REF="$(kernel_ref "$arch")" "${board_args[@]}"
+  printf 'release image %s: %s, generation %s\n' "${board:-$arch}" "$digest" "$(cat "$out/generation")"
+}
+
+# What a board's provenance binds besides (os/dev/release-provenance.sh), as board_args: the
+# board, and the firmware its image carries, by digest.
+board_provenance() {
+  board_args=()
+  case $board in
+    '') ;;
+    lenovo-83ed)
+      board_args=(TILO_HARDWARE_PROFILE=lenovo-83ed
+        "TILO_FIRMWARE_CANDIDATE=$(publication TILO_LENOVO_FIRMWARE_REF)"
+        "TILO_FIRMWARE_MANIFEST_SHA256=$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)") ;;
+    *) die "no release provenance for the board $board" ;;
+  esac
 }
 
 kernel_ref() {
@@ -264,6 +349,31 @@ cmd_sign() {
   for d in "$dir/x86_64" "$dir/aarch64" "$dir/index"; do sign_one "$d"; done
 }
 
+cmd_sign_board() {
+  sign_one "$1"
+}
+
+# The board's image in DIR under its three tags. A tag held by another image fails it: a series
+# generation or a commit's release is published once, and never by another image.
+publish_board_tags() {
+  local dir=$1 held
+  bash tools/ci/publish/oci-publish.sh release "$repository" "$dir" \
+    "once:$board-{commit}" "once:$board-gen{generation}" "$board-latest"
+  held=$(sed -n 's/.*"digest":"\(sha256:[0-9a-f]*\)".*/\1/p' "$dir/receipt.json")
+  [[ $held == "$(cat "$dir/digest")" ]] \
+    || die "$repository holds $held under this release's tags, not $(cat "$dir/digest")"
+}
+
+cmd_publish_board() {
+  local dir=$1
+  use_cosign
+  REGISTRY_AUTH_FILE=$scratch/board-registry-auth.json
+  export REGISTRY_AUTH_FILE
+  registry_login "${repository%%/*}" "$REGISTRY_AUTH_FILE"
+  bash os/dev/board-generation.sh --retain
+  publish_board_tags "$dir"
+}
+
 cmd_publish() {
   local dir=$1 a
   # The images before the index naming them; latest last, once every durable name holds it.
@@ -275,27 +385,31 @@ cmd_publish() {
 
 cmd_reproduce() {
   local compiled=$1 out=$2 layer image expected built root=$scratch/os
-  expected=$(cat "/target/os/$arch/release-image/digest")
+  expected=$(cat "/target/os/$arch/$(image_dir)/digest")
   rm -rf "$out" "$root"
   mkdir -p "$out" "$root/$arch"
   cp -a "$compiled" "$root/$arch/compiled-release"
-  run_layer() { TILO_OS_ROOT=$root TILO_OS_FLAVOUR=release bash os/image/build-layer.sh "$@"; }
+  run_layer() { TILO_OS_ROOT=$root TILO_OS_FLAVOUR=release TILO_OS_BOARD=$board bash os/image/build-layer.sh "$@"; }
   run_layer base "$arch" "$root/$arch/base"
   for image in $(python3 -I -c 'import tomllib; print(" ".join(i["name"] for i in tomllib.load(open("os/image/layers.toml","rb"))["image"]))'); do
     run_layer image "$image" "$arch" "$root/$arch/$image"
   done
-  for layer in $(python3 -I -c 'import tomllib; print(" ".join(("release-layers/" if l.get("release") else "layers/") + l["name"] for l in tomllib.load(open("os/image/layers.toml","rb"))["layer"]))'); do
-    run_layer layer "${layer#*/}" "$arch" "$root/$arch/$layer"
+  for layer in $(python3 -I -c '
+import sys, tomllib
+board = sys.argv[1]
+print(" ".join((f"board-layers/{board}/" if board and l.get("board") else "release-layers/" if l.get("release") else "layers/")
+               + l["name"] for l in tomllib.load(open("os/image/layers.toml", "rb"))["layer"]))' "$board"); do
+    run_layer layer "${layer##*/}" "$arch" "$root/$arch/$layer"
   done
   run_layer compose "$arch" "$out/image"
   built=$(cat "$out/image/digest")
   if [[ $built == "$expected" ]]; then
-    printf 'ok    the independent rebuild of the %s release image is %s, byte for byte\n' "$arch" "$built"
+    printf 'ok    the independent rebuild of the %s release image is %s, byte for byte\n' "${board:-$arch}" "$built"
     rm -rf "$out/image"
     return
   fi
-  printf 'FAIL  the independent rebuild is %s, os-release-image-%s %s\n' "$built" "$arch" "$expected"
-  python3 os/scripts/oci-image-diff.py "/target/os/$arch/release-image/oci" "$out/image/oci" > "$out/diff.txt" 2>&1 || true
+  printf 'FAIL  the independent rebuild is %s, os-release-image-%s %s\n' "$built" "${board:-$arch}" "$expected"
+  python3 os/scripts/oci-image-diff.py "/target/os/$arch/$(image_dir)/oci" "$out/image/oci" > "$out/diff.txt" 2>&1 || true
   rm -rf "$out/image"
   head -n 200 "$out/diff.txt"
   exit 1
@@ -312,19 +426,31 @@ cmd_rehearse() {
   cmd_sign_boot "$sealed" "$scratch/signed"
   cmd_apply "$sealed" "$scratch/signed" "$dir"
   sign_one "$dir"
-  bash tools/ci/publish/oci-publish.sh release "$repository" "$dir" "once:gen{generation}-$arch"
-  printf 'rehearsed the %s release into %s\n' "$arch" "$out/registry"
+  if [[ -n $board ]]; then
+    # The series as publishing reads it, and its seed verified where it is empty; moving the
+    # registry's tags is the release's alone.
+    [[ $(bash os/dev/board-generation.sh) == "$(cat "$dir/generation")" ]] \
+      || die "the image carries generation $(cat "$dir/generation"), not the next of the $board series"
+    publish_board_tags "$dir"
+  else
+    bash tools/ci/publish/oci-publish.sh release "$repository" "$dir" "once:gen{generation}-$arch"
+  fi
+  printf 'rehearsed the %s release into %s\n' "${board:-$arch}" "$out/registry"
 }
 
 command=${1:-}
 case $command in
   seal | apply | reproduce | rehearse)
-    arch=${2:?usage: os-release.sh $command ARCH ...}
+    target "${2:?usage: os-release.sh $command TARGET ...}"
     oci_arch "$arch" >/dev/null
     [[ $(uname -m) == "$arch" ]] || die "the $arch release is built natively, not on $(uname -m)"
     shift 2 ;;
+  sign-board | publish-board)
+    target "${2:?usage: os-release.sh $command BOARD DIR}"
+    [[ -n $board ]] || die "$2 is not a board"
+    shift 2 ;;
   sign-boot | index | sign | publish) shift ;;
-  *) die 'usage: os-release.sh seal|sign-boot|apply|index|sign|publish|reproduce|rehearse ...' ;;
+  *) die 'usage: os-release.sh seal|sign-boot|apply|index|sign|publish|sign-board|publish-board|reproduce|rehearse ...' ;;
 esac
 case $command in
   seal) cmd_seal "${1:?}" "${2:?}" ;;
@@ -333,6 +459,8 @@ case $command in
   index) cmd_index "${1:?}" ;;
   sign) require_commit; cmd_sign "${1:?}" ;;
   publish) cmd_publish "${1:?}" ;;
+  sign-board) require_commit; cmd_sign_board "${1:?}" ;;
+  publish-board) cmd_publish_board "${1:?}" ;;
   reproduce) cmd_reproduce "${1:?}" "${2:?}" ;;
   rehearse) cmd_rehearse "${1:?}" "${2:?}" ;;
 esac

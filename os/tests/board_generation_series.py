@@ -22,13 +22,12 @@ class BoardSeries(unittest.TestCase):
         (self.path / "manifest").write_bytes(self.manifest)
         (self.path / "registry.json").write_text(json.dumps({"gen9": self.digest}))
         (self.path / "key").write_text("fixture key")
-        self.predicate = {"runDetails": {"builder": {"id": "https://code.tilo.so/tilo/t/os-release-v1"},
+        self.predicate = {"runDetails": {"builder": {"id": "https://code.tilo.so/tilo/forgejo/actions/bootc-release-v1"},
             "byproducts": [{"name": "independent-rebuild", "uri": "urn:tilo:verification:manifest-digest-equal"}]},
             "buildDefinition": {"buildType": "https://tilo.sh/buildtypes/bootc-os/v1",
             "internalParameters": {"expectedReleaseDigest": self.digest},
             "externalParameters": {"generation": 1, "hardwareProfile": "lenovo-83ed",
-                "architecture": "aarch64", "firmwareManifestSha256": "b" * 64,
-                "hardwareDefinitionSha256": "d" * 64},
+                "architecture": "aarch64", "firmwareManifestSha256": "b" * 64},
             "resolvedDependencies": [
                 {"uri": "git+ssh://code.tilo.so/tilo/tilo@" + "a" * 40},
                 {"uri": "code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:" + "c" * 64}],
@@ -74,31 +73,45 @@ else:
     def write_predicate(self):
         (self.path / "predicate").write_text(json.dumps({"predicate": self.predicate}))
 
-    def run_allocator(self):
-        return subprocess.run([str(ROOT / "os/dev/board-generation.sh")], cwd=self.path,
+    def run_allocator(self, *args):
+        return subprocess.run([str(ROOT / "os/dev/board-generation.sh"), *args], cwd=self.path,
                               env=self.env, capture_output=True, text=True)
 
     def test_verified_seed_creates_dense_board_history_without_generic_mutation(self):
         result = self.run_allocator()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "2")
+        self.assertFalse((self.path / "copies").exists())
+        result = self.run_allocator("--retain")
+        self.assertEqual(result.returncode, 0, result.stderr)
         rows = json.loads((self.path / "registry.json").read_text())
         self.assertEqual(rows, {"gen9": self.digest, "lenovo-83ed-gen1": self.digest,
                                 "lenovo-83ed-latest": self.digest})
         # Existing initialized state needs no continuing genesis input.
-        self.env.pop("TILO_BOARD_SERIES_SEED")
+        self.env["TILO_BOARD_SERIES_SEED"] = ""
         self.assertEqual(self.run_allocator().stdout.strip(), "2")
+        self.assertEqual(self.run_allocator("--retain").returncode, 0)
+        self.assertEqual((self.path / "copies").read_text().split(),
+                         ["lenovo-83ed-gen1", "lenovo-83ed-latest"])
+
+    def test_pinned_seed_is_a_verified_historical_generation_one(self):
+        self.env.pop("TILO_BOARD_SERIES_SEED")
+        pinned = (ROOT / "os/publication.env").read_text().split("TILO_LENOVO_SERIES_SEED=")[1].split()[0]
+        self.assertRegex(pinned, r"^code\.tilo\.so/tilo/tilo@sha256:[0-9a-f]{64}$")
+        # The fixture registry serves another digest than the pinned one, so the provenance's
+        # expected digest cannot bind it: the pinned seed is what gets verified.
+        self.assertNotEqual(self.run_allocator().returncode, 0)
 
     def test_missing_or_mutable_seed_refuses_before_publication(self):
         for seed in ["", "code.tilo.so/tilo/tilo:lenovo-83ed-latest"]:
             with self.subTest(seed=seed):
                 self.env["TILO_BOARD_SERIES_SEED"] = seed
-                self.assertNotEqual(self.run_allocator().returncode, 0)
+                self.assertNotEqual(self.run_allocator("--retain").returncode, 0)
                 self.assertFalse((self.path / "copies").exists())
 
     def test_seed_signature_refusal_is_not_a_series_reset(self):
         self.env["BAD_SIGNATURE"] = "1"
-        self.assertNotEqual(self.run_allocator().returncode, 0)
+        self.assertNotEqual(self.run_allocator("--retain").returncode, 0)
         self.assertFalse((self.path / "copies").exists())
 
     def test_wrong_board_architecture_generation_or_digest_refuses_before_copy(self):
@@ -109,7 +122,7 @@ else:
                 original = external[key]
                 external[key] = wrong
                 self.write_predicate()
-                self.assertNotEqual(self.run_allocator().returncode, 0)
+                self.assertNotEqual(self.run_allocator("--retain").returncode, 0)
                 self.assertFalse((self.path / "copies").exists())
                 external[key] = original
         self.predicate["buildDefinition"]["internalParameters"]["expectedReleaseDigest"] = "sha256:" + "f" * 64

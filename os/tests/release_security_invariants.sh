@@ -121,10 +121,12 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
    TILO_FIRMWARE_CANDIDATE="$firmware" \
    TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
    "$provenance" "$tmp/lenovo-provenance.json" \
-   && jq -e --arg firmware "$firmware" --arg manifest "$hex" '
+   && jq -e --arg firmware "$firmware" --arg manifest "$hex" \
+     --arg definition "$(sha256sum "$repo/os/hardware/profiles/lenovo-83ed.json" | cut -d' ' -f1)" '
      .buildDefinition.externalParameters.hardwareProfile == "lenovo-83ed"
      and .buildDefinition.externalParameters.architecture == "aarch64"
      and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
+     and .buildDefinition.externalParameters.hardwareDefinitionSha256 == $definition
      and any(.buildDefinition.resolvedDependencies[]; .uri == $firmware)
    ' "$tmp/lenovo-provenance.json" >/dev/null \
    && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
@@ -132,7 +134,7 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
          KERNEL_RPMS_REF="kernel@sha256:$hex" SOURCE_REVISION="$hex" \
          TILO_HARDWARE_PROFILE=generic TILO_FIRMWARE_CANDIDATE="$firmware" \
          "$provenance" "$tmp/bad-generic-firmware.json" >/dev/null 2>&1); then
-  ok 'Lenovo release provenance binds reviewed firmware and generic releases reject it'
+  ok 'Lenovo release provenance binds reviewed firmware and its hardware definition, and generic releases reject firmware'
 else
   bad 'Lenovo firmware input is absent from release provenance or can enter a generic release'
 fi

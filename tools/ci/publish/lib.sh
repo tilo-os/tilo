@@ -111,6 +111,43 @@ aws_role() {
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_REGION=$region
 }
 
+# Log in to the registry $1 into the auth file $2. registry.tilo.so takes an identity token from t
+# (`id_token = ["registry.tilo.so"]`) as the password of the user `oidc`; it lasts minutes, so a
+# long push logs in again. The forge's registry, code.tilo.so, takes no identity token: there a
+# Forgejo token that may write packages (`secrets = ["REGISTRY_TOKEN"]`), as its owner.
+registry_login() {
+  local registry=$1 auth=$2 user password
+  case $registry in
+    code.tilo.so)
+      password=${REGISTRY_TOKEN:-}
+      [[ -n $password ]] || die 'no token for code.tilo.so: the check needs secrets = ["REGISTRY_TOKEN"]'
+      user=$(curl -fsS -H "Authorization: token $password" https://code.tilo.so/api/v1/user \
+        | sed -n 's/.*"login"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p') \
+        || die 'code.tilo.so does not accept REGISTRY_TOKEN'
+      [[ -n $user ]] || die 'code.tilo.so names no owner of REGISTRY_TOKEN' ;;
+    *)
+      user=oidc
+      password=$(id_token "$registry") ;;
+  esac
+  printf '%s' "$password" | skopeo login --authfile "$auth" -u "$user" --password-stdin "$registry" >/dev/null
+}
+
+# The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where the image
+# builds take it from: the Lenovo's from its pinned artifact, the Orange Pi's Wi-Fi files from
+# their pinned public copies.
+stage_board_firmware() {
+  case $1 in
+    lenovo-83ed)
+      python3 "$repo_root/os/dev/hardware-firmware-artifact.py" import \
+        --reference "$(publication TILO_LENOVO_FIRMWARE_REF)" \
+        --manifest-sha256 "$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)" \
+        --profile lenovo-83ed --architecture aarch64 --repo "$repo_root" >/dev/null ;;
+    orangepi-3b-v2-1)
+      TILO_ASSET_OFFLINE=1 bash "$repo_root/os/dev/fetch-orangepi-wifi-firmware.sh" ;;
+    *) die "no firmware source for the board $1" ;;
+  esac
+}
+
 # A value of os/publication.env, the public configuration of OS publication.
 publication() {
   local value
