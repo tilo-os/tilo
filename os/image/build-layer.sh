@@ -28,13 +28,19 @@
 #   compiled/                    the compiled tree (os/image/compile.sh); a release's in
 #                                compiled-release/
 #   layers/<layer>/              the fragment of the layers that layer action added; a
-#                                release's own layers in release-layers/<layer>/
+#                                release's own layers in release-layers/<layer>/, a board
+#                                release's in board-layers/<board>/<layer>/
 #
 # The image is a development image: no LTO, the development owner key, its UKI sealing a
 # placeholder composefs digest. With TILO_OS_FLAVOUR=release it is the image a release seals and
 # signs (tools/ci/publish/os-release.sh): thin LTO from compiled-release/, the registry owner's
 # key (os/publication.env); the layers marked `release` in os/image/layers.toml, which those
-# change, are built again into release-layers/, the others are the development image's.
+# change, are built again into release-layers/, the others are the development image's. With
+# TILO_OS_BOARD=<board> as well it is that board's release image: the layers marked `board`,
+# which read the hardware profile, are built again with it into board-layers/<board>/, with the
+# board's firmware (os/publication.env), its update origin (the tag of this commit's board release,
+# code.tilo.so/tilo/tilo:<board>-<commit>) and the generation of its series
+# (os/dev/board-generation.sh).
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../tools/ci/publish/lib.sh"
 cd "$repo_root"
@@ -68,8 +74,14 @@ for kind in ("layer", "image"):
 ' os/image/layers.toml "$1" "$2"
 }
 
+board_layer() {
+  [[ -n $board && $(layer_field "$1" board) == true ]]
+}
+
 fragment_dir() {
-  if [[ $flavour == release && $(layer_field "$1" release) == true ]]; then
+  if board_layer "$1"; then
+    echo "$os/board-layers/$board/$1"
+  elif [[ $flavour == release && $(layer_field "$1" release) == true ]]; then
     echo "$os/release-layers/$1"
   else
     echo "$os/layers/$1"
@@ -128,6 +140,16 @@ build_env() {
   fi
   # The pinned external assets are os-assets' outputs, which the action needs.
   export TILO_ASSET_OFFLINE=1
+}
+
+# What a board layer builds with besides: the board's firmware, staged where the pieces bind it
+# from, its profile, its update origin and the generation of its own series.
+board_env() {
+  stage_board_firmware "$board"
+  TILO_TARGET_IMGREF=code.tilo.so/tilo/tilo:$board-$(git rev-parse --verify HEAD) \
+    || die 'a board release names its commit: git = true'
+  TILO_GENERATION=$(bash os/dev/board-generation.sh)
+  export TILO_HARDWARE_PROFILE=$board TILO_TARGET_IMGREF TILO_GENERATION
 }
 
 # An image layout into podman's storage; its id.
@@ -216,6 +238,7 @@ cmd_layer() {
   piece=$(layer_field "$name" piece)
   guest_devices
   build_env
+  if board_layer "$name"; then board_env; fi
   phase load-given
   # What the piece is given as images: other actions' images, and compositions of layers.
   for entry in $(layer_field "$name" given); do
@@ -306,6 +329,12 @@ case $flavour in
   release) compiled=compiled-release ;;
   *) die "TILO_OS_FLAVOUR is dev or release, not $flavour" ;;
 esac
+board=${TILO_OS_BOARD:-}
+if [[ -n $board ]]; then
+  [[ $flavour == release ]] || die "a board's image is built only for its release: TILO_OS_FLAVOUR=release"
+  python3 -I -c 'import tomllib,sys; sys.exit(sys.argv[2] not in tomllib.load(open(sys.argv[1],"rb"))["release_boards"])' \
+    os/image/layers.toml "$board" || die "$board is not among release_boards in os/image/layers.toml"
+fi
 case ${1:-} in
   assets) cmd_assets ;;
   base) arch=${2:?} out=${3:?} os=${TILO_OS_ROOT:-/target/os}/$arch; cmd_base ;;

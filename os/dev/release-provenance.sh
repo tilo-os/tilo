@@ -117,7 +117,7 @@ printf '%s' "$release_children" | jq -e '
 }
 
 hardware_definition=""
-if [ "$hardware_profile" = orangepi-3b-v2-1 ]; then
+if [ "$hardware_profile" != generic ]; then
   hardware_definition="$(sha256sum "$(dirname "$0")/../hardware/profiles/$hardware_profile.json" | cut -d' ' -f1)"
 fi
 

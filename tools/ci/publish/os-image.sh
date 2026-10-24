@@ -68,22 +68,6 @@ save_image() {
   printf 'built %s of %s\n' "$(cat "$out/digest")" "$revision"
 }
 
-# The board's firmware, into os/hardware/firmware/BOARD (writable_sources), where
-# os/Containerfile.board takes it from: the Lenovo's from its pinned artifact, the Orange Pi's
-# Wi-Fi files from their pinned public copies.
-stage_board_firmware() {
-  case $1 in
-    lenovo-83ed)
-      python3 os/dev/hardware-firmware-artifact.py import \
-        --reference "$(publication TILO_LENOVO_FIRMWARE_REF)" \
-        --manifest-sha256 "$(publication TILO_LENOVO_FIRMWARE_MANIFEST_SHA256)" \
-        --profile lenovo-83ed --architecture aarch64 --repo "$repo_root" >/dev/null ;;
-    orangepi-3b-v2-1)
-      TILO_ASSET_OFFLINE=1 bash os/dev/fetch-orangepi-wifi-firmware.sh ;;
-    *) die "no firmware source for the board $1" ;;
-  esac
-}
-
 # The resealing bootc the board image computes its composefs digest with
 # (os/Containerfile.bootc-helper): the published build of these sources, else built here.
 bootc_helper() {

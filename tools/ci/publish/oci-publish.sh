@@ -4,7 +4,8 @@
 # there is one, and point TAG... at it.
 # Writes OUT/receipt.json, the digest receipt deployments pin. Logs in to the registry as `oidc`
 # with an identity token from t for the registry (`id_token = ["registry.tilo.so"]`), which the
-# registry accepts for this repository's main, stable and v* tags; never signing credentials.
+# registry accepts for this repository's main, stable and v* tags, or to the forge's registry
+# code.tilo.so with REGISTRY_TOKEN (lib.sh registry_login); never signing credentials.
 #
 # usage: oci-publish.sh dev|release|any REPOSITORY OUT TAG...
 # The first argument is the channel the check publishes to; it must be this run's (lib.sh), so a
@@ -96,14 +97,12 @@ else
   export REGISTRY_AUTH_FILE=$auth DOCKER_CONFIG=$scratch/docker
   mkdir -p "$DOCKER_CONFIG"
 fi
-# Log in with a fresh identity token. It is the registry password and lasts minutes, so a push
-# that outlives it (a multi-GB image) fails to authenticate its next blob; copy() logs in again
-# and retries, and the blobs already pushed are not sent twice.
+# Log in afresh (lib.sh registry_login). An identity token lasts minutes, so a push that outlives
+# it (a multi-GB image) fails to authenticate its next blob; copy() logs in again and retries,
+# and the blobs already pushed are not sent twice.
 login() {
   [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]] && return
-  local password
-  password=$(id_token "$registry")
-  printf '%s' "$password" | skopeo login --authfile "$auth" -u oidc --password-stdin "$registry" >/dev/null
+  registry_login "$registry" "$auth"
   cp "$auth" "$DOCKER_CONFIG/config.json"
 }
 copy() {
