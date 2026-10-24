@@ -719,3 +719,115 @@ fn an_empty_timelines_playhead_stays_in_the_ruler() {
         );
     }
 }
+
+/// The editor opened on the sample project `width` wide, its playhead
+/// parked past the last clip, where the preview has nothing to show.
+fn parked_between_clips(width: u32) -> TestApp<crate::VideoEditor> {
+    let mut app = opened();
+    app.harness()
+        .relayout_at((width, 800))
+        .expect("the editor lays out");
+    let editor = app.surface_mut::<VideoEditorApp>();
+    editor.playhead = editor.project.duration();
+    app.settle();
+    app
+}
+
+/// The preview shows a clip: one is under the playhead, and the hint and
+/// its button are gone.
+fn preview_shows_a_clip(app: &mut TestApp<crate::VideoEditor>) -> bool {
+    app.with_surface::<VideoEditorApp, _>(|editor| {
+        editor.project.top_video_clip_at(editor.playhead).is_some()
+            && editor.go_to_clip_button(&editor.regions()).is_none()
+    })
+    .expect("the editor surface")
+}
+
+/// The preview's hint says to move the playhead over a clip, so it carries
+/// Go to clip, which lands the playhead on the nearest clip, by pointer and
+/// through its semantic action, compact and wide; the published action
+/// does the same.
+#[test]
+fn go_to_clip_lands_the_playhead_on_a_clip_the_preview_shows() {
+    for (width, semantic) in [(420, false), (420, true), (1280, false), (1280, true)] {
+        let mut app = parked_between_clips(width);
+        assert!(
+            !preview_shows_a_clip(&mut app),
+            "{width} px: parked past the clips"
+        );
+        let drawn = app
+            .with_surface::<VideoEditorApp, _>(|editor| editor.go_to_clip_button(&editor.regions()))
+            .expect("the editor surface")
+            .unwrap_or_else(|| panic!("{width} px: the hint carries Go to clip"));
+        let (node, bounds) = app
+            .harness()
+            .a11y_nodes()
+            .into_iter()
+            .find_map(|(id, node)| {
+                let b = node.bounds()?;
+                let b = Rect::new(b.x0, b.y0, b.x1, b.y1);
+                (node.role() == ui::accesskit::Role::Button
+                    && node.label() == Some("Go to clip")
+                    && (b.center() - drawn.center()).hypot() < 1.0)
+                    .then_some((id, b))
+            })
+            .unwrap_or_else(|| panic!("{width} px: Go to clip is in the tree where it is drawn"));
+        if semantic {
+            app.harness()
+                .perform_a11y_action(node, &ui::a11y::Action::Activate)
+                .expect("Go to clip answers its action");
+        } else {
+            app.harness().click_at(bounds.center().x, bounds.center().y);
+        }
+        app.settle();
+        assert!(
+            preview_shows_a_clip(&mut app),
+            "{width} px, semantic {semantic}: the playhead is on a clip the preview shows"
+        );
+    }
+
+    let mut app = parked_between_clips(1280);
+    app.effect(&VideoEditorEffect::GoToClip)
+        .expect("the published action runs");
+    app.settle();
+    assert!(
+        preview_shows_a_clip(&mut app),
+        "the published action lands it too"
+    );
+}
+
+/// Go to clip takes the next clip after the playhead, and the previous one
+/// only where none follows.
+#[test]
+fn go_to_clip_takes_the_next_clip_then_the_previous() {
+    let mut app = sample(1280.0);
+    for clip in &mut app.project.clips {
+        clip.start += 5.0;
+    }
+    let first = app
+        .project
+        .clips
+        .iter()
+        .filter(|clip| {
+            app.project
+                .track(clip.track)
+                .is_some_and(|track| track.kind == crate::model::TrackKind::Video)
+        })
+        .map(|clip| clip.start)
+        .fold(f64::INFINITY, f64::min);
+    app.playhead = 1.0;
+    assert_eq!(app.go_to_clip_target(), Some(first), "the next clip after");
+    app.playhead = app.project.duration() + 1.0;
+    let last = app
+        .project
+        .clips
+        .iter()
+        .filter(|clip| {
+            app.project
+                .track(clip.track)
+                .is_some_and(|track| track.kind == crate::model::TrackKind::Video)
+        })
+        .map(|clip| clip.start)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert_eq!(app.go_to_clip_target(), Some(last), "else the previous one");
+}
