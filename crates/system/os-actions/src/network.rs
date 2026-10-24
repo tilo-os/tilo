@@ -170,11 +170,10 @@ pub fn set_airplane_mode(enabled: bool) -> Result<(), String> {
     }
 }
 
+/// Mobile data on or off: the modem's radio and the profile that connects
+/// through it ([`crate::modem::set_mobile_data`]).
 pub fn set_mobile_broadband(enabled: bool) -> Result<(), String> {
-    run(
-        "nmcli",
-        &["radio", "wwan", if enabled { "on" } else { "off" }],
-    )
+    crate::modem::set_mobile_data(enabled)
 }
 
 /// Activate the Tilo hotspot. `NetworkManager` creates the profile and a random
@@ -642,7 +641,7 @@ fn parse_nmcli_wifi_list(stdout: &str) -> Vec<WifiNetworkInfo> {
 
 /// Split a single nmcli `-t` (terse) line on unescaped `:` separators. `\:` inside a field
 /// stays a literal colon.
-fn split_terse(line: &str) -> Vec<String> {
+pub(crate) fn split_terse(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut buf = String::new();
     let mut chars = line.chars().peekable();
@@ -1715,45 +1714,6 @@ mod profile_tests {
     }
 }
 
-/// Create a `NetworkManager` WWAN profile without handling SIM secrets in the
-/// UI process. PIN/password flags are `not-saved`; `NetworkManager`'s registered
-/// secret agent owns prompting and custody when activation needs them.
-pub fn create_mobile_profile(name: &str, apn: &str) -> Result<(), String> {
-    let safe = |v: &str, max: usize| {
-        !v.trim().is_empty() && v.len() <= max && !v.chars().any(char::is_control)
-    };
-    if !safe(name, 64) || !safe(apn, 100) {
-        return Err("invalid mobile profile name or APN".into());
-    }
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "add",
-            "type",
-            "gsm",
-            "ifname",
-            "*",
-            "con-name",
-            name,
-            "apn",
-            apn,
-        ],
-    )?;
-    run(
-        "nmcli",
-        &[
-            "connection",
-            "modify",
-            name,
-            "gsm.pin-flags",
-            "2",
-            "gsm.password-flags",
-            "2",
-        ],
-    )
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EnterpriseWifiConfiguration {
     pub profile_name: String,
@@ -2405,7 +2365,42 @@ mod wifi_deadline_tests {
 
 #[cfg(test)]
 mod radio_presence_tests {
-    use super::{has_wifi_radio_in, has_wwan_modem_in};
+    use super::{has_wifi_radio_in, has_wwan_modem_in, parse_radio_state};
+
+    /// `NetworkManager` reports its WWAN radio switch as enabled on a
+    /// machine with no modem at all (a laptop with only Wi-Fi). Only a
+    /// modem device `NetworkManager` lists makes mobile broadband
+    /// available, and airplane mode then counts Wi-Fi alone.
+    #[test]
+    fn an_enabled_wwan_switch_without_a_modem_device_is_no_modem() {
+        let wifi_only = parse_radio_state(
+            "enabled:enabled\n",
+            "wifi:connected\nloopback:connected (externally)\nwifi-p2p:disconnected\n",
+            "",
+        );
+        assert!(wifi_only.wifi_available);
+        assert!(!wifi_only.wwan_available, "no gsm or cdma device is listed");
+        assert!(!wifi_only.airplane_mode);
+
+        let wifi_off = parse_radio_state(
+            "disabled:enabled\n",
+            "wifi:unavailable\nloopback:connected (externally)\n",
+            "",
+        );
+        assert!(
+            wifi_off.airplane_mode,
+            "the WWAN switch of a missing modem keeps no radio on"
+        );
+
+        let modem = parse_radio_state(
+            "enabled:disabled\n",
+            "wifi:connected\ngsm:unavailable\n",
+            "",
+        );
+        assert!(modem.wwan_available && !modem.wwan_enabled);
+        let cdma = parse_radio_state("enabled:enabled\n", "cdma:disconnected\n", "");
+        assert!(cdma.wwan_available && cdma.wwan_enabled);
+    }
 
     /// A Wi-Fi PHY or WLAN interface is a Wi-Fi radio and a WWAN device or
     /// interface is a modem; a wired interface and an empty class are
