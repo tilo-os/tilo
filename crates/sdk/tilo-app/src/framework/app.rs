@@ -617,6 +617,12 @@ impl RootShell {
     fn runs_effects(&self) -> bool {
         self.permissions.is_some() && self.run.mode.is_live()
     }
+
+    /// Whether the effects someone invokes run, though the window starts
+    /// no work on its own: a capture a headless drive invokes actions on.
+    fn runs_invoked_effects(&self) -> bool {
+        self.permissions.is_some() && self.run.driven
+    }
 }
 
 /// Build the framework root for a resource state: the live handle, the
@@ -634,6 +640,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     }
     let shell = RootShell::new(app, editing, storage, hosted);
     let runs_effects = shell.runs_effects();
+    let runs_invoked_effects = shell.runs_invoked_effects();
     let RootShell {
         scope,
         permissions,
@@ -657,7 +664,11 @@ pub(crate) fn build_root<A: ResourceApp>(
     if permissions.is_some() {
         A::records(&mut super::Records::new(&storage).with_base(live.clone(), dispatch.clone()));
     }
-    let effects = runs_effects.then(|| Effects::live(dispatch.clone(), live.clone()));
+    let effects = if runs_effects {
+        Some(Effects::live(dispatch.clone(), live.clone()))
+    } else {
+        runs_invoked_effects.then(|| Effects::invoked(dispatch.clone(), live.clone()))
+    };
     let mut cx = ViewCx::root(live, &alive, dispatch, published, run, storage);
     if let Some(effects) = effects {
         cx.env.effects = effects;
@@ -958,7 +969,8 @@ fn create_component(
         super::launch::OpenHere::new(move |arguments| open_in_place(app, &reopener, arguments))
     });
     let run = match context.capture().cloned() {
-        Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?,
+        Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?
+            .driven_by_drive(capture.is_driven()),
         None => Run::live(context.content().cloned()).in_private(context.is_private()),
     };
     if let Some(file) = &file {
@@ -1390,9 +1402,15 @@ fn prepare_named(
         // uses; only a screenshot, or a drive of a named scenario, is built
         // from fixtures.
         if captured {
-            prepared
-                .context
-                .provide_capture(Capture::new(args.scenario.clone()));
+            // A drive invokes what the scene publishes; a screenshot only
+            // photographs it.
+            let scenario = args.scenario.clone();
+            let capture = if args.headless.is_some() {
+                Capture::driven(scenario)
+            } else {
+                Capture::new(scenario)
+            };
+            prepared.context.provide_capture(capture);
             // The theme the capture draws in is the stored choice its
             // controls show.
             ui_core::storage::SettingsDocument::File(super::headless::profile_settings(

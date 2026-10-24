@@ -10216,6 +10216,7 @@ pub fn run() {
     state.set_share_encode_wake(Arc::clone(&session_wake));
     crate::shell::display_persistence::set_wake(Arc::clone(&session_wake));
     crate::shell::storage_notice::start(Arc::clone(&session_wake));
+    crate::shell::crash_notice::start(Arc::clone(&session_wake));
     // NTFS drives open only through the shell's own sheet; see shell::drives.
     crate::shell::drives::start(Arc::clone(&session_wake));
     crate::shell::app_list::set_wake(Arc::clone(&session_wake));
@@ -10897,13 +10898,14 @@ pub fn run() {
         }};
     }
     // From here the compositor thread turns this loop. A turn that stops for
-    // good is recorded and ends the process, so a hang hands the display back
+    // good is recorded (in the journal and the crash directory, which the
+    // next start reads to tell the person) and ends the process, so a hang hands the display back
     // and the session returns to the login screen instead of needing the
     // power button (`watchdog`). Start-up before it may wait without a bound
     // on purpose: the seat is not ours until logind activates the session.
     let watchdog = crate::compositor::watchdog::Watchdog::watch_this_thread(
         crate::compositor::watchdog::Policy::COMPOSITOR,
-        crate::compositor::watchdog::end_process,
+        crate::compositor::watchdog::record_and_end_process,
     )
     .map_err(|error| eprintln!("tilo compositor: the main-loop watchdog did not start: {error}"))
     .ok();
@@ -12049,6 +12051,7 @@ pub fn run() {
         frame_builder.with_chrome(|chrome| {
             session_changed |= chrome.post_queued(crate::shell::storage_notice::drain());
             session_changed |= chrome.post_queued(crate::shell::graphics_notice::drain());
+            session_changed |= chrome.post_queued(crate::shell::crash_notice::drain());
             session_changed |=
                 chrome.post_consent_notices(crate::shell::app_action_consent::drain_notices());
         });

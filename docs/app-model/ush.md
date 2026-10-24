@@ -336,8 +336,10 @@ where it has them, a path, line, column, code or test name.
   session whose shell does not mark its runs, or one in the device's own
   shell, settles the request as failed.
 - `rerun` (on a run) runs its command line again; `rerun-test` (on a run, with
-  a test name it reported) runs that one test the way the run's tool does
-  (`cargo test -p <package> -- --exact <name>`); both are Outside like `run`.
+  a test name it reported) runs that one test the way the run's tool does,
+  keeping the run's environment, toolchain and package and target selection
+  (`cargo test -p <package> --test <target> -- --exact <name>`); both are
+  Outside like `run`.
 - `open-item` (on a run, with the item's position among its items) shows an
   item: a location or a diagnostic opens its file (relative to the run's
   directory), a URL opens in the browser.

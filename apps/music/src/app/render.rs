@@ -1675,7 +1675,7 @@ impl MusicApp {
         invocation: tilo_actions::InvocationId,
         transport: &crate::actions::MusicEffect,
     ) -> Result<ui::framework::Effected, String> {
-        let next = crate::actions::next_playback(transport, &self.pb, &|id| {
+        let (mut next, edit) = crate::actions::next_playback(transport, &self.pb, &|id| {
             self.playback_track(id).is_some()
         })
         .ok_or_else(|| {
@@ -1685,18 +1685,18 @@ impl MusicApp {
             )
         })??;
         self.dirty = true;
-        let next_index = matches!(transport, crate::actions::MusicEffect::PlayNext { .. })
-            .then_some(next.queue_index + 1);
-        if next_index.is_some() && self.pb.shuffle {
-            self.ensure_shuffle_order();
+        // The shuffled order follows the edit exactly as the person's own
+        // queue edits move it: a song put next is heard next, and what has
+        // played stays played.
+        let before = edit.and_then(|edit| self.follow_shuffled_edit(edit, &mut next));
+        let effected = self.start_or_apply_playback(invocation, next);
+        if effected.is_err()
+            && let Some(before) = before
+            && self.shuffle_order.len() != self.pb.queue.len()
+        {
+            self.shuffle_order = before;
         }
-        let effected = self.start_or_apply_playback(invocation, next)?;
-        // A song put next is heard next under shuffle too, as the person's
-        // own Play next does.
-        if let Some(index) = next_index {
-            self.shuffle_next(index);
-        }
-        Ok(effected)
+        effected
     }
 
     /// Move to `next`: only starting a source waits for the audio it starts.

@@ -2256,6 +2256,9 @@ pub(crate) struct Effects<R: Resource> {
     inner: Rc<RefCell<Inner>>,
     /// The jobs the views start on their own, polled with the drains.
     jobs: Rc<RefCell<OwnedJobs<R, ()>>>,
+    /// Whether views and surfaces start work on their own (jobs, projection
+    /// drains), or only the effects someone invokes run.
+    starts_work: bool,
 }
 
 /// An empty [`Inner`], shared. Not generic over the resource, so its
@@ -2271,6 +2274,7 @@ impl<R: Resource> Clone for Effects<R> {
             env: self.env.clone(),
             inner: Rc::clone(&self.inner),
             jobs: Rc::clone(&self.jobs),
+            starts_work: self.starts_work,
         }
     }
 }
@@ -2288,6 +2292,25 @@ impl<R: Resource> Effects<R> {
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(Some(env.clone()))))),
             env: Some(env),
             inner: new_inner(),
+            starts_work: true,
+        }
+    }
+
+    /// Effects of a capture a headless drive invokes actions on: an effect
+    /// it invokes runs, with the work it starts, as it would in a window
+    /// someone uses; the views and surfaces start nothing on their own and
+    /// no projection drains, so the scene stays the scenario's fixture.
+    pub(crate) fn invoked(dispatch: Dispatcher<R>, live: Live<R>) -> Self {
+        Self {
+            env: Some(EffectEnv {
+                dispatch,
+                live,
+                wake: WakeHandle::new(),
+                scope: None,
+            }),
+            inner: new_inner(),
+            jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(None)))),
+            starts_work: false,
         }
     }
 
@@ -2298,6 +2321,7 @@ impl<R: Resource> Effects<R> {
             env: None,
             inner: new_inner(),
             jobs: Rc::new(RefCell::new(OwnedJobs::new(Jobs::new(None)))),
+            starts_work: false,
         }
     }
 
@@ -2314,11 +2338,17 @@ impl<R: Resource> Effects<R> {
     /// Jobs for one surface, whose completions get `&mut` the surface.
     #[inline(never)]
     pub(crate) fn surface_jobs(&self) -> Jobs<R> {
-        Jobs::new(self.env.clone())
+        Jobs::new(self.working_env().cloned())
     }
 
     pub(crate) fn scoped_surface_jobs(&self, scope: &Rc<super::surface::SurfaceScope>) -> Jobs<R> {
-        Jobs::new(self.env.as_ref().map(|env| env.scoped(scope)))
+        Jobs::new(self.working_env().map(|env| env.scoped(scope)))
+    }
+
+    /// The environment work a view or surface starts on its own runs in;
+    /// `None` where none runs.
+    fn working_env(&self) -> Option<&EffectEnv<R>> {
+        self.env.as_ref().filter(|_| self.starts_work)
     }
 
     /// Take up and finish the views' jobs.
@@ -2373,7 +2403,7 @@ impl<R: Resource> Effects<R> {
         T: tilo_resource::Model + Clone + 'static,
         O: serde::Serialize + serde::de::DeserializeOwned + Default + 'static,
     {
-        let Some(env) = self.env.clone() else {
+        let Some(env) = self.working_env().cloned() else {
             return Projection::default();
         };
         let reader = outbox.clone();

@@ -50,6 +50,7 @@ pub(crate) mod collaborator_versions;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
+pub mod crash_notice;
 pub mod desk_widgets;
 pub mod desktop_backdrop;
 pub(crate) mod desktop_commands;
