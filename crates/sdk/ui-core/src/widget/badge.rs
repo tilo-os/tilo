@@ -991,18 +991,22 @@ mod tests {
 
         let mut badge = Badge::count(3);
         let t0 = crate::time::now();
-        with_monotonic_time(t0, || present(&mut badge, &theme));
-        assert!(
-            !badge.needs_redraw() && !badge.needs_animation_frame(),
-            "at rest"
-        );
-        with_monotonic_time(t0, || badge.set_count(4));
-        assert_eq!(
-            badge.display_text().as_deref(),
-            Some("4"),
-            "the value is new at once"
-        );
-        assert!(badge.needs_animation_frame(), "the numbers cross-fade");
+        // Every read stands at a frozen instant: the fade is timed, and a
+        // loaded host must not let it end between the change and the check.
+        with_monotonic_time(t0, || {
+            present(&mut badge, &theme);
+            assert!(
+                !badge.needs_redraw() && !badge.needs_animation_frame(),
+                "at rest"
+            );
+            badge.set_count(4);
+            assert_eq!(
+                badge.display_text().as_deref(),
+                Some("4"),
+                "the value is new at once"
+            );
+            assert!(badge.needs_animation_frame(), "the numbers cross-fade");
+        });
         with_monotonic_time(ms(t0, 12), || {
             let (old, opacity) = badge
                 .label
