@@ -5784,7 +5784,8 @@ impl Widget for TextInput {
         self.single_origin = Point::new(self.rect.x0 + padding_x, text_y);
 
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
-        self.update_single_line_scroll(cursor_x_offset, padding_x, theme.caret_width);
+        let content_w = f64::from(total_w).max(cursor_x_offset);
+        self.update_single_line_scroll(cursor_x_offset, content_w, padding_x, theme.caret_width);
 
         // Text never runs under the show/hide control.
         let text_clip = if self.has_reveal_control() {
