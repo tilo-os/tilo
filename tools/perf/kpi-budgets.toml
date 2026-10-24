@@ -983,22 +983,20 @@ source = "KPI: Frame time p99 at 4K/144 Hz; the CPU share of a pan frame (lavapi
 # like any pan frame instead of rasterising the backdrop, strips and chrome
 # whole (25.6 M px, 376-572 ms on this runner before). Each window group is a
 # damage part of its strip, so a window that changed off screen since the
-# warm (an app the warm drew for the first time presenting its content)
-# rasterises nothing: the strips' layer is no longer rasterised again in a
-# desktop's first pan (8.03 M px before, run 100092; 155,628 px at 100 %,
-# 231,684 at 150 %, 334,264 at 200 % after, run 100497). On two strips a
-# window on screen in the still strip changed between the warm and the first
-# pan (2.2-2.5 M px, its group's area): an in-process app's content, made on
-# its own thread, landed while the 4K warm ran, and the bench, which has no
-# event loop to draw it as it lands, left it to the pan's first frame. The
-# bench now rests and warms again until a frame after the warm changes
-# nothing, as a session reaches rest (`rest_and_warm`); the two-strip maxima
-# stay until a run measures that. The max is enforced about 50 % above
-# those. Frame time is reported like the pan frames'.
+# warm rasterises nothing (8.03 M px before, run 100092). The bench rests and
+# warms again until a frame after the warm changes nothing, and pumps the
+# apps before every frame, as a session's loop does: what an in-process app
+# made on its own thread during the rest is drawn before the pan, never by
+# its first frame (2.2-2.5 M px on two strips before). A first frame now
+# rasterises what any pan frame does: 36,380-38,520 px at 100 %, 55,380 at
+# 150 %, 72,080-74,200 at 200 %, on one strip or two, since each strip is a
+# screen of its own (t run r0757a798e8; 35,564, 53,508 and 70,840 on one
+# strip in run 101617). The max is enforced about 50 % above those. Frame
+# time is reported like the pan frames'.
 
 [kpi."render.shell.pan_start_pixels.4k"]
 unit = "pixels"
-max = 240000.0
+max = 58000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -1015,7 +1013,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window p
 
 [kpi."render.shell.pan_start_pixels.4k_s150"]
 unit = "pixels"
-max = 350000.0
+max = 83000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -1032,7 +1030,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window p
 
 [kpi."render.shell.pan_start_pixels.4k_s200"]
 unit = "pixels"
-max = 500000.0
+max = 112000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -1049,7 +1047,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K six-window p
 
 [kpi."render.shell.pan_start_pixels.4k_strips2"]
 unit = "pixels"
-max = 3700000.0
+max = 58000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -1066,7 +1064,7 @@ source = "KPI: Frame time p99 at 4K/144 Hz, the first frame of a 4K pan of two s
 
 [kpi."render.shell.pan_start_pixels.4k_s200_strips2"]
 unit = "pixels"
-max = 3700000.0
+max = 112000.0
 enforce = true
 p50_tolerance = 1.5
 p99_tolerance = 2.0
@@ -1115,7 +1113,12 @@ source = "KPI: Frame time p99 at 4K/144 Hz, full repaint (lavapipe; reported onl
 # rail). Every move is measured from a desktop at rest, the first one
 # included, so the max is a move too: a move that repaints the output
 # (8,294,400 px) fails at once. Raster pixels are enforced about 40 % above
-# the medians.
+# the medians. Each move now starts from a real rest, as pans do
+# (`rest_and_warm`), so the first move is measured like the others. Since
+# each strip is a screen of its own (the strip deck), a move shows another
+# screen and every move repaints the output: 8,294,400 px at each scale, the
+# first move and the settled ones alike (t run r0757a798e8). These maxima
+# hold until a move composites the next strip from warmed layers.
 
 [kpi."render.shell.strip_move_pixels.4k"]
 unit = "pixels"
