@@ -19,8 +19,8 @@ use ui::widget::{
 };
 
 use super::{
-    Door, El, OperationNotice, PrintPreview, ScanState, Snapshot, UiCommand, display_name,
-    failed_areas, friendly_queue_state, friendly_reason, job_title, supply_level,
+    Door, El, PrintPreview, ScanState, Snapshot, UiCommand, display_name, failed_areas,
+    friendly_queue_state, friendly_reason, job_title, supply_level,
 };
 
 fn text(s: &str, role: TextRole) -> El {
@@ -159,15 +159,6 @@ fn page_with_footer(body: Column, footer: Option<Actions>) -> El {
             .push(Box::new(aligned));
     }
     Box::new(root)
-}
-
-fn notice_banner(notice: &OperationNotice) -> El {
-    let banner = if notice.success {
-        Banner::success(&notice.title)
-    } else {
-        Banner::error(&notice.title)
-    };
-    Box::new(banner.with_message(&notice.message).dismissible())
 }
 
 /// "printers, documents or scanners"
@@ -374,16 +365,13 @@ fn is_active(job: &os_actions::printing::PrintJob) -> bool {
     )
 }
 
-pub(super) fn live_view(snapshot: &Snapshot, tx: &Door, notice: Option<&OperationNotice>) -> El {
+pub(super) fn live_view(snapshot: &Snapshot, tx: &Door) -> El {
     let queues = snapshot.queues.as_deref().unwrap_or(&[]);
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let scanners = snapshot.scanners.as_deref().unwrap_or(&[]);
     let active: Vec<_> = jobs.iter().filter(|job| is_active(job)).collect();
 
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, true, true, true), tx) {
         items.push(issue);
     }
@@ -731,17 +719,9 @@ fn queue_card(job: &os_actions::printing::PrintJob, pending_cancel: Option<&str>
     })
 }
 
-pub(super) fn queue_view(
-    snapshot: &Snapshot,
-    tx: &Door,
-    pending_cancel: Option<&str>,
-    notice: Option<&OperationNotice>,
-) -> El {
+pub(super) fn queue_view(snapshot: &Snapshot, tx: &Door, pending_cancel: Option<&str>) -> El {
     let jobs = snapshot.jobs.as_deref().unwrap_or(&[]);
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     if let Some(issue) = unavailable_notice(&failed_areas(snapshot, false, true, false), tx) {
         items.push(issue);
     }
@@ -1195,12 +1175,7 @@ fn page_navigation(selected_page: usize, page_count: usize, tx: &Door) -> Vec<Bu
     buttons
 }
 
-fn scan_review_view(
-    page_data: &super::ScannedPage,
-    scan: &ScanState,
-    notice: Option<&OperationNotice>,
-    tx: &Door,
-) -> El {
+fn scan_review_view(page_data: &super::ScannedPage, scan: &ScanState, tx: &Door) -> El {
     let selected_page = scan.selected;
     let page_count = scan.pages.len();
     let editor = ImageCropEditor::new(
@@ -1242,9 +1217,6 @@ fn scan_review_view(
         ));
 
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     items.push(Box::new(review));
     items.push(titled_section(
         "Pages in this document",
@@ -1381,17 +1353,13 @@ pub(super) fn scan_setup_view(
     snapshot: &Snapshot,
     selected: Option<&str>,
     scan: &ScanState,
-    notice: Option<&OperationNotice>,
     tx: &Door,
 ) -> El {
     if let Some(page_data) = scan.result.as_ref() {
-        return scan_review_view(page_data, scan, notice, tx);
+        return scan_review_view(page_data, scan, tx);
     }
     let page_count = scan.pages.len();
     let mut items: Vec<El> = Vec::new();
-    if let Some(notice) = notice {
-        items.push(notice_banner(notice));
-    }
     if page_count > 0 {
         items.push(muted(&format!(
             "{page_count} {} captured. New scans are added to this document.",

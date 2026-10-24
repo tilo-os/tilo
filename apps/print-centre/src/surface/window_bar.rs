@@ -167,16 +167,13 @@ mod tests {
             assert!(!drawn(&root, own), "the page draws no {own} of its own");
         }
 
-        app.surface_mut::<PrintCentre>().notice = Some(super::super::OperationNotice {
-            success: true,
-            title: "Printer added".into(),
-            message: String::new(),
-        });
+        app.surface_mut::<PrintCentre>()
+            .tell(super::super::OperationNotice::success("Printer added"));
         press(&mut app, ToolbarEvent::Action { id: REFRESH.into() });
         refreshed(
             &mut app,
             "Refresh to ask again, as the printers' own refresh did",
-            |centre| centre.notice.is_none(),
+            |centre| !centre.notice.is_shown(),
         );
 
         app.effect(&crate::resource::PrintCentreEffect::RunDiagnostics)
