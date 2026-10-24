@@ -340,19 +340,18 @@ pub(crate) fn commit_mute(
     Ok((committed, Osd::volume(committed.level, muted)))
 }
 
+/// The mute key sets the sink to the inverse of the state the tray shows,
+/// rather than flipping whatever the sink is in: the readout says what the
+/// sink is told. A flip read against a stale tray (a press racing the
+/// reading of the one before, or a headset's own mute button not yet read)
+/// said "Muted" while it un-muted the sink.
 fn toggle_mute(audio: &dyn AudioControl, status: Option<&StatusBridge>) -> Option<Osd> {
-    // Read before actuating: a reading taken after the toggle could observe
+    // Read before actuating: a reading taken after the write could observe
     // the new state and invert it a second time.
     let now = current_volume(status)?;
-    audio.toggle_mute().ok()?;
-    // `wpctl set-mute toggle` reports nothing, so assume the inverse of
-    // what we last knew rather than pay a second subprocess.
-    let level = now.level;
-    let muted = !now.muted;
-    if let Some(s) = status {
-        s.set_volume(os_actions::VolumeState { level, muted });
-    }
-    Some(Osd::volume(level, muted))
+    commit_mute(audio, status, now, !now.muted)
+        .ok()
+        .map(|(_, osd)| osd)
 }
 
 /// The microphone's state is not polled, so its readout arrives once the
@@ -679,7 +678,7 @@ mod tests {
     struct Recorder {
         calls: RefCell<Vec<String>>,
         fail_unmute: Cell<bool>,
-        bridge_on_toggle: RefCell<Option<StatusBridge>>,
+        bridge_on_write: RefCell<Option<StatusBridge>>,
         /// `None`: the machine has no display backlight.
         brightness: Cell<Option<f32>>,
         /// `None`: the machine has no keyboard backlight.
@@ -718,11 +717,18 @@ mod tests {
             if !muted && self.fail_unmute.get() {
                 return Err("unmute failed".into());
             }
+            if let Some(bridge) = self.bridge_on_write.borrow().as_ref() {
+                let before = bridge.snapshot().volume.expect("seeded volume");
+                bridge.set_volume(os_actions::VolumeState {
+                    level: before.level,
+                    muted,
+                });
+            }
             Ok(())
         }
         fn toggle_mute(&self) -> Result<(), String> {
             self.calls.borrow_mut().push("toggle_mute".to_string());
-            if let Some(bridge) = self.bridge_on_toggle.borrow().as_ref() {
+            if let Some(bridge) = self.bridge_on_write.borrow().as_ref() {
                 let before = bridge.snapshot().volume.expect("seeded volume");
                 bridge.set_volume(os_actions::VolumeState {
                     level: before.level,
@@ -1104,26 +1110,51 @@ mod tests {
             let rec = Recorder::default();
             let bridge = bridge_at(0.50, false);
             let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
-            assert_eq!(rec.calls.borrow().as_slice(), ["toggle_mute"]);
+            assert_eq!(rec.calls.borrow().as_slice(), ["mute=true"]);
             assert_eq!(osd.caption(), "Muted");
             assert!(bridge.snapshot().volume.unwrap().muted);
 
             let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+            assert_eq!(rec.calls.borrow().as_slice(), ["mute=true", "mute=false"]);
             assert_eq!(osd.caption(), "Volume 50%");
             assert!(!bridge.snapshot().volume.unwrap().muted);
+        }
+
+        fn the_sink_ends_in_the_state_the_readout_shows() {
+            // The sink is already muted (its headset's own button, or the
+            // press before this one), and the tray has not read that yet.
+            let rec = Recorder::default();
+            let bridge = bridge_at(0.50, false);
+            let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
+            let sink_muted =
+                rec.calls
+                    .borrow()
+                    .iter()
+                    .fold(true, |muted, call| match call.as_str() {
+                        "toggle_mute" => !muted,
+                        "mute=true" => true,
+                        "mute=false" => false,
+                        _ => muted,
+                    });
+            assert_eq!(osd.caption(), "Muted");
+            assert!(
+                sink_muted,
+                "the readout says Muted, so the sink must be muted: {:?}",
+                rec.calls.borrow()
+            );
         }
 
         fn mute_uses_the_state_from_before_actuation() {
             let bridge = bridge_at(0.50, false);
             let rec = Recorder::default();
-            *rec.bridge_on_toggle.borrow_mut() = Some(bridge.clone());
+            *rec.bridge_on_write.borrow_mut() = Some(bridge.clone());
 
             let osd = apply_local(MediaKey::VolumeMute, &rec, Some(&bridge)).expect("an OSD");
 
             assert_eq!(osd.caption(), "Muted");
             assert!(
                 bridge.snapshot().volume.unwrap().muted,
-                "a post-toggle read must not be inverted a second time"
+                "a read after the write must not be inverted a second time"
             );
         }
 
@@ -1143,6 +1174,7 @@ mod tests {
         }
 
         the_mute_key_flips_the_state_and_says_so();
+        the_sink_ends_in_the_state_the_readout_shows();
         mute_uses_the_state_from_before_actuation();
         a_machine_with_no_audio_daemon_shows_no_readout();
     }
