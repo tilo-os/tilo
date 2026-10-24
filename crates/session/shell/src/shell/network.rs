@@ -47,6 +47,9 @@ mod own_devices_tests;
 mod paired_continuity_tests;
 mod peer_sync_worker;
 mod personal_device_peers;
+mod personal_reconcile;
+#[cfg(test)]
+mod personal_reconcile_tests;
 #[cfg(test)]
 mod presence_identity_tests;
 mod private_chat;
@@ -1536,6 +1539,9 @@ pub struct ShellNetwork {
     personal_workspaces: Option<Mutex<crate::shell::personal_workspaces::PersonalWorkspaces>>,
     /// When this device last sent its workspace list unprompted.
     last_personal_workspaces_snapshot: Mutex<Option<std::time::Instant>>,
+    /// Whether the workspace list is in step with the tree, and whether a
+    /// reconcile is queued off the loop.
+    personal_reconcile: personal_reconcile::State,
     /// When each of this person's other devices last moved focus, for the
     /// "continue from another device" offer.
     personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
@@ -2311,6 +2317,7 @@ impl ShellNetwork {
             personal_rooms_export: KnownContents::default(),
             personal_workspaces,
             last_personal_workspaces_snapshot: Mutex::new(None),
+            personal_reconcile: personal_reconcile::State::default(),
             #[cfg(test)]
             continuity_policy_override: None,
             device_fabric: Mutex::new(device_fabric),
@@ -6806,52 +6813,6 @@ impl ShellNetwork {
         }
     }
 
-    /// List this device's own workspaces for the person's other devices, and
-    /// send them the list when it changed (or, rarely, when it did not, to
-    /// repair a lost snapshot). Called every frame tick; when nothing
-    /// changed it is one walk over the tree's workspaces.
-    fn reconcile_personal_workspaces(&self) {
-        let (Some(workspaces), Some(person)) =
-            (self.personal_workspaces.as_ref(), self.personal_person())
-        else {
-            return;
-        };
-        let Some(tree) = self.replica.lock().ok().map(|replica| replica.tree.clone()) else {
-            return;
-        };
-        let (mut changed, settle) = {
-            let tree = tree.read();
-            let changed = workspaces
-                .lock()
-                .is_ok_and(|mut workspaces| workspaces.publish_local(&tree, &person));
-            let settle = !tree.personal_device_requests.is_empty()
-                || (tree.personal_device_choices.is_empty() && !tree.desktop.workspaces.is_empty());
-            drop(tree);
-            (changed, settle)
-        };
-        if changed || settle {
-            let mut tree = tree.write();
-            if let Ok(mut workspaces) = workspaces.lock() {
-                for (room, device, shown) in std::mem::take(&mut tree.personal_device_requests) {
-                    changed |= workspaces.set_shown(room, device, shown);
-                }
-                // Keeping a workspace off this device takes it off at once.
-                workspaces.adopt_into(&mut tree, &person);
-                refresh_device_choices(&mut tree, &workspaces);
-            }
-            drop(tree);
-        }
-        let due = self
-            .last_personal_workspaces_snapshot
-            .lock()
-            .is_ok_and(|last| {
-                last.is_none_or(|at| at.elapsed() >= PERSONAL_WORKSPACES_RESTATE_INTERVAL)
-            });
-        if changed || due {
-            self.publish_personal_workspaces();
-        }
-    }
-
     /// Send this device's whole workspace list, signed with its device key,
     /// on the person's own topic.
     fn publish_personal_workspaces(&self) {
@@ -7069,7 +7030,7 @@ impl ShellNetwork {
         steps.time("network/room-push", || self.push_room_changes());
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
-            self.reconcile_personal_workspaces();
+            self.reconcile_personal_workspaces_if_changed(matches!(admission, Admission::InPlace));
         });
         steps.time("network/home-peers", || {
             self.refresh_home_peer_hosts_periodically();
@@ -8997,6 +8958,7 @@ pub(crate) fn shell_network_for_test(
         personal_rooms_export: KnownContents::default(),
         personal_workspaces: None,
         last_personal_workspaces_snapshot: Mutex::new(None),
+        personal_reconcile: personal_reconcile::State::default(),
         personal_focus_recency: Mutex::default(),
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
