@@ -244,13 +244,20 @@ mod tests {
             "ada".to_owned(),
             session_argv(),
             Vec::new(),
-            move |update| sender.lock().unwrap().send(update).unwrap(),
+            move |update| {
+                // Report acceptance from the hook itself: the worker goes on
+                // to start the session and exit the process, which can happen
+                // before another thread prints what it was sent.
+                if update == crate::auth::AuthUpdate::Accepted {
+                    println!("accepted");
+                }
+                sender.lock().unwrap().send(update).unwrap();
+            },
         );
         assert_eq!(
             updates.recv_timeout(tilo_test_env::hang_bound()).unwrap(),
             crate::auth::AuthUpdate::Accepted
         );
-        println!("accepted");
         // The worker exits the process once greetd starts the session.
         let after = updates.recv_timeout(tilo_test_env::hang_bound());
         panic!("the handoff returned instead of starting the session: {after:?}");
