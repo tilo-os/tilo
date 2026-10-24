@@ -138,6 +138,7 @@ fn a_shortcut_saved_on_the_hosting_device_outlives_the_rooms_next_commit() {
         .iter()
         .map(|shortcut| shortcut.id.clone())
         .collect();
+    drop(hosted);
     assert_eq!(ids, ["tidy"], "the saved shortcut is still listed");
 }
 
@@ -160,11 +161,9 @@ fn a_fire_time_the_hosting_device_claims_outlives_the_rooms_next_commit() {
             .claim_schedule(hosted.room, &claim)
     );
     hosted.commit_in_the_room("after the claim");
-    assert_eq!(
-        hosted.workspace().schedule_claims,
-        [claim],
-        "the claimed fire time is still held"
-    );
+    let held = hosted.workspace().schedule_claims;
+    drop(hosted);
+    assert_eq!(held, [claim], "the claimed fire time is still held");
 }
 
 #[test]
@@ -180,10 +179,10 @@ fn an_effect_receipt_the_hosting_device_records_outlives_the_rooms_next_commit()
         tilo_actions::EffectReceiptStatus::Succeeded,
     ));
     hosted.commit_in_the_room("after the receipt");
+    let receipts = hosted.workspace().effect_receipts;
+    drop(hosted);
     assert!(
-        hosted
-            .workspace()
-            .effect_receipts
+        receipts
             .iter()
             .any(|receipt| receipt.invocation == invocation),
         "the recorded effect is still in the workspace's history"
@@ -200,10 +199,11 @@ fn a_sandbox_capability_taken_back_stays_taken_back_across_the_rooms_next_commit
         Access::Write,
     )
     .with_id("document");
-    hosted.device.tree.write().request_governance(
-        hosted.room,
-        GovernanceRequest::GrantSandbox(capability.clone()),
-    );
+    hosted
+        .device
+        .tree
+        .write()
+        .request_governance(hosted.room, GovernanceRequest::GrantSandbox(capability));
     hosted.until_shown("the room to grant the capability", |workspace| {
         workspace.sandbox.iter().any(|held| held.id == "document")
     });
@@ -215,12 +215,10 @@ fn a_sandbox_capability_taken_back_stays_taken_back_across_the_rooms_next_commit
             .narrow_sandbox(hosted.local, &hosted.ada.id(), "document")
     );
     hosted.commit_in_the_room("after taking it back");
+    let sandbox = hosted.workspace().sandbox;
+    drop(hosted);
     assert!(
-        !hosted
-            .workspace()
-            .sandbox
-            .iter()
-            .any(|held| held.id == "document"),
+        !sandbox.iter().any(|held| held.id == "document"),
         "the capability taken back is not granted again"
     );
 }
@@ -251,12 +249,10 @@ fn a_grant_set_saved_through_the_rooms_governance_reaches_the_room() {
             .any(|preset| preset.name == "reviewers")
     });
     hosted.commit_in_the_room("after the grant set");
+    let presets = hosted.workspace().presets;
+    drop(hosted);
     assert!(
-        hosted
-            .workspace()
-            .presets
-            .iter()
-            .any(|preset| preset.name == "reviewers"),
+        presets.iter().any(|preset| preset.name == "reviewers"),
         "the grant set is still saved"
     );
 }
@@ -275,7 +271,9 @@ fn a_name_given_through_the_rooms_governance_reaches_the_room() {
         workspace.name == "Archive"
     });
     hosted.commit_in_the_room("after the rename");
-    assert_eq!(hosted.workspace().name, "Archive");
+    let name = hosted.workspace().name;
+    drop(hosted);
+    assert_eq!(name, "Archive");
 }
 
 #[test]
@@ -314,10 +312,10 @@ fn a_grant_given_on_the_hosting_device_reaches_the_rooms_policy() {
         },
     );
     hosted.commit_in_the_room("after the grant");
+    let policy = hosted.workspace().policy;
+    drop(hosted);
     assert!(
-        hosted
-            .workspace()
-            .policy
+        policy
             .grants
             .iter()
             .any(|grant| grant.id.as_str() == "reader"),

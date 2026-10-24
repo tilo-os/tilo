@@ -93,6 +93,8 @@ fn a_runs_edits_in_a_room_its_device_hosts_reach_a_member_attributed_and_undo_as
 
     // Undoing the run on Bob's copy reverts both of its steps there.
     let finished = door.finished_runs();
+    drop(bob);
+    drop(door);
     assert_eq!(finished.len(), 1, "one run finished");
     let mut workspace_doc = AutoCommit::new();
     crate::shell::automation_host::record_shortcut_run(
@@ -114,5 +116,4 @@ fn a_runs_edits_in_a_room_its_device_hosts_reach_a_member_attributed_and_undo_as
     held.commit();
     assert!(held.get(automerge::ROOT, "draft").unwrap().is_none());
     assert!(held.get(automerge::ROOT, "published").unwrap().is_none());
-    drop(bob);
 }
