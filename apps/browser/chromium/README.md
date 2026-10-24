@@ -566,8 +566,11 @@ content scripts (with `sender.tab`) work without help.
   scripts for the page, the script waits up to one and a half seconds for
   Chromium to make it, as their first script runs: AdGuard injects its
   keep-alive on `tabs.onUpdated` as the page starts, before then, and it
-  needs their `chrome`. Where it has none, the host makes a world
-  that gets a content script's `runtime`, `storage` and `i18n`
+  needs their `chrome`. Where it has none, the host makes a world, in the
+  main frame and in each frame of the page's process it injects into
+  (`allFrames` reaches those the extension may script: a host permission for
+  the frame's address, or `activeTab` for the page's origin), that gets a
+  content script's `runtime`, `storage` and `i18n`
   (`src/extension_content.js`), through a binding only that world has:
   messages and ports both ways (`runtime.sendMessage` and `runtime.connect`
   from the script, `tabs.sendMessage` and `tabs.connect` from the
@@ -593,8 +596,17 @@ content scripts (with `sender.tab`) work without help.
   (`frameId`, `documentId`), as Bitwarden injects its form filler into each
   frame that asks. A message reaches the frame's content scripts, or the
   extension's own page in the frame, as Evernote Web Clipper answers the
-  panel it shows in the page. Chromium knows a frame and its document by
-  ids the inspector does not show, so the host asks the extension's world
+  panel it shows in the page. A message that names no frame reaches every
+  frame the extension has a world in, as in Chrome, so a password manager's
+  script in a login frame or a translator's in each frame hears it: the
+  first reply answers it, nothing does once every frame heard it and none
+  replied, and no receiver when none listens. It asks no frame its id, and
+  of the frames other sites' processes render it attaches only to those the
+  extension may have a world in: its own page, a page its content scripts
+  match (`scriptable`), or one the host met its world in before; another
+  site's frame without one costs no session. Chromium knows a frame and
+  its document by ids the inspector does not show, so the host asks the
+  extension's world
   in the frame (or its page there) over a port only the tab script answers
   (`sender.frameId`, `sender.documentId`): a port, because an extension
   page without the tab script that answers every message itself cannot
@@ -608,7 +620,15 @@ content scripts (with `sender.tab`) work without help.
   `allFrames` passes over a frame the script cannot run in, as Chrome does:
   the extension's own page, and one that went to another site's page the
   extension's content scripts do not match, which keeps its id but has no
-  world of the extension in its new process.
+  world of the extension in its new process. A frame the extension has no
+  world in cannot say which it is, so the host reads the frames Chromium
+  lists for the tab (`webNavigation.getAllFrames`, through the Browser's own
+  extension) and places each under its parent, by its id where known, else
+  by its address in the page's order; the same list names the document of
+  a frame no world told of, so every result carries its `documentId`, as in
+  Chrome. The list is read while the script runs, once per document. Another
+  site's frame the extension has no world in gets none: the host keeps no
+  session to it for the world's messages.
 - A worker that asks for the last focused window before the person focused
   a page (it starts with the engine) gets the first page's, as in Chrome. A
   tab an extension was told of while the host could not learn its id among
