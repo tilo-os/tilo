@@ -77,6 +77,33 @@ impl Hosted {
         });
     }
 
+    /// Save `shortcut` in the room as Ada, through the shortcuts library as
+    /// the door saves one, and wait until the workspace lists it.
+    fn save_shortcut(&self, shortcut: tilo_automation::Shortcut) {
+        let actor = hex::encode(self.ada.user());
+        let id = shortcut.id.clone();
+        let saved = tilo_automation::Shortcut {
+            saved_by: Some(actor.clone()),
+            ..shortcut
+        };
+        let net = Arc::clone(self.device.net());
+        net.runtime_handle()
+            .unwrap()
+            .block_on(
+                crate::shell::broker_services::NativeShortcutLibrary::commit(
+                    self.device.tree.clone(),
+                    Some(Arc::clone(&net)),
+                    self.room,
+                    actor,
+                    tilo_automation::ShortcutChange::Save(Box::new(saved)),
+                ),
+            )
+            .unwrap_or_else(|error| panic!("Ada saves the shortcut: {error}"));
+        self.until_shown("the saved shortcut to be listed", |workspace| {
+            workspace.shortcuts.iter().any(|held| held.id == id)
+        });
+    }
+
     /// Let the room commit a change of its own and wait until this device
     /// holds it.
     fn commit_in_the_room(&self, text: &str) {
@@ -97,7 +124,6 @@ fn shortcut() -> tilo_automation::Shortcut {
         "name": "Tidy",
         "steps": [],
         "triggers": [hourly],
-        "saved_by": "person:me"
     }))
     .expect("shortcut JSON")
 }
@@ -106,13 +132,7 @@ fn shortcut() -> tilo_automation::Shortcut {
 #[serial_test::serial]
 fn a_shortcut_saved_on_the_hosting_device_outlives_the_rooms_next_commit() {
     let hosted = Hosted::start(0x51);
-    assert!(
-        hosted
-            .device
-            .tree
-            .write()
-            .save_workspace_shortcut(hosted.local, &shortcut())
-    );
+    hosted.save_shortcut(shortcut());
     hosted.commit_in_the_room("after the save");
     let ids: Vec<_> = hosted
         .workspace()
@@ -133,11 +153,14 @@ fn a_fire_time_the_hosting_device_claims_outlives_the_rooms_next_commit() {
         due_ms: 1_800_000_000_000,
         device: hex::encode(hosted.device.cert().device_public_key),
     };
-    {
-        let mut tree = hosted.device.tree.write();
-        assert!(tree.save_workspace_shortcut(hosted.local, &shortcut()));
-        assert!(tree.claim_schedule(hosted.room, &claim));
-    }
+    hosted.save_shortcut(shortcut());
+    assert!(
+        hosted
+            .device
+            .tree
+            .write()
+            .claim_schedule(hosted.room, &claim)
+    );
     hosted.commit_in_the_room("after the claim");
     assert_eq!(
         hosted.workspace().schedule_claims,
@@ -215,7 +238,11 @@ fn a_grant_set_saved_through_the_rooms_governance_reaches_the_room() {
         tilo_desktop::workspace_settings::GovernanceOperation::SavePreset {
             name: "reviewers".into(),
             description: "Read and comment".into(),
-            rules: Vec::new(),
+            rules: vec![tilo_action_policy::Rule::new(
+                hosted.workspace().node(),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+            )],
         },
     )
     .expect("the owner may save a grant set");
