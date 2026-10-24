@@ -1794,6 +1794,30 @@ class ExtensionTabs(unittest.TestCase):
                                  ".then(() => 'answered', (e) => e.message)")
         self.assertEqual(missing, 'No tab with id: 2000000000.')
 
+        # Asked to show no count, each still counts; asked again on the same
+        # page, as uBlock Origin Lite's setting does or its first call once
+        # the Browser says whose worker it is, each shows what its own rules
+        # did there so far, as in Chrome.
+        show = ("chrome.declarativeNetRequest.setExtensionActionOptions({displayActionCountAsBadgeText: %s})"
+                ".then(() => 'done', (e) => e.message)")
+        for extension in (tally, spotter):
+            self.assertEqual(self.in_worker(host, extension, show % 'false'), 'done')
+        mark = self.counted(host, 'hidden', {**TALLIED, 'beacon': 'stopped'})
+        # The beacon is the page's last request: once the host knows of it,
+        # it knows of them all.
+        heard = f"(async () => (await chrome.declarativeNetRequest.getMatchedRules({{tabId: {tab}}})).rulesMatchedInfo.length)()"
+        deadline = time.monotonic() + HANG_BOUND
+        while self.in_worker(host, spotter, heard) != 1:
+            self.assertLess(time.monotonic(), deadline, 'the blocked beacon never reached the host')
+            host.settle(0.25)
+        self.assertFalse([e for e in host.seen[mark:] if e['event'] == 'extension_action' and e['id'] in (tally, spotter)
+                          and e['change'].get('badge')], 'a button asked to show no count shows none')
+        mark = len(host.seen)
+        for extension in (tally, spotter):
+            self.assertEqual(self.in_worker(host, extension, show % 'true'), 'done')
+        self.badge(host, mark, tally, '4')
+        self.badge(host, mark, spotter, '1')
+
     def test_an_extensions_download_is_the_browsers_and_the_extension_follows_it(self):
         host, ids = self.start('downloader', access={'downloader': (['downloads', 'downloads.open'], [])})
         host.navigate(self.url + '/page')
