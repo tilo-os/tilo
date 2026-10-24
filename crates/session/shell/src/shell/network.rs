@@ -470,14 +470,14 @@ impl PeerDepartureHistory {
 }
 
 /// The rooms whose topics this device joins: every room in the tree but one
-/// it is still joining through a host. That room's traffic comes over its
+/// it is still joining through a host, or still placing on one. That room's traffic comes over its
 /// native session once the replica installs, which joins the topic itself;
 /// joined earlier, its host would replay the room's retained traffic to a
 /// device that cannot yet tell a member from anyone.
 fn topic_rooms(tree: &crate::shell::state::WorkspaceTree) -> Vec<RoomId> {
     tree.rooms()
         .into_iter()
-        .filter(|room| !tree.is_joining(*room))
+        .filter(|room| !tree.is_joining(*room) && !tree.pending_placements.contains(room))
         .collect()
 }
 
