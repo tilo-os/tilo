@@ -184,11 +184,13 @@ pub enum BrowserEffect {
     #[effect(view, row)]
     ClearLibraryFilter,
     /// Clear browsing history
+    ///
+    /// Your saved browsing history will be removed. Bookmarks are kept.
     #[effect(row, returns, destructive)]
     ClearHistory,
-    /// Request local site-data clear
+    /// Clear site data
     ///
-    /// Asks this device's engine to clear cookies and site storage.
+    /// Cookies and site storage on this device will be cleared. You may be signed out of websites.
     #[effect(row, returns, destructive)]
     RequestSiteDataClear,
     /// Pause history in this window

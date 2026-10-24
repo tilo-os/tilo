@@ -122,4 +122,14 @@ fn unchanged_frames_do_not_wake_or_replace_the_painted_pixels() {
         (resized.width, resized.height, resized.trace_id),
         (1, 2, Some(4))
     );
+
+    // A new view needs its first frame and wake even when its pixels match
+    // the document whose retained frame was explicitly cleared.
+    *shared.frames.lock().unwrap() = None;
+    present_frame(&shared, 1, frame(1, 2, resized.rgba.clone(), Some(5)));
+    assert_eq!(wakes.load(Ordering::Relaxed), 4);
+    assert_eq!(
+        shared.frames.lock().unwrap().as_ref().unwrap().trace_id,
+        Some(5)
+    );
 }

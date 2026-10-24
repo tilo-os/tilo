@@ -14806,17 +14806,17 @@ mod ordinary_confirmation_owner_tests {
             driver
                 .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
                 .unwrap();
-            let field = driver.a11y_node_named("Confirmation").unwrap();
-            driver
-                .perform_a11y_action(field, &crate::a11y::Action::SetValue("CONFIRM".into()))
-                .unwrap();
+            driver.send(&super::key_input(
+                &winit::keyboard::Key::Character("CONFIRM".into()),
+                winit::event::ElementState::Pressed,
+            ));
             let old = driver.control_domain.clone();
             if replacement {
                 driver.control_domain = crate::ControlDomain::new();
             } else {
                 old.close();
             }
-            let submit = driver.a11y_node_named("Confirm").unwrap();
+            let submit = driver.a11y_node_named("Run fixture").unwrap();
             driver
                 .perform_a11y_action(submit, &crate::a11y::Action::Activate)
                 .unwrap();

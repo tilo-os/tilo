@@ -497,15 +497,27 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
 /// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
 /// what the tab already has.
 fn present_frame(shared: &Shared, tab: u32, frame: super::Frame) {
-    if let Ok(mut slot) = shared.frames.lock() {
-        if let Some(previous) = slot.as_ref()
-            && previous.width == frame.width
+    // Comparing a full-resolution frame may scan tens of megabytes.
+    // The UI takes this same lock while handling input and drawing; keep
+    // that scan outside it, retaining only the immutable pixel allocation.
+    let previous = shared.frames.lock().ok().and_then(|slot| slot.clone());
+    let unchanged = previous.as_ref().is_some_and(|previous| {
+        previous.width == frame.width
             && previous.height == frame.height
             && previous.rgba == frame.rgba
+    });
+    if let Ok(mut slot) = shared.frames.lock() {
+        if unchanged
+            && let (Some(previous), Some(current)) = (&previous, slot.as_ref())
+            && current.width == previous.width
+            && current.height == previous.height
+            && Arc::ptr_eq(&previous.rgba, &current.rgba)
         {
-            super::frame_trace::unchanged(tab, frame.trace_id, previous.trace_id);
+            super::frame_trace::unchanged(tab, frame.trace_id, current.trace_id);
             return;
         }
+        // A cleared/replaced slot during comparison still needs this
+        // frame, even if it matched the earlier snapshot.
         *slot = Some(frame);
     }
     shared.wake();
