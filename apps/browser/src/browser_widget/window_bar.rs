@@ -296,15 +296,12 @@ impl BrowserWidget {
 
     /// Tell the window's bar the slots as they are now, and run what the
     /// person did with them: the same canonical actions the browser's own
-    /// toolbar runs. Returns whether anything ran.
-    pub(super) fn sync_window_toolbar(&mut self) -> bool {
+    /// toolbar runs. Events invalidate composition only when they change it.
+    pub(super) fn sync_window_toolbar(&mut self) {
         self.declare_window_toolbar();
-        let events = ui::window_toolbar::take_events();
-        let ran = !events.is_empty();
-        for event in events {
+        for event in ui::window_toolbar::take_events() {
             self.run_window_toolbar_event(event);
         }
-        ran
     }
 
     /// Tell the window's bar the slots, when what they are made from
@@ -337,6 +334,9 @@ impl BrowserWidget {
                 // page's own address is the field put back: no query, so
                 // nothing abandoned is suggested for again.
                 self.bar_query = (text.trim() != self.current_uri.trim()).then_some(text);
+                // Suggestions belong to the host's bar. Rebuilding the page
+                // here discards its retained image and input state per key.
+                return;
             }
             ToolbarEvent::Action { id } => match id.as_str() {
                 RELOAD => self.queue_unit_operation("browser.page", "reload"),

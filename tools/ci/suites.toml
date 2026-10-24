@@ -787,6 +787,7 @@ inputs = ["scripts/browser/"]
 suites = [
   "scripts/browser/benchmark-pages.test.mjs",
   "scripts/browser/scroll-response.test.mjs",
+  "scripts/browser/test_benchmark_input.py",
 ]
 
 # Cargo packages whose code reads repository files outside their directory.

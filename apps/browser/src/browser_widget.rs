@@ -5932,7 +5932,7 @@ impl BrowserWidget {
         self.drive_engine_setup();
         self.apply_engine_events();
         self.apply_panel_events();
-        self.structure_dirty |= self.sync_window_toolbar();
+        self.sync_window_toolbar();
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
@@ -8625,6 +8625,8 @@ mod tests {
         assert_eq!(w.address.with(Clone::clone), "youtube.com");
         assert_eq!(w.suggestions.items().len(), rows.len());
     }
+
+    include!("browser_widget/retained_address_tests.rs");
 
     #[test]
     #[allow(
