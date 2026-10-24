@@ -615,6 +615,12 @@ impl ShellDriver {
         self.fb.take_backdrop()
     }
 
+    /// The ground the shell stands on, as the live compositor clears each
+    /// display to it before drawing the shell.
+    pub fn ground(&self) -> vello::peniko::Color {
+        ui::chrome::shell::desktop_ground(self.fb.theme())
+    }
+
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
             // The lock scene has no floating surfaces; drop any earlier frame's.
