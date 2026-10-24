@@ -1030,6 +1030,7 @@ fn tab_endpoints_keep_capacity_and_frames_until_acknowledged() {
         let engine = ChromiumEngine::with_host(&host, &dir.path().join("profile")).unwrap();
         *engine.frames().lock().unwrap() = Some(super::super::Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(vec![255, 0, 0, 255]),
             width: 1,
             height: 1,

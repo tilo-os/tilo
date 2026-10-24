@@ -584,6 +584,13 @@ impl Widget for BrowserWindow {
         self.page
             .draw_overlay(scene, transform, tr, theme, presence);
     }
+    /// The window paints nothing of its own: its damage is its children's,
+    /// so a caret blinking in the page repaints the caret, not the window.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        for child in self.children() {
+            child.collect_damage(regions);
+        }
+    }
     fn children(&self) -> Vec<&dyn Widget> {
         if self.immersive() {
             return std::iter::once(self.page.as_ref() as &dyn Widget)

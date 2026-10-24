@@ -4506,6 +4506,21 @@ impl Widget for BrowserWidget {
         }
     }
 
+    /// The page's damage, and the toolbar row's: what this widget paints
+    /// itself (the private tint, the band and loading line) is all in that
+    /// row, and its overlays are the window's top layer, which the window
+    /// repaints whole.
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        let Some(composed) = self.composed.element() else {
+            regions.push(self.rect);
+            return;
+        };
+        composed.collect_damage(regions);
+        if let Some(toolbar) = self.find_rect("browser.toolbar") {
+            regions.push(toolbar);
+        }
+    }
+
     /// The suggestion dropdown is a field, not a tree child, so paint it
     /// in the overlay pass here (above the page) after the composed tree's
     /// own overlays.

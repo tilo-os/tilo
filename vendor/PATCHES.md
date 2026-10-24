@@ -583,6 +583,22 @@ atlas texture gains `RENDER_ATTACHMENT` usage for it. A source takes
 precedence over an `override_image` texture for the same image.
 `Renderer::image_source_writes()` counts the writes and their bytes.
 
+## `vendor/vello_encoding/src/image_delta.rs` (new), `image_cache.rs`, `vendor/vello/src/render.rs`, `recording.rs`, `wgpu_engine.rs`: images that changed a few rects
+
+`register_image_delta(from, to, rects)` says the image whose blob id is `to`
+is the image `from` changed only in `rects` (x, y, width, height); a bounded
+process-wide list keeps the latest 64. When the image cache meets `to` and
+holds `from` (or an image a few deltas back) as uploaded and not drawn in the
+same pass, `to` takes over `from`'s atlas slot and the pass lists only the
+rects (`Images::regions`), which the renderer writes with
+`Command::WriteImageRegion`: one `write_texture` at the rect's origin and
+extent, reading the blob from the rect's offset. Any other cache, or an image
+it does not hold, uploads the image whole as before. A web page's frame is a
+new image at every paint; a blinking caret now uploads its few hundred bytes,
+not the 16 MB frame. `image_delta(to)` reads the list back. `vello_encoding`'s
+manifest gains an empty `[workspace]` table so t's `vendored` check runs its
+tests (`tools/ci/test-vendored-crates.sh`).
+
 ## `vendor/vello_shaders/build.rs`, `vendor/vello/src/lib.rs`: shader fingerprint
 
 The build script also emits `SOURCE_FINGERPRINT`, an FNV-1a hash over every

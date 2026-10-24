@@ -51,6 +51,60 @@ pub struct Frame {
     pub rgba: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
+    /// Where it differs from the frames before it, for an engine that
+    /// knows; `None` makes every frame new throughout.
+    pub damage: Option<FrameDamage>,
+}
+
+/// A rect of a frame, in its pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PixelRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Where a frame differs from the ones its engine made before it: a view
+/// that drew one of those repaints, and uploads, only there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrameDamage {
+    /// The frame's place in its engine's sequence. A frame whose `recent`
+    /// does not reach back to the one a view drew is new throughout to it.
+    pub generation: u64,
+    /// What each recent generation changed from the one before it, newest
+    /// first, down to some generation after the oldest still known.
+    pub recent: Arc<[(u64, Arc<[PixelRect]>)]>,
+}
+
+impl FrameDamage {
+    /// What changed since generation `drawn`: nothing when it is this
+    /// frame's, `None` when not known.
+    #[must_use]
+    pub fn since(&self, drawn: u64) -> Option<Vec<PixelRect>> {
+        changed_since(self.recent.iter(), self.generation, drawn)
+    }
+}
+
+/// What changed from generation `from` to `to`, given what each generation
+/// changed from the one before it (`recent`, newest first, from `to`).
+pub(crate) fn changed_since<'a>(
+    recent: impl IntoIterator<Item = &'a (u64, Arc<[PixelRect]>)>,
+    to: u64,
+    from: u64,
+) -> Option<Vec<PixelRect>> {
+    let mut rects = Vec::new();
+    let mut want = to;
+    let mut recent = recent.into_iter();
+    while want > from {
+        let (generation, changed) = recent.next()?;
+        if *generation != want {
+            return None;
+        }
+        rects.extend_from_slice(changed);
+        want -= 1;
+    }
+    (want == from).then_some(rects)
 }
 
 /// Latest-frame mailbox between an engine and the widget. Engines

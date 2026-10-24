@@ -840,6 +840,7 @@ impl Render {
         };
         if !matches!(atlas_proxy_action, AtlasProxyAction::Reused)
             || !images.images.is_empty()
+            || !images.regions.is_empty()
             || images.evicted != 0
         {
             if images.evicted == 0 {
@@ -872,6 +873,9 @@ impl Render {
         }
         for image in images.images {
             recording.write_image(image_atlas, image.1, image.2, image.0.clone());
+        }
+        for (image, x, y, region) in images.regions {
+            recording.write_image_region(image_atlas, [*x, *y], image.clone(), *region);
         }
         let cpu_config = RenderConfig::new(
             &layout,

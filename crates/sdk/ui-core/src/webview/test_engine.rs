@@ -191,6 +191,7 @@ impl TestEngine {
             .saturating_mul(usize::try_from(height).unwrap_or(usize::MAX));
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new([r, g, b, 0xFF].repeat(pixels)),
             width,
             height,
@@ -206,6 +207,7 @@ impl TestEngine {
             .saturating_mul(4);
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(vec![0x80; bytes]),
             width,
             height,
@@ -309,6 +311,7 @@ impl TestEngine {
         }
         *self.lock_frames() = Some(Frame {
             trace_id: None,
+            damage: None,
             rgba: Arc::new(rgba),
             width,
             height,

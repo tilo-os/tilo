@@ -4,6 +4,7 @@
     reason = "native host runner: the Chromium helper process is supervised by threads"
 )]
 mod audio;
+mod damage;
 mod extension_notification;
 mod extension_omnibox;
 mod extension_permissions;
@@ -90,6 +91,10 @@ struct Shared {
     /// The pointer shape the page last asked for.
     cursor: Mutex<Option<winit::window::CursorIcon>>,
     frames: FrameSlot,
+    /// The tab's frame whole, which the host's damage packets change.
+    frame_store: Mutex<damage::FrameStore>,
+    /// The host was asked to send the tab's frame whole and has not yet.
+    frame_asked: AtomicBool,
     events: Mutex<VecDeque<WebViewEvent>>,
     waker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     uri: Mutex<String>,
@@ -525,6 +530,7 @@ fn route(routes: &Routes, id: u32) -> Option<Arc<Shared>> {
 /// frame drawn here is converted.
 fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     if let Some(shared) = route(routes, tab) {
+        shared.frame_asked.store(false, Ordering::Relaxed);
         if let Some(outbox) = &shared.remote {
             outbox.frame(tab, frame);
             return;
@@ -533,33 +539,62 @@ fn deliver_frame(routes: &Routes, tab: u32, frame: protocol::WireFrame) {
     }
 }
 
+/// What changed of a tab's frame goes on to a client tab's process as the
+/// host sent it, and is applied to the tab's frame here otherwise. Where the
+/// frame it changes is missing, the host is asked, once, for it whole.
+fn deliver_damage(routes: &Routes, tab: u32, damage: damage::WireDamage, tx: &CommandQueue) {
+    let Some(shared) = route(routes, tab) else {
+        return;
+    };
+    let delivered = match &shared.remote {
+        Some(outbox) => outbox.damage(tab, damage),
+        None => present_damage(&shared, tab, damage),
+    };
+    if !delivered && !shared.frame_asked.swap(true, Ordering::Relaxed) {
+        let _ = tx.push(json!({"op":"resend_frame","tab":tab}));
+    }
+}
+
 /// Makes `frame` the tab's newest and wakes the view, unless it shows exactly
 /// what the tab already has.
-fn present_frame(shared: &Shared, tab: u32, frame: super::Frame) {
-    // Comparing a full-resolution frame may scan tens of megabytes.
-    // The UI takes this same lock while handling input and drawing; keep
-    // that scan outside it, retaining only the immutable pixel allocation.
-    let previous = shared.frames.lock().ok().and_then(|slot| slot.clone());
-    let unchanged = previous.as_ref().is_some_and(|previous| {
-        previous.width == frame.width
-            && previous.height == frame.height
-            && previous.rgba == frame.rgba
-    });
+fn present_frame(shared: &Shared, tab: u32, mut frame: super::Frame) {
+    // Comparing a full-resolution frame may scan tens of megabytes. The UI
+    // takes the slot's lock while handling input and drawing; the store's
+    // is this thread's alone.
+    let changed = shared.frame_store.lock_recover().replace(&mut frame);
     if let Ok(mut slot) = shared.frames.lock() {
-        if unchanged
-            && let (Some(previous), Some(current)) = (&previous, slot.as_ref())
-            && current.width == previous.width
-            && current.height == previous.height
-            && Arc::ptr_eq(&previous.rgba, &current.rgba)
-        {
+        if !changed && let Some(current) = slot.as_ref() {
             super::frame_trace::unchanged(tab, frame.trace_id, current.trace_id);
             return;
         }
-        // A cleared/replaced slot during comparison still needs this
-        // frame, even if it matched the earlier snapshot.
+        // A view whose frame was cleared needs this one, even unchanged.
         *slot = Some(frame);
     }
     shared.wake();
+}
+
+/// Applies `damage` to the tab's frame and shows the result, as
+/// [`present_frame`] shows a whole frame. Returns `false` when there is no
+/// frame for it to change.
+fn present_damage(shared: &Shared, tab: u32, damage: damage::WireDamage) -> bool {
+    let mut store = shared.frame_store.lock_recover();
+    let frame = match store.apply(tab, damage) {
+        damage::Applied::Missing => return false,
+        damage::Applied::Changed(frame) => frame,
+        damage::Applied::Unchanged => {
+            let cleared = shared.frames.lock().is_ok_and(|slot| slot.is_none());
+            match store.frame(None) {
+                Some(frame) if cleared => frame,
+                _ => return true,
+            }
+        }
+    };
+    drop(store);
+    if let Ok(mut slot) = shared.frames.lock() {
+        *slot = Some(frame);
+    }
+    shared.wake();
+    true
 }
 
 /// Error-only surface used when the engine is not installed or cannot start.
@@ -593,6 +628,8 @@ impl UnavailableEngine {
                 unadopted: Mutex::default(),
                 cursor: Mutex::default(),
                 frames: Arc::new(Mutex::new(None)),
+                frame_store: Mutex::default(),
+                frame_asked: AtomicBool::new(false),
                 events: Mutex::new(VecDeque::new()),
                 waker: Mutex::new(None),
                 uri: Mutex::new(String::new()),
@@ -713,6 +750,7 @@ fn spawn_frame_reader(
     download_events: Arc<Mutex<VecDeque<WebViewEvent>>>,
     ready_tx: std::sync::mpsc::SyncSender<()>,
     hub: Arc<shared::Hub>,
+    tx: Arc<CommandQueue>,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     spawn_named("chromium-frames", move || {
         let mut reader = BufReader::new(stdout);
@@ -723,6 +761,9 @@ fn spawn_frame_reader(
                 }
                 Ok(Some(protocol::Packet::TabFrame(tab, frame))) => {
                     deliver_frame(&reader_routes, tab, frame);
+                }
+                Ok(Some(protocol::Packet::TabDamage(tab, damage))) => {
+                    deliver_damage(&reader_routes, tab, damage, &tx);
                 }
                 Ok(Some(protocol::Packet::Json(value))) => {
                     if let Err(error) =
@@ -931,6 +972,8 @@ fn launch_host(
     let mut command =
         host_command(host).map_err(|error| format!("Could not confine Chromium: {error}"))?;
     command.args(host_audio_switches(media::audio_output::is_governed()));
+    // A frame's changed rects, not the frame again (`damage`).
+    command.arg("--tilo-frame-damage");
     if private_root.is_some() {
         command.arg("--private");
     }
@@ -1276,6 +1319,7 @@ impl ChromiumEngine {
             download_events,
             ready_tx,
             hub.clone(),
+            tx.clone(),
         ) {
             tx.close();
             let _ = child.kill();

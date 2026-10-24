@@ -15,6 +15,8 @@ pub(super) enum Packet {
     Json(serde_json::Value),
     Frame(WireFrame),
     TabFrame(u32, WireFrame),
+    /// What changed of a tab's frame (`super::damage`).
+    TabDamage(u32, super::damage::WireDamage),
 }
 
 /// A frame as the host sends it: BGRA, as it came off the wire. The owner of a
@@ -37,6 +39,7 @@ impl WireFrame {
         bgra_to_rgba(&mut pixels);
         Frame {
             trace_id: crate::webview::frame_trace::received(tab, &pixels, width, height),
+            damage: None,
             width,
             height,
             rgba: Arc::new(pixels),
@@ -44,13 +47,13 @@ impl WireFrame {
     }
 }
 
-fn invalid(message: &str) -> io::Error {
+pub(super) fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
 /// Swaps each pixel's blue and red in place, two pixels to a 64-bit word:
 /// swapping the bytes of one pixel at a time took 2.4 times as long.
-fn bgra_to_rgba(pixels: &mut [u8]) {
+pub(super) fn bgra_to_rgba(pixels: &mut [u8]) {
     const BLUE_AND_RED: u64 = 0x0000_00FF_0000_00FF;
     let mut pairs = pixels.chunks_exact_mut(8);
     for pair in &mut pairs {
@@ -167,6 +170,10 @@ pub(super) fn read_packet(reader: &mut impl Read) -> io::Result<Option<Packet>> 
                 Some(id) => Packet::TabFrame(id, frame),
                 None => Packet::Frame(frame),
             }))
+        }
+        4 => {
+            let (tab, damage) = super::damage::read_body(reader, length)?;
+            Ok(Some(Packet::TabDamage(tab, damage)))
         }
         _ => Err(invalid("Unknown Chromium packet kind")),
     }
