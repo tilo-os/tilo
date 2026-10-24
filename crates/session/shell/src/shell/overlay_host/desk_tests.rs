@@ -638,17 +638,26 @@ fn the_calendar_and_system_monitor_are_desk_widgets_that_read_only_while_shown()
 
 /// A face shown faintly reads as a ghost. The Team widget rests hidden with
 /// nobody else here; with people here it rests as a whole, legible face
-/// stack, and comes with the Appear motion, whole within its first moments,
-/// never resting translucent in between.
+/// stack, and comes at `fast` as if asked for, never on the slow unasked
+/// fade, never resting translucent in between. Its motion is its fade, so
+/// it asks for no frame after it is whole.
 #[test]
 fn the_team_widget_is_whole_or_hidden_never_a_ghost() {
-    let motion = ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false);
-    assert!(shown_opacity(WidgetId::Team, 0.0, motion) <= f32::EPSILON);
-    assert!(
-        (shown_opacity(WidgetId::Team, 0.6, motion) - 1.0).abs() < 1e-6,
-        "whole before its motion ends"
+    assert_eq!(
+        shown_spec(WidgetId::Team, false),
+        ui::motion::Ambient::ASKED,
+        "faces arrive at fast even unasked"
     );
-    assert!((shown_opacity(WidgetId::Team, 1.0, motion) - 1.0).abs() < 1e-6);
+    assert_eq!(
+        shown_spec(WidgetId::Music, false),
+        ui::motion::Ambient::UNASKED
+    );
+    assert!(shown_opacity(0.0) <= f32::EPSILON);
+    assert!(
+        shown_opacity(0.6) < 1.0,
+        "still arriving: its motion is not over"
+    );
+    assert!((shown_opacity(1.0) - 1.0).abs() < 1e-6, "whole as it rests");
 
     // Nobody else here: nothing to show, so it stays hidden at rest.
     let mut tree = WorkspaceTree::bootstrap_demo();
