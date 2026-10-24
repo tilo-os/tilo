@@ -23,7 +23,7 @@ pub struct Request {
     pub device: [u8; 32],
     /// The invocation, on the workspace its request names, and where the
     /// receipt goes.
-    pub request: room_governance::Request,
+    pub governance: room_governance::Request,
 }
 
 impl ActorState {
@@ -31,7 +31,7 @@ impl ActorState {
     pub(super) fn ask_own_device_host(&self, request: Request) {
         let Some(identity) = self.host_identity.clone() else {
             let _ = request
-                .request
+                .governance
                 .reply
                 .send(Err("this device has no identity to ask with".into()));
             return;
@@ -41,7 +41,7 @@ impl ActorState {
             let Request {
                 addr,
                 device,
-                request,
+                governance: request,
             } = request;
             let room_governance::Request {
                 ws, invoke, reply, ..

@@ -320,17 +320,7 @@ impl ActorState {
                 renew_route(route, &self.endpoint, identity, self.local_host.as_ref());
                 continue;
             }
-            self.host_sessions.retain(|(topic, _), runtime| {
-                *topic != ws
-                    || runtime.native_scope.as_ref().is_some_and(|scope| {
-                        material
-                            .as_ref()
-                            .is_ok_and(|(hint, device, _, continuity)| {
-                                scope.pinned_to(hint, device, *continuity)
-                            })
-                    })
-            });
-            if self.host_sessions.keys().any(|(topic, _)| *topic == ws)
+            if keeps_pinned_session(&mut self.host_sessions, ws, &material)
                 || route
                     .pending
                     .as_ref()
@@ -344,23 +334,20 @@ impl ActorState {
             route.local = tilo_joined_room::session::hosted_by(&hint, &cert.device_public_key);
             if route.local {
                 // This device's own host serves the room: its session stays
-                // in process. Until the host opens there is nothing to
-                // join; its opening asks again ([`NetCmd::LocalHostReady`]).
-                let Some(host) = self.local_host.as_ref().and_then(LocalHost::get) else {
-                    continue;
-                };
-                route.pending = Some(join_local(
-                    host,
+                // in process.
+                let key = identity.device_signing_key.clone();
+                route.pending = join_local(
+                    self.local_host.as_ref(),
                     ws,
                     route.serial,
                     hint,
                     Member {
                         cert,
-                        key: identity.device_signing_key.clone(),
+                        key,
                         revocations,
                     },
                     self.internal_tx.clone(),
-                ));
+                );
                 continue;
             }
             let expected_device = cert.clone();
@@ -532,6 +519,34 @@ impl ActorState {
     }
 }
 
+/// Drop topic `ws`'s host sessions not pinned to its room's current
+/// `material`, and answer whether one is left.
+fn keeps_pinned_session(
+    sessions: &mut HashMap<(u64, iroh::EndpointId), HostRuntime>,
+    ws: u64,
+    material: &Result<
+        (
+            TransportHint,
+            DeviceCert,
+            tilo_user_identity::RevocationList,
+            u64,
+        ),
+        String,
+    >,
+) -> bool {
+    sessions.retain(|(topic, _), runtime| {
+        *topic != ws
+            || runtime.native_scope.as_ref().is_some_and(|scope| {
+                material
+                    .as_ref()
+                    .is_ok_and(|(hint, device, _, continuity)| {
+                        scope.pinned_to(hint, device, *continuity)
+                    })
+            })
+    });
+    sessions.keys().any(|(topic, _)| *topic == ws)
+}
+
 /// This device as a member of a room: its certificate for the room, the
 /// key it signs with, and the revocations it presents.
 struct Member {
@@ -540,18 +555,21 @@ struct Member {
     revocations: tilo_user_identity::RevocationList,
 }
 
-/// Join the room on topic `ws`, hosted by this device's own `host`, as
+/// Join the room on topic `ws`, hosted by this device's own host, as
 /// `member`: over the host's in-process carrier, through the handshake and
-/// session a remote member's dial takes, answering as a dial does.
+/// session a remote member's dial takes, answering as a dial does. `None`
+/// until the host opens: there is nothing to join yet, and its opening asks
+/// again ([`super::NetCmd::LocalHostReady`]).
 fn join_local(
-    host: std::sync::Arc<crate::network::local_host::room_host::RoomHost>,
+    local_host: Option<&LocalHost>,
     ws: u64,
     serial: u64,
     hint: TransportHint,
     member: Member,
     tx: tokio::sync::mpsc::Sender<InternalEvent>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+) -> Option<tokio::task::JoinHandle<()>> {
+    let host = local_host.and_then(LocalHost::get)?;
+    Some(tokio::spawn(async move {
         let Member {
             cert,
             key,
@@ -571,7 +589,7 @@ fn join_local(
                 result: Box::new(result),
             })
             .await;
-    })
+    }))
 }
 
 /// What a failed dial of the joined room on topic `ws`, whose host is

@@ -6730,6 +6730,7 @@ impl ShellNetwork {
                     adoption = Some(workspaces.adopt_into(&mut tree, &here));
                     refresh_device_choices(&mut tree, &workspaces);
                 }
+                drop(tree);
             }
             if let Some(adoption) = adoption {
                 self.follow_list_off_loop(adoption);
