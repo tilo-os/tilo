@@ -174,3 +174,44 @@ fn a_window_that_opens_beside_another_is_placed_whole_on_screen_with_it() {
         );
     }
 }
+
+/// A window opened beside a lone one on a 1440 px display: the window in
+/// use narrows to make room on its slot spring while the strip pans to the
+/// new one. The pan aims at the strip as it will be, so the new window
+/// lands whole with the strip's gutter after it, whether it grows in from
+/// nothing or arrives at its width.
+#[test]
+fn a_window_revealed_while_its_neighbour_narrows_keeps_the_strips_gutter() {
+    for grows_in in [false, true] {
+        let mut row = lone_window_on(1440.0);
+        let mut opened = make_group(200, &[2]);
+        if grows_in {
+            opened.start_spawn_animation();
+        }
+        row.insert_group(opened, 1);
+        assert!(row.share_with_neighbour(200), "{grows_in}: the two share");
+        relayout_strip(&mut row, 1440.0);
+        assert!(
+            (row.groups[0].dest_width_px() - row.groups[0].layout_width_px()).abs() > 1.0,
+            "{grows_in}: fixture: the window in use is still narrowing"
+        );
+        row.scroll_group_into_view(200);
+        row.frame_presented();
+        let settled = crate::time::now() + crate::time::Duration::from_secs(2);
+        crate::time::testing::with_monotonic_time(settled, || {
+            relayout_strip(&mut row, 1440.0);
+            row.frame_presented();
+            relayout_strip(&mut row, 1440.0);
+        });
+        let (kept, opened) = (row.groups[0].get_rect(), row.groups[1].get_rect());
+        assert!(
+            kept.x0 >= -0.5,
+            "{grows_in}: the window in use stays whole: {kept:?}"
+        );
+        assert!(
+            opened.x1 <= 1440.0 - STRIP_EDGE_GUTTER_PX + 0.5,
+            "{grows_in}: the new window keeps the strip's gutter: {opened:?}, scroll {}",
+            row.scroll_x()
+        );
+    }
+}
