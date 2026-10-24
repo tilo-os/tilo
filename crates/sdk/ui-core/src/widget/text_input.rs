@@ -555,6 +555,8 @@ pub struct TextInput {
     content_sized: bool,
     /// Colours spans of a single-line field's text ([`Self::with_span_highlighter`]).
     span_highlighter: Option<SpanHighlighter>,
+    /// Marks what the owner judges wrong in the text ([`Self::with_mistakes`]).
+    mistakes: Option<MistakeMarker>,
     /// The text can be selected and copied but not changed ([`Self::with_read_only`]).
     read_only: bool,
     /// Link targets over byte ranges of a read-only text
@@ -574,6 +576,10 @@ struct PendingPaste {
 /// formula, in the colour of the cells it outlines).
 pub type SpanHighlighter =
     Box<dyn Fn(&str, &Theme) -> Vec<(std::ops::Range<usize>, vello::peniko::Color)>>;
+
+/// The byte ranges of a field's text its owner judges wrong (a word outside
+/// the list an entry must come from); see [`TextInput::with_mistakes`].
+pub type MistakeMarker = Box<dyn Fn(&str) -> Vec<std::ops::Range<usize>>>;
 
 /// Where a detected address opens: a web link as it is (a bare host gets
 /// `https://`), an email address as `mailto:`; mentions and room aliases are
@@ -825,6 +831,7 @@ impl TextInput {
             accessory: None,
             content_sized: false,
             span_highlighter: None,
+            mistakes: None,
             read_only: false,
             links: Vec::new(),
         }
@@ -3835,6 +3842,20 @@ impl TextInput {
         self
     }
 
+    /// Underline what `marker` finds wrong in the text, as a misspelling is,
+    /// for entries checked against something other than a dictionary: the
+    /// words of a recovery key. The marker sees the text as it is drawn, so
+    /// the marks never lag an edit; it should leave the word still being
+    /// typed alone.
+    #[must_use]
+    pub fn with_mistakes(
+        mut self,
+        marker: impl Fn(&str) -> Vec<std::ops::Range<usize>> + 'static,
+    ) -> Self {
+        self.mistakes = Some(Box::new(marker));
+        self
+    }
+
     /// Show text the person can select and copy but not change: a message
     /// body, a log. The field keeps the keyboard (arrows, Home, End, select
     /// all, copy) and the pointer (drag, double click), but typing, pasting
@@ -4814,8 +4835,9 @@ impl TextInput {
             .is_none_or(|(active_start, active_end)| end <= active_start || start >= active_end)
     }
 
-    /// Draw a theme-aware wavy underline using the same range geometry as
-    /// selection, so it follows shaping, `BiDi`, and soft wrapping.
+    /// Draw a theme-aware wavy underline under misspellings and the owner's
+    /// marked mistakes, using the same range geometry as selection, so it
+    /// follows shaping, `BiDi`, and soft wrapping.
     #[allow(
         clippy::while_float,
         reason = "x advances by a fixed positive 2px and is clamped to x1"
@@ -4824,10 +4846,21 @@ impl TextInput {
         self.refresh_autocorrection_preview();
         self.refresh_spelling();
         let color = theme.tokens.colors.semantic.danger;
-        for &(start, end) in &self.spell_spans {
-            if !self.spelling_span_is_visible(start, end) {
-                continue;
-            }
+        let spelling = self
+            .spell_spans
+            .iter()
+            .copied()
+            .filter(|&(start, end)| self.spelling_span_is_visible(start, end));
+        let mistakes = self
+            .mistakes
+            .as_ref()
+            .map(|marker| marker(&self.text))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|range| self.text.get(range.clone()).is_some())
+            .map(|range| (range.start, range.end));
+        let marked: Vec<(usize, usize)> = spelling.chain(mistakes).collect();
+        for (start, end) in marked {
             for rect in self.selection_rects(theme, start, end) {
                 let x0 = rect.x0.max(self.rect.x0);
                 let x1 = rect.x1.min(self.rect.x1);

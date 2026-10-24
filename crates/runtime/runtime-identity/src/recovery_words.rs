@@ -13,6 +13,7 @@
 //! word, so none of it reaches a log or an error dialog.
 
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::SigningKey;
@@ -169,6 +170,38 @@ pub fn recovery_words_progress(phrase: &str) -> RecoveryWordsProgress {
         words: words.len(),
         unknown_word,
     }
+}
+
+/// Where in `phrase` the finished words that are not recovery-key words
+/// are, as byte ranges, to mark each one where it was typed. Words are read
+/// as [`recovery_words_public_key`] reads them; the last word is left alone
+/// until something other than a letter follows it.
+#[must_use]
+pub fn unknown_recovery_words(phrase: &str) -> Vec<Range<usize>> {
+    let mut unknown = Vec::new();
+    let mut start = None;
+    for (at, character) in phrase.char_indices().chain([(phrase.len(), ' ')]) {
+        match (character.is_alphabetic(), start) {
+            (true, None) => start = Some(at),
+            (false, Some(from)) => {
+                start = None;
+                let finished = at < phrase.len();
+                let word = Zeroizing::new(phrase.get(from..at).unwrap_or_default().to_lowercase());
+                if finished && !bip39::is_word(&word) {
+                    unknown.push(from..at);
+                }
+            }
+            _ => {}
+        }
+    }
+    unknown
+}
+
+/// The recovery-key word a mistyped `typed` most likely meant, in any case,
+/// to suggest it; `None` when no single word stands out.
+#[must_use]
+pub fn closest_recovery_word(typed: &str) -> Option<&'static str> {
+    bip39::closest_word(&Zeroizing::new(typed.to_lowercase()))
 }
 
 /// The identity (its public key; hex of it is the fingerprint) `phrase`
@@ -512,6 +545,17 @@ mod tests {
 
     fn words_of(seed: u8) -> Zeroizing<String> {
         bip39::encode(&[seed; 32]).unwrap()
+    }
+
+    #[test]
+    fn unknown_words_are_found_where_they_were_typed() {
+        assert_eq!(
+            unknown_recovery_words("1. Abandon 2. abilty\nabout abov"),
+            vec![14..20],
+            "a word still being typed is left alone"
+        );
+        assert_eq!(unknown_recovery_words("zebra, ZEBRAA. "), vec![7..13]);
+        assert!(unknown_recovery_words("").is_empty());
     }
 
     #[test]
