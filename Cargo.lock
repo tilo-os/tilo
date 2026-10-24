@@ -13494,6 +13494,7 @@ dependencies = [
  "settings-store",
  "tilo-actions",
  "tilo-clock",
+ "tilo-content",
  "tilo-lock",
  "tilo-sort",
  "tilo-test-env",

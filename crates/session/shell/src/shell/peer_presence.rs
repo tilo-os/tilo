@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 
 use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
-use ui::collaboration::CollabEvent;
+use runtime_collab::event::CollabEvent;
 use ui::presence::PresenceCtx;
 
 use crate::shell::collab_broker::{BrokerHandle, RoomSubscription};

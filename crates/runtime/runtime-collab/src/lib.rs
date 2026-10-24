@@ -90,6 +90,7 @@ mod surface_delta;
 pub use surface_delta::*;
 pub mod audio_output;
 pub mod committed_document;
+pub mod event;
 #[cfg(feature = "client")]
 pub mod live_activity;
 pub mod native_media;

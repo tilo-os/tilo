@@ -8,12 +8,12 @@ use collab_types::{
     ArtifactKind, ChannelState, OpKind, RedactedMarker, SignedOp, ValidationError,
     validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
+use runtime_collab::event::CollabEvent;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tilo_action_policy::Standing;
-use ui::collaboration::CollabEvent;
 
 /// A document op as the transport delivered it: the route its publishing
 /// host stamped, and the author's standing in the room.

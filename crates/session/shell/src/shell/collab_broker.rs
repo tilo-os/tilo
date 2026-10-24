@@ -16,7 +16,7 @@ use collab_types::ArtifactId;
 use collab_types::{
     DocumentMutation, OpKind, ValidationError, document_artifact_id, document_attestation_id,
 };
-use ui::collaboration::CollabEvent;
+use runtime_collab::event::CollabEvent;
 
 pub use crate::shell::collab_core::{
     AuditEntry, BrokerChannels, RedactionRecord, apply_redaction_from_envelope,
