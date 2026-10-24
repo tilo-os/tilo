@@ -1330,6 +1330,15 @@ source = "framework-scaling scroll, presenting one frame on the GPU p50, 5,000 i
 # height as their available space). The shared x86_64 runner takes 13 / 31 /
 # 109 ms, so every figure is reported: enforcing the frame there would fail
 # every run, and the relative rule guards each against regressions.
+# Each walk the frame takes over the window's widgets (layout dirt, measure,
+# style adjustment, focus, the undo status) then entered every widget's
+# component scope on its own, about 20,000 / 39,000 / 98,000 entries for one
+# item added; the walks now stay in a scope while the widgets they ask share
+# it, and one added item enters a scope 99 times at any length (the
+# `add_item_work` test of tilo-app bounds it). In the test harness on the
+# shared x86_64 runner under load, side by side, best of 15: 10-11 / 21-23 /
+# 69-90 ms before, 4.2-5.9 / 8.7-10 / 32-36 ms after, so the 500 and 1,000
+# item targets are halved.
 
 [kpi."render.framework_focus.recompute_ms.500"]
 unit = "ms"
@@ -1383,7 +1392,7 @@ source = "framework-scaling focus, one focus-order recomputation of the live win
 
 [kpi."render.framework_focus.add_item_ms.500"]
 unit = "ms"
-p50 = 6.0
+p50 = 3.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 1.0
@@ -1391,11 +1400,11 @@ source = "framework-scaling focus, an agent call adding one item end to end, 500
 
 [kpi."render.framework_focus.add_item_ms.1k"]
 unit = "ms"
-p50 = 16.0
+p50 = 8.0
 p50_tolerance = 1.5
 p99_tolerance = 2.0
 min_delta = 2.0
-source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (one 16 ms frame; reported)"
+source = "framework-scaling focus, an agent call adding one item end to end, 1,000 items (half a 16 ms frame; reported)"
 
 [kpi."render.framework_focus.add_item_ms.2500"]
 unit = "ms"

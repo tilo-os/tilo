@@ -498,6 +498,11 @@ pub fn set_undo_status(
     }
 }
 
+/// Whether `widget` shows the undo status: [`set_undo_status`] reaches it.
+pub(crate) fn takes_undo_status(widget: &mut (impl crate::widget::Widget + ?Sized)) -> bool {
+    crate::widget::capability::capability_mut::<dyn UndoControl>(widget).is_some()
+}
+
 /// The undo or redo `widget` asked for, if any.
 pub fn take_undo_request(
     widget: &mut (impl crate::widget::Widget + ?Sized),

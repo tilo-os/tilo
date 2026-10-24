@@ -2760,15 +2760,34 @@ impl FrameHarness {
             crate::undo::UndoStatus,
         )> = Vec::new();
         let mut visited = HashSet::new();
+        // Only an undo control takes the status: the others are asked
+        // whether they are one within one sweep, not each in its own scope.
+        let mut controls = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
         for (&node, pointer) in &self.node_map {
             // SAFETY: node_map pointers are valid until the next `relayout`.
             if !visited.insert(unsafe { crate::widget::node_sweep_identity(*pointer) }) {
                 continue;
             }
-            let binding = self.bindings.binding_for(node);
+            let binding = self.bindings.binding_ref(node);
+            // SAFETY: as in `drain_undo_requests`; the check reads the widget only.
+            let control =
+                unsafe { controls.layout(node, |widget| crate::undo::takes_undo_status(widget)) }
+                    .unwrap_or(false);
+            // A bound node that is no control, of a component whose status
+            // this sweep already read, has nothing to read or be told.
+            if !control
+                && binding.is_some_and(|binding| {
+                    bound_statuses
+                        .iter()
+                        .any(|(seen, _)| seen.same_component(binding))
+                })
+            {
+                continue;
+            }
+            // What follows enters each owner's scope itself.
+            controls.leave();
             // Preserve bound history label warming across pending edits.
             let bound_status = binding
-                .as_ref()
                 .map(|binding| {
                     if let Some((_, status)) = bound_statuses
                         .iter()
@@ -2794,6 +2813,9 @@ impl FrameHarness {
                         .clone()
                 })
             };
+            if !control {
+                continue;
+            }
             // SAFETY: as in `drain_undo_requests`.
             let _ = unsafe {
                 crate::bound_dispatch::mutate_bound_node(
@@ -3446,7 +3468,7 @@ impl FrameHarness {
         let owner = |frame: &Self, node: NodeId| {
             frame
                 .bindings
-                .binding_for(node)
+                .binding_ref(node)
                 .is_some_and(|binding| binding.instance_id == instance)
         };
         if self.focused.is_some_and(|node| owner(self, node)) {
@@ -4036,7 +4058,7 @@ impl FrameHarness {
                         .is_some_and(|history| history.captures_input())
                     || self.active_input_instance.is_none_or(|instance| {
                         self.bindings
-                            .binding_for(node)
+                            .binding_ref(node)
                             .is_some_and(|binding| binding.instance_id == instance)
                             && self.app_focus_eligible(node)
                     }))
@@ -4687,12 +4709,26 @@ impl FrameHarness {
         root: NodeId,
         restrictions: &crate::history_mode::embedded::FocusRestrictions,
     ) -> (Vec<NodeId>, bool) {
+        // One sweep asks every mapped node, entering each component's scope
+        // once rather than once a node.
+        let sweep = std::cell::RefCell::new(crate::bound_dispatch::NodeSweep::new(
+            &self.bindings,
+            &self.node_map,
+        ));
         crate::focus_navigation::layout_map_order(
             root,
             &self.taffy,
             restrictions,
             self.history.as_deref(),
-            |node| self.inspect_node(node, crate::focus_navigation::probe).ok(),
+            |node| {
+                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+                unsafe {
+                    sweep
+                        .borrow_mut()
+                        .inspect(node, crate::focus_navigation::probe)
+                }
+                .ok()
+            },
         )
     }
 
@@ -4715,9 +4751,10 @@ impl FrameHarness {
         {
             // The mapped walk inspects composed nodes, some of which are not
             // Widget children of the root; every one it can inspect is mapped.
+            let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
             self.node_map.keys().any(|&node| {
-                self.inspect_node(node, |widget| widget.traps_focus())
-                    .unwrap_or(false)
+                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
+                unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
             })
         } else {
             crate::focus_navigation::any_trap(self.root.as_ref())
@@ -4865,7 +4902,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id != active)
             })
             .collect();
@@ -4895,7 +4932,7 @@ impl FrameHarness {
         if self.active_input_instance != Some(instance)
             || self.focused.is_some_and(|node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_none_or(|binding| binding.instance_id != instance)
             })
         {
@@ -4922,7 +4959,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id != instance)
             })
             .collect();
@@ -4980,7 +5017,7 @@ impl FrameHarness {
             .into_iter()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_some_and(|binding| binding.instance_id == instance)
                     && self.app_focus_eligible(node)
             })
@@ -5035,7 +5072,7 @@ impl FrameHarness {
             .copied()
             .filter(|&node| {
                 self.bindings
-                    .binding_for(node)
+                    .binding_ref(node)
                     .is_none_or(|binding| binding.instance_id == instance)
                     && self
                         .inspect_node(node, |widget| {
@@ -14936,7 +14973,7 @@ mod prepared_driver_tests {
             let node = *driver
                 .node_map
                 .keys()
-                .find(|node| driver.bindings.binding_for(**node).is_some())
+                .find(|node| driver.bindings.binding_ref(**node).is_some())
                 .unwrap();
             driver.set_focused(Some(node));
             driver.type_text("first");
