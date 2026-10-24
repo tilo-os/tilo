@@ -4060,7 +4060,7 @@ impl ShellNetwork {
             .find(|room| room_topic_id(*room) == topic)
     }
 
-    fn enrolled_room_candidates(&self) -> Result<Vec<RoomId>, String> {
+    fn enrolled_room_candidates(&self) -> Vec<RoomId> {
         let mut enrolled =
             personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
         // The setup session publishes its rooms under the user state
@@ -4073,10 +4073,10 @@ impl ShellNetwork {
             }
         }
         let local = self.tree.read().rooms();
-        Ok(enrolled
+        enrolled
             .into_iter()
             .filter(|room| local.contains(room))
-            .collect())
+            .collect()
     }
 
     /// The shared room to reach `endpoint` on: `named` when given, else the
@@ -4086,7 +4086,7 @@ impl ShellNetwork {
         endpoint: iroh::EndpointId,
         named: Option<RoomId>,
     ) -> Result<RoomId, String> {
-        let candidates = self.enrolled_room_candidates()?;
+        let candidates = self.enrolled_room_candidates();
         let live = self
             .live_room_peers
             .lock()
@@ -4483,8 +4483,7 @@ impl ShellNetwork {
         // or without a relay. A missing or malformed relay registry must not
         // skip them.
         changed |= self.dial_direct_peers();
-        let mut relay_workspace_ids =
-            Some(relay_topics_for_home_peers(self.tree.read().rooms(), None)).unwrap_or_default();
+        let mut relay_workspace_ids = relay_topics_for_home_peers(self.tree.read().rooms(), None);
         if let Some(user) = self.personal_continuity_user {
             relay_workspace_ids.insert(personal_continuity_topic_id(&user));
         }
@@ -6598,11 +6597,11 @@ impl ShellNetwork {
     fn tick_with(&self, admission: Admission, steps: &mut TurnSteps) {
         self.remote_action_replies.expire(std::time::Instant::now());
         steps.time("network/reachability", || {
-            self.note_session_reachability(false)
+            self.note_session_reachability(false);
         });
         steps.time("network/periodic-sync", || self.kick_periodic_sync());
         steps.time("network/personal-workspaces", || {
-            self.reconcile_personal_workspaces()
+            self.reconcile_personal_workspaces();
         });
         steps.time("network/home-peers", || {
             self.refresh_home_peer_hosts_periodically();

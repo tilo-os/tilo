@@ -1136,9 +1136,7 @@ impl PeerPresence {
                 return false;
             }
         }
-        let Some((changed, room, tree)) = self.derive_roster(presence, inputs.tree) else {
-            return false;
-        };
+        let (changed, room, tree) = self.derive_roster(presence, inputs.tree);
         *seen = Some(RosterSeen {
             inputs: RosterInputs { tree, ..inputs },
             presence: roster_presence_print(presence, &self.anchored, &self.absent, &room),
@@ -1152,12 +1150,8 @@ impl PeerPresence {
     /// changed. Returns whether it did, the room it was derived for, and the
     /// tree generation the result stands for: `generation` (loaded before
     /// the tree was read), or the one this refresh's own write leaves when
-    /// nobody else wrote in between. `None` when the tree cannot be read.
-    fn derive_roster(
-        &self,
-        presence: &PresenceCtx,
-        generation: u64,
-    ) -> Option<(bool, String, u64)> {
+    /// nobody else wrote in between.
+    fn derive_roster(&self, presence: &PresenceCtx, generation: u64) -> (bool, String, u64) {
         #[cfg(test)]
         ROSTER_DERIVES.with(|derives| derives.set(derives.get().saturating_add(1)));
         let local = self.net.local_peer_id_hash();
@@ -1170,10 +1164,10 @@ impl PeerPresence {
         let (active, rows, room) = {
             let tree = self.net.tree.read();
             let Some(ws) = tree.desktop.active_workspace() else {
-                return Some((false, String::new(), generation));
+                return (false, String::new(), generation);
             };
             if ws.room().is_nil() {
-                return Some((false, String::new(), generation));
+                return (false, String::new(), generation);
             }
             // What each member calls themselves, over their device's name.
             let labels = crate::shell::network::named_by_themselves(
@@ -1231,7 +1225,7 @@ impl PeerPresence {
             // than holding it to the end of the block below.
             drop(tree);
             if unchanged {
-                return Some((false, room, generation));
+                return (false, room, generation);
             }
             (active, rows, room)
         };
@@ -1256,7 +1250,7 @@ impl PeerPresence {
         // cannot leak another workspace's presence into the top bar.
         tree.desktop.collaborators = rows;
         drop(tree);
-        Some((true, room, written))
+        (true, room, written)
     }
 }
 
@@ -2652,7 +2646,7 @@ mod two_sessions {
         let mut tree = WorkspaceTree::default();
         let ws = tree.create_hosted_workspace("Design review").0;
         let room = tree.room_of(ws).expect("a fresh workspace mints a room");
-        tree.own_workspaces_for_test(|_| OWNER.to_string().clone());
+        tree.own_workspaces_for_test(|_| OWNER.to_string());
         let names: Vec<(String, &str)> = people
             .iter()
             .map(|(peer, called)| ((*peer).to_string(), *called))
@@ -2663,7 +2657,7 @@ mod two_sessions {
 
     /// A session that has joined `room`, holding the room's names and
     /// policy as its admitted document carries them.
-    fn guest_joining(host: &mut WorkspaceTree, room: RoomId) -> WorkspaceTree {
+    fn guest_joining(host: &WorkspaceTree, room: RoomId) -> WorkspaceTree {
         let mut tree = WorkspaceTree::default();
         let ws = tree.create_hosted_workspace("Mine").0;
         assert!(
@@ -2751,7 +2745,7 @@ mod two_sessions {
             let (mut host_tree, room) =
                 host_naming(&[(&guest_peer, "Xaver"), (&host_peer, "Quinten")]);
 
-            let guest_tree = guest_joining(&mut host_tree, room);
+            let guest_tree = guest_joining(&host_tree, room);
 
             let host_handle = host_tree.shared();
             let guest_handle = guest_tree.shared();
@@ -2832,7 +2826,7 @@ mod two_sessions {
         fn a_session_is_silent_until_its_pointer_has_been_somewhere() {
             let guest_peer = peer_id(21);
             let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
-            let guest_tree = guest_joining(&mut host_tree, room);
+            let guest_tree = guest_joining(&host_tree, room);
 
             let host_handle = host_tree.shared();
             let guest_handle = guest_tree.shared();
@@ -2889,7 +2883,7 @@ mod two_sessions {
         fn the_frame_loop_publishes_nothing_for_a_pointer_that_has_never_moved() {
             let guest_peer = peer_id(23);
             let (mut host_tree, room) = host_naming(&[(&guest_peer, "Claude")]);
-            let guest_tree = guest_joining(&mut host_tree, room);
+            let guest_tree = guest_joining(&host_tree, room);
 
             let host_handle = host_tree.shared();
             let guest_handle = guest_tree.shared();
@@ -3018,7 +3012,7 @@ mod two_sessions {
         let native_peer = peer_id(33);
         let (mut native_tree, room) =
             host_naming(&[(&hosted_peer, "Xaver"), (&native_peer, "Quinten")]);
-        let hosted_tree = guest_joining(&mut native_tree, room);
+        let hosted_tree = guest_joining(&native_tree, room);
         let native_handle = native_tree.shared();
         let hosted_handle = hosted_tree.shared();
         let (native_net, mut native_cmds) =
@@ -3087,7 +3081,7 @@ mod two_sessions {
         let other_peer = peer_id(43);
         let (mut other_tree, room) =
             host_naming(&[(&hosted_peer, "Xaver"), (&other_peer, "Quinten")]);
-        let mut hosted_tree = guest_joining(&mut other_tree, room);
+        let mut hosted_tree = guest_joining(&other_tree, room);
         looking_at_its_room(&mut hosted_tree);
         let hosted_handle = hosted_tree.shared();
         let (hosted_net, mut hosted_cmds) =
@@ -3230,7 +3224,7 @@ mod two_sessions {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(43);
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver"), (&host_peer, "Quinten")]);
-        let guest_tree = guest_joining(&mut host_tree, room);
+        let guest_tree = guest_joining(&host_tree, room);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
         let (host_net, mut host_cmds) =
@@ -3376,7 +3370,7 @@ mod two_sessions {
             let guest_peer = peer_id(21);
             let host_peer = peer_id(22);
             let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
-            let mut guest_tree = guest_joining(&mut host_tree, room);
+            let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut host_tree);
             looking_at_its_room(&mut guest_tree);
             let host_handle = host_tree.shared();
@@ -3439,7 +3433,7 @@ mod two_sessions {
             let guest_peer = peer_id(31);
             let host_peer = peer_id(32);
             let (mut host_tree, room) = host_naming(&[]);
-            let mut guest_tree = guest_joining(&mut host_tree, room);
+            let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut host_tree);
             looking_at_its_room(&mut guest_tree);
             let host_handle = host_tree.shared();
@@ -3476,7 +3470,7 @@ mod two_sessions {
             let guest_peer = peer_id(41);
             let host_peer = peer_id(42);
             let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver"), (&host_peer, OWNER)]);
-            let mut guest_tree = guest_joining(&mut host_tree, room);
+            let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut host_tree);
             looking_at_its_room(&mut guest_tree);
             let host_handle = host_tree.shared();
@@ -3513,7 +3507,7 @@ mod two_sessions {
             let host_peer = peer_id(51);
             let guest_peer = peer_id(52);
             let (mut host_tree, room) = host_naming(&[(&host_peer, OWNER)]);
-            let mut guest_tree = guest_joining(&mut host_tree, room);
+            let mut guest_tree = guest_joining(&host_tree, room);
             looking_at_its_room(&mut guest_tree);
             let guest_handle = guest_tree.shared();
 
@@ -3738,7 +3732,7 @@ mod two_sessions {
         let guest_peer = peer_id(71);
         let host_peer = peer_id(72);
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
-        let mut guest_tree = guest_joining(&mut host_tree, room);
+        let mut guest_tree = guest_joining(&host_tree, room);
         looking_at_its_room(&mut host_tree);
         looking_at_its_room(&mut guest_tree);
         let host_handle = host_tree.shared();
@@ -3946,7 +3940,7 @@ mod two_sessions {
         let guest_peer = peer_id(81);
         let host_peer = peer_id(82);
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "Xaver")]);
-        let mut guest_tree = guest_joining(&mut host_tree, room);
+        let mut guest_tree = guest_joining(&host_tree, room);
         looking_at_its_room(&mut host_tree);
         looking_at_its_room(&mut guest_tree);
         let host_handle = host_tree.shared();
@@ -4018,7 +4012,7 @@ mod two_sessions {
         let guest_peer = peer_id(41);
         let host_peer = peer_id(43);
         let (mut host_tree, room) = host_naming(&[(&guest_peer, "Ada"), (&host_peer, "Quinten")]);
-        let guest_tree = guest_joining(&mut host_tree, room);
+        let guest_tree = guest_joining(&host_tree, room);
         let host_handle = host_tree.shared();
         let guest_handle = guest_tree.shared();
         let (host_net, _host_cmds) =

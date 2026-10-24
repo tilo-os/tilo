@@ -73,7 +73,7 @@ impl RoomTxn for HeldRoom {
         let next = HeldRoom {
             peer: Admitted(peer),
             ledger: JoinLedger::default(),
-            generation: self.generation + 1,
+            generation: self.generation.saturating_add(1),
         };
         let answered = ledger(&next.governed())?;
         *self = HeldRoom {

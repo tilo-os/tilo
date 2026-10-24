@@ -292,9 +292,8 @@ impl ShellNetwork {
             return Err(requests);
         };
         match worker.send(Work::Governance(requests)) {
-            Ok(()) => Ok(()),
             Err(mpsc::SendError(Work::Governance(requests))) => Err(requests),
-            Err(mpsc::SendError(_)) => Ok(()),
+            Ok(()) | Err(mpsc::SendError(_)) => Ok(()),
         }
     }
 
