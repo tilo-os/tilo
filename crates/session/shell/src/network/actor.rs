@@ -20,6 +20,9 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 #[cfg(test)]
 mod nearby_transfer_tests;
 pub(crate) mod room_governance;
+mod room_lane;
+#[cfg(test)]
+mod room_lane_tests;
 mod room_members;
 use room_members::Admission;
 pub(crate) use room_members::RosterDevice;
@@ -35,7 +38,7 @@ use futures_util::stream::FuturesUnordered;
 use iroh::address_lookup::memory::MemoryLookup;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use iroh_gossip::api::{Event as GossipEvent, GossipSender};
+use iroh_gossip::api::Event as GossipEvent;
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
 use tilo_relay_session::pointer_pacing::{Pacing, PointerPacer, slot_pacing};
@@ -756,6 +759,17 @@ enum InternalEvent {
     Closed {
         ws: WorkspaceId,
     },
+    /// A room's lane subscribed to its topic, or failed to (`None`).
+    Subscribed {
+        ws: WorkspaceId,
+        serial: u64,
+        receiver: Option<Box<iroh_gossip::api::GossipReceiver>>,
+    },
+    /// A direct send queued on a room's lane went, or did not.
+    DirectSent {
+        ws: WorkspaceId,
+        outcome: Box<room_lane::DirectOutcome>,
+    },
 }
 
 async fn deliver_surface_frame(
@@ -830,8 +844,11 @@ enum HostEvent {
 }
 
 struct TopicRuntime {
-    sender: GossipSender,
-    pump: tokio::task::JoinHandle<()>,
+    /// Which subscription this is: one asked for before the room was left
+    /// and joined again is not it.
+    serial: u64,
+    /// Pumps the subscription's events, once the room's lane made it.
+    pump: Option<tokio::task::JoinHandle<()>>,
     /// Fingerprint of the identity material last announced on the topic, so
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
@@ -849,10 +866,10 @@ impl TopicRuntime {
             .is_some_and(|announced| announced.elapsed() < IDENTITY_ANSWER_INTERVAL)
     }
 
-    fn new(sender: GossipSender, pump: tokio::task::JoinHandle<()>) -> Self {
+    fn new(serial: u64) -> Self {
         Self {
-            sender,
-            pump,
+            serial,
+            pump: None,
             identity_sent: None,
             identity_announced: None,
         }
@@ -1291,11 +1308,14 @@ struct ActorState {
     room_governance: room_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
-    gossip: Gossip,
     internal_tx: mpsc::Sender<InternalEvent>,
     /// The person's own topics, the only ones carried over gossip too.
     gossip_topics: HashSet<WorkspaceId>,
     topics: HashMap<WorkspaceId, TopicRuntime>,
+    /// Each room's remote sends, so one room's slow devices hold up no
+    /// other room ([`room_lane`]).
+    lanes: room_lane::Lanes,
+    next_topic_serial: u64,
     subscribers: HashMap<WorkspaceId, mpsc::Sender<NetEvent>>,
     peers: HashMap<EndpointId, EndpointAddr>,
     hosts: HashMap<EndpointId, (EndpointAddr, Option<HomePeerExpectation>)>,
@@ -1774,11 +1794,11 @@ impl ActorState {
                 self.host_sessions.clear();
             }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
-                self.handle_join_workspace(ws, on_event).await;
+                self.handle_join_workspace(ws, on_event);
             }
             Some(NetCmd::JoinPersonalTopic { ws, on_event }) => {
                 self.gossip_topics.insert(ws);
-                self.handle_join_workspace(ws, on_event).await;
+                self.handle_join_workspace(ws, on_event);
             }
             Some(NetCmd::SetRoomRoster { ws, devices }) => {
                 self.set_room_roster(ws, devices, true);
@@ -1821,8 +1841,9 @@ impl ActorState {
                     }
                     *task_ws != ws
                 });
-                if let Some(topic) = self.topics.remove(&ws) {
-                    topic.pump.abort();
+                self.lanes.close(ws);
+                if let Some(pump) = self.topics.remove(&ws).and_then(|topic| topic.pump) {
+                    pump.abort();
                 }
                 let leaving: Vec<_> = self
                     .host_sessions
@@ -1853,7 +1874,7 @@ impl ActorState {
                     .get(&ws)
                     .is_some_and(|topic| !topic.announced_identity_lately())
                 {
-                    self.announce_identity(ws).await;
+                    self.announce_identity(ws);
                 }
             }
             Some(NetCmd::Replay { ws }) => {
@@ -1913,17 +1934,17 @@ impl ActorState {
                     publish(
                         &self.topics,
                         &self.host_sessions,
+                        &mut self.lanes,
                         ws,
                         msg.clone(),
                         false,
                         false,
                         true,
-                    )
-                    .await;
+                    );
                     let _ = self.start_surface_fanout(ws, msg);
                 } else {
                     self.hold_for_host(ws, &msg, false);
-                    self.publish_paced(ws, msg).await;
+                    self.publish_paced(ws, msg);
                 }
             }
             Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
@@ -1932,13 +1953,13 @@ impl ActorState {
                 publish(
                     &self.topics,
                     &self.host_sessions,
+                    &mut self.lanes,
                     ws,
                     msg,
                     false,
                     false,
                     true,
-                )
-                .await;
+                );
             }
             Some(NetCmd::PublishHostedTopology { ws, msg }) => {
                 if !self.host_sessions.keys().any(|(topic, _)| *topic == ws) {
@@ -1951,33 +1972,42 @@ impl ActorState {
                     publish(
                         &self.topics,
                         &self.host_sessions,
+                        &mut self.lanes,
                         ws,
                         msg,
                         false,
                         false,
                         true,
-                    )
-                    .await;
+                    );
                 }
             }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
-                self.publish_workspace_control(ws, msg, route).await;
+                self.publish_workspace_control(ws, msg, route);
             }
             Some(NetCmd::PublishSurfaceTo { ws, msg, viewers }) => {
-                self.publish_surface_to(ws, msg, &viewers).await;
+                self.publish_surface_to(ws, msg, &viewers);
             }
             Some(NetCmd::PublishRemoteAction { ws, target, msg }) => {
-                self.publish_remote_action(ws, target, msg).await;
+                self.publish_remote_action(ws, target, msg);
             }
             Some(NetCmd::PublishRecordContent(delivery)) => {
-                self.publish_record_content(delivery).await;
+                self.publish_record_content(delivery);
             }
             Some(NetCmd::PublishCheckpoint { ws, msg }) => {
                 if self.native_routes.contains(ws) {
                     return true;
                 }
                 self.hold_for_host(ws, &msg, true);
-                publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
+                publish(
+                    &self.topics,
+                    &self.host_sessions,
+                    &mut self.lanes,
+                    ws,
+                    msg,
+                    true,
+                    true,
+                    true,
+                );
             }
             Some(NetCmd::PublishPersonalFabric {
                 ws,
@@ -2015,10 +2045,9 @@ impl ActorState {
                 let id = addr.id;
                 self.lookup.add_endpoint_info(addr.clone());
                 self.peers.insert(id, addr);
-                for topic in self.topics.values() {
-                    if let Err(error) = topic.sender.join_peers(vec![id]).await {
-                        tracing::warn!(peer = %id, %error, "iroh gossip peer join failed");
-                    }
+                for ws in self.topics.keys().copied() {
+                    self.lanes
+                        .queue_or_shed(ws, room_lane::Work::JoinPeers(vec![id]));
                 }
             }
             Some(NetCmd::ConnectHost { addr, expectation }) => {
@@ -2510,7 +2539,7 @@ impl ActorState {
     /// Send consented input to one exact authenticated device. Gossip has no
     /// addressed-send primitive, so using its broadcast here would disclose
     /// keyboard and pointer events to every participant in the workspace.
-    async fn publish_workspace_control(
+    fn publish_workspace_control(
         &mut self,
         ws: WorkspaceId,
         msg: NeighbourMsg,
@@ -2527,7 +2556,9 @@ impl ActorState {
         }
         match route {
             WorkspaceControlRoute::Direct { target } => {
-                self.publish_direct(ws, target, msg).await;
+                // Input lands within its frame budget or not at all: a
+                // backed-up room has nothing better to do with it.
+                let _ = self.publish_direct(ws, target, msg);
             }
             WorkspaceControlRoute::Relayed { via } => {
                 tracing::warn!(
@@ -2565,7 +2596,7 @@ impl ActorState {
     /// [`NetCmd::PublishSurfaceTo`]: one window's stream to exactly its
     /// viewers. Frames take the per-window media fanout restricted to them;
     /// the stream's start, end and control grants go to each directly.
-    async fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
+    fn publish_surface_to(&mut self, ws: WorkspaceId, msg: NeighbourMsg, viewers: &[u64]) {
         self.observe_surface_stream(ws, &msg);
         let targets = self
             .surface_members(ws)
@@ -2585,7 +2616,7 @@ impl ActorState {
                     self.surface_fanout_viewers.remove(&(ws, *surface));
                 }
                 for target in targets {
-                    let _ = self.publish_direct(ws, target, msg.clone()).await;
+                    let _ = self.publish_direct(ws, target, msg.clone());
                 }
             }
             _ => tracing::warn!(ws, "refused a non-stream message on the viewer route"),
@@ -2595,12 +2626,7 @@ impl ActorState {
     /// Send a remote-action frame to exactly `target`: directly when the
     /// device is live on this workspace's mesh, otherwise through an
     /// authenticated workspace host, which routes it to that device alone.
-    async fn publish_remote_action(
-        &mut self,
-        ws: WorkspaceId,
-        target: EndpointId,
-        msg: NeighbourMsg,
-    ) {
+    fn publish_remote_action(&mut self, ws: WorkspaceId, target: EndpointId, msg: NeighbourMsg) {
         let NeighbourMsg::RemoteAction { frame } = msg else {
             tracing::warn!(
                 ws,
@@ -2608,19 +2634,23 @@ impl ActorState {
             );
             return;
         };
-        if self.is_surface_member(ws, target)
-            && self
-                .publish_direct(
-                    ws,
-                    target,
-                    NeighbourMsg::RemoteAction {
-                        frame: frame.clone(),
-                    },
-                )
-                .await
-        {
+        if self.is_surface_member(ws, target) {
+            match self.publish_direct(ws, target, NeighbourMsg::RemoteAction { frame }) {
+                // How it went comes back from the room's lane.
+                Ok(()) => return,
+                Err(NeighbourMsg::RemoteAction { frame }) => {
+                    self.relay_remote_action(ws, target, frame)
+                }
+                Err(_) => {}
+            }
             return;
         }
+        self.relay_remote_action(ws, target, frame);
+    }
+
+    /// A remote action that could not go to `target` directly: through an
+    /// authenticated workspace host, or held until the device is seen.
+    fn relay_remote_action(&mut self, ws: WorkspaceId, target: EndpointId, frame: Vec<u8>) {
         let relayed = self
             .host_sessions
             .iter()
@@ -2754,17 +2784,16 @@ impl ActorState {
         }
     }
 
-    async fn flush_pending_remote_actions(&mut self, ws: WorkspaceId, peer: EndpointId) {
+    fn flush_pending_remote_actions(&mut self, ws: WorkspaceId, peer: EndpointId) {
         for frame in self
             .pending_remote_actions
             .take_for(ws, peer, Instant::now())
         {
-            self.publish_remote_action(ws, peer, NeighbourMsg::RemoteAction { frame })
-                .await;
+            self.publish_remote_action(ws, peer, NeighbourMsg::RemoteAction { frame });
         }
     }
 
-    async fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
+    fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
         let RecordContentDelivery { ws, target, msg } = delivery;
         if !matches!(
             msg,
@@ -2776,12 +2805,27 @@ impl ActorState {
             );
             return;
         }
-        if let Some(target) = target
-            && self.is_surface_member(ws, target)
-            && self.publish_direct(ws, target, msg.clone()).await
-        {
-            return;
-        }
+        let msg = match target {
+            Some(target) if self.is_surface_member(ws, target) => {
+                match self.publish_direct(ws, target, msg) {
+                    // How it went comes back from the room's lane.
+                    Ok(()) => return,
+                    Err(msg) => msg,
+                }
+            }
+            _ => msg,
+        };
+        self.relay_record_content(ws, target, msg);
+    }
+
+    /// Record content that could not go to `target` directly: through the
+    /// workspace hosts to that device alone, else to the whole room.
+    fn relay_record_content(
+        &mut self,
+        ws: WorkspaceId,
+        target: Option<EndpointId>,
+        msg: NeighbourMsg,
+    ) {
         // The workspace hosts route it to that device alone when it is
         // connected to them.
         if let Some(target) = target
@@ -2802,27 +2846,29 @@ impl ActorState {
         publish(
             &self.topics,
             &self.host_sessions,
+            &mut self.lanes,
             ws,
             msg,
             false,
             true,
             false,
-        )
-        .await;
+        );
     }
 
-    /// Deliver one message to exactly `target` on the authenticated direct
-    /// surface/control plane. The peer must be live on this workspace.
-    /// Returns whether the message was written.
-    async fn publish_direct(
+    /// Queue one message for exactly `target` on the authenticated direct
+    /// surface/control plane, on the room's lane: the peer must be live on
+    /// this workspace. Gives the message back when it cannot go that way
+    /// now; how a queued one went comes back as
+    /// [`InternalEvent::DirectSent`] ([`Self::direct_sent`]).
+    fn publish_direct(
         &mut self,
         ws: WorkspaceId,
         target: EndpointId,
         msg: NeighbourMsg,
-    ) -> bool {
+    ) -> Result<(), NeighbourMsg> {
         if !self.is_surface_member(ws, target) {
             tracing::warn!(ws, peer = %target, "direct route is no longer live");
-            return false;
+            return Err(msg);
         }
         // Input must land within an interactive frame budget or not at all;
         // an action frame (up to a catalogue page) is worth waiting for.
@@ -2841,60 +2887,60 @@ impl ActorState {
             message: msg,
         };
         let Ok(bytes) = postcard::to_allocvec(&wire) else {
-            return false;
+            return Err(wire.message);
         };
-        let addr = self
-            .peers
-            .get(&target)
-            .cloned()
-            .unwrap_or_else(|| EndpointAddr::new(target));
-        if self
-            .surface_connections
-            .get(&target)
-            .is_some_and(|connection| connection.close_reason().is_some())
-        {
-            self.surface_connections.remove(&target);
+        let direct = room_lane::Direct {
+            addr: self
+                .peers
+                .get(&target)
+                .cloned()
+                .unwrap_or_else(|| EndpointAddr::new(target)),
+            cached: self.surface_connections.get(&target).cloned(),
+            msg: wire.message,
+            bytes,
+            budget,
+        };
+        self.lanes.queue_direct(ws, direct).inspect_err(|_| {
+            tracing::warn!(ws, peer = %target, "room's remote work is backed up; not sent directly");
+        })
+    }
+
+    /// A direct send queued on `ws`'s lane went (or did not): keep its
+    /// connection, and send what failed the way it would have gone without
+    /// a direct route.
+    fn direct_sent(&mut self, ws: WorkspaceId, outcome: room_lane::DirectOutcome) {
+        let room_lane::DirectOutcome {
+            target,
+            msg,
+            connection,
+            delivered,
+        } = outcome;
+        match connection {
+            Some(connection) if delivered && self.is_surface_member(ws, target) => {
+                self.surface_connections.insert(target, connection);
+            }
+            _ => {
+                self.surface_connections.remove(&target);
+            }
         }
-        let connection = if let Some(connection) = self.surface_connections.get(&target) {
-            connection.clone()
-        } else {
-            let Ok(Ok(connection)) = tokio::time::timeout(
-                Duration::from_millis(300),
-                self.endpoint.connect(addr, SURFACE_STREAM_ALPN),
-            )
-            .await
-            else {
-                tracing::warn!(ws, peer = %target, "direct connection failed");
-                return false;
-            };
-            self.surface_connections.insert(target, connection.clone());
-            connection
-        };
-        let send = async {
-            let mut stream = connection.open_uni().await.map_err(|_| ())?;
-            stream.write_all(&bytes).await.map_err(|_| ())?;
-            stream.finish().map_err(|_| ())?;
-            Ok::<(), ()>(())
-        };
-        let delivered = tokio::select! {
-            biased;
-            _ = connection.closed() => false,
-            result = tokio::time::timeout(budget, send) => matches!(result, Ok(Ok(()))),
-        };
-        if delivered {
-            return true;
+        if delivered || !self.subscribers.contains_key(&ws) {
+            return;
         }
-        self.surface_connections.remove(&target);
-        tracing::warn!(ws, peer = %target, "direct publish failed");
-        false
+        match msg {
+            NeighbourMsg::RemoteAction { frame } => self.relay_remote_action(ws, target, frame),
+            NeighbourMsg::RecordContentPiece { .. } | NeighbourMsg::RecordContentLacks { .. } => {
+                self.relay_record_content(ws, Some(target), msg);
+            }
+            _ => {}
+        }
     }
 
     /// [`NetCmd::JoinWorkspace`] arm of [`Self::handle_command`], split out
     /// to keep that dispatcher short.
-    async fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
+    fn handle_join_workspace(&mut self, ws: WorkspaceId, on_event: mpsc::Sender<NetEvent>) {
         self.subscribers.insert(ws, on_event);
         if self.gossip_topics.contains(&ws) {
-            self.subscribe_topic(ws).await;
+            self.subscribe_topic(ws);
         }
         if !self.native_routes.contains(ws)
             && let Some(identity) = self.host_identity.as_ref()
@@ -2920,42 +2966,71 @@ impl ActorState {
         }
     }
 
-    /// Subscribe to `ws`'s gossip topic unless a subscription is running.
-    /// A subscribe that failed, or one whose stream has closed, is retried
-    /// from the heartbeat while the workspace is still wanted.
-    async fn subscribe_topic(&mut self, ws: WorkspaceId) {
-        if let std::collections::hash_map::Entry::Vacant(e) = self.topics.entry(ws) {
-            let bootstrap = self.peers.keys().copied().collect();
-            match self.gossip.subscribe(topic_id(ws), bootstrap).await {
-                Ok(topic) => {
-                    let (sender, mut receiver) = topic.split();
-                    let tx = self.internal_tx.clone();
-                    let pump = tokio::spawn(async move {
-                        while let Some(result) = receiver.next().await {
-                            match result {
-                                Ok(event) => {
-                                    if tx.send(InternalEvent::Topic { ws, event }).await.is_err() {
-                                        return;
-                                    }
-                                }
-                                Err(error) => {
-                                    tracing::warn!(ws, %error, "iroh gossip subscription failed");
-                                    break;
-                                }
-                            }
-                        }
-                        let _ = tx.send(InternalEvent::Closed { ws }).await;
-                    });
-                    e.insert(TopicRuntime::new(sender, pump));
-                }
-                Err(error) => tracing::warn!(ws, %error, "could not join iroh workspace topic"),
-            }
+    /// Subscribe to `ws`'s gossip topic, on the room's lane, unless a
+    /// subscription is running or being made. A subscribe that failed, or
+    /// one whose stream has closed, is retried from the heartbeat while the
+    /// workspace is still wanted.
+    fn subscribe_topic(&mut self, ws: WorkspaceId) {
+        if self.topics.contains_key(&ws) {
+            return;
         }
+        self.next_topic_serial = self.next_topic_serial.wrapping_add(1);
+        let serial = self.next_topic_serial;
+        let bootstrap = self.peers.keys().copied().collect();
+        if self
+            .lanes
+            .queue(ws, room_lane::Work::Subscribe { serial, bootstrap })
+        {
+            self.topics.insert(ws, TopicRuntime::new(serial));
+        } else {
+            tracing::warn!(
+                ws,
+                "room's remote work is backed up; its topic is joined later"
+            );
+        }
+    }
+
+    /// `ws`'s lane subscribed to its topic (`receiver`) or failed to: pump
+    /// the subscription's events, unless it is not the one wanted now.
+    fn topic_subscribed(
+        &mut self,
+        ws: WorkspaceId,
+        serial: u64,
+        receiver: Option<Box<iroh_gossip::api::GossipReceiver>>,
+    ) {
+        let Some(topic) = self
+            .topics
+            .get_mut(&ws)
+            .filter(|topic| topic.serial == serial && topic.pump.is_none())
+        else {
+            return;
+        };
+        let Some(mut receiver) = receiver else {
+            self.topics.remove(&ws);
+            return;
+        };
+        let tx = self.internal_tx.clone();
+        topic.pump = Some(tokio::spawn(async move {
+            while let Some(result) = receiver.next().await {
+                match result {
+                    Ok(event) => {
+                        if tx.send(InternalEvent::Topic { ws, event }).await.is_err() {
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(ws, %error, "iroh gossip subscription failed");
+                        break;
+                    }
+                }
+            }
+            let _ = tx.send(InternalEvent::Closed { ws }).await;
+        }));
     }
 
     /// Personal topics that are joined but have no running gossip
     /// subscription.
-    async fn resubscribe_missing_topics(&mut self) {
+    fn resubscribe_missing_topics(&mut self) {
         let missing: Vec<_> = self
             .gossip_topics
             .iter()
@@ -2963,16 +3038,16 @@ impl ActorState {
             .filter(|ws| self.subscribers.contains_key(ws) && !self.topics.contains_key(ws))
             .collect();
         for ws in missing {
-            self.subscribe_topic(ws).await;
+            self.subscribe_topic(ws);
         }
     }
 
     /// Known direct peers are joined when they are first learned. A device
     /// whose network came up after that attempt never appears, so ask again
     /// on each topic until the peer is actually seen there.
-    async fn retry_direct_peers(&self) {
+    fn retry_direct_peers(&mut self) {
         let local = self.endpoint.id();
-        for (ws, topic) in &self.topics {
+        for ws in self.topics.keys() {
             let absent: Vec<_> = self
                 .peers
                 .keys()
@@ -2982,9 +3057,8 @@ impl ActorState {
             if absent.is_empty() {
                 continue;
             }
-            if let Err(error) = topic.sender.join_peers(absent).await {
-                tracing::debug!(ws, %error, "direct peer join will be retried");
-            }
+            self.lanes
+                .queue_or_shed(*ws, room_lane::Work::JoinPeers(absent));
         }
     }
 
@@ -3012,6 +3086,12 @@ impl ActorState {
             Some(InternalEvent::Closed { ws }) => {
                 self.handle_workspace_closed(ws).await;
             }
+            Some(InternalEvent::Subscribed {
+                ws,
+                serial,
+                receiver,
+            }) => self.topic_subscribed(ws, serial, receiver),
+            Some(InternalEvent::DirectSent { ws, outcome }) => self.direct_sent(ws, *outcome),
             Some(InternalEvent::HostConnected {
                 ws,
                 peer,
@@ -3265,13 +3345,13 @@ impl ActorState {
             publish(
                 &self.topics,
                 &self.host_sessions,
+                &mut self.lanes,
                 ws,
                 msg,
                 false,
                 true,
                 false,
-            )
-            .await;
+            );
         }
         if let Some(next) = self
             .pending_surface_frames
@@ -3283,13 +3363,13 @@ impl ActorState {
             publish(
                 &self.topics,
                 &self.host_sessions,
+                &mut self.lanes,
                 ws,
                 next,
                 false,
                 true,
                 false,
-            )
-            .await;
+            );
         }
     }
 
@@ -3406,8 +3486,8 @@ impl ActorState {
             // as the link is usable: once per link, never on a timer. State
             // sync can otherwise arrive before the identity and be rejected
             // by the peer.
-            self.announce_identity(ws).await;
-            self.announce_media_caps(ws).await;
+            self.announce_identity(ws);
+            self.announce_media_caps(ws);
         }
         let Some(tx) = self.subscribers.get(&ws).cloned() else {
             return;
@@ -3456,7 +3536,7 @@ impl ActorState {
                         .get(&ws)
                         .is_some_and(|topic| !topic.announced_identity_lately())
                 {
-                    self.announce_identity(ws).await;
+                    self.announce_identity(ws);
                 }
                 if !self.is_news(ws, peer, decoded.as_ref().ok(), fingerprint) {
                     // A restarted device repeats a message already seen, such
@@ -3471,7 +3551,7 @@ impl ActorState {
                                 membership_epoch,
                             })
                             .await;
-                        self.flush_pending_remote_actions(ws, peer).await;
+                        self.flush_pending_remote_actions(ws, peer);
                     }
                     return;
                 }
@@ -3510,7 +3590,7 @@ impl ActorState {
             let _ = tx.send(event).await;
         }
         if let Some(peer) = joined_anew {
-            self.flush_pending_remote_actions(ws, peer).await;
+            self.flush_pending_remote_actions(ws, peer);
         }
     }
 
@@ -3771,7 +3851,7 @@ impl ActorState {
     /// an agent's pointer travel alike. Carets, selections and typing pass a
     /// held pointer; anything else is broadcast after every held pointer, so
     /// an app's `Left` never overtakes its last move.
-    async fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
+    fn publish_paced(&mut self, ws: WorkspaceId, msg: NeighbourMsg) {
         let pacing = slot_pacing(ws, msg.presence_slot());
         if let Pacing::Pointer(key) = pacing
             && self.topics.contains_key(&ws)
@@ -3788,51 +3868,49 @@ impl ActorState {
             publish(
                 &self.topics,
                 &self.host_sessions,
+                &mut self.lanes,
                 ws,
                 msg,
                 false,
                 false,
                 true,
-            )
-            .await;
+            );
             let now = tokio::time::Instant::now();
             self.gossip_pointers
                 .hold(key, GossipPointer { ws, bytes }, now);
             let due = self.gossip_pointers.take_due(now);
-            self.broadcast_pointers(due).await;
+            self.broadcast_pointers(due);
             return;
         }
         if pacing == Pacing::Ordered {
             let held = self.gossip_pointers.take_all(tokio::time::Instant::now());
-            self.broadcast_pointers(held).await;
+            self.broadcast_pointers(held);
         }
         publish(
             &self.topics,
             &self.host_sessions,
+            &mut self.lanes,
             ws,
             msg,
             false,
             true,
             true,
-        )
-        .await;
+        );
     }
 
     /// Broadcast the held pointer moves whose gap has ended (the run loop
     /// wakes for [`PointerPacer::next_due`], armed only while one is held).
-    async fn broadcast_due_pointers(&mut self) {
+    fn broadcast_due_pointers(&mut self) {
         let due = self.gossip_pointers.take_due(tokio::time::Instant::now());
-        self.broadcast_pointers(due).await;
+        self.broadcast_pointers(due);
     }
 
-    async fn broadcast_pointers(&self, pointers: Vec<GossipPointer>) {
+    fn broadcast_pointers(&mut self, pointers: Vec<GossipPointer>) {
         for GossipPointer { ws, bytes } in pointers {
             // A room left since the move was held has nobody to tell.
-            let Some(topic) = self.topics.get(&ws) else {
-                continue;
-            };
-            if let Err(error) = topic.sender.broadcast(bytes).await {
-                tracing::warn!(ws, %error, "iroh gossip publish failed");
+            if self.topics.contains_key(&ws) {
+                self.lanes
+                    .queue_or_shed(ws, room_lane::Work::Broadcast(bytes));
             }
         }
     }
@@ -4008,11 +4086,11 @@ impl ActorState {
     async fn run_heartbeat_tick(&mut self) {
         for (ws, peer) in self.pending_remote_actions.targets() {
             if self.is_surface_member(ws, peer) {
-                self.flush_pending_remote_actions(ws, peer).await;
+                self.flush_pending_remote_actions(ws, peer);
             }
         }
-        self.resubscribe_missing_topics().await;
-        self.retry_direct_peers().await;
+        self.resubscribe_missing_topics();
+        self.retry_direct_peers();
         self.retry_native_routes();
         // A session with this device's own host loses nothing between
         // heartbeats: it publishes as the owner commits.
@@ -4057,9 +4135,9 @@ impl ActorState {
         // opening). A converged, idle desktop says nothing.
         let workspaces: Vec<_> = self.topics.keys().copied().collect();
         for ws in workspaces {
-            self.announce_identity_if_changed(ws).await;
+            self.announce_identity_if_changed(ws);
         }
-        self.announce_media_caps_if_changed().await;
+        self.announce_media_caps_if_changed();
     }
 
     /// The identity announcement this device makes on `ws`: its certificate
@@ -4080,7 +4158,7 @@ impl ActorState {
     /// Identity announcements are deliberately neighbor-only: receivers bind
     /// the certificate to the endpoint that delivered it, so forwarding one
     /// through another gossip peer would make that check fail.
-    async fn announce_identity(&mut self, ws: WorkspaceId) {
+    fn announce_identity(&mut self, ws: WorkspaceId) {
         let Some(hello) = self.identity_hello(ws) else {
             return;
         };
@@ -4096,16 +4174,15 @@ impl ActorState {
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
         topic.identity_announced = Some(Instant::now());
-        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
-            tracing::warn!(ws, %error, "could not send collaboration identity announcement");
-        }
+        self.lanes
+            .queue_or_shed(ws, room_lane::Work::Neighbours(Bytes::from(bytes)));
     }
 
     /// Announce this device's identity on `ws` again, to its neighbours and
     /// its workspace hosts, when it changed since it was last announced
     /// there: a new revocation reaches the room the tick it is read from
     /// disk, as when every tick announced it.
-    async fn announce_identity_if_changed(&mut self, ws: WorkspaceId) {
+    fn announce_identity_if_changed(&mut self, ws: WorkspaceId) {
         let Some(hello) = self.identity_hello(ws) else {
             return;
         };
@@ -4125,9 +4202,8 @@ impl ActorState {
         }
         tracing::info!(ws, "device identity material changed; announcing it again");
         topic.identity_announced = Some(Instant::now());
-        if let Err(error) = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await {
-            tracing::warn!(ws, %error, "could not send collaboration identity announcement");
-        }
+        self.lanes
+            .queue_or_shed(ws, room_lane::Work::Neighbours(Bytes::from(bytes)));
         for ((session_ws, _), runtime) in &self.host_sessions {
             if *session_ws == ws {
                 Self::announce_identity_to_host(ws, &hello, &runtime.session);
@@ -4146,19 +4222,20 @@ impl ActorState {
     /// Tell `ws`'s neighbours what this machine can encode and decode, so a
     /// sharer picks a codec every viewer takes. Neighbour scoped like the
     /// identity: receivers take an advert only from the device it describes.
-    async fn announce_media_caps(&mut self, ws: WorkspaceId) {
+    fn announce_media_caps(&mut self, ws: WorkspaceId) {
         let Some(bytes) = self.media_caps_advert() else {
             return;
         };
         self.caps_sent = Some(message_fingerprint(&bytes));
-        if let Some(topic) = self.topics.get(&ws) {
-            let _ = topic.sender.broadcast_neighbors(Bytes::from(bytes)).await;
+        if self.topics.contains_key(&ws) {
+            self.lanes
+                .queue_or_shed(ws, room_lane::Work::Neighbours(Bytes::from(bytes)));
         }
     }
 
     /// Announce this machine's codecs again on every topic when they changed
     /// since they were last announced.
-    async fn announce_media_caps_if_changed(&mut self) {
+    fn announce_media_caps_if_changed(&mut self) {
         let Some(bytes) = self.media_caps_advert() else {
             return;
         };
@@ -4169,11 +4246,9 @@ impl ActorState {
         if sent == fingerprint {
             return;
         }
-        for topic in self.topics.values() {
-            let _ = topic
-                .sender
-                .broadcast_neighbors(Bytes::from(bytes.clone()))
-                .await;
+        for ws in self.topics.keys().copied() {
+            self.lanes
+                .queue_or_shed(ws, room_lane::Work::Neighbours(Bytes::from(bytes.clone())));
         }
     }
 
@@ -4557,6 +4632,7 @@ async fn run(
         })
         .spawn();
     let reporting_addrs = report_addrs(&endpoint, listen_addrs);
+    let lanes = room_lane::Lanes::new(gossip, endpoint.clone(), internal_tx.clone());
     let mut state = ActorState {
         private_messages: super::private_messages::Transport::new(
             endpoint.clone(),
@@ -4572,7 +4648,8 @@ async fn run(
         native_routes: native_ingress::Routes::default(),
         local_host,
         room_governance: room_governance::Waiting::default(),
-        gossip,
+        lanes,
+        next_topic_serial: 0,
         internal_tx,
         gossip_topics: HashSet::new(),
         topics: HashMap::new(),
@@ -4656,7 +4733,7 @@ async fn run(
                     break;
                 }
             }
-            () = sleep_until_due(pointer_due) => state.broadcast_due_pointers().await,
+            () = sleep_until_due(pointer_due) => state.broadcast_due_pointers(),
             () = sleep_until_lapse(eviction) => state.run_eviction_tick().await,
             () = sleep_until_lapse(upkeep) => {
                 upkeep = None;
@@ -4669,8 +4746,12 @@ async fn run(
         }
     }
 
-    for topic in state.topics.values() {
-        topic.pump.abort();
+    for pump in state
+        .topics
+        .values()
+        .filter_map(|topic| topic.pump.as_ref())
+    {
+        pump.abort();
     }
     for host in state.host_sessions.values() {
         host.pump.abort();
@@ -4804,9 +4885,10 @@ fn fanout_surface(msg: &NeighbourMsg) -> SurfaceId {
     }
 }
 
-async fn publish(
+fn publish(
     topics: &HashMap<WorkspaceId, TopicRuntime>,
     host_sessions: &HashMap<(WorkspaceId, EndpointId), HostRuntime>,
+    lanes: &mut room_lane::Lanes,
     ws: WorkspaceId,
     msg: NeighbourMsg,
     shell_checkpoint: bool,
@@ -4843,10 +4925,10 @@ async fn publish(
     };
 
     // Host clients enqueue synchronously into their already-authenticated
-    // QUIC pumps. Do that before awaiting gossip: a slow or reconnecting
-    // direct mesh must not add its delay to the independent hosted path.
-    // This also keeps collaboration live through a transient failure to join
-    // the gossip topic, provided an authenticated workspace host is ready.
+    // QUIC pumps, and gossip goes on the room's lane: neither waits for the
+    // other, nor for any other room. This also keeps collaboration live
+    // through a transient failure to join the gossip topic, provided an
+    // authenticated workspace host is ready.
     if publish_hosts {
         for ((session_ws, _), runtime) in host_sessions {
             if *session_ws != ws {
@@ -4867,10 +4949,8 @@ async fn publish(
         }
     }
     if broadcast_gossip {
-        if let Some(topic) = topics.get(&ws) {
-            if let Err(error) = topic.sender.broadcast(Bytes::from(bytes)).await {
-                tracing::warn!(ws, %error, "iroh gossip publish failed");
-            }
+        if topics.contains_key(&ws) {
+            lanes.queue_or_shed(ws, room_lane::Work::Broadcast(Bytes::from(bytes)));
         } else if host_sessions
             .keys()
             .all(|(session_ws, _)| *session_ws != ws)
@@ -5745,24 +5825,20 @@ mod tests {
             .await
             .unwrap()
             .split();
-        let topic = TopicRuntime::new(sender, tokio::spawn(std::future::pending()));
         let timers = || gossip.metrics().actor_tick_timers.get();
 
         for _ in 0..3 {
-            topic
-                .sender
+            sender
                 .broadcast(Bytes::from_static(b"a local change"))
                 .await
                 .unwrap();
-            topic
-                .sender
+            sender
                 .broadcast_neighbors(Bytes::from_static(b"an identity"))
                 .await
                 .unwrap();
         }
         tokio::time::sleep(SWEEP.saturating_mul(10)).await;
         assert_eq!(timers(), 0, "gossip woke for a topic nobody else is on");
-        topic.pump.abort();
         endpoint.close().await;
     }
     use getrandom::{SysRng, rand_core::UnwrapErr};
