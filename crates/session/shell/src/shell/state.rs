@@ -4562,6 +4562,10 @@ impl WorkspaceTree {
         // already happened, so a doc-write failure only means this append
         // doesn't replicate.
         tilo_desktop_model::desktop_doc::append_workspace(&mut self.doc, ws_id, name, room);
+        // Its strip goes in with it: a window moved or opened into the new
+        // workspace is recorded against that strip, and a move the document
+        // cannot record is refused.
+        self.seed_doc_from_cache();
         // A newly-created workspace is local session state as well as a
         // collaboration-document change. Persist it at the mutation boundary:
         // otherwise a compositor crash before the next unrelated edit silently
@@ -8826,6 +8830,43 @@ mod automerge_foundation_tests {
                 "failed document commit must restore the exact source layout"
             );
         }
+    }
+
+    #[test]
+    fn a_window_moves_into_a_workspace_created_moments_ago() {
+        // The window menu's Move to workspace, right after Create a
+        // workspace: nothing else has written the new workspace's strip to
+        // the replicated document, and a move the document cannot record
+        // is refused, so the window must find that strip there.
+        let mut tree = WorkspaceTree::bootstrap_demo();
+        let src_strip = tree.desktop.workspaces[0].strips[0].id;
+        let tab = tree.desktop.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+        let fresh = tree.append_empty_workspace("Fresh");
+        let dst_strip = tree.desktop.active_strip[&fresh];
+        assert!(
+            tree.move_tab_across_strips(
+                src_strip,
+                dst_strip,
+                tab,
+                next_id(),
+                DropTarget::GroupGap { gap_index: 0 },
+            ),
+            "the new workspace's strip is in the document"
+        );
+        let landed = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id == fresh)
+            .is_some_and(|workspace| {
+                workspace.strips.iter().any(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .any(|group| group.tabs.iter().any(|t| t.id == tab))
+                })
+            });
+        assert!(landed, "the window is in the new workspace");
     }
 }
 
