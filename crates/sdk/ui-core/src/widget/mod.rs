@@ -1,8 +1,11 @@
 mod action_directory_identity;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-pub use disclosing::{Disclosing, event_offset};
-pub(crate) use disclosing::{content_box, follower_shifts, place_bands, route_to_shifted_children};
+pub use disclosing::{Disclosing, Placement, event_offset};
+pub(crate) use disclosing::{
+    Ghost, KeptBand, content_box, follower_shifts, place_and_find_leaving, place_bands,
+    route_to_shifted_children,
+};
 pub(crate) mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
 // reached from outside the toolkit only through `crate::host_operation`.
@@ -2257,6 +2260,19 @@ pub trait Widget {
     /// out of the layout: its slot's top and width (`slot`'s height is
     /// zero), set by its container after each layout.
     fn place_disclosing(&mut self, _slot: vello::kurbo::Rect) {}
+
+    /// A band that comes and goes (an in-window banner): when its view
+    /// stops building it, its column draws it leaving
+    /// (`widget::Disclosing`). Its column leaves it out of its identity
+    /// across rebuilds.
+    fn is_band(&self) -> bool {
+        false
+    }
+
+    /// Where a band stands in its column, set by the column after each
+    /// layout: what it leaves when dropped, so the column a rebuild makes
+    /// can draw it leaving.
+    fn note_placement(&mut self, _placement: Placement) {}
 
     /// Why this widget itself asks for animation frames, for diagnostics
     /// that name a desktop which keeps painting. `None` when it has nothing

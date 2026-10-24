@@ -61,6 +61,26 @@ impl Disclosure {
         self.show_from(open, motion, source);
     }
 
+    /// Let a band that is going for good (its view stopped building it)
+    /// leave as the last input asks: a key's result lands; otherwise it
+    /// collapses, and under reduced motion its height lands and its paint
+    /// fades out at `fast`.
+    pub fn leave(&mut self, motion: EffectiveMotion) {
+        let source =
+            super::source::recent_input(super::frame_now()).unwrap_or(MotionSource::Pointer);
+        if motion.reduced() && !source.lands_at_once() && self.presence.is_open() {
+            self.motion = motion;
+            self.fade_only = true;
+            self.presence
+                .show(false, CROSS_FADE, motion, source, super::frame_now());
+            if let Some(until) = self.presence.settles_at() {
+                super::clock::want_frames_until(until);
+            }
+            return;
+        }
+        self.show_from(false, motion, source);
+    }
+
     /// Show or hide it for a change `source` asked for. Asking for the
     /// state it is in or going to changes nothing; the other one mid-flight
     /// reverses from where it is drawn.

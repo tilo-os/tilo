@@ -78,6 +78,12 @@ pub fn take_kept_at<T: 'static>(at: Rect) -> Option<T> {
     })
 }
 
+/// What a widget of `T`'s kind left that `matches`, if anything.
+#[must_use]
+pub fn take_kept_where<T: 'static>(matches: impl Fn(&T) -> bool) -> Option<T> {
+    take_where::<T>(|entry| entry.value.downcast_ref::<T>().is_some_and(&matches))
+}
+
 fn take_where<T: 'static>(matches: impl Fn(&Kept) -> bool) -> Option<T> {
     let kind = TypeId::of::<T>();
     let entry = KEPT.with(|kept| {
