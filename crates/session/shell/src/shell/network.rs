@@ -7639,8 +7639,8 @@ impl ShellNetwork {
         // state that existed before the host connected.
         let host_peer = crate::network::behaviour::peer_liveness_handle(&peer);
         for payload in [
-            ui::collaboration::PresencePayload::Arrived,
-            ui::collaboration::PresencePayload::Left,
+            collab_types::presence::PresencePayload::Arrived,
+            collab_types::presence::PresencePayload::Left,
         ] {
             let key = collab_types::presence::PresenceKey::Workspace {
                 id: room.to_string(),

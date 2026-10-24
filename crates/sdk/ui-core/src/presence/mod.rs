@@ -2215,22 +2215,16 @@ mod remote_cursor_tests {
         }
         .packed_colour();
         assert_eq!(
-            crate::collaboration::Collaborator::colour_from_packed(packed),
+            crate::collaboration::colour_from_packed(packed),
             Some(crate::tokens::PresenceHue::Violet),
             "every presence colour survives the roster's wire"
         );
         for hue in crate::tokens::PresenceHue::ALL {
             let (r, g, b) = identity_rgb(hue);
             let packed = (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
-            assert_eq!(
-                crate::collaboration::Collaborator::colour_from_packed(packed),
-                Some(hue)
-            );
+            assert_eq!(crate::collaboration::colour_from_packed(packed), Some(hue));
         }
-        assert_eq!(
-            crate::collaboration::Collaborator::colour_from_packed(0),
-            None
-        );
+        assert_eq!(crate::collaboration::colour_from_packed(0), None);
     }
 
     #[test]
