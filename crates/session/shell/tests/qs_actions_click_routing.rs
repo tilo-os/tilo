@@ -268,14 +268,16 @@ fn quick_settings_sliders_route_clicks_and_arrows_through_the_host() {
             Key::Named(NamedKey::ArrowRight),
             ModifiersState::empty(),
         ));
-        // One more Tab moves brightness → volume.
-        assert!(press_key(
-            &mut host,
-            &taffy,
-            host_node,
-            Key::Named(NamedKey::Tab),
-            ModifiersState::empty(),
-        ));
+        // Two more Tabs move brightness → the volume's mute switch → volume.
+        for _ in 0..2 {
+            assert!(press_key(
+                &mut host,
+                &taffy,
+                host_node,
+                Key::Named(NamedKey::Tab),
+                ModifiersState::empty(),
+            ));
+        }
         assert!(press_key(
             &mut host,
             &taffy,
