@@ -2,10 +2,16 @@
 //! devices route their traffic through it, and which of their devices this
 //! one routes through (docs/device-vpn.md).
 //!
+//! The same helper holds the kill switch of the person's `NetworkManager` VPN
+//! profiles: which profiles have it ([`PROFILE_KILL_SWITCHES`]), and the
+//! profile the person last turned off on purpose ([`PROFILE_RELEASE`]).
+//!
 //! Settings and quick settings write these keys; the session's controller
 //! follows them and publishes what it is doing as a [`DeviceVpnStatus`] in
 //! the private runtime directory, which Settings reads back. Every key is
 //! this device's own: another device is elsewhere, on another network.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -26,6 +32,58 @@ pub const THROUGH: Key<Option<Through>> = Key::new(SECTION, "through", || None);
 /// The last request to stop one of the person's devices routing through
 /// this one. A new request has a new id; the session acts on each id once.
 pub const STOP: Key<Option<StopRequest>> = Key::new(SECTION, "stop", || None);
+
+/// Each of the person's VPN profiles whose traffic is blocked while it is set
+/// to connect and is not connected, by profile id. A profile not listed has
+/// its kill switch off, as every profile starts.
+pub const PROFILE_KILL_SWITCHES: Key<BTreeMap<String, ProfileKillSwitch>> =
+    Key::new(SECTION, "profile_kill_switches", BTreeMap::new);
+
+/// The last VPN profile the person turned off on purpose from Settings, so
+/// its block lifts even while it is not up. A new request has a new id; the
+/// session acts on each id once.
+pub const PROFILE_RELEASE: Key<Option<ProfileRelease>> =
+    Key::new(SECTION, "profile_release", || None);
+
+/// A VPN profile's kill switch, while it is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileKillSwitch {
+    /// Let the local network through while traffic is blocked: printers,
+    /// file shares, the router.
+    pub allow_local: bool,
+}
+
+/// A request to lift the block of `profile`: the person turned it off.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileRelease {
+    pub id: u64,
+    /// The profile's id.
+    pub profile: String,
+}
+
+impl ProfileRelease {
+    /// A request to lift `profile`'s block, after `previous`.
+    #[must_use]
+    pub fn after(previous: Option<&Self>, profile: impl Into<String>) -> Self {
+        Self {
+            id: previous.map_or(1, |previous| previous.id.wrapping_add(1)),
+            profile: profile.into(),
+        }
+    }
+}
+
+/// The block of the person's VPN profiles, as the session holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfileBlockStatus {
+    /// The profiles whose traffic is blocked now: set to connect and not
+    /// connected, with their kill switch on.
+    pub blocking: Vec<String>,
+    /// Traffic should be blocked and this device could not block it.
+    pub failed: bool,
+}
 
 /// The status file holds a handful of devices; anything larger is not one the
 /// session wrote.
@@ -194,6 +252,8 @@ pub struct DeviceVpnStatus {
     pub offered: Vec<OfferedExit>,
     /// This device's route through another, while it has one.
     pub client: Option<ClientStatus>,
+    /// The block of the person's VPN profiles.
+    pub profile_block: ProfileBlockStatus,
 }
 
 impl DeviceVpnStatus {
@@ -321,6 +381,26 @@ mod tests {
             THROUGH.from_section(&section),
             Some(Through::device("cd34"))
         );
+    }
+
+    #[test]
+    fn every_profiles_kill_switch_is_off_until_the_person_turns_it_on() {
+        let document = serde_json::Map::new();
+        assert!(PROFILE_KILL_SWITCHES.from_document(&document).is_empty());
+        assert_eq!(PROFILE_RELEASE.from_document(&document), None);
+        let mut section = serde_json::Map::new();
+        section.insert(
+            "profile_kill_switches".into(),
+            serde_json::json!({ "work": { "allow_local": true }, "home": {} }),
+        );
+        let switches = PROFILE_KILL_SWITCHES.from_section(&section);
+        assert_eq!(
+            switches.get("work"),
+            Some(&ProfileKillSwitch { allow_local: true })
+        );
+        assert_eq!(switches.get("home"), Some(&ProfileKillSwitch::default()));
+        let first = ProfileRelease::after(None, "work");
+        assert_ne!(ProfileRelease::after(Some(&first), "work").id, first.id);
     }
 
     #[test]

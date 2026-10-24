@@ -229,6 +229,10 @@ policies! {
         "tilo.device_vpn.exit",
         "tilo.device_vpn.through",
         "tilo.device_vpn.stop",
+        // The kill switches of this device's VPN profiles, which are its own
+        // `NetworkManager`'s, and the profile last turned off here.
+        "tilo.device_vpn.profile_kill_switches",
+        "tilo.device_vpn.profile_release",
     ],
     Secret => [
         "tilo.agent_providers.api_key",
